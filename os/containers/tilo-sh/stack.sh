@@ -1132,7 +1132,7 @@ as_owner() {
   HOME=$home XDG_CONFIG_HOME=$home/.config XDG_STATE_HOME=$home/.local/state \
     XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
     TILO_IDENTITY_ROOT=$home/.local/share/tilo \
-    TILO_API_URL=$api_origin TILO_SITE=$site_origin "$(find_tilo)" "$@"
+    TILO_API_URL=$api_origin TILO_SITE=$site_origin "$(find_tilo)" "$@" 9>&-
 }
 
 # The user public key of the stack's own person, made the first time: the
@@ -1328,19 +1328,16 @@ vm_host() {
 }
 
 # The ticket this stack's VM host joins the person's devices with: printed on
-# the stack's own person's device (`tilo device add --capability admin`), once
-# per VM host state disk, and kept until the disk it belongs to is wiped.
+# the stack's own person's device (`tilo device add --capability admin`) at each
+# start. The host spends it once and keeps its login on its own state disk,
+# which is root's; a host that already holds one ignores the ticket it is given.
+# A ticket lets a computer in, so no failure prints it.
 host_ticket() {
-  local kept=$vm_state/ticket
-  if [[ ! -s $kept ]]; then
-    local issued
-    issued=$(owner_person device add --capability admin --server --json --no-wait) \
-      || die 'the stack'"'"'s person printed no ticket for the VM host (tilo device add)'
-    python3 -c 'import json,sys; print(json.load(sys.stdin)["ticket"])' <<<"$issued" > "$kept" \
-      || die "the stack's person printed no ticket: $issued"
-    chmod 600 "$kept"
-  fi
-  TILO_VM_TICKET=$(cat "$kept")
+  local issued
+  issued=$(owner_person device add --capability admin --server --json --no-wait) \
+    || die 'the stack'"'"'s person printed no ticket for the VM host (tilo device add)'
+  TILO_VM_TICKET=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["ticket"])' <<<"$issued") \
+    || die "the stack's person printed no ticket (tilo device add --json answered no \"ticket\")"
 }
 
 # The tilo command to drive the stack with: TILO_SH_TILO_BIN, else this
