@@ -143,7 +143,13 @@ build tilo.sh ran ($(git -C "$repo" rev-parse --short=11 "$live")):
   $web
   $api
 EOF
-git -C "$infra" push -q origin HEAD:main || die "tilo/infra's main moved: run this again with --images $lounge $web $api"
+if ! git -C "$infra" push -q origin HEAD:main; then
+  git -C "$infra" fetch -q origin main
+  if git -C "$infra" merge-base --is-ancestor origin/main HEAD; then
+    die "tilo/infra refused the push (its pre-push checks above): the release commit is $(git -C "$infra" rev-parse --short HEAD) in $infra"
+  fi
+  die "tilo/infra's main moved: run this again with --images $lounge $web $api"
+fi
 say "pushed tilo/infra $(git -C "$infra" rev-parse --short HEAD)"
 took "pushed"
 
