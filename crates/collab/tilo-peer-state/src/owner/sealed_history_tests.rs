@@ -1727,11 +1727,9 @@ async fn a_compaction_sealed_under_an_epoch_the_device_lacks_is_kept_and_taken_w
     let copy = enrolled_with(fixture);
     let (owner, workspace, now) = (&copy.owner, copy.workspace, copy.now);
     let channel = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
-    let mut group = key_group::KeyGroup::create(
-        channel,
-        key_group::MemberKey::generate("governor").unwrap(),
-    )
-    .unwrap();
+    let mut group =
+        key_group::KeyGroup::create(channel, key_group::MemberKey::generate("governor").unwrap())
+            .unwrap();
     let before = group.content_keys().unwrap();
     // A device let into the channel after it moved on: it holds the epoch it joined at, and no
     // older one.
@@ -1744,10 +1742,16 @@ async fn a_compaction_sealed_under_an_epoch_the_device_lacks_is_kept_and_taken_w
         .content_keys()
         .unwrap();
     assert_ne!(before.epoch(), after.epoch(), "the channel moved on");
-    let governor_pub = governor_key.verifying_key().to_bytes();
+    let public_key = governor_key.verifying_key().to_bytes();
 
     // The host's own device writes sealed under the older epoch, and compacts what it wrote.
-    let older = written_at(&mut host, &base(owner, workspace), &before, &governor_key, now);
+    let older = written_at(
+        &mut host,
+        &base(owner, workspace),
+        &before,
+        &governor_key,
+        now,
+    );
     let artifact = collab_types::document_artifact_id(APP, WORKSPACE, "");
     let mut ops = host
         .publication()
@@ -1761,7 +1765,7 @@ async fn a_compaction_sealed_under_an_epoch_the_device_lacks_is_kept_and_taken_w
                     .seal_content(artifact, ContentRetention::of_frame(frame), frame)
                     .map_err(|error| error.to_string())
             },
-            governor_pub,
+            public_key,
             now,
         )
         .unwrap();
@@ -1776,7 +1780,9 @@ async fn a_compaction_sealed_under_an_epoch_the_device_lacks_is_kept_and_taken_w
         .next()
         .expect("a compaction message");
     assert!(
-        older.iter().all(|message| matches!(message, NeighbourMsg::AppDocument { .. })),
+        older
+            .iter()
+            .all(|message| matches!(message, NeighbourMsg::AppDocument { .. })),
         "the writes it folds are document writes"
     );
 
@@ -1793,7 +1799,7 @@ async fn a_compaction_sealed_under_an_epoch_the_device_lacks_is_kept_and_taken_w
     let report = owner
         .receive(
             workspace,
-            TransportOrigin::RetainedServerDelta(governor_pub),
+            TransportOrigin::RetainedServerDelta(public_key),
             compaction,
             now,
         )
@@ -1816,7 +1822,9 @@ async fn a_compaction_sealed_under_an_epoch_the_device_lacks_is_kept_and_taken_w
     }));
     reopened.retry_kept_compactions(workspace);
     let history = reopened
-        .with_current(workspace, |view| Ok(view.peer().publication().sealed_history(APP, "")))
+        .with_current(workspace, |view| {
+            Ok(view.peer().publication().sealed_history(APP, ""))
+        })
         .unwrap();
     assert_eq!(
         history.first().map(|op| op.kind),
