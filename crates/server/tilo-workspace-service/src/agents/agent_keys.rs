@@ -103,8 +103,9 @@ impl FleetAgentKeys {
         statement.extend_from_slice(agent.as_bytes());
         let digest = *blake3::hash(&statement).as_bytes();
         let signature = self.fleets.sign_root(identity, &digest).map_err(|_| {
-            "this device does not hold the root of the agent's person, so the agent works on the \
-             person's device that does"
+            "this computer does not hold its person's root, so it cannot give the agent a key of \
+             its own: approve this computer's ticket on a device of theirs that holds the root \
+             (`tilo device add <ticket>`), then connect the agent again"
                 .to_owned()
         })?;
         Ok(SigningKey::from_bytes(blake3::hash(&signature).as_bytes()))
@@ -497,7 +498,9 @@ mod tests {
             .grant(workspace, "scribe", "Scribe", [7; 32])
             .unwrap_err();
         assert!(
-            refused.contains("does not hold the root of the agent's person"),
+            refused.contains(
+                "approve this computer's ticket on a device of theirs that holds the root"
+            ),
             "{refused}"
         );
         let mut asked = request();

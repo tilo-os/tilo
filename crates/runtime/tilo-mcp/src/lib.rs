@@ -610,8 +610,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     pub fn for_agent(host: H, workspace: String, agent_id: &str, person: &str) -> Self {
         let caller = Caller::local_agent(agent_id)
             .acting_for(person)
-            .in_workspace(workspace);
-        Self::for_delegated(host, caller).expect("an agent acting for a person in a workspace")
+            .in_workspace(workspace.clone())
+            .in_new_execution();
+        Self::from_caller(host, workspace, caller)
     }
 
     /// One session of `person` themselves in `workspace`: a REPL the host admitted because
