@@ -74,6 +74,8 @@ use turn_provider::TurnProvider;
 mod across;
 mod answers;
 mod asked;
+pub use asked::ask_in_direct;
+pub(crate) use asked::keeps_asks;
 mod asking;
 mod asks;
 mod calendar_connect;
@@ -660,6 +662,9 @@ pub enum Ask {
         /// The ask, by its id in that record, and its type.
         ask: String,
         ty: String,
+        /// What names the ask with what it is made from: the mention that asked, or the cause
+        /// that asked outright ([`asked::ask_in_direct`]).
+        key: String,
         /// Which time it is asked: its first reply is 1.
         attempt: u32,
         /// Whether what it is about is the asker's and the agent's alone: every member who may
@@ -1776,9 +1781,12 @@ impl ServerAgents {
                 });
             // A turn a look of its person's look-round started counts on the
             // look-round's own day as well, and stops where that day's limit is reached.
-            let look_round = self.initiative.as_ref().and_then(|initiative| {
-                initiative.day_of_turn(&workspace_id.to_string(), &turn.person, &turn.cause, day)
-            });
+            let look_round = match (&self.initiative, &turn.ask) {
+                (Some(initiative), Ask::Asked { key, .. }) => {
+                    initiative.day_of_turn(&workspace_id.to_string(), &turn.person, key, day)
+                }
+                _ => None,
+            };
             match look_round {
                 Some(look_round) => theirs.spending_as(look_round),
                 None => theirs,

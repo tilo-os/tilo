@@ -234,19 +234,20 @@ pub struct Initiative {
 impl Initiative {
     /// Run every workspace's events, with a look put in front of each
     /// look-round's instruction, and keep what the assistants' initiative
-    /// keeps in each workspace's store. With `actions`, the server's action
-    /// service, an instruction an event hands over starts a turn of its
-    /// author's assistant, and a proposed piece of work is filed in the
-    /// workspace's tracker. Called on the runtime the events are carried
-    /// out on.
+    /// keeps in each workspace's store. With `actions`, the action service of
+    /// a server that keeps its agents working, an instruction an event hands
+    /// over asks its author's assistant, and a proposed piece of work is
+    /// filed in the workspace's tracker. Called on the runtime the events
+    /// are carried out on.
     #[must_use]
     pub fn start(
         workspaces: Workspaces,
         actions: Option<WorkspaceActions>,
     ) -> (Self, WorkspaceEvents) {
-        let initiative = Self::new(workspaces.clone(), actions.clone());
+        let asks = actions.is_some();
+        let initiative = Self::new(workspaces.clone(), actions);
         let before = Some(initiative.before());
-        let events = WorkspaceEvents::start_behind(workspaces, actions, before);
+        let events = WorkspaceEvents::start_behind(workspaces, asks, before);
         let _ = initiative.inner.events.set(events.clone());
         (initiative, events)
     }
@@ -342,10 +343,9 @@ impl Initiative {
         Ok(answer)
     }
 
-    /// The look-round's day, where the turn the message `cause` asks for is
-    /// one a look of `person`'s started in `workspace`: a look hands its
-    /// instruction over under its own id as the cause's key, which names
-    /// that message ([`chat::cause::message_id`]). Whoever carries out the turn
+    /// The look-round's day, where the ask `key` names is one a look of
+    /// `person`'s made in `workspace`: a look asks under its event and its
+    /// own id ([`super::assistant::cause_key`]). Whoever carries out the turn
     /// counts every model call of it on this day beside the assistant's
     /// own, so the turn stops where the look-round's limit is reached.
     /// `None` for every other turn.
@@ -354,17 +354,22 @@ impl Initiative {
         &self,
         workspace: &str,
         person: &str,
-        cause: &str,
+        key: &str,
         day: &str,
     ) -> Option<Spender> {
-        use tilo_actions::policy::MemberId;
         // A turn names its person as a resource does. Only a person's own
         // root is looked up: nothing else names a place this keeps.
         person_of(person).ok()?;
         let kept = self.kept(workspace);
+        if kept
+            .person
+            .as_deref()
+            .is_some_and(|theirs| theirs != person)
+        {
+            return None;
+        }
         let event = kept.event.as_deref()?;
-        let asker = MemberId::person(person.to_owned());
-        let asked_by = |look: &str| chat::cause::message_id(&asker, look).to_string() == cause;
+        let asked_by = |look: &str| super::assistant::cause_key(event, look) == key;
         let handing = self.inner.handing.lock_recover().get(workspace).cloned();
         let theirs = handing.as_deref().is_some_and(&asked_by)
             || kept.looks.iter().any(|past| asked_by(&past.look.id));
@@ -801,7 +806,7 @@ impl Initiative {
         let now_ms = tilo_clock::unix_now_ms_i64();
         self.listen(workspace);
         let workspaces = &self.inner.workspaces;
-        let gathered = on_the_runtime(|runtime| {
+        let mut gathered = on_the_runtime(|runtime| {
             runtime
                 .block_on(async {
                     let assistant = assistant_of(workspaces, workspace, &person)
@@ -809,9 +814,6 @@ impl Initiative {
                         .map(|agent| agent.id.0);
                     let own = look::Own {
                         person: instruction.person.clone(),
-                        thread: assistant
-                            .as_deref()
-                            .map(|agent| thread(&instruction.person, agent)),
                         assistant,
                         event: event.clone(),
                     };
@@ -849,7 +851,15 @@ impl Initiative {
                 .lock_recover()
                 .insert(workspace.to_owned(), id.clone());
             match steps.instruct(handed) {
-                Ok(said) => (LookEnded::Told, Ok(said)),
+                Ok(said) => {
+                    // The look's own ask, made as its person, is no news to the next look.
+                    let seen = &mut gathered.seen;
+                    let _ = on_the_runtime(|runtime| {
+                        runtime.block_on(look::asked(workspaces, workspace, seen));
+                        Ok(())
+                    });
+                    (LookEnded::Told, Ok(said))
+                }
                 // Refused, or nothing took it now: the look says why, and
                 // what it found is still new at the next one. Where
                 // nothing took it, the invocation takes the step again and the
@@ -1182,15 +1192,6 @@ impl Asked<'_> {
             Err(refused(why.to_owned()))
         }
     }
-}
-
-/// The conversation of `person` and their assistant `agent`, as Chat names
-/// it.
-fn thread(person: &str, agent: &str) -> String {
-    use tilo_actions::policy::MemberId;
-    chat::Chat::direct_id([MemberId::person(person.to_owned()), MemberId::agent(agent)])
-        .as_str()
-        .to_owned()
 }
 
 /// What the assistant is told at a look: what its person's event says,

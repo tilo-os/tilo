@@ -18,8 +18,9 @@ use tilo_agent_session::bot::host_steps::{
 };
 use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_server::{
-    workspace_agents::{Ask, WorkspaceActionProvider, invoke_named},
+    workspace_agents::{Ask, WorkspaceActionProvider, ask_in_direct, invoke_named},
     workspace_bots::{
+        assistant::{self, Starter},
         events::Authority,
         initiative::Initiative,
         workspace_resource,
@@ -163,6 +164,20 @@ async fn furnished(
     tasks::issue_list::chain().part(0).as_str().to_owned()
 }
 
+/// The person writes `text` to their assistant, in their direct conversation with it: an ask of
+/// the assistant, made from that conversation.
+async fn asks_their_assistant(workspaces: &Workspaces, workspace: &str, person: &str, text: &str) {
+    ask_in_direct(
+        workspaces,
+        workspace,
+        (person, SCOUT),
+        text.to_owned(),
+        InvocationId::new().0.to_string(),
+    )
+    .await
+    .expect("the person asks their assistant");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on_their_nod() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -188,11 +203,10 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
 
     // The person writes to their assistant, and the server owes it a turn. The assistant acts as
     // that turn's caller: the person's device behind it, the session handed to the agent.
-    write_to_agent(
-        &actions,
+    asks_their_assistant(
         &workspaces,
         &workspace,
-        (&root, &browser),
+        &person,
         "What could you do for me?",
     )
     .await;
@@ -349,11 +363,10 @@ async fn the_model_of_a_hosted_turn_proposes_through_the_tools_its_turn_has() {
 
     // The person asks, and the server answers the turn with what its agents are given: the
     // workspace's resources, the person's events and what their assistant does on its own.
-    write_to_agent(
-        &actions,
+    asks_their_assistant(
         &workspaces,
         &workspace,
-        (&root, &browser),
+        &person,
         "What could you do for me?",
     )
     .await;
@@ -446,11 +459,10 @@ async fn what_the_servers_own_services_answer_reaches_the_model_of_a_turn() {
     furnished(&page, &workspaces, &workspace, &person).await;
     let (initiative, events) = Initiative::start(workspaces.clone(), Some(actions.clone()));
 
-    write_to_agent(
-        &actions,
+    asks_their_assistant(
         &workspaces,
         &workspace,
-        (&root, &browser),
+        &person,
         "Look round for me every hour.",
     )
     .await;
@@ -503,56 +515,24 @@ async fn what_the_servers_own_services_answer_reaches_the_model_of_a_turn() {
     );
 }
 
-/// What takes a look's instruction, as the server's events hand one over: one ask of Chat's
-/// `ask-agent` in the conversation of the person and their assistant, made as the person's
-/// event, under the step's own invocation as the cause's key.
+/// What takes a look's instruction, as the server's events hand one over: the server's own
+/// steps, which ask the person's assistant from their direct conversation, keyed by the step.
+/// Every instruction they took is kept.
 struct HandsOver {
-    actions: WorkspaceActions,
-    /// The person, at their page's device.
-    person: Caller,
-    conversation: String,
-    /// Every instruction handed over.
+    steps: Arc<dyn Steps>,
     handed: Mutex<Vec<String>>,
 }
 
 impl Steps for HandsOver {
     fn instruct(&self, instruction: Instruction) -> Result<String, StepError> {
-        let workspace = WorkspaceId::parse(&instruction.workspace).unwrap();
-        let event = self
-            .person
-            .clone()
-            .delegated_to(instruction.cause.installation.clone())
-            .named("Look-round");
-        let route = DocumentRoute {
-            app_id: CHAT.into(),
-            cluster_id: instruction.workspace.clone(),
-            document: String::new(),
-        };
-        let arguments = serde_json::json!({
-            "channel": self.conversation,
-            "text": instruction.instruction,
-            "cause": {
-                "kind": "event",
-                "label": "Look-round",
-                "key": instruction.cause.invocation.0.to_string(),
-            },
-        });
-        tokio::runtime::Handle::current()
-            .block_on(invoke_named(
-                &WorkspaceActionProvider::new(self.actions.clone(), workspace),
-                &event,
-                &route,
-                &ui::resource::chain_resource_id(&chat::parts::chain()),
-                "ask-agent",
-                arguments.as_object().unwrap().clone(),
-            ))
-            .map_err(StepError::Unavailable)?;
-        self.handed.lock().unwrap().push(instruction.instruction);
-        Ok(String::new())
+        let said = instruction.instruction.clone();
+        let answer = self.steps.instruct(instruction)?;
+        self.handed.lock().unwrap().push(said);
+        Ok(answer)
     }
 
-    fn judge(&self, _: Judgement) -> Result<serde_json::Value, StepError> {
-        Err(StepError::Unavailable("nothing is judged here".into()))
+    fn judge(&self, judgement: Judgement) -> Result<serde_json::Value, StepError> {
+        self.steps.judge(judgement)
     }
 }
 
@@ -655,14 +635,13 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
     let me = Caller::authenticated(keeper, browser.cert.device_public_key)
         .in_workspace(workspace.clone());
     let hands = Arc::new(HandsOver {
-        actions: actions.clone(),
-        person: me.clone(),
-        conversation: chat::Chat::direct_id([
-            MemberId::person(person.clone()),
-            MemberId::agent(SCOUT),
-        ])
-        .as_str()
-        .to_owned(),
+        steps: assistant::steps_starting_turns(
+            workspaces.clone(),
+            Starter {
+                name: "Look-round".into(),
+                kind: assistant::EVENT,
+            },
+        ),
         handed: Mutex::default(),
     });
     let (initiative, events) = Initiative::start_with(workspaces.clone(), hands.clone());
@@ -712,6 +691,11 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     assert_eq!(turns[0].person, person, "it works for the look's person");
+    assert!(
+        matches!(&turns[0].ask, Ask::Asked { key, .. } if key.starts_with(&format!("{event}:"))),
+        "the look asked, keyed by the look-round: {:?}",
+        turns[0].ask
+    );
     tokio::time::timeout(
         Duration::from_secs(60),
         agents.answer(&workspace, &turns[0]),

@@ -199,15 +199,12 @@ pub struct WorkspaceEvents {
 impl WorkspaceEvents {
     /// Run every event kept in its workspace's store, and keep new ones
     /// there. Their steps are answered by this server
-    /// ([`super::assistant`]): with `actions`, the server's action service,
-    /// an instruction an event hands over starts a turn of its author's
-    /// assistant. Called on the runtime the events work on.
+    /// ([`super::assistant`]): where it `asks`, as a server that keeps its
+    /// agents working does, an instruction an event hands over asks its
+    /// author's assistant. Called on the runtime the events work on.
     #[must_use]
-    pub fn start(
-        workspaces: Workspaces,
-        actions: Option<tilo_agent_session::workspace_actions::WorkspaceActions>,
-    ) -> Self {
-        Self::start_behind(workspaces, actions, None)
+    pub fn start(workspaces: Workspaces, asks: bool) -> Self {
+        Self::start_behind(workspaces, asks, None)
     }
 
     /// [`Self::start`], with `before` put in front of what answers each
@@ -216,7 +213,7 @@ impl WorkspaceEvents {
     #[must_use]
     pub fn start_behind(
         workspaces: Workspaces,
-        actions: Option<tilo_agent_session::workspace_actions::WorkspaceActions>,
+        asks: bool,
         before: Option<super::initiative::Before>,
     ) -> Self {
         use super::assistant::{self, Starter};
@@ -224,26 +221,24 @@ impl WorkspaceEvents {
             let steps = assistant::host_steps(workspaces.clone());
             Arc::new(move |_: &Definition| Arc::clone(&steps))
         };
-        let starting_turns =
-            |actions: tilo_agent_session::workspace_actions::WorkspaceActions| -> StepsFor {
-                let workspaces = workspaces.clone();
-                Arc::new(move |event: &Definition| {
-                    let kind = match event.tells_as() {
-                        Kind::Reminder => assistant::REMINDER,
-                        Kind::Brief => assistant::BRIEF,
-                        Kind::Question | Kind::News | Kind::Mention => assistant::EVENT,
-                    };
-                    assistant::steps_starting_turns(
-                        workspaces.clone(),
-                        actions.clone(),
-                        Starter {
-                            name: event.name.clone(),
-                            kind,
-                        },
-                    )
-                })
-            };
-        let steps = actions.map_or_else(plain, starting_turns);
+        let starting_turns = || -> StepsFor {
+            let workspaces = workspaces.clone();
+            Arc::new(move |event: &Definition| {
+                let kind = match event.tells_as() {
+                    Kind::Reminder => assistant::REMINDER,
+                    Kind::Brief => assistant::BRIEF,
+                    Kind::Question | Kind::News | Kind::Mention => assistant::EVENT,
+                };
+                assistant::steps_starting_turns(
+                    workspaces.clone(),
+                    Starter {
+                        name: event.name.clone(),
+                        kind,
+                    },
+                )
+            })
+        };
+        let steps = if asks { starting_turns() } else { plain() };
         let steps: StepsFor = match before {
             Some(before) => Arc::new(move |event: &Definition| before(steps(event))),
             None => steps,

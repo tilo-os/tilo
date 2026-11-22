@@ -75,11 +75,10 @@ async fn a_look_that_read_before_an_answer_does_not_ask_the_message_again() {
 }
 
 /// A person's app shows their agent at work by the agent's reply, where its work is kept, and
-/// stops it by naming that reply. Their stop ends the turn whatever began it: their own
-/// message, or a cause that asked for them.
+/// stops it by naming that reply: their stop ends the turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn_whatever_began_it() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn() {
+    team!(root, browser, actions, workspaces, workspace, page, _person);
     let me = themselves(&root, &browser, &workspace);
     let scout = MemberId::agent(SCOUT);
 
@@ -128,45 +127,6 @@ async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn_whatever_began
     );
     assert_eq!(asked.lock().unwrap().len(), 2, "no step follows a stop");
 
-    // A turn a cause began for them: a reminder, asked by what acts for them.
-    let thread = chat::Chat::direct_id([MemberId::person(person.clone()), scout.clone()]);
-    let planner = themselves(&root, &browser, &workspace)
-        .delegated_to("planner")
-        .named("Planner");
-    ask_agent(&actions, &workspace, &planner, &thread, "call-1")
-        .await
-        .expect("what acts for the person asks their agent");
-    let second = chat::cause::message_id(&MemberId::person(person.clone()), "call-1");
-    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
-    let _opens_again = Opens(Arc::clone(&hold));
-    let agents = worked(
-        &workspaces,
-        &actions,
-        waits(vec![looks(), says("Mum is called.")], 1, &asked, &hold),
-    );
-    agents.look(&workspace).await.unwrap();
-    until("the reminder's turn reaches its second step", || {
-        asked.lock().unwrap().len() == 2
-    })
-    .await;
-    stop_agent(
-        &actions,
-        &workspace,
-        &me,
-        &chat::chat::reply_id(&second, &scout),
-    )
-    .await
-    .expect("the person stops the work a reminder began for them");
-    agents.look(&workspace).await.unwrap();
-    hold.open();
-    let reply = ended(&workspaces, &workspace, &second).await;
-    assert_eq!(
-        end_of(&reply),
-        Some(chat::agent_stream::AgentFinish::Cancelled),
-        "the reminder's reply says it was stopped: {:?}",
-        reply.work
-    );
-    assert_eq!(asked.lock().unwrap().len(), 2, "no step follows a stop");
     page.peer.close();
 }
 
@@ -258,90 +218,6 @@ async fn the_message_after_an_answer_gets_a_turn_of_its_own() {
     page.peer.close();
 }
 
-
-/// A reminder's turn is worked on when she writes, and a look reads her message then. That
-/// look enters the place only once the reminder's answer stands. The turn that begins is told
-/// the conversation as it stands now, that answer included, not as the look read it. What a
-/// cause asks never stands before her own words, so which of the two a look reads as the turn
-/// does not hang on the second each was written in.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_turn_is_told_its_conversation_as_it_stands_when_it_begins() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
-    let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
-    let planner = themselves(&root, &browser, &workspace)
-        .delegated_to("planner")
-        .named("Planner");
-    ask_agent(&actions, &workspace, &planner, &thread, "due-1")
-        .await
-        .expect("the reminder asks");
-    let reminder = chat::cause::message_id(&MemberId::person(person.clone()), "due-1");
-    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
-    let _opens = Opens(Arc::clone(&hold));
-    // The model waits before it answers its first call.
-    let agents = worked(
-        &workspaces,
-        &actions,
-        waits(
-            vec![
-                says("It is time to call mum."),
-                says("The cake is ordered."),
-            ],
-            0,
-            &asked,
-            &hold,
-        ),
-    );
-    let read = agents.turns(&workspace).await.unwrap();
-    assert_eq!(read.len(), 1, "{read:?}");
-    assert_eq!(read[0].cause, reminder.to_string(), "the reminder's turn");
-    let (working, at, turn) = (agents.clone(), workspace.clone(), read[0].clone());
-    let answering = tokio::spawn(async move { working.answer(&at, &turn).await });
-    until("the reminder's turn asks its model", || {
-        asked.lock().unwrap().len() == 1
-    })
-    .await;
-
-    // She writes. What a look reads now is her message, with no answer above it yet.
-    let hers = write_to_agent(
-        &actions,
-        &workspaces,
-        &workspace,
-        (&root, &browser),
-        "also order the cake",
-    )
-    .await;
-    let read = agents.turns(&workspace).await.unwrap();
-    assert_eq!(read.len(), 1, "{read:?}");
-    assert_eq!(read[0].cause, hers.to_string(), "her own words come first");
-    assert!(
-        !read[0].request.contains("It is time to call mum."),
-        "read before the reminder's answer was written: {}",
-        read[0].request
-    );
-
-    // The reminder's turn ends before that look enters the place.
-    hold.open();
-    answering.await.unwrap().unwrap();
-    let reminded = ended(&workspaces, &workspace, &reminder).await;
-    assert_eq!(reminded.text, "It is time to call mum.");
-    agents.answer(&workspace, &read[0]).await.unwrap();
-    let ordered = ended(&workspaces, &workspace, &hers).await;
-    assert_eq!(ordered.text, "The cake is ordered.");
-
-    let requests = asked.lock().unwrap().clone();
-    let words: Vec<String> = requests.iter().map(said_in).collect();
-    assert_eq!(requests.len(), 2, "one model call for each: {words:?}");
-    assert!(
-        begins_with(&requests[1], "also order the cake"),
-        "her message is a turn of its own: {words:?}"
-    );
-    assert!(
-        words[1].contains("It is time to call mum."),
-        "told the answer that was written before it began: {}",
-        words[1]
-    );
-    page.peer.close();
-}
 
 /// A look reads while her first message is owed, and enters only once that message is answered
 /// and a turn on her next one is at work: the look's two steps, taken one at a time. What it

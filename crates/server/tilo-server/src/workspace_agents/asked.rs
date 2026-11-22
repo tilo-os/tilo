@@ -25,7 +25,7 @@ use crate::workspaces::Workspaces;
 
 /// Whether `app`'s record is one asks are read in: tilolang Chat's, which uses the agent
 /// package.
-pub(super) fn keeps_asks(app: &str) -> bool {
+pub(crate) fn keeps_asks(app: &str) -> bool {
     packages().is_ok_and(|packages| packages.app() == app)
 }
 
@@ -196,10 +196,54 @@ fn turn_of(
             app: app.to_owned(),
             ask: asked.at.id_string(),
             ty: asked.at.ty.clone(),
+            key: asked.mention.clone(),
             attempt,
             private,
         },
     })
+}
+
+/// Ask `agent` as the person `person` (their root, hex), keyed by `key`, from the person's direct
+/// conversation with the agent in Chat: what a reminder, an event or a look-round of theirs asks
+/// of their assistant. The conversation is opened as Chat's `message_person` opens it, the one
+/// already there or a new one, and the ask is the base's one keyed ask
+/// ([`asks::ask`]): a cause that fires again asks nothing new. Answers the ask.
+///
+/// # Errors
+/// Chat's record could not be read, or the conversation or the ask was refused.
+pub async fn ask_in_direct(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (person, agent): (&str, &str),
+    said: String,
+    key: String,
+) -> Result<asks::ResourceRef, String> {
+    use tilo_workspace_service::tl_records::runtime::Value;
+    let packages = packages()?;
+    let chat = packages.app().to_owned();
+    let asker = asks::Actor::Member(tilo_action_policy::MemberId::person(person.to_owned()));
+    let agent = tilo_action_policy::MemberId::agent(agent.to_owned());
+    workspaces
+        .with_tl_record(workspace, &packages, viewer(), move |opened| {
+            let all = opened
+                .host()
+                .root_of(&chat)
+                .map_err(|error| error.to_string())?;
+            let direct = match opened.invoke(
+                &asker,
+                (&chat, "message_person"),
+                vec![
+                    Value::resource(&all),
+                    Value::Actor(asks::Actor::Member(agent.clone())),
+                ],
+                None,
+            )? {
+                Value::Ref(reference) => (*reference.target).clone(),
+                other => return Err(format!("Chat opened no conversation: {other:?}")),
+            };
+            asks::ask(opened, &asker, &agent, &said, &key, &direct)
+        })
+        .await
 }
 
 /// Where a turn made from an ask writes its reply: the ask, and the reply once the turn took

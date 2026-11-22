@@ -7,6 +7,121 @@
 use super::*;
 use tilo_actions::remote::person_telling::{self, Kind, ToldList};
 
+impl Up {
+    /// The message a cause asked the assistant with, once the conversation holds one.
+    pub(super) async fn asked_by_a_cause(&self, workspace: &str) -> (Id, chat::chat::Message) {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let part = conversation_part(&self.workspaces, workspace).await;
+            if let Some((id, held)) = part.messages.iter().find(|(_, held)| held.cause.is_some()) {
+                return (id.clone(), held.clone());
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no reminder ever asked the assistant"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+}
+
+/// The assistant's model, written out. Asked to remind its person, it sets the reminder up with
+/// the server's own action, through the tools every turn has, for a moment `in_ms` after it is
+/// asked, and then says so. The moment it chose is kept in `at_ms`.
+struct Reminds {
+    in_ms: i64,
+    at_ms: Arc<Mutex<Option<i64>>>,
+    asked: Arc<Mutex<Vec<ModelRequest>>>,
+}
+
+impl tilo_agent_session::model::PlanTurns for Reminds {
+    fn turn(
+        &mut self,
+        request: &ModelRequest,
+        _: &str,
+        _: std::time::Instant,
+        _: bool,
+    ) -> Result<ModelResponse, ModelError> {
+        self.asked.lock().unwrap().push(request.clone());
+        let mut chosen = self.at_ms.lock().unwrap();
+        if chosen.is_some() {
+            return Ok(says("I will remind you to call home."));
+        }
+        let (when, at_ms) = in_a_moment(self.in_ms);
+        *chosen = Some(at_ms);
+        Ok(answer(
+            vec![Content::ToolCall(ToolCall {
+                id: "call-1".into(),
+                name: "tilo_do".into(),
+                input: serde_json::json!({
+                    "path": "events#set-up",
+                    "args": {
+                        "name": "Call home",
+                        "when": when,
+                        "instruction": "Say that it is time to call home.",
+                    },
+                }),
+                extra_content: None,
+            })],
+            StopReason::ToolCalls,
+            1_000,
+        ))
+    }
+
+    fn model(&self) -> &'static str {
+        "reminds"
+    }
+}
+
+/// The person asks their assistant on `up` for a reminder and closes their page at once. The
+/// assistant's turn, with nothing of the person's on, sets the reminder up for a moment `in_ms`
+/// after it is asked. The reminder as its person then reads it, and its moment.
+pub(super) async fn reminded(
+    up: &Up,
+    workspace: &str,
+    (root, browser): (&SigningKey, &Device),
+    page: &Browser,
+    in_ms: i64,
+) -> (EventView, i64) {
+    let wish = write_to_agent(
+        &up.actions,
+        &up.workspaces,
+        workspace,
+        (root, browser),
+        "Remind me in a moment to call home.",
+    )
+    .await;
+    page.peer.close();
+    let at_ms = Arc::new(Mutex::new(None));
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let model: Model = {
+        let (at_ms, asked) = (Arc::clone(&at_ms), Arc::clone(&asked));
+        Arc::new(move || {
+            Some(Box::new(Reminds {
+                in_ms,
+                at_ms: Arc::clone(&at_ms),
+                asked: Arc::clone(&asked),
+            })
+                as Box<dyn tilo_agent_session::model::PlanTurns>)
+        })
+    };
+    let agents = up.agents(Some(model));
+    let turns = agents.turns(workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    agents.answer(workspace, &turns[0]).await.unwrap();
+    let said = ended(&up.workspaces, workspace, &wish).await;
+    assert!(said.text.contains("I will remind you"), "{}", said.text);
+    let theirs = up.events_of(workspace, &themselves(root, browser, workspace));
+    assert_eq!(
+        theirs.len(),
+        1,
+        "the assistant's own tool call sets the reminder up; its model was last asked {:?}",
+        asked.lock().unwrap().last()
+    );
+    let at_ms = at_ms.lock().unwrap().expect("the assistant chose a moment");
+    (theirs[0].clone(), at_ms)
+}
+
 /// What the person finds they were told, as their own device reads it from the server once it
 /// is on again.
 async fn told_to(up: &Up, (browser, device): (&Device, &Device), workspace: &str) -> ToldList {
