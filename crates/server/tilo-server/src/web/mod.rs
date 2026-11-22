@@ -18,7 +18,6 @@ pub(crate) mod live;
 mod page;
 mod page_errors;
 mod profiles;
-mod shelf;
 mod stand_in;
 #[cfg(test)]
 mod tests;
@@ -44,7 +43,6 @@ use tilo_server_protocol::web::{
 
 use crate::daemon::{Server, ServerError, WebContext};
 use collab_types::WorkspaceId;
-use tilo_workspace_service::workspaces::SealedInvitations;
 
 /// Configuration of the browser listener.
 #[derive(Clone, Debug)]
@@ -79,9 +77,8 @@ pub struct WebConfig {
     /// it. `None` listens beside the HTTPS listener.
     pub link: Option<LinkListen>,
     /// The site this host belongs to (`https://tilo.sh/`), when it knows one:
-    /// its `/i/<handle>` answers a browser that opens the host's own address
-    /// by sending it to the site's page, which is the page that can take a
-    /// sealed invitation's link.
+    /// a browser that opens the host's own address is sent to the site's
+    /// page.
     pub site: Option<String>,
 }
 
@@ -222,11 +219,6 @@ struct Web {
     presence: Arc<live::Authority>,
     /// The page errors the entry logs.
     page_errors: page_errors::PageErrors,
-    /// The sealed invitations this site keeps in place of their clerk: what a
-    /// short link names, in bytes the site has no key for. The workspaces
-    /// here seal onto it, so a link a member hands over and the one the mail
-    /// to an address carries are the same link.
-    shelf: Arc<shelf::Shelf>,
     /// The site this host belongs to, when it knows one: where a browser that
     /// opened a link at the host's own address is sent.
     site: Option<Site>,
@@ -301,8 +293,7 @@ pub(crate) fn stand_ins_dir(state_root: &std::path::Path) -> std::path::PathBuf 
 /// answered: the page that takes it is the site's.
 #[derive(Clone, Debug)]
 struct Site {
-    /// The site's origin (`https://tilo.sh`), below which `i/<handle>` is the
-    /// page an invitation's link opens.
+    /// The site's origin (`https://tilo.sh`).
     origin: String,
     /// The `host:port` a request names when it already reached the site, and so
     /// arrived through it: sending it on would be sending it to itself.
@@ -319,13 +310,6 @@ impl Site {
             origin: entry.to_owned(),
             authority,
         })
-    }
-
-    /// Where the site's page for `handle` is. The key that opens the
-    /// invitation stays in the link's fragment, which a browser carries over
-    /// this redirect by itself: the site is never told it.
-    fn invitation(&self, handle: &str) -> String {
-        format!("{}/i/{handle}", self.origin)
     }
 
     /// Whether the request reached the host through the site itself.
@@ -567,13 +551,6 @@ impl Server {
             0o644,
         )
         .map_err(|error| failed(format!("keep this host's name: {error}")))?;
-        // A link is read days after it was made, so what it names waits on
-        // this host's disk: a restart, an upgrade or a deploy over this
-        // server leaves it there.
-        let invitation_shelf = Arc::new(shelf::Shelf::opening(
-            self.state_root().join("invitations"),
-            tilo_clock::unix_now_ns(),
-        ));
         let web = Arc::new(Web {
             context: context.clone(),
             server_info: server_info.clone(),
@@ -586,7 +563,6 @@ impl Server {
             content_links: self.content_links(),
             presence: live.authority(),
             page_errors: page_errors::PageErrors::default(),
-            shelf: Arc::clone(&invitation_shelf),
             site: config.site.as_deref().and_then(Site::new),
             tickets: tickets::Tickets::new(context.certification.clone()),
             wait_list: config.wait_list.clone(),
@@ -595,10 +571,13 @@ impl Server {
         // here name them by.
         if let Some(workspaces) = &web.workspaces {
             workspaces.person_names(web.profiles.clone());
-            // The invitations the workspaces issue are sealed onto this
-            // site's shelf, so the link a member hands over and the one the
-            // mail to an address carries name the same short link.
-            let _ = workspaces.shelve_invitations(invitation_shelf as Arc<dyn SealedInvitations>);
+            // The short links of the invitations the workspaces issue name
+            // this host, which answers a page for the invitation a link names
+            // (`OPEN_INVITATION_PATH`): the link a member hands over and the
+            // one the mail to an address carries are the same.
+            if let Some(origin) = &public_origin {
+                let _ = workspaces.invitations_at(origin);
+            }
         }
         web.serve_tab_requests();
         web.serve_tickets();
@@ -1128,15 +1107,6 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
         );
         return response;
     }
-    // A sealed invitation is fetched and taken back with their own methods,
-    // so the shelf answers before the POST-only check.
-    if let Some(handle) = tilo_server_protocol::sealed_invitations::handle_of(request.uri().path())
-    {
-        let handle = handle.to_owned();
-        let mut response = shelf::handle(web, request, &handle).await;
-        shelf::cors(&mut response);
-        return response;
-    }
     // A workspace's app as a web page: the document its script opens the
     // page from, over the device's own session.
     if request.method() == Method::GET
@@ -1320,6 +1290,27 @@ async fn route(
             })?;
             let invitation: Vec<u8> = decode(&bytes)?;
             Ok(encoded(&workspaces.inspect_invitation(&invitation).await))
+        }
+        tilo_server_protocol::web::OPEN_INVITATION_PATH => {
+            let workspaces = web.workspaces.as_ref().ok_or_else(|| {
+                status(StatusCode::NOT_FOUND, "this server governs no workspaces")
+            })?;
+            let asked: tilo_server_protocol::web::KeptInvitation = serde_json::from_slice(&bytes)
+                .map_err(|_| {
+                status(
+                    StatusCode::BAD_REQUEST,
+                    "that is not an invitation's secret",
+                )
+            })?;
+            // Spent, lapsed, taken back and never issued read alike: a link
+            // tells nothing about the invitations it does not name.
+            let signed = workspaces
+                .kept_invitation(&asked.workspace, &asked.secret)
+                .await
+                .ok_or_else(|| status(StatusCode::GONE, "that invitation is gone"))?;
+            Ok(json(&tilo_server_protocol::web::OpenedInvitation {
+                invitation: tilo_peer_state::join::encode_invitation_text(&signed),
+            }))
         }
         tilo_server_protocol::directory::DIRECTORY_PATH => {
             let workspaces = web.workspaces.as_ref().ok_or_else(|| {

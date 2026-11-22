@@ -10,12 +10,11 @@
  *    redeemed. An invitation is the approval of whoever made it: the host
  *    admits it at once, and nobody in the workspace answers for it. One sent
  *    off the workspace's wait list opens the person's own workspace instead
- *    (`deps.ownWorkspace`), unless the link names a place inside it. A link
- *    a site hands over (`https://<site>/i/<handle>#<key>`) names the site
- *    that keeps it, whose shelf answers with the invitation and the host it
- *    admits into (`viaSealedLink`); the long form names the invitation's own
- *    text, or its handle and key as `?invite=` after a workspace's route. A
- *    pre-admission `token` admits at once too; a workspace service guest
+ *    (`deps.ownWorkspace`), unless the link names a place inside it. A
+ *    link's `?invite=` after a workspace's route is the invitation's own
+ *    text, or the secret of the one that workspace keeps, which its host
+ *    answers with (a short link, `#/@<host>/w/<workspace>?invite=<secret>`).
+ *    A pre-admission `token` admits at once too; a workspace service guest
  *    `ticket` is spent on this page's pairing code at the redemption entry
  *    the web host names (`entry.json` `tickets`); with `pair`, this browser
  *    becomes a new device of that person once one of their devices approves
@@ -43,15 +42,14 @@
  */
 import {parsePairSecret} from './pairing.mjs';
 import {deviceRemoved} from './session-refusal.mjs';
-import {isInvitedServer} from './site-host.mjs';
 
 export const NO_ACCESS = 'You don’t have access to this workspace. Ask the person who shared the link to invite you.';
 /** A link to a workspace no entry lets a stranger into, in a browser where
  * nobody is signed in (`sign-in`). */
 export const SIGN_IN = 'Sign in to open this workspace.';
-/** An invitation the site no longer keeps, or one that does not open: the
+/** An invitation its workspace no longer keeps, or one its host refuses: the
  * same words for both, so a link tells nothing about invitations it does not
- * hold. */
+ * name. */
 const UNUSABLE_INVITATION = 'This link’s invitation is no longer there. Ask the person who invited you for a new one.';
 
 export class AdmissionError extends Error {
@@ -62,12 +60,11 @@ export class AdmissionError extends Error {
   }
 }
 
-/** The invitation `secret` names, as the site at `site` keeps it: the
- * invitation's own text, and the host it admits into where the inviter named
- * one. */
-async function openedAt({site, secret, deps}) {
+/** The invitation `secret` names: its own text, or the invitation
+ * `workspace` keeps at its host `origin`, which answers with it. */
+async function openedAt({origin, workspace, secret, deps}) {
   try {
-    return await deps.openInvitation(site, secret);
+    return await deps.openInvitation(origin, workspace, secret);
   } catch (error) {
     console.warn('admission: the invitation did not open', error?.message ?? error);
     throw new AdmissionError('invitation-unusable', UNUSABLE_INVITATION);
@@ -122,22 +119,6 @@ async function viaInvitation({origin, invitation, offered = null, id = null, dee
     }
   }
   return ready(joined);
-}
-
-/** A link a site hands over (`https://<site>/i/<handle>#<key>`): the site
- * keeps the invitation, sealed, and its shelf answers with the invitation —
- * never with the key, which only the link carries — and with where it admits
- * into. A shelf of a build that named no host is taken to mean the site's
- * home workspace's host, and the site itself where it has no home. */
-async function viaSealedLink({scope, secrets, home, deep, runtime, deps, onProgress}) {
-  const opened = await openedAt({site: scope.site, secret: `${scope.handle}${secrets.invite}`, deps});
-  // A server the shelf names by its iroh endpoint alone answers no HTTP, and a browser that never
-  // saw it knows no way to it: the invitation names where it is and what it offers, as a long
-  // link's does.
-  const invited = opened.host && isInvitedServer(opened.host)
-    ? await deps.invitedServer?.(opened.invitation, scope.site) : null;
-  const origin = invited?.origin ?? opened.host ?? home?.host?.origin ?? scope.site;
-  return viaInvitation({origin, invitation: opened.invitation, offered: invited?.offer ?? null, deep, secrets, runtime, deps, onProgress});
 }
 
 /** `{peer}` once the host admitted `peer` to its workspace. */
@@ -282,17 +263,16 @@ export async function admit({scope, deep = false, secrets = {}, tickets, home = 
   for (;;) {
     switch (way) {
       case 'own-desktop': return ownDesktop({home, runtime, deps, onProgress});
-      case 'sealed-invitation': return viaSealedLink({scope, secrets, home, deep, runtime, deps, onProgress});
       case 'invitation': {
-        // A link's `invite` names the invitation its host keeps, sealed under a
-        // key in the link; the page opens it before anything reads it. An
+        // A link's `invite` names the invitation its workspace keeps at the
+        // link's host, which the page asks for before anything reads it. An
         // invitation's own text is its own secret.
-        const opened = await openedAt({site: origin, secret: secrets.invite, deps});
-        // An invitation the link names no server beside names its server in itself: one reached
-        // only over iroh is dialled as the invitation says, and what it offers is read from it.
-        const invited = opened.host ? null : await deps.invitedServer?.(opened.invitation, origin);
+        const invitation = await openedAt({origin, workspace: id, secret: secrets.invite, deps});
+        // An invitation names its server in itself: one reached only over iroh is dialled as the
+        // invitation says, and what it offers is read from it.
+        const invited = await deps.invitedServer?.(invitation, origin);
         return viaInvitation({
-          origin: invited?.origin ?? opened.host ?? origin, invitation: opened.invitation, offered: invited?.offer ?? null,
+          origin: invited?.origin ?? origin, invitation, offered: invited?.offer ?? null,
           id, deep, secrets, runtime, deps, onProgress,
         });
       }

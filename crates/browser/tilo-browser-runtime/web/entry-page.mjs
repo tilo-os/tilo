@@ -711,7 +711,7 @@ export async function startEntryPage({mode}) {
       // dialled at the site's origin for it, so every link this person hands out from then on
       // names a host any browser reaches.
       const named = siteNames(invited.info);
-      // Asked there what the invitation offers, as a link the site seals is: the server
+      // Asked there what the invitation offers, as a short link's is: the server
       // answers the workspace's name, its people and whether it sent the invitation off its
       // wait list, which the invitation alone does not say.
       if (named) return named === new URL(origin).origin ? null : {origin: named, offer: null};
@@ -720,9 +720,9 @@ export async function startEntryPage({mode}) {
       nameInvitedServer(at, invited.info);
       return {origin: at, offer: invited.offer};
     },
-    // A link's `invite` names the invitation its host keeps: the page opens
-    // it before anything reads it.
-    openInvitation: (origin, secret) => openInvitation(origin, secret, {runtime}),
+    // A link's `invite` names the invitation its workspace keeps at its host:
+    // the page asks for it before anything reads it.
+    openInvitation: (origin, workspace, secret) => openInvitation(origin, workspace, secret, {runtime}),
     // The invite sheet this page's desktop shows, when the page is in a
     // workspace: made and listed through that workspace's host, in links
     // that open this page.

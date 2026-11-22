@@ -7,8 +7,6 @@ import {assistantAddress, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_SAME_PERSON} 
 import {runtimeFake} from './runtime-surface.mjs';
 
 const USER = 'aa'.repeat(32);
-/** The short link the page's site keeps an invitation under. */
-const SEALED = 'https://web.example/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKeyS3cr3tKeyS3cr3tKeyS3cr';
 const ORIGIN = 'https://node.example';
 const tick = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 
@@ -112,10 +110,6 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     presenceColor: id => {
       calls.push(['colour', id]);
       return '#ffd166';
-    },
-    sealedInvitationLink: async (base, host, invitation) => {
-      calls.push(['sealed', base, host, invitation]);
-      return SEALED;
     },
     // The rules of the list are the runtime's (tilo-session-client's `entered`,
     // tested there); these keep only what the page's steps here rely on.
@@ -797,8 +791,9 @@ test('the entry’s link field takes a pairing link and an invitation’s short 
     return screen['arrival-invite-error'].textContent;
   };
   const pairing = `https://web.example/#/@node.example/w/current?pair=${ELSEWHERE}${'0f'.repeat(16)}`;
-  // A sealed invitation's short link: its handle, and the key that opens it.
-  const short = `https://web.example/i/AbCdEfGhIjKlMnOp#${'k'.repeat(43)}`;
+  // A short link: the invitation its workspace keeps at its host, and the
+  // secret that names it there.
+  const short = `https://web.example/#/@node.example/w/current?invite=${'k'.repeat(43)}`;
   for (const link of [pairing, short, 'https://web.example/#/@node.example/w/current?invite=abc']) {
     const {screen, at, failure} = await turnedAway();
     assert.equal(failure, null);

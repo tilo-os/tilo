@@ -749,7 +749,7 @@ test('a first visit the site may still turn away is held: the setup shows once t
 
 test('a newcomer by invitation joins first, and is set up later: on the site itself, never over a workspace', () => {
   const stored = {};
-  assert.equal(shows('https://tilo.example/i/abcdefghijklmnop', {stored, secrets: {invite: 'x'}}), false,
+  assert.equal(shows('https://tilo.example/#/@workspaces.example/w/team', {stored, secrets: {invite: 'x'}}), false,
     'the invitation opens the workspace it names, nothing in the way');
   assert.equal(JSON.parse(stored[SETUP]).step, 'later', 'their own setup is kept for later');
   // Joining let the page in: it keeps the host and the workspace now.
@@ -771,10 +771,10 @@ test('a newcomer by invitation joins first, and is set up later: on the site its
   assert.equal(setupLater({getItem: () => JSON.stringify({step: 'done'})}), false);
   // Someone already here who opens an invitation keeps what they had.
   const member = {'tilo-host-memberships': '{"x":{}}', ...kept({step: 'done'})};
-  shows('https://tilo.example/i/abcdefghijklmnop', {stored: member, secrets: {invite: 'x'}});
+  shows('https://tilo.example/#/@workspaces.example/w/team', {stored: member, secrets: {invite: 'x'}});
   assert.equal(JSON.parse(member[SETUP]).step, 'done');
   const known = {'tilo-host-memberships': '{"x":{}}'};
-  shows('https://tilo.example/i/abcdefghijklmnop', {stored: known, secrets: {invite: 'x'}});
+  shows('https://tilo.example/#/@workspaces.example/w/team', {stored: known, secrets: {invite: 'x'}});
   assert.equal(known[SETUP], undefined, 'a browser a host let in before is no newcomer');
   const paired = {};
   shows('https://tilo.example/#/@workspaces.example/w/team', {stored: paired, secrets: {pair: 'x'}});

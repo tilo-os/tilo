@@ -548,7 +548,7 @@ try {
     `(() => {
       const shared = document.querySelector('[data-card=share] input[name=link]')?.value;
       if (shared && shared !== ${JSON.stringify(clipboardBefore)}) return 'shared:' + shared;
-      return navigator.clipboard.readText().then(text => text.includes('/i/') && text !== ${JSON.stringify(clipboardBefore)} ? 'copied:' + text : '', () => '');
+      return navigator.clipboard.readText().then(text => /\\?invite=[A-Za-z0-9_-]{43}$/.test(text) && text !== ${JSON.stringify(clipboardBefore)} ? 'copied:' + text : '', () => '');
     })()`, stepLimit(8));
   if (!handed) await fail(`one press did not hand over an invite link, on the clipboard or in a card: ${JSON.stringify(await state(operator.tab))} — "${(await pageText(operator.tab)).slice(0, 300)}"`);
   report.copiedLink = String(handed).replace(/#.*/, '#…');
@@ -590,7 +590,7 @@ try {
   report.sent = await operator.tab.evaluate(`document.querySelector('.tilo-waiting-sent')?.textContent?.trim() ?? null`);
   const invitation = await mailArrived('the invitation mail', 2);
   report.invitationMail = {to: invitation.to, from: invitation.from, subject: invitation.subject};
-  const inviteLink = mailLink(invitation, 'invite') ?? (invitation.text.match(/https?:\/\/\S+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}/) ?? [])[0];
+  const inviteLink = mailLink(invitation, 'invite') ?? (invitation.text.match(/https?:\/\/\S+#(?:\/@[^\s/]+)?\/w\/[0-9a-f-]{36}\?invite=[A-Za-z0-9_-]{43}/) ?? [])[0];
   if (!inviteLink) await fail(`the invitation mail carries no link: ${(invitation.text ?? '').slice(0, 400)}`);
   report.inviteLink = inviteLink.replace(/#.*/, '#…');
   await pressText(operator.tab, 'Close', '.tilo-waiting');

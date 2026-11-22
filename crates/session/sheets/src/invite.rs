@@ -98,8 +98,8 @@ pub struct Person {
 pub struct Created {
     /// The invitation's id, as taking it back names it.
     pub invite: String,
-    /// The site's short link to it (`https://<site>/i/<handle>#<key>`), which
-    /// the code to scan carries too.
+    /// The link that names it where its workspace keeps it, which the code to
+    /// scan carries too.
     pub link: String,
     /// The part it brings someone in at, and the key of the person whose
     /// device alone redeems it (empty: anyone holding it). The sheet shows the
@@ -182,14 +182,12 @@ impl Invite {
     }
 }
 
-/// What a host keeps of the sheet between passes: the link it last made, the
-/// invitation still on its way to a site's shelf, and what became of the last
-/// ask. The session's shell and a page's host replica keep this the same way,
-/// so the sheet can show the native link or its site's short link.
+/// What a host keeps of the sheet between passes: the link it last made, and
+/// what became of the last ask. The session's shell and a page's host replica
+/// keep this the same way.
 #[derive(Clone, Debug, Default)]
 pub struct Making {
     created: Option<Created>,
-    shelving: Option<Created>,
     note: Option<Note>,
 }
 
@@ -200,23 +198,10 @@ impl Making {
         self.created.clone()
     }
 
-    /// Whether the link shown is still on its way to its site's shelf.
-    #[must_use]
-    pub fn making(&self) -> bool {
-        self.shelving.is_some()
-    }
-
     /// What became of the last ask.
     #[must_use]
     pub fn note(&self) -> Option<Note> {
         self.note.clone()
-    }
-
-    /// `created`'s invitation waits for its site's shelf: [`Self::shelved`]
-    /// shows it once the site answers with its short link.
-    pub fn shelving(&mut self, created: Created) {
-        self.shelving = Some(created);
-        self.note = None;
     }
 
     /// Show the link that can be handed over now.
@@ -225,42 +210,10 @@ impl Making {
         self.note = None;
     }
 
-    /// The link that is waiting for a shelf answer.
-    #[must_use]
-    pub fn waiting_to_show(&self, invite: &str) -> bool {
-        self.shelving
-            .as_ref()
-            .is_some_and(|pending| pending.invite == invite)
-    }
-
-    /// Show the site's short link for `invite` if it kept it. Use the native
-    /// link if the site refuses and the invitation can travel directly.
-    pub fn shelved(&mut self, invite: &str, link: Result<String, String>) {
-        let Some(mut created) = self.shelving.take() else {
-            return;
-        };
-        if created.invite != invite {
-            self.shelving = Some(created);
-            return;
-        }
-        match link {
-            Ok(link) => {
-                created.link = link;
-                self.handed_over(created);
-            }
-            Err(_) if !created.link.is_empty() => self.handed_over(created),
-            Err(reason) => self.say(words("invite-failed", &[("reason", &reason)]), true),
-        }
-    }
-
     /// An invitation was taken back: no link of this opening shows it.
     pub fn revoked(&mut self, invite: &str) {
         self.created = self
             .created
-            .take()
-            .filter(|created| created.invite != invite);
-        self.shelving = self
-            .shelving
             .take()
             .filter(|created| created.invite != invite);
     }
@@ -289,8 +242,7 @@ impl Making {
 }
 
 /// What the sheet shows of the link it just made at `role` for `recipient`
-/// (empty: anyone holding it), once its site answers with the link: the words
-/// around it, and how long it works.
+/// (empty: anyone holding it): the words around it, and how long it works.
 #[must_use]
 pub fn made(invite: &str, role: &str, recipient: &str, expires_at_ns: u64) -> Created {
     Created {
@@ -383,7 +335,7 @@ pub trait Invitations {
     fn made(&self) -> Option<Created> {
         None
     }
-    /// Whether the link made is still on its way to its site's shelf.
+    /// Whether the link asked for has not been made yet.
     fn making(&self) -> bool {
         false
     }
@@ -1092,11 +1044,13 @@ mod tests {
     use super::*;
 
     const INVITE: &str = "49a289c86314e68b618e01abca086915354cdb16fd11fdd45746a95161ee71f8";
-    const SHORT: &str =
-        "https://tilo.sh/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGGHHHIIIJJJKKKLLLMMMNNNO";
+    const SHORT: &str = "https://tilo.sh/#/@eu1.tilo.sh/w/6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71?invite=AAABBBCCCDDDEEEFFFGGGHHHIIIJJJKKKLLLMMMNNNO";
 
     fn made_link() -> Created {
-        made(INVITE, "editor", "", 0)
+        Created {
+            link: SHORT.to_owned(),
+            ..made(INVITE, "editor", "", 0)
+        }
     }
 
     /// A sheet whose links go into `workspace`, when it names one.
@@ -1135,79 +1089,39 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// `Making`: the link one opening of the sheet made, from asking the site to taking it back.
-        fn a_link_in_the_making_is_shown_once_its_site_keeps_it;
+        /// `Making`: the link one opening of the sheet made, from handing it over to taking it back.
+        fn a_link_made_shows_until_it_is_taken_back;
 
-        phase a_link_waits_for_its_site_and_then_shows_the_short_one;
+        phase a_link_handed_over_shows_with_its_words;
         {
             let mut making = Making::default();
-            making.shelving(made_link());
-            assert!(making.making(), "the site has not answered yet");
-            assert!(
-                making.made().is_none(),
-                "a link is handed over once it is the one the site keeps"
-            );
-
-            // An answer for another opening's link changes nothing.
-            making.shelved("another invitation", Ok("https://elsewhere/i/x".to_owned()));
-            assert!(making.making(), "still waiting for its own site");
-
-            making.shelved(INVITE, Ok(SHORT.to_owned()));
-            assert!(!making.making());
+            making.handed_over(made_link());
             let shown = making.made().unwrap();
             assert_eq!(shown.link, SHORT);
             assert_eq!(shown.link_label, word("invite-link-label"));
             assert_eq!(shown.alt, word("invite-code-alt"));
         }
 
-        phase a_site_that_keeps_nothing_shows_no_link_and_says_why;
-        {
-            let mut making = Making::default();
-            making.shelving(made_link());
-            making.shelved(INVITE, Err("the site is down".to_owned()));
-            assert!(!making.making());
-            assert!(
-                making.made().is_none(),
-                "the invitation's own text is never handed over"
-            );
-            let note = making.note().unwrap();
-            assert!(note.bad);
-            assert!(note.text.contains("the site is down"), "{}", note.text);
-        }
-
         phase a_link_taken_back_leaves_nothing_of_this_opening_behind;
         {
             let mut making = Making::default();
-            making.shelving(made_link());
-            making.shelved(INVITE, Ok(SHORT.to_owned()));
-            assert!(making.made().is_some());
-
+            making.handed_over(made_link());
             making.revoked("another invitation");
             assert!(making.made().is_some(), "another link is not this one");
-
             making.revoked(INVITE);
-            assert!(making.made().is_none());
-            assert!(!making.making());
-
-            // A link still on its way to the site is taken back the same way.
-            making.shelving(made_link());
-            making.revoked(INVITE);
-            assert!(!making.making());
             assert!(making.made().is_none());
         }
 
         phase opening_the_sheet_again_forgets_the_link_of_the_earlier_opening;
         {
             let mut making = Making::default();
-            making.shelving(made_link());
-            making.shelved(INVITE, Ok(SHORT.to_owned()));
+            making.handed_over(made_link());
             making.copied(SHORT);
             assert_eq!(making.made().unwrap().copy, word("invite-copied"));
             making.say("Taken back".to_owned(), false);
             making.opening();
             assert!(making.made().is_none());
             assert!(making.note().is_none());
-            assert!(!making.making());
         }
     }
 

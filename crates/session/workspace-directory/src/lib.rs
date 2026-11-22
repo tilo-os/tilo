@@ -27,12 +27,11 @@ use tilo_server_protocol::directory::{Activity, DirectoryEntry, DirectoryPage};
 use tilo_server_protocol::workspaces::Role;
 
 pub use client::{
-    Granted, Person, SealedInvitation, Shelved, SiteEntry, SiteWorkspace, Taken, Way, client,
-    fetch_directory, invited_workspace, read_site, sealed_invitation, shelve, site_entry, take,
-    take_back, verify_invitation, web_origin,
+    Granted, Person, SiteEntry, SiteWorkspace, Taken, Way, client, fetch_directory,
+    invited_workspace, kept_invitation, read_site, site_entry, take, verify_invitation, web_origin,
 };
 
-/// Why a site, its entry or its shelf gave nothing to use.
+/// Why a site, its entry or the host of an invitation gave nothing to use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SiteError {
     /// What the directory sheet says, by the key of its catalogue's message

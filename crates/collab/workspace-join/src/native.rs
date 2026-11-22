@@ -52,6 +52,36 @@ fn bearer(signed: &[u8]) -> [u8; 32] {
     blake3::derive_key("tilo retained workspace invitation link v1", signed)
 }
 
+/// Characters of the secret a web link carries for an invitation its
+/// workspace keeps ([`bearer_text`]).
+pub const BEARER_CHARS: usize = 43;
+
+/// The secret a web link names an invitation by, at the host that keeps it
+/// in its workspace: the invitation's bearer as base64url. Only whoever holds
+/// the signed bytes can derive it, so the host hands the invitation to
+/// whoever names it and to nobody who guesses.
+#[must_use]
+pub fn bearer_text(signed: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bearer(signed))
+}
+
+/// The bearer `text` spells, when it is a web link's secret for a kept
+/// invitation rather than an invitation's own text.
+#[must_use]
+pub fn parse_bearer(text: &str) -> Option<[u8; 32]> {
+    let text = text.trim();
+    if text.len() != BEARER_CHARS {
+        return None;
+    }
+    URL_SAFE_NO_PAD.decode(text).ok()?.try_into().ok()
+}
+
+/// Whether `signed` is the invitation `bearer` names.
+#[must_use]
+pub fn bears(signed: &[u8], bearer_of: &[u8; 32]) -> bool {
+    blake3::Hash::from_bytes(bearer(signed)) == blake3::Hash::from_bytes(*bearer_of)
+}
+
 /// Routing information for the read-only lookup. The signed invitation must
 /// bind this exact service key to the issuing device and workspace after lookup.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,5 +122,30 @@ impl InvitationLink {
         let bytes = URL_SAFE_NO_PAD.decode(text.strip_prefix(PREFIX)?).ok()?;
         let (link, trailing) = postcard::take_from_bytes::<Self>(&bytes).ok()?;
         (trailing.is_empty() && link.to_link().as_deref() == Some(text)).then_some(link)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_web_links_secret_names_one_invitation_and_reads_apart_from_its_text() {
+        let signed = b"the signed invitation's own bytes, private nonce and all";
+        let secret = bearer_text(signed);
+        assert_eq!(secret.len(), BEARER_CHARS);
+        let read = parse_bearer(&secret).expect("the secret reads back");
+        assert!(bears(signed, &read));
+        assert!(
+            !bears(b"another invitation", &read),
+            "a secret names the one invitation it was derived from"
+        );
+        assert_eq!(parse_bearer(&format!(" {secret} ")), Some(read));
+        assert_eq!(parse_bearer(&format!("{secret}A")), None);
+        assert_eq!(
+            parse_bearer(&crate::encode_invitation_text(signed)),
+            None,
+            "an invitation's own text is not a kept invitation's secret"
+        );
     }
 }

@@ -205,7 +205,7 @@ test-server = { path = "../../dev/test-server" }
 # machines whose programs a test reads back.
 ush = { path = "../../runtime/ush", features = ["quic", "test-host"] }
 test-http = { path = "../../dev/test-http" }
-# Opens an invitation's link as a page does, from the site's shelf.
+# Opens an invitation's link as a page does, asking the workspace's host for it.
 tilo-workspace-directory = { path = "../../session/workspace-directory" }
 # `tilolang repl`, driven in process against a workspace the server hosts.
 tilolang-cli = { path = "../../lang/tilolang-cli" }

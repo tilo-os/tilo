@@ -751,6 +751,21 @@ impl JoinLog {
             .map(|record| (record.issued.clone(), record.grant.expires_at_ns))
     }
 
+    /// The signed invitation a web link's secret names (its bearer,
+    /// [`crate::join::native::bearer_text`]), while it may still be redeemed
+    /// at `now`: what the workspace answers whoever follows the link, before
+    /// they are anyone it knows. Holding the secret is holding the
+    /// invitation; redeeming it still checks for whom it was issued.
+    #[must_use]
+    pub fn invitation_by_bearer(&self, bearer: &[u8; 32], now: u64) -> Option<Vec<u8>> {
+        let record = self
+            .invitations
+            .iter()
+            .find(|record| crate::join::native::bears(&record.issued.signed_invitation, bearer))?;
+        self.open_invitation(record.issued.invite_id, now)
+            .map(|(issued, _)| issued.signed_invitation)
+    }
+
     /// Open the exact invitation named by a native link for the dialling device.
     pub fn resolve_invitation(
         &self,

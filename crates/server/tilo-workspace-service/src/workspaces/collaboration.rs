@@ -348,6 +348,20 @@ impl Workspaces {
         Ok(())
     }
 
+    /// The signed invitation `workspace` keeps under the secret a short link
+    /// carries ([`tilo_peer_state::join::native::bearer_text`]), while it may
+    /// still be redeemed: what this host answers whoever follows the link,
+    /// before they are anyone it knows. `None` for a secret that names
+    /// nothing here, or an invitation spent, lapsed or taken back.
+    pub async fn kept_invitation(&self, workspace: &str, secret: &str) -> Option<Vec<u8>> {
+        let bearer = tilo_peer_state::join::native::parse_bearer(secret)?;
+        let workspace = self.workspace(workspace).await.ok()?;
+        let workspace = workspace.lock().await;
+        workspace
+            .collaboration()
+            .invitation_by_bearer(&bearer, tilo_clock::unix_now_ns())
+    }
+
     /// The invitations of `workspace` still redeemable.
     pub async fn pending(
         &self,

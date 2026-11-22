@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use super::said;
 use tilo_workspace_directory::{
-    self as client, Granted, Listed, Person, Shelved, SiteError, home_listing, listings_of,
+    self as client, Granted, Listed, Person, SiteError, home_listing, listings_of,
 };
 
 /// Called whenever something landed, from the task that read or joined: what
@@ -39,32 +39,9 @@ enum Ask {
         community: Option<url::Url>,
         site: Option<String>,
     },
-    /// Join what the person pasted: an invitation's text, or the sealed link
-    /// that names one.
+    /// Join what the person pasted: an invitation's text, or a link that
+    /// carries one or names the one its workspace keeps.
     Take { text: String, person: Person },
-    /// Seal `invitation` under a fresh key and leave it on `site`'s shelf,
-    /// for the link that names it.
-    Shelve {
-        invite: String,
-        invitation: Vec<u8>,
-        expires_at_ns: u64,
-        site: url::Url,
-        /// The origin of the host serving the workspace the invitation is
-        /// for, where the caller knows it: a page opening the link is told
-        /// where it admits into.
-        host: Option<String>,
-        /// The caller awaiting the link ([`Store::shelve_soon`]), answered by
-        /// the task itself: a store whose loop nobody runs still answers it.
-        /// Without one, the answer waits for the caller's loop.
-        awaiting: Option<tokio::sync::oneshot::Sender<Result<Shelved, String>>>,
-    },
-    /// Take a shelved invitation back: its link names nothing from now on.
-    Unshelve {
-        invite: String,
-        site: url::Url,
-        handle: String,
-        delete: String,
-    },
 }
 
 /// What the task answers.
@@ -77,17 +54,6 @@ enum Answer {
         key: String,
         name: String,
         granted: Result<Granted, String>,
-    },
-    /// Where leaving `invite` on a site's shelf stands: its link, or why it
-    /// was not left.
-    Shelved {
-        invite: String,
-        result: Result<Shelved, String>,
-    },
-    /// Whether a shelved invitation was taken back.
-    Unshelved {
-        invite: String,
-        result: Result<(), String>,
     },
 }
 
@@ -117,11 +83,6 @@ pub struct Store {
     /// The workspaces joined since the caller last took them, for the shell
     /// to add.
     joined: std::cell::RefCell<Vec<Joined>>,
-    /// The invitations left on a site's shelf, by the invitation's id: the
-    /// link the sheet hands over and what takes it back.
-    shelves: std::cell::RefCell<BTreeMap<String, Shelved>>,
-    /// Where leaving an invitation on a shelf stands, for the caller to show.
-    shelvings: std::cell::RefCell<Vec<(String, Result<Shelved, String>)>>,
     /// The name a site listed each workspace under, by its id: a join whose
     /// slot is made only once the host admits it keeps the name it was
     /// listed by ([`Store::listed_name`]).
@@ -209,7 +170,7 @@ impl Store {
     }
 
     /// Join what the person pasted into the sheet — an invitation's text or a
-    /// sealed link — off the caller's loop.
+    /// short link — off the caller's loop.
     ///
     /// # Errors
     /// Why nothing was asked: nothing was pasted.
@@ -280,55 +241,8 @@ impl Store {
         std::mem::take(&mut *self.joined.borrow_mut())
     }
 
-    /// Seal `invitation`, the signed bytes of one, under a fresh key and
-    /// leave it on `site`'s shelf, off the caller's loop: the link that names
-    /// it answers later, as [`Self::take_shelved`] takes it. The site is given
-    /// ciphertext, the invitation's life and a delete secret — never the key.
-    ///
-    /// # Errors
-    /// Why nothing was left: there is no task to ask.
-    pub fn shelve(
-        &self,
-        invite: &str,
-        invitation: Vec<u8>,
-        expires_at_ns: u64,
-        site: &url::Url,
-        host: Option<&str>,
-    ) -> Result<(), String> {
-        self.ask_shelve(invite, invitation, expires_at_ns, site, host, None)
-    }
-
-    fn ask_shelve(
-        &self,
-        invite: &str,
-        invitation: Vec<u8>,
-        expires_at_ns: u64,
-        site: &url::Url,
-        host: Option<&str>,
-        awaiting: Option<tokio::sync::oneshot::Sender<Result<Shelved, String>>>,
-    ) -> Result<(), String> {
-        let Some(asks) = self.worker() else {
-            return Err("the directory has nowhere to ask".to_owned());
-        };
-        asks.send(Ask::Shelve {
-            invite: invite.to_owned(),
-            invitation,
-            expires_at_ns,
-            site: site.clone(),
-            host: host.map(str::to_owned),
-            awaiting,
-        })
-        .map_err(|error| format!("the invitation was not left on its site: {error}"))
-    }
-
-    /// Take the invitations left on a shelf since this was last asked, each
-    /// with the invitation it was made for.
-    pub fn take_shelved(&self) -> Vec<(String, Result<Shelved, String>)> {
-        std::mem::take(&mut *self.shelvings.borrow_mut())
-    }
-
-    /// Hand over the invitation with the holder's native link when supplied.
-    /// A site's shelf can also carry the same signed invitation.
+    /// Hand over the invitation the workspace made: the link it answered
+    /// with, else the native link that names it at its host.
     ///
     /// # Errors
     /// `text` is not an invitation's bytes.
@@ -337,99 +251,13 @@ impl Store {
         made: &mut sheet::Making,
         mut created: sheet::Created,
         text: &str,
-        site: Option<&url::Url>,
-        host: Option<&str>,
     ) -> Result<(), String> {
-        let bytes = tilo_workspace_join::invitation_bytes(text)?;
         if created.link.is_empty() {
+            let bytes = tilo_workspace_join::invitation_bytes(text)?;
             created.link = tilo_workspace_join::native_invitation_link(&bytes);
         }
-        if let Some(site) = site
-            && self
-                .shelve(&created.invite, bytes, created.expires_at_ns, site, host)
-                .is_ok()
-        {
-            made.shelving(created);
-        } else {
-            made.handed_over(created);
-        }
+        made.handed_over(created);
         Ok(())
-    }
-
-    /// Take what a shelf answered since the sheet last looked: the site's
-    /// short link to show, or why it kept nothing. Whether one answered.
-    pub fn follow_shelf(&self, made: &mut sheet::Making) -> bool {
-        let answers = self.take_shelved();
-        let answered = !answers.is_empty();
-        for (invite, answer) in answers {
-            made.shelved(&invite, answer.map(|shelved| shelved.link));
-        }
-        answered
-    }
-
-    /// Take `invite` back: its site lets go of what it keeps
-    /// ([`Self::unshelve`]), and no link of this opening shows it.
-    pub fn take_back(&self, made: &mut sheet::Making, invite: &str) {
-        self.unshelve(invite);
-        made.revoked(invite);
-    }
-
-    /// Seal `invitation` onto `site`'s shelf and resolve to the link that
-    /// names it, for a caller that is itself async where the sheet takes the
-    /// same answer on its loop ([`Self::take_shelved`]): one shelf, one seal,
-    /// whichever way the link is handed back. The task answers this caller
-    /// directly, so the link arrives whether or not anyone runs the store's
-    /// loop: a page making a link in one press has none.
-    ///
-    /// # Errors
-    /// Why nothing was left, or why the shelf answered with nothing.
-    // The store is a handle to one task on the caller's own loop, not shared
-    // state: what it keeps of the shelf is kept on the thread that asked.
-    #[allow(
-        clippy::future_not_send,
-        reason = "the directory answers on the single thread that asked"
-    )]
-    pub async fn shelve_soon(
-        &self,
-        invite: &str,
-        invitation: Vec<u8>,
-        expires_at_ns: u64,
-        site: &url::Url,
-        host: Option<&str>,
-    ) -> Result<Shelved, String> {
-        let (left, answer) = tokio::sync::oneshot::channel();
-        self.ask_shelve(invite, invitation, expires_at_ns, site, host, Some(left))?;
-        let result = answer
-            .await
-            .map_err(|_| "the site's shelf went away without answering".to_owned())?;
-        self.kept_on_shelf(invite, &result);
-        result
-    }
-
-    /// Where the invitation `invite` was left, while its link still works.
-    pub fn shelved(&self, invite: &str) -> Option<Shelved> {
-        self.shelves.borrow().get(invite).cloned()
-    }
-
-    /// Take `invite` back off the shelf it was left on, off the caller's
-    /// loop: its link names nothing from then on. A link whose shelf is
-    /// unknown — this session made no such link — has nothing to take back;
-    /// the invitation itself is refused by its host when it is cancelled.
-    pub fn unshelve(&self, invite: &str) {
-        let Some(shelved) = self.shelves.borrow_mut().remove(invite) else {
-            return;
-        };
-        let Some(asks) = self.worker() else {
-            return;
-        };
-        if let Err(error) = asks.send(Ask::Unshelve {
-            invite: invite.to_owned(),
-            site: shelved.site,
-            handle: shelved.handle,
-            delete: shelved.delete,
-        }) {
-            tracing::warn!(%error, "the shelved invitation was not taken back");
-        }
     }
 
     /// Take what the task answered since the last call. Whether anything
@@ -483,36 +311,6 @@ impl Store {
                         self.failures.borrow_mut().insert(key, reason);
                     }
                 }
-            }
-            Answer::Shelved { invite, result } => self.left_on_shelf(invite, result),
-            Answer::Unshelved { invite, result } => {
-                if let Err(reason) = result {
-                    tracing::warn!(invite = %invite, %reason, "a shelved invitation was not taken back");
-                }
-            }
-        }
-    }
-
-    /// A site's answer to an invitation left on it: the link that names where
-    /// it waits, kept for as long as the invitation works, or why it was not
-    /// left.
-    pub(crate) fn left_on_shelf(&self, invite: String, result: Result<Shelved, String>) {
-        self.kept_on_shelf(&invite, &result);
-        self.shelvings.borrow_mut().push((invite, result));
-    }
-
-    /// Remember where `invite` was left, to take it back later, or say why
-    /// it was not.
-    fn kept_on_shelf(&self, invite: &str, result: &Result<Shelved, String>) {
-        match result {
-            Ok(shelved) => {
-                self.shelves
-                    .borrow_mut()
-                    .insert(invite.to_owned(), shelved.clone());
-            }
-            // The caller says why: no link is handed over without the site.
-            Err(reason) => {
-                tracing::warn!(invite = %invite, %reason, "an invitation was not left on its site");
             }
         }
     }
@@ -590,46 +388,6 @@ async fn work(
                     granted: taken.granted.map_err(|error| said(&error)),
                 }
             }
-            Ask::Shelve {
-                invite,
-                invitation,
-                expires_at_ns,
-                site,
-                host,
-                awaiting,
-            } => {
-                let result = match &client {
-                    Err(error) => Err(format!("no network to leave it over: {}", said(error))),
-                    Ok(client) => {
-                        client::shelve(client, &site, host.as_deref(), &invitation, expires_at_ns)
-                            .await
-                            .map_err(|error| said(&error))
-                    }
-                };
-                match awaiting {
-                    // The caller awaiting the link takes it here, not from the
-                    // caller's loop, which nobody may be running.
-                    Some(awaiting) => {
-                        let _ = awaiting.send(result);
-                        continue;
-                    }
-                    None => Answer::Shelved { invite, result },
-                }
-            }
-            Ask::Unshelve {
-                invite,
-                site,
-                handle,
-                delete,
-            } => Answer::Unshelved {
-                invite,
-                result: match &client {
-                    Err(error) => Err(format!("no network to take it back over: {}", said(error))),
-                    Ok(client) => client::take_back(client, &site, &handle, &delete)
-                        .await
-                        .map_err(|error| said(&error)),
-                },
-            },
         };
         if answers.send(answer).is_err() {
             return;

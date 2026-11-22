@@ -110,10 +110,6 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         content_links: Arc::default(),
         presence: Arc::new(live::Authority::new(server.web_context().server.clone())),
         page_errors: page_errors::PageErrors::default(),
-        shelf: Arc::new(shelf::Shelf::opening(
-            server.state_root().join("invitations"),
-            tilo_clock::unix_now_ns(),
-        )),
         site: site.and_then(Site::new),
         tickets: tickets::Tickets::new(server.web_context().certification.clone()),
         wait_list: Arc::default(),
@@ -512,110 +508,88 @@ async fn a_page_that_could_not_open_its_workspace_reaches_the_host_log() {
     }
 }
 
-/// The shelf answers a site's own `/i/<handle>`: an inviter leaves sealed
-/// bytes, a redeemer fetches exactly those, and the inviter takes them back.
-/// The site reads no key, because no request carries one.
+/// A short link names an invitation its workspace keeps: whoever follows it
+/// asks this host for the invitation by the link's secret, before they are
+/// anyone the host knows, from any site's page. The host answers it while it
+/// stands, and once it is taken back answers what it answers for a secret it
+/// never issued.
 #[tokio::test]
-async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
-    use tilo_server_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
+async fn an_invitation_its_workspace_keeps_is_opened_by_its_links_secret() {
+    use tilo_server_protocol::web::{KeptInvitation, OPEN_INVITATION_PATH, OpenedInvitation};
 
     let root = SigningKey::from_bytes(&[131; 32]);
     let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::member());
+    let (_, owner) = device(&root, 133, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+    workspaces.enter(&workspace, &owner).await.unwrap();
+    let invitation = workspaces
+        .issue(
+            &workspace,
+            &owner,
+            crate::workspaces::IssueInvitationRequest {
+                request_id: [1; 32],
+                role: Role::Editor,
+                recipient_user_public_key: None,
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let secret = tilo_peer_state::join::native::bearer_text(&invitation.signed_invitation);
     let (addr, serving) = serve_web(Arc::new(web_of(&server, &host))).await;
 
-    let handle = "abcdefghijklmnop";
-    let delete = "a".repeat(43);
-    let sealed = "c2VhbGVkIGludml0YXRpb24";
-    let stored = serde_json::to_vec(&Stored {
-        sealed: sealed.to_owned(),
-        expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
-        delete: delete.clone(),
-        host: None,
-    })
-    .unwrap();
-    // Below the site's own path, as `entry.json` names it, and with no
-    // credentials: the inviter's device signs nothing at the site.
-    let head = format!(
-        "POST /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://app.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        stored.len()
-    );
-    let (status, head, _) = exchange(addr, &head, &stored).await;
-    assert_eq!(status, 204, "{head}");
-    assert_eq!(
-        header_value(&head, "access-control-allow-origin"),
-        Some("*"),
-        "any site's page may leave one"
-    );
+    let ask = |workspace: &str, secret: &str| {
+        let body = serde_json::to_vec(&KeptInvitation {
+            workspace: workspace.to_owned(),
+            secret: secret.to_owned(),
+        })
+        .unwrap();
+        let head = format!(
+            "POST /peer/v1{OPEN_INVITATION_PATH} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://app.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        async move { exchange(addr, &head, &body).await }
+    };
 
-    let (status, head, body) = exchange(
-        addr,
-        &format!(
-            "GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://app.example\r\n\r\n"
-        ),
-        b"",
-    )
-    .await;
+    let (status, head, body) = ask(&workspace, &secret).await;
     assert_eq!(status, 200, "{head}");
+    let opened: OpenedInvitation = serde_json::from_slice(&body).unwrap();
     assert_eq!(
-        header_value(&head, "content-type"),
-        Some("application/json")
-    );
-    let fetched: Fetched = serde_json::from_slice(&body).unwrap();
-    assert_eq!(fetched.sealed, sealed);
-    assert!(
-        !String::from_utf8_lossy(&body).contains(&delete),
-        "the site gives back no delete secret"
+        tilo_peer_state::join::invitation_bytes(&opened.invitation).unwrap(),
+        invitation.signed_invitation,
+        "the host answers the invitation the workspace issued, byte for byte"
     );
 
-    // A preflight from a page on another site.
-    let (status, head, _) = exchange(
-        addr,
-        &format!(
-            "OPTIONS /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: DELETE\r\n\r\n"
-        ),
-        b"",
-    )
-    .await;
-    assert_eq!(status, 204, "{head}");
-    assert!(
-        header_value(&head, "access-control-allow-methods")
-            .unwrap_or_default()
-            .contains("delete"),
-        "{head}"
-    );
+    // A secret it never issued, and the right secret in another workspace,
+    // name nothing.
+    let other = workspaces.create("Elsewhere").await.unwrap().workspace;
+    for (workspace, secret) in [
+        (workspace.as_str(), "a".repeat(43)),
+        (other.as_str(), secret.clone()),
+        (workspace.as_str(), "short".to_owned()),
+    ] {
+        let (status, head, _) = ask(workspace, &secret).await;
+        assert_eq!(status, 410, "{head}");
+    }
 
-    // A stranger holding the link can fetch, but takes nothing back.
-    let wrong = serde_json::to_vec(&TakeBack {
-        delete: "b".repeat(43),
-    })
-    .unwrap();
-    let head = format!(
-        "DELETE /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
-        wrong.len()
-    );
-    let (status, head, _) = exchange(addr, &head, &wrong).await;
-    assert_eq!(status, 403, "{head}");
-
-    let right = serde_json::to_vec(&TakeBack {
-        delete: delete.clone(),
-    })
-    .unwrap();
-    let head = format!(
-        "DELETE /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
-        right.len()
-    );
-    let (status, head, _) = exchange(addr, &head, &right).await;
-    assert_eq!(status, 204, "{head}");
-
-    // The link now names an invitation that is gone, and says so.
-    let (status, head, body) = exchange(
-        addr,
-        &format!("GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
-        b"",
-    )
-    .await;
+    // Taken back, the invitation is gone for whoever holds the link.
+    workspaces
+        .cancel(
+            &workspace,
+            &owner,
+            crate::workspaces::CancelInvitationRequest {
+                request_id: [2; 32],
+                invite_id: invitation.invite_id,
+            },
+        )
+        .await
+        .unwrap();
+    let (status, head, body) = ask(&workspace, &secret).await;
     assert_eq!(status, 410, "{head}");
     assert!(
         String::from_utf8_lossy(&body).contains("gone"),
@@ -641,68 +615,6 @@ fn a_site_named_with_its_default_port_is_the_same_site() {
         "a port that is not the default is part of the site"
     );
     assert!(Site::new("not an address").is_none());
-}
-
-/// A person who opens an invitation's link at the host's own address is sent
-/// to the site's page for it, which is the page that takes the link: a link
-/// handed out before links moved to the site still works. The page's own
-/// request for the invitation's bytes — and any request that already reached
-/// the host through the site — is answered here, as it was.
-#[tokio::test]
-async fn a_browser_that_opens_a_link_at_the_host_is_sent_to_its_site() {
-    let root = SigningKey::from_bytes(&[141; 32]);
-    let host = host(&root, 142, tilo_user_identity::DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
-    let site = "https://app.example";
-    let (addr, serving) = serve_web(Arc::new(web_of_at(
-        &server,
-        &host,
-        Some(&format!("{site}/")),
-    )))
-    .await;
-
-    let handle = "abcdefghijklmnop";
-    let browser = format!(
-        "GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: text/html,application/xhtml+xml\r\n\r\n"
-    );
-    let (status, head, _) = exchange(addr, &browser, b"").await;
-    assert_eq!(status, 302, "{head}");
-    let page = format!("{site}/i/{handle}");
-    assert_eq!(
-        header_value(&head, "location"),
-        Some(page.as_str()),
-        "the browser is sent to the site's page, with the key still in its fragment: {head}"
-    );
-    assert_eq!(
-        header_value(&head, "cache-control"),
-        Some("no-store"),
-        "nothing keeps a link's stop"
-    );
-
-    // The page's own request for the invitation's bytes asks for no page, and
-    // is answered by the shelf, which holds nothing under that handle.
-    let bytes = format!(
-        "GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: */*\r\n\r\n"
-    );
-    let (status, head, _) = exchange(addr, &bytes, b"").await;
-    assert_eq!(status, 410, "{head}");
-
-    // A request that arrived through the site already is not sent on: the
-    // site's page fetched it from here, and sending it back would be a loop.
-    let through = format!(
-        "GET /i/{handle} HTTP/1.1\r\nHost: app.example\r\nConnection: close\r\nAccept: text/html\r\n\r\n"
-    );
-    let (status, head, _) = exchange(addr, &through, b"").await;
-    assert_eq!(status, 410, "{head}");
-
-    // A host that knows no site answers as it always has.
-    let (unhosted, second) = serve_web(Arc::new(web_of(&server, &host))).await;
-    let (status, head, _) = exchange(unhosted, &browser, b"").await;
-    assert_eq!(status, 410, "{head}");
-    second.abort();
-
-    stop(server, serving).await;
 }
 
 /// A browser that opens an address this host does not serve asks for a page,
@@ -743,112 +655,6 @@ async fn a_browser_that_opens_an_unknown_address_is_sent_to_the_site() {
     second.abort();
 
     stop(server, serving).await;
-}
-
-/// A link is pasted into a message and read days later, so what it names
-/// outlives the server that was handed it: an invitation left before a restart
-/// is fetched back, and taken back, on the server that comes up next on the same
-/// state — and one that lapsed while nothing was running says so.
-#[tokio::test]
-async fn a_sealed_invitation_outlives_the_server_it_was_left_on() {
-    use tilo_server_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
-
-    let root = SigningKey::from_bytes(&[133; 32]);
-    let signer = host(&root, 134, tilo_user_identity::DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let keeping = "abcdefghijklmnop";
-    let lapsing = "ponmlkjihgfedcba";
-    let delete = "a".repeat(43);
-    let sealed = "c2VhbGVkIGludml0YXRpb24";
-
-    let leaving = |expires_at_ns| {
-        serde_json::to_vec(&Stored {
-            sealed: sealed.to_owned(),
-            expires_at_ns,
-            delete: delete.clone(),
-            host: Some("https://server.example".to_owned()),
-        })
-        .unwrap()
-    };
-    let post = |handle: &str, body: &[u8]| {
-        format!(
-            "POST /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        )
-    };
-    let get = |handle: &str| {
-        format!("GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-    };
-
-    // The server this site reached first, with one invitation that outlasts it
-    // and one that lapses while it is down.
-    let first = server_at(&state, signer.identity(), ServerConfig::default()).await;
-    let (addr, serving) = serve_web(Arc::new(web_of(&first, &signer))).await;
-    // Dated once the server is up: starting one can take longer than the
-    // second the lapsing invitation lives.
-    let now = tilo_clock::unix_now_ns();
-    let lapse_at = now + 1_000_000_000;
-    for (handle, expires_at_ns) in [(keeping, now + 600_000_000_000), (lapsing, lapse_at)] {
-        let body = leaving(expires_at_ns);
-        let (status, head, _) = exchange(addr, &post(handle, &body), &body).await;
-        assert_eq!(status, 204, "{head}");
-    }
-    stop(first, serving).await;
-
-    // The server that comes up next, on the state the first one kept.
-    let next = server_at(&state, signer.identity(), ServerConfig::default()).await;
-    let (addr, serving) = serve_web(Arc::new(web_of(&next, &signer))).await;
-
-    let (status, head, body) = exchange(addr, &get(keeping), b"").await;
-    assert_eq!(status, 200, "{head}");
-    let fetched: Fetched = serde_json::from_slice(&body).unwrap();
-    assert_eq!(fetched.sealed, sealed);
-    assert_eq!(fetched.host.as_deref(), Some("https://server.example"));
-    assert!(
-        !String::from_utf8_lossy(&body).contains(&delete),
-        "the site gives back no delete secret"
-    );
-
-    // The secret it was left with still takes it back, and the disk lets go.
-    let take_back = serde_json::to_vec(&TakeBack {
-        delete: delete.clone(),
-    })
-    .unwrap();
-    let head = format!(
-        "DELETE /i/{keeping} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
-        take_back.len()
-    );
-    let (status, head, _) = exchange(addr, &head, &take_back).await;
-    assert_eq!(status, 204, "{head}");
-    assert!(
-        !state
-            .path()
-            .join("invitations")
-            .join(format!("{keeping}.json"))
-            .exists(),
-        "a taken-back invitation is off the state disk"
-    );
-
-    // What lapsed while the server was down is gone, and gone from the disk.
-    while tilo_clock::unix_now_ns() <= lapse_at {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    let (status, head, body) = exchange(addr, &get(lapsing), b"").await;
-    assert_eq!(status, 410, "{head}");
-    assert!(
-        String::from_utf8_lossy(&body).contains("gone"),
-        "the refusal says the invitation is gone"
-    );
-    assert!(
-        !state
-            .path()
-            .join("invitations")
-            .join(format!("{lapsing}.json"))
-            .exists(),
-        "a lapsed invitation is collected"
-    );
-
-    stop(next, serving).await;
 }
 
 /// One request to the listener at `addr`: its status, its header block

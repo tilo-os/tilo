@@ -101,30 +101,15 @@ async fn start(issuer: &str, shelled: bool) -> OnServer {
     // `entry.json` names the home workspace's entry once the server made it.
     let entry = Arc::new(std::sync::OnceLock::<String>::new());
     let answered = Arc::clone(&entry);
-    // Its shelf keeps the sealed invitations links name (`/i/<handle>`).
-    let shelf = std::sync::Mutex::new(HashMap::<String, Value>::new());
     let site = test_http::Responder::handle(move |request| {
-        use tilo_server_protocol::sealed_invitations::{Fetched, Stored, handle_of};
-        let reply = |body: String| {
+        if request.target != "/entry.json" {
+            return None;
+        }
+        Some(
             test_http::Reply::status(200)
                 .header("content-type", "application/json")
-                .body(body)
-        };
-        if request.target == "/entry.json" {
-            return Some(reply(answered.get()?.clone()));
-        }
-        let handle = handle_of(&request.target)?.to_owned();
-        let mut shelf = shelf.lock().unwrap();
-        if request.method == "POST" {
-            let stored: Stored = serde_json::from_slice(&request.body).ok()?;
-            let fetched = Fetched {
-                sealed: stored.sealed,
-                host: stored.host,
-            };
-            shelf.insert(handle, serde_json::to_value(fetched).unwrap());
-            return Some(reply("{}".into()));
-        }
-        shelf.get(&handle).map(|fetched| reply(fetched.to_string()))
+                .body(answered.get()?.clone()),
+        )
     });
     // The server, as its operator runs it.
     let (operator, _) = tilo_user_identity::UserIdentity::generate("Server operator", 1);
@@ -421,8 +406,9 @@ pub async fn approved_key(
 }
 
 /// A person following `link` on a page of theirs, as the site's join flow
-/// takes them (`admission.mjs`): the invitation opened from the site's shelf
-/// (or read from the link itself), what it offers inspected, then joined
+/// takes them (`admission.mjs`): the invitation the link's workspace keeps,
+/// asked of its host by the link's secret (or read from the link itself),
+/// what it offers inspected, then joined
 /// with a new device `root` certifies, named `name`. Answers that device and
 /// what the host admitted it to: `{workspace, name, role}`.
 pub async fn accept_invitation(
@@ -432,19 +418,16 @@ pub async fn accept_invitation(
     name: &str,
 ) -> (Device, Value) {
     use base64::Engine as _;
-    let text = if let Some((site, sealed)) = link.rsplit_once("/i/")
-        && let Some((handle, key)) = sealed.split_once('#')
-    {
-        tilo_workspace_directory::sealed_invitation(site, &format!("{handle}{key}"))
-            .await
-            .expect("the site's shelf opens the link")
-            .invitation
-    } else {
-        let (_, text) = link
-            .split_once("invite=")
-            .expect("a link names its invitation");
-        text.split('&').next().unwrap_or_default().to_owned()
-    };
+    let (route, secret) = link
+        .split_once("?invite=")
+        .expect("a link names its invitation");
+    let secret = secret.split('&').next().unwrap_or_default();
+    let (_, workspace) = route
+        .rsplit_once("/w/")
+        .expect("a link names its workspace");
+    let text = tilo_workspace_directory::kept_invitation(&on_server.server, workspace, secret)
+        .await
+        .expect("the workspace's host answers with the invitation the link names");
     let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(text)
         .expect("an invitation's text");

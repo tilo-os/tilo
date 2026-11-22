@@ -46,6 +46,8 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-server-protocol = { path = "../tilo-server-protocol" }
+# A short invitation link names this host as every link names one.
+tilo-reference = { path = "../../collab/reference" }
 # What a planned machine's installation is to become: the destinations, disk
 # rules and open choices its entry carries.
 install-profile-model = { path = "../../session/install-profile-model" }

@@ -1,14 +1,12 @@
 // The site's host for the Lounge integration test: the web entry's bundle,
 // served as the web entry image serves it, with the entry configuration this
 // deployment writes — its home is the Lounge, joined through the entry the
-// relay lists it at, and its directory is the relay's. Under `/i/` it is the
-// site a sealed invitation's link opens: the page for a browser, and the
-// server's shelf for the page's own request for the invitation (the web entry
-// image's `TILO_WEB_SHELF`).
+// relay lists it at, and its directory is the relay's. What it has no file
+// for it hands to the server (the web entry image's `TILO_WEB_SERVER`).
 //
-// usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN SHELF_ORIGIN NAME ADMISSION PORT HOST_INFO [FEEDBACK]
-// SHELF_ORIGIN is the server's plain listener, which is where a deployment's
-// ingress hands what it terminates TLS for: the shelf needs no certificate of
+// usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN SERVER_ORIGIN NAME ADMISSION PORT HOST_INFO [FEEDBACK]
+// SERVER_ORIGIN is the server's plain listener, which is where a deployment's
+// ingress hands what it terminates TLS for: the server needs no certificate of
 // its own there.
 // HOST_INFO is the line the workspace's host writes in `web-host.json` for its
 // host, which the web entry image hands its page from TILO_WEB_HOME_HOST_INFO
@@ -24,9 +22,9 @@ import {createServer} from 'node:https';
 import {request as plainRequest} from 'node:http';
 import {extname, join, normalize} from 'node:path';
 
-const [site, cert, key, origin, shelfOrigin, name, admission, port, info, feedback = ''] = process.argv.slice(2);
-if (!site || !cert || !key || !origin || !shelfOrigin || !name || !admission || !port || info === undefined) {
-  console.error('usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN SHELF_ORIGIN NAME ADMISSION PORT HOST_INFO [FEEDBACK]');
+const [site, cert, key, origin, serverOrigin, name, admission, port, info, feedback = ''] = process.argv.slice(2);
+if (!site || !cert || !key || !origin || !serverOrigin || !name || !admission || !port || info === undefined) {
+  console.error('usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN SERVER_ORIGIN NAME ADMISSION PORT HOST_INFO [FEEDBACK]');
   process.exit(2);
 }
 
@@ -70,13 +68,13 @@ const serve = (response, file) => {
   response.end(body);
 };
 
-/** Hand `request` to the server at `shelfOrigin` under the path it serves the
- * shelf at, and its answer back as it came. That is the plain listener an
+/** Hand `request` to the server at `serverOrigin` under its own path, and its
+ * answer back as it came. That is the plain listener an
  * ingress forwards to once it terminated TLS, so this hop is the deployment's
  * own and no certificate stands on it. */
-const shelf = (request, response) => {
+const toServer = (request, response) => {
   const path = new URL(request.url, 'https://x').pathname;
-  const upstream = plainRequest(`${shelfOrigin}${path}`, {
+  const upstream = plainRequest(`${serverOrigin}${path}`, {
     method: request.method,
     headers: {...request.headers, host: new URL(origin).host},
   }, answer => {
@@ -84,7 +82,7 @@ const shelf = (request, response) => {
     answer.pipe(response);
   });
   upstream.on('error', error => {
-    console.error(`site: the shelf did not answer: ${error.message}`);
+    console.error(`site: the server did not answer: ${error.message}`);
     response.writeHead(502).end();
   });
   request.pipe(upstream);
@@ -98,28 +96,13 @@ const server = createServer({cert: readFileSync(cert), key: readFileSync(key)}, 
     response.end(body);
     return;
   }
-  // A sealed invitation's link: the page for a browser that accepts HTML,
-  // with the files it names relative to itself, and the server answering under
-  // the handle for everyone else (the page fetching an invitation, and the
-  // inviter leaving one there).
-  if (path.startsWith('/i/')) {
-    const file = fileAt(path.slice('/i'.length));
-    if (file) { serve(response, file); return; }
-    const wantsPage = (request.headers.accept ?? '').includes('text/html');
-    if (wantsPage && /^[A-Za-z0-9_-]{16}$/.test(path.slice('/i/'.length))) {
-      serve(response, join(site, 'index.html'));
-      return;
-    }
-    shelf(request, response);
-    return;
-  }
   const file = fileAt(path);
   if (file) { serve(response, file); return; }
   // Everything else the entry serves from the host behind it: a workspace's
   // app as a web page (`/w/…`, the page the server renders), the host's
   // routes, and a directory listing. The ingress hands what it terminates TLS
-  // for to the shelf (`TILO_WEB_SHELF`), and so does this.
-  shelf(request, response);
+  // for to the server (`TILO_WEB_SERVER`), and so does this.
+  toServer(request, response);
 });
 server.listen(Number(port), '127.0.0.1', () => {
   console.log(JSON.stringify({url: `https://127.0.0.1:${server.address().port}`}));

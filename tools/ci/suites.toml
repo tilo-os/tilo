@@ -635,7 +635,6 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/site-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/sealed-link.test.mjs",
   "crates/browser/tilo-browser-runtime/web/reconnect.test.mjs",
   "crates/browser/tilo-browser-runtime/web/recovery-words.test.mjs",
   "crates/browser/tilo-browser-runtime/web/failure-screen.test.mjs",

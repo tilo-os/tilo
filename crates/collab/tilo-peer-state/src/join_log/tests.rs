@@ -117,6 +117,19 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
         .unwrap(),
         issued.signed_invitation
     );
+    let bearer = crate::join::native::parse_bearer(&crate::join::native::bearer_text(
+        &issued.signed_invitation,
+    ))
+    .unwrap();
+    assert_eq!(
+        log.invitation_by_bearer(&bearer, now_ns),
+        Some(issued.signed_invitation.clone())
+    );
+    assert!(
+        log.invitation_by_bearer(&bearer, expiry).is_none(),
+        "a lapsed invitation is not handed out"
+    );
+    assert!(log.invitation_by_bearer(&[9; 32], now_ns).is_none());
     assert!(
         resolve(
             &log,
@@ -257,6 +270,10 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
         Some(guest_cert.device_public_key)
     );
     assert!(log.pending(now_ns).is_empty(), "the invitation is spent");
+    assert!(
+        log.invitation_by_bearer(&bearer, now_ns).is_none(),
+        "a spent invitation is not handed to whoever holds its link"
+    );
     assert!(
         resolve(
             &log,
@@ -538,7 +555,20 @@ fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing
         .inspect(&workspace, &issued.signed_invitation, now_ns)
         .unwrap();
     let reference = crate::join::native::InvitationRef::of(&verified);
+    let bearer = crate::join::native::parse_bearer(&crate::join::native::bearer_text(
+        &issued.signed_invitation,
+    ))
+    .unwrap();
+    assert_eq!(
+        log.invitation_by_bearer(&bearer, now_ns),
+        Some(issued.signed_invitation.clone()),
+        "a web link's secret names the invitation while it stands"
+    );
     assert!(log.cancel(&cancel).unwrap());
+    assert!(
+        log.invitation_by_bearer(&bearer, now_ns).is_none(),
+        "an invitation taken back is no longer handed to whoever holds its link"
+    );
     assert!(!log.cancel(&cancel).unwrap());
     assert!(
         log.cancel(&CancelInvitationRequest {

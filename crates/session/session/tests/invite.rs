@@ -11,8 +11,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use ed25519_dalek::SigningKey;
@@ -166,21 +164,6 @@ fn scanned(app: &mut HeadlessApp<InviteApp>) -> Result<(Vec<u8>, usize), String>
     Err("a scanner finds no readable QR on the sheet's screen".into())
 }
 
-/// The invitation a short `link` names, as its site's shelf `kept` it and the key in the link
-/// opens it: the text a device joins with.
-fn redeemed(link: &str, kept: &Mutex<HashMap<String, String>>) -> String {
-    let parsed = tilo_workspace_join::sealed::parse_link(link).expect("a short link");
-    let sealed = kept
-        .lock()
-        .expect("the shelf's invitations")
-        .get(&parsed.handle)
-        .cloned()
-        .expect("the shelf keeps the invitation the link names");
-    let bytes = tilo_workspace_join::sealed::open_sealed(&sealed, &parsed.handle, &parsed.key)
-        .expect("the link's key opens it");
-    tilo_workspace_join::encode_invitation_text(&bytes)
-}
-
 /// A session on a shell showing the workspace it made, placed on this device's own workspace
 /// service, with the invite sheet up as the person who may invite there sees it: everything either
 /// test does before it can make a link.
@@ -304,14 +287,12 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    // This computer's community site is a shelf on this machine: the sheet hands over its short
-    // link, and her device redeems the invitation it names.
-    let (responder, kept) = shelf();
+    // The sheet hands over the link that names the invitation this computer keeps in the
+    // workspace, and her device fetches it from here: no site is asked for anything.
     let community = home.config().join("community.toml");
-    std::fs::write(&community, format!("site = \"{}/\"\n", responder.url()))
-        .expect("a community site");
+    std::fs::write(&community, "site = ''").expect("no community site");
     home.env().set("TILO_COMMUNITY_CONFIG", &community);
-    // Nor does it relay through anyone: the link names the addresses of this computer's own
+    // It relays through no one: the link names the addresses of this computer's own
     // network, which her device dials directly, rather than a public relay a test cannot count on.
     settings_store::relay::RELAY
         .set(settings_store::relay::Relays::None)
@@ -329,10 +310,9 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     // the shell, and the sheet shows the link back.
     let mut app = sheet_app(&state);
     let link = press_create(&mut app, &mut session);
-    assert!(
-        link.starts_with(&format!("{}/i/", responder.url())),
-        "the link the sheet shows is the site's short one: {link:?}"
-    );
+    let locator = tilo_workspace_join::native::InvitationLink::parse(&link)
+        .unwrap_or_else(|| panic!("the link names the invitation its workspace keeps: {link:?}"));
+    assert_eq!(locator.reference.workspace, workspace);
     assert_eq!(
         invitations_on_the_sheet(&mut session, 1),
         1,
@@ -393,7 +373,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         "Her laptop",
         DeviceCapabilities::member(),
     );
-    let hers = joins_with(&redeemed(&link, &kept), workspace, &her, &her_key)
+    let hers = joins_with(&link, workspace, &her, &her_key)
         .expect("the link admits her device into the workspace");
 
     // The workspace she took in has this computer's person in it already, and her in the part the
@@ -497,135 +477,4 @@ fn a_native_invitation_scans_from_the_sheet_and_admits_over_iroh() {
         joins_with(&read, workspace, &cert, &key).is_err(),
         "a spent link cannot be fetched again"
     );
-}
-
-/// A community site's shelf on this machine: it keeps the sealed invitations it is left, under the
-/// handle the request names, and answers them back.
-fn shelf() -> (test_http::Responder, Arc<Mutex<HashMap<String, String>>>) {
-    let kept = Arc::new(Mutex::new(HashMap::<String, String>::new()));
-    let serving = Arc::clone(&kept);
-    let responder = test_http::Responder::handle(move |request| {
-        let Some((_, handle)) = request.target.rsplit_once("/i/") else {
-            return Some(test_http::Reply::status(404));
-        };
-        let handle = handle.to_owned();
-        Some(match request.method.as_str() {
-            "POST" => {
-                let stored: serde_json::Value = serde_json::from_slice(&request.body).ok()?;
-                let sealed = stored.get("sealed")?.as_str()?.to_owned();
-                serving
-                    .lock()
-                    .expect("the shelf's invitations")
-                    .insert(handle, sealed);
-                test_http::Reply::status(204)
-            }
-            "GET" => {
-                let sealed = serving
-                    .lock()
-                    .expect("the shelf's invitations")
-                    .get(&handle)
-                    .cloned()?;
-                test_http::Reply::status(200)
-                    .header("Content-Type", "application/json")
-                    .body(serde_json::json!({ "sealed": sealed }).to_string())
-            }
-            _ => test_http::Reply::status(405),
-        })
-    });
-    (responder, kept)
-}
-
-#[test]
-fn a_link_left_on_the_community_site_is_short_and_the_site_never_sees_its_key() {
-    let _settled = ui::motion::testing::settled();
-    tilo_secrets::keep_in_memory_for_process();
-    let mut home = tilo_test_env::TestHome::new().expect("a test home");
-
-    // This computer's community site is a shelf on this machine, and the sheet is configured with
-    // it: what it makes goes there, sealed.
-    let (responder, kept) = shelf();
-    let community = home.config().join("community.toml");
-    std::fs::write(&community, format!("site = \"{}/\"\n", responder.url()))
-        .expect("a community site");
-    home.env().set("TILO_COMMUNITY_CONFIG", &community);
-    let Hosted {
-        _kept,
-        mut session,
-        state,
-        ..
-    } = hosted(&mut home);
-
-    // They make a link at the part the sheet opens on. What the sheet hands over is where the
-    // invitation waits and the key that opens it — not a kilobyte of signed invitation.
-    let mut app = sheet_app(&state);
-    let link = press_create(&mut app, &mut session);
-    assert!(
-        link.starts_with(&format!("{}/i/", responder.url())),
-        "the sheet hands over the site's own link: {link}"
-    );
-    assert_eq!(
-        link.chars().filter(|c| *c == '#').count(),
-        1,
-        "the key follows the fragment, and is the only one: {link}"
-    );
-    assert!(
-        link.len() <= tilo_workspace_join::sealed::MAX_LINK_CHARS,
-        "the link is short enough to scan: {link}"
-    );
-    let key = link
-        .rsplit_once('#')
-        .expect("a key in the link")
-        .1
-        .to_owned();
-    assert_eq!(
-        key.chars().count(),
-        tilo_workspace_join::sealed::KEY_CHARS,
-        "the fragment is the key"
-    );
-
-    // The code the sheet draws carries exactly that link, and a scanner reads it back: forty-one
-    // modules, a version 6 code at medium error correction, not the version 39 the invitation's own
-    // kilobytes need.
-    let made = state.invite().created.expect("the link the sheet made");
-    assert_eq!(made.link, link, "the sheet shows the link it hands over");
-    crate::common::app_shot(&mut app, "invite-sheet-short");
-    let (read, version) = scanned(&mut app).expect("a scanner reads the short code");
-    assert_eq!(
-        read,
-        link.as_bytes(),
-        "the scanner reads the link back whole"
-    );
-    assert!(
-        version <= 6,
-        "a short link fits a version 6 code, and this one is version {version}"
-    );
-
-    // The site was left the invitation sealed: it holds ciphertext, and the key the link carries
-    // never reached it.
-    let requests = responder.drain_requests();
-    let post = requests
-        .iter()
-        .find(|request| request.method == "POST")
-        .expect("the shelf was left the invitation");
-    assert!(post.target.starts_with("/i/"), "{}", post.target);
-    let body = post.body_text();
-    assert!(
-        body.contains("\"sealed\""),
-        "the invitation is sealed: {body}"
-    );
-    assert!(!body.contains(&key), "the key is in the link alone: {body}");
-    assert!(
-        !body.contains(&link),
-        "the link itself is not sent either: {body}"
-    );
-    let handle = post.target.rsplit('/').next().expect("the handle");
-    let kept = kept.lock().expect("the shelf's invitations");
-    let sealed = kept
-        .get(handle)
-        .expect("the shelf keeps it under its handle");
-    assert!(
-        !sealed.contains(&key),
-        "what the site holds does not carry the key: {sealed}"
-    );
-    drop(kept);
 }

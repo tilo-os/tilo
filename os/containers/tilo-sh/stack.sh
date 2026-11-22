@@ -608,8 +608,7 @@ caddy_image=docker.io/library/caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79b
 # start NAME ARGS…: one service's container, replacing any stopped one of the
 # same name. Every container is this stack's own (named tilo-sh-local-*).
 # Each resolves the site's name as production's resolve tilo.sh: the
-# images' own resolvers know nothing of *.localhost, and the API server keeps the
-# invitations it hands over on the site's shelf, at that name.
+# images' own resolvers know nothing of *.localhost.
 start() {
   local name=$1
   shift
@@ -844,7 +843,7 @@ web_env() {
     TILO_WEB_HOME_FEEDBACK=c_feedback \
     "TILO_WEB_DIRECTORY=$server_origin/peer/v1/directory" \
     "TILO_WEB_API=$api_origin" \
-    "TILO_WEB_SHELF=http://127.0.0.1:$plain_port" \
+    "TILO_WEB_SERVER=http://127.0.0.1:$plain_port" \
     "TILO_RELEASES_ORIGIN=http://127.0.0.1:$releases_port/tilo-cli"
 }
 
@@ -2429,7 +2428,7 @@ up_images() {
 
   # The web entry: its image listens on 8080 alone, so it gets its own
   # network, published on the port tls serves the site from, from which it reaches the server's
-  # plain listener (its shelf) and the releases on this machine's loopback.
+  # plain listener (the pages it renders) and the releases on this machine's loopback.
   start_releases
   local web_args=() info
   info=$(host_info)
