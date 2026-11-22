@@ -225,6 +225,16 @@ impl StatePeer {
             .is_some_and(|cert| !self.core.revocations.refuses(cert))
     }
 
+    /// Whether `person` is a member of this workspace, at any role: the owner,
+    /// or anyone the governance this replica holds names as a member.
+    #[must_use]
+    pub fn is_member(&self, person: &[u8; 32]) -> bool {
+        self.core.workspace_doc.as_ref().is_some_and(|doc| {
+            doc.workspace_policy(&self.core.workspace)
+                .is_member(&hex::encode(person))
+        })
+    }
+
     /// Whether `person` governs the workspace's history: its owner, or one of
     /// its administrators as the governance this replica holds names them.
     /// Their devices sign the workspace's checkpoints and bases and relay

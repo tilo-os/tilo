@@ -274,24 +274,23 @@ pub struct ServerHandle {
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
 }
 
-/// Verify `cert`'s device's delegation against the server's user `own_user`
-/// and put it in the server's agent register, replacing an earlier one: what
-/// confines an agent to its delegated workspaces from its next envelope on. Both
-/// paths that tell a server about an agent come here
-/// ([`Server::register_agent`], `ServerAgentLink::register`), so neither can
-/// register one the other leaves unconfined.
+/// Verify `cert`'s device's delegation against the person the agent acts for,
+/// the root its certificate names, and put it in the server's agent register,
+/// replacing an earlier one: what confines an agent to its delegated workspaces
+/// from its next envelope on. Both paths that tell a server about an agent come
+/// here ([`Server::register_agent`], `ServerAgentLink::register`), so neither
+/// can register one the other leaves unconfined.
 ///
 /// # Errors
 ///
-/// The delegation is not `own_user`'s, or names another device.
+/// The delegation is not the agent's person's, or names another device.
 pub(crate) fn register_agent_in(
     agents: &crate::peer::AgentRegistry,
-    own_user: &[u8; 32],
     cert: &tilo_user_identity::DeviceCert,
     delegation: &tilo_server_protocol::delegation::Delegation,
 ) -> Result<(), String> {
     delegation
-        .verify(own_user, tilo_clock::unix_now_ns())
+        .verify(&cert.user_public_key, tilo_clock::unix_now_ns())
         .map_err(|error| error.to_string())?;
     if cert.device_public_key != delegation.device_public_key {
         return Err("the delegation names another device".into());
@@ -912,7 +911,7 @@ impl Server {
     }
 
     /// Tell the host that the device `cert` certifies is an agent: verify
-    /// its root-signed delegation against this server's user and confine the
+    /// its root-signed delegation against the person it acts for and confine the
     /// device to the delegated workspaces from its next envelope on, then put it
     /// on the roster of each workspace this server governs that the delegation
     /// names, as an approved grant does ([`crate::workspaces::Workspaces::reconcile_agent`]).
@@ -921,7 +920,7 @@ impl Server {
     ///
     /// # Errors
     ///
-    /// The delegation is not this server's user's, names another device, or
+    /// The delegation is not the agent's person's, names another device, or
     /// does not verify.
     #[cfg_attr(
         not(feature = "agents"),
@@ -935,12 +934,7 @@ impl Server {
         cert: &tilo_user_identity::DeviceCert,
         delegation: tilo_server_protocol::delegation::Delegation,
     ) -> Result<(), String> {
-        register_agent_in(
-            &self.web.server.agents,
-            &self.web.server.identity.user_public_key,
-            cert,
-            &delegation,
-        )?;
+        register_agent_in(&self.web.server.agents, cert, &delegation)?;
         // The governed workspaces it names put it on their rosters.
         #[cfg(feature = "agents")]
         if let Some(workspaces) = self.workspaces() {

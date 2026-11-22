@@ -13,6 +13,9 @@
 //! their request waits beside the owner's, and a page holding the member's
 //! root lists and answers that member's own requests over HTTPS with
 //! root-signed [`MemberApproval`]s ([`CertificationProtocol::member_approve`]).
+//! An agent is approved the same way, by any device of the person it acts
+//! for: the same command lists the proposal, and the member's root signs the
+//! agent's certificate and its delegation together.
 //!
 //! The same approvers answer the questions the host's agents put to their
 //! person ([`CertificationProtocol::confirm`]): one invocation each, allowed
@@ -443,7 +446,8 @@ impl CertificationProtocol {
     }
 
     /// Answer a member's root-signed approver command: their own pending
-    /// requests, or a decision on one of them.
+    /// requests, an agent they are asked to approve, or a decision on one of
+    /// them.
     pub fn member_approve(&self, approval: MemberApproval, now_ns: u64) -> ApproverReply {
         let refused = |reason: &str| ApproverReply::Refused {
             reason: reason.into(),
@@ -476,8 +480,11 @@ impl CertificationProtocol {
             request @ (ApproverRequest::PushKey | ApproverRequest::Notify(_)) => {
                 self.push(&user, request)
             }
+            // A delegate's request is approved by any device of the person
+            // the delegate acts for, its root signing the certificate and the
+            // delegation together.
             ApproverRequest::DelegateProposals => {
-                refused("a member approves only their own device requests")
+                ApproverReply::DelegateProposals(self.proposals_of(&user, now_ns))
             }
         }
     }
@@ -531,9 +538,29 @@ impl CertificationProtocol {
             .collect()
     }
 
-    /// Queue a request for an agent this host supervises, carrying what
-    /// the person proposed. Only an `IssueDelegate` decision answers it; wait
-    /// for it with [`Self::delegate_answer`].
+    /// What the delegate requests `user` waits to answer ask for.
+    fn proposals_of(&self, user: &[u8; 32], now_ns: u64) -> Vec<PendingDelegate> {
+        self.lock()
+            .values()
+            .filter(|entry| {
+                entry.entry.request.user_public_key == *user
+                    && entry.entry.request.expires_at_ns > now_ns
+                    && !entry.decided()
+            })
+            .filter_map(|entry| {
+                Some(PendingDelegate {
+                    request_digest: entry.entry.request_digest,
+                    proposal: entry.agent.clone()?,
+                })
+            })
+            .collect()
+    }
+
+    /// Queue a request for an agent this host runs for `request`'s person,
+    /// carrying what that person proposed. Only an `IssueDelegate` decision
+    /// answers it; wait for it with [`Self::delegate_answer`]. The host
+    /// queues it for whoever asked, already admitted to the workspace the
+    /// grant is for.
     pub fn enqueue_delegate(
         &self,
         request: CertificationRequest,
@@ -546,7 +573,7 @@ impl CertificationProtocol {
         {
             return Err("a delegate proposal names its delegate and workspaces".into());
         }
-        self.enqueue_with(request, Some(proposal), now_ns, false)
+        self.enqueue_with(request, Some(proposal), now_ns, true)
             .map(|(digest, code, _)| (digest, code))
     }
 
@@ -932,10 +959,6 @@ impl CertificationProtocol {
 
     /// Answer `request` from an approver of `approver`'s root, who decides
     /// only requests naming that root.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one match over every approver command, each answered where it reads"
-    )]
     fn decide(&self, request: ApproverRequest, now_ns: u64, approver: &[u8; 32]) -> ApproverReply {
         let refused = |reason: &str| ApproverReply::Refused {
             reason: reason.into(),
@@ -947,16 +970,7 @@ impl CertificationProtocol {
                 ApproverReply::Pending(self.pending_of(&self.identity.user_public_key, now_ns))
             }
             ApproverRequest::DelegateProposals => ApproverReply::DelegateProposals(
-                self.lock()
-                    .values()
-                    .filter(|entry| entry.entry.request.expires_at_ns > now_ns && !entry.decided())
-                    .filter_map(|entry| {
-                        Some(PendingDelegate {
-                            request_digest: entry.entry.request_digest,
-                            proposal: entry.agent.clone()?,
-                        })
-                    })
-                    .collect(),
+                self.proposals_of(&self.identity.user_public_key, now_ns),
             ),
             ApproverRequest::Confirmations => {
                 ApproverReply::Confirmations(self.questions(&self.identity.user_public_key, now_ns))
@@ -1002,9 +1016,7 @@ impl CertificationProtocol {
                         if delegation.device_public_key != entry.entry.request.device_public_key {
                             return refused("the delegation names another device");
                         }
-                        if let Err(error) =
-                            delegation.verify(&self.identity.user_public_key, now_ns)
-                        {
+                        if let Err(error) = delegation.verify(approver, now_ns) {
                             return refused(&error.to_string());
                         }
                         if let Err(reason) = proposal.admits(&delegation) {
@@ -1463,6 +1475,160 @@ mod confirmation_tests {
             panic!("issued");
         };
         assert_eq!(delivered, cert);
+    }
+
+    /// A member's agent, asked for by the host on their behalf: their root
+    /// lists the proposal and signs the agent's certificate and the
+    /// delegation together, and the delegation is theirs, not the host's.
+    #[tokio::test]
+    async fn a_member_approves_their_own_agent() {
+        use tilo_server_protocol::WorkspaceId;
+        use tilo_server_protocol::delegation::{Delegate, DelegateScope};
+
+        let protocol = protocol();
+        let member = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
+        let agent = ed25519_dalek::SigningKey::from_bytes(&[22; 32]);
+        let now = unix_now_ns();
+        let request = member_request(&member, &agent);
+        let proposal = DelegateProposal {
+            delegate: Delegate::Agent {
+                agent_id: "scout".into(),
+            },
+            label: "Scout".into(),
+            color: [1, 2, 3],
+            scope: DelegateScope {
+                workspaces: vec![
+                    WorkspaceId::parse("6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21").unwrap(),
+                ],
+                apps: Vec::new(),
+            },
+            expires_at_ns: now.saturating_add(60_000_000_000),
+        };
+        let (digest, _) = protocol
+            .enqueue_delegate(request.clone(), proposal.clone(), now)
+            .unwrap();
+        assert_eq!(
+            protocol.decide(
+                ApproverRequest::DelegateProposals,
+                now,
+                &protocol.identity.user_public_key
+            ),
+            ApproverReply::DelegateProposals(Vec::new()),
+            "the host's own approvers see no agent of another person's"
+        );
+        let ApproverReply::DelegateProposals(listed) =
+            protocol.member_approve(signed(&member, ApproverRequest::DelegateProposals), now)
+        else {
+            panic!("the member's proposals");
+        };
+        assert_eq!(
+            listed,
+            vec![PendingDelegate {
+                request_digest: digest,
+                proposal: proposal.clone()
+            }]
+        );
+        let cert = tilo_user_identity::issue_device_cert(
+            &request,
+            &member,
+            &CertificationPolicy::agent(),
+            &RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        let delegation = proposal
+            .sign(&member, request.device_public_key, now)
+            .unwrap();
+        let decide = |delegation: Delegation| ApproverRequest::Decide {
+            request_digest: digest,
+            decision: ApproverDecision::IssueDelegate {
+                cert: cert.clone(),
+                delegation,
+            },
+        };
+        // A delegation the host's root signed is another person's: refused.
+        assert!(matches!(
+            protocol.member_approve(
+                signed(
+                    &member,
+                    decide(
+                        proposal
+                            .sign(
+                                &protocol.identity.signing_key,
+                                request.device_public_key,
+                                now
+                            )
+                            .unwrap()
+                    )
+                ),
+                now
+            ),
+            ApproverReply::Refused { .. }
+        ));
+        assert_eq!(
+            protocol.member_approve(signed(&member, decide(delegation.clone())), now),
+            ApproverReply::Decided
+        );
+        let (delivered, delivered_delegation) = protocol.delegate_answer(&digest).await.unwrap();
+        assert_eq!(delivered, cert);
+        assert_eq!(delivered_delegation, delegation);
+        let member_root = member.verifying_key().to_bytes();
+        delivered_delegation.verify(&member_root, now).unwrap();
+        assert_eq!(
+            delivered_delegation.verify(&protocol.identity.user_public_key, now),
+            Err(tilo_server_protocol::delegation::DelegationError::WrongUser),
+            "the agent is kept by the member, not the host"
+        );
+    }
+
+    /// Another member cannot answer an agent that is not theirs: they list
+    /// none of it and their decision names no such request.
+    #[test]
+    fn a_member_cannot_approve_another_members_agent() {
+        use tilo_server_protocol::WorkspaceId;
+        use tilo_server_protocol::delegation::{Delegate, DelegateScope};
+
+        let protocol = protocol();
+        let member = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
+        let other = ed25519_dalek::SigningKey::from_bytes(&[24; 32]);
+        let agent = ed25519_dalek::SigningKey::from_bytes(&[25; 32]);
+        let now = unix_now_ns();
+        let proposal = DelegateProposal {
+            delegate: Delegate::Agent {
+                agent_id: "scout".into(),
+            },
+            label: "Scout".into(),
+            color: [1, 2, 3],
+            scope: DelegateScope {
+                workspaces: vec![
+                    WorkspaceId::parse("6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21").unwrap(),
+                ],
+                apps: Vec::new(),
+            },
+            expires_at_ns: now.saturating_add(60_000_000_000),
+        };
+        let (digest, _) = protocol
+            .enqueue_delegate(member_request(&member, &agent), proposal, now)
+            .unwrap();
+        assert_eq!(
+            protocol.member_approve(signed(&other, ApproverRequest::DelegateProposals), now),
+            ApproverReply::DelegateProposals(Vec::new())
+        );
+        assert_eq!(
+            protocol.member_approve(
+                signed(
+                    &other,
+                    ApproverRequest::Decide {
+                        request_digest: digest,
+                        decision: ApproverDecision::Deny,
+                    }
+                ),
+                now
+            ),
+            ApproverReply::Refused {
+                reason: "no such pending request".into()
+            }
+        );
     }
 
     #[test]

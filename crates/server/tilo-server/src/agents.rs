@@ -65,7 +65,6 @@ const ASK_WAIT_NS: u64 = 30 * 60 * 1_000_000_000;
 /// The server as an agent supervisor sees it.
 #[derive(Clone)]
 pub struct ServerAgentLink {
-    user_public_key: [u8; 32],
     certification: CertificationProtocol,
     agents: AgentRegistry,
     /// The workspaces this server governs, whose rosters follow each agent's grant.
@@ -80,7 +79,6 @@ impl Server {
     pub fn agent_link(&self) -> ServerAgentLink {
         let web = self.web_context();
         ServerAgentLink {
-            user_public_key: web.server.identity.user_public_key,
             certification: web.certification.clone(),
             agents: web.server.agents.clone(),
             workspaces: self.workspaces().cloned(),
@@ -135,6 +133,7 @@ impl ServerAgentLink {
 
     fn enqueue_approval(
         &self,
+        keeper: [u8; 32],
         key: &SigningKey,
         proposal: &DelegateProposal,
     ) -> Result<([u8; 32], String), String> {
@@ -143,7 +142,7 @@ impl ServerAgentLink {
         getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
         let request = CertificationRequest {
             version: CERTIFICATION_SCHEMA_VERSION,
-            user_public_key: self.user_public_key,
+            user_public_key: keeper,
             device_public_key: key.verifying_key().to_bytes(),
             device_label: format!("Agent: {}", proposal.label),
             requested: DeviceCapabilities::nothing(),
@@ -1604,10 +1603,7 @@ async fn start_inner(
     options: AgentOptions,
 ) -> Result<(Server, AgentService, Arc<WorkspaceActionsServer>), ServerError> {
     let content = crate::content::stores(&cfg.state_root);
-    let mut agents = AgentService::new(
-        identity.user_public_key,
-        (options.state_dir.clone(), Arc::clone(&content)),
-    );
+    let mut agents = AgentService::new((options.state_dir.clone(), Arc::clone(&content)));
     // The server this starts is a large future of its own; boxing it keeps every caller's
     // future small, so a caller that awaits several starts does not build a large one.
     let (server, actions) = Box::pin(start_app_server(

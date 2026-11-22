@@ -1530,3 +1530,219 @@ mod views;
 #[cfg(test)]
 #[path = "hosted_initiative.rs"]
 mod hosted_initiative;
+
+/// The member's root signs one approver command for `server`. A member's
+/// page holds their root, so the commands it sends carry that signature and
+/// no device certificate of its own.
+fn member_approval(
+    root: &SigningKey,
+    request: tilo_server_protocol::certify::ApproverRequest,
+) -> tilo_server_protocol::certify::MemberApproval {
+    use ed25519_dalek::Signer as _;
+    let user_public_key = root.verifying_key().to_bytes();
+    let issued_at_ns = tilo_clock::unix_now_ns();
+    let digest = tilo_server_protocol::certify::MemberApproval::signed_digest(
+        &user_public_key,
+        issued_at_ns,
+        &request,
+    )
+    .unwrap();
+    tilo_server_protocol::certify::MemberApproval {
+        user_public_key,
+        issued_at_ns,
+        request,
+        signature: root.sign(&digest).to_bytes(),
+        device: None,
+    }
+}
+
+/// A member of the host's workspace, not the host's own person, keeps an
+/// agent on it: they make it from their page, approve its grant with their
+/// own root from another device, and the turn that answers works for them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_members_own_agent_on_the_host_works_for_them() {
+    use tilo_peer_state::join::Role;
+    use tilo_server::workspace_agents::ServerAgents;
+    use tilo_server_client::MemberApprover;
+    use tilo_server_client::MemberServer as _;
+    use tilo_server_protocol::agents::{
+        AGENTS_PROVIDER, REQUEST_GRANT_ACTION, SUPERVISOR_RESOURCE,
+    };
+    use tilo_server_protocol::certify::{ApproverReply, ApproverRequest};
+    use tilo_user_identity::{CertificationPolicy, issue_device_cert};
+
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (member, _) = tilo_user_identity::UserIdentity::generate("Bob", 1);
+    let host = enrol(&owner, "tilo-sh", DeviceCapabilities::member());
+    let member_page = enrol(&member, "bobs-browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let server = crate::harness::hosted::start(
+        &owner,
+        &host,
+        state.path(),
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
+    )
+    .await;
+    let actions = server.roster.actions.clone();
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    super::resource_support::admit_person(&server, &host, &workspace, &member_page, Role::Editor)
+        .await;
+    let mut page =
+        super::resource_support::open_admitted_peer(&server, &member_page, &host, &workspace).await;
+    let keeper = member.verifying_key().to_bytes();
+    let person = hex::encode(keeper);
+    // The member makes an agent of their own, kept by them.
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+
+    // Their page asks the host to run it, and the host queues the grant for
+    // the member's root.
+    let asked = page
+        .invoke(request(
+            AGENTS_PROVIDER,
+            ActionAddress::new(SUPERVISOR_RESOURCE, REQUEST_GRANT_ACTION),
+            InvokeArgument::Json(
+                serde_json::json!({
+                    "agentId": SCOUT,
+                    "workspaces": [workspace],
+                    "apps": [TASKS],
+                    "expiresInSecs": 3600,
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        ))
+        .await;
+    assert!(
+        matches!(asked.status, ReceiptStatus::Completed { .. }),
+        "the member asks for their own agent's grant: {asked:?}"
+    );
+    let approver = MemberApprover::new(ServerAddress::at(server.server.node_addr()));
+    let approve = |request| member_approval(&member, request);
+    let ApproverReply::DelegateProposals(proposals) = approver
+        .ask(&approve(ApproverRequest::DelegateProposals))
+        .await
+        .unwrap()
+    else {
+        panic!("the member's proposals");
+    };
+    assert_eq!(proposals.len(), 1, "{proposals:?}");
+    let proposal = proposals[0].clone();
+    let ApproverReply::Pending(pending) = approver
+        .ask(&approve(ApproverRequest::ListPending))
+        .await
+        .unwrap()
+    else {
+        panic!("the member's pending requests");
+    };
+    let pending = pending
+        .into_iter()
+        .find(|entry| entry.request_digest == proposal.request_digest)
+        .unwrap();
+    let now = tilo_clock::unix_now_ns();
+    let cert = issue_device_cert(
+        &pending.request,
+        &member,
+        &CertificationPolicy::agent(),
+        &RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    let delegation = proposal
+        .proposal
+        .sign(&member, pending.request.device_public_key, now)
+        .unwrap();
+    assert_eq!(
+        approver
+            .ask(&approve(ApproverRequest::Decide {
+                request_digest: proposal.request_digest,
+                decision: tilo_server_protocol::certify::ApproverDecision::IssueDelegate {
+                    cert,
+                    delegation,
+                },
+            }))
+            .await
+            .unwrap(),
+        ApproverReply::Decided
+    );
+    let workspace_id = WorkspaceId::parse(&workspace).unwrap();
+    let link = server.server.agent_link();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        if link
+            .roster_session_device(&server.roster.sessions, workspace_id, SCOUT, &keeper)
+            .await
+            .is_some()
+        {
+            break;
+        }
+        let grant = server
+            .agents
+            .supervisor()
+            .snapshot()
+            .grants
+            .into_iter()
+            .find(|grant| grant.proposal.delegate.agent_id() == Some(SCOUT))
+            .map(|grant| (grant.state, grant.reason));
+        assert!(
+            Instant::now() < deadline,
+            "the member's agent did not join under their approval: {grant:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // The member gives it an issue, and the turn works for them, not for the
+    // host's own person.
+    let tracker_id = file_issue(
+        &actions,
+        &workspaces,
+        &workspace,
+        &member,
+        (&host, &member_page),
+    )
+    .await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = ServerAgents::with_sessions(
+        workspaces.clone(),
+        actions.clone(),
+        &server.server,
+        server.roster.sessions.clone(),
+    )
+    .scripted(looks_then_answers(1_000, Arc::clone(&asked)));
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(
+        turns.len(),
+        1,
+        "the issue is the member's agent's turn: {turns:?}"
+    );
+    assert_eq!(
+        turns[0].person, person,
+        "it works for the member who kept it"
+    );
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        agents.answer(&workspace, &turns[0]),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the turn never ended; the model was asked {:?}",
+            asked.lock().unwrap().len()
+        )
+    })
+    .unwrap();
+    let answered = tracker(&workspaces, &workspace, &tracker_id).await;
+    assert!(
+        answered
+            .issues
+            .values()
+            .flat_map(|issue| issue.comments.values())
+            .any(|message| {
+                message.author == Some(ui::tilo_resource::MemberId::agent(SCOUT))
+                    && message.text.contains("the plan is ready")
+            }),
+        "the member's agent answers in their issue"
+    );
+    drop(approver);
+}

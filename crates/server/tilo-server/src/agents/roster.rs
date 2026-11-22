@@ -123,23 +123,12 @@ fn keeper_required() -> ActionCallError {
     }
 }
 
-fn check_keeper_session(
-    link: &ServerAgentLink,
-    caller: &Caller,
-    cert: &DeviceCert,
-) -> Result<(), ActionCallError> {
+fn check_keeper_session(caller: &Caller, cert: &DeviceCert) -> Result<(), ActionCallError> {
     if !caller.acting().is_person()
         || caller.user_public_key() != Some(&cert.user_public_key)
         || caller.device_public_key() != Some(&cert.device_public_key)
     {
         return Err(keeper_required());
-    }
-    if cert.user_public_key != link.user_public_key {
-        return Err(ActionCallError::Refused {
-            reason: "This server can't run an agent you bring as a guest yet. \
-                Ask the person who runs this server to set up an agent for this workspace."
-                .into(),
-        });
     }
     Ok(())
 }
@@ -154,9 +143,9 @@ async fn revoke_grant(
     id: &str,
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
     let workspaces = link.workspaces.as_ref().ok_or_else(keeper_required)?;
-    check_keeper_session(link, caller, cert)?;
+    check_keeper_session(caller, cert)?;
     if !workspaces
-        .roster_keeper_device(workspace, &link.user_public_key, cert)
+        .roster_keeper_device(workspace, &cert.user_public_key, cert)
         .await
     {
         return Err(keeper_required());
@@ -181,7 +170,7 @@ async fn provision(
                 reason: error.to_string(),
             }
         })?;
-    check_keeper_session(link, caller, cert)?;
+    check_keeper_session(caller, cert)?;
     if asked.workspaces.as_slice() != [workspace.to_string()]
         || asked.agent_id.is_empty()
         || asked.agent_id.len() > tilo_server_protocol::delegation::MAX_DELEGATE_TEXT_BYTES
@@ -189,13 +178,9 @@ async fn provision(
         return Err(keeper_required());
     }
     let workspaces = link.workspaces.as_ref().ok_or_else(keeper_required)?;
+    let keeper = cert.user_public_key;
     let entry = workspaces
-        .hosted_roster_agent(
-            workspace,
-            &asked.agent_id,
-            &link.user_public_key,
-            Some(cert),
-        )
+        .hosted_roster_agent(workspace, &asked.agent_id, &keeper, Some(cert))
         .await
         .ok_or_else(keeper_required)?;
     let grant = GrantRequest {
@@ -238,9 +223,9 @@ impl ServerAgentLink {
             .ok_or("the proposal names no agent")?
             .to_owned();
         let label = proposal.label.clone();
-        let (digest, code) = self.enqueue_approval(key, proposal)?;
+        let keeper = requester.user_public_key;
+        let (digest, code) = self.enqueue_approval(keeper, key, proposal)?;
         let certification = self.certification.clone();
-        let keeper = self.user_public_key;
         let requester = requester.clone();
         self.runtime.spawn(async move {
             let mut outcome = certification.delegate_answer(&digest).await;
@@ -293,12 +278,13 @@ impl ServerAgentLink {
             .agent_id()
             .ok_or("the approval names no agent")?;
         let device = identity.cert.device_public_key;
+        let keeper = identity.cert.user_public_key;
         let roster_document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let mut documents = workspaces.document_writes();
         let mut governance = workspaces.governance_changes();
         let current = || async {
             workspaces
-                .hosted_roster_agent(workspace, agent, &self.user_public_key, None)
+                .hosted_roster_agent(workspace, agent, &keeper, None)
                 .await
                 .is_some_and(|entry| entry.created_at == created_at)
         };
@@ -308,22 +294,15 @@ impl ServerAgentLink {
         let now = tilo_clock::unix_now_ns();
         tilo_user_identity::verify_device_cert_at(&identity.cert, now)
             .map_err(|error| error.to_string())?;
-        if identity.cert.user_public_key != self.user_public_key
-            || self.certification.revocations().refuses(&identity.cert)
-        {
+        if self.certification.revocations().refuses(&identity.cert) {
             return Err("the roster agent's certificate is no longer admitted".into());
         }
-        crate::daemon::register_agent_in(
-            &self.agents,
-            &self.user_public_key,
-            &identity.cert,
-            delegation,
-        )?;
+        crate::daemon::register_agent_in(&self.agents, &identity.cert, delegation)?;
         let admitted = workspaces
             .admit_roster_agent(workspace, agent, &identity.cert)
             .await;
         let active = workspaces
-            .approved_agent_device(workspace, agent, &self.user_public_key)
+            .approved_agent_device(workspace, agent, &keeper)
             .await
             == Some(device);
         if admitted.is_err() || !active || !current().await {
@@ -365,11 +344,11 @@ impl ServerAgentLink {
                 };
                 if recheck
                     && (workspaces
-                        .approved_agent_device(workspace, &agent, &link.user_public_key)
+                        .approved_agent_device(workspace, &agent, &keeper)
                         .await
                         != Some(device)
                         || workspaces
-                            .hosted_roster_agent(workspace, &agent, &link.user_public_key, None)
+                            .hosted_roster_agent(workspace, &agent, &keeper, None)
                             .await
                             .is_none_or(|entry| entry.created_at != created_at))
                 {

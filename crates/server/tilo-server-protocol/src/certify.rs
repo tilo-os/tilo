@@ -192,7 +192,9 @@ pub const MEMBER_APPROVAL_SKEW_NS: u64 = 5 * 60 * 1_000_000_000;
 
 /// An approver command from a member ([`CertifyOpen::Member`]): only
 /// [`ApproverRequest::ListPending`] and [`ApproverRequest::AwaitPending`]
-/// (that member's own requests), [`ApproverRequest::Decide`] (one of them), [`ApproverRequest::Confirmations`]
+/// (that member's own requests), [`ApproverRequest::Decide`] (one of them),
+/// [`ApproverRequest::DelegateProposals`] (the agents they are asked to
+/// approve), [`ApproverRequest::Confirmations`]
 /// (what the host asks that member about actions run for them) and
 /// [`ApproverRequest::Answer`] (to one of those) are answered.
 ///
@@ -315,6 +317,8 @@ pub enum ApproverRequest {
         request_digest: [u8; 32],
         decision: ApproverDecision,
     },
+    /// Read every pending request for an agent the asking person's root
+    /// approves.
     DelegateProposals,
     /// Read every question an agent is waiting on.
     Confirmations,
@@ -330,9 +334,7 @@ pub enum ApproverRequest {
     /// otherwise as a request arrives or is answered, or after
     /// [`AWAIT_PENDING_NS`]. A device showing a pairing link hears of the new
     /// device as it asks, rather than asking again and again.
-    AwaitPending {
-        known: Vec<[u8; 32]>,
-    },
+    AwaitPending { known: Vec<[u8; 32]> },
     /// The key this host signs its pushes with ([`ApproverReply::PushKey`]):
     /// what a browser subscribes with before [`Self::Notify`].
     PushKey,

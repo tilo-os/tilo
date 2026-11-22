@@ -113,24 +113,16 @@ pub struct AgentService {
 }
 
 impl AgentService {
-    /// The roster agents of `user_public_key`, their grants kept under `state_dir`, the host's
+    /// The roster agents a host runs, their grants kept under `state_dir`, the host's
     /// workspaces' content in `content`. [`Self::start`] once the host is up.
     #[must_use]
-    pub fn new(
-        user_public_key: [u8; 32],
-        (state_dir, content): (PathBuf, Arc<WorkspaceStores>),
-    ) -> Self {
-        Self::with_clock(
-            user_public_key,
-            (state_dir, content),
-            Arc::new(tilo_clock::unix_now_ns),
-        )
+    pub fn new((state_dir, content): (PathBuf, Arc<WorkspaceStores>)) -> Self {
+        Self::with_clock((state_dir, content), Arc::new(tilo_clock::unix_now_ns))
     }
 
     /// [`Self::new`] with the wall clock read by `clock` (Unix nanoseconds).
     #[must_use]
     pub fn with_clock(
-        user_public_key: [u8; 32],
         (state_dir, content): (PathBuf, Arc<WorkspaceStores>),
         clock: HostClock,
     ) -> Self {
@@ -145,7 +137,7 @@ impl AgentService {
             agent_sessions: crate::grants::AgentSessions::default(),
             clock,
         });
-        let supervisor = AgentSupervisor::new(user_public_key);
+        let supervisor = AgentSupervisor::new();
         let joining = Arc::clone(&shared);
         let supervised = Arc::downgrade(&supervisor);
         supervisor.set_roster_spawner(Arc::new(move |identity, created_at| {
@@ -504,7 +496,6 @@ mod tests {
         let root = SigningKey::from_bytes(&[1; 32]);
         let clock = Arc::clone(&pinned);
         let mut host = AgentService::with_clock(
-            root.verifying_key().to_bytes(),
             (state.path().to_owned(), test_content(state.path())),
             Arc::new(move || clock.load(Ordering::Relaxed)),
         );
@@ -566,7 +557,7 @@ mod tests {
     }
 
     fn agent_service(state: &Path) -> AgentService {
-        AgentService::new([7; 32], (state.to_path_buf(), test_content(state)))
+        AgentService::new((state.to_path_buf(), test_content(state)))
     }
 
     #[test]
