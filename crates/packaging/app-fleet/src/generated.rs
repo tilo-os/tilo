@@ -31,6 +31,10 @@ pub(super) const DOCUMENT_WINDOWS: &[&str] = &[
     "so.tilo.word-processor",
 ];
 
+/// `(app, kind)`: the kinds of record of which each member of a workspace keeps one that
+/// only they read and change (`[resources] private`).
+pub(super) const PRIVATE_KINDS: &[(&str, &str)] = &[("so.tilo.messages", "messages.drafts")];
+
 /// Each package's signed `surface.toml`, as its package ships it: what a task's programs
 /// compile against there, and what the SDK's types and the API's description describe, by
 /// the package's id. A service's surface is here too: its actions are the workspace's.

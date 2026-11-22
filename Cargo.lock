@@ -17369,6 +17369,7 @@ dependencies = [
 name = "tilo-action-policy"
 version = "0.1.0"
 dependencies = [
+ "app-fleet",
  "blake3",
  "hex",
  "postcard",

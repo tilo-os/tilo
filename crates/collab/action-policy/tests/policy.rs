@@ -1237,7 +1237,6 @@ tilo_test_env::scenario! {
             "workspace r: reading and undoable changes allowed, outside effects ask first. \
          workspace r › so.tilo.browser-desktop › desktop.person-view: undoable changes not allowed. \
          workspace r › so.tilo.messages › messages.drafts: reading and undoable changes not allowed. \
-         workspace r › so.tilo.tube › tube.watch-history: reading and undoable changes not allowed. \
          workspace r › tilo.workspace: undoable changes and outside effects not allowed. \
          workspace r › anywhere › moderation: undoable changes and outside effects not allowed."
         );
@@ -1293,9 +1292,8 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             sentences(&viewer, &Ids),
-            "workspace r › so.tilo.tube › tube.watch-history: reading and undoable changes not \
-         allowed. workspace r › so.tilo.messages › messages.drafts: reading and undoable changes \
-         not allowed. workspace r: reading allowed."
+            "workspace r › so.tilo.messages › messages.drafts: reading and undoable changes not \
+         allowed. workspace r: reading allowed."
         );
         let owner = roles::role_preset(Role::Owner, "r").assign(
             "o",
@@ -1305,9 +1303,8 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             sentences(&owner, &Ids),
-            "workspace r › so.tilo.tube › tube.watch-history: reading and undoable changes not \
-         allowed. workspace r › so.tilo.messages › messages.drafts: reading and undoable changes \
-         not allowed. workspace r: everything allowed."
+            "workspace r › so.tilo.messages › messages.drafts: reading and undoable changes not \
+         allowed. workspace r: everything allowed."
         );
     }
 
@@ -2767,9 +2764,8 @@ fn each_persons_private_record_is_theirs_alone() {
             false,
         )
         .expect("the owner admits a member");
-    let history = |of: &str| {
-        roles::member_record("tube.watch-history", of).expect("a person id names a record")
-    };
+    let history =
+        |of: &str| roles::member_record("messages.drafts", of).expect("a person id names a record");
     let answer = |workspace: &WorkspacePolicy, person: &str, node: &TreePath, kind| {
         Authority::person(workspace.party(person))
             .decide(node, kind, &cx())
@@ -2777,7 +2773,7 @@ fn each_persons_private_record_is_theirs_alone() {
     };
     for (person, other) in [(&owner, &editor), (&editor, &owner)] {
         let theirs = TreePath::workspace("r")
-            .app("so.tilo.tube")
+            .app("so.tilo.messages")
             .resource(history(person));
         for kind in [ActionKind::Read, ActionKind::Undoable] {
             assert_eq!(
@@ -2794,8 +2790,8 @@ fn each_persons_private_record_is_theirs_alone() {
     }
     // A part of the record is decided as the record.
     let part = TreePath::workspace("r")
-        .app("so.tilo.tube")
-        .kind("tube.watch-history")
+        .app("so.tilo.messages")
+        .kind("messages.drafts")
         .resource(format!("derived:part@{}", history(&editor)));
     assert_eq!(
         answer(&workspace, &owner, &part, ActionKind::Read),
@@ -2811,15 +2807,15 @@ fn each_persons_private_record_is_theirs_alone() {
         "share-history",
         Grantee::person(owner.clone()),
         TreePath::workspace("r")
-            .app("so.tilo.tube")
-            .kind("tube.watch-history")
+            .app("so.tilo.messages")
+            .kind("messages.drafts")
             .resource(history(&editor)),
         KindSet::READ,
         Answer::Allow,
         Grantee::person(editor.clone()),
     ));
     let editors = TreePath::workspace("r")
-        .app("so.tilo.tube")
+        .app("so.tilo.messages")
         .resource(history(&editor));
     assert_eq!(
         answer(&shared, &owner, &editors, ActionKind::Read),

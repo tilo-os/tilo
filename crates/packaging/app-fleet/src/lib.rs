@@ -148,6 +148,21 @@ pub fn windows_hold_documents(package_id: &str) -> bool {
         .any(|held| held.eq_ignore_ascii_case(&app))
 }
 
+/// The kinds of record `package_id`'s manifest declares each member of a workspace keeps one of
+/// that only they read and change (`[resources] private`).
+pub fn private_kinds(package_id: &str) -> impl Iterator<Item = &'static str> {
+    let app = canonical(package_id).into_owned();
+    generated::PRIVATE_KINDS
+        .iter()
+        .filter(move |(declared, _)| declared.eq_ignore_ascii_case(&app))
+        .map(|(_, kind)| *kind)
+}
+
+/// Every kind of record [`private_kinds`] names, by the app that declares it.
+pub fn every_private_kind() -> impl Iterator<Item = (&'static str, &'static str)> {
+    generated::PRIVATE_KINDS.iter().copied()
+}
+
 /// `package_id` as the fleet names it: a development build's `dev.tilo.` app is its `so.tilo.` one,
 /// and an id an app was published under before names that app.
 fn canonical(package_id: &str) -> std::borrow::Cow<'_, str> {

@@ -403,11 +403,11 @@ fn unseal_with(
 }
 
 #[test]
-fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
+fn a_viewers_drafts_are_signed_and_sealed_for_their_devices() {
     use crate::state::document_capture::{KeptDocument, PeerDocumentReadError};
     use collab_types::{ContentRetention, DocumentMutation};
 
-    const APP: &str = "so.tilo.tube";
+    const APP: &str = "so.tilo.messages";
     let (mut peer, owner_key, member_key, member, second, now) =
         crate::admission_tests::seeded_editor_with_second_device();
     let person = hex::encode(member.user_public_key);
@@ -415,11 +415,11 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
     peer.select_exact_admissions().unwrap();
     let owner = owner_key.verifying_key().to_bytes();
     let device = member.device_public_key;
-    let history = collab_types::document::DocumentId::of_member(&person, "tube.watch-history")
+    let drafts = collab_types::document::DocumentId::of_member(&person, "messages.drafts")
         .unwrap()
         .as_str()
         .to_owned();
-    let route = (APP, history.as_str());
+    let route = (APP, drafts.as_str());
     let workspace = collab_types::WorkspaceId::parse(peer.workspace_id()).unwrap();
     let group = neighbour_wire::KeyScope::document(workspace, route.0, route.1, None)
         .unwrap()
@@ -430,18 +430,18 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
     let (second_group, keys) =
         group_for_two_devices(group, &mut first_group, second.device_public_key);
     assert_eq!(
-        peer.document_key_holders(APP, &history, now).unwrap(),
+        peer.document_key_holders(APP, &drafts, now).unwrap(),
         [device, second.device_public_key].into(),
         "the group follows the person to both devices and excludes the owner"
     );
-    let mut watched = automerge::AutoCommit::new();
-    watched.put(ROOT, "video", "lecture").unwrap();
-    let frame = DocumentMutation::Snapshot(watched.save()).encode().unwrap();
+    let mut written = automerge::AutoCommit::new();
+    written.put(ROOT, "body", "see you at noon").unwrap();
+    let frame = DocumentMutation::Snapshot(written.save()).encode().unwrap();
     assert!(
         peer.draft_write(route, None, &frame, None, device, 0, now)
             .is_err()
     );
-    let artifact = collab_types::document_artifact_id(APP, peer.workspace_id(), &history);
+    let artifact = collab_types::document_artifact_id(APP, peer.workspace_id(), &drafts);
     let write = |key: &SigningKey| {
         let mut seal = |plaintext: &[u8]| {
             keys.seal_content(artifact, ContentRetention::of_frame(plaintext), plaintext)
@@ -465,10 +465,10 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
     let wrong = write(&owner_key);
     let own = write(&member_key);
     assert!(
-        peer.admit_new_local_document(APP, &history, wrong, now)
+        peer.admit_new_local_document(APP, &drafts, wrong, now)
             .is_err()
     );
-    peer.admit_new_local_document(APP, &history, own, now)
+    peer.admit_new_local_document(APP, &drafts, own, now)
         .unwrap();
 
     let second_keys = second_group.content_keys().unwrap();
@@ -478,7 +478,7 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
         peer.open_document(owner, route, now, usize::MAX, Some(&mut unseal), &mut held),
         Err(PeerDocumentReadError::Denied)
     ));
-    let own_history = peer
+    let own_drafts = peer
         .open_document(
             second.device_public_key,
             route,
@@ -489,21 +489,21 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
         )
         .expect("the other Viewer device reads what their first device kept");
     assert_eq!(
-        own_history
-            .get(ROOT, "video")
+        own_drafts
+            .get(ROOT, "body")
             .unwrap()
             .and_then(|(value, _)| value.into_string().ok())
             .as_deref(),
-        Some("lecture")
+        Some("see you at noon")
     );
 
     sign_as_owner(
         &mut peer,
         tilo_action_policy::Change::RemoveMember { person },
     );
-    assert!(peer.check_document_read(owner, APP, &history, now).is_err());
+    assert!(peer.check_document_read(owner, APP, &drafts, now).is_err());
     assert!(
-        peer.document_key_holders(APP, &history, now)
+        peer.document_key_holders(APP, &drafts, now)
             .unwrap()
             .is_empty(),
         "retained ownership cannot fall back to shared readership after removal"
