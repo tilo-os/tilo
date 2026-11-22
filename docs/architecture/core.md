@@ -160,7 +160,16 @@ A sub-agent or coding agent that an agent starts acts as its starter's
 approved key, narrowed to its own conversation: a grant only narrows what
 its giver holds. Any device of the person an agent acts for may approve
 that agent. A turn that has no approved caller writes its refusal into the
-conversation, with the reason, and ends.
+conversation, with the reason, and ends. It is written as the device that took
+the turn, whose grant is that one notice on that one ask. A handed node
+for a sub-agent is decided together with its signer and only narrows it.
+
+A member change (add, role, remove) is an ordinary action on
+`workspace/members`, run and signed by the device that writes it. That
+device admits the call itself with `admit_invocation` over its synced
+grants and asks its person through the Confirm frame. A member may remove
+someone ranked below them, and an agent may do what its person may once
+its person says yes.
 
 An agent sandbox on tilo.sh is one workspace. Whether that workspace also
 has a machine for terminal commands, Browser tabs, or Linux and Windows apps
