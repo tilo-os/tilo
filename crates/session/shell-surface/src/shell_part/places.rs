@@ -628,6 +628,9 @@ fn session_turn(link: &SessionLink, layout: &LayoutReading, room: &mut Room) -> 
             packages.insert(app, module);
         }
     }
+    // A placed app's views call the `fn`s of the apps it uses (Chat's message, the agent
+    // package's replies): the session loads their packages with it.
+    let packages = super::readings::with_uses(packages, |app| room.service.module(app));
     let mut changed = link.publish_packages(packages);
     changed |= link.follow_places(layout, &room.service.resources(), |id| {
         room.service.read(id)

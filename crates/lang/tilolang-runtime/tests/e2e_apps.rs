@@ -61,6 +61,8 @@ mod cases {
         letters: App,
         counter: App,
         today: App,
+        /// The agents' asks and replies, which Chat makes and shows.
+        agent: App,
         /// Chat: channels, replies and threads.
         channels: App,
         board: App,
@@ -88,13 +90,14 @@ mod cases {
             &[],
         );
         let counter = build(app_source!("counter"), &[]);
-        let channels = build(app_source!("chat"), &[]);
+        let agent = build(app_source!("agent"), &[]);
+        let channels = build(app_source!("chat"), &[&agent]);
         let today = build(
             app_source!("today"),
-            &[&discussion, &notes, &todo, &channels],
+            &[&discussion, &notes, &todo, &agent, &channels],
         );
         let board = build(app_source!("board"), &[]);
-        let views = build(app_source!("views"), &[&channels]);
+        let views = build(app_source!("views"), &[&agent, &channels]);
         Apps {
             discussion,
             notes,
@@ -103,6 +106,7 @@ mod cases {
             letters,
             counter,
             today,
+            agent,
             channels,
             board,
             views,
@@ -129,6 +133,7 @@ mod cases {
             &apps.chat,
             &apps.letters,
             &apps.counter,
+            &apps.agent,
             &apps.today,
             &apps.channels,
             &apps.board,
@@ -411,7 +416,7 @@ mod cases {
     fn every_app_compiles_with_its_committed_ids_and_loads_together() {
         let a = apps();
         let w = world(&a, &AmStore::new());
-        assert_eq!(w.ids.len(), 10);
+        assert_eq!(w.ids.len(), 11);
         for app in [
             &a.discussion,
             &a.notes,
@@ -420,6 +425,7 @@ mod cases {
             &a.letters,
             &a.counter,
             &a.today,
+            &a.agent,
             &a.channels,
             &a.board,
             &a.views,
