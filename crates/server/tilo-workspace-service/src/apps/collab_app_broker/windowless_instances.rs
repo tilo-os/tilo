@@ -3,8 +3,8 @@
 //! windows, and never handed an `open`.
 
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
-    ActionCallError, Caller, InvokeRequest, provider_workspace,
+    APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION, ActionCallError, Caller, InvokeRequest,
+    provider_workspace,
 };
 
 use super::AppBrokerState;
@@ -23,52 +23,6 @@ pub(super) fn started_app(request: &InvokeRequest) -> Option<(&str, &str)> {
 }
 
 impl AppBrokerState {
-    /// Have the host run `app_id` with no window in `workspace`, for an action
-    /// that shows nothing: how its start ends, where it does.
-    pub(super) fn run_windowless(
-        &self,
-        app_id: &str,
-        workspace: &str,
-    ) -> Result<Option<crate::apps::services::WindowlessStart>, ActionCallError> {
-        let started = match (
-            self.launchable.windowless(),
-            self.services.launcher.as_ref(),
-        ) {
-            (Some(stand_in), _) => stand_in(app_id, workspace),
-            (None, Some(launcher)) => launcher.windowless(app_id, workspace),
-            (None, None) => Ok(None),
-        };
-        started.map_err(|why| ActionCallError::Unavailable {
-            reason: format!("{app_id} could not run without a window: {why}"),
-        })
-    }
-
-    /// The running instance of `app_id` in `workspace` that may take `action`
-    /// and takes invocations now: what an app's `open` or `start` answers
-    /// with once one runs.
-    pub(super) fn running_instance(
-        &self,
-        app_id: &str,
-        workspace: &str,
-        action: &str,
-    ) -> Option<u64> {
-        let subscribers = self.invocation_subscribers.lock().ok()?;
-        self.surfaces
-            .lock()
-            .ok()?
-            .values()
-            .filter(|surface| {
-                surface.live
-                    && self.shows(surface.peer_id, action)
-                    && surface.app_id == app_id
-                    && surface.route.cluster_id == workspace
-                    && super::open_stream(&subscribers, surface.peer_id).is_some()
-                    && !surface.actions.is_empty()
-            })
-            .map(|surface| surface.peer_id)
-            .min()
-    }
-
     /// Answer `request`, a workspace's `start` of `app_id` ([`started_app`]),
     /// with `peer_id`, the instance that runs now: admitted and settled as
     /// the workspace's other host actions on its apps are. Blocks on the
@@ -116,7 +70,7 @@ impl AppBrokerState {
         local: Option<&super::native_media::LocalAppConnection>,
     ) {
         if local.is_some_and(|local| local.windowless)
-            && let Ok(mut windowless) = self.launchable.windowless_peers.lock()
+            && let Ok(mut windowless) = self.publishers.windowless.lock()
         {
             windowless.insert(peer_id);
         }
@@ -128,21 +82,9 @@ impl AppBrokerState {
         if let Ok(mut windows) = self.window_instances.lock() {
             windows.remove(&peer_id);
         }
-        if let Ok(mut windowless) = self.launchable.windowless_peers.lock() {
+        if let Ok(mut windowless) = self.publishers.windowless.lock() {
             windowless.remove(&peer_id);
         }
-    }
-
-    /// Whether peer `peer_id` may take an invocation of `action`: an
-    /// instance with no window takes every action but `open`, which shows
-    /// what it opens and so goes to a window.
-    pub(super) fn shows(&self, peer_id: u64, action: &str) -> bool {
-        action != APPLICATION_OPEN_ACTION
-            || self
-                .launchable
-                .windowless_peers
-                .lock()
-                .is_ok_and(|windowless| !windowless.contains(&peer_id))
     }
 }
 
@@ -152,30 +94,5 @@ pub(super) fn started_output(peer_id: u64) -> tilo_actions::ActionOutput {
     tilo_actions::ActionOutput {
         value: Some(serde_json::json!({ super::workspace_open::OPENED_PEER_FIELD: peer_id })),
         ..tilo_actions::ActionOutput::default()
-    }
-}
-
-/// Why the start of an instance with no window failed, once it does;
-/// pending while there is none to wait on, or once it runs. Cancel-safe: a
-/// wait dropped before the start ended leaves `starting` as it was.
-pub(super) async fn start_failed(
-    starting: &mut Option<crate::apps::services::WindowlessStart>,
-    app_id: &str,
-) -> ActionCallError {
-    let Some(start) = starting.as_mut() else {
-        return std::future::pending().await;
-    };
-    let ended = start.await;
-    *starting = None;
-    let why = match ended {
-        Ok(Ok(())) => return std::future::pending().await,
-        Ok(Err(why)) => why,
-        Err(error) => {
-            tracing::warn!(%error, app = app_id, "starting the app without a window did not finish");
-            format!("the host stopped starting it ({error})")
-        }
-    };
-    ActionCallError::Unavailable {
-        reason: format!("{app_id} could not run without a window: {why}"),
     }
 }

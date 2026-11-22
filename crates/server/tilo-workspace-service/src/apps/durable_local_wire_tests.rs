@@ -703,7 +703,8 @@ async fn durable_admission_rechecks_original_ownership_after_the_directory_answe
                         tilo_test_env::within("the application's stream closes", async {
                             while rig
                                 .state
-                                .invocation_subscribers
+                                .publishers
+                                .streams
                                 .lock()
                                 .unwrap()
                                 .get(&903)

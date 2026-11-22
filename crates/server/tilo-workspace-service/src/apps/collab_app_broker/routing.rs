@@ -367,7 +367,7 @@ impl AppBrokerState {
         // holds instead.
         let candidate = self.next_peer_id();
         let peer_id = if candidate == u64::MAX {
-            match self.surfaces.lock() {
+            match self.publishers.surfaces.lock() {
                 Ok(surfaces) if surfaces.contains_key(&candidate) => (1..candidate)
                     .rev()
                     .find(|id| !surfaces.contains_key(id))

@@ -41,7 +41,8 @@ impl AppBrokerState {
     {
         let peer_id = surface.peer_id;
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.invocation_subscribers
+        self.publishers
+            .streams
             .lock()
             .map_err(|_| "invocation subscribers unavailable")?
             .insert(peer_id, sender);
@@ -49,7 +50,8 @@ impl AppBrokerState {
             .lock()
             .map_err(|_| "stable invocation registry unavailable")?
             .insert(peer_id);
-        self.surfaces
+        self.publishers
+            .surfaces
             .lock()
             .map_err(|_| "action surfaces unavailable")?
             .insert(peer_id, surface);
@@ -83,6 +85,7 @@ impl AppBrokerState {
                 }
             }
             let removed = state
+                .publishers
                 .surfaces
                 .lock()
                 .is_ok_and(|mut surfaces| surfaces.remove(&peer_id).is_some());

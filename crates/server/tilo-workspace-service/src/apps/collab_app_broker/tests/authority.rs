@@ -1048,3 +1048,31 @@ fn personal_cluster_admits_only_its_own_roots_devices_as_owner() {
             if *cluster_id == route.cluster_id && document_id == "watch-history"
     ));
 }
+
+/// A device a harness lists is still refused once the workspace's authority
+/// revokes it: the list never stands in for, or overrides, revocation.
+#[test]
+fn a_revoked_device_is_refused_even_when_it_is_listed() {
+    let root = SigningKey::from_bytes(&[11; 32]);
+    let route = CrdtRoute::cluster(uuid::Uuid::from_u128(11).to_string());
+    let device = |seed| {
+        super::signed_worker::signed_device(
+            &root,
+            &SigningKey::from_bytes(&[seed; 32]),
+            "laptop",
+            tilo_user_identity::DeviceCapabilities::primary(),
+            None,
+        )
+    };
+    let (current, revoked) = (device(12), device(13));
+    let host = super::signed_worker::CurrentHost::new(&route, &current, None);
+    let listed = [current.device_public_key, revoked.device_public_key];
+    let authority: &dyn crate::apps::certificate_authority::CertificateAuthority = host.as_ref();
+
+    let refused = authorize_join_certificate(&route, &revoked, Some(&listed), Some(authority));
+    assert_eq!(refused.unwrap_err(), "host certificate changed or revoked");
+    assert_eq!(
+        authorize_join_certificate(&route, &current, Some(&listed), Some(authority)),
+        Ok((root.verifying_key().to_bytes(), false, true)),
+    );
+}

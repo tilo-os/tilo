@@ -42,7 +42,7 @@ async fn ordinary_person_requested_uuid_survives_actual_delivery_and_completion(
             actions: vec![published_directory_action(&fixture.directory_state.borrow().row()).unwrap()],
             live: true,
         };
-        fixture.state.surfaces.lock().unwrap().insert(fixture.peer_id, offered);
+        fixture.state.publishers.surfaces.lock().unwrap().insert(fixture.peer_id, offered);
         let caller = Caller::local_person("fixture-owner").in_workspace(fixture.cluster_id.clone());
         assert!(caller.execution_id().is_none(), "no fabricated execution lease");
         let request = InvokeRequest {
@@ -572,7 +572,7 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         Some(membership),
         None,
     );
-    state.surfaces.lock().expect("surfaces").insert(
+    state.publishers.surfaces.lock().expect("surfaces").insert(
         7,
         PublishedSurface {
             peer_id: 7,
@@ -647,12 +647,14 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
     );
     let (tx, mut invocations) = mpsc::unbounded_channel();
     state
-        .invocation_subscribers
+        .publishers
+        .streams
         .lock()
         .expect("subscribers")
         .insert(7, tx);
 
     let action_cluster = state
+        .publishers
         .surfaces
         .lock()
         .expect("surfaces")
@@ -845,6 +847,7 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         route: CrdtRoute::app(
             "so.tilo.files",
             state
+                .publishers
                 .surfaces
                 .lock()
                 .expect("surfaces")
@@ -875,7 +878,12 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         live: false,
     };
     state.launchable.retain(&launchable);
-    state.surfaces.lock().expect("surfaces").remove(&7);
+    state
+        .publishers
+        .surfaces
+        .lock()
+        .expect("surfaces")
+        .remove(&7);
     let archived = state.published_surfaces();
     assert_eq!(archived.len(), 1);
     assert!(!archived[0].live);

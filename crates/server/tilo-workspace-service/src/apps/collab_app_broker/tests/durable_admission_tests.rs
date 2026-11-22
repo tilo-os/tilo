@@ -83,7 +83,7 @@ fn durable_fixture(
         ..tilo_actions::ActionContract::default()
     };
     assert!(action.contract.validate_declaration().is_empty());
-    fixture.state.surfaces.lock().unwrap().insert(
+    fixture.state.publishers.surfaces.lock().unwrap().insert(
         71,
         PublishedSurface {
             peer_id: 71,
@@ -454,6 +454,7 @@ async fn invocation_journal_real_effect_once_across_concurrent_duplicate_respons
             let (mut fixture, caller, request) = durable_fixture(root.path(), None);
             fixture
                 .state
+                .publishers
                 .surfaces
                 .lock()
                 .unwrap()
@@ -702,7 +703,7 @@ tilo_test_env::scenario! {
                 .insert(71);
             let original_workspace = fixture
                 .state
-                .surfaces
+                .publishers.surfaces
                 .lock()
                 .unwrap()
                 .get(&71)
@@ -712,7 +713,7 @@ tilo_test_env::scenario! {
                 .clone();
             fixture
                 .state
-                .surfaces
+                .publishers.surfaces
                 .lock()
                 .unwrap()
                 .get_mut(&71)
@@ -727,7 +728,7 @@ tilo_test_env::scenario! {
             );
             fixture
                 .state
-                .surfaces
+                .publishers.surfaces
                 .lock()
                 .unwrap()
                 .get_mut(&71)
@@ -1035,6 +1036,7 @@ async fn invocation_journal_immediate_progress_and_malformed_stream_items_are_re
                 let channel = fixture.invocation_channel();
                 fixture
                     .state
+                    .publishers
                     .surfaces
                     .lock()
                     .unwrap()
@@ -1053,6 +1055,7 @@ async fn invocation_journal_immediate_progress_and_malformed_stream_items_are_re
                 if !streaming {
                     fixture
                         .state
+                        .publishers
                         .surfaces
                         .lock()
                         .unwrap()
@@ -1125,6 +1128,7 @@ async fn invocation_journal_confirmation_uuid_and_lifecycle_remain_authoritative
             let channel = fixture.invocation_channel();
             fixture
                 .state
+                .publishers
                 .surfaces
                 .lock()
                 .unwrap()
@@ -1143,7 +1147,7 @@ async fn invocation_journal_confirmation_uuid_and_lifecycle_remain_authoritative
                     .is_err()
             );
             // The one-use grant admission mints once the person answered.
-            let offered = fixture.state.surfaces.lock().unwrap()[&71].actions[0].clone();
+            let offered = fixture.state.publishers.surfaces.lock().unwrap()[&71].actions[0].clone();
             let token = fixture
                 .state
                 .mint_confirmation_grant(71, &offered, None, &BrokerActor::person(actor))

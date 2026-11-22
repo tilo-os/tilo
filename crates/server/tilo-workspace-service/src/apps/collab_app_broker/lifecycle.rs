@@ -459,12 +459,12 @@ impl AppBrokerState {
         clear!(self.host_workers);
         clear!(self.route_holders);
         clear!(self.channels);
-        clear!(self.surfaces);
+        clear!(self.publishers.surfaces);
         clear!(self.approval_publications);
         clear!(self.surface_tables);
         clear!(self.action_directory_roots);
         clear!(self.native_checkouts);
-        clear!(self.invocation_subscribers);
+        clear!(self.publishers.streams);
         clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
         clear!(self.stable_invocation_subscribers);
@@ -474,7 +474,7 @@ impl AppBrokerState {
         clear!(self.cancellation_requests);
         clear!(self.workers);
         // A launch waiting for an app to publish learns the broker stopped.
-        self.invocation_streams_changed();
+        self.publishers.streams_changed();
         // The broker that would run what is handed over is gone.
         std::mem::take(&mut *self.turn_work.handed.lock_recover());
         self.refresh_action_directory_root_snapshot();
@@ -776,11 +776,10 @@ impl AppBrokerState {
                     .map(|config| config.certificate_authority.clone())
                     .or_else(|| services.native_certificates.clone())
                     .map_or_else(std::sync::OnceLock::new, std::sync::OnceLock::from),
-                surfaces: Mutex::new(BTreeMap::new()),
+                publishers: tilo_broker_core::delivery::Publishers::default(),
                 approval_publications: Mutex::new(HashMap::new()),
                 next_approval_publication: AtomicU64::new(1),
                 surface_tables: Mutex::new(HashMap::new()),
-                surface_changes: tokio::sync::watch::Sender::new(0),
                 launchable: launchable::LaunchableCatalogue::new(),
                 workspace_opens: workspace_open::WorkspaceOpens::default(),
                 window_instances: Mutex::new(HashMap::new()),
@@ -792,7 +791,6 @@ impl AppBrokerState {
                 native_checkouts: Mutex::new(HashMap::new()),
                 canonical_directories: Mutex::new(canonical_route::CanonicalDirectories::default()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
-                invocation_subscribers: Mutex::new(HashMap::new()),
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
                 approved_check_jobs: Mutex::default(),
@@ -978,13 +976,13 @@ impl AppBrokerState {
         peer_id: u64,
     ) -> mpsc::UnboundedReceiver<InvocationEnvelope> {
         let (tx, rx) = mpsc::unbounded_channel();
-        if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
+        if let Ok(mut subscribers) = self.publishers.streams.lock() {
             subscribers.insert(peer_id, tx);
         }
         if let Ok(mut stable) = self.stable_invocation_subscribers.lock() {
             stable.insert(peer_id);
         }
-        self.invocation_streams_changed();
+        self.publishers.streams_changed();
         rx
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -1004,7 +1002,7 @@ impl AppBrokerState {
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn replace_published_surfaces_for_test(&self, surfaces: Vec<PublishedSurface>) {
-        if let Ok(mut published) = self.surfaces.lock() {
+        if let Ok(mut published) = self.publishers.surfaces.lock() {
             for peer in published
                 .keys()
                 .copied()

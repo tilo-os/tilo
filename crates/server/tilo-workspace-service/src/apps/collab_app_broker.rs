@@ -128,10 +128,11 @@ pub use native_media::{
     NativeMediaServices,
 };
 pub use published_invocation::OriginalInvocation;
+pub use action_provider::delivering::LaunchOrigin;
 use published_invocation::{InvocationCaller, OriginalInvocationData};
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
@@ -383,22 +384,15 @@ pub struct AppBrokerState {
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     certificate_authority:
         std::sync::OnceLock<Arc<dyn super::certificate_authority::CertificateAuthority>>,
-    /// Latest complete action surface per live connection, kept in the order
-    /// the connections came: the catalogue lists them in it, so a caller is
-    /// offered the same list each time it asks.
-    surfaces: Mutex<BTreeMap<u64, PublishedSurface>>,
+    /// What each live connection publishes, and the invocation stream of each that takes
+    /// invocations.
+    publishers: tilo_broker_core::delivery::Publishers<InvocationEnvelope>,
     /// Per-connection incarnations, independent of unrelated discovery churn.
     approval_publications: Mutex<HashMap<u64, (u64, u64)>>,
     next_approval_publication: AtomicU64,
     /// Each connection's surface as `publishActionSurface` deltas built it:
     /// the shapes and bindings the next delta applies to.
     surface_tables: Mutex<HashMap<u64, runtime_collab::SurfaceTable>>,
-    /// Monotonic generation for shell-side retained action projections.
-    /// Every change to a published surface moves it; a change to an
-    /// application's invocation stream notifies its receivers without
-    /// moving it. A launch waiting for an app to publish an action and open
-    /// its stream wakes on either.
-    surface_changes: tokio::sync::watch::Sender<u64>,
     /// Last published surface per app, workspace and record, kept across
     /// restarts. Catalogue state, never an executable capability by itself.
     launchable: launchable::LaunchableCatalogue,
@@ -416,8 +410,6 @@ pub struct AppBrokerState {
     canonical_directories: Mutex<canonical_route::CanonicalDirectories>,
     native_checkouts: Mutex<HashMap<u64, native_checkout::NativeCheckout>>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
-    /// Directed invocation stream registered by each application connection.
-    invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     /// Builds the catalogue its subscribers follow, off the connection thread.
     catalogue_refresh: surface_publication::CatalogueRefresh,
@@ -604,35 +596,12 @@ impl AppBrokerState {
         self.gone.clone()
     }
 
-    /// Wake every launch waiting for its app's invocation stream after one
-    /// opened or closed. Retained projections do not depend on streams, so
-    /// the generation stays.
-    fn invocation_streams_changed(&self) {
-        self.surface_changes.send_modify(|_| {});
-    }
-
     /// `peer_id`'s invocation stream while it takes invocations: opened, not
     /// ended by its app, and still read.
     fn invocation_stream(&self, peer_id: u64) -> Option<mpsc::UnboundedSender<InvocationEnvelope>> {
-        open_stream(&*self.invocation_subscribers.lock().ok()?, peer_id).cloned()
+        tilo_broker_core::delivery::open_stream(&*self.publishers.streams.lock().ok()?, peer_id)
+            .cloned()
     }
-
-    /// A receiver that sees every later surface or invocation-stream change;
-    /// what exists so far counts as seen, so check readiness after taking it.
-    pub(crate) fn publisher_changes(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.surface_changes.subscribe()
-    }
-}
-
-/// `peer_id`'s stream among `subscribers` while it takes invocations: one its
-/// app ended is gone from them, and one nobody reads any more is closed.
-fn open_stream(
-    subscribers: &HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>,
-    peer_id: u64,
-) -> Option<&mpsc::UnboundedSender<InvocationEnvelope>> {
-    subscribers
-        .get(&peer_id)
-        .filter(|sender| !sender.is_closed())
 }
 
 /// What ends one invocation stream once its app asks for no more: the broker
@@ -653,7 +622,8 @@ impl InvocationFeedEnd {
         };
         let removed = self
             .state
-            .invocation_subscribers
+            .publishers
+            .streams
             .lock()
             .ok()
             .and_then(|mut subscribers| {
@@ -665,7 +635,7 @@ impl InvocationFeedEnd {
             .is_some();
         drop(sender);
         if removed {
-            self.state.invocation_streams_changed();
+            self.state.publishers.streams_changed();
         }
     }
 }

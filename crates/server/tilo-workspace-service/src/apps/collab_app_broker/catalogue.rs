@@ -120,6 +120,7 @@ impl AppBrokerState {
     /// Snapshot every action surface currently published by a connected app.
     pub fn published_surfaces(&self) -> Vec<PublishedSurface> {
         let live = self
+            .publishers
             .surfaces
             .lock()
             .map(|surfaces| surfaces.values().cloned().collect::<Vec<_>>())
@@ -153,7 +154,7 @@ impl AppBrokerState {
         resource: &str,
         action: &str,
     ) -> Option<(PublishedSurface, PublishedAction)> {
-        let surfaces = self.surfaces.lock().ok()?;
+        let surfaces = self.publishers.surfaces.lock().ok()?;
         let mut live_route = false;
         for surface in surfaces
             .values()
@@ -183,7 +184,7 @@ impl AppBrokerState {
         resource: &str,
         action: &str,
     ) -> bool {
-        self.surfaces.lock().is_ok_and(|surfaces| {
+        self.publishers.surfaces.lock().is_ok_and(|surfaces| {
             surfaces.values().any(|surface| {
                 surface.live
                     && surface.app_id == app_id
@@ -199,7 +200,7 @@ impl AppBrokerState {
     /// clones the potentially large application action inventory.
     #[must_use]
     pub fn published_surfaces_generation(&self) -> u64 {
-        *self.surface_changes.borrow()
+        *self.publishers.changes.borrow()
     }
     #[cfg(test)]
     pub(super) fn action_catalogue(
@@ -245,6 +246,7 @@ impl AppBrokerState {
             .filter(|surface| surface.route.cluster_id == cluster_id)
             .collect::<Vec<_>>();
         let live_apps = self
+            .publishers
             .surfaces
             .lock()
             .map(|surfaces| {

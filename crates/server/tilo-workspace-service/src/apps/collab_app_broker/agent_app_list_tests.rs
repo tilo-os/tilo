@@ -338,8 +338,8 @@ tilo_test_env::scenario! {
         };
         assert!(!opens(&state), "a window of it is up");
         state
-            .launchable
-            .windowless_peers
+            .publishers
+            .windowless
             .lock()
             .expect("windowless")
             .insert(9);

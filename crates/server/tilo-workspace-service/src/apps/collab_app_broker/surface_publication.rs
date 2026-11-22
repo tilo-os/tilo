@@ -58,11 +58,12 @@ impl AppBrokerState {
     /// this generation, so a move with nothing changed is churn.
     #[track_caller]
     pub(super) fn surfaces_changed(&self) {
-        self.surface_changes
+        self.publishers
+            .changes
             .send_modify(|generation| *generation = generation.wrapping_add(1));
         tracing::debug!(
             target: "tilo::publications",
-            generation = *self.surface_changes.borrow(),
+            generation = *self.publishers.changes.borrow(),
             cause = %std::panic::Location::caller(),
             "published surfaces changed"
         );
@@ -103,7 +104,7 @@ impl AppBrokerState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn publish_surface_for_test(&self, surface: PublishedSurface) {
         let peer = surface.peer_id;
-        let Ok(mut published) = self.surfaces.lock() else {
+        let Ok(mut published) = self.publishers.surfaces.lock() else {
             return;
         };
         let republished = surface.clone();

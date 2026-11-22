@@ -115,6 +115,7 @@ impl AppBrokerState {
             return Ok(record);
         }
         let offered = self
+            .publishers
             .surfaces
             .lock()
             .map_err(|_| "action catalogue unavailable")?

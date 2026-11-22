@@ -345,6 +345,7 @@ impl AppBrokerState {
             .in_new_execution();
         let actor = BrokerActor::for_caller(&caller);
         let (surface, action) = self
+            .publishers
             .surfaces
             .lock()
             .map_err(|_| "the published surfaces are unavailable")?

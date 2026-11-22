@@ -420,7 +420,7 @@ fn prepare(
     argument: Option<&str>,
     actor: &str,
 ) -> Result<String, String> {
-    let offered = state.surfaces.lock().unwrap()[&peer]
+    let offered = state.publishers.surfaces.lock().unwrap()[&peer]
         .actions
         .iter()
         .find(|offered| offered.resource == resource && offered.action == action)

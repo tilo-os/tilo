@@ -606,6 +606,7 @@ impl JoinedChannel {
         };
         let Some((surface, offered)) = self
             .state
+            .publishers
             .surfaces
             .lock()
             .ok()
@@ -1107,7 +1108,7 @@ impl JoinedChannel {
             peer_id: self.peer_id,
             sender: tx.downgrade(),
         };
-        if let Ok(mut subscribers) = self.state.invocation_subscribers.lock() {
+        if let Ok(mut subscribers) = self.state.publishers.streams.lock() {
             subscribers.insert(self.peer_id, tx);
         } else {
             return Err(BrokerError::failed(
@@ -1115,7 +1116,7 @@ impl JoinedChannel {
             ));
         }
         drop(admission);
-        self.state.invocation_streams_changed();
+        self.state.publishers.streams_changed();
         // The app the launcher attested, else the one this channel names.
         let (app, workspace) = self
             .lease
@@ -1331,6 +1332,7 @@ impl JoinedChannel {
         self.state.launchable.retain(&surface);
         let previous = self
             .state
+            .publishers
             .surfaces
             .lock()
             .map_err(|_| unavailable())?

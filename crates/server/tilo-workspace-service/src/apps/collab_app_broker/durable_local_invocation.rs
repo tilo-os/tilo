@@ -146,7 +146,8 @@ impl AppBrokerState {
         }
         if sender.is_closed()
             || !self
-                .invocation_subscribers
+                .publishers
+                .streams
                 .lock()
                 .map_err(|_| "application invocation stream unavailable")?
                 .get(&peer)

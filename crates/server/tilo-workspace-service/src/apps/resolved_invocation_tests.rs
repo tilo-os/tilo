@@ -417,6 +417,7 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
             let surface = || {
                 workspace
                     .state
+                    .publishers
                     .surfaces
                     .lock()
                     .unwrap()

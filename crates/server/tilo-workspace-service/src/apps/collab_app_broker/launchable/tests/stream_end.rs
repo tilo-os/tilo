@@ -75,11 +75,23 @@ tilo_test_env::scenario! {
             .enable_all()
             .build()
             .expect("runtime");
-        let delivered = runtime.block_on(state.deliver_picked(
+        let ask = tilo_broker_core::delivery::DeliveryAsk {
+            caller: &owner,
+            origin: None,
+            app_id: APP,
+            workspace: &workspace,
+            opened_on: destination.record.as_deref(),
+            address: &request.target.address,
+            start: false,
+            timeout: state.launchable.delivery_timeout(),
+            launches: super::launch_permits(),
+        };
+        let host = crate::apps::collab_app_broker::action_provider::delivering::Delivering::new(&state, &request);
+        let delivered = runtime.block_on(tilo_broker_core::delivery::deliver_picked(
+            &state.publishers,
+            &host,
+            &ask,
             picked,
-            &owner,
-            None,
-            (&request, &destination),
         ));
         assert!(
             delivered.is_none(),

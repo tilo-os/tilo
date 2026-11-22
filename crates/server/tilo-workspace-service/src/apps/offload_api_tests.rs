@@ -91,7 +91,7 @@ async fn an_admitted_offloadable_invocation_runs_where_the_route_places_it() {
             };
             fixture
                 .state
-                .surfaces
+                .publishers.surfaces
                 .lock()
                 .unwrap()
                 .insert(fixture.peer_id, offered.clone());
@@ -241,7 +241,7 @@ async fn an_admitted_offloadable_invocation_runs_where_the_route_places_it() {
             // An action that declares no offload goes to the app at once.
             let mut ordinary = action.clone();
             ordinary.contract.offload = None;
-            fixture.state.surfaces.lock().unwrap().insert(
+            fixture.state.publishers.surfaces.lock().unwrap().insert(
                 fixture.peer_id,
                 PublishedSurface {
                     actions: vec![ordinary],

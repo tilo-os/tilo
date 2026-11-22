@@ -434,6 +434,7 @@ impl AppBrokerState {
         origin: Option<InvocationCaller>,
     ) -> Result<StagedJob, String> {
         let offered = self
+            .publishers
             .surfaces
             .lock()
             .ok()
@@ -711,7 +712,7 @@ impl AppBrokerState {
     /// to notice the app publishing what it now offers — a page holding a
     /// request that nothing has answered yet — without asking again.
     pub fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.surface_changes.subscribe()
+        self.publishers.changes.subscribe()
     }
     /// Whether job `id`'s action declares untrusted content.
     pub fn untrusted_job(&self, id: u64) -> bool {
@@ -915,7 +916,7 @@ impl AppBrokerState {
         if let Ok(mut tables) = self.surface_tables.lock() {
             tables.remove(&peer_id);
         }
-        if let Ok(mut surfaces) = self.surfaces.lock()
+        if let Ok(mut surfaces) = self.publishers.surfaces.lock()
             && surfaces.remove(&peer_id).is_some()
         {
             self.surfaces_changed();
@@ -940,11 +941,12 @@ impl AppBrokerState {
         }
         // Gone already when its app ended the stream as it closed.
         let ended_by_app = !self
-            .invocation_subscribers
+            .publishers
+            .streams
             .lock()
             .is_ok_and(|mut subscribers| subscribers.remove(&peer_id).is_some());
         if !ended_by_app {
-            self.invocation_streams_changed();
+            self.publishers.streams_changed();
         }
         let unfinished: Vec<(u64, PendingInvocation)> = {
             let Ok(mut pending) = self.pending_invocations.lock() else {
