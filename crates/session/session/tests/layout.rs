@@ -36,6 +36,9 @@ const PROBE: &str = "so.tilo.probe";
 /// The app of a saved window that is not on this machine.
 const GONE: &str = "so.tilo.gone";
 
+/// An app whose windows are the person's own, never on a workspace's shared desktop.
+const SETTINGS: &str = "so.tilo.settings";
+
 /// What a test names a strip it renames.
 const RENAMED: &str = "Sketches";
 
@@ -894,10 +897,24 @@ fn starts(started: &Path) -> usize {
 /// window as the app that opened it, and the next session opens that app, in the tab it was in.
 #[test]
 fn a_window_the_person_opened_opens_again_after_a_restart() {
+    opens_again_after_a_restart(PROBE);
+}
+
+/// A window of the person's own (Settings) is never in the workspace's layout, and opens again
+/// after a restart all the same: the device's view keeps it, and the next session asks its app.
+#[test]
+fn a_window_of_the_persons_own_opens_again_after_a_restart() {
+    opens_again_after_a_restart(SETTINGS);
+}
+
+/// The person opens `app`, its window maps into the tab the launch made, the session restarts, and
+/// the next session asks `app` for its window again, into that tab.
+fn opens_again_after_a_restart(app: &str) {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
-    let launcher = installed_probe(&mut home, &started);
+    crate::common::probe_app(&mut home, app, "Probe");
+    let launcher = launcher(&home, &started);
     let state = Device::in_home(&mut home).state;
 
     // The person opens the app from the layout, the compositor maps its window into the tab it made,
@@ -911,7 +928,7 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
             .expect("a workspace is in front");
         apps.start(
             &tilo_app_launch::Launch::Package {
-                app: PROBE.into(),
+                app: app.into(),
                 open: None,
             },
             &apps.workspace_named(&workspace),
@@ -922,7 +939,7 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
         });
         session
             .desktop()
-            .with_policy(|policy| policy.map(window(11, PROBE)))
+            .with_policy(|policy| policy.map(window(11, app)))
             .expect("the window maps");
         until(&mut session, "the window is in its tab", |session| {
             tabs(session).len() == 1
@@ -949,7 +966,7 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
         "the tab it was in is kept for it while the app starts"
     );
     next.desktop()
-        .with_policy(|policy| policy.map(window(12, PROBE)))
+        .with_policy(|policy| policy.map(window(12, app)))
         .expect("the window maps");
     until(&mut next, "the app's new window takes its tab", |session| {
         matches!(
