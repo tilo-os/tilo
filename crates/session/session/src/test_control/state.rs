@@ -257,8 +257,8 @@ pub(super) fn keeping_devices(tree: &Layout, session: &Session<'_>, ctx: &Contex
 }
 
 /// What the person was told, as the banners and the centre show it: oldest first, one row per
-/// notification, each with the words it says, the app it came from, the actions it offers and
-/// whether the person has seen it. The id is the one [the notifications' own `act` and `open-notice`
+/// notification, each with its words, app, actions, severity, and whether it is still a banner or
+/// has been seen. The id is the one [the notifications' own `act` and `open-notice`
 /// verbs](crate::notifications::RESOURCE) take, so a tool chooses a notice as the person does.
 fn notices_shown(session: &Session<'_>) -> Json {
     let desktop = &session.notifications;
@@ -266,14 +266,17 @@ fn notices_shown(session: &Session<'_>) -> Json {
     Json::Array(
         log.history()
             .iter()
-            .chain(log.active())
-            .map(|notification| {
+            .map(|notification| (notification, false))
+            .chain(log.active().iter().map(|notification| (notification, true)))
+            .map(|(notification, banner)| {
                 json!({
                     "id": notification.id,
                     "app": notification.app_name,
                     "app_id": notification.app_id,
                     "title": notification.title,
                     "body": notification.body,
+                    "severity": crate::notifications::severity_name(notification.severity),
+                    "banner": banner,
                     "actions": notification
                         .actions
                         .iter()

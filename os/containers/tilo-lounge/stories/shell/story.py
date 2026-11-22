@@ -411,11 +411,13 @@ class Story:
             time.sleep(max(0.0, FRAME_SECONDS - (time.monotonic() - began)))
 
     def step(self, title: str, run: Callable[[], object], *, people: list[Person] | None = None,
-             budget_key: str | None = None):
+             budget_key: str | None = None, expected_errors: tuple[str, ...] = ()):
         """One step: `run` does what the person does and waits for what they would wait for, and
         raises Failed with what did not happen. It may answer `{"tookMs": ms}` when the time a
         person waited is not the step's whole time. `people` are the shells the step's shots
-        show (default: every running one)."""
+        show (default: every running one). All running shells are checked for error banners.
+        An intentional error can be expected for this step by its exact text, title and body
+        joined with " — " when both are present."""
         if self.stopped:
             raise StoryStopped(self.stopped.get("why", ""))
         budget = self.budget_of(budget_key or title)
@@ -432,6 +434,11 @@ class Story:
         took = value.get("tookMs") if isinstance(value, dict) else None
         record["ms"] = round(took if isinstance(took, (int, float)) else
                              (time.monotonic() - began) * 1000)
+        if error is None:
+            try:
+                self.check_error_banners(expected_errors)
+            except Exception as thrown:  # noqa: BLE001 - an unreadable shell cannot pass
+                error = thrown
         over = error is None and record["ms"] > budget
         record["status"] = "failed" if error else "over budget" if over else "ok"
         shown = [one for one in (self.people if error else people or self.people) if one.running]
@@ -462,6 +469,19 @@ class Story:
             self.stopped = record
             raise StoryStopped(record["why"])
         return value
+
+    def check_error_banners(self, expected: tuple[str, ...]) -> None:
+        unexpected = []
+        for one in self.people:
+            if not one.running:
+                continue
+            for notice in one.session.state_dump()["notifications"]:
+                if notice["banner"] and notice["severity"] == "error":
+                    message = " — ".join(part for part in (notice["title"], notice["body"]) if part)
+                    if message not in expected:
+                        unexpected.append(f"{one.name}: {message}")
+        if unexpected:
+            raise Failed("Unexpected error notice: " + "; ".join(unexpected))
 
     def timing(self, name: str, ms: float) -> None:
         self.timings[name] = round(ms)

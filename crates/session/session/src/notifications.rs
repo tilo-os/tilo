@@ -38,6 +38,14 @@ use crate::platform::notice::{Closed, Notice, Notices, Place};
 use crate::portal_link::PortalSide;
 use crate::system_sounds::SystemSounds;
 
+pub(crate) const fn severity_name(severity: notifications::NotificationSeverity) -> &'static str {
+    match severity {
+        notifications::NotificationSeverity::Info => "info",
+        notifications::NotificationSeverity::Warning => "warning",
+        notifications::NotificationSeverity::Error => "error",
+    }
+}
+
 /// `notice` as the notifications service carries it: the session's own word about the machine, or a
 /// role's, shown as any other notification.
 #[must_use]
@@ -730,12 +738,7 @@ impl SessionNotifications {
                 title: notification.title.clone(),
                 body: notification.body.clone(),
                 from: notification.app_name.clone().unwrap_or_default(),
-                kind: match notification.severity {
-                    notifications::NotificationSeverity::Info => "info",
-                    notifications::NotificationSeverity::Warning => "warning",
-                    notifications::NotificationSeverity::Error => "error",
-                }
-                .to_owned(),
+                kind: severity_name(notification.severity).to_owned(),
                 seen: !self.desktop.is_unread(notification.id),
                 actions: notification
                     .actions
