@@ -20,17 +20,17 @@
 //! - **Stopping.** A stop on its item ends the turn that is going, and every ask that stood
 //!   before the stop ([`Team::settle`]).
 //!
-//! What a sub-agent may read is not decided here: every turn carries the rules its item
-//! derives ([`tilo_workspace_agent::Agent::turn_rules`]).
+//! What a sub-agent may read and change is not decided here: it is one more actor in its
+//! starter's chain ([`tilo_actions::remote::Caller::working_under`]), decided as every action is.
 
 use std::collections::BTreeMap;
 
 use chat::chat::{Chat, Message, reply_id_at};
 use collaboration::permissions::MemberId;
-use serde_json::{Map, Value, json};
-use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
+use serde_json::{Map, json};
+use tilo_actions::remote::Caller;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_resource::{Id, Resource as _};
+use tilo_resource::Id;
 use tilo_workspace_agent::{Agent, Stands, WorkspaceAgents, sub};
 
 use super::{
@@ -210,127 +210,6 @@ fn lead_turn(
         chat::summons::conversation_address(&Id::from_raw(above.conversation.clone())),
         job.to_string(),
     ))
-}
-
-/// Where a sub-agent's turn writes in Chat, and whom its words may name there.
-#[derive(Clone)]
-pub(super) struct Own {
-    /// Its own conversation.
-    conversation: String,
-    /// The members Chat binds a name in a message to, as the workspace's member list names them.
-    /// None when the list could not be read: then its turn is taken no words, since nothing says
-    /// whom they would name.
-    members: Option<Vec<(tilo_actions::MemberId, String)>>,
-    /// The reply its turn answers with, by the id Chat derives for it: what its model writes
-    /// goes into that reply while it writes, and into no other. None for a turn that answers
-    /// no message.
-    reply: Option<String>,
-    /// The messages that reply's answer went on in, where it is longer than one message
-    /// holds: the ids this server derived for this one turn. What its model writes goes into
-    /// those as into its reply, and into no other message.
-    followed: super::written::Followed,
-}
-
-impl Own {
-    /// The messages the answer of the turn that answers with `reply` goes on in, for that
-    /// turn's writer to add to as its server derives them: none for another turn's.
-    pub(super) fn followed_by(&self, reply: Option<&str>) -> Option<super::written::Followed> {
-        (reply.is_some() && self.reply.as_deref() == reply).then(|| self.followed.clone())
-    }
-
-    /// Whether `text` names nobody Chat would bind a mention to.
-    fn names_nobody(&self, text: &str) -> bool {
-        self.members
-            .as_ref()
-            .is_some_and(|members| chat::mention::resolve(text, members).is_empty())
-    }
-}
-
-/// `members` as Chat binds a typed `@Name` to them (`tilo_resource::members::know`): each name
-/// without the blanks around it, and nobody whose name is empty. The rule reads a name the way
-/// Chat does, so a name Chat would bind is never one the rule did not see.
-fn named(
-    members: impl IntoIterator<Item = (tilo_actions::MemberId, String)>,
-) -> Vec<(tilo_actions::MemberId, String)> {
-    members
-        .into_iter()
-        .map(|(id, name)| (id, name.trim().to_owned()))
-        .filter(|(_, name)| !name.is_empty())
-        .collect()
-}
-
-/// Whether an argument says nothing: left out as null, or an empty list or object.
-fn says_nothing(value: &Value) -> bool {
-    match value {
-        Value::Null => true,
-        Value::Array(items) => items.is_empty(),
-        Value::Object(fields) => fields.is_empty(),
-        _ => false,
-    }
-}
-
-/// Whether the server's action service takes `request` from `caller` while it serves a turn
-/// of the sub-agent that writes in `own`.
-///
-/// What is no call of a turn (the server's own writes for a sub-agent) and what goes to another
-/// app than Chat is not decided here. Of Chat, a sub-agent's turn is let four actions by its
-/// rules ([`sub::OWN_WRITES`], [`sub::OWN_GROWTH`]), and a rule cannot say which conversation
-/// a message is in. So
-/// its answer is taken only for the message its turn answers, and what its model writes while
-/// it writes only into the reply to that message, in its own conversation and under no name;
-/// a question to its person and its words while it works only in its own conversation, as
-/// plain words: under no other message, with nothing attached, and naming nobody, so that
-/// nothing it writes asks another agent or reaches a member outside its conversation.
-/// Anything else of Chat's is refused here as well.
-pub(super) fn admits(own: &Own, caller: &Caller, request: &InvokeRequest) -> bool {
-    let Some(turn) = caller.turn() else {
-        return true;
-    };
-    let chat = format!("{}:{CHAT}:", tilo_agent_session::RESOURCE_PROVIDER);
-    let target = &request.target;
-    if !target.provider.starts_with(&chat) {
-        return true;
-    }
-    let [answer, question, words] = sub::OWN_WRITES;
-    let action = target.address.action.as_str();
-    if action == answer {
-        let answered = format!(
-            "{}/messages/{}",
-            chat::parts::ChatMessages::KIND,
-            turn.message
-        );
-        return target.address.resource == answered;
-    }
-    let InvokeArgument::Json(given) = &request.argument else {
-        return false;
-    };
-    let said = |name: &str| given.get(name).and_then(Value::as_str);
-    // Nothing but what `kept` lists is said: so no message it would stand under, nothing
-    // attached, nobody named beside its words.
-    let only = |kept: &[&str]| {
-        given
-            .iter()
-            .all(|(name, value)| kept.contains(&name.as_str()) || says_nothing(value))
-    };
-    let plain = said(TO) == Some(own.conversation.as_str())
-        && said("text").is_some_and(|text| own.names_nobody(text));
-    if action == question {
-        plain && only(&[TO, "text", "answers", "kind", "detail"])
-    } else if action == words {
-        plain && only(&[TO, "text"])
-    } else if action == sub::OWN_GROWTH {
-        // Chat makes a message of a reply it does not hold yet, in whatever conversation the
-        // call names and under whatever name it gives: so only the reply its turn answers
-        // and the messages its server derived for that answer to go on in, where it works,
-        // and nothing said beside.
-        own.reply.as_deref().is_some_and(|reply| {
-            said(TO) == Some(own.conversation.as_str())
-                && said("reply").is_some_and(|named| named == reply || own.followed.holds(named))
-                && only(&[TO, "reply", "event"])
-        })
-    } else {
-        false
-    }
 }
 
 /// The agent whose day `turn`'s model calls are counted on.
@@ -626,39 +505,6 @@ impl ServerAgents {
         Ok(Team::of(roster, worked))
     }
 
-    /// Where `turn`'s agent writes in Chat when it is a sub-agent: none for an agent a person
-    /// made, whose turns are not kept to one conversation.
-    pub(super) async fn own_of(&self, workspace: &str, turn: &Turn) -> Option<Own> {
-        let sub = turn.agent.sub.as_ref()?;
-        let mut own = self.own_in(workspace, &sub.conversation).await;
-        own.reply = super::written::reply_of(turn);
-        Some(own)
-    }
-
-    /// The sub-agent's conversation `conversation`, with the members of `workspace` a name
-    /// written there is bound to.
-    async fn own_in(&self, workspace: &str, conversation: &str) -> Own {
-        let members = self
-            .workspaces
-            .summary(workspace)
-            .await
-            .ok()
-            .map(|summary| {
-                named(
-                    summary
-                        .members
-                        .into_iter()
-                        .map(|member| (member.id, member.name)),
-                )
-            });
-        Own {
-            conversation: conversation.to_owned(),
-            members,
-            reply: None,
-            followed: super::written::Followed::default(),
-        }
-    }
-
     /// Carry what a look found owed to the sub-agents of `workspace`: each job and note the
     /// list holds is written into its sub-agent's conversation, as the words of the agent
     /// that gave it, and a note that is there reaches the turn of its sub-agent that is going.
@@ -773,7 +619,7 @@ impl ServerAgents {
     /// ([`lead_turn`]); none for what any other agent gave.
     ///
     /// # Errors
-    /// The list could not be read, or the lead's words name a member of the workspace.
+    /// The list could not be read.
     async fn of_lead(
         &self,
         workspace: &str,
@@ -786,15 +632,7 @@ impl ServerAgents {
         else {
             return Ok(None);
         };
-        let Some(on) = lead_turn(&roster, delivery) else {
-            return Ok(None);
-        };
-        let there = self.own_in(workspace, &delivery.conversation).await;
-        if there.names_nobody(&delivery.text) {
-            Ok(Some(on))
-        } else {
-            Err("a sub-agent's words name no member of the workspace".to_owned())
-        }
+        Ok(lead_turn(&roster, delivery))
     }
 
     /// Write `delivery`, a job or a note the list holds, into its sub-agent's conversation as
@@ -802,13 +640,9 @@ impl ServerAgents {
     ///
     /// What a person's own agent gave is written in that agent's name outside a turn, where the
     /// service holds it to what the list keeps for the agent. What a sub-agent gave one of its
-    /// own team is this server's to carry as well, and outside a turn nothing is taken in a
-    /// sub-agent's name but the three writes its own rules let it, of which asking an agent is
-    /// none. So that one message is written for the lead's turn ([`lead_turn`]), as every call
-    /// of a turn this server works is, and through the service as it serves everyone. It is
-    /// carried as plain words only: words that name a member of the workspace are not written,
-    /// as a sub-agent's own turn is taken none ([`admits`]), so nothing a lead gives its team
-    /// reaches a member or asks another agent.
+    /// own team is this server's to carry as well: that one message is written for the lead's
+    /// turn ([`lead_turn`]), as every call of a turn this server works is, and through the
+    /// service as it serves everyone, so it does what the lead's chain may.
     async fn deliver(&self, workspace: &str, delivery: &Delivery) -> Result<(), String> {
         let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
         let person: [u8; 32] = tilo_action_policy::PersonId::parse(&delivery.person)
@@ -1117,161 +951,6 @@ mod tests {
         assert_eq!(key, key_of(&long, JOB), "the same every time it is made");
         assert_ne!(key, key_of(&long, "note:n1"));
         assert_eq!(cut("äöü", 3), "ä", "cut at a character");
-    }
-
-    #[test]
-    fn a_sub_agents_words_name_a_member_as_chat_binds_the_name() {
-        let own = |members| Own {
-            conversation: "own".to_owned(),
-            members,
-            reply: None,
-            followed: super::super::written::Followed::default(),
-        };
-        let kept = own(Some(named([
-            (
-                tilo_actions::MemberId::person("ad".repeat(32)),
-                " Ada ".to_owned(),
-            ),
-            (
-                tilo_actions::MemberId::person("b0".repeat(32)),
-                "  ".to_owned(),
-            ),
-        ])));
-        assert!(
-            !kept.names_nobody("@Ada look at this."),
-            "a member is named"
-        );
-        assert!(
-            !kept.names_nobody("ask @ada"),
-            "whatever the case of the letters"
-        );
-        assert!(kept.names_nobody("Half done: the notes are sorted."));
-        assert!(kept.names_nobody("@Adam is no member here"));
-        assert!(
-            !own(None).names_nobody("plain words"),
-            "with no list read, no words are taken"
-        );
-    }
-
-    /// A call of a sub-agent's turn to Chat's `action` on its messages, given `said`.
-    fn call(action: &str, said: Map<String, Value>) -> InvokeRequest {
-        InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            target: tilo_actions::remote::RemoteActionTarget {
-                provider: format!("{}:{CHAT}:", tilo_agent_session::RESOURCE_PROVIDER),
-                address: tilo_actions::api::ActionAddress {
-                    resource: "chain".to_owned(),
-                    action: action.to_owned(),
-                },
-            },
-            argument: InvokeArgument::Json(said),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        }
-    }
-
-    #[test]
-    fn what_a_sub_agents_model_writes_is_taken_only_for_the_reply_its_turn_answers() {
-        let own = Own {
-            conversation: "own".to_owned(),
-            members: Some(Vec::new()),
-            reply: Some("m_reply_own".to_owned()),
-            followed: super::super::written::Followed::default(),
-        };
-        let caller = Caller::agent_turn(
-            "writer",
-            tilo_action_policy::PersonId::from_root([7; 32]),
-            tilo_action_policy::turn::Turn::new(
-                chat::summons::conversation_address(&Id::from_raw("own")),
-                "m1",
-            ),
-        );
-        // What Chat's `stream-output` is given: where, which reply, the words, and whatever
-        // `beside` adds.
-        let said = |to: &str, reply: &str, beside: Option<(&str, Value)>| {
-            let mut said = Map::new();
-            said.insert(TO.to_owned(), json!(to));
-            said.insert("reply".to_owned(), json!(reply));
-            said.insert(
-                "event".to_owned(),
-                json!({"sequence": 1, "event": {"type": "text_delta", "text": "The notes "}}),
-            );
-            if let Some((name, value)) = beside {
-                said.insert(name.to_owned(), value);
-            }
-            said
-        };
-        let taken = |own: &Own, said: Map<String, Value>| {
-            admits(own, &caller, &call(sub::OWN_GROWTH, said))
-        };
-        assert!(
-            taken(&own, said("own", "m_reply_own", None)),
-            "into the reply its turn answers, where it works"
-        );
-        for (what, said) in [
-            (
-                "in its starter's conversation",
-                said("thread", "m_reply_own", None),
-            ),
-            (
-                "into a reply that is not its turn's",
-                said("own", "m_reply_other", None),
-            ),
-            (
-                "under a name of its choosing",
-                said("own", "m_reply_own", Some(("name", json!("Ada")))),
-            ),
-            (
-                "with something said beside",
-                said("own", "m_reply_own", Some(("parent", json!("m1")))),
-            ),
-        ] {
-            assert!(!taken(&own, said), "{what} it is refused");
-        }
-        // Where its answer went on past one message, the message its server derived for it
-        // takes its model's words as its reply does, and no other message does.
-        let went_on = Own {
-            followed: super::super::written::Followed::of(&["m_reply_next"]),
-            ..own.clone()
-        };
-        assert!(
-            taken(&went_on, said("own", "m_reply_next", None)),
-            "into the message its server derived for its answer to go on in"
-        );
-        for (what, own, said) in [
-            (
-                "into a message no server derived for its turn",
-                &own,
-                said("own", "m_reply_next", None),
-            ),
-            (
-                "into another message than the one derived",
-                &went_on,
-                said("own", "m_reply_other", None),
-            ),
-            (
-                "into the derived message, named in its starter's conversation,",
-                &went_on,
-                said("thread", "m_reply_next", None),
-            ),
-            (
-                "into the derived message under a name of its choosing",
-                &went_on,
-                said("own", "m_reply_next", Some(("name", json!("Ada")))),
-            ),
-        ] {
-            assert!(!taken(own, said), "{what} it is refused");
-        }
-        let answers_none = Own { reply: None, ..own };
-        assert!(
-            !taken(&answers_none, said("own", "m_reply_own", None)),
-            "a turn that answers no message is taken none"
-        );
     }
 
     /// A person's own agent, a lead it started, the lead's worker and a sub-agent beside the

@@ -113,8 +113,8 @@ fn conversation_id(address: &str) -> Option<String> {
 /// Why a turn's call of one of Chat's sharing verbs is not taken, when it is not: a turn shares
 /// only into the conversation it answers in. Where a share stands is where a document's name
 /// and address reach, and the conversation is an argument the model gives, so it is held here
-/// to the turn's own, as a sub-agent's words are (`sub_agents::admits`). A call that is no
-/// turn's, as a person's own is, is never refused here, and neither is any other action.
+/// to the turn's own. A call that is no turn's, as a person's own is, is never refused here,
+/// and neither is any other action.
 pub(super) fn refuses(caller: &Caller, request: &InvokeRequest) -> Option<String> {
     let turn = caller.turn()?;
     let chat = format!("{}:{CHAT}:", tilo_agent_session::RESOURCE_PROVIDER);

@@ -28,7 +28,7 @@
 //! ([`super::sub_agents::admits`]). The reply of a model whose answers arrive whole is
 //! written once, at its turn's end.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use chat::agent_stream::{AgentFinish, AgentOutput, AgentStreamEvent};
 use collaboration::permissions::MemberId;
@@ -74,38 +74,6 @@ struct Piece {
     /// message: a message the answer went on in begins with a word.
     passed: String,
     said: String,
-}
-
-/// The messages one turn's answer went on in after its reply, by the ids this server derived
-/// for them as the message before each was full. Whoever keeps a sub-agent's turn to its own
-/// writes reads them here ([`super::sub_agents::admits`]): what that turn's model writes is
-/// taken for these and for its reply, and for no other message.
-#[derive(Clone, Default)]
-pub(super) struct Followed(Arc<Mutex<Vec<String>>>);
-
-impl Followed {
-    /// Whether `reply` is one of them.
-    pub(super) fn holds(&self, reply: &str) -> bool {
-        self.0.lock_recover().iter().any(|held| held == reply)
-    }
-
-    /// The answer goes on in `reply`.
-    fn add(&self, reply: &str) {
-        let mut held = self.0.lock_recover();
-        if !held.iter().any(|known| known == reply) {
-            held.push(reply.to_owned());
-        }
-    }
-
-    /// Those `replies`, as a server derived them.
-    #[cfg(test)]
-    pub(super) fn of(replies: &[&str]) -> Self {
-        let followed = Self::default();
-        for reply in replies {
-            followed.add(reply);
-        }
-        followed
-    }
 }
 
 /// What a model wrote that its reply does not hold yet. The thread the model is asked on
@@ -174,8 +142,6 @@ pub(super) struct Written {
     /// one's id and its author's ([`chat::chat::reply_id`]).
     agent: MemberId,
     grown: Mutex<Grown>,
-    /// The messages the answer went on in, as whoever serves a sub-agent's turn reads them.
-    followed: Followed,
 }
 
 /// A message an answer went on in after its reply.
@@ -210,9 +176,8 @@ struct Grown {
 
 impl Written {
     /// Where the reply of `turn` grows: nowhere for an issue's turn, whose answer is a
-    /// comment. A sub-agent's grows in the conversation its item names, the only one its
-    /// turn writes in. `followed` takes the messages its answer goes on in.
-    pub(super) fn of(turn: &Turn, followed: Followed) -> Self {
+    /// comment. A sub-agent's grows in the conversation its item names, where its turns are.
+    pub(super) fn of(turn: &Turn) -> Self {
         let place = reply_of(turn).map(|reply| Place {
             conversation: turn.agent.sub.as_ref().map_or_else(
                 || asks::conversation_id_of(&turn.conversation, &turn.person, &turn.agent.id.0),
@@ -224,7 +189,6 @@ impl Written {
             place,
             agent: MemberId::agent(&turn.agent.id.0),
             grown: Mutex::default(),
-            followed,
         }
     }
 
@@ -305,9 +269,6 @@ impl Written {
             newest = Some(message.text.len());
             full = next;
         }
-        for link in &on {
-            self.followed.add(&link.reply);
-        }
         self.grown.lock_recover().on = on;
         newest
     }
@@ -327,7 +288,6 @@ impl Written {
             .last()
             .map_or(place.reply.as_str(), |link| link.reply.as_str());
         let next = self.after(full);
-        self.followed.add(&next);
         grown.on.push(Link {
             reply: next,
             sequence: 0,
@@ -1006,7 +966,6 @@ mod tests {
             }),
             agent: MemberId::agent("scout"),
             grown: Mutex::default(),
-            followed: Followed::default(),
         };
         written.open();
         written
@@ -1151,14 +1110,6 @@ mod tests {
             .flat_map(|(_, said)| said.split(' '))
             .collect();
         assert_eq!(stands, words, "every word stands once and in order");
-        assert!(
-            written.followed.holds(&second) && written.followed.holds(&third),
-            "whoever serves the turn reads the messages its server derived"
-        );
-        assert!(
-            !written.followed.holds(&after(&third)),
-            "and none it did not derive"
-        );
     }
 
     /// A word the model is in the middle of ends in the message it began in, in what a

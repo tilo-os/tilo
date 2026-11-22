@@ -167,9 +167,6 @@ pub struct WorkspaceActionProvider {
     own: Vec<Arc<dyn TurnProvider>>,
     /// How the calls those took ended; `None` while it answers none of them.
     ended: Option<turn_provider::Ended>,
-    /// The one conversation a sub-agent's turn writes in, while this serves such a turn
-    /// ([`sub_agents::admits`]).
-    kept_to: Option<sub_agents::Own>,
     /// What its own services answered, for a caller that follows an invocation.
     answered: OwnAnswers,
     /// What the person asked of the turn this serves, in their words: the purpose History
@@ -235,7 +232,6 @@ impl WorkspaceActionProvider {
             events: None,
             own: Vec::new(),
             ended: None,
-            kept_to: None,
             initiative: None,
             answered: OwnAnswers::default(),
             purpose: None,
@@ -371,14 +367,6 @@ impl WorkspaceActionProvider {
         self
     }
 
-    /// The same service, kept to `own` for a turn of the sub-agent that writes there: of Chat it
-    /// takes that turn's answer, its question and its words there, and nothing else.
-    #[must_use]
-    fn keeping_to(mut self, own: Option<sub_agents::Own>) -> Self {
-        self.kept_to = own;
-        self
-    }
-
     fn serve(
         &self,
         caller: &Caller,
@@ -447,11 +435,6 @@ impl ActionProvider for WorkspaceActionProvider {
             if context.purpose.is_none() {
                 context.purpose = Some(purpose.clone());
             }
-        }
-        if let Some(own) = &self.kept_to
-            && !sub_agents::admits(own, caller, &request)
-        {
-            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         if let Some(reason) = shares::refuses(caller, &request) {
             return Pending::ready(Err(ActionCallError::InvalidRequest { reason }));
@@ -1645,7 +1628,6 @@ impl ServerAgents {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone())
                 .offering_initiative(self.initiative.clone())
-                .keeping_to(self.own_of(workspace, turn).await)
                 .serving_ask(&turn.request),
             agent,
             person,
@@ -2215,20 +2197,12 @@ impl TurnScope {
             .asked(&turn.asked)
             .on_roster_turn(cause);
         let provider = self.provider.clone();
-        // A sub-agent's turn grows the messages its answer goes on in, and whoever keeps it
-        // to its own writes reads which those are.
-        let followed = self
-            .provider
-            .kept_to
-            .as_ref()
-            .and_then(|own| own.followed_by(written::reply_of(turn).as_deref()))
-            .unwrap_or_default();
         Reply {
             provider,
             caller,
             workspace: self.workspace.clone(),
             ask: turn.ask.clone(),
-            written: written::Written::of(turn, followed),
+            written: written::Written::of(turn),
             shows_in: shares::shows_in(turn),
             claim: None,
         }

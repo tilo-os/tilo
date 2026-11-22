@@ -25,7 +25,6 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionOutput, InvocationUpdate};
 use tilo_workspace_agent::Agent;
 
-use super::mail::narrowing;
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
@@ -49,7 +48,7 @@ impl TurnCalendars {
     /// as.
     pub(super) async fn for_turn(workspaces: &Workspaces, turn: &Turn, reply: &Reply) -> Arc<Self> {
         let workspace_id = WorkspaceId::parse(&reply.workspace);
-        let narrowed = narrowing(&turn.agent, &reply.workspace);
+        let narrowed = turn.agent.bound_rules();
         let offered = if let Some(workspace) = workspace_id {
             let hosted = HostedTurn {
                 workspace,
@@ -78,7 +77,7 @@ impl TurnCalendars {
         let Some(workspace) = self.workspace_id else {
             return Err(ActionCallError::UnknownAction);
         };
-        let narrowed = narrowing(&self.agent, &self.workspace);
+        let narrowed = self.agent.bound_rules();
         let hosted = HostedTurn {
             workspace,
             caller,

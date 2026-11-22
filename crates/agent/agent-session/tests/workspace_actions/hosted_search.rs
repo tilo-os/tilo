@@ -8,7 +8,7 @@ use tilo_server::{
     workspaces::{IssueInvitationRequest, Workspaces},
 };
 use tilo_workspace_service::agents as turns;
-use ui::tilo_workspace_agent::{Agent, Bound, Sub};
+use ui::tilo_workspace_agent::{Agent, Bound};
 
 /// What Ada tells her agent, and nobody else.
 const HERS: &str = "The code word for Friday is heron.";
@@ -1040,54 +1040,6 @@ async fn what_a_person_tells_an_agent_is_found_by_them_and_their_own_turns_alone
     page.peer.close();
 }
 
-/// A sub-agent finds nothing that Chat keeps: not the conversation of the agent that started
-/// it, which that agent's own turn finds, and not under a rule set on it to let it. What it may
-/// read elsewhere it finds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_sub_agent_finds_nothing_of_its_starters_conversation() {
-    let mut served = Served::start(1).await;
-    let (workspace, page, hers) = served.workspace(|_| Vec::new()).await;
-    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
-    let starter = on_a_turn(
-        &ada,
-        SCOUT,
-        (&conversation_with(&served.ada, SCOUT), &hers),
-        Vec::new(),
-    );
-    served
-        .finds_soon(&workspace, &starter, ("heron", hers.as_str()))
-        .await;
-
-    // The rules every turn of a sub-agent carries are what its item in the workspace's list of
-    // agents gives: with no rule of its own, and with one that would let it read Chat.
-    let own = conversation_with(&served.ada, "helper");
-    for bound in [Vec::new(), vec![reading(chat_in(&workspace), "allow")]] {
-        let helper = Agent {
-            id: ui::tilo_resource::Atom("helper".into()),
-            name: "Helper".into(),
-            keeper: person_of(&served.ada),
-            bound,
-            sub: Some(Sub {
-                started_by: SCOUT.into(),
-                conversation: own.to_string(),
-                ..Sub::default()
-            }),
-            ..Agent::default()
-        };
-        let sub_agent = on_a_turn(&ada, "helper", (&own, &hers), helper.turn_rules(&workspace));
-        let found = served.finds(&workspace, &sub_agent, "heron").await;
-        assert!(
-            !found.contains(hers.as_str()) && !found.contains("heron"),
-            "a sub-agent finds nothing of its starter's conversation: {found}"
-        );
-        let found = served
-            .finds_soon(&workspace, &sub_agent, ("Gooseberry", WRITER))
-            .await;
-        assert!(found.contains(WRITER), "{found}");
-    }
-    page.peer.close();
-}
-
 /// A turn finds what was said in its own conversation by words and by time, through the same
 /// search: "what did I say about the heron last week" is answered with last week's message and
 /// when it was written, not with the older one, today's or another topic's. With no words, a
@@ -1184,21 +1136,6 @@ async fn a_turn_finds_what_was_said_in_its_conversation_by_words_and_by_time() {
     let found = served
         .found(&workspace, &turn, ("", &Within::default()))
         .await;
-    assert!(found.is_empty(), "{found:?}");
-
-    // A sub-agent is refused what Chat keeps, narrowed or not.
-    let helper = Agent {
-        id: ui::tilo_resource::Atom("helper".into()),
-        sub: Some(Sub::default()),
-        ..Agent::default()
-    };
-    let sub_agent = on_a_turn(
-        &ada,
-        "helper",
-        (&conversation, &today),
-        helper.turn_rules(&workspace),
-    );
-    let found = served.found(&workspace, &sub_agent, ("", &this_week)).await;
     assert!(found.is_empty(), "{found:?}");
 
     // The whole way, as a turn's model asks it: the tool takes the conversation and the week

@@ -1113,8 +1113,8 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
 
 /// What an agent is in a workspace, decided in one place.
 ///
-/// An agent acts for one person, inside a turn that person's message caused
-/// ([`crate::turn::authority`]): it never holds more than that person's role,
+/// An agent acts inside a turn ([`crate::turn::Turn`]), for the person whose
+/// message caused it, bounded by its own person: it never holds more than their role,
 /// and never more than [`ROLE_CAP`](agent_policy::ROLE_CAP). Every host — the
 /// server governing a workspace, every member admitting its ops, the desktop
 /// broker hosting a workspace itself — asks [`role`](agent_policy::role) rather

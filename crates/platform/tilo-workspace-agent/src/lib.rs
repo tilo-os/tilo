@@ -292,18 +292,11 @@ impl Agent {
         self.sub.is_some()
     }
 
-    /// The rules every turn of it carries in `workspace`: what its record bounds it to
-    /// ([`Self::bound_rules`]), and for a sub-agent the rules that keep it from reading
-    /// whoever started it ([`sub::one_way`]). Whoever works its turns hands the policy these,
-    /// never the bound alone: the one-way rule comes from what the agent is, so no bound set
-    /// on it, and none taken off it, lifts it.
+    /// The rules every turn of it carries: what its record bounds it to
+    /// ([`Self::bound_rules`]), none where it bounds it to nothing.
     #[must_use]
-    pub fn turn_rules(&self, workspace: &str) -> Vec<tilo_action_policy::Rule> {
-        let mut rules = self.bound_rules().unwrap_or_default();
-        if self.is_sub() {
-            sub::keep_one_way(&mut rules, workspace);
-        }
-        rules
+    pub fn turn_rules(&self, _workspace: &str) -> Vec<tilo_action_policy::Rule> {
+        self.bound_rules().unwrap_or_default()
     }
 }
 

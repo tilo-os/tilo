@@ -1778,6 +1778,43 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_turn_for_another_member_and_its_sub_agent_do_what_both_people_may;
+    {
+        // Bob's agent answers Carol: Bob may not touch mail, Carol may.
+        let mut workspace = workspace_with_members(&[(BOB, Role::Editor), (CAROL, Role::Editor)]);
+        workspace.grants.push(Grant::new(
+            "bob-no-mail",
+            Grantee::person(BOB),
+            mail(),
+            KindSet::ALL,
+            Answer::Deny,
+            alice(),
+        ));
+        let decided = |acting: &Acting, node: &TreePath| {
+            let granted = acting.handed_preset("r");
+            Authority::of_acting(acting, &workspace, &granted)
+                .decide(node, ActionKind::Undoable, &cx())
+                .answer
+        };
+        let for_carol = Acting::handed_agent("scout", CAROL);
+        let answering_carol = for_carol.clone().agent_of(BOB);
+        let sub_agent = answering_carol.clone().handed_on("helper");
+        assert_eq!(decided(&for_carol, &archive()), Answer::Allow);
+        for (who, acting) in [("the turn", &answering_carol), ("its sub-agent", &sub_agent)] {
+            assert_eq!(
+                decided(acting, &archive()),
+                Answer::Deny,
+                "{who} does nothing its agent's person may not: {acting:?}"
+            );
+            let notes = TreePath::workspace("r").app("notes").action("append");
+            assert_eq!(
+                decided(acting, &notes),
+                Answer::Allow,
+                "and is not refused for being Bob's agent: {acting:?}"
+            );
+        }
+    }
+
     phase a_foreign_device_never_governs;
     {
         let workspace = workspace_with_members(&[]);

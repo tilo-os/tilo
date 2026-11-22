@@ -84,7 +84,7 @@ pub(super) async fn of(
     reply: &Reply,
     workspace_id: WorkspaceId,
 ) -> Arc<TurnConnections> {
-    let narrowed = narrowing(&turn.agent, &reply.workspace);
+    let narrowed = turn.agent.bound_rules();
     let hosted = HostedTurn {
         workspace: workspace_id,
         caller: &reply.caller,
@@ -106,7 +106,7 @@ impl TurnConnections {
     async fn take(&self, caller: &Caller, request: &InvokeRequest) -> Ended {
         let invocation = request.invocation;
         let workspace = self.workspace_id;
-        let narrowed = narrowing(&self.agent, &self.workspace);
+        let narrowed = self.agent.bound_rules();
         let hosted = HostedTurn {
             workspace,
             caller,
@@ -173,9 +173,9 @@ impl TurnProvider for TurnConnections {
         let workspace = self.workspace_id;
         let (completer, rows) = tilo_actions::remote::pending();
         let workspaces = self.asker.workspaces.clone();
-        let (caller, agent, named) = (caller.clone(), self.agent.clone(), self.workspace.clone());
+        let (caller, agent) = (caller.clone(), self.agent.clone());
         self.runtime.spawn(async move {
-            let narrowed = narrowing(&agent, &named);
+            let narrowed = agent.bound_rules();
             let hosted = HostedTurn {
                 workspace,
                 caller: &caller,
@@ -211,13 +211,6 @@ impl TurnProvider for TurnConnections {
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending {
         Box::pin(async move { self.take(&caller, &request).await })
     }
-}
-
-/// The rules a turn of `agent` is decided by in `workspace`, where anything narrows it: what
-/// its entry bounds it to and, for a sub-agent, what keeps it from whoever started it. `None`
-/// for an agent nothing narrows.
-fn narrowing(agent: &Agent, workspace: &str) -> Option<Vec<tilo_action_policy::Rule>> {
-    (agent.bound_rules().is_some() || agent.is_sub()).then(|| agent.turn_rules(workspace))
 }
 
 fn succeeded(invocation: InvocationId, value: Value) -> InvocationUpdate {
@@ -363,7 +356,7 @@ impl Carries for Answers {
                     String::new(),
                     ask.ask.clone(),
                 ));
-            let narrowed = narrowing(&agent, &ask.workspace);
+            let narrowed = agent.bound_rules();
             let hosted = HostedTurn {
                 workspace,
                 caller: &caller,

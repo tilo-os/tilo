@@ -149,7 +149,7 @@ impl TurnUses {
     /// tools begin as and act through.
     pub(super) async fn for_turn(agents: &ServerAgents, turn: &Turn, reply: &Reply) -> Arc<Self> {
         let workspace_id = reply.provider.workspace;
-        let narrowed = narrowing(&turn.agent, &reply.workspace);
+        let narrowed = turn.agent.bound_rules();
         let hosted = HostedTurn {
             workspace: workspace_id,
             caller: &reply.caller,
@@ -185,7 +185,7 @@ impl TurnUses {
         request: &InvokeRequest,
     ) -> Result<InvocationUpdate, ActionCallError> {
         let invocation = request.invocation;
-        let narrowed = narrowing(&self.agent, &self.workspace);
+        let narrowed = self.agent.bound_rules();
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
@@ -254,7 +254,7 @@ impl TurnUses {
             });
         };
         // Refused before any window is asked, as before the vault is opened.
-        let narrowed = narrowing(&self.agent, &self.workspace);
+        let narrowed = self.agent.bound_rules();
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
@@ -290,7 +290,7 @@ impl TurnUses {
         wanted: FillField,
         origin: String,
     ) -> Release {
-        let narrowed = narrowing(&self.agent, &self.workspace);
+        let narrowed = self.agent.bound_rules();
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
@@ -509,7 +509,7 @@ impl TurnUses {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<InvocationUpdate, ActionCallError> {
-        let narrowed = narrowing(&self.agent, &self.workspace);
+        let narrowed = self.agent.bound_rules();
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
@@ -578,13 +578,6 @@ impl ServerAgents {
         self.tell_of_password(&open, &asked, (answered, &came))
             .await;
     }
-}
-
-/// The rules a turn of `agent` is decided by in `workspace`, where anything
-/// narrows it: what its entry bounds it to and, for a sub-agent, what keeps
-/// it from whoever started it. `None` for an agent nothing narrows.
-fn narrowing(agent: &Agent, workspace: &str) -> Option<Vec<tilo_action_policy::Rule>> {
-    (agent.bound_rules().is_some() || agent.is_sub()).then(|| agent.turn_rules(workspace))
 }
 
 /// Where and for which turn `caller` asks, as an ask keeps it.
@@ -890,7 +883,7 @@ impl ServerAgents {
             self.workspaces.use_not_asked(&claimed);
             return;
         }
-        let narrowed = narrowing(agent, workspace);
+        let narrowed = agent.bound_rules();
         let hosted = HostedTurn {
             workspace: workspace_id,
             caller: &turn,

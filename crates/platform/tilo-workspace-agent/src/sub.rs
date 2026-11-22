@@ -2,9 +2,8 @@
 //!
 //! A person's main agent starts sub-agents: each gets one job, a role in words, a kind of work
 //! that picks its model and a conversation of its own. Whoever started one reads it and steers
-//! it while it works, and it cannot read whoever started it. A sub-agent may start sub-agents
-//! of its own, as deep as its person allows, and the same holds at every level: a lead with
-//! fifty workers is as ordinary as one helper.
+//! it while it works. A sub-agent may start sub-agents of its own, as deep as its person allows,
+//! and the same holds at every level: a lead with fifty workers is as ordinary as one helper.
 //!
 //! A sub-agent is an agent like any other: an item of the workspace's record of its agents
 //! whose [`Agent::sub`] is set. Nothing keeps a second list of them.
@@ -16,22 +15,20 @@
 //! writes back how it stands ([`WorkspaceAgents::sub_agent_stands`]), so a runner that restarts
 //! finds everything it owes in the records.
 //!
-//! **The one-way rule is a permission.** Every turn of a sub-agent carries the rules
-//! [`Agent::turn_rules`] derives from its record: it reads nothing Chat keeps ([`one_way`]), so
-//! not the thread of the agent that started it, no other conversation, and not this record
-//! either. No verb lifts that: nothing clears [`Agent::sub`], a bound set on it adds to the rule
-//! and never replaces it, and a sub-agent changes nothing of this record but its own team
-//! ([`WorkspaceAgents::not_by_sub_agent`]), so it can neither unbind itself nor make an agent
-//! that nothing binds.
+//! **A sub-agent is one more actor in its starter's chain.** It works for the person its
+//! starter's turn answered, and its work is decided for that person bounded by every agent and
+//! person before it ([`tilo_action_policy::Acting::handed_on`]): it does no more than its
+//! starter's turn may, and reads what that chain's grants allow. A sub-agent changes nothing of
+//! this record but its own team ([`WorkspaceAgents::not_by_sub_agent`]), so it can neither
+//! unbind its starter nor make an agent that nothing binds.
 
 use std::fmt;
 
 use collab_types::MemberId;
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
 use tilo_resource::{ActionCx, Atom, Id, JsonSchema, Model, Refusal};
 
-use crate::{Agent, AgentState, OWNER, WorkspaceAgents};
+use crate::{Agent, AgentState, WorkspaceAgents};
 
 /// The longest job, in bytes: what a sub-agent is asked to do, which is also the first message
 /// of its conversation. Longer material belongs in a file or a note it is pointed at.
@@ -75,92 +72,6 @@ pub const KINDS: [&str; 5] = ["subtask", "task", "request", "classifier", "one_s
 
 /// The kind of work of a sub-agent that was given none: a part of a task.
 pub const DEFAULT_KIND: &str = "subtask";
-
-/// The kind of Chat's messages, as its actions are decided under it.
-const MESSAGES: &str = "chat.messages";
-
-/// What a sub-agent's turn writes in Chat, and nothing else of Chat's: its answer to what it
-/// was asked, a question to its person, and its words while it works. Whoever serves its turn
-/// takes each only in its own conversation, since a rule's path cannot say which conversation
-/// a message is in.
-pub const OWN_WRITES: [&str; 3] = ["record-work", "ask", "post"];
-
-/// What a sub-agent's turn writes besides, into its answer: the words its model writes, as
-/// they come, so that its person reads along. Whoever serves its turn takes it only for the
-/// reply that turn answers, in its own conversation.
-pub const OWN_GROWTH: &str = "stream-output";
-
-/// The actions on the workspace's agents a sub-agent's turn keeps: those of its own team. The
-/// list itself guards them, and refuses a sub-agent every other
-/// ([`WorkspaceAgents::not_by_sub_agent`]).
-///
-/// What else is said of a sub-agent on its own item, what it made and how its harness works,
-/// is written by whatever works it, on the list as the sub-agent, and by no tool of its turn.
-const OWN_TEAM: [&str; 4] = [
-    "start-sub-agent",
-    "note-sub-agent",
-    "stop-sub-agent",
-    "sub-agent-stands",
-];
-
-/// The rules that keep a sub-agent from reading upward in `workspace`, and from writing
-/// there: no read of anything Chat or the workspace's agent roster keeps, and no action of
-/// Chat's but its [`OWN_WRITES`] and [`OWN_GROWTH`], and no action on the agent roster but
-/// what steers its own team. The refusal is more specific than the workspace-wide allow every
-/// agent's turn starts from, so it holds whatever else the turn carries.
-#[must_use]
-pub fn one_way(workspace: &str) -> Vec<Rule> {
-    let chat = TreePath::workspace(workspace).app(tilo_app_id::apps::CHAT);
-    let agents = TreePath::workspace(workspace).app(OWNER);
-    let mut rules = Vec::new();
-    for app in [&chat, &agents] {
-        // It reads nothing Chat or the agent roster keeps, and nothing there reaches outside.
-        rules.push(Rule::new(
-            app.clone(),
-            KindSet::READ.union(KindSet::OUTSIDE),
-            Answer::Deny,
-        ));
-        // No action of theirs is its to call, one added later included: the kept ones are
-        // named below. What a kept action changes is saved field by field, under no action,
-        // so those writes stay with what every agent's turn starts from.
-        rules.push(Rule::new(
-            app.clone().rest().any(Level::Action),
-            KindSet::ALL,
-            Answer::Deny,
-        ));
-    }
-    for (app, kind, items, kept) in [
-        (&chat, MESSAGES, "messages", &OWN_WRITES[..]),
-        (&chat, MESSAGES, "messages", &[OWN_GROWTH][..]),
-        (&agents, crate::KIND, "agents", &OWN_TEAM[..]),
-    ] {
-        // An action on one item of a collection is decided under the collection's own kind,
-        // which is the kind and the collection's field: both are named.
-        for held in [kind.to_owned(), format!("{kind}.{items}")] {
-            rules.extend(kept.iter().map(|action| {
-                Rule::new(
-                    app.clone().kind(held.clone()).rest().action(*action),
-                    KindSet::UNDOABLE,
-                    Answer::Allow,
-                )
-            }));
-        }
-    }
-    rules
-}
-
-/// Make `rules`, what a sub-agent's item bounds it to, keep the one-way rule in `workspace`:
-/// a rule written for Chat or the agent roster alone would be more specific than [`one_way`]
-/// and so could allow under it, so only what such a rule refuses stands; then the rule itself
-/// is added. What the bound narrows anywhere else stands as it is.
-pub(crate) fn keep_one_way(rules: &mut Vec<Rule>, workspace: &str) {
-    let chat = TreePath::workspace(workspace).app(tilo_app_id::apps::CHAT);
-    let agents = TreePath::workspace(workspace).app(OWNER);
-    rules.retain(|rule| {
-        rule.answer == Answer::Deny || (!chat.covers(&rule.node) && !agents.covers(&rule.node))
-    });
-    rules.extend(one_way(workspace));
-}
 
 /// How a sub-agent stands.
 #[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -283,16 +194,19 @@ fn not_a_sub_agent(agent: &Id) -> Refusal {
     Refusal::new(format!("{agent} is not a sub-agent"))
 }
 
-/// The agent invoking, and the one person it acts for.
+/// The agent invoking, and the person it works for: the one whose message its turn answers,
+/// first in its chain. Whoever else the chain names (the person its agent belongs to, the agents
+/// that started it) bounds what it does where every action is decided, not here.
 fn agent_acting(cx: &ActionCx) -> Result<(String, String), Refusal> {
     let acting = cx.invoked_by().ok_or_else(by_an_agent)?;
     let agent = acting.agent_id().ok_or_else(by_an_agent)?.to_owned();
-    match acting.people().as_slice() {
-        [person] if !person.is_empty() => Ok((agent, (*person).to_owned())),
-        _ => Err(Refusal::new(
-            "an agent starts and steers sub-agents for the one person it works for",
-        )),
-    }
+    let person = acting
+        .acted_for_person()
+        .filter(|person| !person.is_empty())
+        .ok_or_else(|| {
+            Refusal::new("an agent starts and steers sub-agents for a person it works for")
+        })?;
+    Ok((agent, person.to_owned()))
 }
 
 /// Refuses `text` that is no plain text of at most `most` bytes.

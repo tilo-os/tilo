@@ -458,21 +458,21 @@ impl Caller {
 
     /// The agent `agent_id`, named `name`, working under this roster agent's approval: a
     /// sub-agent its starter started. It acts as itself, so what it writes and says is its
-    /// own, for the same person. Its starter hands it the work as a person's device hands an
-    /// agent its session ([`Acting::handed`]), and every change it makes is signed by the
-    /// starter's key, whose approval bounds what that tree may do
-    /// ([`Acting::signed_by`]): it may do only what its person, an agent's preset and its
-    /// starter's approval all allow. It holds no approval of its own. Changes nothing for a caller not bound to its roster entry
+    /// own, for the same person, as one more actor in its starter's chain
+    /// ([`Acting::handed_on`]): the starter, the person its turn answers and the person the
+    /// starter belongs to all bound it. Every change it makes is signed by the starter's key,
+    /// whose approval bounds that tree too ([`Acting::signed_by`]). It holds no approval of
+    /// its own. Changes nothing for a caller not bound to its roster entry
     /// ([`Self::on_roster`]).
     #[must_use]
     pub fn working_under(mut self, agent_id: impl Into<String>, name: &str) -> Self {
         let Some(approved) = self.approved_agent().map(str::to_owned) else {
             return self;
         };
-        let Some(person) = self.acting.acted_for_person().map(str::to_owned) else {
+        if self.acting.acted_for_person().is_none() {
             return self;
-        };
-        self.acting = Acting::handed_agent(agent_id.into(), person);
+        }
+        self.acting = self.acting.handed_on(agent_id);
         self.approved_as = Some(approved);
         self.agent_name = None;
         self.named(name)
@@ -729,6 +729,41 @@ mod tests {
             appearance: None,
             signed: None,
         }
+    }
+
+    /// Ada's approved agent answers Bo: it acts for Bo, bounded by Ada. A sub-agent it starts
+    /// on that turn works for Bo under Ada's agent's approval, and records the whole chain, so
+    /// whatever decides its changes is bounded by Ada's agent and Ada as well.
+    #[test]
+    fn a_sub_agent_on_another_members_turn_carries_its_starters_whole_chain() {
+        let (ada, bo) = ([1; 32], [2; 32]);
+        let (ada_id, bo_id) = (hex::encode(ada), hex::encode(bo));
+        let scout = Caller::delegated_agent("scout", ada, [3; 32]).on_roster(7, bo);
+        assert_eq!(scout.acting().acted_for_person(), Some(bo_id.as_str()));
+        assert_eq!(
+            scout.acting().people(),
+            vec![bo_id.as_str(), ada_id.as_str()]
+        );
+        assert_eq!(scout.turn_person(), Some(&bo));
+
+        let helper = scout.clone().working_under("helper", "Helper");
+        let acting = helper.acting();
+        assert_eq!(acting.agent_id(), Some("helper"));
+        assert_eq!(
+            acting.acted_for_person(),
+            Some(bo_id.as_str()),
+            "it works for Bo"
+        );
+        assert!(acting.people().contains(&ada_id.as_str()), "{acting:?}");
+        assert!(
+            acting.nodes().iter().any(|node| *node == scout.acting()),
+            "its starter's whole tree: {acting:?}"
+        );
+        assert_eq!(helper.approved_agent(), Some("scout"));
+
+        // Ada's own turn records her once.
+        let hers = Caller::delegated_agent("scout", ada, [3; 32]).on_roster(7, ada);
+        assert_eq!(hers.acting().people(), vec![ada_id.as_str()]);
     }
 
     /// An agent goes by the name of the session its client named for the call, and by its own

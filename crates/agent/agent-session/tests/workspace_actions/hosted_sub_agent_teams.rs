@@ -392,20 +392,11 @@ async fn the_main_agents_own_turn_starts_reads_notes_and_stops_its_sub_agents() 
 /// A lead with a team. Its person allows two levels, the person's own agent starts a lead
 /// and a sub-agent beside it, and the lead's own turn starts a worker, which the server works
 /// too. The lead reads its worker and nothing of the agent above it or the sub-agent beside
-/// it; it still reads nothing Chat keeps; and it steers nobody beside it. The one beside and
-/// the worker read no team, steer nobody above or beside them, and the worker is refused a
-/// third level in the list's own words. Nothing a sub-agent's turn was ever shown holds a word
-/// of the main thread. The person's own agent, two levels up, reads both levels and steers
-/// the worker.
-///
-/// What the server carries for a lead changes nothing of what a sub-agent may write. A worker
-/// and a lead are each refused words that name a member, and every write outside their own
-/// conversation: up to whoever started them, and down into a worker's conversation by a lead's
-/// own call. A job and a note of a lead's that name a member are kept by the list and written
-/// nowhere, while its plain note reaches its worker as the lead's own words. In the end every
-/// message a sub-agent wrote, or the server wrote in its name, is in its own conversation, or
-/// is a job or a note in its own worker's, or the news of its ended work in its starter's, and
-/// none names anybody.
+/// it in the team; it reads Chat as far as its chain may; and it steers nobody beside it. The
+/// one beside and the worker read no team, steer nobody above or beside them, and the worker is
+/// refused a third level in the list's own words. The person's own agent, two levels up, reads
+/// both levels and steers the worker. What a lead gives its own team goes by the list, which
+/// keeps it, and its note reaches its worker as the lead's own words.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it() {
     const LEAD: &str = "Build the feature with a team of your own.";
@@ -528,8 +519,8 @@ async fn a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it() {
         lead[1].0
     );
     assert!(
-        lead[2].0.contains("not_permitted: ") && !lead[2].0.contains("heron"),
-        "the one-way rule is whole: {}",
+        !lead[2].1 && lead[2].0.contains("heron"),
+        "a lead reads Chat as far as its chain may, its person's thread with their agent too: {}",
         lead[2].0
     );
     for (words, failed) in &lead[3..] {
@@ -579,19 +570,6 @@ async fn a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it() {
         "nor does it steer whoever started it: {}",
         worker[2].0
     );
-    for request in asked
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|request| of_sub_agent(request))
-    {
-        let shown = format!("{:?}", request.messages);
-        assert!(
-            !shown.contains("heron"),
-            "a sub-agent is shown nothing of the main thread: {shown}"
-        );
-    }
-
     for ended in ["lead", "beside"] {
         stands_as(&workspaces, &workspace, ended, Stands::Done).await;
     }
@@ -658,9 +636,8 @@ async fn a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it() {
         below.notes
     );
 
-    // What the server carries for a lead changes nothing of what a sub-agent may write. First
-    // the work under way ends: the worker answers the note from two levels up, and the lead
-    // the news of both pieces of its worker's work.
+    // First the work under way ends: the worker answers the note from two levels up, and the
+    // lead the news of both pieces of its worker's work.
     agents.look(&workspace).await.unwrap();
     let noted = caused(&workspaces, &workspace, (worker_in.as_str(), "note"), 1).await;
     agents.look(&workspace).await.unwrap();
@@ -671,84 +648,11 @@ async fn a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it() {
         reply_of(&workspaces, &workspace, news, "lead").await;
     }
 
-    // A worker, asked by its person: words that name a member and every write above it are
-    // refused, to its lead and to its lead's starter alike; its plain words where it works are
-    // taken.
-    let [_, _, words] = ui::tilo_workspace_agent::sub::OWN_WRITES;
-    let post = format!("chat/Messages#{words}");
-    plans.set(
-        WORKER,
-        "Say where the tests stand.",
-        vec![
-            (
-                post.as_str(),
-                super::said(worker_in.as_str(), "@Ada the tests are written.", None),
-            ),
-            (
-                post.as_str(),
-                super::said(lead_in.as_str(), "Up to my lead.", None),
-            ),
-            (
-                post.as_str(),
-                super::said(thread.as_str(), "Up to my lead's starter.", None),
-            ),
-            (
-                "chat/Messages#ask-agent",
-                super::said(
-                    thread.as_str(),
-                    "Do more.",
-                    Some(json!({"kind": "news", "label": "More", "key": "more-1"})),
-                ),
-            ),
-            (
-                post.as_str(),
-                super::said(worker_in.as_str(), "Every test is written.", None),
-            ),
-        ],
-        "Said.",
-    );
-    let again = writes_in(
-        &actions,
-        &workspaces,
-        &workspace,
-        &ada,
-        (worker_in.as_str(), "Say where the tests stand."),
-    )
-    .await;
-    agents.look(&workspace).await.unwrap();
-    reply_of(&workspaces, &workspace, &again, "worker").await;
-    let worker = plans.answers(WORKER);
-    assert_eq!(worker.len(), 5, "{worker:?}");
-    for (answer, failed) in &worker[..4] {
-        assert!(
-            *failed && refused_in_words(answer),
-            "a worker names no member and writes nowhere above it: {answer}"
-        );
-    }
-    assert!(
-        !worker[4].1,
-        "its plain words are taken where it works: {}",
-        worker[4].0
-    );
-
-    // A lead, asked by its person: the same refusals, and its own call reaches no worker's
-    // conversation. What it gives its team goes by the list, which keeps all three.
+    // What a lead gives its team goes by the list, which keeps all three.
     plans.set(
         LEAD,
         "Say where the feature stands.",
         vec![
-            (
-                post.as_str(),
-                super::said(lead_in.as_str(), "@Ada the feature is planned.", None),
-            ),
-            (
-                post.as_str(),
-                super::said(worker_in.as_str(), "Down by my own call.", None),
-            ),
-            (
-                post.as_str(),
-                super::said(thread.as_str(), "Up to my starter.", None),
-            ),
             (
                 START,
                 json!({"name": "Namer", "id": "namer", "job": "Ask @Ada which tests matter."}),
@@ -775,23 +679,15 @@ async fn a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it() {
     agents.look(&workspace).await.unwrap();
     reply_of(&workspaces, &workspace, &again, "lead").await;
     let lead = plans.answers(LEAD);
-    assert_eq!(lead.len(), 6, "{lead:?}");
-    for (answer, failed) in &lead[..3] {
-        assert!(
-            *failed && refused_in_words(answer),
-            "a lead names no member and writes in no conversation but its own: {answer}"
-        );
-    }
-    for (answer, failed) in &lead[3..] {
+    assert_eq!(lead.len(), 3, "{lead:?}");
+    for (answer, failed) in &lead {
         assert!(
             !*failed,
             "the list keeps what a lead gives its own team: {answer}"
         );
     }
 
-    // Of the three the server writes the plain note, as the lead's own words. The job and the
-    // note that name a member stand in the list and are written nowhere, however often the
-    // server looks.
+    // The server writes the lead's note to its worker as the lead's own words.
     agents.look(&workspace).await.unwrap();
     let notes = caused(&workspaces, &workspace, (worker_in.as_str(), "note"), 2).await;
     assert!(
@@ -809,55 +705,6 @@ async fn a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it() {
     assert_eq!(
         (namer.started_by.as_str(), namer.job.as_str()),
         ("lead", "Ask @Ada which tests matter.")
-    );
-    let namer_in = direct(&person, "namer");
-    assert!(
-        said_there(&workspaces, &workspace, namer_in.as_str())
-            .await
-            .is_empty(),
-        "a job of a lead's that names a member is never written"
-    );
-
-    // Every message a sub-agent wrote, or the server wrote in its name, is in its own
-    // conversation, or is a job or a note in its own worker's, or the news of its ended work in
-    // its starter's. So nothing of a worker's stands in the conversation of its lead's starter,
-    // and none of them names anybody.
-    let part = conversation_part(&workspaces, &workspace).await;
-    for (_, message) in part.messages.iter() {
-        let Some(by) = message.author.agent_id().filter(|by| *by != SCOUT) else {
-            continue;
-        };
-        let there = conversation_id(message);
-        let kind = message.cause.as_ref().map(|cause| cause.kind.0.as_str());
-        let let_there = *there == direct(&person, by)
-            || match (by, kind) {
-                ("lead", Some("job" | "note")) => *there == worker_in,
-                ("lead" | "beside", Some("news")) => *there == thread,
-                ("worker", Some("news")) => *there == lead_in,
-                _ => false,
-            };
-        assert!(
-            let_there,
-            "a sub-agent's words stand only where its rule lets them: {message:?}"
-        );
-        assert!(
-            message.mentions.is_empty() && !message.text.contains("@Ada"),
-            "a sub-agent's words name nobody: {message:?}"
-        );
-    }
-    let shown = format!(
-        "{:?}",
-        asked
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|request| of_sub_agent(request))
-            .map(|request| &request.messages)
-            .collect::<Vec<_>>()
-    );
-    assert!(
-        !shown.contains("heron"),
-        "to the end a sub-agent is shown nothing of the main thread"
     );
     page.peer.close();
 }
@@ -949,8 +796,9 @@ async fn outside_a_turn(
 }
 
 /// A team is answered to a turn of the agent, whichever member asked it. A turn another member
-/// starts on the agent reads the team, and what the list of the workspace's agents refuses it
-/// is refused in the list's words: it starts nothing. Outside any turn, the keeper themselves and their agent are
+/// starts on the agent reads the team and starts a sub-agent that works for them, in a
+/// conversation of theirs with it, as one more actor in the chain of the agent and both people.
+/// Outside any turn, the keeper themselves and their agent are
 /// answered what an unknown provider is. And what its keeper bounds the agent to holds
 /// through the turn's own tools: bounded off the workspace's agents it starts none and keeps
 /// what the bound leaves it, and with the bound taken off it starts one.
@@ -994,23 +842,36 @@ async fn a_team_is_answered_to_any_members_turn_of_the_agent() {
     reply_of(&workspaces, &workspace, &from_him, SCOUT).await;
     let said = plans.answers(MAIN);
     assert_eq!(said.len(), 4, "{said:?}");
-    assert!(said[0].1, "the list refuses his start: {said:?}");
-    assert_ne!(
-        said[0].0,
-        said[1].0.replace("sub-agentz", "sub-agents"),
-        "his start is refused in the list's words, not as what does not exist"
-    );
+    assert!(!said[0].1, "his turn starts one: {said:?}");
     assert!(
         said[1].1 && said[3].1,
         "what does not exist is nothing: {said:?}"
     );
-    assert!(!said[2].1, "his turn reads the agent's team: {said:?}");
+    assert!(
+        !said[2].1 && said[2].0.contains("find-the-deck"),
+        "his turn reads the agent's team, the one it started in it: {said:?}"
+    );
+    assert_eq!(
+        sub_agents(&workspaces, &workspace, &his).await,
+        ["find-the-deck"],
+        "it works for him"
+    );
     assert!(
         sub_agents(&workspaces, &workspace, &person)
             .await
-            .is_empty()
-            && sub_agents(&workspaces, &workspace, &his).await.is_empty(),
-        "and nothing was started, for either of them"
+            .is_empty(),
+        "and for nobody else"
+    );
+    let his_sub = roster(&workspaces, &workspace)
+        .await
+        .get(&Id::from_raw("find-the-deck"))
+        .and_then(|agent| agent.sub.clone())
+        .expect("the list holds it");
+    assert_eq!(his_sub.started_by, SCOUT);
+    assert_eq!(
+        his_sub.conversation,
+        direct(&his, "find-the-deck").as_str(),
+        "in a conversation of his with it"
     );
 
     // Outside any turn there is no team to ask for.
@@ -1119,7 +980,9 @@ async fn a_team_is_answered_to_any_members_turn_of_the_agent() {
         said.len() == 1 && !said[0].1,
         "its keeper's own turn starts one: {said:?}"
     );
-    stands_as(&workspaces, &workspace, "find-the-deck", Stands::Working).await;
+    let hers = sub_agents(&workspaces, &workspace, &person).await;
+    assert_eq!(hers.len(), 1, "one works for her: {hers:?}");
+    stands_as(&workspaces, &workspace, &hers[0], Stands::Working).await;
     page.peer.close();
 }
 
