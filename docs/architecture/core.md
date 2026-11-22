@@ -156,6 +156,11 @@ is sealed for Ada and the agent, never for Ada alone. A device that runs the
 agent, the tilo.sh server included, holds the agent's keys and so opens
 exactly the records the agent reads, and no others. A device that cannot
 open the record an ask is about is not eligible to take its turn.
+A sub-agent or coding agent that an agent starts acts as its starter's
+approved key, narrowed to its own conversation: a grant only narrows what
+its giver holds. Any device of the person an agent acts for may approve
+that agent. A turn that has no approved caller writes its refusal into the
+conversation, with the reason, and ends.
 
 An agent sandbox on tilo.sh is one workspace. Whether that workspace also
 has a machine for terminal commands, Browser tabs, or Linux and Windows apps
