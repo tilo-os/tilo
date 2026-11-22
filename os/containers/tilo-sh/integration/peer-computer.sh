@@ -94,7 +94,12 @@ log_in_and_show() {
   as_computer "$tilo" login "$ticket" >>"$logs/login.log" 2>&1 \
     || { kill "$add" 2>/dev/null || true; return 1; }
   wait "$add" || say "the person's computer did not finish adding this one"
-  wait_for 120 "the holder shows the folder" shown
+  wait_for 120 "the holder shows the folder" shown || {
+    say "what this computer says of its folders:"
+    as_computer "$tilo" folders >&2 || true
+    as_computer "$tilo" status >&2 || true
+    return 1
+  }
 }
 # Unmount whatever the scratch homes still have mounted.
 unmount_scratch() {
