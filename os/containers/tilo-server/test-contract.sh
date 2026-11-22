@@ -23,7 +23,7 @@ for path in "$compose" "$config" "$readme" "$build" "$binaries"; do
   [ -f "$path" ] || fail "missing $(basename "$path")"
 done
 
-# State must outlive the container. Enrollment creates only the scoped host
+# State must outlive the container. A ticket's login leaves only the scoped host
 # identity here; the user's root private key never enters this deployment.
 need "$compose" "./identity:/var/lib/tilo:Z"
 need "$compose" "tilo-server-state:/var/lib/tilo-server:Z"
@@ -44,13 +44,16 @@ assert cfg["iroh_listen"] == "0.0.0.0:4433"
 assert cfg["trust_policy"] == {"kind": "allow_matching_user"}
 PY
 
-need "$readme" "Pair home server"
+need "$readme" "tilo device add --server"
+need "$readme" "TILO_TICKET"
 
-# The image packages programs t built: the server, its admin and its enroll program come from
-# the staged context, and nothing in the image compiles.
+# The image packages programs t built: the server, its admin, and the command and daemon a
+# volume first booting as one of the person's devices runs, from the staged context; nothing in
+# the image compiles.
 need "$containerfile" "COPY bin/tilo-server /usr/libexec/tilo/tilo-server"
 need "$containerfile" "COPY bin/tilo-server-admin /usr/libexec/tilo/tilo-server-admin"
-need "$containerfile" "COPY bin/tilo-enroll /usr/libexec/tilo/tilo-enroll"
+need "$containerfile" "COPY bin/tilo /usr/bin/tilo"
+need "$containerfile" "COPY bin/tilo-runtime /usr/bin/tilo-runtime"
 forbid "$containerfile" 'COPY bin/fs'
 forbid "$containerfile" "cargo build"
 forbid "$containerfile" "--mount=type=cache"
@@ -64,8 +67,8 @@ need "$containerfile" "microdnf remove -y --setopt=protected_packages= openssl-l
 # The programs are one check's, thin LTO and read back off the ELF, from one feature resolution
 # per image. Thin LTO is
 # the default; only a development image's build asks for none, and the server image's does not.
-need "$binaries" "packages+=(-p tilo-server --bins)"
-need "$binaries" "bins+=(tilo-server tilo-server-admin tilo-enroll)"
+need "$binaries" "packages+=(-p tilo-server --bin tilo-server --bin tilo-server-admin"
+need "$binaries" "bins+=(tilo-server tilo-server-admin tilo tilo-runtime)"
 need "$binaries" ': "${TILO_SERVER_LTO:=thin}"'
 need "$binaries" "thin) export CARGO_PROFILE_RELEASE_LTO=thin ;;"
 need "$binaries" 'bash os/scripts/verify-elf-hardening.sh "$out"'
@@ -74,7 +77,7 @@ need "$binaries" 'bash os/scripts/verify-elf-hardening.sh "$out"'
 # passed by digest; the binaries are the check's output, staged with the entrypoint and the unit
 # the image copies; nothing else enters the context, and a commit time is no input.
 need "$build" "bash os/containers/tilo-server/test-contract.sh"
-need "$build" 'for bin in tilo-server tilo-server-admin tilo-enroll; do'
+need "$build" 'for bin in tilo-server tilo-server-admin tilo tilo-runtime; do'
 need "$build" '--build-arg "RPMS_REF=$rpms_ref"'
 need "$build" 'cp os/containers/tilo-server/tilo-home-peer "$context/os/containers/tilo-server/"'
 need "$build" 'cp os/usr/lib/systemd/system/tilo-server.service "$context/os/usr/lib/systemd/system/"'
@@ -83,10 +86,11 @@ forbid "$build" 'SOURCE_DATE_EPOCH'
 forbid "$build" "sccache"
 
 need "$compose" "./config:/etc/tilo:Z"
+need "$compose" "TILO_TICKET"
 forbid "$compose" "full-replica"
 forbid "$entrypoint" "/usr/bin/fs"
 need "$entrypoint" "/usr/libexec/tilo/tilo-server"
-need "$entrypoint" "/usr/libexec/tilo/tilo-enroll enroll"
+need "$entrypoint" "/usr/bin/tilo login"
 need "$entrypoint" "/var/lib/tilo-server/decommissioned"
 need "$entrypoint" "exec /usr/bin/busybox sleep infinity"
 

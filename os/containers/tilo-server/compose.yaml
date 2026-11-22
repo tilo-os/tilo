@@ -1,8 +1,9 @@
 # A user-owned, always-on Tilo server.
 #
-# Create the identity/config directories, then run `podman compose up -d` and
-# approve the nearby server from Tilo Settings. Its identity is provisioned over
-# the LAN without copying a token.
+# Create the identity/config directories, make a ticket with `tilo device add
+# --server` on a computer that holds the person's identity, then run `podman
+# compose up -d` with it in TILO_TICKET. The ticket is spent once, on the
+# volume's first start.
 services:
   tilo-server:
     image: ${TILO_SERVER_IMAGE:-registry.tilo.so/tilo/tilo-server:latest}
@@ -10,15 +11,19 @@ services:
     restart: unless-stopped
     environment:
       TILO_DEVICE_NAME: ${TILO_DEVICE_NAME:-Home server}
-    # Enrollment uses authenticated LAN broadcast on UDP 23831. A bridged
-    # container cannot receive/reply on the physical LAN broadcast domain, so
-    # the server deliberately joins the host network.
+      # The one secret a new volume joins with. Ignored once the volume holds
+      # its device key and login, so a restart never spends it.
+      TILO_TICKET: ${TILO_TICKET:-}
+    # The ticket's certify call reaches the issuing device over the peer
+    # network: a bridged container works; this deliberately joins the host
+    # network so the server's iroh endpoint is reachable on the machine's own
+    # address.
     network_mode: host
     volumes:
       # The server configuration, written on first start.
       - ./config:/etc/tilo:Z
-      # A pre-enrolled, host-capable device identity. Never put a user-root
-      # private key in this directory or image.
+      # A device key, certificate and login. Never put a user-root private key
+      # here or in the image.
       - ./identity:/var/lib/tilo:Z
       # CRDT snapshots, offline pending queues, metrics, and the stable Iroh
       # endpoint secret. Back this volume up as server state.

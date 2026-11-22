@@ -6,17 +6,27 @@ if [ -e /var/lib/tilo-server/decommissioned ]; then
     exec /usr/bin/busybox sleep infinity
 fi
 
-if [ ! -s /var/lib/tilo/device/cert.bin ]; then
-    enrollment_source="${TILO_ENROLLMENT_TOKEN_FILE:-/run/secrets/tilo-enrollment-token}"
-    token_file=/var/lib/tilo/enrollment-token.txt
-    if [ -s "$enrollment_source" ]; then
-        umask 077
-        /usr/bin/busybox tr -d '[:space:]' < "$enrollment_source" > "$token_file"
+# This machine's identity and the login that joins it live on the volume an operator persists,
+# so one ticket is spent once per volume, never once per start.
+TILO_IDENTITY_ROOT=${TILO_IDENTITY_ROOT:-/var/lib/tilo}
+XDG_STATE_HOME=${XDG_STATE_HOME:-$TILO_IDENTITY_ROOT/state}
+export TILO_IDENTITY_ROOT XDG_STATE_HOME
+
+# A volume that already holds its device key, certificate and login is one of the person's
+# devices: a ticket handed to it is left unspent. An empty volume is a machine joining an
+# existing owner, and the one secret that does it is the ticket `tilo device add` printed on an
+# owner device.
+if [ ! -s "$TILO_IDENTITY_ROOT/device/cert.bin" ] \
+    || [ ! -s "$XDG_STATE_HOME/tilo/device/login.json" ]; then
+    no_identity='no identity on this volume: make a ticket with `tilo device add` and pass it as TILO_TICKET'
+    if [ -z "${TILO_TICKET:-}" ]; then
+        echo "$no_identity" >&2
+        exit 1
     fi
-    /usr/libexec/tilo/tilo-enroll enroll --token-file "$token_file" \
-        --identity-root /var/lib/tilo \
-        --label "${TILO_DEVICE_NAME:-Home server}" --timeout 270
-    /usr/bin/busybox rm -f "$token_file"
+    /usr/bin/tilo login "$TILO_TICKET" --label "${TILO_DEVICE_NAME:-Home server}" || {
+        echo "$no_identity" >&2
+        exit 1
+    }
 fi
 
 if [ ! -s /etc/tilo/server.toml ]; then
