@@ -5,7 +5,7 @@
     clippy::indexing_slicing,
     reason = "a failed unwrap or index in a test is its assertion"
 )]
-// One test binary instead of five: each tests/*.rs linked this whole crate as a
+// One test binary instead of four: each tests/*.rs linked this whole crate as a
 // binary of its own. #[path] keeps the files where they are, and nextest runs
 // each test in a process of its own, so the isolation separate binaries gave
 // them stays. A test that starts itself again as a helper process selects
@@ -16,8 +16,6 @@
 // entry every module's tests start.
 tilo_automerge_isolate::test_worker!();
 
-#[path = "admission.rs"]
-mod admission;
 #[path = "device_host.rs"]
 mod device_host;
 #[path = "device_mcp.rs"]

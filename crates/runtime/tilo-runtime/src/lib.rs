@@ -20,7 +20,6 @@ mod daemon;
 #[cfg(target_os = "macos")]
 mod i18n;
 pub mod key_sessions;
-pub mod mcp_process;
 pub mod offload;
 mod os_search;
 pub mod personal_devices;
@@ -41,10 +40,6 @@ pub const BLOB_SOCKET: &str = "blobs.sock";
 /// The profile's workspace files, served read only (`tilo-file-provider`).
 pub const FILES_SOCKET: &str = "files.sock";
 
-/// Joins a workspace another host governs from an invitation, answering the
-/// joined workspace's id.
-pub type Joiner = std::sync::Arc<dyn Fn(&str) -> io::Result<String> + Send + Sync>;
-
 /// One running service session over a profile: the host's identity,
 /// collaboration and content services.
 pub trait RuntimeServices: Sized {
@@ -55,21 +50,6 @@ pub trait RuntimeServices: Sized {
     /// it, so whoever waits can tell a slow start from a stuck one. Holds the
     /// profile exclusively until dropped.
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self>;
-
-    /// Start an isolated admission session with the already enrolled device
-    /// owner's identity. This must only verify that identity: no provisioning,
-    /// certificate renewal or identity/fleet persistence is permitted.
-    fn start_admission_reporting(
-        root: &Path,
-        owner_uid: u32,
-        stage: &mut dyn FnMut(&str),
-    ) -> io::Result<Self> {
-        let _ = (root, owner_uid, stage);
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "this host has no native admission profile",
-        ))
-    }
 
     /// [`Self::start_reporting`] for app development: builds under
     /// development, which are not installed, are served too. A host without
@@ -122,12 +102,6 @@ pub trait RuntimeServices: Sized {
                 actor.clone(),
             ))
         }))
-    }
-
-    /// How this host joins workspaces other hosts govern; `None` for a host
-    /// that joins through its own surfaces.
-    fn joiner(&self) -> Option<Joiner> {
-        None
     }
 
     /// Spawn `command` as `app_id`, connected to this session's services.

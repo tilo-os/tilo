@@ -8,6 +8,9 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+use tilo_mcp::lines::{
+    Frame, MAX_REQUEST_BYTES, mcp_answer, read_frame, serve_lines, spawn_reader, write_reply,
+};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 tilo_test_env::scenario! {
@@ -133,7 +136,6 @@ tilo_test_env::scenario! {
                             pid: 1,
                             workspace: "workspace".into(),
                         },
-                        None,
                         &search,
                     )
                     .unwrap();
@@ -187,7 +189,6 @@ tilo_test_env::scenario! {
                         pid: 1,
                         workspace: "workspace".into(),
                     },
-                    None,
                     &search,
                 )
             })
@@ -237,6 +238,121 @@ tilo_test_env::scenario! {
             client.delivered, reply,
             "the whole reply reached the client while the stream is open"
         );
+    }
+}
+
+tilo_test_env::scenario! {
+    #[expect(
+        clippy::naive_bytecount,
+        reason = "counts the newlines of one short test reply"
+    )]
+    fn the_stdio_host_frames_bounded_lines_and_answers_as_requests_finish;
+
+    phase bounded_framing_recovers_after_an_oversized_line;
+    {
+        let mut bytes = vec![b'x'; MAX_REQUEST_BYTES + 1];
+        bytes.extend_from_slice(b"\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n");
+        let mut input = std::io::BufReader::new(bytes.as_slice());
+
+        assert_eq!(read_frame(&mut input).unwrap(), Frame::TooLong);
+        let Frame::Line(next) = read_frame(&mut input).unwrap() else {
+            panic!("expected the complete request after the oversized line");
+        };
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&next).unwrap()["method"],
+            "ping"
+        );
+        assert_eq!(read_frame(&mut input).unwrap(), Frame::Eof);
+    }
+
+    phase line_at_the_one_mib_limit_is_accepted;
+    {
+        let mut bytes = vec![b' '; MAX_REQUEST_BYTES];
+        bytes.push(b'\n');
+        let mut input = std::io::BufReader::new(bytes.as_slice());
+        let Frame::Line(line) = read_frame(&mut input).unwrap() else {
+            panic!("line at limit must be accepted");
+        };
+        assert_eq!(line.len(), MAX_REQUEST_BYTES);
+    }
+
+    phase framing_joins_lines_split_across_buffer_refills;
+    {
+        // A three-byte buffer forces every line to span several `fill_buf` calls,
+        // including a refill that starts exactly at a newline.
+        let bytes = b"abcdef\r\n\nxy\nlast";
+        let mut input = std::io::BufReader::with_capacity(3, bytes.as_slice());
+        assert_eq!(
+            read_frame(&mut input).unwrap(),
+            Frame::Line(b"abcdef".to_vec())
+        );
+        assert_eq!(read_frame(&mut input).unwrap(), Frame::Line(Vec::new()));
+        assert_eq!(read_frame(&mut input).unwrap(), Frame::Line(b"xy".to_vec()));
+        assert_eq!(
+            read_frame(&mut input).unwrap(),
+            Frame::Line(b"last".to_vec())
+        );
+        assert_eq!(read_frame(&mut input).unwrap(), Frame::Eof);
+    }
+
+    phase protocol_writer_emits_one_json_line_and_flushes;
+    {
+        #[derive(Default)]
+        struct Output {
+            bytes: Vec<u8>,
+            flushes: usize,
+        }
+        impl std::io::Write for Output {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushes += 1;
+                Ok(())
+            }
+        }
+        let mut output = Output::default();
+        write_reply(
+            &mut output,
+            &serde_json::json!({"jsonrpc":"2.0","id":1,"result":{}}),
+        )
+        .unwrap();
+        assert_eq!(output.flushes, 1);
+        assert_eq!(output.bytes.last(), Some(&b'\n'));
+        assert_eq!(
+            output.bytes.iter().filter(|byte| **byte == b'\n').count(),
+            1
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.bytes).unwrap();
+    }
+
+    phase parallel_requests_complete_out_of_order;
+    // The stdio host answers one session's requests as they finish, not in
+    // the order asked: a `tilo_status` and one that cancels answer while two
+    // invokes wait, and every reply is one whole line.
+    {
+        use tilo_mcp::test_hosts::{HeldHost, overlapping_lines};
+        let host = HeldHost::default();
+        let server = std::sync::Arc::new(tilo_mcp::McpServer::new(
+            host.clone(),
+            "workspace".into(),
+            "owner".into(),
+        ));
+        let (client, end) = std::os::unix::net::UnixStream::pair().unwrap();
+        let input = spawn_reader(end.try_clone().unwrap()).unwrap();
+        let serving = std::thread::spawn(move || {
+            let mut writer = end;
+            serve_lines(
+                tilo_rt::try_app().unwrap(),
+                input,
+                &mut writer,
+                |request| mcp_answer(&server, request),
+                Some(&mut || Ok(())),
+            )
+        });
+        overlapping_lines(&host, &client);
+        serving.join().unwrap().unwrap();
     }
 }
 
@@ -613,29 +729,6 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn the_command_line_names_one_mode_and_reads_the_names_it_had;
 
-    phase owner_action_is_bounded_and_exclusive_with_other_modes;
-    {
-        let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
-        let parsed = args(&["--profile", "/run/example-profile", "--owner-action", "{}"]).unwrap();
-        assert_eq!(
-            parsed.mode,
-            Mode::OwnerAction {
-                request: "{}".into()
-            }
-        );
-        for invalid in [
-            vec!["--owner-action"],
-            vec!["--owner-action", ""],
-            vec!["--owner-action", "{}", "--daemon"],
-            vec!["--owner-action", "{}", "--connect"],
-            vec!["--owner-action", "{}", "--dev"],
-            vec!["--owner-action", "{}", "--standalone"],
-        ] {
-            assert!(args(&invalid).is_err(), "{invalid:?}");
-        }
-        assert!(args(&["--owner-action", &"x".repeat(32 * 1024 + 1)]).is_err());
-    }
-
     phase run_app_reads_the_workspace_flag_it_had_another_name_for;
     // A launcher outside this repository passes the flag by the name it had
     // before the workspace was called a workspace.
@@ -792,40 +885,6 @@ tilo_test_env::scenario! {
             ],
         ] {
             assert!(args(refused).is_err(), "{refused:?}");
-        }
-    }
-
-    phase admission_daemon_requires_an_explicit_non_root_owner_and_no_dev_bypass;
-    {
-        let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
-        let parsed = args(&["--profile", "/run/admission", "--admission-daemon", "1000"]).unwrap();
-        assert_eq!(parsed.mode, Mode::AdmissionDaemon { owner_uid: 1000 });
-        for invalid in [
-            vec!["--admission-daemon", "1000"],
-            vec!["--profile", "/run/admission", "--admission-daemon"],
-            vec!["--profile", "/run/admission", "--admission-daemon", "0"],
-            vec![
-                "--profile",
-                "/run/admission",
-                "--admission-daemon",
-                "unknown",
-            ],
-            vec![
-                "--profile",
-                "/run/admission",
-                "--admission-daemon",
-                "1000",
-                "--dev",
-            ],
-            vec![
-                "--profile",
-                "/run/admission",
-                "--admission-daemon",
-                "1000",
-                "--daemon",
-            ],
-        ] {
-            assert!(args(&invalid).is_err(), "{invalid:?}");
         }
     }
 

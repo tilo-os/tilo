@@ -26,26 +26,13 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 #[derive(Debug, PartialEq, Eq)]
 pub enum Mode {
     Daemon,
-    /// An isolated native-admission profile of an existing device owner.
-    AdmissionDaemon {
-        owner_uid: u32,
-    },
     Connect,
-    /// Invoke the canonical owner action server while holding the profile
-    /// exclusively. Refuses if a daemon already serves it; no extra IPC server.
-    OwnerAction {
-        request: String,
-    },
     RunApp {
         app_id: String,
         /// A workspace this profile joined; the profile's own workspace when `None`.
         workspace: Option<String>,
         executable: OsString,
         args: Vec<OsString>,
-    },
-    /// Join the workspace an invitation names, through the running daemon.
-    Join {
-        invitation: String,
     },
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -126,32 +113,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
                 ));
             }
             Some("--daemon") if mode.is_none() => mode = Some(Mode::Daemon),
-            Some("--admission-daemon") if mode.is_none() => {
-                let owner_uid = arguments
-                    .next()
-                    .and_then(|arg| arg.into_string().ok())
-                    .and_then(|arg| arg.parse::<u32>().ok())
-                    .filter(|uid| *uid != 0)
-                    .ok_or_else(|| invalid("--admission-daemon requires a non-root owner UID"))?;
-                mode = Some(Mode::AdmissionDaemon { owner_uid });
-            }
             Some("--connect") if mode.is_none() => mode = Some(Mode::Connect),
-            Some("--owner-action") if mode.is_none() => {
-                let request = arguments
-                    .next()
-                    .and_then(|arg| arg.into_string().ok())
-                    .filter(|request| !request.is_empty() && request.len() <= 32 * 1024)
-                    .ok_or_else(|| invalid("--owner-action requires bounded invocation JSON"))?;
-                mode = Some(Mode::OwnerAction { request });
-            }
-            Some("--join") if mode.is_none() => {
-                let invitation = arguments
-                    .next()
-                    .and_then(|arg| arg.into_string().ok())
-                    .filter(|invitation| !invitation.is_empty() && invitation.len() <= 384 * 1024)
-                    .ok_or_else(|| invalid("--join requires an invitation"))?;
-                mode = Some(Mode::Join { invitation });
-            }
             Some("--run-app") if mode.is_none() => {
                 mode = Some(parse_run_app(&mut arguments)?);
                 break;
@@ -172,12 +134,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     if !profile.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
     }
-    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect [--standalone] [--device NAME] [--workspace ID], --owner-action INVOCATION_JSON, --join INVITATION, --run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
-    if matches!(mode, Mode::AdmissionDaemon { .. }) && !explicit_profile {
-        return Err(invalid(
-            "native admission requires an explicit isolated profile",
-        ));
-    }
+    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect [--standalone] [--device NAME] [--workspace ID], or --run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE"))?;
     if dev && mode != Mode::Daemon {
         return Err(invalid("--dev starts a daemon: use it with --daemon"));
     }
@@ -782,19 +739,10 @@ pub fn serve<S: RuntimeServices + Send + Sync + 'static>(
     )
 }
 
-/// Start the existing native endpoint under an existing-owner admission policy.
-pub fn serve_admission<S: RuntimeServices + Send + Sync + 'static>(
-    profile: &Path,
-    owner_uid: u32,
-) -> io::Result<()> {
-    serve_profile::<S>(profile, StartupPolicy::Admission { owner_uid })
-}
-
 #[derive(Clone, Copy)]
 enum StartupPolicy {
     Normal,
     Development,
-    Admission { owner_uid: u32 },
 }
 
 fn serve_profile<S: RuntimeServices + Send + Sync + 'static>(
@@ -807,9 +755,6 @@ fn serve_profile<S: RuntimeServices + Send + Sync + 'static>(
     let session = Arc::new(match policy {
         StartupPolicy::Development => S::start_in_dev_mode(profile, &mut stage)?,
         StartupPolicy::Normal => S::start_reporting(profile, &mut stage)?,
-        StartupPolicy::Admission { owner_uid } => {
-            S::start_admission_reporting(profile, owner_uid, &mut stage)?
-        }
     });
     let host = session.action_provider()?;
     let search = crate::os_search::start(host, session.workspace(), session.actor())?;
@@ -828,7 +773,6 @@ fn serve_profile<S: RuntimeServices + Send + Sync + 'static>(
     let endpoint = Endpoint {
         session_factory: session.mcp_session_factory(session.workspace())?,
         status,
-        joiner: session.joiner(),
         search,
         media: session.media(),
         other_devices: session.other_devices(),
@@ -840,7 +784,6 @@ fn serve_profile<S: RuntimeServices + Send + Sync + 'static>(
 struct Endpoint<H> {
     session_factory: tilo_mcp::SessionFactory<H>,
     status: Status,
-    joiner: Option<crate::Joiner>,
     /// Opens the host search results another process was handed.
     search: Arc<tilo_os_search::OsSearch>,
     /// Where answers read the content actions produced.
@@ -888,7 +831,6 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             }
             let factory = Arc::clone(&self.session_factory);
             let status = self.status.clone();
-            let joiner = self.joiner.clone();
             let search = Arc::clone(&self.search);
             let media = self.media.clone();
             let other_devices = self.other_devices.clone();
@@ -948,9 +890,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
                             return;
                         }
                     };
-                    if let Err(error) =
-                        serve_connection(stream, input, &server, &status, joiner.as_ref(), &search)
-                    {
+                    if let Err(error) = serve_connection(stream, input, &server, &status, &search) {
                         tracing::debug!(%error, "native runtime client disconnected");
                     }
                 })?;
@@ -972,7 +912,6 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     input: impl Read + Send + 'static,
     server: &Arc<McpServer<H>>,
     status: &Status,
-    joiner: Option<&crate::Joiner>,
     search: &tilo_os_search::OsSearch,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
@@ -991,10 +930,6 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
             }
             Some("activate") => {
                 Box::pin(async move { Ok(Some(answer_activate(server, &value).await)) })
-            }
-            Some("join") => {
-                let answer = answer_join(joiner, &value);
-                Box::pin(async move { Ok(Some(answer)) })
             }
             Some(tilo_host_search::OPEN) => {
                 Box::pin(async move { Ok(Some(answer_open(search, &value).await)) })
@@ -1037,55 +972,6 @@ pub(crate) async fn answer_open(search: &tilo_os_search::OsSearch, request: &Val
     match search.open(entry).await {
         Ok(()) => json!({"opened": true}),
         Err(error) => json!({"error": format!("{error:?}")}),
-    }
-}
-
-/// A native join request's answer: the joined workspace, or why not.
-fn answer_join(joiner: Option<&crate::Joiner>, request: &Value) -> Value {
-    let Some(joiner) = joiner else {
-        return json!({"error": "this host joins workspaces through its own surfaces"});
-    };
-    let Some(invitation) = request.get("invitation").and_then(Value::as_str) else {
-        return json!({"error": "a join request needs an invitation"});
-    };
-    match joiner(invitation) {
-        Ok(workspace) => json!({"workspace": workspace}),
-        Err(error) => json!({"error": error.to_string()}),
-    }
-}
-
-/// Join the workspace `invitation` names, through the running daemon, and print
-/// the joined workspace's id.
-pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
-    ensure_running(profile)?;
-    let mut stream = tilo_files::native::socket::connect(&profile.join("native.sock"))?;
-    let mut request = serde_json::to_vec(&json!({"native": "join", "invitation": invitation}))
-        .map_err(io::Error::other)?;
-    request.push(b'\n');
-    stream.write_all(&request)?;
-    let mut reply = Vec::new();
-    BufReader::new(stream)
-        .take(16_385)
-        .read_until(b'\n', &mut reply)?;
-    let reply: Value = serde_json::from_slice(&reply).map_err(io::Error::other)?;
-    match (
-        // A daemon older than this name answers `workspace`.
-        reply
-            .get("workspace")
-            .or_else(|| reply.get("workspace"))
-            .and_then(Value::as_str),
-        reply.get("error"),
-    ) {
-        (Some(workspace), None) => {
-            println!("{workspace}");
-            Ok(())
-        }
-        (_, error) => Err(io::Error::other(
-            error
-                .and_then(Value::as_str)
-                .unwrap_or("invalid join reply")
-                .to_owned(),
-        )),
     }
 }
 

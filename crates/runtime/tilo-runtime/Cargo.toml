@@ -182,6 +182,3 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
-
-[target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["process"] }

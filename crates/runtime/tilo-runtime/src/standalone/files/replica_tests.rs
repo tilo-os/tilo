@@ -40,6 +40,27 @@ fn run<T>(future: impl std::future::Future<Output = T>) -> T {
     tilo_rt::app().block_on(Box::pin(future)).unwrap()
 }
 
+/// Join `device` to the workspace `invitation` names, holding its files from
+/// the join on as the runtime does for the workspaces a profile joined.
+/// Answers the joined workspace's id.
+fn join(device: &Standalone, invitation: &str) -> String {
+    let workspaces = std::sync::Arc::clone(&device.workspaces);
+    let (workspace, name) = run(async move {
+        let workspace = workspaces.copies().join_member(invitation).await?;
+        let name = workspaces
+            .copies()
+            .member_copy(workspace)
+            .await
+            .map_or_else(|| "Workspace".to_owned(), |(name, _)| name);
+        Ok::<_, String>((workspace, name))
+    })
+    .unwrap();
+    if let Some(replicas) = &device.replicas {
+        let _ = super::super::super::hold_files(replicas, &name, workspace);
+    }
+    workspace.to_string()
+}
+
 /// A device certificate of `root` for `key`, as an enrollment issues one.
 fn certificate(
     root: &SigningKey,
@@ -213,7 +234,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     if let Some(invitation) = std::env::var_os(PERSON_INVITATION) {
         let profile = isolated_root(TEST).unwrap();
         let device = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
-        device.joiner().unwrap()(invitation.to_str().unwrap()).unwrap();
+        join(&device, invitation.to_str().unwrap());
         loop {
             std::thread::sleep(Duration::from_secs(1));
         }
@@ -248,14 +269,14 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     .unwrap();
 
     // The member joins and holds the workspace's files at a folder.
-    let joined = member.joiner().unwrap()(&run(invitation(
+    let issued = run(invitation(
         &server,
         &workspace,
         &shell,
         Some(member_device.user_public_key),
         1,
-    )))
-    .unwrap();
+    ));
+    let joined = join(&member, &issued);
     assert_eq!(joined, workspace);
     let member_folder = member
         .joined_files_folder(&workspace)
@@ -340,7 +361,7 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
     if let Some(invitation) = std::env::var_os(JOINER_INVITATION) {
         let profile = isolated_root(KEPT_TEST).unwrap();
         let device = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
-        device.joiner().unwrap()(invitation.to_str().unwrap()).unwrap();
+        join(&device, invitation.to_str().unwrap());
         loop {
             std::thread::sleep(Duration::from_secs(1));
         }
@@ -377,14 +398,14 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
     .unwrap();
 
     // The member joins and holds the workspace's files at a folder.
-    let joined = member.joiner().unwrap()(&run(invitation(
+    let issued = run(invitation(
         &server,
         &workspace,
         &shell,
         Some(member_device.user_public_key),
         1,
-    )))
-    .unwrap();
+    ));
+    let joined = join(&member, &issued);
     assert_eq!(joined, workspace);
     let member_folder = member
         .joined_files_folder(&workspace)
@@ -488,14 +509,14 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
         Ok::<_, String>(created.workspace)
     })
     .unwrap();
-    let joined = member.joiner().unwrap()(&run(invitation(
+    let issued = run(invitation(
         &server,
         &workspace,
         &shell,
         Some(member_device.user_public_key),
         1,
-    )))
-    .unwrap();
+    ));
+    let joined = join(&member, &issued);
     assert_eq!(joined, workspace);
     let member_folder = member
         .joined_files_folder(&workspace)
@@ -646,7 +667,7 @@ fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole()
     if let Some(invitation) = std::env::var_os(PERSON_INVITATION) {
         let profile = isolated_root(CLONE_TEST).unwrap();
         let device = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
-        device.joiner().unwrap()(invitation.to_str().unwrap()).unwrap();
+        join(&device, invitation.to_str().unwrap());
         loop {
             std::thread::sleep(Duration::from_secs(1));
         }
@@ -686,14 +707,14 @@ fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole()
         Ok::<_, String>(created.workspace)
     })
     .unwrap();
-    let joined = member.joiner().unwrap()(&run(invitation(
+    let issued = run(invitation(
         &server,
         &workspace,
         &shell,
         Some(member_device.user_public_key),
         1,
-    )))
-    .unwrap();
+    ));
+    let joined = join(&member, &issued);
     assert_eq!(joined, workspace);
     let member_folder = member
         .joined_files_folder(&workspace)
@@ -801,7 +822,7 @@ fn serve_as_member(invitation: &std::ffi::OsStr) -> ! {
         .try_init();
     let profile = isolated_root(WIPED_TEST).unwrap();
     let device = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
-    device.joiner().unwrap()(invitation.to_str().unwrap()).unwrap();
+    join(&device, invitation.to_str().unwrap());
     loop {
         std::thread::sleep(Duration::from_secs(1));
     }
@@ -856,6 +877,44 @@ fn wait_for_files(
             said(),
         );
         std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Wait until the server keeps every file written on the member: all their
+/// bytes, and no blob it still lacks.
+fn wait_until_kept(
+    server: &tilo_server::Server,
+    workspace: &str,
+    kept: &Path,
+    written_files: &[(PathBuf, Vec<u8>)],
+    started: std::time::Instant,
+    said: &dyn Fn() -> String,
+) {
+    let written = written_files
+        .iter()
+        .map(|(_, bytes)| u64::try_from(bytes.len()).unwrap())
+        .fold(0, u64::saturating_add);
+    // Sealing and manifests add bytes: the bytes alone may add up while a few
+    // small files are still on the member alone, which the wipe would lose.
+    let workspaces = server.workspaces().unwrap();
+    let content = server.content();
+    let bound = tilo_test_env::hang_bound().saturating_sub(WAIT_LEAD);
+    while bytes_under(kept) < written
+        || run(tilo_server::kept_content::lacking(
+            workspaces, &content, workspace,
+        )) != Some(0)
+    {
+        assert!(
+            started.elapsed() <= bound,
+            "the server keeps {} of the {written} bytes written on the member, lacking {:?} \
+             blobs:\n{}",
+            bytes_under(kept),
+            run(tilo_server::kept_content::lacking(
+                workspaces, &content, workspace
+            )),
+            said(),
+        );
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -934,30 +993,7 @@ fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
         .join("state")
         .join(tilo_server::content::DIRECTORY)
         .join(&workspace);
-    let written = written_files
-        .iter()
-        .map(|(_, bytes)| u64::try_from(bytes.len()).unwrap())
-        .fold(0, u64::saturating_add);
-    // Sealing and manifests add bytes: the bytes alone may add up while a few
-    // small files are still on the member alone, which the wipe would lose.
-    let content = server.content();
-    while bytes_under(&kept) < written
-        || run(tilo_server::kept_content::lacking(
-            workspaces, &content, &workspace,
-        )) != Some(0)
-    {
-        assert!(
-            started.elapsed() <= bound,
-            "the server keeps {} of the {written} bytes written on the member, lacking {:?} \
-             blobs:\n{}",
-            bytes_under(&kept),
-            run(tilo_server::kept_content::lacking(
-                workspaces, &content, &workspace
-            )),
-            said("first"),
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    wait_until_kept(&server, &workspace, &kept, &written_files, started, &|| said("first"));
     let _ = first.kill();
     let _ = first.wait();
     eprintln!("the server kept the tree after {:?}", started.elapsed());

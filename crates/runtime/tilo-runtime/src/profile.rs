@@ -1,8 +1,44 @@
-//! What every host of a runtime profile does the same way: hold the profile
+//! What every host of a runtime profile does the same way: prepare the
+//! profile's private directories and environment, hold the profile
 //! exclusively and serve its apps their document media.
 
 use crate::unix;
-use std::{io, path::Path, sync::Arc};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+/// Create the profile's private directories and answer the environment its
+/// services start with. This does not mutate process-global state: the native
+/// executable applies the returned values at its single-threaded startup
+/// boundary.
+pub(crate) fn prepare_environment(profile: &Path) -> io::Result<[(&'static str, PathBuf); 5]> {
+    if !profile.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "profile path must be absolute",
+        ));
+    }
+    unix::private_directory(profile)?;
+    let paths = environment(profile);
+    for (_, path) in &paths {
+        unix::private_directory(path)?;
+    }
+    Ok(paths)
+}
+
+/// The directories inside the profile the runtime's services keep their state
+/// in, as the environment names them.
+fn environment(profile: &Path) -> [(&'static str, PathBuf); 5] {
+    [
+        ("XDG_CONFIG_HOME", profile.join("config")),
+        ("XDG_DATA_HOME", profile.join("data")),
+        ("XDG_CACHE_HOME", profile.join("cache")),
+        ("XDG_STATE_HOME", profile.join("state")),
+        ("TILO_IDENTITY_ROOT", profile.join("identity")),
+    ]
+}
 
 /// Hold `root` exclusively for this process, recording the owner so a
 /// second start can name it.

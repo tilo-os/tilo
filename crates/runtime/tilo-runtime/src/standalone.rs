@@ -31,9 +31,7 @@ mod workspace_keys;
 mod workspaces;
 
 use crate::personal_devices::PersonalDevices;
-use crate::{
-    BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, Joiner, RuntimeServices, apps, profile, unix,
-};
+use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, profile, unix};
 use commits::{RecordCreation, ServiceCommits};
 use service::ServiceWorkspaces;
 use std::{
@@ -107,14 +105,12 @@ pub struct Standalone {
     _lock: advisory_lock::FileLock,
 }
 
-/// The services a profile is served as: the person's own runtime, the same in
-/// development, or an isolated admission profile of the device's existing
-/// owner, which nothing is provisioned for.
+/// The services a profile is served as: the person's own runtime, or the same
+/// in development.
 #[derive(Clone, Copy)]
 enum Serving {
     Profile,
     Dev,
-    Admission { owner_uid: u32 },
 }
 
 impl Drop for Standalone {
@@ -138,17 +134,12 @@ impl Standalone {
         reason = "one start, each service opened in the order the next ones need it"
     )]
     fn start(root: &Path, stage: &mut dyn FnMut(&str), serving: Serving) -> io::Result<Self> {
-        let take_work = taking_work(serving)?;
+        let take_work = taking_work()?;
         stage("locking the profile");
         let lock = profile::lock(root)?;
         let storage = IdentityStorage::for_session();
-        let device = match serving {
-            Serving::Profile | Serving::Dev => {
-                stage("provisioning the collaboration identity");
-                provision_device(storage)?
-            }
-            Serving::Admission { owner_uid } => admit_device(owner_uid, stage)?,
-        };
+        stage("provisioning the collaboration identity");
+        let device = provision_device(storage)?;
         let dev = matches!(serving, Serving::Dev);
         let (workspace, identity, actor) = open_profile_workspace(root, stage)?;
         let workspace_id = workspace.workspace();
@@ -310,14 +301,9 @@ fn open_profile_workspace(
 
 /// The server whose work this profile takes, when it is a member: what the
 /// environment names, read before anything of the profile is opened, so a
-/// broken configuration is no profile's. An admission profile is a session
-/// of an existing owner, never a member.
-fn taking_work(serving: Serving) -> io::Result<Option<take_work::Server>> {
-    match serving {
-        Serving::Profile | Serving::Dev => take_work::Server::from_env(),
-        Serving::Admission { .. } => Ok(None),
-    }
-    .map_err(io::Error::other)
+/// broken configuration is no profile's.
+fn taking_work() -> io::Result<Option<take_work::Server>> {
+    take_work::Server::from_env().map_err(io::Error::other)
 }
 
 /// The device action service this profile answers its server's work on, when it takes
@@ -448,14 +434,6 @@ impl RuntimeServices for Standalone {
         Self::start(root, stage, Serving::Profile)
     }
 
-    fn start_admission_reporting(
-        root: &Path,
-        owner_uid: u32,
-        stage: &mut dyn FnMut(&str),
-    ) -> io::Result<Self> {
-        Self::start(root, stage, Serving::Admission { owner_uid })
-    }
-
     fn start_in_dev_mode(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
         Self::start(root, stage, Serving::Dev)
     }
@@ -523,35 +501,6 @@ impl RuntimeServices for Standalone {
             actor,
             self.policy_origin.capture().map_err(io::Error::other)?,
         ))
-    }
-
-    fn joiner(&self) -> Option<Joiner> {
-        let workspaces = Arc::clone(&self.workspaces);
-        let replicas = self.replicas.clone();
-        Some(Arc::new(move |invitation: &str| {
-            let invitation = invitation.to_owned();
-            let (workspace, name) = tilo_rt::app()
-                .handle()
-                .block_on({
-                    let workspaces = Arc::clone(&workspaces);
-                    async move {
-                        let workspace = workspaces.copies().join_member(&invitation).await?;
-                        let name = workspaces
-                            .copies()
-                            .member_copy(workspace)
-                            .await
-                            .map_or_else(|| "Workspace".to_owned(), |(name, _)| name);
-                        Ok::<_, String>((workspace, name))
-                    }
-                })
-                .map_err(io::Error::other)?;
-            // The workspace's files are held from the join on: the folder
-            // fills as the workspace's tree arrives.
-            if let Some(replicas) = &replicas {
-                let _ = hold_files(replicas, &name, workspace);
-            }
-            Ok(workspace.to_string())
-        }))
     }
 
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
@@ -1181,36 +1130,6 @@ fn provision_device(storage: IdentityStorage) -> io::Result<[u8; 32]> {
         &paths,
         storage,
     )?;
-    Ok(tilo_device_identity::persist::load_device_key(&paths)
-        .map_err(io::Error::other)?
-        .verifying_key()
-        .to_bytes())
-}
-
-/// The identity an isolated admission profile is served under: the existing
-/// owner's, verified and never created, renewed or written. Answers its device
-/// key.
-fn admit_device(owner_uid: u32, stage: &mut dyn FnMut(&str)) -> io::Result<[u8; 32]> {
-    if owner_uid == 0 || rustix::process::geteuid().as_raw() != owner_uid {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "native admission must run as the existing non-root device owner",
-        ));
-    }
-    stage("verifying the existing collaboration identity");
-    let identity_dir = tilo_identity::store::identity_dir_from_env()?;
-    let paths = tilo_identity::provisioning::collaboration_identity_paths();
-    tilo_identity::provisioning::verify_collaboration_identity(
-        &identity_dir,
-        &paths,
-        tilo_clock::unix_now_ns(),
-    )?;
-    if !tilo_identity::provisioning::active_identity_owns_device(&identity_dir, &paths)? {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "native admission identity does not own this device",
-        ));
-    }
     Ok(tilo_device_identity::persist::load_device_key(&paths)
         .map_err(io::Error::other)?
         .verifying_key()

@@ -1,19 +1,14 @@
 //! The runtime executable's command line, shared by every host binary.
 
-use crate::{RuntimeServices, daemon, mcp_process};
+use crate::{RuntimeServices, daemon, profile};
 use std::{ffi::OsString, io, path::Path};
 
 #[allow(
     clippy::disallowed_methods,
     reason = "called from `run` before tracing or any other thread starts, so no other thread can read the environment concurrently; the profile variables must reach this process and every child it spawns"
 )]
-fn configure_profile(profile: &Path, admission: bool) -> io::Result<()> {
-    let paths = if admission {
-        mcp_process::prepare_admission_profile_environment(profile)?
-    } else {
-        mcp_process::prepare_profile_environment(profile)?
-    };
-    for (name, path) in paths {
+fn configure_profile(profile: &Path) -> io::Result<()> {
+    for (name, path) in profile::prepare_environment(profile)? {
         // SAFETY: this executable has not started any threads. Reusable host
         // code never mutates the environment; applications receive Command env.
         unsafe { std::env::set_var(name, path) };
@@ -52,31 +47,10 @@ fn run<S: RuntimeServices + Send + Sync + 'static>() -> io::Result<()> {
     {
         return tilo_dialogs::confined::run_consent_helper();
     }
-    // Legacy manifest invocation remains an independently owned stdio session.
-    if arguments
-        .iter()
-        .take_while(|argument| *argument != "--" && *argument != "--run-app")
-        .any(|argument| argument == "--apps")
-    {
-        let args = mcp_process::parse_args(arguments)?;
-        configure_profile(&args.profile, false)?;
-        let _ = tracing_subscriber::fmt()
-            .with_writer(std::io::stderr)
-            .try_init();
-        return mcp_process::run::<S>(&args.profile, &args.apps);
-    }
     let args = daemon::parse_args(arguments)?;
-    if matches!(
-        args.mode,
-        daemon::Mode::Daemon
-            | daemon::Mode::AdmissionDaemon { .. }
-            | daemon::Mode::OwnerAction { .. }
-    ) {
+    if matches!(args.mode, daemon::Mode::Daemon) {
         daemon::validate_profile(&args.profile)?;
-        configure_profile(
-            &args.profile,
-            matches!(args.mode, daemon::Mode::AdmissionDaemon { .. }),
-        )?;
+        configure_profile(&args.profile)?;
     }
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -87,33 +61,12 @@ fn run<S: RuntimeServices + Send + Sync + 'static>() -> io::Result<()> {
         .try_init();
     match args.mode {
         daemon::Mode::Daemon => daemon::serve::<S>(&args.profile, args.dev),
-        daemon::Mode::AdmissionDaemon { owner_uid } => {
-            daemon::serve_admission::<S>(&args.profile, owner_uid)
-        }
         daemon::Mode::Connect => daemon::connect(
             &args.profile,
             args.standalone,
             args.forward.as_ref(),
             args.workspace.as_deref(),
         ),
-        daemon::Mode::OwnerAction { request } => {
-            let receipt = owner_action::<S>(&args.profile, &request)?;
-            println!(
-                "{}",
-                serde_json::to_string(&receipt).map_err(io::Error::other)?
-            );
-            if matches!(
-                receipt.status,
-                tilo_actions::remote::ReceiptStatus::Completed { .. }
-            ) {
-                Ok(())
-            } else {
-                Err(io::Error::other(
-                    "owner action did not complete successfully",
-                ))
-            }
-        }
-        daemon::Mode::Join { invitation } => daemon::join(&args.profile, &invitation),
         daemon::Mode::RunApp {
             app_id,
             workspace,
@@ -126,54 +79,6 @@ fn run<S: RuntimeServices + Send + Sync + 'static>() -> io::Result<()> {
             &executable,
             &app_args,
         ),
-    }
-}
-
-/// Invoke through the same registered action host, not a privileged backend
-/// shortcut. The profile lock and its sandbox-inaccessible directory admit
-/// same-account unconfined scripts to the owner facade. That facade retains
-/// the original certified session and revalidates it before effects; an owner
-/// label alone is not action authority.
-pub(crate) fn owner_action<S: RuntimeServices>(
-    profile: &Path,
-    json: &str,
-) -> io::Result<tilo_actions::remote::InvocationReceipt> {
-    use tilo_actions::remote::{ActionProvider as _, Caller, InvokeRequest};
-    crate::daemon::validate_profile(profile)?;
-    if json.len() > 32 * 1024 {
-        return Err(io::Error::other(
-            "owner invocation exceeds the argument limit",
-        ));
-    }
-    let request: InvokeRequest = serde_json::from_str(json).map_err(io::Error::other)?;
-    let session = S::start_reporting(profile, &mut |_| {})?;
-    let host = session.action_provider()?;
-    let caller = Caller::local_person(session.actor()).in_workspace(session.workspace());
-    let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
-    let _entered = runtime.handle().enter();
-    let timeout = std::time::Duration::from_secs(125);
-    let deadline = std::time::Instant::now()
-        .checked_add(timeout)
-        .ok_or_else(|| io::Error::other("owner action deadline overflow"))?;
-    host.invoke(&caller, request.clone())
-        .wait_timeout(timeout)
-        .map_err(|_| io::Error::other("owner action admission timed out"))?
-        .ok_or_else(|| io::Error::other("owner action admission stopped"))?
-        .map_err(io::Error::other)?;
-    loop {
-        let change = host.next_change(&caller, &request.invocation);
-        let state = host
-            .observe(&caller, &request.invocation)
-            .ok_or_else(|| io::Error::other("owner invocation unavailable"))?;
-        if state.is_terminal() {
-            return Ok(state.receipt());
-        }
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        change
-            .ok_or_else(|| io::Error::other("owner action has no change signal"))?
-            .wait_timeout(remaining)
-            .map_err(|_| io::Error::other("owner action timed out; a partial import may remain"))?
-            .ok_or_else(|| io::Error::other("owner action stopped without an answer"))?;
     }
 }
 

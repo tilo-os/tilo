@@ -88,32 +88,25 @@ tilo_test_env::scenario! {
     }
 
     phase only_a_profile_whose_server_is_named_takes_work;
-    // A profile takes work when its server is named, and an admission session,
-    // which is a session of an existing owner's device, never does.
+    // A profile takes work when its server is named.
     {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.remove(SERVER_DEVICE_ENV);
         assert!(
-            crate::standalone::taking_work(crate::standalone::Serving::Profile)
+            crate::standalone::taking_work()
                 .unwrap()
                 .is_none()
         );
         env.set(SERVER_DEVICE_ENV, "127.0.0.1:7703");
         assert!(
-            crate::standalone::taking_work(crate::standalone::Serving::Profile).is_err(),
+            crate::standalone::taking_work().is_err(),
             "a server is named by its device key, never by where it is"
         );
         env.set(SERVER_DEVICE_ENV, hex::encode([0x33; 32]));
         assert!(
-            crate::standalone::taking_work(crate::standalone::Serving::Profile)
+            crate::standalone::taking_work()
                 .unwrap()
                 .is_some()
-        );
-        assert!(
-            crate::standalone::taking_work(crate::standalone::Serving::Admission { owner_uid: 1000 })
-                .unwrap()
-                .is_none(),
-            "an admission session serves an existing owner, and takes no work"
         );
     }
 
