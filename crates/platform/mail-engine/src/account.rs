@@ -252,9 +252,9 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Mail's accounts, kept in the workspace's accounts record and read back from it.
-        fn the_account_store_keeps_accounts_in_the_workspaces_record;
+        fn the_accounts_record_keeps_the_workspaces_accounts;
 
-        phase account_store_upserts_clamps_and_round_trips_the_record;
+        phase the_accounts_record_upserts_clamps_and_round_trips;
         {
             {
                 let mut store = AccountStore::new();

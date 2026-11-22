@@ -898,7 +898,7 @@ tilo_test_env::scenario! {
         assert!(!crate::copied_source_matches(&cleared, &expected));
     }
 
-    phase protected_copies_refuse_legacy_decoders_but_canonical_dav_ownership_still_signs_in;
+    phase protected_copies_refuse_old_decoders_but_canonical_dav_ownership_still_signs_in;
     {
         #[derive(serde::Deserialize)]
         #[serde(tag = "kind", rename_all = "snake_case")]
