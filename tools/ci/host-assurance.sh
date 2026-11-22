@@ -1173,11 +1173,26 @@ gen=\$(cat /usr/lib/tilo/generation)
 "
 grep -q "\"floor_generation\":$n" "$out/the floor moves to this generation, with the approvals.txt" \
   || die "the floor did not move to generation $n"
-# Put the older signed image on the ESP in place of this one, and start it.
+# Put the older signed image on the ESP in place of this one, and start it. A machine that
+# refuses it stops at its recovery prompt, so the way back is the disk as it was before the
+# swap; the floor lives in the TPM, which keeps it.
+as_root 'sync' >/dev/null 2>&1 || true
+./os/dev/vm.sh stop >/dev/null 2>&1 || true
+qemu-img snapshot -c floor "$disk" || die 'cannot keep the disk to go back to after the older image'
+boot_vm
+unattended_unlock || die 'the sealed disk did not open by itself before the older image went on it'
+as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
 refuse 'the older signed image is on the ESP' '
 set -eu
 mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
-uki=$(ls /boot/EFI/Linux/bootc/*.efi); [ "$(printf "%s\n" $uki | wc -l)" = 1 ]
+# The UKI this boot started: the one whose command line names its composefs image (an
+# update the registry stage staged has a UKI of its own beside it).
+booted=$(tr " " "\n" < /proc/cmdline | sed -n "s/^composefs=//p")
+uki=""
+for f in /boot/EFI/Linux/bootc/*.efi; do
+  /usr/libexec/tilo-uki-cmdline show "$f" | tr " " "\n" | grep -qx "composefs=$booted" && uki="$uki $f"
+done
+[ "$(printf "%s\n" $uki | grep -c .)" = 1 ] || { echo "no single UKI boots composefs=$booted: $(ls /boot/EFI/Linux/bootc)"; exit 1; }
 unshare -m sh -euc "mount -o remount,bind,rw /boot; cp /mnt/update/older.efi \$uki; sync"
 '
 as_root 'sync' >/dev/null 2>&1 || true
@@ -1193,13 +1208,9 @@ grep -q 'rollback floor refuses generation 0' "$out/floor-serial.log" \
        die 'the image below the floor did not open, but nothing on the console says the floor refused it'; }
 # The same disk, back on the image the machine runs: the floor permits this
 # generation, so it opens by itself again. The floor is what differed.
-refuse 'the signed image this machine runs is on the ESP again' '
-set -eu
-mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
-uki=$(ls /boot/EFI/Linux/bootc/*.efi); [ "$(printf "%s\n" $uki | wc -l)" = 1 ]
-unshare -m sh -euc "mount -o remount,bind,rw /boot; cp /mnt/update/original.efi \$uki; sync"
-'
 ./os/dev/vm.sh stop >/dev/null 2>&1 || true
+qemu-img snapshot -a floor "$disk" || die 'cannot put the disk back as it was before the older image'
+qemu-img snapshot -d floor "$disk" || true
 boot_vm
 unattended_unlock || { ./os/dev/vm.sh serial > "$out/floor-permitted-serial.log" 2>&1 || true
                        die 'the signed image the machine runs no longer opens its disk by itself'; }
