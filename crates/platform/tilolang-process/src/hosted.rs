@@ -372,7 +372,7 @@ impl Surface {
         if let Some(tree) =
             self.publications
                 .borrow_mut()
-                .addressed(&self.host, &self.planner, &self.app, address)
+                .addressed(&self.host, &self.planner, address)
             && let Some(spec) = find(&tree, address)
         {
             resources.push(spec);
@@ -2154,7 +2154,10 @@ impl Hosted {
     fn toggled(&self, edit: &ActionAddress, field: &str) -> Option<String> {
         let host = self.instance.host()?;
         let read = host
-            .read_content(Some(&edit.resource), &host.reads_for(host.viewer()))
+            .read_resource(
+                &tilolang_tilo::ReadAsk::of(Some(&edit.resource)),
+                &host.reads_for(host.viewer()),
+            )
             .ok()?;
         let package = host.package(&self.spec.app)?;
         let field = package
@@ -2396,18 +2399,15 @@ impl Hosted {
         payload: &[u8],
         reader: &tilolang_tilo::runtime::Actor,
     ) -> Result<tilo_actions::ActionOutput, String> {
-        let host = self
-            .instance
-            .host()
-            .ok_or_else(|| "the app has not started yet".to_owned())?;
-        // What the reader may read is what they may read now, of a past version too.
-        let reads = host.reads_for(reader);
         let args: serde_json::Value = if payload.is_empty() {
             serde_json::Value::Null
         } else {
             tilo_actions::decode_json(payload).map_err(|error| error.to_string())?
         };
-        let item = args.get("item").and_then(serde_json::Value::as_str);
+        let host = self
+            .instance
+            .host()
+            .ok_or_else(|| "the app has not started yet".to_owned())?;
         let value = if let Some(version) = args.get("version").and_then(serde_json::Value::as_str) {
             let doc = &self.record.doc();
             let heads = collaboration::history_source::steps::resolve(doc, version)?;
@@ -2428,20 +2428,14 @@ impl Hosted {
             verbs::review::bounded(serde_json::json!({
                 "version": heads.iter().map(ToString::to_string).collect::<Vec<_>>().join("+"),
                 "heads": heads.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                "content": past.read_content(item, &reads)?,
+                // What the reader may read of a past version is what they may read now.
+                "content": past.read_resource(
+                    &tilolang_tilo::ReadAsk::of_arguments(&args)?,
+                    &host.reads_for(reader),
+                )?,
             }))?
         } else {
-            let content = host.read_content(item, &reads)?;
-            // A whole resource reads a page at a time, as every app's does.
-            if item.is_none() {
-                tilo_resource::read::page(
-                    content,
-                    args.get("cursor").and_then(serde_json::Value::as_str),
-                    args.get("pageSize").and_then(serde_json::Value::as_i64),
-                )?
-            } else {
-                content
-            }
+            host.answer_read(&args, reader)?
         };
         Ok(tilo_actions::ActionOutput {
             value: Some(value),

@@ -748,6 +748,33 @@ impl ResourceService {
                     .map(Started::Done)
                     .map_err(ApiError::Failed);
             }
+            if encoded.type_id == tilo_resource::read::TYPE {
+                let args: Json = if encoded.payload.is_empty() {
+                    Json::Null
+                } else {
+                    tilo_actions::decode_json(&encoded.payload)
+                        .map_err(|error| ApiError::InvalidArguments(error.to_string()))?
+                };
+                if args
+                    .get("version")
+                    .is_some_and(|version| !version.is_null())
+                {
+                    return Err(ApiError::Failed(
+                        "a past version is read where its app runs".to_owned(),
+                    ));
+                }
+                let reader = crate::publish::Caller::from(invoker).reader();
+                return self
+                    .host
+                    .answer_read(&args, &reader)
+                    .map(|value| {
+                        Started::Done(ActionOutput {
+                            value: Some(value),
+                            resources: Vec::new(),
+                        })
+                    })
+                    .map_err(ApiError::Failed);
+            }
             if encoded.type_id != ACTION_TYPE {
                 return Err(ApiError::Unknown(address));
             }

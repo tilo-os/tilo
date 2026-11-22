@@ -107,10 +107,21 @@ impl Replica {
         packages: &[(&str, &str)],
         access: Option<tilo_action_policy::MemberAccess>,
     ) -> (Self, Vec<Package>) {
+        Self::following(name, doc, packages, move || access.clone())
+    }
+
+    /// As [`Self::access`], deciding by what `access` answers when the host asks: the access the
+    /// person has now, which a test may change.
+    pub fn following(
+        name: &str,
+        doc: AutoCommit,
+        packages: &[(&str, &str)],
+        access: impl Fn() -> Option<tilo_action_policy::MemberAccess> + 'static,
+    ) -> (Self, Vec<Package>) {
         let host = Host::new(
             &doc,
             Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name)),
-            move || access.clone(),
+            access,
         )
         .unwrap();
         let loaded = packages

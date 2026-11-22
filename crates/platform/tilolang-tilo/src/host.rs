@@ -181,6 +181,8 @@ pub(crate) struct HostInner {
     triggers: crate::triggers::Schedule,
     /// What the asks made from mentions of agents follow ([`crate::asks`]).
     asking: crate::asks::Asking,
+    /// The person and policy the runtime's members were last given from ([`Host::follow_members`]).
+    pub(crate) members_from: RefCell<Option<(String, tilo_action_policy::WorkspacePolicy)>>,
     /// Whether the next plan is the run of an invocation the document applies next
     /// ([`Host::carrying_out`]): what it writes stays, as the change the document commits.
     carried: Cell<bool>,
@@ -1037,6 +1039,7 @@ impl Host {
             returned: RefCell::default(),
             triggers,
             asking,
+            members_from: RefCell::new(None),
             carried: Cell::new(false),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));

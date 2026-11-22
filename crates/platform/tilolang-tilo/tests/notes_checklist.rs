@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use automerge::AutoCommit;
-use tilo_doc::snapshot::BlockView;
 use tilo_doc::AttrVal;
+use tilo_doc::snapshot::BlockView;
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
 
@@ -102,7 +102,10 @@ fn body(r: &Replica, note: &ResourceRef) -> RichValue {
 type Said = (String, String, Option<bool>);
 
 /// What one step of typing writes, and how the note reads after it.
-type Step = (Vec<BlockView>, Vec<(&'static str, &'static str, Option<bool>)>);
+type Step = (
+    Vec<BlockView>,
+    Vec<(&'static str, &'static str, Option<bool>)>,
+);
 
 fn written(rich: &RichValue) -> Vec<Said> {
     rich.blocks
@@ -122,7 +125,10 @@ fn a_checklist_the_editor_wrote_survives_tagging_the_note() {
     let (mut ada, notebook) = workspace();
     let note = note(&mut ada, &notebook, "Trip to Lisbon");
     // The page's editor writes the body it typed: a heading, a bullet and two tasks.
-    let page = ada.host.open_resource(&note, None).expect("the note's page");
+    let page = ada
+        .host
+        .open_resource(&note, None)
+        .expect("the note's page");
     let editor = page
         .tree()
         .first_of_kind("ui.BlockEditor")
@@ -179,7 +185,10 @@ fn a_checklist_the_editor_wrote_survives_tagging_the_note() {
 fn each_step_of_typing_the_body_leaves_the_note_as_it_was_written() {
     let (mut ada, notebook) = workspace();
     let note = note(&mut ada, &notebook, "Trip to Lisbon");
-    let page = ada.host.open_resource(&note, None).expect("the note's page");
+    let page = ada
+        .host
+        .open_resource(&note, None)
+        .expect("the note's page");
     let editor = page
         .tree()
         .first_of_kind("ui.BlockEditor")
@@ -207,7 +216,10 @@ fn each_step_of_typing_the_body_leaves_the_note_as_it_was_written() {
         ),
         (
             vec![heading(), bullet("passport")],
-            vec![("heading", "Packing", None), ("list_item", "passport", None)],
+            vec![
+                ("heading", "Packing", None),
+                ("list_item", "passport", None),
+            ],
         ),
         (
             vec![heading(), bullet("passport"), bullet("")],
@@ -279,7 +291,10 @@ fn the_workspace_reads_the_body_as_the_app_wrote_it() {
     let note = note(&mut ada, &notebook, "Trip to Lisbon");
     let mut workspace_copy = ada.fork("ada", &[DISCUSSION, NOTES]);
     ada.sync_with(&mut workspace_copy);
-    let page = ada.host.open_resource(&note, None).expect("the note's page");
+    let page = ada
+        .host
+        .open_resource(&note, None)
+        .expect("the note's page");
     let editor = page
         .tree()
         .first_of_kind("ui.BlockEditor")

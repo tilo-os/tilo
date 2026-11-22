@@ -104,6 +104,17 @@ pub(crate) fn answer(
     } else {
         tilo_actions::decode_json(payload).map_err(|error| error.to_string())?
     };
+    // Its record tables list what a resource holds a page at a time (`cursor`), and match no
+    // fields: a read that asks for that is refused, never answered with the whole collection.
+    if ["field", "where", "after", "limit"]
+        .iter()
+        .any(|name| args.get(name).is_some_and(|value| !value.is_null()))
+    {
+        return Err(
+            "this resource reads its lists a page at a time by `cursor`; it matches no `where`"
+                .to_owned(),
+        );
+    }
     let item = args.get("item").and_then(serde_json::Value::as_str);
     match args.get("version").and_then(serde_json::Value::as_str) {
         Some(version) => {

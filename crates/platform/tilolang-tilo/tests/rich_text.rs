@@ -487,9 +487,9 @@ fn plain_paths(
             "agent read",
             replica
                 .host
-                .read_content(
-                    Some(&format!("tl:{APP}:{post}")),
-                    &replica.host.reads_for(replica.host.viewer()),
+                .answer_read(
+                    &serde_json::json!({ "item": format!("tl:{APP}:{post}") }),
+                    replica.host.viewer(),
                 )
                 .unwrap()
                 .to_string(),

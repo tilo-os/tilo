@@ -39,10 +39,7 @@ fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             "so.tilo.lang.tasks",
             vec![app!("discussion"), app_and_scenarios!("tasks")],
         ),
-        (
-            "so.tilo.notes",
-            vec![app!("discussion"), app!("notes")],
-        ),
+        ("so.tilo.notes", vec![app!("discussion"), app!("notes")]),
         ("so.tilo.mail", vec![app!("mail")]),
         ("so.tilo.lang.chat", vec![app!("agent"), app!("chat")]),
         (

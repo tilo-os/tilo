@@ -82,12 +82,7 @@ pub(crate) fn run(host: &Host, asking: &Asking) -> usize {
 }
 
 /// [`run`] for the item `resource`, whose `fields` moved.
-fn item(
-    host: &Host,
-    agent: &Meta,
-    resource: &str,
-    fields: &BTreeSet<String>,
-) -> usize {
+fn item(host: &Host, agent: &Meta, resource: &str, fields: &BTreeSet<String>) -> usize {
     let Some(at) = ResourceRef::parse_id(resource, String::new()) else {
         return 0;
     };
@@ -110,9 +105,10 @@ fn item(
     let viewer = host.viewer().clone();
     let wrote = host
         .store()
-        .versions(&at)
+        .version_end(&at, true)
         .ok()
-        .and_then(|versions| versions.last().and_then(|v| v.who.clone()));
+        .flatten()
+        .and_then(|last| last.who);
     if wrote.as_ref() != Some(&viewer) {
         return 0;
     }

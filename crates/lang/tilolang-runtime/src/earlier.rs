@@ -577,9 +577,17 @@ mod tests {
         assert_eq!(of("draft").texts["sender.email"], "sam@rivera.example");
         assert_eq!(of("drafts").texts["to"], "bo@chen.example");
         assert_eq!(of("drafts").texts["sender.email"], "work@rivera.example");
-        assert!(items.iter().all(|item| item.of != "imported" && item.of != "tl"));
+        assert!(
+            items
+                .iter()
+                .all(|item| item.of != "imported" && item.of != "tl")
+        );
         let own = of("");
         assert_eq!(own.lists["imported"], ["one"]);
-        assert!(own.texts.keys().all(|key| !key.contains('.')), "{:?}", own.texts);
+        assert!(
+            own.texts.keys().all(|key| !key.contains('.')),
+            "{:?}",
+            own.texts
+        );
     }
 }
