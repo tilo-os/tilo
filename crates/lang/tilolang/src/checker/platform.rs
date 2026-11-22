@@ -465,6 +465,29 @@ impl Checker<'_> {
         Ex::host(Imp::Members, vec![r], Ty::List(Box::new(Ty::Actor)))
     }
 
+    /// `std.may_read(who, r)`: whether the member `who` may read `r` now, as the workspace's
+    /// grants decide a read of theirs. Someone who is no member reads nothing.
+    pub(super) fn builtin_may_read(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [who, r] = args else {
+            self.err(
+                "E022",
+                span,
+                "`std.may_read` takes a member and a resource: `std.may_read(who, r)`",
+            );
+            return Ex::error();
+        };
+        if let Some(name) = who.name.as_ref().or(r.name.as_ref()) {
+            self.err(
+                "E022",
+                name.span,
+                "`std.may_read` takes its arguments by position: `std.may_read(who, r)`",
+            );
+        }
+        let who = self.expr_as(&who.value, &Ty::Actor);
+        let r = self.expr_as(&r.value, &Ty::Record(super::resource_key()));
+        Ex::host(Imp::MayRead, vec![who, r], Ty::Bool)
+    }
+
     /// `workspace.members`: everyone in the workspace now, read from the platform's membership.
     /// `workspace.me`: the person the view is shown to.
     pub(super) fn workspace_field(&mut self, name: &ast::Ident) -> Ex {

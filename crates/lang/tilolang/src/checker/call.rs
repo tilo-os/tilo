@@ -63,6 +63,9 @@ impl Checker<'_> {
                     if name.name == "say" {
                         return self.builtin_say(args, span);
                     }
+                    if name.name == "may_read" {
+                        return self.builtin_may_read(args, span);
+                    }
                 }
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == RANDOM)
                     && self.lookup(RANDOM).is_none()

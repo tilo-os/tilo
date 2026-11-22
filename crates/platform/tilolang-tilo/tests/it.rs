@@ -47,6 +47,7 @@ mod link_editor;
 mod links;
 mod make_from;
 mod marks;
+mod may_read;
 mod migrations;
 mod naming;
 mod native_chat;

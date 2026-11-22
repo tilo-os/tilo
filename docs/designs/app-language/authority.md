@@ -23,6 +23,15 @@ tilolang adds one input: **who wrote the code.**
 6. Asks are shown by the system, never by the code: the prompt shows the action itself, not the
    label the view gave it. History records the whole chain ("you, via Alex's view").
 
+**Code can ask who reads what.** `members(r)` lists the workspace's members who may read the
+resource `r` now, and `std.may_read(who: Actor, r: host.Resource) -> Bool` answers it for one
+member, a person or an agent: the answer a read by them would get, from the same grants, reader
+rules and per-member privacy. Someone who is no member of the workspace, an automation or an app
+reads nothing, and so does everyone where the host gave no members. Code that would copy what a
+resource says to someone else (an ask to an agent mentioned in it) asks first, and tells an agent
+that may not read it so instead of copying it. Both read the membership the host gives, so a view
+that asked shows the new answer once a grant changes.
+
 The compiler computes which actions a piece of code can reach. Granting, keeping and updating
 are decided against that list, shown in plain words, so nobody has to read code to decide.
 

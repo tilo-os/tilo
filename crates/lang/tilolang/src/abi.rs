@@ -248,6 +248,8 @@ imports! {
     WorkspaceMembers = "workspace_members" ([] -> [H]);
     Viewer = "viewer" ([] -> [H]);
     Members = "members" ([H] -> [H]);
+    // `std.may_read(who, r)`: whether the member `who` may read the resource `r`.
+    MayRead = "may_read" ([H, H] -> [I32]);
     Speakers = "speakers" ([H, I64] -> [H]);
     MetaOf = "meta_of" ([H] -> [H]);
     Versions = "versions" ([H] -> [H]);

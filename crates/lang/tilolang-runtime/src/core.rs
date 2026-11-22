@@ -474,7 +474,7 @@ impl Core {
             ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
             ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew,
             MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup,
-            Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType,
+            MayRead, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType,
             Outside, OutsideAt, PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query,
             QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText,
             ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF,
@@ -549,7 +549,7 @@ impl Core {
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
             | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
-            WorkspaceMembers | Members | Speakers | ActorKind | ActorRole => {
+            WorkspaceMembers | Members | MayRead | Speakers | ActorKind | ActorRole => {
                 self.members_import(imp, a)
             }
             EditField => self.edit_field(a),

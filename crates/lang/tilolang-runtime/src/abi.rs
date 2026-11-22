@@ -233,6 +233,7 @@ imports! {
     (WorkspaceMembers, "workspace_members", "", "i"),
     (Viewer, "viewer", "", "i"),
     (Members, "members", "i", "i"),
+    (MayRead, "may_read", "ii", "i"),
     (Speakers, "speakers", "il", "i"),
     (MetaOf, "meta_of", "i", "i"),
     (Versions, "versions", "i", "i"),

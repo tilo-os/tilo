@@ -221,12 +221,23 @@ impl Core {
                 let target = self.ref_arg(a.h(0)?)?;
                 let list = self.read_members();
                 let reads = self.members.borrow().reads.clone();
-                let readers = list.iter().filter(|member| {
-                    reads
-                        .as_ref()
-                        .is_none_or(|reads| reads(&member.who(), &target.target))
-                });
+                let readers = list
+                    .iter()
+                    .filter(|member| member_reads(reads.as_deref(), member, &target.target));
                 self.ret_h(actors(readers))
+            }
+            // Whether one actor reads a resource: the answer `members(r)` gives for them, and
+            // none for an actor who is no member, an automation or an app among them.
+            Imp::MayRead => {
+                let who = self.actor_arg(a.h(0)?)?;
+                let target = self.ref_arg(a.h(1)?)?;
+                let list = self.read_members();
+                let reads = self.members.borrow().reads.clone();
+                let may = list.iter().any(|member| {
+                    who.member_id() == Some(&member.id)
+                        && member_reads(reads.as_deref(), member, &target.target)
+                });
+                crate::core::ret_i32(i32::from(may))
             }
             Imp::Speakers => {
                 let max = usize::try_from(a.long(1)?).unwrap_or(0);
@@ -247,6 +258,12 @@ impl Core {
             _ => trap("not a members import"),
         }
     }
+}
+
+/// Whether `member` reads `target` by `reads`, the host's grants (none given: every member
+/// reads every resource of the workspace).
+fn member_reads(reads: Option<&Reads>, member: &Member, target: &ResourceRef) -> bool {
+    reads.is_none_or(|reads| reads(&member.who(), target))
 }
 
 pub(crate) fn actors<'a>(members: impl Iterator<Item = &'a Member>) -> Value {
