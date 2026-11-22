@@ -24021,6 +24021,7 @@ dependencies = [
  "tilo-ui",
  "tilolang",
  "tilolang-tilo",
+ "tilolang-web",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
@@ -24181,6 +24182,24 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-web"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-app-window",
+ "tilo-font-catalog",
+ "tilo-render-protocol",
+ "tilo-ui",
+ "tilolang",
+ "tilolang-lex",
+ "tilolang-runtime",
+ "tilolang-tilo",
+ "wasm-bindgen",
  "workspace-hack",
 ]
 

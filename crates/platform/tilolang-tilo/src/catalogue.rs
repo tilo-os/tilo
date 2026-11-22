@@ -190,13 +190,25 @@ pub fn native_surface(dir: &Path) -> Result<Option<NativeSurface>, String> {
     let read = |path: &Path| {
         std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))
     };
-    let manifest: Manifest = toml::from_str(&read(&manifest)?)
-        .map_err(|error| format!("{}: {error}", dir.join(MANIFEST_FILE).display()))?;
-    Ok(Some(NativeSurface {
-        app: manifest.package.id,
-        title: manifest.package.name,
-        surface: read(&surface)?,
-    }))
+    NativeSurface::read(&read(&manifest)?, read(&surface)?)
+        .map(Some)
+        .map_err(|error| format!("{}: {error}", dir.join(MANIFEST_FILE).display()))
+}
+
+impl NativeSurface {
+    /// The native app whose `tilo-app.toml` is `manifest` and whose `surface.toml` is `surface`:
+    /// [`native_surface`] over files already read, as a host with no disk holds them.
+    ///
+    /// # Errors
+    /// The manifest is not one.
+    pub fn read(manifest: &str, surface: String) -> Result<Self, String> {
+        let manifest: Manifest = toml::from_str(manifest).map_err(|error| error.to_string())?;
+        Ok(Self {
+            app: manifest.package.id,
+            title: manifest.package.name,
+            surface,
+        })
+    }
 }
 
 /// The package a native app directory publishes: its manifest's id and name, and the

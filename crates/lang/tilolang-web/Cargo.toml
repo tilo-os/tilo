@@ -1,0 +1,37 @@
+[package]
+name = "tilolang-web"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Tilolang in a browser page: compile packages from their files, run an app over its scenario and show its window as semantic HTML, and the two-peer playground over one source."
+
+[lib]
+# `cdylib` is the page's module (wasm-bindgen); `rlib` is what the native tools link: the staged
+# window `tilolang layout-check` lays out is this crate's [`Packages`].
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tilolang = { path = "../tilolang" }
+tilolang-lex = { path = "../tilolang-lex" }
+tilolang-runtime = { path = "../tilolang-runtime", default-features = false }
+# The app instance a window talks to, the platform's packages and the native apps' surfaces.
+tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+# The window's half: the toolkit's widgets, built from the component patches the instance sends.
+tilo-app-window = { version = "0.1.0", path = "../../platform/tilo-app-window" }
+tilo-render-protocol = { version = "0.1.0", path = "../../platform/tilo-render-protocol" }
+# The frame pipeline that lays the window out, and the page its composition is written as.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+# The pinned startup fonts a page hands its windows.
+tilo-font-catalog = { version = "0.1.0", path = "../../sdk/font-catalog" }
+serde.workspace = true
+serde_json.workspace = true
+wasm-bindgen = "=0.2.108"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

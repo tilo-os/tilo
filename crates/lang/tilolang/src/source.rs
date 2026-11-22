@@ -209,27 +209,7 @@ pub fn dependency_order_with(
     provided: &[String],
 ) -> Result<Vec<PathBuf>, String> {
     let search = &search_of(root, search);
-    let mut index: HashMap<String, PathBuf> = HashMap::new();
-    // The ids packages were published under before: `use` of one finds the package, unless a package
-    // still has it as its own id.
-    let mut earlier: HashMap<String, PathBuf> = HashMap::new();
-    let mut headers: HashMap<PathBuf, Vec<String>> = HashMap::new();
-    let mut known = |dir: &Path,
-                     index: &mut HashMap<String, PathBuf>,
-                     headers: &mut HashMap<PathBuf, Vec<String>>|
-     -> Result<(), String> {
-        let source = PackageSource::read_dir(dir)?;
-        let (app, previously, uses) = source.header_with_previously();
-        if let Some(app) = app {
-            index.entry(app).or_insert_with(|| dir.to_path_buf());
-            for old in previously {
-                earlier.entry(old).or_insert_with(|| dir.to_path_buf());
-            }
-        }
-        headers.insert(dir.to_path_buf(), uses);
-        Ok(())
-    };
-    known(root, &mut index, &mut headers)?;
+    let mut packages = vec![(root.to_path_buf(), PackageSource::read_dir(root)?)];
     for entry in search {
         let candidates: Vec<PathBuf> = if source_paths(entry).is_ok_and(|p| !p.is_empty()) {
             vec![entry.clone()]
@@ -244,10 +224,51 @@ pub fn dependency_order_with(
             dirs
         };
         for dir in candidates {
-            if !headers.contains_key(&dir) && !same_dir(&dir, root) {
-                known(&dir, &mut index, &mut headers)?;
+            if !packages.iter().any(|(known, _)| *known == dir) && !same_dir(&dir, root) {
+                let source = PackageSource::read_dir(&dir)?;
+                packages.push((dir, source));
             }
         }
+    }
+    let searched: Vec<String> = search.iter().map(|p| p.display().to_string()).collect();
+    order_of(&packages, provided, &searched.join(", "))
+}
+
+/// The packages the first of `packages` needs, dependencies first and it last, each named by the
+/// directory it stands for: the imports of each (`use <app id>`) are looked up among `packages` by the
+/// app id it declares, then by an id it was published under before. An import of one of the apps
+/// `provided` is metadata given otherwise. `searched` is what a missing import's error names.
+///
+/// This is [`dependency_order_with`] over packages already read: a host with no disk (a browser
+/// page) hands its packages' files over as they are.
+///
+/// # Errors
+/// An import no package declares, or packages that import each other in a cycle.
+pub fn order_of(
+    packages: &[(PathBuf, PackageSource)],
+    provided: &[String],
+    searched: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let Some((root, _)) = packages.first() else {
+        return Ok(Vec::new());
+    };
+    let mut index: HashMap<String, PathBuf> = HashMap::new();
+    // The ids packages were published under before: `use` of one finds the package, unless a package
+    // still has it as its own id.
+    let mut earlier: HashMap<String, PathBuf> = HashMap::new();
+    let mut headers: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    for (dir, source) in packages {
+        if headers.contains_key(dir) {
+            continue;
+        }
+        let (app, previously, uses) = source.header_with_previously();
+        if let Some(app) = app {
+            index.entry(app).or_insert_with(|| dir.clone());
+            for old in previously {
+                earlier.entry(old).or_insert_with(|| dir.clone());
+            }
+        }
+        headers.insert(dir.clone(), uses);
     }
     for (old, dir) in earlier {
         index.entry(old).or_insert(dir);
@@ -257,7 +278,7 @@ pub fn dependency_order_with(
     let visiting = Visit {
         index: &index,
         headers: &headers,
-        search,
+        searched,
         provided,
     };
     visiting.visit(root, &mut state, &mut order)?;
@@ -274,7 +295,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 struct Visit<'a> {
     index: &'a HashMap<String, PathBuf>,
     headers: &'a HashMap<PathBuf, Vec<String>>,
-    search: &'a [PathBuf],
+    searched: &'a str,
     provided: &'a [String],
 }
 
@@ -285,7 +306,7 @@ impl Visit<'_> {
         state: &mut BTreeMap<PathBuf, bool>,
         order: &mut Vec<PathBuf>,
     ) -> Result<(), String> {
-        let (index, headers, search) = (self.index, self.headers, self.search);
+        let (index, headers) = (self.index, self.headers);
         match state.get(dir) {
             Some(true) => return Ok(()),
             Some(false) => {
@@ -305,12 +326,10 @@ impl Visit<'_> {
                 continue;
             }
             let Some(dep) = index.get(&app) else {
-                let searched: Vec<String> =
-                    search.iter().map(|p| p.display().to_string()).collect();
                 return Err(format!(
                     "{}: `use {app}`: no package with that app id in {}; name its directory with --path",
                     dir.display(),
-                    searched.join(", ")
+                    self.searched
                 ));
             };
             self.visit(dep, state, order)?;
@@ -379,10 +398,31 @@ pub fn compile_dirs(
     extra: &[PackageMeta],
     rng: &mut dyn Entropy,
 ) -> Result<Vec<BuiltPackage>, BuildError> {
+    compile_in_order(
+        dirs.iter().map(|dir| {
+            let source = PackageSource::read_dir(dir).map_err(BuildError::Read)?;
+            let ids = read_ids(dir).map_err(BuildError::Read)?;
+            Ok((dir.clone(), source, ids))
+        }),
+        extra,
+        rng,
+    )
+}
+
+/// Compiles packages already read, `(directory, sources, ids lock)`, in the order given, each against
+/// `extra` and the packages before it: [`compile_dirs`] over packages a host holds in memory, ordered
+/// by [`order_of`].
+///
+/// # Errors
+/// The first package that cannot be read or has errors.
+pub fn compile_in_order(
+    packages: impl IntoIterator<Item = Result<(PathBuf, PackageSource, IdsLock), BuildError>>,
+    extra: &[PackageMeta],
+    rng: &mut dyn Entropy,
+) -> Result<Vec<BuiltPackage>, BuildError> {
     let mut out: Vec<BuiltPackage> = Vec::new();
-    for dir in dirs {
-        let source = PackageSource::read_dir(dir).map_err(BuildError::Read)?;
-        let ids = read_ids(dir).map_err(BuildError::Read)?;
+    for package in packages {
+        let (dir, source, ids) = package?;
         let mut imports = extra.to_vec();
         imports.extend(out.iter().map(|b| b.compiled.meta.clone()));
         let compiled =
@@ -393,7 +433,7 @@ pub fn compile_dirs(
                 }
             })?;
         out.push(BuiltPackage {
-            dir: dir.clone(),
+            dir,
             source,
             compiled,
         });

@@ -324,6 +324,7 @@ members = [
 
     # Language
     "crates/lang/tilolang-runtime",
+    "crates/lang/tilolang-web",
     "crates/lang/tilo-model-engine",
 
     # Hosting
