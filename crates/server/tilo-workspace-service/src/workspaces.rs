@@ -355,12 +355,6 @@ struct GovernedWorkspace {
     unkept: bool,
     /// Whether writing them through is due already ([`Workspaces::keep_soon`]).
     keeping: bool,
-    /// Sealed compactions this copy refused for writes it has not admitted, by app and record:
-    /// the writes they cover are nowhere but inside them, so they are kept and taken as the
-    /// record's base as soon as this host holds its keys
-    /// ([`GovernedWorkspace::take_behind`]). Kept in memory: a refusal is asked for again by its
-    /// author, and the keys one waits for arrive with the channel's own replay.
-    behind: std::collections::BTreeMap<(String, String), collab_types::SignedOp>,
     /// The channels of this workspace's records whose key holders this host
     /// is asking to admit it, by app and record: a burst of writes to a
     /// record the host holds no keys of yet asks once
@@ -539,7 +533,6 @@ impl GovernedWorkspace {
             desktop_segments: collab_types::DocumentReassembler::default(),
             unkept: false,
             keeping: false,
-            behind: std::collections::BTreeMap::new(),
             #[cfg(any(feature = "agents", feature = "web"))]
             asking: std::collections::BTreeSet::new(),
             rebased: false,
@@ -2722,6 +2715,14 @@ impl Workspaces {
         // A sealed compaction this copy is behind in is taken as the record's base rather than
         // refused ([`GovernedWorkspace::follow_kept`]).
         let followed = workspace.follow_kept(author, message.clone()).await;
+        // The record's keys are not here yet: the retained store keeps the compaction like any
+        // sealed frame it cannot read, and a replay takes it once they are. Asking to be let
+        // into the record's channel is what brings them here.
+        if followed.behind == Some(follow::BehindRefusal::Keys) {
+            #[cfg(any(feature = "agents", feature = "web"))]
+            self.join_soon(workspace, app.clone(), record.clone());
+            return;
+        }
         if followed.changed {
             self.landed(workspace, &message);
             self.keep_soon(workspace);

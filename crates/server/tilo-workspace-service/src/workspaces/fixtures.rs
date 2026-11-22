@@ -265,7 +265,7 @@ pub struct TestGroupKeys {
     held: Mutex<BTreeMap<String, ContentKeys>>,
     /// Whether the device opens no group itself: it holds keys only once they are handed to it
     /// ([`Self::hand`]), as a device a group has not let in yet.
-    admitted_only: bool,
+    admitted_only: std::sync::atomic::AtomicBool,
     /// How many times keys were handed to the device, for whoever waits for them.
     handed: tokio::sync::watch::Sender<u64>,
     /// The groups a read asked the person's other devices for the frames of, and the epoch the
@@ -277,7 +277,7 @@ impl Default for TestGroupKeys {
     fn default() -> Self {
         Self {
             held: Mutex::default(),
-            admitted_only: false,
+            admitted_only: std::sync::atomic::AtomicBool::new(false),
             handed: tokio::sync::watch::Sender::new(0),
             behind: Mutex::default(),
         }
@@ -291,9 +291,19 @@ impl TestGroupKeys {
     #[must_use]
     pub fn admitted_only() -> Self {
         Self {
-            admitted_only: true,
+            admitted_only: std::sync::atomic::AtomicBool::new(true),
             ..Self::default()
         }
+    }
+
+    /// The device holds no group's keys any more and opens none itself, as a host whose state is
+    /// fresh and whose channel has not let it in yet.
+    pub fn hold_nothing(&self) {
+        self.held.lock().expect("the fixture's keys").clear();
+        self.admitted_only
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.handed
+            .send_modify(|handed| *handed = handed.wrapping_add(1));
     }
 
     /// Hand the fixture every group's keys `other` holds, as a group lets a device in after it
@@ -357,7 +367,11 @@ impl GroupKeys for TestGroupKeys {
             if let Some(keys) = held {
                 return Some(Ok(keys));
             }
-            if !create || self.admitted_only {
+            if !create
+                || self
+                    .admitted_only
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 return Some(Err("this channel has no keys yet".into()));
             }
             let keys = KeyGroup::create(

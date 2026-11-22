@@ -7,9 +7,10 @@
 //! A member's compaction where the governor's copy was behind, or folded the history itself.
 
 use super::tests::{
-    APP, Lounge, follows, lounge_with_client, readable, retained_until, retained_writes,
-    seal_and_send_title, send_sealed, title,
+    APP, Lounge, follows, lounge_holding, lounge_with_client, readable, retained_until,
+    retained_writes, seal_and_send_title, send_sealed, subscribed_member, title,
 };
+use crate::workspaces::fixtures::{TestGroupKeys, test_host_holding};
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::{CommitNamed as _, SignedOp};
 use neighbour_wire::NeighbourMsg;
@@ -516,4 +517,132 @@ async fn a_copy_takes_a_compaction_a_device_sends_over_a_write_it_lacks() {
     );
     drop((state, lounge.workspaces));
     lounge.server.shutdown().await;
+}
+
+/// A copy whose record keys have not arrived keeps a compaction it receives, in the retained
+/// store, and a restart before the keys come loses nothing: a replay once the keys are here
+/// takes it, and every write it folds reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    clippy::significant_drop_tightening,
+    reason = "one story: the copy's missing keys, its restart, and the replay that takes it"
+)]
+async fn a_copy_takes_a_compaction_it_kept_before_its_keys_after_a_restart() {
+    let keys = std::sync::Arc::new(TestGroupKeys::default());
+    let lounge = Box::new(lounge_holding(std::sync::Arc::clone(&keys)).await);
+    let client = Box::pin(subscribed_member(
+        &lounge.server,
+        &lounge.member_key,
+        lounge.member_cert.clone(),
+        lounge.workspace_id,
+    ))
+    .await;
+    // A copy that holds the first and third of the member's writes, and not the second.
+    let (state, _second, compaction) = a_copy_without_the_second_write(&lounge, &client).await;
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: APP.to_owned(),
+        cluster_id: lounge.workspace.clone(),
+        document: DOCUMENT.to_owned(),
+    };
+    let record_keys = lounge
+        .workspaces
+        .own_route_keys(&route, true)
+        .await
+        .unwrap()
+        .unwrap();
+    let NeighbourMsg::AppDocument { envelope, .. } = &compaction else {
+        panic!("a compaction is a document write");
+    };
+    let kept = envelope.signature;
+
+    // The copy has not been let into the record's channel yet.
+    keys.hold_nothing();
+    send_sealed(&client, lounge.workspace_id, &lounge.member_key, &compaction);
+    // A sealed frame the host cannot read is the retained store's, not a refusal.
+    tilo_test_env::within("the copy keeps the compaction", async {
+        loop {
+            let retained = retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT).await;
+            if retained.iter().any(|op| op.signature == kept) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        !state
+            .lock()
+            .await
+            .peer()
+            .publication()
+            .sealed_history(APP, DOCUMENT)
+            .iter()
+            .any(|op| op.signature == kept),
+        "the copy takes nothing it cannot open yet"
+    );
+
+    // The copy restarts, with its keys still not here.
+    drop((client, state));
+    let Lounge {
+        _dir: dir,
+        server,
+        workspaces,
+        workspace,
+        governor,
+        governor_key,
+        ..
+    } = *lounge;
+    drop(workspaces);
+    server.shutdown().await;
+    let restarted = test_host_holding(dir.path(), &governor_key, &governor, keys.clone()).await;
+    let state = restarted.workspaces().workspace(&workspace).await.unwrap();
+    restarted
+        .workspaces()
+        .recall(&mut *state.lock().await)
+        .await
+        .unwrap();
+
+    // The keys arrive, and the record reads whole: the compaction the store kept is its base,
+    // and every write it folds comes with it.
+    keys.hand(&workspace, record_keys);
+    restarted
+        .workspaces()
+        .recall(&mut *state.lock().await)
+        .await
+        .unwrap();
+    assert_eq!(
+        state
+            .lock()
+            .await
+            .peer()
+            .publication()
+            .sealed_history(APP, DOCUMENT)
+            .first()
+            .map(|op| op.signature),
+        Some(kept),
+        "the compaction the store kept leads the copy's history"
+    );
+    let bytes = restarted
+        .workspaces()
+        .resource_document(&workspace, APP, DOCUMENT)
+        .await
+        .unwrap()
+        .unwrap();
+    let document = automerge::AutoCommit::load(&bytes).unwrap();
+    let read = |name: &str| {
+        document
+            .get(ROOT, name)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| value.into_string().ok())
+    };
+    assert_eq!(read("title").as_deref(), Some("three"));
+    assert_eq!(
+        read("second").as_deref(),
+        Some("kept"),
+        "the write the copy lacked, folded into the compaction, reads after the restart"
+    );
+    drop(state);
+    restarted.shutdown().await;
 }
