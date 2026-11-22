@@ -356,19 +356,6 @@ RUN set -eu; \
       if [ -e "$node_bin/$program" ]; then ln -sf "$node_bin/$program" "/usr/local/bin/$program"; fi; \
     done
 
-# Claude Code, at the version os/hosted-guest/base.env pins (hosted-guest.sh
-# reads it from there), so a person or agent who types `claude` in Terminal
-# fetches nothing. Signing in is the person's, inside the VM.
-ARG CLAUDE_CODE_VERSION
-RUN set -eu; \
-    test -n "$CLAUDE_CODE_VERSION"; \
-    at="/home/tilo/.local/share/claude-code/$CLAUDE_CODE_VERSION"; \
-    su -s /bin/bash tilo -c \
-      "npm install --global --no-fund --no-audit --prefix '$at' @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"; \
-    test -x "$at/bin/claude"; \
-    ln -sf "$at/bin/claude" /usr/local/bin/claude; \
-    rm -rf /home/tilo/.npm
-
 # rust: rustup (checksum-pinned) with the stable toolchain, minimal profile —
 # cargo, rustc, rustup and rustdoc, and no documentation or clippy the tenant
 # did not ask for. `rustup component add` and `rustup toolchain install` work.
@@ -384,22 +371,6 @@ RUN set -eu; \
       ln -sf "$tool" "/usr/local/bin/${tool##*/}"; \
     done; \
     rm -f /var/tmp/rustup-init
-
-# The workspace's t, as a launcher and not the program: the first call in a VM
-# downloads t from the server it is named for, with the token the workspace's
-# vault gives its programs, and caches it under the tenant's own cache
-# (os/hosted-guest/t, docs/hosted-browser.md). The check below is what a
-# program's first call says with no token: the image holds none, and the
-# launcher names the vault item instead of failing to exec.
-COPY --chmod=0755 os/hosted-guest/t /usr/local/bin/t
-RUN set -eu; \
-    sh -n /usr/local/bin/t; \
-    t_says=$(env -u T_TOKEN -u T_SERVER HOME=/home/tilo /usr/local/bin/t --help 2>&1 || true); \
-    case $t_says in \
-      *'T_TOKEN'*) echo 't: launcher ready, and asks for the vault item' ;; \
-      *) echo "t: $t_says"; exit 1 ;; \
-    esac; \
-    test ! -e /home/tilo/.cache/t
 
 # The session, its fonts and its interface declaration (as the check arranged
 # them), then the store and the runtimes from the payload stage, then the script

@@ -54,30 +54,6 @@ on the workspace's Browser record, so the window is live, published and
 subscribed like a Browser window on anyone's computer, and its page actions
 (`browser@<window>/page#read-page`, …) are the ones Browser already has.
 
-### t
-
-The VM runs the workspace's `t` (`/usr/local/bin/t`): `t cargo`, `t test` and
-`t exec` put a checkout's builds and checks on the shared server the same way
-they do on a person's machine, so a workspace runs them without a warm build
-of its own. The image holds a launcher, not the program: the first call
-downloads `t` from the server it is named for into the tenant's cache
-(`~/.cache/t/t`), and every later call runs that copy.
-
-`t` reads both settings from its environment, so the launcher writes neither
-to disk:
-
-| Variable | What it is | Without it |
-| :--- | :--- | :--- |
-| `T_SERVER` | The t server the workspace runs on | `https://t.tilo.so` |
-| `T_TOKEN` | A token that server accepts, granted to the workspace from its vault | the launcher names the vault item to grant and exits 1 |
-
-The download is the one `t`'s own self-update makes: the server's build for
-the VM, `T_SERVER/v1/client?target=<triple>&file=t`, with `Authorization:
-Bearer <T_TOKEN>`. The launcher caches it only when it matches the SHA-256 the
-server states for its build (`x-t-sha256`): a page in its place, a login or an
-error, fails the first call and nothing is cached. From then on `t` keeps
-itself on the server's build.
-
 ### git
 
 `git` in the VM commits as whoever asked for the command, a person or an
