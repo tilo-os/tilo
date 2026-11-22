@@ -1115,7 +1115,8 @@ impl WorkspaceState {
                 ui_core::workspace_sync::retry();
                 arriving.writer().pending(Source::Remote);
             })
-            .on_continue_without(|arriving| arriving.writer().ready(()));
+            .on_continue_without(|arriving| arriving.writer().ready(()))
+            .failure_as_notice(RecordNotHere::title);
         self.awaited.borrow_mut().push(Awaited {
             keys,
             arriving: arriving.clone(),
@@ -1194,7 +1195,8 @@ impl WorkspaceState {
     }
 
     /// What a window that waited too long for `keys` says it waits for: the first of them still
-    /// on its way, by its type's name, and the app that keeps it when that is the window's own.
+    /// on its way, by its type's name, and the app that keeps it: the window's own, or another
+    /// app installed here, by the name the session sent for it.
     fn not_here(&self, keys: &[OpenKey]) -> RecordNotHere {
         let unopened = self.unopened.borrow();
         let waited = keys
@@ -1206,7 +1208,11 @@ impl WorkspaceState {
         };
         RecordNotHere {
             record,
-            keeper: (owner == self.app_id).then(|| self.app_title.to_owned()),
+            keeper: if owner == self.app_id {
+                Some(self.app_title.to_owned())
+            } else {
+                ui_core::history_source::installed_app_name(owner)
+            },
         }
     }
 

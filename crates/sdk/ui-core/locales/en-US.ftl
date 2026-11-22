@@ -235,6 +235,7 @@ workspace-sync-host-needs-update-body = Nothing here syncs until it has. Your ch
 workspace-sync-device-needs-update = Tilo needs to update to sync this workspace
 workspace-sync-device-needs-update-body = The update is on its way. Your changes stay on this device until then.
 workspace-sync-shell-gone = This window lost its connection to Tilo, so what this workspace holds can’t reach it. Open it again.
+workspace-record-not-here-title = { $record } hasn’t arrived yet
 workspace-record-not-here = { $record } from { $app } hasn’t reached this device yet.
 workspace-record-not-here-unnamed = { $record } hasn’t reached this device yet.
 workspace-sync-no-identity = This device isn’t signed in to Tilo, so it can’t open this workspace. Sign in, then try again.

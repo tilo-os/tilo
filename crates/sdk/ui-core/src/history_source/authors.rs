@@ -23,7 +23,8 @@ use collaboration::history_source::authors::handle_actor_hex;
 /// id, telling a device's actors apart and the colours history paints.
 pub use collaboration::history_source::authors::{
     DeviceActors, MemberNames, ResolveAuthor, UNKNOWN_AUTHOR_NAME, actor_handle, app_name,
-    app_words, author_coloured, device_actor, name_words, set_installed_apps, short_id, stable_hue,
+    app_words, author_coloured, device_actor, installed_app_name, name_words, set_installed_apps,
+    short_id, stable_hue,
 };
 #[cfg(test)]
 use collaboration::history_source::authors::{SHORT_LEN, rgb_to_hue};

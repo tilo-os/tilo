@@ -341,6 +341,9 @@ impl ArrivalClock {
 
 type Retry<T, E> = Arc<dyn Fn(&Arriving<T, E>) + Send + Sync>;
 
+/// What a failure that is no fault is titled ([`Arriving::failure_as_notice`]).
+type NoticeTitle<E> = Arc<dyn Fn(&E) -> String + Send + Sync>;
+
 /// A read whose answer arrives later.
 pub struct Arriving<T, E = String> {
     task: LatestTask<Arrival<T, E>>,
@@ -349,6 +352,9 @@ pub struct Arriving<T, E = String> {
     /// What the reader can do without the answer, once the read failed
     /// ([`Self::on_continue_without`]).
     without: Arc<Mutex<Option<Retry<T, E>>>>,
+    /// How a failure that is no fault is titled, said as a notice rather than an error
+    /// ([`Self::failure_as_notice`]).
+    notice: Arc<Mutex<Option<NoticeTitle<E>>>>,
 }
 
 impl<T, E> Clone for Arriving<T, E> {
@@ -358,6 +364,7 @@ impl<T, E> Clone for Arriving<T, E> {
             began: Arc::clone(&self.began),
             retry: Arc::clone(&self.retry),
             without: Arc::clone(&self.without),
+            notice: Arc::clone(&self.notice),
         }
     }
 }
@@ -375,6 +382,7 @@ impl<T, E> Arriving<T, E> {
             began: Arc::new(Mutex::new(crate::time::now())),
             retry: Arc::new(Mutex::new(None)),
             without: Arc::new(Mutex::new(None)),
+            notice: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -491,6 +499,22 @@ impl<T, E> Arriving<T, E> {
         if let Some(without) = without {
             without(self);
         }
+    }
+
+    /// A failure of this read is no fault, only something that has not arrived yet: it is said as a
+    /// notice titled by `title`, not as an error.
+    #[must_use]
+    pub fn failure_as_notice(self, title: impl Fn(&E) -> String + Send + Sync + 'static) -> Self {
+        *self.notice.lock_recover() = Some(Arc::new(title));
+        self
+    }
+
+    /// The notice's title of the failure standing now, when the read says it as one
+    /// ([`Self::failure_as_notice`]).
+    #[must_use]
+    pub fn failure_notice(&self) -> Option<String> {
+        let title = self.notice.lock_recover().clone()?;
+        self.with(|arrival| arrival.failure().map(|error| title(error)))
     }
 
     /// What the reader can do without the answer once the read failed: `without` answers the read

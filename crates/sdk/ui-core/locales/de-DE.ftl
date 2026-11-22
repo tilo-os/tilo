@@ -238,6 +238,7 @@ workspace-sync-host-needs-update-body = Bis dahin wird hier nichts synchronisier
 workspace-sync-device-needs-update = Tilo muss aktualisieren, um diesen Arbeitsbereich zu synchronisieren
 workspace-sync-device-needs-update-body = Die Aktualisierung kommt. Bis dahin bleiben deine Änderungen auf diesem Gerät.
 workspace-sync-shell-gone = Dieses Fenster hat die Verbindung zu Tilo verloren, daher kann der Inhalt dieses Arbeitsbereichs es nicht erreichen. Öffne es erneut.
+workspace-record-not-here-title = { $record } ist noch nicht angekommen
 workspace-record-not-here = { $record } aus { $app } ist noch nicht auf diesem Gerät angekommen.
 workspace-record-not-here-unnamed = { $record } ist noch nicht auf diesem Gerät angekommen.
 workspace-sync-no-identity = Dieses Gerät ist nicht bei Tilo angemeldet und kann diesen Arbeitsbereich daher nicht öffnen. Melde dich an und versuche es erneut.

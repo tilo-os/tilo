@@ -264,6 +264,11 @@ fn a_window_whose_record_never_arrives_says_so_and_goes_on_without_it() {
         app.texts()
     );
     assert!(
+        says(&mut app, "Bookmarks hasn\u{2019}t arrived yet"),
+        "its title names what has not arrived: {:?}",
+        app.texts()
+    );
+    assert!(
         !says(&mut app, "the bookmarks are not here"),
         "the view is not built yet"
     );
@@ -292,5 +297,139 @@ fn a_window_whose_record_never_arrives_says_so_and_goes_on_without_it() {
     assert!(
         says(&mut app, "hello"),
         "what the person types reaches the view, not held"
+    );
+}
+
+/// The workspace's answer that it holds none of the record comes after the window said it
+/// waited too long: the late answer wins, and the window shows its view with the record empty,
+/// as if it had come in time, with nothing for the person to press.
+#[test]
+fn a_late_answer_shows_the_view_after_the_window_said_it_waited_too_long() {
+    use tilo_app::resource::WorkspaceAnswer;
+    let mut app = TestApp::<ReadsOnce>::awaiting_the_workspace(
+        tilo_app::framework::headless::TEST_WORKSPACE,
+        BROWSER,
+    )
+    .unwrap();
+    app.frame();
+    let opened = tilo_app::time::now();
+    let after = |seconds: u64| {
+        opened
+            .checked_add(tilo_app::time::Duration::from_secs(seconds))
+            .expect("a time")
+    };
+    tilo_app::time::testing::with_monotonic_time(after(16), || {
+        for _ in 0..4 {
+            app.frame();
+        }
+    });
+    assert!(
+        says(&mut app, "Continue without it"),
+        "past the bound, the window offers to go on: {:?}",
+        app.texts()
+    );
+
+    let wanted = app.wanted_resources();
+    assert!(
+        !wanted.is_empty(),
+        "the window still asks for its bookmarks"
+    );
+    for record in wanted {
+        app.workspace_answered(record, WorkspaceAnswer::HoldsNone);
+    }
+    for seconds in 17..21 {
+        tilo_app::time::testing::with_monotonic_time(after(seconds), || app.frame());
+    }
+    assert!(
+        says(&mut app, "nothing bookmarked"),
+        "the late answer shows the bookmarks, empty: {:?}",
+        app.texts()
+    );
+    assert!(
+        !says(&mut app, "Continue without it"),
+        "and the window no longer says it waits"
+    );
+}
+
+/// Browser's record shown as a page: the view a person's browser renders, held outside any
+/// window, which whoever holds it tells what the workspace holds.
+fn page_of_reads_once() -> tilo_app::framework::AttachedView {
+    let app = TestApp::<ReadsOnce>::new().unwrap();
+    let definition = tilo_app::framework::definition::<ReadsOnce>();
+    tilo_app::framework::AttachedView::open(
+        definition,
+        tilo_app::framework::testing::TEST_WORKSPACE,
+        tilo_app::resource::DocumentCheckout::new(
+            app.record().clone(),
+            definition.resource_type.clone(),
+        ),
+        app.read_document(|doc| doc.clone().save()),
+        &MemberId::person("ada"),
+        tilo_app::permissions::PermissionContext::permissive(),
+        false,
+    )
+    .unwrap()
+}
+
+/// What the page shows, as its composition carries it.
+fn page_says(page: &tilo_app::framework::AttachedView, text: &str) -> bool {
+    serde_json::to_string(&page.composition())
+        .unwrap()
+        .contains(text)
+}
+
+/// A page waiting for the workspace's record shows its view once whoever holds it says the
+/// workspace holds none: the record is new, empty, and the view reads it as such. The page
+/// asks for the record itself, so a holder that answers what the page wants answers it.
+#[test]
+fn a_page_shows_the_workspaces_record_empty_once_the_workspace_holds_none() {
+    use tilo_app::resource::WorkspaceAnswer;
+    let mut page = page_of_reads_once();
+    assert!(
+        !page_says(&page, "nothing bookmarked"),
+        "not read as none yet"
+    );
+    let wanted = page.wanted_resources();
+    assert!(!wanted.is_empty(), "the page asks for its bookmarks");
+    for record in wanted {
+        page.workspace_answered(record, WorkspaceAnswer::HoldsNone);
+    }
+    assert!(
+        page_says(&page, "nothing bookmarked"),
+        "the page shows the bookmarks, empty"
+    );
+}
+
+/// The answer that the workspace holds none comes after the page said it waited too long: the
+/// late answer wins, and the page shows its view as if it had come in time.
+#[test]
+fn a_late_answer_shows_the_page_after_it_said_it_waited_too_long() {
+    use tilo_app::resource::WorkspaceAnswer;
+    let mut page = page_of_reads_once();
+    let opened = tilo_app::time::now();
+    let after = |seconds: u64| {
+        opened
+            .checked_add(tilo_app::time::Duration::from_secs(seconds))
+            .expect("a time")
+    };
+    let offered = tilo_app::time::testing::with_monotonic_time(after(16), || {
+        page_says(&page, "Continue without it")
+    });
+    assert!(offered, "past the bound, the page offers to go on");
+    let asked = page.wanted_resources();
+    assert!(!asked.is_empty(), "the page still asks for its bookmarks");
+    for record in asked {
+        page.workspace_answered(record, WorkspaceAnswer::HoldsNone);
+    }
+    let shown = tilo_app::time::testing::with_monotonic_time(after(17), || {
+        (
+            page_says(&page, "nothing bookmarked"),
+            page_says(&page, "Continue without it"),
+        )
+    });
+    assert_eq!(
+        shown,
+        (true, false),
+        "the late answer shows the bookmarks, empty, and the page no longer says it waits"
     );
 }

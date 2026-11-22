@@ -195,6 +195,16 @@ pub struct RecordNotHere {
     pub keeper: Option<String>,
 }
 
+impl RecordNotHere {
+    /// What the window says above it: the record, by name, has not arrived yet.
+    #[must_use]
+    pub fn title(&self) -> String {
+        let mut args = fluent::FluentArgs::new();
+        args.set("record", self.record.clone());
+        crate::i18n::I18nManager::lookup("workspace-record-not-here-title", Some(&args))
+    }
+}
+
 impl std::fmt::Display for RecordNotHere {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut args = fluent::FluentArgs::new();
