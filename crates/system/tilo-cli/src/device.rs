@@ -178,6 +178,7 @@ async fn keep_in_list(entered: &Entered, cert: &DeviceCert) -> Result<()> {
 
 /// This computer's login and the person whose root it holds, checked to be one person.
 fn person_here() -> Result<(SigningKey, Device, crate::identity::Person)> {
+    crate::identity::convert_earlier()?;
     let (key, here) = login::load(&login::Place::here(crate::identity::paths())?)?
         .ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
     let person = crate::identity::held()?.ok_or_else(|| {

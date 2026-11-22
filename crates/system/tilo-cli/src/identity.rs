@@ -135,9 +135,154 @@ pub fn held() -> Result<Option<Person>> {
     }))
 }
 
+/// The login an earlier tilo kept as `device.json`, with its key in a file of its own beside it.
+#[derive(serde::Deserialize)]
+struct EarlierLogin {
+    site: String,
+    host_origin: String,
+    workspace: String,
+    #[serde(default)]
+    workspace_name: Option<String>,
+    agent: String,
+    /// Hex of the postcard certificate the root signed for the earlier key.
+    cert: String,
+    /// Hex of the host's postcard certificate.
+    server_cert: String,
+    #[serde(default)]
+    server_address: Option<tilo_device_identity::login::ServerAddress>,
+}
+
+/// Convert, once, what an earlier tilo kept as plain files in this account's state folder: the
+/// person's root (`tilo/identity/user-identity/privkey.bin`) becomes the identity store's record
+/// under the same key, certifying this computer's one device key, and its login
+/// (`tilo/device/device.json`) becomes this computer's login with that certificate. Each file is
+/// removed once converted, so the root has one home and nothing reads the old files again.
+///
+/// # Errors
+/// The files are damaged, the computer holds another person's identity, or the login is of a
+/// person whose root is not here.
+pub fn convert_earlier() -> Result<()> {
+    let place = login::Place::here(paths())?;
+    if let Some(state) = place.dir().parent() {
+        convert_earlier_root(&state.join("identity/user-identity"))?;
+    }
+    convert_earlier_login(&place)
+}
+
+/// Remove `files`, those that are there.
+fn remove(files: &[&std::path::Path]) -> Result<()> {
+    for file in files {
+        match std::fs::remove_file(file) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(anyhow!(error).context(format!("remove {}", file.display())));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The person's root an earlier tilo kept in `earlier`, kept in the identity store: see
+/// [`convert_earlier`].
+fn convert_earlier_root(earlier: &std::path::Path) -> Result<()> {
+    let seed = earlier.join("privkey.bin");
+    if seed.exists() {
+        let root = tilo_device_identity::persist::read_signing_key(&seed)
+            .map_err(|error| anyhow!("{} cannot be read: {error}", seed.display()))?;
+        let user = root.verifying_key().to_bytes();
+        let public = earlier.join("pubkey.bin");
+        if public.exists()
+            && tilo_device_identity::persist::read_public_key(&public).ok() != Some(user)
+        {
+            bail!(
+                "{} is not the key of {}: nothing was changed.",
+                public.display(),
+                seed.display()
+            );
+        }
+        if let Some(kept) = held()? {
+            if kept.public_key() != user {
+                bail!(
+                    "This computer account holds the Tilo identity {} and an earlier tilo kept \
+                     another one ({}) in {}: nothing was changed.",
+                    kept.user(),
+                    hex::encode(user),
+                    earlier.display()
+                );
+            }
+        } else {
+            let dir = dir()?;
+            tilo_identity::provisioning::import_single_device_root(
+                &dir,
+                &root,
+                "",
+                IdentityStorage::for_session(),
+            )
+            .with_context(|| format!("keep the identity in {}", dir.display()))?;
+            tilo_identity::provisioning::ensure_collaboration_identity_with_device_label(
+                &dir,
+                &paths(),
+                IdentityStorage::for_session(),
+                &login::label("tilo", &login::hostname()),
+            )
+            .context("certify this computer's device key")?;
+            let kept = held()?.context("the identity just kept is not there")?;
+            if kept.public_key() != user {
+                bail!("the identity kept is not the earlier one");
+            }
+        }
+        remove(&[&seed, &public])?;
+        let _ = std::fs::remove_dir(earlier);
+    }
+    Ok(())
+}
+
+/// The login an earlier tilo kept in `place`, kept as this computer's: see [`convert_earlier`].
+fn convert_earlier_login(place: &login::Place) -> Result<()> {
+    let login_file = place.dir().join("device.json");
+    if !login_file.exists() || place.logged_in() {
+        return Ok(());
+    }
+    let earlier: EarlierLogin = serde_json::from_slice(
+        &std::fs::read(&login_file).with_context(|| format!("read {}", login_file.display()))?,
+    )
+    .with_context(|| format!("{} is damaged", login_file.display()))?;
+    let cert = |hexed: &str| -> Result<DeviceCert> {
+        hex::decode(hexed)
+            .ok()
+            .and_then(|bytes| postcard::from_bytes(&bytes).ok())
+            .with_context(|| format!("{} holds a damaged certificate", login_file.display()))
+    };
+    let person = held()?.context(
+        "This computer's earlier login is of a person whose identity it does not hold: log in \
+         with a ticket from `tilo device add` on one of their devices.",
+    )?;
+    if cert(&earlier.cert)?.user_public_key != person.public_key() {
+        bail!(
+            "This computer's earlier login is of another person than the one whose identity it \
+             holds: log in with a ticket from `tilo device add` on one of their devices."
+        );
+    }
+    login::store(
+        place,
+        &login::Device {
+            site: earlier.site,
+            host_origin: earlier.host_origin,
+            workspace: earlier.workspace,
+            workspace_name: earlier.workspace_name,
+            agent: earlier.agent,
+            cert: person.cert,
+            server_cert: cert(&earlier.server_cert)?,
+            server_address: earlier.server_address,
+        },
+    )?;
+    remove(&[&login_file, &place.dir().join("key")])
+}
+
 /// The person kept here, made first when there is none: whether it was made
 /// now. `name` names a new one; one already kept stays as it is.
 pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
+    convert_earlier()?;
     let made = !holds_root();
     if made {
         let dir = dir()?;
@@ -165,6 +310,7 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
 /// The words are not a recovery key, they are someone else's than the person
 /// kept here, or the identity could not be written or certified.
 pub fn restore(words: &str) -> Result<Person> {
+    convert_earlier()?;
     let dir = dir()?;
     tilo_enrollment::install::restore_from_recovery_words(
         &dir,
@@ -566,6 +712,109 @@ mod tests {
         assert_eq!(held().unwrap().unwrap().public_key(), ada.public_key());
         let wrong = restore("abandon ability able").err().expect("three words");
         assert!(wrong.to_string().contains("24 words"), "{wrong:#}");
+    }
+
+    #[test]
+    fn a_person_and_login_an_earlier_tilo_kept_are_converted_once_under_the_same_key() {
+        use tilo_device_identity::persist::{write_public_key, write_signing_key};
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let at = |env: &mut tilo_test_env::ScopedEnv, home: &std::path::Path| {
+            env.set("HOME", home)
+                .set("XDG_CONFIG_HOME", home.join("config"))
+                .set("XDG_STATE_HOME", home.join("state"))
+                .set("TILO_IDENTITY_ROOT", home.join("system"))
+                .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+        };
+        // A computer account where an earlier tilo kept Ada: her root and public key as files
+        // in its state folder, and its login beside them, with a key of its own.
+        let earlier_files = |home: &std::path::Path, root: &SigningKey| {
+            let user = home.join("state/tilo/identity/user-identity");
+            std::fs::create_dir_all(&user).unwrap();
+            write_signing_key(&user.join("privkey.bin"), root).unwrap();
+            write_public_key(&user.join("pubkey.bin"), &root.verifying_key().to_bytes()).unwrap();
+            let cert_of = |user_public_key: [u8; 32], device: [u8; 32], label: &str| DeviceCert {
+                user_public_key,
+                device_public_key: device,
+                device_label: label.into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            let hexed = |cert: &DeviceCert| hex::encode(postcard::to_allocvec(cert).unwrap());
+            let device = home.join("state/tilo/device");
+            std::fs::create_dir_all(&device).unwrap();
+            std::fs::write(device.join("key"), [9; 32]).unwrap();
+            std::fs::write(
+                device.join("device.json"),
+                serde_json::json!({
+                    "site": "https://site.test",
+                    "host_origin": "https://host.test",
+                    "workspace": "ws-ada",
+                    "workspace_name": "Ada's",
+                    "agent": "tilo",
+                    "cert": hexed(&cert_of(root.verifying_key().to_bytes(), [9; 32], "tilo")),
+                    "server_cert": hexed(&cert_of([4; 32], [5; 32], "Host")),
+                })
+                .to_string(),
+            )
+            .unwrap();
+        };
+        let ada = SigningKey::from_bytes(&[7; 32]);
+        let home = tempfile::tempdir().unwrap();
+        at(&mut env, home.path());
+        earlier_files(home.path(), &ada);
+        assert!(!holds_root(), "the store holds no one yet");
+
+        // Asking for a new identity converts hers instead of making a second person.
+        let (person, made) = ensure(Some("Someone")).unwrap();
+        assert!(!made, "no second person is made beside her");
+        assert_eq!(
+            person.public_key(),
+            ada.verifying_key().to_bytes(),
+            "the same key"
+        );
+        tilo_user_identity::verify_device_cert(&person.cert).unwrap();
+        let place = login::Place::here(paths()).unwrap();
+        let (key, device) = login::load(&place)
+            .unwrap()
+            .expect("her login is converted");
+        assert_eq!(
+            key.verifying_key().to_bytes(),
+            person.cert.device_public_key
+        );
+        assert_eq!(device.workspace, "ws-ada");
+        assert_eq!(device.server_cert.device_public_key, [5; 32]);
+        for gone in [
+            "state/tilo/identity/user-identity/privkey.bin",
+            "state/tilo/device/device.json",
+            "state/tilo/device/key",
+        ] {
+            assert!(!home.path().join(gone).exists(), "{gone} is removed");
+        }
+        // Once converted, nothing is read again and she is kept.
+        convert_earlier().unwrap();
+        assert_eq!(held().unwrap().unwrap().public_key(), person.public_key());
+
+        // An account that holds Bea already never takes Ada's root beside her.
+        let other = tempfile::tempdir().unwrap();
+        at(&mut env, other.path());
+        let (bea, _) = ensure(Some("Bea")).unwrap();
+        earlier_files(other.path(), &ada);
+        let refused = convert_earlier().expect_err("another person's root");
+        assert!(
+            refused.to_string().contains("nothing was changed"),
+            "{refused:#}"
+        );
+        assert_eq!(held().unwrap().unwrap().public_key(), bea.public_key());
+        assert!(
+            other
+                .path()
+                .join("state/tilo/identity/user-identity/privkey.bin")
+                .exists(),
+            "her files are left as they were"
+        );
     }
 
     #[test]
