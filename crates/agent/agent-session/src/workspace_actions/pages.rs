@@ -686,19 +686,12 @@ impl Worker {
         };
         match action {
             PageAction::Value(text) => {
-                self.pages.held.insert(
-                    page,
-                    HeldPage::Search {
-                        workspace_id,
-                        caller,
-                        needle: text.clone(),
-                        rows: Vec::new(),
-                        notes: None,
-                        pending: None,
-                        notice: None,
-                    },
-                );
-                self.search_again(page, workspace_id, &text)
+                // Typing narrows the page; what it was showing (a row's
+                // answer still running, say) is kept until the answer is.
+                if let Some(HeldPage::Search { needle, .. }) = self.pages.held.get_mut(&page) {
+                    needle.clone_from(&text);
+                }
+                self.search_again(page, workspace_id, &caller, &text)
             }
             PageAction::Activate => self.run_search_row(page, workspace_id, &caller, id),
             PageAction::Toggle | PageAction::Focus | PageAction::Select { .. } => Ok(Vec::new()),
@@ -710,17 +703,14 @@ impl Worker {
         &mut self,
         page: u64,
         workspace_id: WorkspaceId,
+        caller: &Caller,
         needle: &str,
     ) -> Result<Vec<PagePatch>, PageRefusal> {
         let state = self
             .refresh(workspace_id, Needs::Workspace)
             .map_err(refused)?;
         state.workspace.as_ref().ok_or(PageRefusal::Elsewhere)?;
-        let caller = match self.pages.held.get(&page) {
-            Some(HeldPage::Search { caller, .. }) => caller.clone(),
-            _ => return Err(unavailable("the page was closed")),
-        };
-        let (rows, notes) = self.search_rows(workspace_id, &caller, needle);
+        let (rows, notes) = self.search_rows(workspace_id, caller, needle);
         if let Some(HeldPage::Search {
             rows: held,
             notes: held_notes,
