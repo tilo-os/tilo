@@ -123,10 +123,18 @@ windows and outside effects (sending a mail, calling an API, declared by the
 action and carried out by the system under the workspace's grants) are the
 system's. An app is its resource types, its actions' code and its views.
 
-### Agents
+### Agents and automations
 
-An agent is a collaborator acting for a person, with a subset of that
-person's permissions, by default the largest one. Granting it less works the
+An agent is not a person. It is shown as itself: its name, the person it
+acts for, its turns and what they cost. An automation (a shortcut, a rule, a
+script someone set up) is shown as the rule that ran and who set it up.
+Underneath, both are actors acting for a person, like a person acting for
+themselves, and one call can run through several of them: an automation a
+person set up, run by an agent. Every actor in that chain must allow the
+call (`tilo_action_policy::Acting`, `admit_invocation`).
+
+An agent or an automation acts with a subset of its person's permissions,
+by default the largest one. Granting it less works the
 way granting a person less does. It acts on undoable things without asking,
 which is most of what happens in a workspace. It runs on the person's
 devices, like everything else, and does whatever it or its person starts it
