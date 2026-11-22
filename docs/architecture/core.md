@@ -86,8 +86,8 @@ use the same addresses.
   specific grant wins, a person's own grant beats their role's, and no grant
   means no. Roles are named sets of grants.
 - Membership and grants are a resource of the workspace, changed by signed
-  actions. No device and no server governs a workspace: every key holder
-  works out the same answer from the same signed list.
+  actions. No device and no server governs a workspace: every device that
+  can read it works out the same answer from the same signed list.
 - The rule is enforced three times with the same function: when an action is
   called (one admission, `admit_invocation`; an agent acting for a person
   gets the narrower of the two), when a change arrives (every receiver drops
@@ -189,6 +189,17 @@ view output is drawn as native widgets and as semantic HTML on the web page.
   data once, in one migration action, and then the old reader goes.
 - No UX loss. A deletion that would lose something a person does in their
   first hour is blocked until the surviving path does it.
+- A removal lands whole. Deleting the old copy, moving every caller onto the
+  survivor and the survivor's own changes are one branch and one push (or a
+  few commits pushed together), never "move now, delete later". Older
+  branches and worktrees on the same code are taken into that push or
+  deleted, not left parked.
+- Test once, at the end. The change is finished first (old code gone,
+  callers moved, `t cargo check` clean); then clippy and the focused tests
+  run once, and it is pushed. No test or cost runs on a half-done change.
+- The words-that-go check fails only when a specific word's count rises.
+  Generic words (record, item, kind, document, surface, instance, held) are
+  counted and printed, and a count that falls never fails.
 
 ---
 
@@ -710,7 +721,7 @@ any of them is added.
 
 | Word in the code | What it is today | What the design has instead |
 |---|---|---|
-| governor, governance document, `GovernedWorkspace`, `NativeWorkspaceOwner`, succession | one device that admits a workspace's changes and owns its record | the signed member list every key holder checks |
+| governor, governance document, `GovernedWorkspace`, `NativeWorkspaceOwner`, succession | one device that admits a workspace's changes and owns its record | the signed member list every member's device checks |
 | `tilo.host`, `tilo.member` namespaces, host as owner | a server's own records and authority beside the workspace | the workspace's resources; a server is a device |
 | keeper | the person an agent belongs to, named apart from members | the person the agent acts for |
 | roster, `tilo.workspace.agent` | a second list of agents beside members | members; an agent is a member acting for a person |
