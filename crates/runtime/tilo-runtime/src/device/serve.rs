@@ -287,8 +287,8 @@ fn take_lock(
     loop {
         // A lock that is not this user's own private file (a link to another file, one others
         // may write) is refused rather than taken: whoever holds it serves the person.
-        let file =
-            crate::unix::private_file(path).with_context(|| format!("open {}", path.display()))?;
+        // Its error names the file and why it is refused.
+        let file = crate::unix::private_file(path)?;
         match FileLock::try_exclusive(file) {
             Ok(lock) => {
                 // Who holds it, for a daemon starting beside this one to name.

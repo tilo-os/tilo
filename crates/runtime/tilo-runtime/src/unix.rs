@@ -219,21 +219,54 @@ pub(crate) fn private_file(path: &Path) -> io::Result<File> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
     let metadata = file.metadata()?;
-    if !metadata.is_file()
-        || !tilo_files::native::private::owned_by_me(&metadata)
-        || metadata.nlink() != 1
-        || metadata.permissions().mode() & 0o077 != 0
-    {
-        return Err(io::Error::new(
+    let refused = |why: &str| {
+        Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "runtime file must be private, singly linked and owned by this user",
-        ));
+            format!(
+                "{} {why}: a runtime file is this user's own, private and singly linked",
+                path.display()
+            ),
+        ))
+    };
+    if !metadata.is_file() {
+        return refused("is not a file");
+    }
+    if !tilo_files::native::private::owned_by_me(&metadata) {
+        return refused("belongs to another user");
+    }
+    if metadata.nlink() != 1 {
+        return refused("has another link");
+    }
+    // One this user owns that others may read (an earlier Tilo made its files so) is made
+    // private: nobody but its owner and the superuser could have written it.
+    if metadata.permissions().mode() & 0o077 != 0 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(file)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_runtime_file_an_earlier_tilo_left_readable_is_made_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("holder.lock");
+        std::fs::write(&lock, b"").unwrap();
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+        super::private_file(&lock).expect("this user's own file is taken");
+        let mode = std::fs::metadata(&lock).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let other = dir.path().join("other.lock");
+        std::fs::hard_link(&lock, &other).unwrap();
+        let refused = super::private_file(&lock).expect_err("a file with another link");
+        assert!(
+            refused.to_string().contains("has another link"),
+            "{refused}"
+        );
+    }
+
     #[test]
     fn managed_connection_preparation_clears_ancestor_automatic_metadata() {
         let root = tempfile::tempdir().unwrap();
