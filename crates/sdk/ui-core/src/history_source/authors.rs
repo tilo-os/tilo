@@ -1190,10 +1190,8 @@ mod tests {
         let author = authors.resolve_entry(&device, Some(&entry));
         assert_eq!(author.name, "Scout");
         assert_eq!(author.relation, AuthorRelation::Software);
-        assert_eq!(
-            crate::history_source::sentence::writer_badge(&author).as_deref(),
-            Some("Scout")
-        );
+        // The agent is the author itself, so no badge names a writer beside it.
+        assert_eq!(crate::history_source::sentence::writer_badge(&author), None);
         // The session's title is detail on the hover, never part of who did it.
         assert_eq!(author.task, None);
         let hover = crate::history_source::sentence::attribution_hover(&author).unwrap_or_default();
