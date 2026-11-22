@@ -2381,15 +2381,26 @@ impl Task {
             .filter(|(_, keys)| !matches!(keys, RouteKeys::Handed))
             .map(|(route, _)| route.clone())
             .collect();
-        for route in routes {
-            self.read_keys(&route);
+        // Every route's keys are read off one reading of the workspace's key holders: asked
+        // route by route, a device with many records open re-derived the whole membership's
+        // access for each of them whenever a member came or went.
+        let keys = self.engine.documents_seal_keys(&routes);
+        for (route, keys) in routes.iter().zip(keys) {
+            self.take_keys(route, here(keys));
         }
     }
 
     /// Take up `route`'s keys when the engine holds newer ones than the
     /// session; answers whether the route has keys.
     fn read_keys(&mut self, route: &DocumentRoute) -> bool {
-        let Some(keys) = self.keys_of(route) else {
+        let keys = self.keys_of(route);
+        self.take_keys(route, keys)
+    }
+
+    /// Take up `keys`, `route`'s keys as the engine holds them now, when they are newer than the
+    /// session's; answers whether the route has keys.
+    fn take_keys(&mut self, route: &DocumentRoute, keys: Option<key_group::ContentKeys>) -> bool {
+        let Some(keys) = keys else {
             return false;
         };
         let change = self.workspace_keys.workspace_change(keys.workspace());
@@ -2630,10 +2641,7 @@ impl Task {
 
     /// The keys this device seals and opens `route`'s content with, as its engine holds them.
     fn keys_of(&self, route: &DocumentRoute) -> Option<key_group::ContentKeys> {
-        match self.engine.document_seal_keys(route) {
-            Ok(crate::engine::SealKeys::Here(keys)) => Some(keys),
-            _ => None,
-        }
+        here(self.engine.document_seal_keys(route))
     }
 
     fn keys_for_ciphertext(
@@ -2654,6 +2662,14 @@ impl Task {
             crate::engine::SealKeys::Here(keys) => Some(keys),
             _ => None,
         }
+    }
+}
+
+/// The keys `sealing` names, when they are here.
+fn here(sealing: Result<crate::engine::SealKeys, String>) -> Option<key_group::ContentKeys> {
+    match sealing {
+        Ok(crate::engine::SealKeys::Here(keys)) => Some(keys),
+        _ => None,
     }
 }
 

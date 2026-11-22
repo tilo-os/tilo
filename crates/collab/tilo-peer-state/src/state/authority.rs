@@ -1114,45 +1114,20 @@ impl StatePeer {
         document: &str,
         now: SystemTime,
     ) -> Result<bool, String> {
-        if collab_types::validator::requires_independent_document_keys(app, document)
-            || self.publication().has_document_keys(app, document)
-        {
-            return Ok(true);
+        self.document_keys_basis(now).requires(app, document)
+    }
+
+    /// What deciding [`Self::requires_document_keys`] of many documents at `now`
+    /// reads once for all of them: who holds the workspace's keys and what each
+    /// may do. Asked document by document, a device holding a workspace of
+    /// hundreds re-derived every key holder's access for each record it opened.
+    #[must_use]
+    pub fn document_keys_basis(&self, now: SystemTime) -> DocumentKeysBasis<'_> {
+        DocumentKeysBasis {
+            peer: self,
+            now,
+            holders: std::cell::OnceCell::new(),
         }
-        let governance = self.governance();
-        let policy = self
-            .core
-            .workspace_doc
-            .as_ref()
-            .ok_or("workspace governance missing")?
-            .workspace_policy(&self.core.workspace);
-        let own = self.document_owner(app, document, policy);
-        let node = collab_types::document_node(&self.core.workspace, app, document);
-        let cx = tilo_action_policy::Context::at_time(now);
-        // A rule can exclude a person before they join on a device. Protect
-        // the history now, before that device receives the workspace key.
-        if own.is_some()
-            || policy.grants.iter().any(|grant| {
-                grant.kinds.contains(ActionKind::Read)
-                    && grant.answer != tilo_action_policy::Answer::Allow
-                    && grant.is_live(&cx)
-                    && cx.covers(&grant.node, &node)
-            })
-        {
-            return Ok(true);
-        }
-        let devices: Vec<_> = governance.key_holders(now)?.into_iter().collect();
-        let access = governance.access_of(&devices, now)?;
-        Ok(devices.iter().any(|device| match access.get(device) {
-            Some(member) => {
-                !self.holds_document_keys_as(*device, member, (app, document), None, now)
-            }
-            // A holder the governance names to hold the workspace's keys reads
-            // what they seal because it is named so, not through a member's
-            // role. A server that takes no member's work, or no longer does,
-            // has no member access, and the workspace key reaches it by right.
-            None => governance.holder_role(device) != Some(super::CopyRole::KeyHolder),
-        }))
     }
 
     /// Validate the group bound into the signed encryption metadata. A
@@ -1651,4 +1626,77 @@ fn refused_change(
         said.push_str(KEY_NOT_APPROVED);
     }
     said
+}
+
+/// The key holders of one state of a workspace's governance at one moment, read
+/// once for every document asked of them ([`StatePeer::document_keys_basis`]).
+pub struct DocumentKeysBasis<'p> {
+    peer: &'p StatePeer,
+    now: SystemTime,
+    holders: std::cell::OnceCell<Result<KeyHolderAccess, String>>,
+}
+
+/// Every device holding a workspace's keys, and the access of each that is a member's.
+type KeyHolderAccess = (
+    Vec<[u8; 32]>,
+    std::collections::BTreeMap<[u8; 32], MemberAccess>,
+);
+
+impl DocumentKeysBasis<'_> {
+    /// The workspace's key holders and their access, read on the first document that needs them.
+    fn holders(&self) -> Result<&KeyHolderAccess, String> {
+        self.holders
+            .get_or_init(|| {
+                crate::governance_work::key_holders_read();
+                let governance = self.peer.governance();
+                let devices: Vec<_> = governance.key_holders(self.now)?.into_iter().collect();
+                let access = governance.access_of(&devices, self.now)?;
+                Ok((devices, access))
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    /// [`StatePeer::requires_document_keys`] of `document` of `app`.
+    pub fn requires(&self, app: &str, document: &str) -> Result<bool, String> {
+        let (peer, now) = (self.peer, self.now);
+        if collab_types::validator::requires_independent_document_keys(app, document)
+            || peer.publication().has_document_keys(app, document)
+        {
+            return Ok(true);
+        }
+        let governance = peer.governance();
+        let policy = peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or("workspace governance missing")?
+            .workspace_policy(&peer.core.workspace);
+        let own = peer.document_owner(app, document, policy);
+        let node = collab_types::document_node(&peer.core.workspace, app, document);
+        let cx = tilo_action_policy::Context::at_time(now);
+        // A rule can exclude a person before they join on a device. Protect
+        // the history now, before that device receives the workspace key.
+        if own.is_some()
+            || policy.grants.iter().any(|grant| {
+                grant.kinds.contains(ActionKind::Read)
+                    && grant.answer != tilo_action_policy::Answer::Allow
+                    && grant.is_live(&cx)
+                    && cx.covers(&grant.node, &node)
+            })
+        {
+            return Ok(true);
+        }
+        let (devices, access) = self.holders()?;
+        Ok(devices.iter().any(|device| match access.get(device) {
+            Some(member) => {
+                !peer.holds_document_keys_as(*device, member, (app, document), None, now)
+            }
+            // A holder the governance names to hold the workspace's keys reads
+            // what they seal because it is named so, not through a member's
+            // role. A server that takes no member's work, or no longer does,
+            // has no member access, and the workspace key reaches it by right.
+            None => governance.holder_role(device) != Some(super::CopyRole::KeyHolder),
+        }))
+    }
 }

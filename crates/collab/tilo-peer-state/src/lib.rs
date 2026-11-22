@@ -71,6 +71,7 @@ pub use state::ChangeRefused;
 /// The durable layout a replica's state is written in ([`StatePeer::durable`]).
 pub use state::DURABLE_VERSION;
 pub use state::DelegatedWork;
+pub use state::DocumentKeysBasis;
 /// A state of a workspace's governance, kept to ask which heads it holds.
 pub use state::GovernanceHeads;
 pub use state::mail_send_lease;

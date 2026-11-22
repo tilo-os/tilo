@@ -52,13 +52,11 @@ pub fn lacks_private_record_owner(app: &str, document: &str) -> bool {
 pub fn has_member_reader(app: &str, kind: &str) -> bool {
     matches!(
         (app, kind),
-        (
-            "so.tilo.tube" | "dev.tilo.tube",
-            "tube.watch-history"
-        ) | (
-            tilo_app_id::apps::MESSAGES | "dev.tilo.messages",
-            "messages.drafts"
-        )
+        ("so.tilo.tube" | "dev.tilo.tube", "tube.watch-history")
+            | (
+                tilo_app_id::apps::MESSAGES | "dev.tilo.messages",
+                "messages.drafts"
+            )
     )
 }
 
@@ -373,6 +371,13 @@ pub fn administrator_moderation_grant(workspace: &str, person: &str, granted_by:
         lifetime: Lifetime::UntilRevoked,
         granted_by,
     }
+}
+
+/// Whose administrator grant `id` names, when it is one
+/// ([`administrator_grant_id`]); the moderation grant beside it is not.
+#[must_use]
+pub fn administrator_grant_person(id: &GrantId) -> Option<&str> {
+    id.as_str().strip_prefix(ADMINISTRATOR_GRANT_PREFIX)
 }
 
 /// Whether `id` is one of the two grants that make someone an administrator

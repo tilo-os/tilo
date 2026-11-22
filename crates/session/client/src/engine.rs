@@ -771,11 +771,58 @@ impl Engine {
     /// Keys for a new write to this document. The workspace key remains valid
     /// only while every workspace key holder may read the document.
     pub fn document_seal_keys(&self, route: &DocumentRoute) -> Result<SealKeys, String> {
+        self.documents_seal_keys(std::slice::from_ref(route))
+            .pop()
+            .unwrap_or_else(|| Err("no keys were asked".to_owned()))
+    }
+
+    /// [`Self::document_seal_keys`] of each of `routes`, in their order. Whether each needs keys
+    /// of its own is read off one reading of who holds its workspace's keys
+    /// ([`tilo_peer_state::DocumentKeysBasis`]), which a workspace of hundreds makes the larger part
+    /// of the work.
+    pub fn documents_seal_keys(&self, routes: &[DocumentRoute]) -> Vec<Result<SealKeys, String>> {
+        let now = tilo_clock::wall();
+        let workspaces: BTreeSet<_> = routes
+            .iter()
+            .filter_map(|route| route.workspace_id().ok())
+            .collect();
+        let mut isolated: BTreeMap<usize, Result<bool, String>> = BTreeMap::new();
+        for workspace in workspaces {
+            let of_workspace = || {
+                routes
+                    .iter()
+                    .enumerate()
+                    .filter(move |(_, route)| route.workspace_id().ok() == Some(workspace))
+            };
+            let read = self.owner.with_current(workspace, |view| {
+                let basis = view.peer().document_keys_basis(now);
+                Ok(of_workspace()
+                    .map(|(at, route)| (at, basis.requires(&route.app_id, &route.document)))
+                    .collect::<Vec<_>>())
+            });
+            match read {
+                Ok(read) => isolated.extend(read),
+                Err(error) => {
+                    isolated.extend(of_workspace().map(|(at, _)| (at, Err(error.clone()))));
+                }
+            }
+        }
+        routes
+            .iter()
+            .enumerate()
+            .map(|(at, route)| match isolated.remove(&at) {
+                Some(isolated) => self.route_seal_keys(route, isolated?),
+                None => Err(route
+                    .workspace_id()
+                    .err()
+                    .map_or_else(|| "no workspace".to_owned(), |error| error.to_string())),
+            })
+            .collect()
+    }
+
+    /// The keys a new write to `route` seals with, `isolated` when it needs keys of its own.
+    fn route_seal_keys(&self, route: &DocumentRoute, isolated: bool) -> Result<SealKeys, String> {
         let workspace = route.workspace_id().map_err(|error| error.to_string())?;
-        let isolated = self.owner.with_current(workspace, |view| {
-            view.peer()
-                .requires_document_keys(&route.app_id, &route.document, tilo_clock::wall())
-        })?;
         let named = self.named_document_readers(workspace, &route.document)?;
         if !isolated {
             return match named {

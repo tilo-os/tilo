@@ -529,11 +529,28 @@ impl WorkspacePolicy {
     /// administrator is their role's to say, and is not counted.
     #[must_use]
     pub fn extra_grants(&self, person: &str) -> usize {
-        self.grants
-            .iter()
-            .filter(|grant| grant.grantee.person_id() == Some(person))
-            .filter(|grant| roles::administrator_named(&grant.id).is_none())
-            .count()
+        self.grants_by_person().extra(person)
+    }
+
+    /// What the grants say of each person, read in one walk of them: whom they
+    /// make an administrator, and how many permissions each person holds beyond
+    /// their role ([`Self::extra_grants`]). Asking that of every member walks
+    /// the grants once rather than once a member.
+    #[must_use]
+    pub fn grants_by_person(&self) -> PersonGrants<'_> {
+        let mut grants = PersonGrants::default();
+        for grant in &self.grants {
+            if let Some(person) = roles::administrator_grant_person(&grant.id) {
+                grants.administrators.insert(person);
+            }
+            if let Some(person) = grant.grantee.person_id()
+                && roles::administrator_named(&grant.id).is_none()
+            {
+                let extra = grants.extra.entry(person).or_default();
+                *extra = extra.saturating_add(1);
+            }
+        }
+        grants
     }
 
     /// The workspace's administrators, by person id, in id order.
@@ -1355,5 +1372,27 @@ impl WorkspacePolicy {
         } else {
             Err(Refusal::UnknownRole(id.to_owned()))
         }
+    }
+}
+
+/// What a workspace's grants say of each person ([`WorkspacePolicy::grants_by_person`]).
+#[derive(Debug, Default)]
+pub struct PersonGrants<'p> {
+    administrators: BTreeSet<&'p str>,
+    extra: BTreeMap<&'p str, usize>,
+}
+
+impl PersonGrants<'_> {
+    /// Whether a grant makes `person` an administrator: one holds the id
+    /// [`roles::administrator_grant_id`] gives them.
+    #[must_use]
+    pub fn administers(&self, person: &str) -> bool {
+        self.administrators.contains(person)
+    }
+
+    /// How many permissions the workspace gives `person` beyond their role.
+    #[must_use]
+    pub fn extra(&self, person: &str) -> usize {
+        self.extra.get(person).copied().unwrap_or(0)
     }
 }

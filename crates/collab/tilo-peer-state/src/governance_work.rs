@@ -27,6 +27,13 @@ pub struct GovernanceWork {
     /// Security bases worked out over every member's row
     /// ([`crate::StatePeer::security_basis`]).
     pub security_bases: u64,
+    /// Walks of the workspace's grants for what they say of its people: who
+    /// administers it, and what each holds beyond their role.
+    pub grant_walks: u64,
+    /// Readings of who holds the workspace's keys and what each may do, which
+    /// deciding whether a record needs keys of its own reads
+    /// ([`crate::DocumentKeysBasis`]).
+    pub key_holder_reads: u64,
 }
 
 thread_local! {
@@ -37,6 +44,8 @@ thread_local! {
         replays: 0,
         receipts_read: 0,
         security_bases: 0,
+        grant_walks: 0,
+        key_holder_reads: 0,
     }) };
 }
 
@@ -85,4 +94,12 @@ pub(crate) fn security_basis_worked_out() {
 
 pub(crate) fn replayed() {
     add(|work| work.replays = work.replays.saturating_add(1));
+}
+
+pub(crate) fn grants_walked() {
+    add(|work| work.grant_walks = work.grant_walks.saturating_add(1));
+}
+
+pub(crate) fn key_holders_read() {
+    add(|work| work.key_holder_reads = work.key_holder_reads.saturating_add(1));
 }

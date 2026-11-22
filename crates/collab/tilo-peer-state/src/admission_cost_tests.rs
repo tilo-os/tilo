@@ -324,3 +324,50 @@ fn newcomer_of_30_against_300() {
         "one receipt per member: {large:?} against {small:?}"
     );
 }
+
+/// What a member's copy of a workspace of `members` works through when someone
+/// enters it, as each device holding the workspace does: it reads who is in it
+/// now and whether each of the `records` it holds needs keys of its own, which
+/// is how it seals its next write there.
+fn entered_work(members: u32, records: usize) -> crate::governance_work::GovernanceWork {
+    let (mut peer, authority, now) = crowd(members);
+    admit(&mut peer, &authority, members, now);
+    let _ = crate::governance_work::take();
+    let people = peer.governance().governed_members(now).unwrap();
+    // The crowd, its owner and the person who just entered.
+    assert_eq!(
+        people.members.len(),
+        usize::try_from(members.checked_add(2).unwrap()).unwrap()
+    );
+    let basis = peer.document_keys_basis(now);
+    for record in 0..records {
+        assert!(
+            !basis
+                .requires("so.tilo.notes", &format!("note-{record}"))
+                .unwrap(),
+            "every member reads the workspace's notes"
+        );
+    }
+    crate::governance_work::take()
+}
+
+/// A workspace of 300 against one of 30, someone entering each: the member's
+/// copy walks the workspace's grants once for all its people, not once a
+/// person, and reads who holds the workspace's keys once for all the records it
+/// holds, not once a record. Each person and each record costs a lookup, a
+/// bound the work does not grow past however many members there are.
+#[test]
+fn an_entry_reads_the_grants_and_the_key_holders_once() {
+    let small = entered_work(30, 40);
+    let large = entered_work(300, 40);
+    assert_eq!(
+        (large.grant_walks, large.key_holder_reads),
+        (small.grant_walks, small.key_holder_reads),
+        "grant walks and key-holder readings, at 300 members against 30: {large:?} against \
+         {small:?}"
+    );
+    assert_eq!(
+        large.key_holder_reads, 1,
+        "40 records' keys read off one reading of the key holders: {large:?}"
+    );
+}

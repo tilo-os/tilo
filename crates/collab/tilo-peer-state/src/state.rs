@@ -126,6 +126,7 @@ pub use sealed_compaction::{
 /// admits, what it signs and seals, and the durable record it restores from.
 mod admitting;
 mod authority;
+pub use authority::DocumentKeysBasis;
 mod construction;
 mod durable;
 mod written_under;

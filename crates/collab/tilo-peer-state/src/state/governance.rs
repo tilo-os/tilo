@@ -4,8 +4,8 @@ use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, Grant, GrantId, Grantee,
     Member, MemberAccess, MemberId, MemberList, MembershipError, Person, ROOT, ReadDoc,
-    RevocationList, Role, SystemTime, Transactable, administrator_grant_id, err, governed_map,
-    keeping_device_keys_of, now_ns, person_of, workspace,
+    RevocationList, Role, SystemTime, Transactable, err, governed_map, keeping_device_keys_of,
+    now_ns, person_of, workspace,
 };
 use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
@@ -563,6 +563,12 @@ impl PeerGovernance<'_> {
         let serving: BTreeSet<[u8; 32]> = keeping_device_keys_of(doc);
         let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
         let certificates = doc.identity_certificates();
+        // Who the grants make administrators, and how many each gives a person beyond their
+        // role, read in one walk of them: asked person by person, a workspace of hundreds walked
+        // every grant for every member.
+        let grants = workspace_policy.grants_by_person();
+        crate::governance_work::grants_walked();
+        let administrator = |root: &[u8; 32]| grants.administers(&hex::encode(root));
         let mut people: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();
         // A person is a member by their root, whatever devices of theirs the
         // workspace has rows for: its owner from the workspace's beginning,
@@ -591,12 +597,8 @@ impl PeerGovernance<'_> {
                 role,
                 // Its owner keeps the part they were given first, whatever
                 // else the policy says of the same person.
-                administrator: role == Role::Owner
-                    || workspace_policy
-                        .grants
-                        .iter()
-                        .any(|grant| grant.id == administrator_grant_id(root)),
-                grants: workspace_policy.extra_grants(person),
+                administrator: role == Role::Owner || administrator(&root),
+                grants: grants.extra(person),
                 removed: false,
                 devices: Vec::new(),
             };
@@ -615,10 +617,7 @@ impl PeerGovernance<'_> {
             {
                 held.insert(GovernedMember {
                     role: receipt.role,
-                    administrator: workspace_policy
-                        .grants
-                        .iter()
-                        .any(|grant| grant.id == administrator_grant_id(root)),
+                    administrator: administrator(&root),
                     grants: 0,
                     removed: true,
                     devices: Vec::new(),
