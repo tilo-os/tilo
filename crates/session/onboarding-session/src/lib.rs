@@ -1,6 +1,6 @@
 //! The session side of first use: everything setup does that the setup app
 //! (`tilo-onboarding`) only asks for. The identity ceremony and its storage,
-//! first-boot provisioning, pairing with a nearby device, a setup prepared
+//! first-boot provisioning, adding this computer with a code, a setup prepared
 //! on another computer and the transfers it carries over (a portable home,
 //! its applications, browser data, the files of the system Tilo replaced),
 //! and the ownership of every secret those steps take.

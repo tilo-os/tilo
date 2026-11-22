@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde_json::{Value, json};
-use tilo_api::daemon::{DaemonPlace, naming, runtime_program};
+use tilo_api::daemon::{DaemonPlace, naming};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
 /// How long a connection waits for a daemon to listen.
@@ -108,24 +108,10 @@ fn reach_starting(
 /// group of its own, so the agent that ends this connection does not end it with the others',
 /// and adding what it says to its log.
 fn start_daemon(place: &DaemonPlace, via_service: bool) -> std::io::Result<Started> {
-    use std::os::unix::process::CommandExt as _;
     if via_service && crate::service::start_installed() {
         return Ok(Started::Service(Instant::now()));
     }
-    // Added to, never emptied: a daemon started while another holds the device ends at once, and
-    // emptying the log the one holding writes to would lose what it said.
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(place.log())?;
-    std::process::Command::new(runtime_program()?)
-        .arg("--hold")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(log)
-        .process_group(0)
-        .spawn()
-        .map(Started::Process)
+    place.start().map(Started::Process)
 }
 
 /// Serve this connection's stdio alone, every call answered with `problem`: with no login to

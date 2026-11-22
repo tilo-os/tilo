@@ -20744,6 +20744,7 @@ dependencies = [
 name = "tilo-onboarding-session"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bounded-command",
  "browser-continuity",
  "collab-types",
@@ -20764,6 +20765,7 @@ dependencies = [
  "tempfile",
  "threshold-identity",
  "tilo-actions",
+ "tilo-api",
  "tilo-app-state",
  "tilo-automerge-fork",
  "tilo-clock",
@@ -20784,6 +20786,7 @@ dependencies = [
  "tilo-user-identity",
  "tilo-vello",
  "tilo-winit",
+ "tokio",
  "tracing",
  "uuid",
  "workspace-hack",

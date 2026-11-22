@@ -13,7 +13,7 @@ pub enum Screen {
     Intro,
     /// Use an identity that already exists: choose how to bring it here.
     Existing,
-    /// Receive the identity from a nearby trusted device.
+    /// Join the identity with the code another of the person's devices printed.
     Nearby,
     /// Restore the identity from an encrypted backup file.
     Restore,
@@ -141,18 +141,13 @@ impl KeyCopy {
     }
 }
 
-/// Where a nearby device's pairing stands.
+/// Where adding this computer with a code from another device stands.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Nearby {
-    /// Pairing started from a device link.
-    pub from_link: bool,
-    /// Pairing runs.
+    /// The code is being redeemed on the device that issued it.
     pub active: bool,
-    pub status: Option<String>,
     /// Why the last attempt ended without joining: title, then message.
     pub failure: Option<(String, String)>,
-    /// The verification code both devices show.
-    pub code: Option<String>,
 }
 
 /// The media codecs extension's state, as the helper reports it.

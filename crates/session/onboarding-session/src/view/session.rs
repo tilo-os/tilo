@@ -1,6 +1,7 @@
 //! The places of this login that first use reads and writes: the home a
 //! prepared setup, a migration or a picker starts from, and the system
-//! identity root that minting, restoring and pairing provision into.
+//! identity root that minting, restoring and adding this computer with a
+//! code provision into.
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use tilo_device_identity::IdentityPaths;

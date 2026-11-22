@@ -352,10 +352,26 @@ fn the_page_changes_in_place_when_the_shell_moves_on() {
     ));
 }
 
+/// Review renders of the code screen as a person meets it, in both themes,
+/// written only where `TILO_UI_SCREENSHOT_DIR` names a folder.
 #[test]
-fn the_nearby_code_is_read_in_two_groups() {
-    let mut app = staged("nearby-code");
-    assert!(says(&mut app, "482 913"));
+fn the_code_screen_is_reviewed_in_both_themes() {
+    let Some(directory) = std::env::var_os("TILO_UI_SCREENSHOT_DIR") else {
+        return;
+    };
+    let directory = std::path::PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    for theme in [ui::theme::Theme::light(), ui::theme::Theme::dark()] {
+        let name = theme.name.clone();
+        for scenario in ["nearby", "nearby-joining", "nearby-failed"] {
+            let mut app = staged(scenario);
+            app.harness().set_theme(theme.clone());
+            app.harness().resize(VIEWPORT).unwrap();
+            app.settle();
+            app.harness()
+                .render_png(&directory.join(format!("{scenario}-{name}.png")));
+        }
+    }
 }
 
 #[test]

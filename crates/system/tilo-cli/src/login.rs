@@ -19,7 +19,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
-use serde_json::{Value, json};
+use serde_json::json;
 use tilo_api::daemon::DaemonPlace;
 use tilo_api::server::ServerAddress;
 use tilo_device_identity::login::Ticket;
@@ -557,7 +557,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
             key_file: None,
             json: false,
         })?;
-        let workspace = founded_workspace(&client).await?;
+        let workspace = client.founded_workspace().await?;
         client
             .act(
                 &workspace,
@@ -580,19 +580,6 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
     Ok(code)
 }
 
-/// The workspace this computer's daemon serves before a login exists: the one it founded.
-pub(crate) async fn founded_workspace(client: &Client) -> Result<String> {
-    let listed = client.workspaces().await?;
-    listed
-        .get("workspaces")
-        .and_then(Value::as_array)
-        .and_then(|workspaces| workspaces.first())
-        .and_then(|workspace| workspace.get("id"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .context("this computer's daemon serves no workspace to log in to")
-}
-
 /// How long `tilo login` waits for the daemon it logged in to end before starting the one the
 /// new login needs.
 const RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -603,15 +590,11 @@ const RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// # Errors
 /// The daemon did not start, or did not serve its API in time.
 pub(crate) fn ensure_daemon(place: &DaemonPlace) -> Result<()> {
-    crate::mcp::held::ensure(place).map_err(anyhow::Error::msg)?;
-    let started = std::time::Instant::now();
-    while !place.api().exists() {
-        if started.elapsed() > RESTART_WAIT {
-            bail!("This computer's daemon did not serve its API in time: try again.");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    Ok(())
+    place
+        .wait_for_api(RESTART_WAIT, || {
+            crate::mcp::held::ensure(place).map_err(std::io::Error::other)
+        })
+        .map_err(anyhow::Error::msg)
 }
 
 /// Start the daemon the new login needs, once the one serving the login before it ended.

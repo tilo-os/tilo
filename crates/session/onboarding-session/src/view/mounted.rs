@@ -15,12 +15,12 @@ use winit::event::WindowEvent;
 
 use super::{
     AcknowledgementKind, KEY_BACK, KEY_BACKUP_ANOTHER, KEY_BACKUP_BROWSE, KEY_BACKUP_CONTINUE,
-    KEY_BEGIN, KEY_CHOOSE_NEARBY, KEY_CHOOSE_PAIRING_LINK, KEY_CHOOSE_RECOVERY_KEY,
-    KEY_CHOOSE_RESTORE, KEY_CODECS_CONTINUE, KEY_CODECS_INSTALL, KEY_CODECS_SKIP,
-    KEY_CONNECT_BROWSE, KEY_CONNECT_CANCEL, KEY_CONNECT_NEARBY, KEY_CONNECT_RETRY, KEY_CREATE,
-    KEY_EXISTING, KEY_FINISH, KEY_IMPORT, KEY_PREPARED_IMPORT, KEY_RECOVERY_KEY_CLOSE,
-    KEY_RECOVERY_KEY_CONFIRM, KEY_RECOVERY_KEY_RESTORE, KEY_RECOVERY_KEY_SHOW, KEY_TOUR_BACK,
-    KEY_TOUR_NEXT, KEY_TOUR_SKIP, OnboardingView, PickerPurpose,
+    KEY_BEGIN, KEY_CHOOSE_NEARBY, KEY_CHOOSE_RECOVERY_KEY, KEY_CHOOSE_RESTORE, KEY_CODECS_CONTINUE,
+    KEY_CODECS_INSTALL, KEY_CODECS_SKIP, KEY_CONNECT_BROWSE, KEY_CONNECT_CANCEL,
+    KEY_CONNECT_NEARBY, KEY_CONNECT_RETRY, KEY_CREATE, KEY_EXISTING, KEY_FINISH, KEY_IMPORT,
+    KEY_PREPARED_IMPORT, KEY_RECOVERY_KEY_CLOSE, KEY_RECOVERY_KEY_CONFIRM,
+    KEY_RECOVERY_KEY_RESTORE, KEY_RECOVERY_KEY_SHOW, KEY_TOUR_BACK, KEY_TOUR_NEXT, KEY_TOUR_SKIP,
+    OnboardingView, PickerPurpose,
 };
 use ui::widget::DrawChild;
 
@@ -236,7 +236,7 @@ impl OnboardingView {
     pub(super) fn secrets(&self) -> Secrets {
         Secrets {
             connect_passphrase: self.connect_passphrase.clone(),
-            pairing_link: self.pairing_link.clone(),
+            ticket: self.ticket.clone(),
             backup_passphrase: self.backup_passphrase.clone(),
             backup_confirmation: self.backup_confirmation.clone(),
             recovery_words: self.recovery_words.clone(),
@@ -294,14 +294,11 @@ impl OnboardingView {
                 }
             }),
             nearby: tilo_onboarding::Nearby {
-                from_link: self.nearby_from_link,
                 active: self.nearby_active(),
-                status: self.nearby_status.clone(),
                 failure: self
                     .nearby_failure
                     .as_ref()
                     .map(|failure| (failure.title(), failure.message())),
-                code: self.nearby_code.clone(),
             },
             connect_path: self.connect_path.get(),
             recovery_check: self.recovery_check.clone(),
@@ -501,7 +498,6 @@ impl OnboardingView {
                 "create" => KEY_BEGIN,
                 "existing" => KEY_EXISTING,
                 "nearby" => KEY_CHOOSE_NEARBY,
-                "pairing-link" => KEY_CHOOSE_PAIRING_LINK,
                 "recovery-key" => KEY_CHOOSE_RECOVERY_KEY,
                 "backup-file" => KEY_CHOOSE_RESTORE,
                 "write-down-recovery-key" => KEY_RECOVERY_KEY_SHOW,

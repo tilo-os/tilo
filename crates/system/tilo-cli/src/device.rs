@@ -110,7 +110,7 @@ pub fn add(
         })?;
         let workspace = match &here {
             Some((_, device)) => device.workspace.clone(),
-            None => login::founded_workspace(&client).await?,
+            None => client.founded_workspace().await?,
         };
         let capability = match adding {
             Adding::Member => "member",
