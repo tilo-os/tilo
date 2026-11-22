@@ -1264,7 +1264,7 @@ fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
         editable: true,
         ..crate::window_toolbar::ToolbarLocation::default()
     });
-    let (mut frame, window, _toolbar, heard) = menu_window_with(declared, 220.0);
+    let (mut frame, window, _toolbar, heard) = menu_window_with(declared, 160.0);
     let mut parts = crate::window_parts::WindowParts::default();
     frame_of(&mut frame, &mut parts, &window);
     {

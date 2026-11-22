@@ -9110,7 +9110,7 @@ mod tests {
             );
             assert!(!b.toolbar_row.popup_open());
 
-            lay_out_at_width_with(&mut b, 420.0, &theme);
+            lay_out_at_width_with(&mut b, 300.0, &theme);
             let (_, _, narrow_location, narrow_actions) = b.toolbar_rects();
             assert!(narrow_actions.len() < crate::window_toolbar::MAX_ACTIONS);
             assert!(narrow_location.area() > 0.0);

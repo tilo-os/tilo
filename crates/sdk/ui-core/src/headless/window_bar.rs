@@ -1531,11 +1531,10 @@ mod tests {
         (hosted, harness, bar)
     }
 
-    /// A compact (420 px) window's bar keeps the calendar's navigation and actions: previous,
-    /// next, Today and New event stand, the views go into the overflow menu, and the period
-    /// leaves the row, which has no width left to name it.
+    /// A compact (420 px) window's bar names the period whole beside its navigation: Today,
+    /// New event and the views go into the overflow menu to make the room.
     #[test]
-    fn a_compact_window_keeps_its_navigation_and_actions_and_folds_the_views() {
+    fn a_compact_window_keeps_its_navigation_and_location_and_folds_the_views() {
         use crate::a11y::{AccessNode, Role};
         fn find<'a>(node: &'a AccessNode, role: Role, name: &str) -> Option<&'a AccessNode> {
             if node.role == role && node.name.as_deref() == Some(name) {
@@ -1559,7 +1558,7 @@ mod tests {
             "window_leading:0",
             "window_leading:1",
             "window_leading:2",
-            "window_action:0",
+            "window_location",
             "window_more",
         ] {
             assert!(
@@ -1567,11 +1566,6 @@ mod tests {
                 "{name} stands in the bar: {rects:?}"
             );
         }
-        assert_eq!(
-            rect("window_location"),
-            Rect::ZERO,
-            "the period leaves: {rects:?}"
-        );
         assert_eq!(
             rect("window_views_menu"),
             Rect::ZERO,
@@ -1622,25 +1616,23 @@ mod tests {
         Some(shown.to_owned())
     }
 
-    /// A bar names a period in the widest of its forms that stands whole, and leaves it out
-    /// where even the narrowest does not: never a date cut in half, and in no language.
+    /// A compact bar names the period whole in every language, down to the numeric span where
+    /// the spelled forms do not fit, never cut in half.
     #[test]
-    fn a_compact_window_names_its_period_whole_or_not_at_all() {
+    fn a_compact_window_names_its_period_whole_in_a_longer_language() {
         use crate::format::speak_locale as speak;
-        for (locale, width, stands) in [
-            ("en-US", 420, false),
-            ("de-DE", 360, false),
-            ("en-US", 640, true),
-            ("de-DE", 640, true),
-        ] {
+        for locale in ["en-US", "de-DE"] {
             speak(locale);
-            let (_hosted, mut harness, bar) = compact_calendar_bar_at(width);
-            assert_eq!(
-                period_shown(&bar, &mut harness).is_some(),
-                stands,
-                "{locale} {width} px"
-            );
-            crate::window_toolbar::declare(None);
+            for width in [360_u32, 420] {
+                let (_hosted, mut harness, bar) = compact_calendar_bar_at(width);
+                let shown = period_shown(&bar, &mut harness)
+                    .unwrap_or_else(|| panic!("{locale} {width} px: the period stands"));
+                assert!(
+                    week_across_a_month().forms().contains(&shown),
+                    "{locale} {width} px: {shown:?}"
+                );
+                crate::window_toolbar::declare(None);
+            }
         }
         speak("en-US");
     }

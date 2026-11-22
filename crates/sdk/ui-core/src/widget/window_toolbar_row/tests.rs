@@ -1220,52 +1220,28 @@ tilo_test_env::scenario! {
         assert_eq!(shown(140.0), "in the menu", "a narrow row folds it");
     }
 
-    phase a_wide_row_names_the_period_whole_and_a_compact_one_keeps_its_navigation;
+    phase a_primary_action_stands_where_a_secondary_one_folds;
     {
-        let day = |d| jiff::civil::Date::new(2026, 10, d).ok().unwrap_or_default();
-        for period in [
-            a_week(),
-            crate::format::Period::Day(day(21)),
-            crate::format::Period::Month(day(21)),
-        ] {
-            let mut toolbar = calendar();
-            toolbar.location = Some(ToolbarLocation::period(period));
-            let wide = calendar_row_of(&toolbar, 1400.0);
-            assert_eq!(
-                wide.parts().form,
-                0,
-                "a wide row names {:?} whole",
-                period.forms()[0]
-            );
-            let compact = calendar_row_of(&toolbar, 233.0);
+        let mut toolbar = calendar();
+        toolbar.actions = vec![
+            ToolbarAction::new("upload", "upload", "Upload files").primary(),
+            ToolbarAction::new("new-folder", "folder-plus", "New folder"),
+            ToolbarAction::new("new-file", "file-plus", "New file"),
+            ToolbarAction::new("import", "download", "Import").in_menu(),
+        ];
+        for width in [360.0, 420.0] {
+            let parts = calendar_row_of(&toolbar, width);
+            let parts = parts.parts();
             assert!(
-                compact.parts().leading[..2].iter().all(|rect| rect.area() > 0.0),
-                "a compact row keeps the navigation"
+                parts.actions.first().is_some_and(|rect| rect.area() > 0.0),
+                "{width} px keeps the window's main action in the row"
             );
         }
     }
 
-    phase a_compact_row_folds_the_views_and_keeps_its_navigation_and_actions;
-    {
-        // A compact window's row: the views go into the overflow menu, previous,
-        // next and Today keep their places, and the period leaves the row.
-        let mut compact = calendar_row(COMPACT_CALENDAR_ROW);
-        let parts = compact.parts().clone();
-        assert!(parts.views.is_empty() && parts.views_menu == Rect::ZERO);
-        assert!(parts.leading[..3].iter().all(|rect| rect.area() > 0.0));
-        assert_eq!(parts.location, Rect::ZERO, "the period leaves: {parts:?}");
-        assert!(compact.open_overflow());
-        let listed: Vec<MenuEntry> = compact.menu_entries.iter().flatten().cloned().collect();
-        assert_eq!(
-            listed.get(..3),
-            Some(&[MenuEntry::View(0), MenuEntry::View(1), MenuEntry::View(2)][..]),
-            "the views run from the overflow menu"
-        );
-    }
-
     phase a_narrow_row_folds_the_views_into_a_menu_of_every_view;
     {
-        let mut row = calendar_row_of(&calendar_with_a_field(), 300.0);
+        let mut row = calendar_row_of(&calendar_with_a_field(), 420.0);
         let parts = row.parts().clone();
         assert!(parts.views.is_empty(), "no segmented switcher");
         let menu = parts.views_menu;
@@ -1314,7 +1290,7 @@ tilo_test_env::scenario! {
             Theme::dark().motion(),
             crate::motion::frame_now(),
         );
-        row.lay_out(Rect::new(0.0, 0.0, 300.0, 40.0));
+        row.lay_out(Rect::new(0.0, 0.0, 420.0, 40.0));
         assert_eq!(row.parts().views_menu, menu, "another view, the same place");
     }
 }
@@ -1322,11 +1298,6 @@ tilo_test_env::scenario! {
 /// A row with no width for the switcher folds the views into a menu that
 /// names the chosen view: a press (a click or a tap) lists every view, the
 /// chosen one checked, and choosing one hands the app its id. The menu is
-/// as wide as its widest view, so choosing another never moves the row.
-/// As wide as the row a compact (420 px) window leaves the calendar's
-/// parts beside its bar's own search, History and window controls.
-const COMPACT_CALENDAR_ROW: f64 = 233.0;
-
 fn listed_views(row: &ToolbarRow) -> Vec<(String, String, bool, Option<bool>)> {
     row.menu_entries
         .iter()

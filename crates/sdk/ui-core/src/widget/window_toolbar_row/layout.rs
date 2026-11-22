@@ -329,9 +329,10 @@ impl Parts {
         let form = forms.fit(leftover);
         let notice = forms.notice(toolbar, leftover);
         let least = notice.as_ref().map_or_else(
-            || match forms.text.len() {
-                0 | 1 => 0.0,
-                n => forms.width(n - 1) + forms.chrome - SHARED_GAP,
+            || match (toolbar.location.is_some(), forms.text.len()) {
+                (false, _) => 0.0,
+                (true, 0 | 1) => MIN_LOCATION_PX,
+                (true, n) => forms.width(n - 1) + forms.chrome - SHARED_GAP,
             },
             |notice| notice.least,
         );
@@ -465,6 +466,7 @@ impl Parts {
     /// Where the location names itself in shorter forms, the form it shows stands whole; where
     /// even the space beside it does not hold that, it leaves the row rather than be cut.
     fn fit_shown_form(&mut self, row: Rect, forms: &LocationForms) {
+        self.form = forms.fit(self.location.width());
         let need = forms.width(self.form) + forms.chrome;
         if self.location.area() <= 0.0 || need <= self.location.width() {
             return;
@@ -632,7 +634,11 @@ impl Parts {
                 );
                 let placed =
                     !matches!(place, ViewsPlace::InLocation(_)) || parts.views_menu.area() > 0.0;
-                if parts.fits(row) && placed && !lone(inline, place) {
+                if parts.fits(row)
+                    && parts.location.width() >= least
+                    && placed
+                    && !lone(inline, place)
+                {
                     return parts;
                 }
                 if inline <= floor {

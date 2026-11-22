@@ -354,6 +354,17 @@ impl<R: Resource> WindowBar<R> {
         self
     }
 
+    /// The entry declared last is the app's one main action for what the window shows
+    /// ([`ui_core::window_toolbar::ToolbarAction::primary`]): it leads the actions and stands
+    /// in the row at every width where any action stands.
+    #[must_use]
+    pub fn primary(mut self) -> Self {
+        if let Some(entry) = self.chrome.entries.last_mut() {
+            entry.primary = true;
+        }
+        self
+    }
+
     /// The entry declared last goes to the bar's overflowing menu, never the
     /// row: an occasional action (import, export, the app's settings).
     #[must_use]
