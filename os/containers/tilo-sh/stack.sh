@@ -1035,13 +1035,6 @@ takes no other login.
 EOF
 }
 
-# `link` as the page a person on this machine opens: the server names
-# tilo.sh's page for an invitation whose entry is reached from this machine
-# alone (`wait_list.rs`), and this stack serves its own site here.
-opened_here() {
-  printf '%s\n' "${1/#https:\/\/tilo.sh\//$site_origin/}"
-}
-
 # invite [WORKSPACE] [-- --role ROLE] [--email ADDRESS]: an invite link to
 # WORKSPACE (the Lounge when none), made by the stack's own person, its owner,
 # with `tilo workspace people invite`, as any owner makes one. Opened in any browser,
@@ -1069,9 +1062,7 @@ invite_link() {
     esac
   done
   [[ -n $workspace ]] || workspace=$(lounge_id)
-  local link
-  link=$(owner_tilo workspace people invite --role "$role" "${asked[@]}" -w "$workspace" | head -1)
-  opened_here "$link"
+  owner_tilo workspace people invite --role "$role" "${asked[@]}" -w "$workspace" | head -1
 }
 
 # The Lounge's workspace id, once it runs.
@@ -1234,7 +1225,7 @@ owner_link() {
   link=$(owner_tilo workspace people invite --role administrator -w "$(lounge_id)" | head -1) \
     || die 'the Lounge made no administrator link'
   say 'opening this link in any browser makes that person an administrator of the Lounge:'
-  opened_here "$link"
+  printf '%s\n' "$link"
 }
 
 # The mails the entry sent, oldest first: who to, the subject and the links in
@@ -2328,7 +2319,7 @@ up() {
   fi
   if [[ -n $link ]]; then
     say 'opening this link in any browser makes that person an administrator of the Lounge'
-    opened_here "$link"
+    printf '%s\n' "$link"
   else
     say 'the Lounge made no administrator link: stack.sh owner asks again'
   fi
