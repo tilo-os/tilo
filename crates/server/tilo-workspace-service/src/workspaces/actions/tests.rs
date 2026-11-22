@@ -795,7 +795,8 @@ async fn a_member_removes_someone_ranked_below_them_or_themselves() {
         invoke(&host, workspace_id, &caller(&ada), remove(&bo)).await,
         Err(ActionCallError::UnknownAction)
     );
-    // Anyone may leave, but the owner cannot be removed, not even by themselves.
+    // Anyone may leave, but the workspace's owner cannot be removed, not even by themselves:
+    // it always keeps one.
     let cy = admit(workspaces, &workspace, &owner, 3).await;
     invoke(&host, workspace_id, &caller(&cy), remove(&cy))
         .await
@@ -809,7 +810,7 @@ async fn a_member_removes_someone_ranked_below_them_or_themselves() {
     );
     assert!(matches!(
         invoke(&host, workspace_id, &caller(&owner), remove(&owner)).await,
-        Err(ActionCallError::Refused { reason }) if reason.contains("the owner cannot be removed")
+        Err(ActionCallError::Refused { reason }) if reason.contains("owner cannot be removed")
     ));
     // A Moderator removes an Editor, answered with the people as they are then.
     workspaces

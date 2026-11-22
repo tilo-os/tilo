@@ -1817,11 +1817,6 @@ impl Workspaces {
                 super::MemberPlace::Administrator => WorkspaceOp::InviteAdministrator,
                 super::MemberPlace::Owner => WorkspaceOp::MakeOwner,
             },
-            governance::REMOVE_MEMBER
-                if args.required_key("person")? == self.inner.host.cert.user_public_key =>
-            {
-                return Err(refused(&"the owner cannot be removed"));
-            }
             governance::REMOVE_MEMBER | governance::BAN | governance::UNBAN => {
                 let membership = match action {
                     governance::REMOVE_MEMBER => super::collaboration::Membership::Remove,
