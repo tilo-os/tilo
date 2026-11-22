@@ -118,7 +118,8 @@ async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
             super::PLAN_MACHINE,
             super::LIST_MACHINES,
             super::SHOW_MACHINE,
-            super::ADMIT_MACHINE
+            super::ADMIT_MACHINE,
+            tilo_server_session::workspaces::TAKE_IN_PERSON,
         ]
         .map(str::to_owned)
     );
