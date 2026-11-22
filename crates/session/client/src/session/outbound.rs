@@ -435,9 +435,11 @@ impl Task {
                     "writes wait for what the workspace has not admitted here yet");
                 None
             }
-            Err(refusal @ (WriteRefusal::Refused(_) | WriteRefusal::ChangeRefused(_))) => {
-                Some(self.refused_write(route, &refusal))
-            }
+            Err(
+                refusal @ (WriteRefusal::Refused(_)
+                | WriteRefusal::Declined { .. }
+                | WriteRefusal::ChangeRefused(_)),
+            ) => Some(self.refused_write(route, &refusal)),
         }
     }
 

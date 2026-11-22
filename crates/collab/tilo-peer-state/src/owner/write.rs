@@ -27,14 +27,70 @@ pub enum WriteRefusal {
     /// once it has.
     #[error("the writes wait for {0}")]
     Waiting(crate::admission::MissingPrerequisite),
-    /// The workspace is not held here, or its record does not take the writes.
+    /// The workspace's record does not take the writes, for a reason this device has no class
+    /// for.
     #[error("{0}")]
     Refused(String),
+    /// The workspace refused the writes for a reason this device knows: the person is told it,
+    /// and `detail` stays for the log.
+    #[error("{detail}")]
+    Declined {
+        reason: neighbour_wire::RefusalReason,
+        detail: String,
+    },
     /// The workspace's rules refused the change before it went: the document it writes, the
     /// changes it carries and why, as a server's refusal of a change names them. Its author's
     /// session is told it, and it is filed where the person's activity reads it.
     #[error("{0}")]
     ChangeRefused(Box<crate::ChangeRefused>),
+}
+
+impl WriteRefusal {
+    /// Why the writes were not taken, as the person is told it.
+    #[must_use]
+    pub fn reason(&self) -> neighbour_wire::RefusalReason {
+        use neighbour_wire::RefusalReason;
+        match self {
+            Self::HistoryFull { .. } => RefusalReason::Full,
+            Self::Waiting(_) => RefusalReason::MissingDependency,
+            Self::Declined { reason, .. } => *reason,
+            Self::ChangeRefused(refused) => refused.reason_class(),
+            Self::Unsigned(_) | Self::Refused(_) => RefusalReason::Other,
+        }
+    }
+}
+
+impl From<crate::MembershipError> for WriteRefusal {
+    /// A device the workspace grants nothing is told why; a workspace whose governance has not
+    /// arrived yet decides once it has, so the writes wait for it.
+    fn from(error: crate::MembershipError) -> Self {
+        use crate::MembershipError;
+        use neighbour_wire::RefusalReason;
+        let reason = match &error {
+            MembershipError::GovernanceMissing => {
+                return Self::Waiting(crate::admission::MissingPrerequisite::Governance);
+            }
+            MembershipError::Revoked => RefusalReason::Revoked,
+            MembershipError::Certificate(tilo_user_identity::DeviceCertError::Expired) => {
+                RefusalReason::Expired
+            }
+            MembershipError::UnknownDevice
+            | MembershipError::Certificate(_)
+            | MembershipError::Absent
+            | MembershipError::CertificateMismatch => RefusalReason::NotCertified,
+            MembershipError::RevocationRoot
+            | MembershipError::Revocation(_)
+            | MembershipError::UnreadableAccess
+            | MembershipError::MalformedIdentity(_) => RefusalReason::Malformed,
+            MembershipError::Delegate(_) | MembershipError::NoMembership => {
+                RefusalReason::Forbidden
+            }
+        };
+        Self::Declined {
+            reason,
+            detail: error.to_string(),
+        }
+    }
 }
 
 impl From<WriteRefusal> for String {

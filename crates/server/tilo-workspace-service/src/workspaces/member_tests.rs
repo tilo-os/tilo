@@ -721,6 +721,92 @@ async fn a_write_made_while_the_serving_device_is_away_is_kept_and_reaches_it_la
     serving.shutdown().await;
 }
 
+/// A write made while this device is still taking a workspace in (it joins, or opens the
+/// workspace as it starts) waits rather than being refused: the person hears nothing, and the same
+/// write, made again once the device holds the workspace, is kept and reaches its serving device.
+#[tokio::test]
+async fn a_write_before_the_workspace_is_held_here_waits_and_lands_once_it_is() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Joining", 48).await;
+    let workspace = created.workspace.clone();
+    serving_writes(
+        &serving,
+        &workspace,
+        ("test.app", "record"),
+        ("value", "by-the-serving-device"),
+    )
+    .await;
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+
+    let early = copies
+        .own_write(
+            &workspace,
+            ("test.app", "record"),
+            None,
+            &snapshot("value", "written-while-joining"),
+            false,
+            false,
+            None,
+        )
+        .await;
+    assert_eq!(
+        early.err(),
+        Some(tilo_peer_state::owner::WriteRefusal::Waiting(
+            tilo_peer_state::MissingPrerequisite::Workspace
+        )),
+        "a write before the workspace is held here waits for it, not refused"
+    );
+
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    let change = change_of(
+        &copies,
+        &workspace,
+        ("test.app", "record"),
+        ("value", "written-while-joining"),
+    )
+    .await;
+    copies
+        .own_write(
+            &workspace,
+            ("test.app", "record"),
+            None,
+            &change,
+            false,
+            false,
+            None,
+        )
+        .await
+        .expect("the write is kept once the workspace is held here");
+    tilo_test_env::within("the write reaches the serving device", async {
+        copies
+            .served(&workspace, &[("test.app", "record")])
+            .expect("the copy waits on its serving device")
+            .await
+            .expect("the serving device keeps the write");
+    })
+    .await;
+    assert_eq!(
+        served_value(
+            serving.workspaces(),
+            &workspace,
+            ("test.app", "record"),
+            "value"
+        )
+        .await
+        .as_deref(),
+        Some("written-while-joining")
+    );
+    drop(copies);
+    member.shutdown().await;
+    serving.shutdown().await;
+}
+
 /// A member copy says when the history of the device serving it is in hand, and a workspace this
 /// device governs has no such link to wait on.
 #[tokio::test]

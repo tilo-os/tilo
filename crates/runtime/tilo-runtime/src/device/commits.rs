@@ -190,6 +190,6 @@ impl CommitParts {
         }
         drop(peer);
         let workspace = request.workspace.clone();
-        copies.commit_local_document(&workspace, request).await
+        Ok(copies.commit_local_document(&workspace, request).await?)
     }
 }

@@ -23,6 +23,7 @@ use std::sync::Arc;
 use collab_types::signer::DeviceSigner;
 use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+use tilo_peer_state::MissingPrerequisite;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::direct::{Answered, DirectSync, Kept};
@@ -31,6 +32,7 @@ use tilo_peer_state::join::{
     JoinTransportResponse, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint,
 };
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
+use tilo_peer_state::owner::WriteRefusal;
 use tilo_peer_state::owner::session::hosted_by;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_server_protocol::WorkspaceId;
@@ -1277,14 +1279,16 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not held here, the request is not a document write of this device's, or
-    /// the write could not be kept.
+    /// [`WriteRefusal::Waiting`] while this device is still taking the workspace in (joining it,
+    /// or opening it as it starts): the same write is kept once it holds it. Otherwise the
+    /// request is not a document write of this device's, or the write could not be kept.
     pub async fn commit_local_document(
         &self,
         workspace: &str,
         request: OwnerCommitRequest,
-    ) -> Result<OwnerCommitReceipt, String> {
-        let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
+    ) -> Result<OwnerCommitReceipt, WriteRefusal> {
+        let workspace_id = WorkspaceId::parse(workspace)
+            .ok_or_else(|| WriteRefusal::Refused(format!("{workspace} is not a workspace id")))?;
         let device = self.signing_device();
         let CommitOperation::Document {
             app,
@@ -1293,14 +1297,18 @@ impl Workspaces {
             readers,
         } = &request.operation
         else {
-            return Err("a local commit is a document write".into());
+            return Err(WriteRefusal::Refused(
+                "a local commit is a document write".into(),
+            ));
         };
         if envelope.author.as_bytes() != &device.device() {
-            return Err("the document's signer differs from this device".into());
+            return Err(WriteRefusal::Refused(
+                "the document's signer differs from this device".into(),
+            ));
         }
         let member = self.is_member(workspace).await?;
         if !member && self.governed_copy(workspace_id).await.is_none() {
-            return Err("this device holds no such workspace".into());
+            return Err(WriteRefusal::Waiting(MissingPrerequisite::Workspace));
         }
         let message = NeighbourMsg::AppDocument {
             peer: neighbour_wire::peer_handle(&device.device()),
@@ -1312,10 +1320,12 @@ impl Workspaces {
         };
         let binding = request.binding()?;
         if !member {
-            return self.commit_own_document(workspace, request).await;
+            return Ok(self.commit_own_document(workspace, request).await?);
         }
         if neighbour_wire::retention(&message, false).is_none() {
-            return Err("the write carries no retention route".into());
+            return Err(WriteRefusal::Refused(
+                "the write carries no retention route".into(),
+            ));
         }
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
         let aggregate_hash = *blake3::hash(&body).as_bytes();

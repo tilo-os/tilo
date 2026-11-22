@@ -74,6 +74,23 @@ impl ChangeRefused {
             reason,
         }
     }
+
+    /// The class of the refusal, as its author is told it.
+    #[must_use]
+    pub const fn reason_class(&self) -> RefusalReason {
+        use tilo_server_protocol::refusal::Refusal;
+        match &self.refusal {
+            Refusal::NotGranted(_) | Refusal::NotAllowed(_) | Refusal::WorkspaceDeleted => {
+                RefusalReason::Forbidden
+            }
+            Refusal::NotAMember(_) | Refusal::NotAdmitted => RefusalReason::NotCertified,
+            Refusal::NotReady | Refusal::Offline => RefusalReason::MissingDependency,
+            Refusal::Full => RefusalReason::Full,
+            Refusal::Invalid(_) => RefusalReason::Malformed,
+            Refusal::Conflict => RefusalReason::Conflict,
+            Refusal::Other(_) => RefusalReason::Other,
+        }
+    }
 }
 
 impl std::fmt::Display for ChangeRefused {

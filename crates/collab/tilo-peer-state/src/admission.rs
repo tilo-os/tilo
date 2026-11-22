@@ -150,6 +150,9 @@ pub enum MissingPrerequisite {
     /// here yet ([`crate::removals`]): whether the write is history is
     /// decided once it is.
     RemovalCut,
+    /// The workspace itself: this device is still taking it in (joining it, or opening it as
+    /// it starts), and decides the write once it holds it.
+    Workspace,
 }
 impl std::fmt::Display for MissingPrerequisite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -164,6 +167,7 @@ impl std::fmt::Display for MissingPrerequisite {
             Self::AppSurface => "its app surface",
             Self::EarlierWrite => "an earlier write of its author to its record",
             Self::RemovalCut => "the cut of its author's removal",
+            Self::Workspace => "the workspace, which this device is still taking in",
         })
     }
 }
