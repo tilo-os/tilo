@@ -536,6 +536,25 @@ async fn next_data(body: &mut Option<Body>) -> Option<Bytes> {
     }
 }
 
+impl crate::client::Client {
+    /// The workspace a computer serves before a login exists: the one it founded. The device
+    /// actions are called in it, as `tilo login` and setup call them.
+    ///
+    /// # Errors
+    /// The workspaces could not be listed, or the daemon serves none.
+    pub async fn founded_workspace(&self) -> anyhow::Result<String> {
+        self.workspaces()
+            .await?
+            .get("workspaces")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|workspaces| workspaces.first())
+            .and_then(|workspace| workspace.get("id")?.as_str().map(str::to_owned))
+            .ok_or_else(|| {
+                anyhow::anyhow!("this computer's daemon serves no workspace to log in to")
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Answer, AnswerBody, Direct};

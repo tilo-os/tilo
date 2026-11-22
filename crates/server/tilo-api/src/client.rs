@@ -441,23 +441,6 @@ impl Client {
         }
     }
 
-    /// The workspace a computer serves before a login exists: the one it founded. The device
-    /// actions are called in it, as `tilo login` and setup call them.
-    ///
-    /// # Errors
-    /// The workspaces could not be listed, or the daemon serves none.
-    pub async fn founded_workspace(&self) -> Result<String> {
-        let listed = self.get("/v1/workspaces").await?;
-        listed
-            .get("workspaces")
-            .and_then(Value::as_array)
-            .and_then(|workspaces| workspaces.first())
-            .and_then(|workspace| workspace.get("id"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .context("this computer's daemon serves no workspace to log in to")
-    }
-
     /// Run `action` on `resource` in `workspace`, titled `title` in History:
     /// its answer, which is `pending` when the person has not answered it yet.
     pub async fn act(
