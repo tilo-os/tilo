@@ -42,7 +42,7 @@ use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::runtime::{Meta, ResourceRef, Value};
 
-use crate::session_platform::{Loads, OnSession, Person};
+use crate::session_platform::{Loads, OnSession};
 use crate::{Placement, WidgetSurface};
 
 /// How often the instance and its window may answer each other in one frame before the frame
@@ -418,7 +418,7 @@ impl PartView {
                 },
                 waker,
             }),
-            Rc::new(Person),
+            Rc::new(tilolang_tilo::names::Installed),
             Box::new(app_end),
         );
         // A package whose whole view is another app's state has no root of its own to open.

@@ -227,7 +227,7 @@ impl PageWindow {
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             },
             platform,
-            Rc::new(tilolang_tilo::names::Unnamed),
+            Rc::new(tilolang_tilo::names::Installed),
             Box::new(app_end),
         );
         let record = MemoryDocument::new(ui::automerge::AutoCommit::new(), me);

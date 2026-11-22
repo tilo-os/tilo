@@ -1039,7 +1039,7 @@ impl Hosted {
             },
             Rc::new(platform),
             // People by what the workspace's member list calls them, once it arrived.
-            Rc::new(tilolang_tilo::names::Unnamed),
+            Rc::new(tilolang_tilo::names::Installed),
             transport,
         );
         // The device that governs the workspace is its documents' origin: the package's migrations
