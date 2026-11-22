@@ -464,8 +464,24 @@ need=$(( $(stat -c %s "$cycle_dir/transfer.qcow2") + (1 << 30) ))
 avail="$(server "df -B1 --output=avail /var/tmp | tail -n 1" | tr -d ' \t\n')"
 [ "$avail" -ge "$need" ] || die "the retained root has $avail bytes free, the bundle needs $need"
 guest_dir=/var/tmp/tilo-server-plan
-server "install -d -m 0755 $guest_dir && sudo cat /dev/disk/by-id/virtio-tilo-attach-1 | tar -C $guest_dir --no-same-owner -xSf -" \
-  || die 'the machine could not unpack the installer and its bundle'
+# The unpack runs as a unit of the machine's own, not under the SSH session:
+# a session that ended part way through ten gigabytes (the connection closed
+# by the machine) took the unpack with it.
+server "install -d -m 0755 $guest_dir && sudo systemd-run --quiet --unit=tilo-cycle-copy-in \
+  -p Type=oneshot -p RemainAfterExit=yes \
+  bash -c 'tar -C $guest_dir --no-same-owner -xSf /dev/disk/by-id/virtio-tilo-attach-1 && chown -R cycle:cycle $guest_dir'" \
+  || die 'the machine did not start unpacking the installer and its bundle'
+unpacked=""
+for i in $(seq 1 1800); do
+  state="$(server 'systemctl is-active tilo-cycle-copy-in' 2>/dev/null || true)"
+  case "$state" in
+    active) unpacked=1; break ;;
+    failed) break ;;
+  esac
+  sleep 2
+done
+server 'journalctl -b -u tilo-cycle-copy-in --no-pager' > "$evidence/05-copy-in.txt" 2>&1 || true
+[ -n "$unpacked" ] || { tail -n 20 "$evidence/05-copy-in.txt" >&2; die "the machine could not unpack the installer and its bundle (${state:-no answer})"; }
 server "chmod 0600 $guest_dir/machine.token"
 layers_flag=""
 if [ -n "$development_layers" ]; then
