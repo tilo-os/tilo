@@ -245,7 +245,7 @@ view workspace_menu() {
     let name = if front_workspace_name() != "" { front_workspace_name() } else { "Workspaces" }
     // On a phone the status cluster takes the name's room while a folder needs the person.
     let icon_only = bar_is_narrow(space.width)
-        or (space.compact and folders_need_person(device.folders.folders))
+        or space.compact and folders_need_person(device.folders.folders)
     ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
         for w in layout.workspaces {
             ui.MenuItem(w.name, checked: w.current) {
