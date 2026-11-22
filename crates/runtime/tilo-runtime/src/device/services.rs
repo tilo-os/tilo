@@ -405,7 +405,7 @@ impl Daemon {
             stage,
         );
         if let Some(replicas) = &replicas {
-            let _ = replica_slot.set(Arc::clone(replicas));
+            let _ = replica_slot.set(Arc::downgrade(replicas));
         }
         Ok(Self {
             policy_origin,

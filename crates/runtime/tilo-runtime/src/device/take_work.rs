@@ -319,13 +319,14 @@ fn shell_runs(
             replicas
                 .as_ref()
                 .and_then(|slot| slot.get())
+                .and_then(std::sync::Weak::upgrade)
                 .zip(holder.upgrade())
                 .zip(tilo_desktop_model::WorkspaceId::parse(workspace))
                 .and_then(|((replicas, workspaces), id)| {
                     let name = workspaces
                         .workspace(id)
                         .map_or_else(|| "Workspace".to_owned(), |workspace| workspace.name);
-                    super::services::hold_files(replicas, &name, id)
+                    super::services::hold_files(&replicas, &name, id)
                 })
                 .unwrap_or_else(|| files(&member, workspace))
         })

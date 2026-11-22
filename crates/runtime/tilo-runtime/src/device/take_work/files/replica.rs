@@ -57,6 +57,11 @@ use super::{Author, Files, INTERVAL, NamespaceFile};
 /// pass asks again.
 const CONTENT_WAIT: Duration = Duration::from_secs(10);
 
+/// How long a dropped replica waits for the writes it had under way: content
+/// being offered, and the tree being kept. Both are short; a write still
+/// waiting past this is left, its state as far as it got.
+const STOPPING: Duration = Duration::from_secs(10);
+
 /// What a replica of one joined workspace's files is made of.
 pub(crate) struct ReplicaParts<'a> {
     /// The joined workspace.
@@ -83,13 +88,35 @@ pub(crate) struct ReplicaParts<'a> {
 pub(crate) struct ReplicaFiles {
     folder: PathBuf,
     _watch: Watch,
-    tree: TreeSync,
-    keeper: tokio::task::JoinHandle<()>,
+    /// Held until this replica drops: its drop stops the tree and waits for its last keep, so no
+    /// write lands in the tree's state after the replica has gone.
+    tree: Option<TreeSync>,
+    keeper: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for ReplicaFiles {
     fn drop(&mut self) {
-        self.keeper.abort();
+        // What a replica had under way writes into the tree's state: content being offered for a
+        // file, and the tree's own documents being kept. They are stopped and waited for here, so
+        // a daemon whose replicas are dropped has finished writing, not merely stopped asking.
+        // The folder's thread is joined as its field drops.
+        let (keeper, tree) = (self.keeper.take(), self.tree.take());
+        if let Some(keeper) = &keeper {
+            keeper.abort();
+        }
+        if tilo_rt::in_async_context() || tilo_rt::is_ui_thread() {
+            // A thread that must not wait cannot finish them: the keeper is aborted, and the
+            // tree's task is cancelled as its field drops, its last write as far as it got.
+            return;
+        }
+        let _ = tilo_rt::app().block_on(async move {
+            if let Some(keeper) = keeper {
+                let _ = tokio::time::timeout(STOPPING, keeper).await;
+            }
+            if let Some(tree) = tree {
+                tree.stop(STOPPING).await;
+            }
+        });
     }
 }
 
@@ -142,8 +169,8 @@ impl ReplicaFiles {
         Ok(Self {
             folder: parts.folder.to_path_buf(),
             _watch: watch,
-            tree,
-            keeper,
+            tree: Some(tree),
+            keeper: Some(keeper),
         })
     }
 
@@ -154,7 +181,9 @@ impl ReplicaFiles {
 
     /// Where the folder's sync stands.
     pub(in crate::device) fn status(&self) -> tilo_fs::tree_sync::Status {
-        self.tree.status()
+        self.tree
+            .as_ref()
+            .map_or_else(tilo_fs::tree_sync::Status::default, TreeSync::status)
     }
 }
 

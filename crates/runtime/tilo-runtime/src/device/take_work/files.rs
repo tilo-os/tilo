@@ -6,8 +6,9 @@ mod replica;
 pub(crate) use replica::{ReplicaHost, Replicas};
 
 /// The workspaces' files, once they are held: a member taking a workspace's work is set up
-/// before the broker their records travel on runs.
-pub(crate) type ReplicaSlot = Arc<std::sync::OnceLock<Arc<Replicas>>>;
+/// before the broker their records travel on runs. Held weakly: the shells that ask for a
+/// workspace's folder keep no replica alive past the daemon that holds them.
+pub(crate) type ReplicaSlot = Arc<std::sync::OnceLock<std::sync::Weak<Replicas>>>;
 
 use std::{
     io,
