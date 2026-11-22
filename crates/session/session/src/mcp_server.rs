@@ -1241,13 +1241,6 @@ enum ApiAsk {
             Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
         >,
     },
-    /// The record of the package the session runs itself, by its app (`so.tilo.shell`): its
-    /// document and the packages a program reading it loads, or `None` for one no service keeps a
-    /// record of.
-    Record {
-        app: String,
-        done: tilo_actions::remote::Completer<Option<tilo_service::Document>>,
-    },
     /// The packages the session runs itself, which a task's host loads to run programs against:
     /// each one's compiled module, its description embedded, the packages it uses first
     /// ([`task_hosts`] adds every installed app).
@@ -1625,9 +1618,6 @@ impl SessionServices {
                     ),
                     Err(why) => done.complete(Err(why)),
                 },
-                ApiAsk::Record { app, done } => {
-                    done.complete(services.borrow().document(&app));
-                }
                 ApiAsk::Apps(done) => {
                     done.complete(session_packages(services));
                 }
@@ -2394,11 +2384,11 @@ fn session_packages(
     services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
 ) -> Vec<runtime_portal::process_link::App> {
     use runtime_portal::process_link::{App, Module};
+    let services = services.borrow();
     services
-        .borrow()
-        .documents()
-        .into_iter()
-        .flat_map(|record| record.packages)
+        .apps()
+        .iter()
+        .filter_map(|app| services.module(app))
         .map(|wasm| {
             App::Module(Module {
                 wasm: wasm.to_vec(),

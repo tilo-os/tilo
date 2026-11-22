@@ -3,7 +3,7 @@
 //!
 //! Every resource the app keeps is in the workspace's one store, which the broker answers for:
 //! the instance sends each read and write as a resource command on its connection and waits for
-//! the answer ([`BrokerPort`]), as the runtime asks for each read before it goes on. Everything
+//! the answer ([`CallPort`]), as the runtime asks for each read before it goes on. Everything
 //! else the connection delivers meanwhile (an invocation, presence, the member list) is kept for
 //! the host's next frame ([`Connection::poll`]), in the order it came.
 
@@ -109,8 +109,8 @@ impl Connection {
     /// The port the store sends its commands on. `arrived` is written whenever the connection
     /// has something new; without it the port looks again every millisecond.
     #[must_use]
-    pub fn port(&self, arrived: Option<Rc<Wake>>) -> BrokerPort {
-        BrokerPort {
+    pub fn port(&self, arrived: Option<Rc<Wake>>) -> CallPort {
+        CallPort {
             manager: Rc::clone(&self.manager),
             held: Rc::clone(&self.held),
             arrived,
@@ -120,7 +120,7 @@ impl Connection {
 }
 
 /// The store's commands, sent on the instance's connection; see the module docs.
-pub struct BrokerPort {
+pub struct CallPort {
     manager: Rc<RefCell<CollaborationManager>>,
     held: Rc<RefCell<VecDeque<CollabEvent>>>,
     /// Written whenever the connection has something new: what the port waits on for its
@@ -129,7 +129,7 @@ pub struct BrokerPort {
     next: Cell<u64>,
 }
 
-impl BrokerPort {
+impl CallPort {
     /// Wait until the connection may have delivered something, or `until`.
     fn wait(&self, until: Instant) {
         let Some(arrived) = &self.arrived else {
@@ -149,7 +149,7 @@ impl BrokerPort {
     }
 }
 
-impl Port for BrokerPort {
+impl Port for CallPort {
     fn command(&self, command: Command) -> Result<Reply, String> {
         let request_id = self.next.get();
         self.next.set(request_id.wrapping_add(1));

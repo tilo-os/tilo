@@ -2497,7 +2497,7 @@ impl ResourceStore {
     /// Queues an outside effect of the document `at` names, in `txn`: what its capability
     /// carries out, with `payload`, held until `held_until` when that is given. The same entry
     /// (`key`) queued again keeps what became of it.
-    fn push_outbox(
+    fn push_effect(
         &self,
         txn: Txn,
         at: &ResourceRef,
@@ -2530,7 +2530,7 @@ impl ResourceStore {
             content: Some(serde_json::Map::new()),
         };
         self.write(txn, &id, Some(held), |dirty| dirty.put = true)?;
-        self.touch_outbox(txn, &at.doc)
+        self.touch_effects(txn, &at.doc)
     }
 
     /// What a write `m` of the field `name` of the resource `id` changes of links: the
@@ -2724,7 +2724,7 @@ impl ResourceStore {
                 held_until,
                 key,
             } => {
-                self.push_outbox(
+                self.push_effect(
                     txn,
                     at,
                     capability,
@@ -2736,7 +2736,7 @@ impl ResourceStore {
             }
             Mutation::OutboxWithdraw => {
                 self.withdraw_in(txn, &at.doc, "")?;
-                self.touch_outbox(txn, &at.doc)?;
+                self.touch_effects(txn, &at.doc)?;
                 Ok(Some(Applied::Done))
             }
             _ => Ok(None),
@@ -2845,7 +2845,7 @@ impl ResourceStore {
     }
 
     /// The outbox entries the store holds that hold to `filters`, by id.
-    fn outbox_rows(&self, filters: Vec<Filter>) -> Vec<(String, BTreeMap<String, Cell>)> {
+    fn effect_rows(&self, filters: Vec<Filter>) -> Vec<(String, BTreeMap<String, Cell>)> {
         let mut query = Query::of(OUTBOX, PAGE);
         query.filters = filters;
         let mut rows = Vec::new();
@@ -2867,7 +2867,7 @@ impl ResourceStore {
     /// Note that the commit of `txn` changed what the document `doc` has waiting to go out:
     /// whoever carries out a device's outside effects, and every reader of how the document's
     /// delivery stands, hears of it with the rest of the commit.
-    fn touch_outbox(&self, txn: Txn, doc: &str) -> Result<(), StoreError> {
+    fn touch_effects(&self, txn: Txn, doc: &str) -> Result<(), StoreError> {
         let key = FieldKey {
             resource: doc.to_owned(),
             field: OUTBOX.to_owned(),
@@ -2880,7 +2880,7 @@ impl ResourceStore {
     /// Settles every outbox entry of the document `doc` not settled yet as withdrawn, for
     /// `reason`, in the open transaction. How many it settled.
     fn withdraw_in(&self, txn: Txn, doc: &str, reason: &str) -> Result<usize, StoreError> {
-        let rows = self.outbox_rows(vec![
+        let rows = self.effect_rows(vec![
             Filter::Is(OUT_DOC.to_owned(), Value::Text(doc.to_owned())),
             Filter::Is(OUT_SETTLED.to_owned(), Value::Bool(false)),
         ]);
@@ -2903,7 +2903,7 @@ impl ResourceStore {
     }
 
     /// Writes what `change` makes of the outbox entry `entry`'s fields, as the change `note`.
-    fn outbox_write(
+    fn effect_write(
         &self,
         entry: &OutboxEntry,
         note: &ChangeNote,
@@ -5054,7 +5054,7 @@ impl Store for ResourceStore {
 
     fn outbox_pending(&self) -> Vec<OutboxEntry> {
         let device = self.inner.device.borrow().clone();
-        self.outbox_rows(vec![
+        self.effect_rows(vec![
             Filter::Is(OUT_SETTLED.to_owned(), Value::Bool(false)),
             Filter::Is(OUT_OWNER.to_owned(), Value::Text(device)),
         ])
@@ -5109,7 +5109,7 @@ impl Store for ResourceStore {
             OutboxState::Sending { by } => ("sending", by.as_str()),
             OutboxState::Waiting { reason } => ("waiting", reason.as_str()),
         };
-        self.outbox_write(entry, note, |fields| {
+        self.effect_write(entry, note, |fields| {
             fields.insert(
                 OUT_STATE.to_owned(),
                 Cell::One(Value::Text(word.to_owned())),
@@ -5127,12 +5127,12 @@ impl Store for ResourceStore {
         outcome: &Settled,
         note: &ChangeNote,
     ) -> Result<(), StoreError> {
-        self.outbox_write(entry, note, |fields| settle_fields(fields, outcome))
+        self.effect_write(entry, note, |fields| settle_fields(fields, outcome))
     }
 
     fn outbox_states(&self) -> Vec<(DocId, DeliveryState)> {
         let mut by_doc: BTreeMap<DocId, Vec<(OutboxEntry, Option<Outcome>)>> = BTreeMap::new();
-        for (_, fields) in self.outbox_rows(Vec::new()) {
+        for (_, fields) in self.effect_rows(Vec::new()) {
             let (entry, settled) = outbox_entry(&fields);
             by_doc
                 .entry(entry.doc.clone())

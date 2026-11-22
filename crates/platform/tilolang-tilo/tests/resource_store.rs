@@ -8,6 +8,51 @@ use tilolang_tilo::resources::ResourceStore;
 
 const SOURCE: &str = include_str!("../../../lang/tilolang/tests/fixtures/todo.tl");
 
+fn compile() -> tilolang::Compiled {
+    tilolang::compile_package(SOURCE, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|errors| panic!("{errors:#?}"))
+}
+
+/// The workspace's store as a session's workspace service keeps it: every app surface the device
+/// knows declares its types there, and each write is drafted, checked against them, and only then
+/// made, as the service checks a write before it keeps it.
+struct Declared(std::cell::RefCell<tilo_resource_store::Store>);
+
+impl Declared {
+    fn of(surfaces: &[collab_types::surface::SurfaceFile]) -> Self {
+        let mut store = tilo_resource_store::Store::new();
+        for file in surfaces {
+            for surface in &file.resources {
+                store.declare(tilo_resource_store::Schema::from_surface(surface));
+            }
+        }
+        Self(std::cell::RefCell::new(store))
+    }
+}
+
+impl tilolang_tilo::resources::Port for Declared {
+    fn command(
+        &self,
+        command: tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        use tilo_resource_store::wire;
+        let mut store = self.0.borrow_mut();
+        if !command.writes() {
+            return wire::read(&store, &command, &|_| true)
+                .ok_or_else(|| "the store answered no read".to_owned());
+        }
+        let drafted =
+            wire::draft(&mut store, command.clone()).map_err(|error| error.to_string())?;
+        for write in &drafted {
+            store
+                .check_write(write, [7; 32])
+                .map_err(|refusal| format!("refused: {refusal:?}"))?;
+        }
+        wire::write(&mut store, command).map_err(|error| error.to_string())?;
+        Ok(wire::Reply::Written)
+    }
+}
+
 fn me() -> tilolang_runtime::Actor {
     tilolang_runtime::Actor::from(tilolang_runtime::ids::MemberId::person("me"))
 }
@@ -20,9 +65,11 @@ struct Todo {
 
 impl Todo {
     fn new() -> Self {
-        let compiled = tilolang::compile_package(SOURCE, &tilolang::IdsLock::new(), &[])
-            .unwrap_or_else(|errors| panic!("{errors:#?}"));
-        let store = ResourceStore::in_memory();
+        Self::over(ResourceStore::in_memory(), compile())
+    }
+
+    /// The package `compiled` run over `store`.
+    fn over(store: ResourceStore, compiled: tilolang::Compiled) -> Self {
         store.declare(&compiled.meta);
         let rt = Runtime::new(store, SimpleAuthority::new()).unwrap();
         rt.load_compiled(&compiled).unwrap();
@@ -180,4 +227,37 @@ fn thousands_of_items_are_written_fast_and_listed() {
     let view = t.view();
     assert_eq!(heading(view.tree()), format!(" ({total} open)"));
     assert_eq!(titles(view.tree()).len(), total);
+}
+
+/// A tilolang app's writes land in a workspace whose other apps declare their own types: what
+/// each app's surface declares judges that app's kinds, and none refuses another app's.
+#[test]
+fn an_apps_writes_land_beside_the_types_other_apps_declare() {
+    let compiled = compile();
+    let own =
+        tilolang_tilo::surface::surface_toml(&[&compiled.meta], &tilolang_runtime::SourceWords)
+            .unwrap();
+    // An app whose surface declares the types it keeps, as a native app's does.
+    let other = collab_types::surface::SurfaceFile::from_json(
+        &serde_json::json!({"resources": [{
+            "kind": "tasks.tracker", "label": "Tracker", "version": 1, "fields": [],
+            "types": [
+                {"name": "Tracker", "fields": [{"name": "name", "type": "text"}]},
+                {"name": "Thread", "fields": [{"name": "subject", "type": "text"}]},
+            ],
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    let surfaces = [
+        collab_types::surface::SurfaceFile::parse(&own).unwrap(),
+        other,
+    ];
+    let t = Todo::over(
+        ResourceStore::new(std::rc::Rc::new(Declared::of(&surfaces))),
+        compiled,
+    );
+    let milk = t.add("milk");
+    t.call("toggle", vec![Value::resource(&milk)]);
+    assert_eq!(t.rt.read(&milk, "done").unwrap(), Value::Bool(true));
 }

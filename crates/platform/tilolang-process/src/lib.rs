@@ -260,7 +260,7 @@ pub struct TilolangProcess {
     running: Vec<Running>,
     opening: Vec<Opening>,
     /// Written whenever an instance's connection has something new: what a resource command
-    /// waits on for its answer ([`connection::BrokerPort`]).
+    /// waits on for its answer ([`connection::CallPort`]).
     arrived: Option<Rc<wait::Wake>>,
     /// The windows whose instances ended since the session was last told.
     ended: Vec<u64>,

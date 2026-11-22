@@ -704,31 +704,6 @@ impl Activity {
         self.records_held(workspace_id).as_ref().clone()
     }
 
-    /// The records the session's own services keep, each as the record of its app: an agent's
-    /// run there is listed and undone in History as one in a running app's record is, though no
-    /// app's process holds it.
-    fn service_records(&self) -> Vec<DetachedRecordHistory> {
-        let Some(services) = self.services_held() else {
-            return Vec::new();
-        };
-        // A pass that is invoking a service has it borrowed: this one lists what it lists next.
-        let Ok(services) = services.try_borrow() else {
-            return Vec::new();
-        };
-        let kept = services.history_documents();
-        kept.into_iter()
-            .map(|record| DetachedRecordHistory {
-                // The service's record is the app's record of the workspace, which the history
-                // names as its primary: one document may hold several apps' records, and the
-                // kind says whose steps in it this entry's are.
-                checkout: DocumentCheckout::package_primary(ResourceType::new(record.kind)),
-                app: record.app,
-                tree_chunks: Vec::new(),
-                document: Some(record.document),
-            })
-            .collect()
-    }
-
     /// The services this session runs, once it has started them.
     fn services_held(&self) -> Option<Rc<RefCell<tilo_service::Services>>> {
         self.0
@@ -820,7 +795,6 @@ impl HistorySource for Activity {
         if let Some(workspace_id) = Self::id_of(tree, workspace) {
             records.extend(self.resources_of(workspace_id));
         }
-        records.extend(self.service_records());
         // What the person's devices answered when one of them asked to be unlocked is theirs and
         // not any one workspace's: it reads the same in every workspace's history.
         #[cfg(target_os = "linux")]

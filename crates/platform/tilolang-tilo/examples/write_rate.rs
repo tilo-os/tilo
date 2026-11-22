@@ -2,7 +2,8 @@
 //! workspace grows: issues written a thousand a change up to each size, then single issues written
 //! one change each, as a person adding them one by one does.
 //!
-//! `rcargo run --release -p tilolang-tilo --example write_rate -- 1000 10000 50000`
+//! `cargo run --release -p tilolang-tilo --example write_rate -- 1000 10000 50000`, or through
+//! any cargo drop-in (`$CARGO`).
 
 #![allow(
     clippy::print_stdout,

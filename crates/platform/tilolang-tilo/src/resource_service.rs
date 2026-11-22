@@ -197,6 +197,19 @@ impl ResourceService {
         self.only.as_deref().is_none_or(|only| only == app) && !self.profile_only(app)
     }
 
+    /// Whether this service keeps `app`'s resources: the app's own service, or the session's for
+    /// the packages it runs itself (the shell); the session's loads every package to read it.
+    fn answers_for(&self, app: &str) -> bool {
+        match &self.only {
+            Some(only) => only == app && self.offers(app),
+            None if self.session_document => self.shared.contains_key(app),
+            None => {
+                self.shared.contains_key(app)
+                    || self.host.package(app).is_some() && self.offers(app)
+            }
+        }
+    }
+
     /// Whether `app` keeps its records in each person's profile: the person's own app instance
     /// publishes them, never the workspace's service. The shell's are the session's.
     fn profile_only(&self, app: &str) -> bool {
@@ -1167,6 +1180,18 @@ impl Service for ResourceService {
             .get(app)
             .cloned()
             .or_else(|| self.host.package(app).map(|package| package.wasm))
+    }
+
+    fn apps(&self) -> Vec<String> {
+        let loaded = self
+            .host
+            .packages()
+            .into_iter()
+            .map(|package| package.meta.app.clone());
+        let apps: BTreeSet<String> = loaded.chain(self.shared.keys().cloned()).collect();
+        apps.into_iter()
+            .filter(|app| self.answers_for(app))
+            .collect()
     }
 
     fn share(&mut self, share: &tilo_service::Share<'_>) -> Result<(), String> {

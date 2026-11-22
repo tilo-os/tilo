@@ -108,7 +108,9 @@ pub(super) fn change_through(
     } else {
         tilo_actions::ActionInvoker::person(actor.person_id()?.to_owned())
     };
-    services.borrow().document(&change.app)?;
+    if !services.borrow().apps().contains(&change.app) {
+        return None;
+    }
     let ran = services.borrow_mut().invoke_as(
         &invoker,
         None,
@@ -118,10 +120,6 @@ pub(super) fn change_through(
     );
     Some(match ran {
         Ok(output) => {
-            let document = services
-                .borrow()
-                .document(&change.app)
-                .map(|record| record.document);
             let output = match output {
                 tilo_service::Started::Done(output) => serde_json::json!({
                     "value": output.value,
@@ -131,7 +129,7 @@ pub(super) fn change_through(
                     serde_json::Value::Null
                 }
             };
-            Ok(serde_json::json!({"ok": output, "change": document}))
+            Ok(serde_json::json!({"ok": output}))
         }
         Err(error) => Err(ActionCallError::Unavailable {
             reason: error.to_string(),
