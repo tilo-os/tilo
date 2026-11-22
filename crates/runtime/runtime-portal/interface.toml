@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/package-service/interface.toml).
 name = "runtime"
-version = 34
+version = 35
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -17,6 +17,7 @@ sources = [
     "crates/runtime/runtime-portal/src/tools.rs",
     "crates/runtime/runtime-collab/src/wire.rs",
     "crates/runtime/runtime-collab/src/lib.rs",
+    "crates/runtime/runtime-collab/src/held_elsewhere.rs",
     "crates/runtime/runtime-collab/src/action_directory.rs",
     "crates/runtime/runtime-collab/src/workspace_status.rs",
     "crates/collab/collab-types/src/artifact.rs",
@@ -33,6 +34,7 @@ sources = [
     "crates/collab/collab-types/src/member.rs",
     "crates/collab/action-policy/src/member.rs",
     "crates/collab/action-policy/src/person.rs",
+    "crates/collab/action-policy/src/kind.rs",
     "crates/platform/tilo-app-id/src/lib.rs",
     "crates/collab/action-policy/src/grant.rs",
     "crates/collab/collab-types/src/presence/hue.rs",
@@ -86,6 +88,10 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "ActionKey.action" = "#2 String"
 "ActionKey.app" = "#0 String"
 "ActionKey.kind" = "#1 String"
+"ActionKind" = "enum external"
+"ActionKind::outside" = "#2 unit"
+"ActionKind::read" = "#0 unit"
+"ActionKind::undoable" = "#1 unit"
 "Actor" = "enum external"
 "Actor::app" = "#2 tuple(AppId)"
 "Actor::automation" = "#1 tuple(AutomationId)"
@@ -258,6 +264,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "Event::Content.hash" = "#0 String"
 "Event::Content.state" = "#1 ContentState"
 "Event::Context" = "#3 tuple(ContextUpdate)"
+"Event::HeldElsewhere" = "#11 tuple(Vec<HeldDecision>)"
 "Event::Invocation" = "#4 tuple(Invocation)"
 "Event::Op" = "#1 struct"
 "Event::Op.admission" = "#1 OpAdmission"
@@ -401,6 +408,22 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "FsRequest::Write.bytes" = "#1 Vec<u8>"
 "FsRequest::Write.offset" = "#0 u64"
 "Handle" = "tuple(u64)"
+"HeldDecision" = "struct"
+"HeldDecision.record" = "#0 HeldRecord"
+"HeldDecision.verdict" = "#1 HeldVerdict"
+"HeldRecord" = "struct"
+"HeldRecord.action" = "#4 String"
+"HeldRecord.app" = "#1 String"
+"HeldRecord.field" = "#6 Option<String>"
+"HeldRecord.kind" = "#2 String"
+"HeldRecord.kind_needed" = "#5 ActionKind"
+"HeldRecord.privileged" = "#7 bool"
+"HeldRecord.resource" = "#3 String"
+"HeldRecord.workspace" = "#0 String"
+"HeldVerdict" = "enum external"
+"HeldVerdict::Allowed" = "#0 unit"
+"HeldVerdict::AsksFirst" = "#1 unit"
+"HeldVerdict::Refused" = "#2 tuple(String)"
 "HistoryOp" = "enum external"
 "HistoryOp::checkpoint" = "#3 struct"
 "HistoryOp::checkpoint.name" = "#0 String"
@@ -937,6 +960,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "Topic::Catalogue" = "#5 unit"
 "Topic::Content" = "#2 unit"
 "Topic::Context" = "#3 unit"
+"Topic::HeldElsewhere" = "#10 tuple(Vec<HeldRecord>)"
 "Topic::Invocations" = "#4 struct"
 "Topic::Invocations.stable_ids" = "#0 bool"
 "Topic::Ops" = "#1 unit"
