@@ -13,11 +13,12 @@
  * page shows the screen once the site's entry let them in (`reveal`), and
  * the visitor it turned away sees the wait list instead.
  *
- * Everything an agent does for the person goes through a login code
- * (`K7Q-MX2P`, `tilo-server-protocol`'s `login_code`): the tab asks its host
- * for one, the agent runs `tilo login <code>`, and the tab follows the code
- * (`follow()`, about once a second), showing each step the computer reports
- * as it happens.
+ * Everything an agent does for the person goes through a ticket the tab's
+ * host serves it (`tilo_device_identity::login`): the tab asks its host for
+ * one, the agent runs `tilo login <ticket>` on a computer (or
+ * `tilo device add <ticket>` on one of the person's own, to sign this tab
+ * in), and the tab follows the ticket (`follow()`, about once a second),
+ * showing each step the computer reports as it happens.
  *
  * The page makes its codes as soon as it can (`offerSetup`,
  * `offerAgentSignIn`), before anyone asks, and keeps a fresh one ready,
@@ -122,7 +123,7 @@ export const ASK_MS = 8_000;
 export const QUIET_MS = 3 * 60_000;
 /** How long opening the person's own workspace waits before it says why it is slow. */
 export const OPEN_SLOW_MS = 20_000;
-/** The site whose commands need no `--site`. */
+/** The site whose commands need no `--site`: a ticket names its own host. */
 export const HOME_SITE = 'https://tilo.sh';
 /** Tilo's MCP server, for an agent added by hand. */
 export const MCP_URL = 'https://mcp.tilo.sh';
@@ -261,12 +262,12 @@ export function setupFailure(error, {site = HOME_SITE} = {}) {
   if (code === 'stopped') return 'Tilo could not open a workspace for you here yet. Skip for now to see why.';
   if (code === 'no-workspace') return 'There is no workspace here yet to set your agent up in. Try again, or skip for now.';
   if (code === 'no-codes') return 'This tab can’t make the code an agent needs. Try again, or skip for now.';
-  // The site's server answered and would not make the code (a
-  // `LoginCodeError` of no other kind): said of the site by the name in the
-  // person's address bar, never by the address its codes come from, which may
-  // be one by number. Refused by anything else, the sentence names nobody.
+  // The site's server answered and would not serve a ticket (a `TicketError`):
+  // said of the site by the name in the person's address bar, never by the
+  // address its tickets come from, which may be one by number. Refused by
+  // anything else, the sentence names nobody.
   if (code === 'refused') {
-    const by = error?.name === 'LoginCodeError' ? `: ${nameOf(site)} refused it` : '';
+    const by = error?.name === 'TicketError' ? `: ${nameOf(site)} refused it` : '';
     return `The code for your agent could not be made here${by}. Try again, or skip for now and use Tilo without an agent.`;
   }
   if (code === 'copy-failed') return 'Your browser did not let Tilo copy the prompt. Select it and copy it yourself.';

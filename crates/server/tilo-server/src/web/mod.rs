@@ -15,12 +15,10 @@ mod fetch;
 pub mod install;
 mod link;
 pub(crate) mod live;
-mod login_codes;
 mod page;
 mod page_errors;
 mod profiles;
 mod shelf;
-mod sign_in;
 mod stand_in;
 #[cfg(test)]
 mod tests;
@@ -232,8 +230,6 @@ struct Web {
     /// The site this host belongs to, when it knows one: where a browser that
     /// opened a link at the host's own address is sent.
     site: Option<Site>,
-    /// The login codes tabs hand their agents.
-    login_codes: Arc<login_codes::LoginCodes>,
     /// The tickets tabs hand their agents, and the questions their computers ask with them.
     tickets: tickets::Tickets,
     /// The wait list the entry keeps for a workspace taking people by
@@ -258,14 +254,25 @@ impl Web {
         info
     }
 
+    /// Queue the certification requests this host's sign-in tickets expect: a tab that pairs
+    /// with the invite its ticket named waits for the device that approved it to be answered.
+    fn serve_tab_requests(&self) {
+        self.context
+            .certification
+            .set_tab_requests(Arc::new(tickets::Expecting(self.tickets.clone())));
+    }
+
     /// Serve the tickets a page's host makes for its agent: the certify action a computer with
-    /// no certificate calls, routed to the ticket whose secret its call carries.
+    /// no certificate calls, routed to the ticket whose secret its call carries, and the device
+    /// actions a certified device calls beside its workspaces' own.
     fn serve_tickets(&self) {
         if let Some(workspaces) = self.workspaces.as_ref() {
-            workspaces.action_service().admit_uncertified(
+            let service = workspaces.action_service();
+            service.admit_uncertified(
                 tilo_device_identity::login::SCOPE,
                 Arc::new(tickets::Router::new(self.tickets.clone())),
             );
+            service.add_provider(Arc::new(tickets::Certified::new(self.tickets.clone())));
         }
     }
 }
@@ -581,11 +588,6 @@ impl Server {
             page_errors: page_errors::PageErrors::default(),
             shelf: Arc::clone(&invitation_shelf),
             site: config.site.as_deref().and_then(Site::new),
-            login_codes: Arc::new(kept_login_codes(
-                self.state_root(),
-                public_origin.clone(),
-                also,
-            )),
             tickets: tickets::Tickets::new(context.certification.clone()),
             wait_list: config.wait_list.clone(),
         });
@@ -598,7 +600,7 @@ impl Server {
             // mail to an address carries name the same short link.
             let _ = workspaces.shelve_invitations(invitation_shelf as Arc<dyn SealedInvitations>);
         }
-        web.serve_code_requests();
+        web.serve_tab_requests();
         web.serve_tickets();
         web.serve_pushes(
             self.state_root(),
@@ -1229,31 +1231,6 @@ fn refused(code: StatusCode, message: &str) -> Response<Body> {
     response
 }
 
-/// This host's login codes, kept under `state_root`: every deploy restarts
-/// the host, and a code a tab shows, or an agent was handed, outlives that.
-fn kept_login_codes(
-    state_root: &std::path::Path,
-    public_origin: Option<String>,
-    also: Vec<String>,
-) -> login_codes::LoginCodes {
-    login_codes::LoginCodes::kept(
-        public_origin,
-        state_root.join("login-codes.json"),
-        tilo_clock::unix_now_ms(),
-    )
-    .reached_also_at(also)
-}
-
-fn code_refused(refusal: &login_codes::Refusal) -> Response<Body> {
-    let code = match refusal {
-        login_codes::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
-        login_codes::Refusal::Unknown => StatusCode::NOT_FOUND,
-        login_codes::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
-        login_codes::Refusal::Conflict(_) => StatusCode::CONFLICT,
-    };
-    refused(code, refusal.message())
-}
-
 #[allow(
     clippy::result_large_err,
     reason = "the error is the response the handler sends as it is"
@@ -1263,67 +1240,16 @@ fn json_body<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Response
         .map_err(|_| refused(StatusCode::BAD_REQUEST, "not a request this route takes"))
 }
 
-/// The login code routes ([`tilo_server_protocol::login_code`]), or `None`
-/// for any other route.
-fn login_route(
-    web: &Web,
-    route: &str,
-    bytes: &[u8],
-    client: Option<std::net::IpAddr>,
-) -> Option<Response<Body>> {
-    use tilo_server_protocol::login_code as wire;
-    fn answered<T: serde::Serialize>(result: Result<T, login_codes::Refusal>) -> Response<Body> {
-        result.map_or_else(|refusal| code_refused(&refusal), |value| json(&value))
-    }
-    let now_ms = tilo_clock::unix_now_ms();
-    let codes = &web.login_codes;
-    Some(match route {
-        wire::CREATE_ROUTE => match json_body::<wire::CreateCode>(bytes) {
-            Ok(create) => answered(codes.create(create.link.as_deref(), now_ms)),
-            Err(refusal) => refusal,
-        },
-        wire::RESOLVE_ROUTE => match json_body::<wire::Resolve>(bytes) {
-            Ok(resolve) => answered(codes.resolve(&resolve.code, client, now_ms)),
-            Err(refusal) => refusal,
-        },
-        wire::STEP_ROUTE => match json_body::<wire::Report>(bytes) {
-            Ok(report) => codes.report(&report, now_ms).map_or_else(
-                |refusal| code_refused(&refusal),
-                |()| reply(StatusCode::NO_CONTENT, Vec::new()),
-            ),
-            Err(refusal) => refusal,
-        },
-        wire::CLAIM_ROUTE => match json_body::<wire::Claim>(bytes) {
-            Ok(claim) => web.claim(&claim).unwrap_or_else(|refusal| refusal),
-            Err(refusal) => refusal,
-        },
-        wire::WAITING_ROUTE => match json_body::<wire::Waiting>(bytes) {
-            Ok(waiting) => answered(web.waiting(&waiting)),
-            Err(refusal) => refusal,
-        },
-        wire::CERTIFY_ROUTE => match json_body::<wire::Certify>(bytes) {
-            Ok(certify) => web.certify(&certify).map_or_else(
-                |refusal| refusal,
-                |()| reply(StatusCode::NO_CONTENT, Vec::new()),
-            ),
-            Err(refusal) => refusal,
-        },
-        wire::FOLLOW_ROUTE => match json_body::<wire::Follow>(bytes) {
-            Ok(follow) => {
-                answered(codes.follow(&follow.follow, follow.offer.as_ref(), client, now_ms))
-            }
-            Err(refusal) => refusal,
-        },
-        _ => return None,
-    })
-}
-
 /// Why a ticket route was refused, as the page is told it.
 fn ticket_refused(refusal: &tickets::Refusal) -> Response<Body> {
     let status = match refusal {
         tickets::Refusal::Malformed => StatusCode::BAD_REQUEST,
         tickets::Refusal::Unknown => StatusCode::NOT_FOUND,
         tickets::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
+        tickets::Refusal::NotWaiting
+        | tickets::Refusal::NotThisPerson
+        | tickets::Refusal::NotSignedIn
+        | tickets::Refusal::Spent => StatusCode::CONFLICT,
     };
     refused(status, refusal.message())
 }
@@ -1375,9 +1301,6 @@ async fn route(
     };
     let client = client_address(&request);
     let (_, bytes) = body(request, MAX_REQUEST_BYTES).await?;
-    if let Some(answer) = login_route(web, route, &bytes, client) {
-        return Ok(answer);
-    }
     if let Some(answer) = ticket_route(web, route, &bytes) {
         return Ok(answer);
     }

@@ -511,6 +511,10 @@ fn not_served() -> ActionCallError {
 }
 
 impl ActionProvider for Answers {
+    fn serves(&self, provider: &str) -> bool {
+        provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER || provider == WORK_PROVIDER
+    }
+
     fn query(
         &self,
         _caller: &Caller,

@@ -986,94 +986,6 @@ pub async fn certify_with_root(
     .map_err(js_error)
 }
 
-/// Approve the computer that asked with a ticket this tab's host serves: sign the member
-/// certificate the host built for it with this tab's root (`root`), and sign the question with
-/// this tab's device key. Resolves to the [`Approved`] JSON the host checks with
-/// `check_approval` before it answers the computer.
-///
-/// `asked` is the [`Asked`] JSON the host handed the page.
-///
-/// # Errors
-///
-/// The question is malformed, the root is not the person's, or a signature failed.
-#[wasm_bindgen(js_name = approveAsked)]
-pub async fn approve_asked(&self, root: JsValue, asked: String) -> Result<String, JsError> {
-    let asked: Asked = serde_json::from_str(&asked).map_err(js_error)?;
-    if asked.user_public_key != self.own_cert.user_public_key {
-        return Err(js_error("this tab approves computers of the person it is"));
-    }
-    let root = PageSigner::from_js(&root)?;
-    if root.device_public_key() != asked.user_public_key {
-        return Err(js_error(
-            "the root that signs the certificate is not the person's",
-        ));
-    }
-    let mut cert = asked.cert.clone();
-    tilo_user_identity::sign_device_cert_async(&mut cert, &root)
-        .await
-        .map_err(js_error)?;
-    let signature = self
-        .signer
-        .sign(asked.digest.to_vec())
-        .await
-        .map_err(|error| js_error(error.0))?;
-    serde_json::to_string(&Approved {
-        cert,
-        approver: self.own_cert.clone(),
-        signature,
-    })
-    .map_err(js_error)
-}
-
-/// `refusal` as the page reads it: an `Error` named `LoginCodeError`, with the host's HTTP
-/// `status` (0 unreached) and the kind of refusal as `code`
-/// ([`tilo_server_client::login_code::CodeRefusal::code`]).
-fn code_error(refusal: &tilo_server_client::login_code::CodeRefusal) -> JsValue {
-    let error = js_sys::Error::new(&refusal.message);
-    error.set_name("LoginCodeError");
-    let _ = Reflect::set(&error, &"code".into(), &refusal.code().into());
-    let _ = Reflect::set(&error, &"status".into(), &refusal.status.into());
-    error.into()
-}
-
-/// Make a login code at the host `post` reaches, naming `link` (this tab's pairing link, setting
-/// up through an agent) or nothing (asking to be signed in by a device of the person). Resolves
-/// to `{code, follow, expires_at_ms}` JSON.
-///
-/// # Errors
-///
-/// Rejects with a `LoginCodeError` ([`code_error`]).
-#[wasm_bindgen(js_name = createLoginCode)]
-pub async fn create_login_code(post: Function, link: Option<String>) -> Result<String, JsValue> {
-    let made = tilo_server_client::login_code::create(&PageHttp(post), link)
-        .await
-        .map_err(|refusal| code_error(&refusal))?;
-    serde_json::to_string(&made).map_err(|error| js_error(error).into())
-}
-
-/// Where the code this tab follows with the secret `follow` is: the host's `Polled`, as JSON.
-/// `offer` is the code as it was made, `{code, expires_at_ms, link?}` JSON: the host keeps a code
-/// only once its tab follows it with that, which the tab does once its person uses the code.
-///
-/// # Errors
-///
-/// Rejects with a `LoginCodeError` ([`code_error`]), or a malformed offer.
-#[wasm_bindgen(js_name = followLoginCode)]
-pub async fn follow_login_code(
-    post: Function,
-    follow: String,
-    offer: Option<String>,
-) -> Result<String, JsValue> {
-    let offer = offer
-        .map(|offer| serde_json::from_str::<tilo_server_protocol::login_code::Offer>(&offer))
-        .transpose()
-        .map_err(js_error)?;
-    let polled = tilo_server_client::login_code::follow(&PageHttp(post), &follow, offer)
-        .await
-        .map_err(|refusal| code_error(&refusal))?;
-    serde_json::to_string(&polled).map_err(|error| js_error(error).into())
-}
-
 /// Revoke `keyHex`, a device key of this person's, with the root the page
 /// holds (`root`): resolves to the root-signed revocation as JSON, which the
 /// page keeps beside the person. It
@@ -1456,6 +1368,45 @@ impl WasmPeer {
 
 #[wasm_bindgen]
 impl WasmPeer {
+    /// Approve the computer that asked with a ticket this tab's host serves: sign the member
+    /// certificate the host built for it with this tab's root (`root`), and sign the question with
+    /// this tab's device key. Resolves to the [`Approved`] JSON the host checks with
+    /// `check_approval` before it answers the computer.
+    ///
+    /// `asked` is the [`Asked`] JSON the host handed the page.
+    ///
+    /// # Errors
+    ///
+    /// The question is malformed, the root is not the person's, or a signature failed.
+    #[wasm_bindgen(js_name = approveAsked)]
+    pub async fn approve_asked(&self, root: JsValue, asked: String) -> Result<String, JsError> {
+        let asked: Asked = serde_json::from_str(&asked).map_err(js_error)?;
+        if asked.user_public_key != self.own_cert.user_public_key {
+            return Err(js_error("this tab approves computers of the person it is"));
+        }
+        let root = PageSigner::from_js(&root)?;
+        if root.device_public_key() != asked.user_public_key {
+            return Err(js_error(
+                "the root that signs the certificate is not the person's",
+            ));
+        }
+        let mut cert = asked.cert.clone();
+        tilo_user_identity::sign_device_cert_async(&mut cert, &root)
+            .await
+            .map_err(js_error)?;
+        let signature = self
+            .signer
+            .sign(asked.digest.to_vec())
+            .await
+            .map_err(|error| js_error(error.0))?;
+        serde_json::to_string(&Approved {
+            cert,
+            approver: self.own_cert.clone(),
+            signature,
+        })
+        .map_err(js_error)
+    }
+
     /// Start a session. `configJson` is `{cert, hostCert}` from
     /// [`certify_device`], optionally with `displayName`. With `namespace`
     /// (`{profile, device}` JSON, whose storage the page has opened) the

@@ -70,8 +70,6 @@ mod late_join;
 mod layout_views;
 #[path = "lifecycle_states.rs"]
 mod lifecycle_states;
-#[path = "login_codes.rs"]
-mod login_codes;
 #[path = "lounge_fresh_page.rs"]
 mod lounge_fresh_page;
 #[path = "mcp_server.rs"]

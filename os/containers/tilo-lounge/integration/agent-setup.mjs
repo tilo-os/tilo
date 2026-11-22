@@ -23,7 +23,7 @@
 // Prints a JSON report and saves what each page showed; exits non-zero when a
 // step of either path did not happen.
 import {execFile, spawn} from 'node:child_process';
-import {mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
+import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
@@ -125,12 +125,30 @@ const until = async (tab, expression, what, timeout = stepLimit(3)) => {
 const computer = join(out, 'computer');
 mkdirSync(join(computer, 'bin'), {recursive: true});
 const agentName = 'Reviewer';
-const agentConfiguration = join(computer, 'agent-mcp.json');
+// The tool the agent runs in, as `tilo login` finds it: its own command adds Tilo's MCP server,
+// which it records, and writes the configuration it would keep.
+const claudeCalls = join(out, 'claude-calls.txt');
+const claudeConfig = join(computer, '.claude.json');
+const claude = `#!/bin/sh
+echo "$@" >> ${JSON.stringify(claudeCalls)}
+if [ "${'$'}1" = "mcp" ] && [ "${'$'}2" = "add" ]; then
+  command=""
+  rest=$(echo "$@" | sed 's/.* -- //')
+  program=${'$'}{rest%% *}
+  printf '{"mcpServers":{"tilo":{"type":"stdio","command":"%s","args":["mcp"],"env":{}}}}\n' "${'$'}program" > ${JSON.stringify(claudeConfig)}
+fi
+exit 0
+`;
+writeFileSync(join(computer, 'bin', 'claude'), claude);
+chmodSync(join(computer, 'bin', 'claude'), 0o755);
 const env = {
   PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
   HOME: computer,
   XDG_STATE_HOME: join(computer, 'state'),
   XDG_CONFIG_HOME: join(computer, 'config'),
+  // The tool this computer's commands run under, as every tool names itself to the commands it
+  // runs.
+  CLAUDECODE: '1',
   // The computer's peer logs each window it shows on the person's layout.
   RUST_LOG: 'tilo_runtime::mcp::agent::link=debug,warn',
 };
@@ -244,7 +262,7 @@ const clipboardNow = tab => tab.evaluate(`navigator.clipboard.readText().catch((
 // from what it held before the click (`before`).
 const copied = async (tab, what, before) => {
   const read = `navigator.clipboard.readText().then(text =>
-    text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
+    text.match(/(?:tilo|sh -s) (?:login|device add) /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
   // The clipboard is the browser's, not the page's: a write landing is no
   // change the page tells anyone about, so this is the one wait here that
   // reads on a clock, and it holds a step.
@@ -344,22 +362,24 @@ const following = followSteps(first, `document.documentElement.dataset.firstScre
 const loggedIn = await login;
 report.login = loggedIn;
 if (loggedIn.code !== 0) await fail(`tilo login failed (${loggedIn.code}): ${loggedIn.stderr}${loggedIn.stdout}`);
-if (!/restart/.test(loggedIn.stdout) || !/\btilo_[a-z]+\b/.test(loggedIn.stdout)) {
+if (!/restart/i.test(loggedIn.stdout) || !/\btilo_[a-z]+\b/.test(loggedIn.stdout)) {
   await fail(`tilo login did not tell the agent to restart and which tool to call: ${loggedIn.stdout}`);
 }
-if (!/agent check --config/.test(loggedIn.stdout)) await fail(`tilo login did not leave the agent the check that confirms its tools: ${loggedIn.stdout}`);
-if (!/stdio server \S*tilo with the argument mcp/.test(loggedIn.stdout)) {
-  await fail(`tilo login did not name the command that runs its MCP server: ${loggedIn.stdout}`);
+if (!/holds the MCP server tilo/.test(loggedIn.stdout) || !/tilo_[a-z]+/.test(loggedIn.stdout)) {
+  await fail(`tilo login did not confirm Tilo's tools in the agent's own configuration: ${loggedIn.stdout}`);
 }
 if (/failed/i.test(loggedIn.stdout)) await fail(`tilo login said something failed: ${loggedIn.stdout}`);
-// The agent adds the server where its own configuration keeps servers, as
-// the login's words ask, then runs the check they name on that file.
-writeFileSync(agentConfiguration, `${JSON.stringify({mcpServers: {tilo: {type: 'stdio', command: tiloBin, args: ['mcp'], env: {}}}})}\n`);
-const checked = await tilo(['agent', 'check', '--config', agentConfiguration]);
-report.check = checked;
-if (checked.code !== 0) await fail(`tilo agent check did not confirm Tilo's server (${checked.code}): ${checked.stderr}${checked.stdout}`);
-if (!checked.stdout.includes(`holds the MCP server tilo`) || !/tilo_[a-z]+/.test(checked.stdout)) {
-  await fail(`tilo agent check did not say the file holds the server and what to call: ${checked.stdout}`);
+// The tool's own command added the server, as the login runs it, and the configuration it keeps
+// holds Tilo's server: what the tab shows the tools added is what the agent's own file holds.
+const calls = readFileSync(claudeCalls, 'utf8');
+report.claudeCalls = calls;
+if (!/^mcp add --scope user tilo -- \S*tilo mcp$/m.test(calls)) {
+  await fail(`the tool's own command never added Tilo's server: ${JSON.stringify(calls)}`);
+}
+const kept = readFileSync(claudeConfig, 'utf8');
+report.claudeConfig = kept;
+if (!JSON.parse(kept)?.mcpServers?.tilo?.command?.endsWith('tilo')) {
+  await fail(`the tool's own configuration holds no Tilo server: ${kept}`);
 }
 const steps = await following;
 report.steps = steps;

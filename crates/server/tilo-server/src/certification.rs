@@ -106,15 +106,11 @@ type Queued = ([u8; 32], String, watch::Receiver<Option<CertifyReply>>);
 /// The pairing invites answered, as (person, invite).
 type AnsweredInvites = std::collections::HashSet<([u8; 32], [u8; 16])>;
 
-/// The requests this server's login codes expect (`crate::web`'s login
-/// codes): queued for whoever answers them, even for a person no workspace
-/// here lets in yet.
-pub(crate) trait CodeRequests: Send + Sync {
-    /// Whether a computer resolving a setting-up code here made `request`,
-    /// so its tab, which wrote the link the code names, answers it.
-    fn sets_up(&self, request: &CertificationRequest, now_ns: u64) -> bool;
-    /// Whether a claim of a sign-in code here expects `request`: the device
-    /// that claimed it certifies it ([`CertificationProtocol::issue_named`]).
+/// The requests a page's sign-in tickets expect (`crate::web::tickets`): queued for the device
+/// that approved the tab, even for a person no workspace here lets in yet.
+pub(crate) trait TabRequests: Send + Sync {
+    /// Whether a tab signing in with a ticket here pairs with `request`: the device that
+    /// approved it answers it ([`CertificationProtocol::issue_named`]).
     fn expects(&self, request: &CertificationRequest, now_ns: u64) -> bool;
 }
 
@@ -159,7 +155,7 @@ pub struct CertificationProtocol {
     /// devices' requests; absent in a host that governs none.
     workspaces: Option<crate::peer::WorkspaceRegistry>,
     /// The requests this server's login codes expect.
-    codes: Arc<std::sync::OnceLock<Arc<dyn CodeRequests>>>,
+    codes: Arc<std::sync::OnceLock<Arc<dyn TabRequests>>>,
     /// The workspaces this host governs, whose records keep each person's
     /// devices: a certificate a root issues here joins its person's record.
     records: Arc<std::sync::OnceLock<tilo_workspace_service::workspaces::Workspaces>>,
@@ -267,10 +263,10 @@ impl CertificationProtocol {
         }
     }
 
-    /// Name the requests this server's login codes expect. Named once; a
-    /// later call keeps the first.
+    /// Name the requests this server's sign-in tickets expect. Named once; a later call keeps
+    /// the first.
     #[cfg(feature = "web")]
-    pub(crate) fn set_code_requests(&self, codes: Arc<dyn CodeRequests>) {
+    pub(crate) fn set_tab_requests(&self, codes: Arc<dyn TabRequests>) {
         let _ = self.codes.set(codes);
     }
 
@@ -364,9 +360,9 @@ impl CertificationProtocol {
 
     /// Add `cert`, a certificate the person's root signed here, to the person's
     /// record, so their devices list it and the workspaces here admit it. Idempotent.
-    pub(crate) fn keep_issued_device(&self, cert: &DeviceCert, label: &str) {
+    pub(crate) async fn keep_issued_device(&self, cert: &DeviceCert, label: &str) {
         if let Some(records) = self.records.get() {
-            records.keep_issued_device(cert, label);
+            records.keep_issued_device(cert, label).await;
         }
     }
 
@@ -812,17 +808,15 @@ impl CertificationProtocol {
         let now = unix_now_ns();
         // A member of a workspace this host serves queues their own devices
         // beside the host's own, answered by their root rather than the
-        // owner's. A person's tab shows its agent a setting-up code before
-        // the Lounge has let it into a workspace here, so a computer that
-        // resolves that code is queued the same way: once its request
-        // arrives, the tab is the one that answers it.
-        // A request a sign-in code's claim expects is queued the same way,
-        // for the device that claimed it to certify.
+        // owner's. A tab signing in with a ticket pairs with the invite its
+        // ticket named before a workspace here lets its person in: the device
+        // that approved it is the one that answers, so its request is queued
+        // the same way.
         let member = self.admits(request.user_public_key).await
-            || self.codes.get().is_some_and(|codes| {
-                request.invite != [0; 16]
-                    && (codes.sets_up(&request, now) || codes.expects(&request, now))
-            });
+            || self
+                .codes
+                .get()
+                .is_some_and(|codes| request.invite != [0; 16] && codes.expects(&request, now));
         let queued = self.enqueue_member(request, now, member);
         let (digest, pairing_code, answer) = match queued {
             Ok(queued) => queued,

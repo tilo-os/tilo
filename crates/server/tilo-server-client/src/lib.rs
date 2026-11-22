@@ -59,7 +59,6 @@ pub mod link;
 #[cfg(feature = "dial")]
 pub mod login;
 /// A server's login codes and the person's stand-in approver, for the tab and the computer alike.
-pub mod login_code;
 pub mod pairing;
 #[cfg(feature = "dial")]
 pub mod questions;

@@ -52,7 +52,6 @@ pub mod host_voice;
 pub mod hosted;
 pub mod invocation;
 pub mod live;
-pub mod login_code;
 pub mod mesh;
 pub mod metrics;
 pub mod operator;

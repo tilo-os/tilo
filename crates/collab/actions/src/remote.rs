@@ -1165,6 +1165,15 @@ pub trait ActionProvider {
         caller.retire_execution();
     }
 
+    /// Whether this provider answers the actions published under `provider`, the name a request
+    /// targets. A device's dispatcher answers its workspace's own, and a provider a device's
+    /// action service serves beside it (`ActionService::add_provider`) answers the one it names,
+    /// so one request reaches the provider it was meant for.
+    fn serves(&self, provider: &str) -> bool {
+        let _ = provider;
+        false
+    }
+
     /// One page of what `caller` is offered. An action the caller may not
     /// invoke is absent, not flagged.
     fn query(

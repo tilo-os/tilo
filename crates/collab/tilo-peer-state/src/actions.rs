@@ -251,6 +251,9 @@ struct Inner {
     workspaces: Option<Arc<dyn Workspaces>>,
     /// The one place a request is handed to, wherever it came from.
     dispatcher: Arc<dyn ActionProvider + Send + Sync>,
+    /// Providers this device answers beside its dispatcher, each the actions of the provider it
+    /// names ([`ActionService::add_provider`]).
+    providers: Mutex<Vec<Arc<dyn ActionProvider + Send + Sync>>>,
     /// The scope a device with no certificate yet may call, and what answers it there
     /// ([`ActionService::admit_uncertified`]).
     uncertified: Mutex<Option<(String, Arc<dyn ActionProvider + Send + Sync>)>>,
@@ -303,6 +306,7 @@ impl ActionService {
             replicas: Mutex::default(),
             workspaces: None,
             dispatcher,
+            providers: Mutex::default(),
             uncertified: Mutex::default(),
             replay: Mutex::default(),
             bounds,
@@ -329,6 +333,7 @@ impl ActionService {
             replicas: Mutex::default(),
             workspaces: Some(workspaces),
             dispatcher,
+            providers: Mutex::default(),
             uncertified: Mutex::default(),
             replay: Mutex::default(),
             bounds: Bounds::default(),
@@ -400,6 +405,47 @@ impl ActionService {
         provider: Arc<dyn ActionProvider + Send + Sync>,
     ) {
         *self.0.uncertified.lock_recover() = Some((scope.into(), provider));
+    }
+
+    /// Answer the actions published under the provider `provider` names
+    /// ([`ActionProvider::serves`]) through it, beside what this device's dispatcher answers: a
+    /// host holding a ticket for a page serves `tilo.device`'s actions on the device action
+    /// service a certified device reaches, where its workspaces' provider answers its own.
+    pub fn add_provider(&self, provider: Arc<dyn ActionProvider + Send + Sync>) {
+        self.0.providers.lock_recover().push(provider);
+    }
+
+    /// What answers the actions published under `provider`: the dispatcher where it serves
+    /// them, else the first provider this device serves beside it that does.
+    fn provider_for(&self, provider: &str) -> Arc<dyn ActionProvider + Send + Sync> {
+        if self.0.dispatcher.serves(provider) {
+            return Arc::clone(&self.0.dispatcher);
+        }
+        self.0
+            .providers
+            .lock_recover()
+            .iter()
+            .find(|served| served.serves(provider))
+            .map_or_else(|| Arc::clone(&self.0.dispatcher), Arc::clone)
+    }
+
+    /// What owns invocation `id` for `caller`: the dispatcher where it keeps the invocation,
+    /// else the first provider beside it that does. A provider that observes an invocation is the
+    /// one that ran it, so what follows or cancels it is asked there.
+    fn owner(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Arc<dyn ActionProvider + Send + Sync> {
+        if self.0.dispatcher.observe(caller, id).is_some() {
+            return Arc::clone(&self.0.dispatcher);
+        }
+        self.0
+            .providers
+            .lock_recover()
+            .iter()
+            .find(|served| served.observe(caller, id).is_some())
+            .map_or_else(|| Arc::clone(&self.0.dispatcher), Arc::clone)
     }
 
     /// Read one workspace's state, from wherever this device holds it: a
@@ -663,8 +709,9 @@ impl ActionService {
                 })
             }
             RemoteActionMessage::Invoke(invoke) => {
+                let provider = self.provider_for(&invoke.target.provider);
                 let status = match self.spend(caller) {
-                    Ok(()) => await_answer(dispatcher.invoke(caller, invoke.clone()))
+                    Ok(()) => await_answer(provider.invoke(caller, invoke.clone()))
                         .await
                         .map_or_else(
                             |error| ReceiptStatus::Rejected { error },
@@ -684,7 +731,13 @@ impl ActionService {
                 seen,
             } => {
                 let state = self
-                    .observe(dispatcher, caller, invocation, *wait_ms, *seen)
+                    .observe(
+                        &self.owner(caller, invocation),
+                        caller,
+                        invocation,
+                        *wait_ms,
+                        *seen,
+                    )
                     .await;
                 Some(RemoteActionMessage::Update {
                     invocation: *invocation,
@@ -693,7 +746,8 @@ impl ActionService {
                 })
             }
             RemoteActionMessage::Cancel { invocation } => {
-                let result = await_answer(dispatcher.cancel(caller, invocation)).await;
+                let result =
+                    await_answer(self.owner(caller, invocation).cancel(caller, invocation)).await;
                 Some(RemoteActionMessage::CancelResponse {
                     invocation: *invocation,
                     result,
@@ -1481,5 +1535,115 @@ mod refusal_tests {
                 reason: "your access to this workspace could not be read".into(),
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod provider_routing_tests {
+    use super::*;
+    use tilo_actions::remote::{
+        ActionCallError, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState,
+        InvokeRequest, Pending, TestProvider,
+    };
+
+    /// A provider that says which provider's actions it answers, so one device answers two.
+    struct Serving {
+        name: &'static str,
+        inner: TestProvider,
+    }
+
+    impl ActionProvider for Serving {
+        fn serves(&self, provider: &str) -> bool {
+            provider == self.name
+        }
+
+        fn query(
+            &self,
+            caller: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            self.inner.query(caller, query)
+        }
+
+        fn invoke(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            self.inner.invoke(caller, request)
+        }
+
+        fn observe(
+            &self,
+            caller: &Caller,
+            id: &tilo_actions::InvocationId,
+        ) -> Option<InvocationState> {
+            self.inner.observe(caller, id)
+        }
+
+        fn cancel(
+            &self,
+            caller: &Caller,
+            id: &tilo_actions::InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            self.inner.cancel(caller, id)
+        }
+    }
+
+    fn invoked(provider: &Arc<dyn ActionProvider + Send + Sync>, name: &str) {
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: name.to_owned(),
+                address: tilo_actions::ActionAddress::new("resource", "action"),
+            },
+            argument: tilo_actions::remote::InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let caller = Caller::authenticated([2; 32], [3; 32]);
+        let _ = provider
+            .invoke(&caller, request)
+            .wait_timeout(std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn a_request_reaches_the_provider_it_names_beside_the_dispatchers_own() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let own = Arc::new(Serving {
+            name: "own",
+            inner: TestProvider::new(),
+        });
+        let extra = Arc::new(Serving {
+            name: "extra",
+            inner: TestProvider::new(),
+        });
+        let service = ActionService::new(key, own.clone());
+        service.add_provider(extra.clone());
+        assert!(extra.serves("extra"), "the extra answers extra");
+        assert!(!own.serves("extra"), "the dispatcher answers not extra");
+        let chosen = service.provider_for("extra");
+        assert!(chosen.serves("extra"), "the provider chosen answers extra");
+        assert!(
+            !chosen.serves("own"),
+            "the provider chosen is not the dispatcher"
+        );
+        invoked(&chosen, "extra");
+        assert_eq!(
+            extra.inner.asked().len(),
+            1,
+            "the provider the device serves beside its own is the one asked"
+        );
+        assert!(
+            own.inner.asked().is_empty(),
+            "the dispatcher is not asked for another provider's action"
+        );
+        invoked(&service.provider_for("own"), "own");
+        assert_eq!(own.inner.asked().len(), 1, "the dispatcher answers its own");
     }
 }

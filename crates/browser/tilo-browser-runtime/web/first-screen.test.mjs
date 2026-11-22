@@ -351,7 +351,7 @@ test('a server that refuses the code says the code could not be made, never that
   // What a page that came by its server's second name got from it: the workspace is there, the code is refused.
   const {screen, last} = fixture({site: 'https://tilo.wifi.example:24520'});
   const refusal = Object.assign(new Error('the code route answered 400'),
-    {name: 'LoginCodeError', code: 'refused', status: 400, origin: 'https://tilo.wifi.example:24500'});
+    {name: 'TicketError', code: 'refused', status: 400, origin: 'https://tilo.wifi.example:24500'});
   screen.offerSetup(async () => { throw refusal; });
   await settle();
   await settle();
@@ -360,7 +360,7 @@ test('a server that refuses the code says the code could not be made, never that
   assert.equal(problem, `The code for your agent could not be made here: tilo.wifi.example:24520 refused it.${rest}`);
   // The site is named as its address bar names it, not by the address its codes come from, and never
   // by an address by number.
-  const numbered = Object.assign(new Error('the code route answered 400'), {name: 'LoginCodeError', code: 'refused', status: 400, origin: 'http://127.0.0.1:24500'});
+  const numbered = Object.assign(new Error('the code route answered 400'), {name: 'TicketError', code: 'refused', status: 400, origin: 'http://127.0.0.1:24500'});
   assert.equal(setupFailure(numbered, {site: 'http://tilo.localhost:24520'}),
     `The code for your agent could not be made here: tilo.localhost:24520 refused it.${rest}`);
   assert.equal(setupFailure(numbered, {site: 'http://127.0.0.1:24520'}), `The code for your agent could not be made here: this site refused it.${rest}`);

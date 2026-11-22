@@ -248,7 +248,7 @@ const copy = async (tab, id) => {
   // change the page tells anyone about, so this is the one wait here that
   // reads on a clock, and it holds a step.
   const read = `navigator.clipboard.readText().then(text =>
-    text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
+    text.match(/(?:tilo|sh -s) (?:login|device add) /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
   for (const deadline = Date.now() + stepLimit(1); Date.now() < deadline;) {
     const text = await tab.evaluate(read).catch(() => '');
     if (text) return text;

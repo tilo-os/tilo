@@ -333,8 +333,8 @@ There are seven ways to add a device:
 3. The `tilo-enroll` and `tilo-approve` binaries in `tilo-server` (1,741).
 4. `tilo login` with a ticket, the certify action on the device that issued
    it (`tilo_device_identity::login`, `tilo_peer_state::new_device`, `tilo-cli`
-   `login.rs` and `device.rs`), and the browser page's login codes
-   (`tilo-server` `web/login_codes.rs` and `web/sign_in.rs` 1,500).
+   `login.rs` and `device.rs`), and the tickets a page's host serves it
+   (`tilo-server` `web/tickets.rs`).
 5. The browser's `web/pairing.mjs` (348).
 6. The boot-key enrolment in `tilo-auth` `sibling/enrol.rs` (1,121).
 7. `tilo-device-admin` `device.unlock.enrol` (2,211).

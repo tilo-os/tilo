@@ -26,11 +26,11 @@ import {loadRuntime} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation, profileDevice, withDeviceKey} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceKey} from './device-key.mjs';
-import {createIdentityActions, setupOrigin} from './identity-actions.mjs';
+import {setupOrigin} from './identity-actions.mjs';
 import {showRecoveryWords} from './recovery-words.mjs';
 import {firstScreen, openSignIn, setupDone} from './first-screen.mjs';
 import {fetchPersonProfile} from './profile-photos.mjs';
-import {askOwnPairing, deviceLabel, ofThisSite, ownPairing, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret} from './pairing.mjs';
+import {askOwnPairing, deviceLabel, ofThisSite, ownPairing, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose} from './pairing.mjs';
 import {browserIdentity, browserPerson, currentIdentity, keepRecoveryWordsShown, keptIdentity, recoveryWords, recoveryWordsShown} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
 import {domFailureView, failureCause, failureDetails, failureScreen, namedOrigin, unanswered} from './failure-screen.mjs';
@@ -533,7 +533,7 @@ export async function startEntryPage({mode}) {
     const identity = currentIdentity();
     const origin = setupOrigin({peer, home: page.entry?.home});
     const listed = peer ? workspaceAt(listedWorkspaces({home: page.entry?.home}), peer.origin) : null;
-    if (identity && peer?.workspace && origin && runtime?.createLoginCode && peer.userPublicKey === identity.userPublicKey) {
+    if (identity && peer?.workspace && origin && peer.userPublicKey === identity.userPublicKey) {
       offerFirstScreenCodes({origin, identity, runtime, link: grammar(runtime, page.entry), home: homeAdmissionWorkspace(page.entry),
         pair: pairSignIn(listed)});
     } else {
@@ -1087,7 +1087,6 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
   // no longer watched for an agent either: this person approves no device
   // at a host that turned them away, and asking would only be refused.
   firstScreen?.close();
-  for (const watcher of agentWatchers) watcher.stopWatchingAgents();
   document.documentElement.removeAttribute('data-first-screen');
   const form = document.getElementById('arrival-invite');
   const toggle = document.getElementById('arrival-invite-toggle');
@@ -1216,15 +1215,15 @@ export function offerSignIn({workspace, messages, runtime, link, home = null, pa
   // the wait list.
   const origin = workspace?.host?.origin;
   const target = entryWorkspace(workspace);
-  const signInWithAgent = origin && target && runtime?.createLoginCode && link && pair;
+  const signInWithAgent = origin && target && link && pair;
   agent.hidden = !signInWithAgent;
   row.hidden = !signInWithAgent;
   if (!signInWithAgent) return;
-  const codes = loginCodes(runtime, new URL(origin).origin);
+  const tickets = ticketCodes({origin: new URL(origin).origin});
   const signIn = claimed => signInAs(claimed, {origin, home, stay}, link, pair);
   agent.addEventListener('click', () => {
     const screen = openSignIn(document, {onBack: () => agent.focus()});
-    screen?.offerAgentSignIn(async () => ({...await codes.create(null), signIn}));
+    screen?.offerAgentSignIn(async () => ({...await tickets.createSignIn(), signIn}));
   });
 }
 
@@ -1303,7 +1302,7 @@ function askOwnWorkspace(peer) {
   return ownWorkspaceAsked;
 }
 
-/** Whether the first screen has its login codes offered. */
+/** Whether the first screen has its tickets offered. */
 let firstScreenCodesOffered = false;
 /** The workspace an agent is set up in when the host keeps none of the
  * person's own: the one this page is in. */
@@ -1311,102 +1310,63 @@ let setUpIn = null;
 /** Resolves to the page's peer once it is in its workspace. */
 let letIn;
 const pageLetIn = new Promise(resolve => { letIn = resolve; });
-/** The identity actions watching for agents set up from this tab's codes:
- * told to stop once the host turns the page away, where this
- * person approves nothing. */
-const agentWatchers = new Set();
 /** How long signing in with an agent waits for this tab to be in its workspace. */
 const LET_IN_MS = 30_000;
 
 /**
- * The codes a person's agent sets Tilo up with, for this tab's root on
- * `origin`: `make()` hands back a code the agent runs `tilo login` with and
- * the setup keeps (`resume(saved)` follows it again after a reload), and
- * `codes` are the host's login codes themselves. Its `ours(saved)` says
- * whether a kept code is this person's, on this host.
+ * The tickets a person's agent sets Tilo up with, for this tab's root on `origin`: `make()` hands
+ * back the ticket the agent runs `tilo login` with, and the setup keeps it (`resume(saved)`
+ * follows it again after a reload). Its `ours(saved)` says whether a kept ticket is this person's,
+ * on this host.
  *
- * The code names a pairing link to this tab, into `workspace` when one is
- * named (the one in front, where the person connects an agent from their
- * card and sees it working), else into the person's own
- * workspace on that host, as the host answers it once this tab is let in
- * (`askOwnWorkspace`): made then on a first visit, under an id the host
- * chooses, so the link names a workspace the host knows. The tab approves the
- * agent's device through the host's published address.
+ * Setting up is a ticket this tab's host serves for the person's own workspace on that host,
+ * which the person's agent's computer logs in with: the tab approves that computer with its root.
+ * The ticket names the workspace when one is named (the one in front, where the person connects
+ * an agent from their card and sees it working), else the person's own workspace on that host, as
+ * the host answers it once this tab is let in (`askOwnWorkspace`): made then on a first visit,
+ * under an id the host chooses, so the ticket names a workspace the host knows.
  */
 function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
   const host = new URL(origin).origin;
-  const codes = loginCodes(runtime, host);
   const tickets = ticketCodes({origin: host, identity});
-  let actions = null;
-  const agentActions = async () => {
-    if (actions) return actions;
-    const links = await link;
-    actions = createIdentityActions({identity, pairing: pairingAt({origin: host, identity, runtime, link: links})});
-    agentWatchers.add(actions);
-    return actions;
-  };
-  // A code followed: the first screen follows one as soon as it shows it, so
-  // the tab watches for the agent's device from the moment the prompt is on
-  // the screen, not only once someone copied it.
-  const watched = (made, agents) => ({...made, follow: () => { agents.watchAgents(); return made.follow(); }});
-  // What the setup keeps of a code names whose it is: a code kept for
-  // another person or host is not this tab's to follow.
+  // What the setup keeps of a ticket names whose it is: a ticket kept for another person or host
+  // is not this tab's to follow.
   const ours = saved => saved?.person === identity.userPublicKey && saved?.host === host;
   const make = () => makeCode().catch(error => { throw hostNamed(error, host); });
-  // Setting up is a ticket this tab's host serves for the person's own
-  // workspace, which the person's agent's computer logs in with: the tab
-  // approves that computer with its root.
   const makeCode = async () => {
     const own = workspace ? {id: workspace, name: null} : await setupOwnWorkspace();
-    const made = await tickets.create(own.id, own.name);
+    const made = await tickets.create({workspace: own.id, name: own.name});
     return {...made, saved: {...made.saved, person: identity.userPublicKey, host}};
   };
-  const resume = saved => {
-    if (!ours(saved)) return null;
-    // A ticket kept from before a reload names the same workspace the computer
-    // enters: followed again here, and approved here.
-    if (saved.id) return tickets.resume(saved);
-    // A sign-in code kept from before a reload: the link in it names an invite
-    // this tab made then, and the agent's device answering it is approved here.
-    const made = codes.resume(saved);
-    if (!saved.invite) return made;
-    const adopted = agentActions().then(async agents => {
-      await agents.connectAgent({adopt: {id: saved.invite, expiresAt: saved.inviteExpiresAt}, watch: false});
-      return agents;
-    });
-    adopted.catch(error => console.warn('first screen: approving your agent', error));
-    return {...made, follow: async () => watched(made, await adopted).follow()};
-  };
-  return {codes, tickets, ours, make, resume};
+  const resume = saved => (ours(saved) ? tickets.resume(saved) : null);
+  return {tickets, ours, make, resume};
 }
 
 /**
- * The first screen's login codes, from the host at `origin` (for an agent
- * to set Tilo up through this tab's root, or to sign this tab in as a person
- * who has been here), offered once: the tab needs only its person
- * (`identity`) and that host for them, not a session in any workspace.
- * The code itself is [`agentSetupCodes`]'s. `pair` makes this tab a device of
- * a person through that host (the one whose device claimed the code), and
- * `home` is the host's shared home workspace, which a sign-in does not open.
- * The setup code names the person's own workspace, which the host makes when
- * it is asked for it, so it is made only once the person asks to set up
+ * The first screen's tickets, from the host at `origin` (for an agent to set Tilo up through this
+ * tab's root, or to sign this tab in as a person who has been here), offered once: the tab needs
+ * only its person (`identity`) and that host for them, not a session in any workspace. The ticket
+ * itself is [`agentSetupCodes`]'s. `pair` makes this tab a device of a person through that host
+ * (the one whose device approved the ticket), and `home` is the host's shared home workspace,
+ * which a sign-in does not open. The setup ticket names the person's own workspace, which the
+ * host makes when it is asked for it, so it is made only once the person asks to set up
  * (`ahead: false`).
  */
 function offerFirstScreenCodes({origin, identity, runtime, link, home = null, pair = null}) {
-  if (firstScreenCodesOffered || !firstScreen || !origin || !runtime?.createLoginCode) return;
+  if (firstScreenCodesOffered || !firstScreen || !origin || !runtime) return;
   firstScreenCodesOffered = true;
   const host = new URL(origin).origin;
   const setup = agentSetupCodes({origin: host, identity, runtime, link});
   firstScreen.offerSetup(setup.make, setup.resume, {ahead: false});
-  // Signing this tab in is this tab's own: it pairs here, as the person's
-  // new device, so the device that claimed its code certifies it at once.
+  // Signing this tab in is the person's computer's to approve, and this tab's to pair once it
+  // learns whom: the ticket names no workspace, so the host makes none for it.
   if (!pair) return;
-  const {codes, ours} = setup;
+  const {tickets, ours} = setup;
   const signIn = claimed => signInAs(claimed, {origin: host, home}, link, pair);
   firstScreen.offerAgentSignIn(async () => {
-    const made = await codes.create(null);
-    return {...made, saved: {...made.saved, person: identity.userPublicKey, host: new URL(origin).origin}, signIn};
-  }, saved => (ours(saved) ? {...codes.resume(saved), signIn} : null));
+    const made = await tickets.createSignIn();
+    return {...made, saved: {...made.saved, person: identity.userPublicKey, host}, signIn};
+  }, saved => (ours(saved) ? {...tickets.resume(saved), signIn} : null));
 }
 
 /**
@@ -1507,14 +1467,6 @@ async function ensureOwnWorkspace(peer, store = globalThis.localStorage) {
   return {id: own.workspace, name, origin};
 }
 
-/**
- * The login codes of the host at `origin`, through the one client of them
- * (`createLoginCode`, `followLoginCode` in wasm): `create(link)` makes one
- * naming this tab's pairing link, or nothing to be signed in by a device of
- * the person, resolving to `{code, expiresAt, follow()}`; `follow()` says
- * where it is (the host's `Polled`). A refusal is a `LoginCodeError` whose
- * `code` says its kind (`not-a-device`, `unknown`, `unreachable`, …).
- */
 /** The routes a page reaches its host's tickets at, below the host's API prefix. */
 const TICKET_MINT = '/peer/v1/ticket';
 const TICKET_ASKED = '/peer/v1/ticket/asked';
@@ -1523,14 +1475,17 @@ const TICKET_ANSWER = '/peer/v1/ticket/answer';
 const TICKET_LIFE_MS = 10 * 60_000;
 
 /**
- * The tickets this tab's host serves it for its agent's computer: `create(workspace, name)`
- * asks for one and answers it the way `loginCodes` answers a code (`{code, expiresAt, follow(),
- * saved}`), and `resume(saved)` follows one kept before a reload again. A ticket is the longer
- * text the prompt carries; the [id] under it is what this page asks the host by.
+ * The tickets this tab's host serves it for its agent: `create({workspace, name})` asks for one
+ * the agent's computer logs in with, `createSignIn()` one that signs this tab in as the person
+ * whose computer approves it. Each answers the way the first screen follows a code
+ * (`{code, expiresAt, follow(), saved}`), and `resume(saved)` follows one kept before a reload
+ * again. A ticket is the longer text the prompt carries; the [id] under it is what this page asks
+ * the host by.
  *
- * The host serves the ticket on its iroh endpoint; the tab approves the computer that shows up
- * with it by signing, with the root it holds, the certificate the host built and the question
- * with its own device key (`peer.approveAsked`).
+ * The host serves a setup's ticket on its iroh endpoint, and the tab approves the computer that
+ * shows up with it by signing, with the root it holds, the certificate the host built and the
+ * question with its own device key (`peer.approveAsked`). A sign-in's ticket is the person's
+ * computer's to approve; the tab learns whom to pair with from the ticket's answer (`claimed`).
  */
 function ticketCodes({origin, identity}) {
   const post = httpsPost(origin);
@@ -1540,69 +1495,66 @@ function ticketCodes({origin, identity}) {
     if (reply.status >= 400) {
       let said = null;
       try { said = JSON.parse(text)?.error ?? null; } catch { /* not JSON */ }
-      throw hostNamed(Object.assign(new Error(said ?? 'the host refused this ticket'), {status: reply.status}), origin);
+      throw hostNamed(Object.assign(new Error(said ?? 'the host refused this ticket'),
+        {name: 'TicketError', code: 'refused', status: reply.status}), origin);
     }
     return text ? JSON.parse(text) : null;
   };
+  const kept = (ticket, id, direction) => ({code: ticket, expiresAt: Date.now() + TICKET_LIFE_MS, follow: id, id, direction});
+  const answerer = saved => {
+    let answering = false;
+    return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
+      follow: async () => {
+        const status = await call(TICKET_ASKED, {id: saved.follow}) ?? {};
+        const agent = status.agent ?? null;
+        const claimed = status.claimed ?? null;
+        if (saved.direction === 'sign-in') {
+          // The person's computer approved this tab: the screen hands whom to pair with, and the
+          // tab is signed in once its own request is answered.
+          if (status.certified) return {resolved: true, expired: false, steps: ['approved'], agent, claimed};
+          if (status.declined) {
+            return {resolved: true, expired: false, steps: ['failed'], agent, detail: status.declined, claimed};
+          }
+          return {resolved: Boolean(claimed), expired: Date.now() > saved.expiresAt, steps: [], agent, claimed};
+        }
+        if (status.declined) {
+          return {resolved: true, expired: false, steps: ['failed'], agent, detail: status.declined};
+        }
+        if (status.asked && !answering) {
+          answering = true;
+          try {
+            const peer = await setupPeer();
+            const person = currentIdentity();
+            if (!peer?.approveAsked || !person) throw new Error('this tab cannot approve your agent');
+            const approved = JSON.parse(await peer.approveAsked(person, JSON.stringify(status.asked)));
+            await call(TICKET_ANSWER, {id: saved.follow, approved});
+          } catch (error) {
+            console.warn('first screen: approving your agent', error);
+            await call(TICKET_ANSWER, {id: saved.follow, declined: String(error?.message ?? error)})
+              .catch(() => {});
+          } finally {
+            answering = false;
+          }
+        }
+        // The steps are the ones the computer reported: it logged in, added Tilo's tools, and
+        // entered. Approval is not a step the screen claims on its own.
+        const steps = status.steps ?? [];
+        return {resolved: steps.length > 0 || Boolean(status.asked), expired: Date.now() > saved.expiresAt,
+          steps, agent, detail: status.detail ?? status.declined ?? null};
+      }};
+  };
   return {
     async create(workspace, name) {
-      const made = await call(TICKET_MINT, {user: hex(identity.userPublicKey), workspace, name: name ?? null,
+      const minted = await call(TICKET_MINT, {user: identity.userPublicKey, workspace, name: name ?? null,
         site: globalThis.location?.origin ?? null});
-      return this.resume({code: made.ticket, expiresAt: Date.now() + TICKET_LIFE_MS, follow: made.id, id: made.id});
+      return answerer(kept(minted.ticket, minted.id, 'login'));
+    },
+    async createSignIn() {
+      const minted = await call(TICKET_MINT, {direction: 'sign-in', site: globalThis.location?.origin ?? null});
+      return answerer(kept(minted.ticket, minted.id, 'sign-in'));
     },
     resume(saved) {
-      let answering = false;
-      return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
-        follow: async () => {
-          const status = await call(TICKET_ASKED, {id: saved.follow}) ?? {};
-          const agent = status.agent ?? null;
-          if (status.certified) return {resolved: true, expired: false, steps: ['logged-in', 'entered'], agent};
-          if (status.declined) {
-            return {resolved: true, expired: false, steps: ['failed'], agent, detail: status.declined};
-          }
-          if (status.asked && !answering) {
-            answering = true;
-            try {
-              const peer = await setupPeer();
-              const person = currentIdentity();
-              if (!peer?.approveAsked || !person) throw new Error('this tab cannot approve your agent');
-              const approved = JSON.parse(await peer.approveAsked(person, JSON.stringify(status.asked)));
-              await call(TICKET_ANSWER, {id: saved.follow, approved});
-            } catch (error) {
-              console.warn('first screen: approving your agent', error);
-              await call(TICKET_ANSWER, {id: saved.follow, declined: String(error?.message ?? error)})
-                .catch(() => {});
-            } finally {
-              answering = false;
-            }
-          }
-          return {resolved: Boolean(status.asked), expired: Date.now() > saved.expiresAt,
-            steps: status.asked ? ['resolved'] : [], agent};
-        }};
-    },
-  };
-}
-
-function loginCodes(runtime, origin) {
-  const post = httpsPost(origin);
-  const named = error => { throw hostNamed(error, origin); };
-  return {
-    async create(link = null) {
-      const made = JSON.parse(await runtime.createLoginCode(post, link).catch(named));
-      return this.resume({code: made.code, expiresAt: made.expires_at_ms, follow: made.follow, link});
-    },
-    /** A code made before, from what was kept of it (`{code, expiresAt,
-     * follow, link}`, `follow` the secret only this browser holds, and
-     * whatever else the page kept with it), followed again: kept again
-     * whole. The host only offered the code: each follow carries the offer
-     * back, and the first one has the host keep it. The page follows a code
-     * as soon as the first screen shows it, since a person may copy the
-     * prompt by hand or type the code rather than use its button; a code the
-     * page never shows is never followed, and leaves nothing on the host. */
-    resume(saved) {
-      const offer = JSON.stringify({code: saved.code, expires_at_ms: saved.expiresAt, link: saved.link ?? null});
-      return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
-        follow: async () => JSON.parse(await runtime.followLoginCode(post, saved.follow, offer).catch(named))};
+      return answerer(saved);
     },
   };
 }
@@ -1618,28 +1570,3 @@ function hostNamed(error, origin) {
   return error;
 }
 
-/**
- * Pairing an agent's device of `identity` through the host at `origin`,
- * reached by the address it publishes (`hostInfo`) rather than a session in
- * any workspace: what the first screen needs before the page is let in.
- * `link(invite, workspace)` opens `workspace` there as that new device.
- */
-function pairingAt({origin, identity, runtime, link}) {
-  if (!runtime?.PairingHost || !link) return null;
-  let host = null;
-  const asked = async () => siteServer(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin)));
-  const at = () => (host ??= asked().then(info => {
-    const {address} = info;
-    if (!address) throw new Error('this host takes no device connections');
-    return new runtime.PairingHost(JSON.stringify(address));
-  }).catch(error => { host = null; throw error; }));
-  return {
-    link: (invite, workspace) => {
-      const url = link.format({mode: 'desktop', target: {scope: {kind: 'workspace', host: origin, workspace}}});
-      return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(identity.userPublicKey, invite)}`;
-    },
-    pending: async () => JSON.parse(await (await at()).pending(identity)),
-    answer: async (digest, approved) => (await at()).answer(identity, digest, approved),
-    close: () => { const done = host; host = null; return done?.then(pairing => pairing.close(), () => {}); },
-  };
-}

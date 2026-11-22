@@ -15,6 +15,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_api::daemon::DaemonPlace;
+use tilo_device_identity::login::Ticket;
 use tilo_server_session::workspaces::{PersonalDevice, WorkspaceLabels};
 use tilo_session_client::device::Device as Entered;
 use tilo_user_identity::{DeviceCert, RevocationReason};
@@ -86,13 +87,21 @@ fn person_here() -> Result<(SigningKey, Device, crate::identity::Person)> {
 ///
 /// # Errors
 /// This computer cannot add devices, or no computer came before the ticket ran out.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one command: the ticket a browser showed, or printing one and waiting for it"
+)]
 pub fn add(
+    ticket: Option<&str>,
     json: bool,
     adding: Adding,
     no_wait: bool,
     plan: Option<&str>,
     server: bool,
 ) -> Result<ExitCode> {
+    if let Some(ticket) = ticket {
+        return sign_in(ticket, json);
+    }
     login::trust_test_certificates()?;
     crate::identity::convert_earlier()?;
     let login_place = login::Place::here(crate::identity::paths())?;
@@ -197,6 +206,132 @@ pub fn add(
         );
     } else {
         println!("Added {} ({}).", cert.device_label, short(&cert));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `tilo device add <ticket>`: the browser that showed the ticket is signed in as the person
+/// this computer is a device of, once the person approves it here.
+///
+/// # Errors
+/// The text is no sign-in ticket, this computer is not logged in, the browser is not waiting, or
+/// the host refused the approval.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one command: the browser's request, the root's signature, and what the person reads"
+)]
+fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
+    use tilo_device_identity::login::{APPROVE, Direction, PENDING};
+
+    login::trust_test_certificates()?;
+    crate::identity::convert_earlier()?;
+    let parsed = Ticket::parse(ticket).map_err(|_| {
+        anyhow!(
+            "{} is not a Tilo ticket; a browser's sign-in prompt copies one that starts with \
+             tilo1.",
+            ticket.trim().chars().take(24).collect::<String>()
+        )
+    })?;
+    if parsed.direction == Direction::Login {
+        bail!(
+            "That ticket logs a computer in: run `tilo login {}` on the computer it was made \
+             for.",
+            ticket.trim()
+        );
+    }
+    let person = crate::identity::held()?;
+    let login_place = login::Place::here(crate::identity::paths())?;
+    let (key, here) = login::load(&login_place)?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    let place = DaemonPlace::of(login_place.dir(), &key.verifying_key().to_bytes())
+        .map_err(anyhow::Error::msg)?;
+    login::ensure_daemon(&place)?;
+    let runtime = login::runtime()?;
+    let text = parsed.encode();
+    let (device, label, capability) = runtime.block_on(async {
+        let client = Client::open(Reach {
+            api: None,
+            key_file: None,
+            json: false,
+        })?;
+        let workspace = here.workspace.clone();
+        let answer = client
+            .act(
+                &workspace,
+                "devices",
+                PENDING,
+                &json!({"ticket": text}),
+                "Sign a browser in",
+            )
+            .await?;
+        let result = answer.get("result").cloned().unwrap_or(Value::Null);
+        let device = result
+            .get("device")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("this computer's daemon answered no browser"))?
+            .to_owned();
+        let label = result
+            .get("label")
+            .and_then(Value::as_str)
+            .unwrap_or("a browser")
+            .to_owned();
+        let capability = result
+            .get("capability")
+            .and_then(Value::as_str)
+            .unwrap_or("a browser of yours")
+            .to_owned();
+        Ok::<(String, String, String), anyhow::Error>((device, label, capability))
+    })?;
+    if !json {
+        println!("This browser asks to be one of your devices: \"{label}\" ({capability}).");
+    }
+    let tab = tilo_device_identity::login::Tab {
+        device_public_key: device.clone(),
+        label: label.clone(),
+    };
+    // The person's root signs the tab's certificate, as it signs one for any device of theirs.
+    // A computer without the root hands the signing to one that holds it: the tab's request is
+    // already queued for the person's approving devices.
+    let cert = match &person {
+        Some(person) => {
+            let mut cert = tab
+                .certificate(person.public_key(), tilo_clock::unix_now_ns())
+                .map_err(|error| anyhow!("the browser's certificate: {error}"))?;
+            tilo_user_identity::sign_device_cert(&mut cert, &person.root)
+                .map_err(|error| anyhow!("signing the browser's certificate: {error}"))?;
+            Some(cert)
+        }
+        None => None,
+    };
+    let answer = runtime.block_on(async {
+        let client = Client::open(Reach {
+            api: None,
+            key_file: None,
+            json: false,
+        })?;
+        let argument = match &cert {
+            Some(cert) => json!({"ticket": text, "cert": cert, "label": here.cert.device_label}),
+            None => json!({"ticket": text, "label": here.cert.device_label}),
+        };
+        client
+            .act(
+                &here.workspace,
+                "devices",
+                APPROVE,
+                &argument,
+                "Approve a browser's sign-in",
+            )
+            .await
+    })?;
+    if json {
+        println!("{}", json!({"label": label, "device": device}));
+    } else if cert.is_some() {
+        println!("Signed the browser in as one of your devices.");
+    } else {
+        let _ = answer;
+        println!(
+            "This computer does not hold your identity, so it handed the signing on: approve \
+             \"{label}\" on the device that does, in your Tilo, and the browser is signed in."
+        );
     }
     Ok(ExitCode::SUCCESS)
 }

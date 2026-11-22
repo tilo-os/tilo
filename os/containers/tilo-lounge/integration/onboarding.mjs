@@ -384,7 +384,7 @@ const tilo = async (env, args) => new Promise(resolve => {
  * later, so a prompt an earlier copy left there is not this one. */
 const copied = async (tab, before) => {
   const read = `navigator.clipboard.readText().then(text =>
-    text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
+    text.match(/(?:tilo|sh -s) (?:login|device add) /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
   // The clipboard is the browser's, not the page's: a write landing is no
   // change the page tells anyone about, so this is the one wait here that
   // reads on a clock, and it holds a few steps.

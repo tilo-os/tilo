@@ -496,6 +496,9 @@ enum DeviceCmd {
                       logs in with it reaches this one directly, and this one certifies it as your device."
     )]
     Add {
+        /// The ticket a browser's sign-in prompt carried: sign that browser in as you, instead
+        /// of printing a ticket for a computer.
+        ticket: Option<String>,
         /// What the new computer is: an ordinary member device, or one that administers your
         /// other devices.
         #[arg(long, value_enum, default_value_t = device::Adding::Member)]
@@ -1550,12 +1553,20 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
         }
         DeviceCmd::Health { gpu: _, json } => health::run_gpu(json),
         DeviceCmd::Add {
+            ticket,
             capability,
             json,
             no_wait,
             plan,
             server,
-        } => device::add(json, capability, no_wait, plan.as_deref(), server),
+        } => device::add(
+            ticket.as_deref(),
+            json,
+            capability,
+            no_wait,
+            plan.as_deref(),
+            server,
+        ),
         DeviceCmd::Ls { json } => device::list(json),
         DeviceCmd::Revoke {
             device: which,
