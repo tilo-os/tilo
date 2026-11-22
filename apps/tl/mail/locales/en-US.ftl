@@ -392,6 +392,7 @@ d-xxxfkczs = Send later
     .doc = Sends the message at a moment instead of now: it waits in the outbox until then, as the person's hold makes a message wait, and goes with no window open.
     .w-this-message-went-already = This message went already
     .w-it-goes-to-nobody-yet = It goes to nobody yet
+    .w-add-a-mail-account-in-settings = Add a mail account in Settings first
     .w-pick-a-moment-still-to-come = Pick a moment still to come
 
 d-xxxfkczs-at = At
@@ -431,6 +432,7 @@ d-qcfc2rhb = Send
     .doc = Sends the message from its account.
     .w-this-message-went-already = This message went already
     .w-it-goes-to-nobody-yet = It goes to nobody yet
+    .w-add-a-mail-account-in-settings = Add a mail account in Settings first
 
 d-twebu5cb = Undo send
     .doc = Takes back a message that was sent and has not gone yet: it never leaves, and the message is a draft again, as it was.
@@ -561,6 +563,8 @@ d-oqpazwvc = Editor
     .w-it-goes-in-a-moment = It goes in a moment.
     .w-undo-send = Undo send
     .w-from = From
+    .w-no-mail-account-to-send-from = No mail account to send from
+    .w-add-an-account-in-settings = Add an account in Settings
     .w-to = To
     .w-name-example-org = name@example.org
     .w-cc = Cc

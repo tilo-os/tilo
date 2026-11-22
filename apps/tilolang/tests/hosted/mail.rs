@@ -573,6 +573,18 @@ fn texts_in(node: &UiNode, out: &mut Vec<String>) {
     }
 }
 
+/// Every node under `node` whose `label` is `label`.
+fn labelled<'a>(node: &'a UiNode, label: &str) -> Vec<&'a UiNode> {
+    let mut found = Vec::new();
+    if matches!(node.props.get("label"), Some(RtValue::Text(text)) if text == label) {
+        found.push(node);
+    }
+    for child in &node.children {
+        found.extend(labelled(child, label));
+    }
+    found
+}
+
 /// The wall clock at `hour:minute:second` on `day` of 2026, in the zone this process reads as
 /// the person's.
 fn local(month: i8, day: i8, (hour, minute, second): (i8, i8, i8)) -> ui::time::SystemTime {
@@ -840,6 +852,14 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
     let reply = session.made("reply_to", notes, &json!({}));
     assert_eq!(session.text(&reply, "to"), "ada@analytical.example");
     assert_eq!(session.text(&reply, "subject"), "Re: Engine notes");
+    // It came to no account the workspace has, so the answer goes from the one it reads now.
+    assert_eq!(session.text(&reply, "from"), ME);
+    let reply = session.made("reply", thread, &json!({}));
+    assert_eq!(session.text(&reply, "from"), ME);
+    assert!(
+        session.view_of(&reply).iter().any(|text| text == ME),
+        "the composer says the address it goes from"
+    );
 }
 
 #[test]
@@ -1634,4 +1654,71 @@ fn a_reply_typed_in_the_conversation_goes_out_once_quoting_the_message_it_answer
         session.settle();
     }
     assert_eq!(servers.smtp.sent().len(), 1, "it goes once");
+}
+
+// USER REQUIREMENT: a reply the workspace has no account to send says so where it names the
+// sender, and offers the way to Settings' accounts, rather than a blank From and a Send that
+// does nothing.
+#[test]
+fn a_reply_with_no_account_to_send_it_says_so_and_does_not_send() {
+    let connector = MailConnector::new(Vec::new);
+    let mut session = connector.window();
+    session.settle();
+    let root = session.mail_root();
+    session.call(
+        "deliver_message",
+        &root,
+        &json!({
+            "from": "Grace Hopper <grace@navy.example>", "to": "Office <office@company.example>",
+            "subject": "Quarterly invoices", "body": "Please confirm the totals by Friday.",
+            "date": "2026-11-12T09:30:00Z", "folder": "inbox",
+            "message_id": "<invoices@navy.example>",
+        }),
+    );
+    let kept = session.refs(&root, "recovered_mail");
+    let [thread] = kept.as_slice() else {
+        panic!("one conversation: {kept:?}");
+    };
+    let draft = session.made("reply", thread, &json!({}));
+    assert_eq!(session.text(&draft, "subject"), "Re: Quarterly invoices");
+    assert_eq!(session.text(&draft, "to"), "grace@navy.example");
+    assert_eq!(session.text(&draft, "from"), "");
+
+    let shown = session.view_of(&draft);
+    for said in ["No mail account to send from", "Add an account in Settings"] {
+        assert!(
+            shown.iter().any(|text| text == said),
+            "{said:?} in {shown:?}"
+        );
+    }
+    // The window's own Send stands unavailable, saying why; the composer keeps none of its own.
+    let window = session
+        .instance_host()
+        .open_resource(&draft, None)
+        .expect("its window opens");
+    let sends = labelled(window.tree(), "Send");
+    let [send] = sends.as_slice() else {
+        panic!("one Send: {shown:?}");
+    };
+    assert_eq!(
+        send.props.get("disabled"),
+        Some(&RtValue::Int(1)),
+        "Send is unavailable: {:?}",
+        send.props
+    );
+    assert_eq!(
+        send.props.get("reason"),
+        Some(&RtValue::Text(
+            "Add a mail account in Settings first".to_owned()
+        )),
+        "Send says why: {:?}",
+        send.props
+    );
+    let refused = session
+        .try_call("send", &draft, &json!({}))
+        .expect_err("a draft with no account is not sent");
+    assert!(
+        refused.contains("Add a mail account in Settings first"),
+        "{refused}"
+    );
 }

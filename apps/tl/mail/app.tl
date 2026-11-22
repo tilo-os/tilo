@@ -189,6 +189,19 @@ fn signed(m: Mail, key: Text, body: Text) -> Text {
     if signature == "" { body } else { "{signature}{body}" }
 }
 
+/// The account an answer to mail that came to the account `key`, or mail passed on from it,
+/// goes from: that account while the workspace has it, and the workspace's first otherwise, as
+/// mail kept from an account that went is answered from the one the workspace reads now. Empty
+/// while the workspace has no account.
+fn sends_from(m: Mail, key: Text) -> Text {
+    if has_account(m, key) { key } else { m.accounts.first()?.key ?? "" }
+}
+
+/// Whether the workspace has the account `key`.
+fn has_account(m: Mail, key: Text) -> Bool {
+    m.accounts.any(a -> a.key == key)
+}
+
 /// Sets or clears the workspace account's signature.
 action set_signature(a: Account, signature: Text) (icon: .pen_tool, label: "Signature") {
     a.signature = signature
@@ -475,12 +488,13 @@ fn quoted(m: Message) -> Text {
 primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
     let m = root Mail
     let last = t.messages.last()
+    let from = sends_from(m, t.account)
     m.drafts.insert(
         Draft(
-            from: t.account,
+            from: from,
             to: last?.from ?? "",
             subject: re(t.subject),
-            body: signed(m, t.account, if let l = last { quoted(l) } else { "" }),
+            body: signed(m, from, if let l = last { quoted(l) } else { "" }),
             in_reply_to: last?.message_id ?? "",
             references: "{last?.references ?? ""} {last?.message_id ?? ""}",
         ),
@@ -491,15 +505,16 @@ primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
 action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all", key: "a") {
     let m = root Mail
     let last = t.messages.last()
+    let from = sends_from(m, t.account)
     m.drafts.insert(
         Draft(
-            from: t.account,
+            from: from,
             to: last?.from ?? "",
             cc: if let l = last {
                 if l.cc == "" { l.to } else { "{l.to}, {l.cc}" }
             } else { "" },
             subject: re(t.subject),
-            body: signed(m, t.account, if let l = last { quoted(l) } else { "" }),
+            body: signed(m, from, if let l = last { quoted(l) } else { "" }),
             in_reply_to: last?.message_id ?? "",
             references: "{last?.references ?? ""} {last?.message_id ?? ""}",
         ),
@@ -509,12 +524,13 @@ action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all", key:
 /// Answers one message of the conversation, to whoever wrote it, quoting it.
 action reply_to(m: Message) -> Draft (icon: .reply) {
     let mail = root Mail
+    let from = sends_from(mail, m.account)
     mail.drafts.insert(
         Draft(
-            from: m.account,
+            from: from,
             to: m.from,
             subject: re(m.subject),
-            body: signed(mail, m.account, quoted(m)),
+            body: signed(mail, from, quoted(m)),
             in_reply_to: m.message_id,
             references: "{m.references} {m.message_id}",
         ),
@@ -525,13 +541,14 @@ action reply_to(m: Message) -> Draft (icon: .reply) {
 action reply_all_to(m: Message) -> Draft (icon: .reply_all, label: "Reply all") {
     let mail = root Mail
     let theirs = if m.cc == "" { m.to } else { "{m.to}, {m.cc}" }
+    let from = sends_from(mail, m.account)
     mail.drafts.insert(
         Draft(
-            from: m.account,
+            from: from,
             to: m.from,
             cc: theirs,
             subject: re(m.subject),
-            body: signed(mail, m.account, quoted(m)),
+            body: signed(mail, from, quoted(m)),
             in_reply_to: m.message_id,
             references: "{m.references} {m.message_id}",
         ),
@@ -541,13 +558,14 @@ action reply_all_to(m: Message) -> Draft (icon: .reply_all, label: "Reply all") 
 /// Sends one message of the conversation on, with its sender, when and what it says.
 action forward_message(m: Message) -> Draft (icon: .forward) {
     let mail = root Mail
+    let from = sends_from(mail, m.account)
     mail.drafts.insert(
         Draft(
-            from: m.account,
+            from: from,
             subject: "Fwd: {m.subject}",
             body: signed(
                 mail,
-                m.account,
+                from,
                 "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n",
             ),
         ),
@@ -561,9 +579,8 @@ action forward(t: Thread) -> Draft (icon: .forward, key: "f") {
     let said = if let l = last {
         "\n\nFrom {l.from_name} <{l.from}> ({l.received}):\n\n> {l.body.replace("\n", "\n> ")}\n"
     } else { "" }
-    m.drafts.insert(
-        Draft(from: t.account, subject: "Fwd: {t.subject}", body: signed(m, t.account, said)),
-    )
+    let from = sends_from(m, t.account)
+    m.drafts.insert(Draft(from: from, subject: "Fwd: {t.subject}", body: signed(m, from, said)))
 }
 
 /// Archives the conversation: its messages leave the inbox.
@@ -722,6 +739,7 @@ action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
 action send_later(d: Draft, at: Time) uses time (icon: .clock, label: "Send later") {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" "It goes to nobody yet"
+    require has_account(root Mail, d.from) "Add a mail account in Settings first"
     require at > now "Pick a moment still to come"
     outside(
         "smtp.send",
@@ -797,6 +815,7 @@ destructive action discard(m: Mail, d: Draft) (icon: .trash, label: "Delete draf
 primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" "It goes to nobody yet"
+    require has_account(root Mail, d.from) "Add a mail account in Settings first"
     let m = root Mail
     let at = now + Duration(m.hold)
     outside(
@@ -913,7 +932,10 @@ view mail(m: Mail) {
                 sidebar_title: "Mail",
                 overview_title: "Recovered mail",
                 overview_count: m.recovered_mail.len(),
+                actions: [new_draft],
             ) {
+                // The bar holds what a person does here; the mailbox's settings and what scripts
+                // and moves bring in stand behind its "More".
                 sidebar: {
                     ui.NavList(selected: "recovered") {
                         ui.NavItem("recovered", "Recovered mail", icon: .archive) {
@@ -949,6 +971,7 @@ view unified(m: Mail) {
             overview_count: if query == "recovered" {
                 m.recovered_mail.len()
             } else { shown.len() },
+            actions: [new_draft],
         ) {
             sidebar_actions: {
                 // The accounts whose server does not stand well, beside the name of the accounts
@@ -1301,9 +1324,20 @@ view editor(d: Draft) {
                 on act: undo_send(d)
             }
         }
+        let mail = root Mail
+        let sender = mail.accounts.find(a -> a.key == d.from)
         field("From") {
-            let mail = root Mail
-            if mail.accounts.len() > 1 {
+            // One account a draft goes from is said; with more, or none of them chosen yet, each
+            // is offered. With no account at all, nothing can send it: the person is told so and
+            // taken to where an account is added.
+            if mail.accounts.is_empty() {
+                stack(gap: .tight) {
+                    text("No mail account to send from")
+                    ui.Link("settings://accounts", label: "Add an account in Settings")
+                }
+            } else if mail.accounts.len() == 1 and sender != .none {
+                text(sender?.address ?? "")
+            } else {
                 row(gap: .tight, wrap: true) {
                     for a in mail.accounts {
                         ui.Chip(a.address, selected: a.key == d.from) {
@@ -1311,8 +1345,6 @@ view editor(d: Draft) {
                         }
                     }
                 }
-            } else if let a = mail.accounts.first() {
-                text(a.address)
             }
         }
         field("To") {
@@ -1325,10 +1357,12 @@ view editor(d: Draft) {
         ui.BlockEditor(bind: d.body, placeholder: "Write your message")
         // The message's own Send: a composer sends from where it is written, and the window's
         // bar keeps it once for the draft it shows.
-        row {
-            spacer()
-            ui.Button("Send", icon: .send) {
-                on press: send(d)
+        if sender != .none {
+            row {
+                spacer()
+                ui.Button("Send", icon: .send) {
+                    on press: send(d)
+                }
             }
         }
     }
@@ -1638,6 +1672,20 @@ scenario "a reply being written" -> Draft {
             body: "The fifth works for the beta. I would move the release to the fourteenth so the docs can catch up.\n\nSam",
             in_reply_to: "launch@rivera.example",
             references: "launch@rivera.example",
+        ),
+    )
+}
+
+/// A reply to mail kept from an account that went, with no account left to send it from.
+scenario "a reply with no account to send it" -> Draft {
+    let m = root Mail
+    m.drafts.insert(
+        Draft(
+            to: "desk@parcels.example",
+            subject: "Re: Your parcel was delivered",
+            body: "Thank you, I collected it from number twelve.",
+            in_reply_to: "delivery@parcels.example",
+            references: "delivery@parcels.example",
         ),
     )
 }

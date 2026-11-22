@@ -385,6 +385,7 @@ d-xxxfkczs = Später senden
     .doc = Sendet die Nachricht zu einem Zeitpunkt statt jetzt: sie wartet bis dahin im Postausgang, wie die Wartezeit der Person eine Nachricht warten lässt, und geht raus, ohne dass ein Fenster offen ist.
     .w-this-message-went-already = Diese Nachricht ist schon rausgegangen
     .w-it-goes-to-nobody-yet = Sie geht noch an niemanden
+    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
     .w-pick-a-moment-still-to-come = Wähle einen Zeitpunkt, der noch kommt
 
 d-xxxfkczs-at = Um
@@ -424,6 +425,7 @@ d-qcfc2rhb = Senden
     .doc = Sendet die Nachricht von ihrem Konto.
     .w-this-message-went-already = Diese Nachricht ist schon rausgegangen
     .w-it-goes-to-nobody-yet = Sie geht noch an niemanden
+    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
 
 d-twebu5cb = Senden rückgängig
     .doc = Holt eine Nachricht zurück, die gesendet ist und noch nicht rausging: sie geht nie raus und die Nachricht ist wieder ein Entwurf, wie sie war.
@@ -554,6 +556,8 @@ d-oqpazwvc = Schreiben
     .w-it-goes-in-a-moment = Sie geht gleich raus.
     .w-undo-send = Senden rückgängig
     .w-from = Von
+    .w-no-mail-account-to-send-from = Kein Mailkonto zum Senden
+    .w-add-an-account-in-settings = Mailkonto in den Einstellungen hinzufügen
     .w-to = An
     .w-name-example-org = name@example.org
     .w-cc = Cc
