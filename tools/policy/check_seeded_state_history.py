@@ -20,8 +20,10 @@ So for each such seed this check requires a history directory,
 * is named by a test outside this directory, which loads every version in it
   through the production reader.
 
-The history only grows: a version stays as long as a machine installed with it
-may still exist. ``C+`` and ``f+`` overwrite on every boot, ``f`` without an
+A version stays while the reader still takes its schema. When a schema
+changes, the versions in the old one are deleted with the reader that took
+them: a machine installed from an older image is given a current image, not a
+reader for its old file. ``C+`` and ``f+`` overwrite on every boot, ``f`` without an
 argument creates an empty file, and the other line types create no content, so
 none of them is checked.
 """

@@ -2399,9 +2399,8 @@ mod tests {
 
         phase a_capability_list_an_older_image_seeded_gives_way_to_the_one_the_image_ships;
         // tmpfiles' `C` never overwrites, so a machine keeps the capability list of the image it was
-        // installed with across every update. The shipped version must mount with its grant through
-        // the same loader fs.service uses; a version in a schema the code no longer reads must be
-        // refused with what the machine has to do about it.
+        // installed with across every update. Every version in the history must mount with its grant
+        // through the same loader fs.service uses.
         {
             use fs::Access;
 
