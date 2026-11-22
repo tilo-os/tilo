@@ -47,16 +47,12 @@ impl Hosted {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The apps of `workspace_id` this device runs itself, by page name (`notes`), each with its
-    /// name.
+    /// The apps of `workspace_id` this device runs itself, each its id and its name: a page names
+    /// one by its id.
     pub(super) fn apps(&self, workspace_id: WorkspaceId) -> Vec<(String, String)> {
-        self.pages.get().map_or_else(Vec::new, |pages| {
-            pages
-                .apps(workspace_id)
-                .into_iter()
-                .map(|(app, title)| (page_app_name(&app).to_owned(), title))
-                .collect()
-        })
+        self.pages
+            .get()
+            .map_or_else(Vec::new, |pages| pages.apps(workspace_id))
     }
 }
 
@@ -310,7 +306,7 @@ impl WorkspaceActions {
                         Some(Err(PageRefusal::NoSuchApp)) => {
                             this.open_catalogue_page(workspace_id, &caller, address, done);
                         }
-                        Some(opened) => done.complete(opened.map(|opened| this.held(opened))),
+                        Some(opened) => done.complete(opened.map(|opened| this.kept_open(opened))),
                         None => done.complete(Err(unavailable("the page's app stopped"))),
                     });
             }
@@ -319,8 +315,8 @@ impl WorkspaceActions {
         answer
     }
 
-    /// `opened`, held until its person closes it, under a number of its own.
-    fn held(&self, opened: HostedOpened) -> OpenedPage {
+    /// `opened`, kept open until its person closes it, under a number of its own.
+    fn kept_open(&self, opened: HostedOpened) -> OpenedPage {
         let hosted = &self.shared.hosted;
         let page = HOSTED_PAGE
             | hosted
@@ -371,9 +367,9 @@ impl WorkspaceActions {
         act: Option<(u32, Option<String>, PageAction)>,
     ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
         if page & HOSTED_PAGE != 0 {
-            let held = self.shared.hosted.open().get(&page).cloned();
-            return match held {
-                Some(held) => held.act(act),
+            let open = self.shared.hosted.open().get(&page).cloned();
+            return match open {
+                Some(open) => open.act(act),
                 None => Pending::ready(Err(unavailable("the page is closed"))),
             };
         }
@@ -586,8 +582,7 @@ impl Worker {
             None => (Vec::new(), Vec::new()),
         };
         let here = here(&present);
-        // The apps this device runs itself first, by their page names; the catalogue's after,
-        // each named once.
+        // The apps this device runs itself, by their ids, and the catalogue's, each named once.
         let hosted = self.shared.hosted.apps(workspace_id);
         let mut apps: Vec<(String, String, String)> = hosted
             .iter()
@@ -599,7 +594,7 @@ impl Worker {
             .filter(|app| app.keeps_workspace_resource())
         {
             let name = page_app_name(app.app_id());
-            if hosted.iter().any(|(hosted, _)| hosted == name) {
+            if hosted.iter().any(|(hosted, _)| hosted == app.app_id()) {
                 continue;
             }
             // Every tile holds its icon's place, so a grid of apps reads as rows: an app with no

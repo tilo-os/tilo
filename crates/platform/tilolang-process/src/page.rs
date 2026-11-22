@@ -1,11 +1,11 @@
-//! A page window: an instance's window laid out here, in the app's own process, and written as a
-//! page for whoever looks at it through the device that started the instance
+//! A page window: a viewer's page, its app's view laid out here, in the app's own process, and
+//! written as a page for whoever looks at it through the device that started it
 //! ([`tilo_server_protocol::page_window`]).
 //!
-//! The device hands the instance its page connection where a session hands a window's patch
-//! connection ([`Shows::Page`](runtime_portal::process_link::Shows::Page)). The instance draws
-//! into a window of the toolkit's, side by side with it; what the person does on the page is acted
-//! on that window as their click or their typing is, and each answer is the page whole or the
+//! The device hands the page its connection where a session hands a window's patch connection
+//! ([`Shows::Page`](runtime_portal::process_link::Shows::Page)). The app's code draws into a
+//! window of the toolkit's, side by side with it; what the person does on the page is acted on
+//! that window as their click or their typing is, and each answer is the page whole or the
 //! elements that changed.
 
 use std::io;
@@ -25,11 +25,11 @@ use crate::hosted::Hosted;
 /// at its own, so this only decides which of a split's columns the window shows.
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-/// How often the window and its instance may answer each other before a page is written as it
+/// How often the window and the app's code may answer each other before a page is written as it
 /// is: the rows a list shows, then the rows those rows show.
 const EXCHANGES: usize = 8;
 
-/// One instance's page window and the connection it is asked on.
+/// One viewer's page window and the connection it is asked on.
 pub struct PageWindow {
     connection: UnixStream,
     harness: FrameHarness,
@@ -38,7 +38,7 @@ pub struct PageWindow {
 }
 
 impl PageWindow {
-    /// The page window that shows what the instance sends to `window`'s other end, asked on
+    /// The page window that shows what the app's code sends to `window`'s other end, asked on
     /// `connection`.
     pub fn new(connection: UnixStream, window: End) -> Self {
         let mut theme = ui::Theme::light();
@@ -64,7 +64,7 @@ impl PageWindow {
         self.connection.as_fd()
     }
 
-    /// One turn of the instance and its window, and an answer to every ask that arrived: whether
+    /// One turn of the app's code and its window, and an answer to every ask that arrived: whether
     /// anything changed.
     ///
     /// # Errors
@@ -108,7 +108,7 @@ impl PageWindow {
                 }
             }
             Ask::Act { id, target, action } => {
-                // An element a page numbers for a part of a widget (a document's block, a
+                // An element a page numbers for a part of a widget (a text's block, a
                 // control) is acted on through the widget it is a part of.
                 let Some(widget) = self.page.path(id).map(|path| {
                     path.split_once('#')
@@ -164,7 +164,7 @@ impl PageWindow {
             .downcast_mut::<AppWindow>()
     }
 
-    /// Let the window and its instance answer each other until neither has more to say, laying
+    /// Let the window and the app's code answer each other until neither has more to say, laying
     /// the window out after each answer.
     fn exchange(&mut self, hosted: &mut Hosted) -> bool {
         let mut changed = false;

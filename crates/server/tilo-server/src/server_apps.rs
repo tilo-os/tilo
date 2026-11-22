@@ -233,6 +233,9 @@ pub struct Device {
     pub identity_root: PathBuf,
     /// Its certificate.
     pub cert: tilo_user_identity::DeviceCert,
+    /// Its key service's keys, when it takes part in its workspaces' key groups: what it hands a
+    /// page whose reader may read what the workspace keeps sealed.
+    pub keys: Option<tilo_workspace_keys::KeyProvider>,
 }
 
 /// Run the apps of the workspaces `workspaces` keeps on this server, whose device is `device`,
@@ -274,7 +277,7 @@ pub async fn serve(
         tracing::warn!(%error, "this server's apps have no identity service, so none runs");
         return;
     }
-    // Every request a page's instance makes is decided as the one who reads the page.
+    // Every request a page makes is decided as the one who reads it.
     let readers = std::sync::Arc::new(Readers::default());
     let signer = tilo_workspace_service::apps::caller_signer::CallerSigner::new(
         workspaces,
@@ -284,10 +287,14 @@ pub async fn serve(
         std::sync::Arc::clone(&readers)
             as std::sync::Arc<dyn tilo_workspace_service::apps::caller_signer::Callers>,
     );
+    let keys: std::sync::Arc<dyn tilo_identity::sources::GroupKeySource> = match device.keys {
+        Some(keys) => std::sync::Arc::new(keys),
+        None => std::sync::Arc::new(()),
+    };
     let identity = match tilo_identity::broker::spawn_signing(
         identity_socket,
         std::sync::Arc::new(server.clone()),
-        std::sync::Arc::new(()),
+        keys,
         std::sync::Arc::new(()),
         std::sync::Arc::new(signer),
     ) {

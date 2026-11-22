@@ -891,6 +891,7 @@ impl Server {
                     crate::server_apps::Device {
                         identity_root: cfg.identity_root.clone(),
                         cert: identity.device_cert.clone(),
+                        keys: workspace_keys.as_ref().map(|keys| keys.keys()),
                     },
                     cfg.state_root.clone(),
                     app_serving.clone(),
