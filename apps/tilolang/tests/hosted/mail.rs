@@ -1240,8 +1240,10 @@ fn every_account_shows_in_the_sidebar_and_opens_its_own_mail() {
                 .iter()
                 .all(|a| !session.refs(a, "threads").is_empty())
     });
+    // Each account shows by its address: one person's two accounts carry the same name, and
+    // only the address tells them apart.
     let texts = session.shown();
-    for want in ["Sam Rivera", "Sam at work"] {
+    for want in [ME, "work@rivera.example"] {
         assert!(
             texts.iter().any(|text| text == want),
             "the sidebar names {want}: {texts:#?}"
