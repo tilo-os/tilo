@@ -72,14 +72,19 @@ async fn handle_session_write(
         )));
     };
     // What may arrive is what the link itself admits: a member's signed record
-    // frame, the workspace's own changes, or a device's identity hello (its
-    // certificate and revocations, which take the link's hello path). Nothing
-    // else is a frame of the workspace.
+    // frame, the workspace's own changes, a device's identity hello (its
+    // certificate and revocations, which take the link's hello path), or a
+    // channel's governance and a device's request to join its group, which the
+    // link answers from the geneses it carries and hands to the channel's
+    // members. Nothing else is a frame of the workspace. Each goes through the
+    // same author and member checks below, and the link's one admission.
     if !matches!(
         message,
         neighbour_wire::NeighbourMsg::AppDocument { .. }
             | neighbour_wire::NeighbourMsg::SyncResp { .. }
             | neighbour_wire::NeighbourMsg::IdentityHello { .. }
+            | neighbour_wire::NeighbourMsg::MlsGovernance { .. }
+            | neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }
     ) {
         tracing::debug!(
             %workspace_id,
