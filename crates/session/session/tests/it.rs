@@ -147,8 +147,6 @@ mod lockdown_live;
 mod log_says_once;
 #[path = "logging.rs"]
 mod logging;
-#[path = "lounge_e2e.rs"]
-mod lounge_e2e;
 #[path = "machine_isolation.rs"]
 mod machine_isolation;
 #[path = "machine_plan.rs"]

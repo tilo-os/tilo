@@ -197,10 +197,10 @@ fn sheet_control(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> 
     None
 }
 
-/// Choosing Join closes the sheet once its action has started, leaving the person where they are
-/// rather than a sheet behind.
+/// Choosing Join on a listing joins nothing by itself: the workspace is joined with an invitation,
+/// so the sheet stays up and says which one to ask for.
 #[test]
-fn choosing_join_closes_the_sheet() {
+fn choosing_join_says_the_workspace_needs_an_invitation() {
     let _settled = ui::motion::testing::settled();
     let mut env = tilo_test_env::ScopedEnv::new();
     let (_identity, _person) = this_computer(&mut env);
@@ -212,13 +212,33 @@ fn choosing_join_closes_the_sheet() {
     ask_to_join(&mut session, CLUB_WORKSPACE);
     crate::common::until(
         &mut session,
-        "the sheet to close once the join started",
+        "the sheet to say the workspace needs an invitation",
         |session| {
             session.step(Duration::from_millis(2)).expect("step");
-            session
-                .workspace_directory()
-                .is_some_and(|state| !state.presentation().is_drawn())
+            session.workspace_directory().is_some_and(|state| {
+                state.presentation().is_drawn()
+                    && state
+                        .directory()
+                        .note
+                        .as_deref()
+                        .is_some_and(|note| note.contains("needs an invitation"))
+            })
         },
+    );
+    let note = session
+        .workspace_directory()
+        .and_then(|state| state.directory().note)
+        .expect("the sheet says why nothing was joined");
+    assert!(
+        note.contains("Book club"),
+        "the notice names the workspace it is about: {note}"
+    );
+    assert!(
+        !session
+            .held_workspaces()
+            .iter()
+            .any(|workspace| workspace == CLUB_WORKSPACE),
+        "and nothing was joined"
     );
 }
 

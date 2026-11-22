@@ -1,5 +1,5 @@
-//! Reading a community site's directory from the shell, and what a shared desktop shows: the
-//! fixtures of the tests that join workspaces from a site.
+//! Reading a site's directory from the shell, and what a shared desktop shows: the fixtures of
+//! the tests that browse what a site lists.
 
 use std::time::Duration;
 
@@ -7,8 +7,6 @@ use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_session::Session;
 use tilo_sheets::directory::Status;
-
-use super::publisher;
 
 /// Point this computer at the community site `site` for the test's lifetime. Returns the
 /// configuration's directory, which goes with it.
@@ -49,21 +47,6 @@ pub fn wait_until_the_directory_answered(session: &mut Session) {
         );
         session.step(Duration::from_millis(10)).unwrap();
     }
-}
-
-/// Read the site `site` in the open sheet, as the person typing its address into its search field
-/// does, and wait until it answered.
-pub fn look_up_site(session: &mut Session, site: &str) {
-    let sheet = publisher(session, "look").expect("the directory sheet looks a site up");
-    let arguments = serde_json::json!({ "text": site })
-        .as_object()
-        .expect("an object")
-        .clone();
-    session
-        .invoke(&sheet, "look", &arguments)
-        .expect("the session reads the site");
-    session.step(Duration::from_millis(1)).unwrap();
-    wait_until_the_directory_answered(session);
 }
 
 /// The workspaces this computer holds: the shell's id, the name shown and the workspace's id.

@@ -94,17 +94,6 @@ fn configured_from<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Configured 
     Configured::default()
 }
 
-/// Join the home workspace of the community `site` as this computer's person,
-/// with nobody at the directory asking: what the site's `entry.json` names as
-/// its home, through the same API a listing's Join asks.
-///
-/// # Errors
-/// Why nothing was asked: this computer has no identity to join as, or no
-/// task to ask.
-pub(crate) fn join_community(store: &Store, site: &url::Url) -> Result<(), String> {
-    store.join_community(site, &person()?)
-}
-
 /// Join what the person pasted into the sheet as this computer's person.
 ///
 /// # Errors

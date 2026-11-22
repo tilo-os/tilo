@@ -1,18 +1,11 @@
-//! "Join a workspace…" as a person on a computer set up for a community meets it: opening the sheet
-//! reads that site's directory and lists the public workspaces it serves, who is in each one now
-//! and how many belong. The workspaces this computer holds open instead of joining, and a site that
-//! cannot be read says so without hiding them.
-//! Joining one enters through the entry its listing names, as the person at this computer and by
-//! their own name, on the session this computer opens with the entry's host: the workspace admitting
-//! it is what puts the workspace on the shell, one it holds from then on, open rather than to join,
-//! with everything the workspace held before this computer arrived. An entry that refuses says why,
-//! where the person pressed, and leaves the workspace one to try again.
-//! A link or a code pasted into the sheet joins the same way: an invitation's text is redeemed
-//! where it names, and a workspace's link joins the workspace on the site it points at.
-//! A computer set up for a community (`community.toml`) is in it already: its session enters the
-//! community's own entry as it starts, through the same join, and asks once more when the machine's
-//! network comes back while the join is still waiting. What the person decided — joined, or joined
-//! and left — is theirs, and keeps every computer of theirs from joining it again on its own.
+//! "Join a workspace…" as a person meets it: opening the sheet reads the sites' directories and
+//! lists the public workspaces they serve, who is in each one now and how many belong. The
+//! workspaces this computer holds open instead of joining, and a site that cannot be read says so
+//! without hiding them.
+//! A workspace another person's host keeps is joined with an invitation: its text, or the link a
+//! site holds sealed for it, is pasted into the sheet and redeemed where it names. A listing is a
+//! catalogue and nothing to enter: pressing Join on one says it needs an invitation, and no site's
+//! entry is read for a host to dial.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -24,8 +17,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-#[path = "directory/community.rs"]
-mod community;
 #[path = "directory/sheet.rs"]
 mod sheet;
 
@@ -52,8 +43,7 @@ use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::SheetState as _;
 
 use crate::common::directory::{
-    community_site, held, layout, look_up_site, open_directory, pointer_here, recorded_layout,
-    tile_here,
+    community_site, held, layout, open_directory, pointer_here, recorded_layout, tile_here,
 };
 use crate::common::held::{certified, this_computer_with_an_identity};
 use crate::common::publisher;
@@ -518,166 +508,6 @@ fn a_computer_with_no_community_site_has_nothing_to_join() {
 }
 
 #[test]
-fn joining_a_listed_workspace_enters_through_its_entry_and_lands_in_it() {
-    let _settled = ui::motion::testing::settled();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    let (_identity, _person) = this_computer(&mut env);
-    let responder = joining_site(vec![community_entry(34, now_ms()), club_entry(now_ms())]);
-    let _config = community_site(&mut env, &responder.url());
-    let mut session = session();
-    session.step(Duration::from_millis(1)).unwrap();
-    open_directory(&mut session);
-    assert_eq!(
-        listing(&session, "Book club").action,
-        ListingAction::Join,
-        "the club is listed to join"
-    );
-    ask_to_join(&mut session, CLUB_WORKSPACE);
-    wait_until(&mut session, "the club was joined", |session| {
-        held(session)
-            .iter()
-            .any(|(_, _, workspace)| workspace == CLUB_WORKSPACE)
-    });
-    let joined = held(&session)
-        .into_iter()
-        .find(|(_, _, workspace)| workspace == CLUB_WORKSPACE)
-        .expect("the workspace joined");
-    assert_eq!(
-        joined.1, "Book club",
-        "the workspace goes by the name it was listed under"
-    );
-    assert_eq!(
-        session.handle().read(|tree| tree.active.to_string()),
-        joined.0,
-        "and the person lands in it"
-    );
-    // The entry is entered on the session this computer opens with its host, never asked over HTTP:
-    // the site was asked for its entry and its directory, and nothing else.
-    let asked: Vec<(String, String)> = responder
-        .drain_requests()
-        .into_iter()
-        .map(|request| (request.method, request.target))
-        .collect();
-    assert!(
-        asked
-            .iter()
-            .all(|(_, target)| target == "/entry.json" || target == "/directory"),
-        "nothing but the site's entry and directory was asked over HTTP: {asked:?}"
-    );
-    wait_until_the_directory_is_done(&mut session);
-    // Opening the directory again does not offer the club to join: this computer holds it now.
-    open_directory(&mut session);
-    assert!(
-        !rows(&session).iter().any(|(name, ..)| name == "Book club"),
-        "the club is no longer one to join"
-    );
-}
-
-#[test]
-fn an_entry_that_refuses_says_why_where_the_person_now_is() {
-    let _settled = ui::motion::testing::settled();
-    tilo_secrets::keep_in_memory_for_process();
-    let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    let (_root, person) = this_computer_with_an_identity(&mut home);
-    // The site lists the lounge, but its host never made it public: its entry lets nobody in.
-    let lounge = Lounge::start_with(person, "Coffee's on", LoungeAdmission::Private);
-    let _config = community_site(home.env(), "");
-    let state = tempfile::tempdir().expect("a directory for this computer's session");
-    let mut session = collaborative_session(state.path());
-    session.step(Duration::from_millis(1)).unwrap();
-    open_directory(&mut session);
-    look_up_site(&mut session, &lounge.entry);
-    ask_to_join(&mut session, &lounge.workspace);
-    // The sheet leaves as soon as the join starts; the entry's refusal, on this computer's session
-    // with its host, reaches the person as a banner where they are now.
-    wait_until(&mut session, "the entry answered", |session| {
-        listing(session, "Lounge").action == ListingAction::TryAgain
-    });
-    let sheet = session
-        .workspace_directory()
-        .expect("the session hosts the workspace directory");
-    let shown = sheet.directory();
-    assert_eq!(
-        shown.note.as_deref(),
-        Some("Couldn't join Lounge: that workspace is not public"),
-        "the sheet's note says why it is not joined, in the entry's own words"
-    );
-    let row = listing(&session, "Lounge");
-    assert_eq!(
-        row.activity, "Didn't join: that workspace is not public",
-        "and the row says so where the person pressed"
-    );
-    assert!(
-        !sheet.presentation().is_drawn(),
-        "the sheet left once the join started, leaving no sheet behind"
-    );
-    wait_until(&mut session, "the refusal is said as a banner", |session| {
-        said(session)
-            .iter()
-            .any(|notice| notice.contains("Couldn't join Lounge: that workspace is not public"))
-    });
-    assert!(
-        !held(&session)
-            .iter()
-            .any(|(_, _, workspace)| workspace == &lounge.workspace),
-        "and no workspace was added"
-    );
-}
-
-#[test]
-fn a_members_only_lounge_says_ask_for_an_invite_and_lands_nowhere() {
-    let _settled = ui::motion::testing::settled();
-    tilo_secrets::keep_in_memory_for_process();
-    let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    let (_root, person) = this_computer_with_an_identity(&mut home);
-    let lounge = Lounge::start_with(person, "Coffee's on", LoungeAdmission::InvitationOnly);
-    let _config = community_site(home.env(), "");
-    let state = tempfile::tempdir().expect("a directory for this computer's session");
-    let mut session = collaborative_session(state.path());
-    session.step(Duration::from_millis(1)).unwrap();
-    open_directory(&mut session);
-    look_up_site(&mut session, &lounge.entry);
-    let shell_before: Vec<(String, String, String)> = held(&session);
-    let in_front_before = session.handle().read(|tree| {
-        tree.active_workspace()
-            .map(tilo_desktop_model::Workspace::id)
-    });
-    ask_to_join(&mut session, &lounge.workspace);
-    wait_until(&mut session, "the entry answered", |session| {
-        listing(session, "Lounge").action == ListingAction::TryAgain
-    });
-    // Choosing Join closed the sheet when the join started: the refusal reaches the person as a
-    // banner, in the entry's own words.
-    wait_until(&mut session, "the refusal is said as a banner", |session| {
-        said(session)
-            .iter()
-            .any(|notice| notice.contains("joined by invitation"))
-    });
-    let shown = said(&session);
-    assert!(
-        shown
-            .iter()
-            .any(|notice| notice.contains("Lounge") && notice.contains("joined by invitation")),
-        "the host's own refusal, in its own words: {shown:?}"
-    );
-    capture(&mut session, "join-refused");
-    // The person stays where they were: no empty workspace was ever shown to arrive in, and none
-    // was taken away again.
-    assert_eq!(
-        session.handle().read(|tree| tree
-            .active_workspace()
-            .map(tilo_desktop_model::Workspace::id)),
-        in_front_before,
-        "the person is where they were: the workspace in front did not move"
-    );
-    assert_eq!(
-        held(&session),
-        shell_before,
-        "and the session holds exactly what it held before the join"
-    );
-}
-
-#[test]
 fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
@@ -707,8 +537,7 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     open_directory(&mut session);
-    look_up_site(&mut session, &lounge.entry);
-    ask_to_join(&mut session, &lounge.workspace);
+    paste_link(&mut session, &lounge.invitation_link());
     wait_until_the_lounge_is_here(&mut session, &lounge);
     // What the join presented was the renewal, not the certificate that had run out: ownership holds
     // a certificate issued since, and the workspace holds this device under it.
@@ -903,25 +732,10 @@ impl Drop for Lounge {
     }
 }
 
-/// Who the lounge admits.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LoungeAdmission {
-    /// Anyone who asks, as an editor: the workspace is public.
-    Public,
-    /// Only people invited: the workspace is listed, and takes people by invitation.
-    InvitationOnly,
-    /// Nobody: the site lists the workspace, but its host never made it public.
-    Private,
-}
-
 impl Lounge {
-    /// The lounge's workspace, whose chat already holds `written` , and which admits anyone.
+    /// The lounge's workspace, whose chat already holds `written`: its people invite those they
+    /// want in, and this computer joins by an invitation one of them made.
     fn start(person: [u8; 32], written: &str) -> Self {
-        Self::start_with(person, written, LoungeAdmission::Public)
-    }
-
-    /// [`Self::start`], admitting whom `admission` says.
-    fn start_with(person: [u8; 32], written: &str, admission: LoungeAdmission) -> Self {
         // The lounge's host and page run in this test's process: what they did with a join is only
         // said in its log.
         crate::common::people::install_log();
@@ -933,7 +747,7 @@ impl Lounge {
             .expect("a runtime for the lounge's host");
         let host = LoungeHost::start(&runtime, state.path());
         let page = host.page(&runtime, written);
-        let (site, web, entry) = host.serve_site(&runtime, state.path(), admission);
+        let (site, web, entry) = host.serve_site(&runtime, state.path());
         Self {
             page: Some(page),
             server: Some(host.server),
@@ -1091,35 +905,25 @@ impl LoungeHost {
     }
 
     /// The site as the world meets it: its entry and the directory of the workspaces it serves,
-    /// whose entry is the host's own, served by its web listener (kept under `state` ), which a
-    /// device enters through on its session with the host. It admits whom `admission` says.
-    /// Returns the site, the host's web listener, and the site's entry.
+    /// served by its web listener (kept under `state` ). Returns the site, the host's web
+    /// listener, and the site's entry.
     fn serve_site(
         &self,
         runtime: &tokio::runtime::Runtime,
         state: &std::path::Path,
-        admission: LoungeAdmission,
     ) -> (Responder, tilo_server::web::WebHandle, String) {
         let web = block_on_within(runtime, "the lounge's host to serve its web", async {
-            if admission != LoungeAdmission::Private {
-                self.workspaces
-                    .publish(
-                        &self.workspace,
-                        &self.server_cert,
-                        tilo_server_protocol::directory::Listing {
-                            description: "Where the site's people talk".to_owned(),
-                            default_role: Role::Editor,
-                        },
-                    )
-                    .await
-                    .expect("the lounge is public");
-            }
-            if admission == LoungeAdmission::InvitationOnly {
-                self.workspaces
-                    .list_invitation_only(&self.workspace, &self.server_cert, true)
-                    .await
-                    .expect("the lounge takes people by invitation");
-            }
+            self.workspaces
+                .publish(
+                    &self.workspace,
+                    &self.server_cert,
+                    tilo_server_protocol::directory::Listing {
+                        description: "Where the site's people talk".to_owned(),
+                        default_role: Role::Editor,
+                    },
+                )
+                .await
+                .expect("the lounge is public");
             self.server
                 .serve_web(tilo_server::web::WebConfig {
                     listen: "127.0.0.1:0".parse().expect("an address"),
@@ -1331,83 +1135,6 @@ impl Lounge {
     }
 }
 
-/// Whose the workspace named `workspace` is, as the shell names them.
-fn owner_on_shell(session: &Session, workspace: &str) -> Option<String> {
-    session.handle().read(|tree| {
-        tree.workspaces
-            .iter()
-            .find(|held| held.id().to_string() == workspace)
-            .and_then(|held| held.owner().cloned())
-    })
-}
-
-#[test]
-fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
-    let _settled = ui::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    let (_root, person) = this_computer_with_an_identity(&mut home);
-    let lounge = Lounge::start(person, "Coffee's on");
-    // The lounge is not this computer's community: the person types its address into the sheet, as
-    // anyone joining a site they were given does.
-    let _config = community_site(home.env(), "");
-    let state = tempfile::tempdir().expect("a directory for this computer's session");
-    let mut session = collaborative_session(state.path());
-    session.step(Duration::from_millis(1)).unwrap();
-    open_directory(&mut session);
-    look_up_site(&mut session, &lounge.entry);
-    assert_eq!(
-        listing(&session, "Lounge").action,
-        ListingAction::Join,
-        "the lounge's workspace is listed to join"
-    );
-    ask_to_join(&mut session, &lounge.workspace);
-    wait_until_the_lounge_is_here(&mut session, &lounge);
-    let people = session
-        .people(&lounge.workspace)
-        .expect("the lounge's people are known here");
-    let member = people
-        .iter()
-        .find(|member| member.id.person_id() == Some(hex::encode(person).as_str()))
-        .expect("the lounge is shared with this person");
-    assert_eq!(
-        member.role,
-        Some(tilo_workspace_join::Role::Editor),
-        "in the part the invitation gave them"
-    );
-    assert!(!member.removed, "and the lounge has not removed them");
-    // The slot is made once the host admits the device, and the person lands in it: wait for the
-    // shell to show it, as the person would see it.
-    wait_until(&mut session, "the lounge is on the session", |session| {
-        held(session)
-            .iter()
-            .any(|(_, _, workspace)| workspace == &lounge.workspace)
-    });
-    let joined = held(&session)
-        .into_iter()
-        .find(|(_, _, workspace)| workspace == &lounge.workspace)
-        .expect("the workspace is on the session");
-    assert_eq!(joined.1, "Lounge", "under the name the site listed it by");
-    // Whose the workspace is stays its host's governance's to say: joining it never makes it this
-    // person's.
-    wait_until(
-        &mut session,
-        "the lounge's owner is named here",
-        |session| owner_on_shell(session, &lounge.workspace).is_some(),
-    );
-    let host = hex::encode(lounge.server_cert.user_public_key);
-    assert_eq!(
-        owner_on_shell(&session, &lounge.workspace).as_deref(),
-        Some(host.as_str()),
-        "the workspace joined keeps the owner its host's governance names"
-    );
-    assert_ne!(
-        owner_on_shell(&session, &lounge.workspace).as_deref(),
-        Some(hex::encode(person).as_str()),
-        "and never the person who only joined it"
-    );
-    wait_until_the_directory_is_done(&mut session);
-}
-
 #[test]
 fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
     let _settled = ui::motion::testing::settled();
@@ -1421,16 +1148,7 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     open_directory(&mut session);
-    let link = lounge.invitation_link();
-    let sheet =
-        publisher(&session, "link-or-code").expect("the directory sheet takes a link or a code");
-    let arguments = serde_json::json!({ "text": link })
-        .as_object()
-        .expect("an object")
-        .clone();
-    session
-        .invoke(&sheet, "link-or-code", &arguments)
-        .expect("the person pastes the link");
+    paste_link(&mut session, &lounge.invitation_link());
     wait_until(
         &mut session,
         "the linked workspace is held here",
@@ -1759,13 +1477,25 @@ fn layout_tab(desktop: &SharedDesktop, title: &str) -> u64 {
         )
 }
 
-/// Join the lounge's listed workspace and wait until its content and its people reached this
-/// computer.
+/// Join the lounge's workspace with the invitation it sends, and wait until its content and its
+/// people reached this computer.
 fn join_the_lounge(session: &mut Session, lounge: &Lounge) {
     open_directory(session);
-    look_up_site(session, &lounge.entry);
-    ask_to_join(session, &lounge.workspace);
+    paste_link(session, &lounge.invitation_link());
     wait_until_the_lounge_is_here(session, lounge);
+}
+
+/// Paste `link` into the sheet's link-or-code field.
+fn paste_link(session: &mut Session, link: &str) {
+    let sheet =
+        publisher(session, "link-or-code").expect("the directory sheet takes a link or a code");
+    let arguments = serde_json::json!({ "text": link })
+        .as_object()
+        .expect("an object")
+        .clone();
+    session
+        .invoke(&sheet, "link-or-code", &arguments)
+        .expect("the person pastes the link");
 }
 
 /// The lounge's other member says they are here, as every device does when it joins: their presence

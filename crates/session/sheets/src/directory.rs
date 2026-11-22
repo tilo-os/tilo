@@ -50,7 +50,8 @@ impl WorkspaceDirectory {}
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "so.tilo.workspace-directory.join")]
 pub enum DirectoryEffect {
-    /// Join a public workspace
+    /// Join a listed workspace: another person's host keeps it, so it is joined with an
+    /// invitation, which this says to ask for
     #[effect(kind = "outside")]
     #[effect(own_device)]
     Join {

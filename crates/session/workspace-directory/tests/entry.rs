@@ -1,5 +1,5 @@
-//! A site, its directory and its entry, over a real `tilo_net` connection to
-//! a local responder: what a page and the desktop both do.
+//! A site and its directory, over a real `tilo_net` connection to a local
+//! responder: what a page and the desktop both do.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -11,9 +11,9 @@
 use test_http::{Reply, Responder};
 use tilo_server_protocol::directory::{DirectoryEntry, DirectoryPage};
 use tilo_server_protocol::workspaces::Role;
-use tilo_workspace_directory::{Way, client, fetch_directory, read_site, through_entry};
+use tilo_workspace_directory::{client, fetch_directory, read_site};
 
-/// The workspace every test in this file joins.
+/// The workspace every test in this file names.
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 fn entry(name: &str) -> DirectoryEntry {
@@ -33,60 +33,9 @@ fn entry(name: &str) -> DirectoryEntry {
     }
 }
 
-/// Joining through an entry asks the entry nothing here (there is no client to
-/// ask with): the device enters the workspace its path names on the session
-/// it opens with the entry's host, where the entry decides. An entry below a host's API prefix and one at a
-/// site's own path name the same workspace, and a path that names none is
-/// refused before anything is asked.
-#[test]
-fn an_entry_join_enters_the_workspace_its_path_names_and_asks_nothing() {
-    for entry in [
-        format!("https://workspaces.tilo.test/peer/v1/directory/{WORKSPACE}/"),
-        format!("https://tilo.test/directory/{WORKSPACE}/"),
-    ] {
-        let entry = url::Url::parse(&entry).expect("the entry's address");
-        let granted = through_entry(&entry, None).expect("an entry names its workspace");
-        assert_eq!(granted.workspace, WORKSPACE);
-        assert_eq!(
-            granted.way,
-            Way::Entry {
-                entry: entry.clone(),
-                host: None,
-            },
-            "the device enters through the entry itself, holding no invitation"
-        );
-        assert_eq!(granted.invitation(), None);
-    }
-    for nameless in [
-        "https://tilo.test/entry/".to_owned(),
-        "https://tilo.test/directory/not-a-workspace/".to_owned(),
-    ] {
-        let entry = url::Url::parse(&nameless).expect("the entry's address");
-        assert!(
-            through_entry(&entry, None).is_err(),
-            "{nameless} names no workspace to enter"
-        );
-    }
-}
-
-/// The host a site names, as its web entry serves it: the host's `web-host.json` line, as text.
-fn named_host() -> tilo_server_protocol::web::PageHost {
-    tilo_server_protocol::web::PageHost {
-        server_cert: tilo_user_identity::DeviceCert {
-            user_public_key: [1; 32],
-            device_public_key: [2; 32],
-            device_label: "workspaces.tilo.sh".to_owned(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [3; 64],
-            issuer: None,
-        },
-        address: None,
-        origin: Some("https://workspaces.tilo.sh".to_owned()),
-    }
-}
-
+/// A site's `entry.json` names its home workspace, its directory and the host's
+/// admission entry, and nothing of the host itself: a native client reads no
+/// host to dial from it, so its `home.host` says only where the host answers.
 #[test]
 fn a_site_says_its_home_workspace_and_its_directory() {
     let responder = Responder::handle(|request: &test_http::Request| {
@@ -94,10 +43,7 @@ fn a_site_says_its_home_workspace_and_its_directory() {
             serde_json::json!({
                 "home": {
                     "name": "tilo.sh",
-                    "host": {
-                        "origin": "https://workspaces.tilo.sh/",
-                        "info": serde_json::to_string(&named_host()).expect("a host's line"),
-                    },
+                    "host": { "origin": "https://workspaces.tilo.sh/" },
                     "admission": "https://workspaces.tilo.sh/",
                 },
                 "directory": "directory",
@@ -124,11 +70,6 @@ fn a_site_says_its_home_workspace_and_its_directory() {
     let home = read.home.expect("the site's home workspace");
     assert_eq!(home.name, "tilo.sh");
     assert_eq!(
-        home.host,
-        Some(named_host()),
-        "the host is dialled as the site names it"
-    );
-    assert_eq!(
         home.admission.as_ref().map(url::Url::as_str),
         Some("https://workspaces.tilo.sh/")
     );
@@ -145,4 +86,64 @@ fn a_site_says_its_home_workspace_and_its_directory() {
     let second = responder.next_request();
     assert_eq!(second.method, "POST", "a directory route is a POST");
     assert!(second.target.ends_with("directory"), "{}", second.target);
+}
+
+/// A site that names its host with the host's own `web-host.json` line in
+/// `home.host.info` reads the same: the field is not read by a native client,
+/// so what a site puts there changes nothing here.
+#[test]
+fn a_sites_host_info_is_not_read() {
+    let host_line = serde_json::json!({
+        "server_cert": {
+            "user_public_key": "01".repeat(32),
+            "device_public_key": "02".repeat(32),
+            "device_label": "workspaces.tilo.sh",
+            "issued_at_ns": 1,
+            "expires_at_ns": null,
+            "signature": "03".repeat(64),
+        },
+        "origin": "https://workspaces.tilo.sh",
+    });
+    let responder = Responder::handle(move |request: &test_http::Request| {
+        if request.target.ends_with("entry.json") {
+            Some(
+                Reply::status(200)
+                    .header("Content-Type", "application/json")
+                    .body(
+                        serde_json::json!({
+                            "home": {
+                                "name": "tilo.sh",
+                                "host": {
+                                    "origin": "https://workspaces.tilo.sh/",
+                                    "info": serde_json::to_string(&host_line)
+                                        .expect("a host's line"),
+                                },
+                                "admission": "https://workspaces.tilo.sh/",
+                            },
+                            "directory": "directory",
+                        })
+                        .to_string(),
+                    ),
+            )
+        } else {
+            Some(
+                Reply::status(200)
+                    .header("Content-Type", "application/json")
+                    .body(
+                        serde_json::to_string(&DirectoryPage {
+                            host: None,
+                            workspaces: Vec::new(),
+                        })
+                        .expect("a directory page"),
+                    ),
+            )
+        }
+    });
+    let site = url::Url::parse(&format!("{}/", responder.url())).expect("the site's address");
+    let client = client().expect("a client");
+    let read = tilo_rt::block_on(read_site(&client, &site))
+        .expect("the app runtime")
+        .expect("a site read");
+    let home = read.home.expect("the site's home workspace");
+    assert_eq!(home.name, "tilo.sh");
 }

@@ -20,8 +20,8 @@ use tilo_workspace_directory::{
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// A workspace this person chose to join: the name it was listed under, and
-/// the workspace itself with the way this device comes into it — its entry,
-/// or an invitation it holds.
+/// the workspace itself with the way this device comes into it — an
+/// invitation it holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Joined {
     /// The name the workspace was listed under, or the address a link named
@@ -30,10 +30,6 @@ pub struct Joined {
     pub name: String,
     /// The workspace joined, and how this device comes into it.
     pub granted: Granted,
-    /// The community site whose home this is, when nobody at the directory
-    /// asked for the join: the person's community joins on its own as their
-    /// session starts. `None` for a join a person chose.
-    pub community: Option<String>,
 }
 
 /// What the task is asked.
@@ -43,18 +39,8 @@ enum Ask {
         community: Option<url::Url>,
         site: Option<String>,
     },
-    /// Enter the workspace `entry` lets people into.
-    Join {
-        key: String,
-        name: String,
-        entry: url::Url,
-        host: Option<Box<tilo_server_protocol::web::PageHost>>,
-    },
-    /// Join the home workspace of the community `site`, with nobody at the
-    /// directory asking for it.
-    Community { site: url::Url },
-    /// Join what the person pasted: a sealed link, an invitation's text, a
-    /// site, or a workspace link.
+    /// Join what the person pasted: an invitation's text, or the sealed link
+    /// that names one.
     Take { text: String, person: Person },
     /// Seal `invitation` under a fresh key and leave it on `site`'s shelf,
     /// for the link that names it.
@@ -85,20 +71,6 @@ enum Ask {
 enum Answer {
     /// What the sites list, and what could not be read.
     Read(Snapshot),
-    /// Where joining the listing `key`, named `name`, stands: what it was
-    /// granted, or why it was not.
-    Joined {
-        key: String,
-        name: String,
-        granted: Result<Granted, String>,
-    },
-    /// Where joining the home workspace of the community `site` stands: the
-    /// name it goes by and what it was granted, `None` when the site serves
-    /// no home workspace to join.
-    Community {
-        site: String,
-        joined: Result<Option<(String, Granted)>, String>,
-    },
     /// Where joining what the person pasted stands, named `name` when it got
     /// far enough to know it.
     Taken {
@@ -119,18 +91,10 @@ enum Answer {
     },
 }
 
-/// What a site answered when its directory or its entry was read.
+/// What a site answered when its directory was read.
 struct Snapshot {
     listings: Vec<Listed>,
     failures: Vec<String>,
-}
-
-/// The community site whose home workspace this store was asked to join, and whether the site
-/// answered: a join still unanswered may bring a workspace onto the shell, and one that answered —
-/// letting the person in or not — is over ([`Store::community_answered`]).
-struct CommunityJoin {
-    site: String,
-    answered: bool,
 }
 
 /// The directories as last read, the joins asked for, and the task that
@@ -162,14 +126,6 @@ pub struct Store {
     /// slot is made only once the host admits it keeps the name it was
     /// listed by ([`Store::listed_name`]).
     names: std::cell::RefCell<BTreeMap<String, String>>,
-    /// The community site each workspace was joined as its home through, by
-    /// the workspace granted: the person's community is theirs once a host
-    /// admits them to it, which is after the entry grants ([`Store::community_of`]).
-    communities: std::cell::RefCell<BTreeMap<String, String>>,
-    /// The community whose home workspace was asked for, while its site has
-    /// not answered: its join may still bring a workspace onto the shell
-    /// ([`Store::community_answered`]).
-    community: std::cell::RefCell<Option<CommunityJoin>>,
     asks: std::cell::RefCell<Option<mpsc::UnboundedSender<Ask>>>,
     answers: std::cell::RefCell<Option<mpsc::UnboundedReceiver<Answer>>>,
     /// What wakes the caller's loop as the task answers, so a directory being
@@ -219,112 +175,6 @@ impl Store {
         }
     }
 
-    /// Join `listing`, which the sheet knows as `key`, as `person`: the
-    /// caller enters it through its entry on the session it opens with the
-    /// entry's host. One join at a time.
-    ///
-    /// # Errors
-    /// Why no entry was asked: the listing lets people in by invitation only,
-    /// or the caller has no person to join as.
-    pub fn join(&self, key: &str, listing: &Listed, person: &Person) -> Result<(), String> {
-        let entry = listing.entry_url.clone().ok_or_else(|| {
-            let reason = format!("{} needs an invitation", listing.entry.name.trim());
-            tracing::info!(
-                target: JOIN_FLOW_TARGET,
-                workspace = %listing.entry.workspace,
-                key = %key,
-                site = %listing.host,
-                name = %listing.entry.name.trim(),
-                %reason,
-                outcome = "no entry asked",
-                "join: the listing names no entry"
-            );
-            reason
-        })?;
-        let Some(asks) = self.worker() else {
-            tracing::info!(
-                target: JOIN_FLOW_TARGET,
-                workspace = %listing.entry.workspace,
-                key = %key,
-                outcome = "no entry asked",
-                "join: the directory has no task to ask"
-            );
-            return Err("the directory has nowhere to ask".to_owned());
-        };
-        *self.joining.borrow_mut() = Some(key.to_owned());
-        self.failures.borrow_mut().remove(key);
-        *self.note.borrow_mut() = None;
-        tracing::info!(
-            target: JOIN_FLOW_TARGET,
-            workspace = %listing.entry.workspace,
-            key = %key,
-            site = %listing.host,
-            name = %listing.entry.name.trim(),
-            entry = %entry,
-            person = %hex::encode(person.user),
-            "join: entering through the entry"
-        );
-        if let Err(error) = asks.send(Ask::Join {
-            key: key.to_owned(),
-            name: listing.entry.name.clone(),
-            entry,
-            host: listing.entry_host.clone().map(Box::new),
-        }) {
-            *self.joining.borrow_mut() = None;
-            tracing::info!(
-                target: JOIN_FLOW_TARGET,
-                workspace = %listing.entry.workspace,
-                key = %key,
-                %error,
-                outcome = "no entry asked",
-                "join: the directory task is gone"
-            );
-            return Err(format!("the join was not asked of its entry: {error}"));
-        }
-        Ok(())
-    }
-
-    /// Join the home workspace of the community `site`, as `person`: what the
-    /// site's own `entry.json` names as its home, through the same entry a
-    /// listing's Join asks. Nobody at the directory chose this: its failure
-    /// is the log's, not a note where a person would look for one they asked
-    /// for.
-    ///
-    /// # Errors
-    /// Why nothing was asked: there is no task to ask.
-    pub fn join_community(&self, site: &url::Url, person: &Person) -> Result<(), String> {
-        let asked = self
-            .worker()
-            .ok_or_else(|| "the directory has nowhere to ask".to_owned())
-            .and_then(|asks| {
-                tracing::info!(
-                    target: JOIN_FLOW_TARGET,
-                    site = %site,
-                    person = %hex::encode(person.user),
-                    "join: asking the community site's home entry"
-                );
-                asks.send(Ask::Community { site: site.clone() })
-                    .map_err(|error| format!("the community site was not asked: {error}"))
-            });
-        *self.community.borrow_mut() = Some(CommunityJoin {
-            site: site.to_string(),
-            // Nothing is left to answer a join that could not be asked: it is over as it was asked.
-            answered: asked.is_err(),
-        });
-        asked
-    }
-
-    /// Whether the community `site`'s home workspace was asked for and the site answered: the
-    /// join is over, whether it let the person in or not. `false` before it is asked, and while
-    /// the site has not answered, which is while its workspace may still come onto the shell.
-    #[must_use]
-    pub fn community_answered(&self, site: &url::Url) -> bool {
-        self.community
-            .borrow()
-            .as_ref()
-            .is_some_and(|join| join.site == site.as_str() && join.answered)
-    }
-
     /// The listing `key` names, while it is listed.
     pub fn listing(&self, key: &str) -> Option<Listed> {
         self.listed
@@ -334,8 +184,32 @@ impl Store {
             .cloned()
     }
 
-    /// Join what the person pasted into the sheet — an invitation's text, a
-    /// site, or a workspace link — off the caller's loop.
+    /// Join `listing`, which the sheet knows as `key`: a workspace another
+    /// person's host keeps is joined with an invitation it sends, never by
+    /// entering through its site, so a listing with none is told to ask for
+    /// one.
+    ///
+    /// # Errors
+    /// What a person does instead: ask for an invitation.
+    pub fn join(&self, _key: &str, listing: &Listed, _person: &Person) -> Result<(), String> {
+        let name = listing.entry.name.trim();
+        tracing::info!(
+            target: JOIN_FLOW_TARGET,
+            workspace = %listing.entry.workspace,
+            key = %listing.key(),
+            site = %listing.host,
+            name = %name,
+            outcome = "no invitation",
+            "join: a listing is joined with an invitation, so nothing is asked of its site"
+        );
+        Err(format!(
+            "{name} needs an invitation: open it on its site, or paste the invite link someone \
+             in it sends you"
+        ))
+    }
+
+    /// Join what the person pasted into the sheet — an invitation's text or a
+    /// sealed link — off the caller's loop.
     ///
     /// # Errors
     /// Why nothing was asked: nothing was pasted.
@@ -593,66 +467,10 @@ impl Store {
                     });
                 }
             }
-            Answer::Joined { key, name, granted } => {
-                *self.joining.borrow_mut() = None;
-                match granted {
-                    Ok(granted) => self.granted(&key, &name, granted, None),
-                    Err(reason) => {
-                        tracing::info!(
-                            target: JOIN_FLOW_TARGET,
-                            key = %key,
-                            name = %name,
-                            %reason,
-                            outcome = "failed",
-                            "join: the workspace was not joined; the person stays where they were"
-                        );
-                        // The sheet says why, and the row says it was not
-                        // joined, to try again.
-                        self.failing(crate::words(
-                            "directory-join-failed",
-                            &[("name", &name), ("error", &reason)],
-                        ));
-                        self.failures.borrow_mut().insert(key, reason);
-                    }
-                }
-            }
-            Answer::Community { site, joined } => {
-                if let Some(join) = self.community.borrow_mut().as_mut() {
-                    // The join is over, however it went: a site that refused it, or that was not
-                    // reachable, brings no workspace onto the shell.
-                    join.answered |= join.site == site;
-                }
-                match joined {
-                    Ok(Some((name, granted))) => {
-                        tracing::info!(
-                            target: JOIN_FLOW_TARGET,
-                            site = %site,
-                            workspace = %granted.workspace,
-                            name = %name,
-                            outcome = "granted",
-                            "join: the community's home workspace is granted"
-                        );
-                        self.granted(&site, &name, granted, Some(&site));
-                    }
-                    Ok(None) => tracing::info!(
-                        target: JOIN_FLOW_TARGET,
-                        site = %site,
-                        outcome = "no home workspace",
-                        "join: the community site serves no home workspace to join"
-                    ),
-                    Err(reason) => tracing::info!(
-                        target: JOIN_FLOW_TARGET,
-                        site = %site,
-                        %reason,
-                        outcome = "failed",
-                        "join: the community site did not let this person in; their community stays unjoined"
-                    ),
-                }
-            }
             Answer::Taken { key, name, granted } => {
                 *self.joining.borrow_mut() = None;
                 match granted {
-                    Ok(granted) => self.granted(&key, &name, granted, None),
+                    Ok(granted) => self.granted(&key, &name, granted),
                     Err(reason) => {
                         tracing::info!(
                             target: JOIN_FLOW_TARGET,
@@ -702,7 +520,7 @@ impl Store {
     /// A join the task settled the way in for: keep the name it is listed by
     /// for the slot made once the host admits this device, and hand it to the
     /// caller.
-    fn granted(&self, key: &str, name: &str, granted: Granted, community: Option<&str>) {
+    fn granted(&self, key: &str, name: &str, granted: Granted) {
         self.failures.borrow_mut().remove(key);
         self.names
             .borrow_mut()
@@ -714,15 +532,9 @@ impl Store {
             outcome = "granted",
             "join: the workspace is joined and its slot is next"
         );
-        if let Some(site) = community {
-            self.communities
-                .borrow_mut()
-                .insert(granted.workspace.clone(), site.to_owned());
-        }
         self.joined.borrow_mut().push(Joined {
             name: name.to_owned(),
             granted,
-            community: community.map(str::to_owned),
         });
     }
 
@@ -737,20 +549,6 @@ impl Store {
             .get(workspace)
             .filter(|name| !name.trim().is_empty())
             .cloned()
-    }
-
-    /// The community site `workspace` was joined as its home through, while
-    /// the person's membership of it is not settled: the host admits this
-    /// device after the entry grants, and only then is the community theirs.
-    pub fn community_of(&self, workspace: &str) -> Option<String> {
-        self.communities.borrow().get(workspace).cloned()
-    }
-
-    /// Forget the site `workspace` was joined through, once its host admitted
-    /// this device or refused it: the join is settled either way, and a
-    /// refused one is asked again by the community's own follow.
-    pub fn forget_community(&self, workspace: &str) {
-        self.communities.borrow_mut().remove(workspace);
     }
 
     /// What became of the last read or join, when it went wrong.
@@ -784,26 +582,6 @@ async fn work(
     while let Some(ask) = asks.recv().await {
         let answer = match ask {
             Ask::Read { community, site } => Answer::Read(read(&client, community, site).await),
-            Ask::Join {
-                key,
-                name,
-                entry,
-                host,
-            } => Answer::Joined {
-                key,
-                name,
-                granted: client::through_entry(&entry, host.map(|host| *host))
-                    .map_err(|error| said(&error)),
-            },
-            Ask::Community { site } => Answer::Community {
-                joined: match &client {
-                    Ok(client) => client::join_home(client, &site)
-                        .await
-                        .map_err(|error| said(&error)),
-                    Err(error) => Err(format!("no network to join over: {}", said(error))),
-                },
-                site: site.to_string(),
-            },
             Ask::Take { text, person } => {
                 let taken = client::take(&client, &text, &person).await;
                 Answer::Taken {
@@ -919,16 +697,6 @@ async fn read(
                 {
                     listed.insert(0, home_listing(site, home));
                 }
-                // A site's own workspace is joined at its home, even when
-                // its directory lists it without an entry of its own.
-                if let Some(home) = &read.home {
-                    for listing in listed
-                        .iter_mut()
-                        .filter(|listing| listing.entry.community && listing.entry_url.is_none())
-                    {
-                        listing.entry_url.clone_from(&home.admission);
-                    }
-                }
                 listings.extend(listed);
             }
             Err(error) => failures.push(said(&error)),
@@ -950,8 +718,8 @@ async fn read(
 }
 
 /// A store with no task behind it still says what a join the caller settles
-/// became: those words are the sheet's, whether they come from an entry or from
-/// the caller's own enrollment.
+/// became: those words are the sheet's, whether they come from an invitation
+/// or from the caller's own enrollment.
 #[cfg(test)]
 mod tests {
     #[test]

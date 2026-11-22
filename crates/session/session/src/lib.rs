@@ -147,7 +147,6 @@ mod collaboration;
 #[cfg(target_os = "linux")]
 pub mod comforts;
 #[cfg(target_os = "linux")]
-mod community;
 #[cfg(target_os = "linux")]
 mod config;
 #[cfg(target_os = "linux")]

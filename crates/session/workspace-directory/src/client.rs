@@ -1,27 +1,23 @@
-//! Reading a site, and asking its entry: the requests a directory makes, on
-//! `tilo_net` so the desktop's connection pool and a page's `fetch` run the
-//! same ones.
+//! Reading a site and its directory, and joining with an invitation: the
+//! requests a directory makes, on `tilo_net` so the desktop's connection pool
+//! and a page's `fetch` run the same ones.
 //!
 //! A site's `entry.json` names its home workspace and its directory of public
 //! ones; the directory then lists every public workspace it serves with what
 //! it is, who is in it now and how lively it is
-//! ([`tilo_server_protocol::directory`]). Joining one enters it through its
-//! entry ([`through_entry`]): the device asks its entry on the session it opens
-//! with the entry's host ([`tilo_server_protocol::entering`]), as every device
-//! enters a workspace, so nothing is asked of the entry here.
+//! ([`tilo_server_protocol::directory`]). A workspace is joined with an
+//! invitation, never by entering through a site: no site's entry is read for a
+//! host to dial, and a device joins only where an invitation it holds admits it.
 //!
-//! Every step of a join is logged at `info` under
+//! What a join became is logged at `info` under
 //! [`tilo_startup_metrics::JOIN_FLOW_TARGET`], which the session's log keeps
-//! whatever `RUST_LOG` says: the directory read, the entry chosen, the host's
-//! answer in its own words, the workspace slot made for it, and that slot
-//! taken away with why — so a join that lands nowhere says where it stopped,
-//! in the log the device keeps.
+//! whatever `RUST_LOG` says: whether an invitation verified, and what the host
+//! it admits into answered in its own words.
 
 use std::time::Duration;
 
 use serde::Deserialize;
 use tilo_net::Client;
-use tilo_startup_metrics::JOIN_FLOW_TARGET;
 
 use crate::SiteError;
 
@@ -123,15 +119,6 @@ pub enum Way {
     Invitation(String),
     /// A native link whose signed invitation still has to be fetched by the device.
     Native(tilo_workspace_join::native::InvitationLink),
-    /// The workspace's entry (its base address, `…/directory/<workspace>/`):
-    /// the device enters through it on the session it opens with the entry's
-    /// host, whose origin is the entry's own, and the workspace's own rules
-    /// decide there whether the person is let in.
-    Entry {
-        entry: url::Url,
-        /// The host's certificate and where it is dialled, as its site or directory publishes.
-        host: Option<Box<tilo_server_protocol::web::PageHost>>,
-    },
 }
 
 impl Granted {
@@ -140,16 +127,7 @@ impl Granted {
     pub fn invitation(&self) -> Option<&str> {
         match &self.way {
             Way::Invitation(text) => Some(text),
-            Way::Native(_) | Way::Entry { .. } => None,
-        }
-    }
-
-    /// The entry this device enters through, when it enters through one.
-    #[must_use]
-    pub fn entry_url(&self) -> Option<&url::Url> {
-        match &self.way {
-            Way::Entry { entry, .. } => Some(entry),
-            Way::Native(_) | Way::Invitation(_) => None,
+            Way::Native(_) => None,
         }
     }
 }
@@ -172,11 +150,6 @@ struct HomeJson {
 #[derive(Deserialize)]
 struct HostJson {
     origin: String,
-    /// Who the host is and where it is dialled: the web entry's
-    /// `TILO_WEB_HOME_HOST_INFO`, the host's `web-host.json` line served as a
-    /// string, which the page keeps as the text it was served.
-    #[serde(default)]
-    info: Option<String>,
 }
 
 /// A site's home workspace, as its `entry.json` names it.
@@ -189,8 +162,6 @@ pub struct SiteWorkspace {
     /// The host's admission entry, when it admits people without an
     /// invitation.
     pub admission: Option<url::Url>,
-    /// The host's certificate and where it is dialled, as the site publishes them.
-    pub host: Option<tilo_server_protocol::web::PageHost>,
 }
 
 /// What a site's `entry.json` says: its home workspace and its directory.
@@ -240,24 +211,10 @@ fn home_workspace(entry: &url::Url, home: &HomeJson) -> Result<SiteWorkspace, Si
     } else {
         home.name.trim().to_owned()
     };
-    let host = home
-        .host
-        .info
-        .as_deref()
-        .map(serde_json::from_str::<tilo_server_protocol::web::PageHost>)
-        .transpose()
-        .map_err(|error| {
-            said(
-                "a site names its host in a form this computer cannot read",
-                error,
-                "directory-error-no-workspace",
-            )
-        })?;
     Ok(SiteWorkspace {
         entry: entry.clone(),
         name,
         admission,
-        host,
     })
 }
 
@@ -304,69 +261,6 @@ pub async fn fetch_directory(
             "directory-error-unreadable",
         )
     })
-}
-
-/// The workspace `entry` (its base address, `…/directory/<workspace>/`, below
-/// a host's API prefix or at a site's own path) lets people into, as its path
-/// names it.
-#[must_use]
-pub fn entry_workspace(entry: &url::Url) -> Option<String> {
-    let mut segments = entry.path_segments()?.filter(|segment| !segment.is_empty());
-    segments.find(|segment| *segment == "directory")?;
-    let workspace = segments.next()?;
-    tilo_desktop_model::WorkspaceId::parse(workspace).map(|_| workspace.to_owned())
-}
-
-/// Join through `entry`: the workspace its path names, entered on the session
-/// this device opens with the entry's host. Nothing is asked here; the entry
-/// decides on that session whether the person is let in.
-///
-/// # Errors
-/// The entry names no workspace.
-pub fn through_entry(
-    entry: &url::Url,
-    host: Option<tilo_server_protocol::web::PageHost>,
-) -> Result<Granted, SiteError> {
-    let workspace = entry_workspace(entry).ok_or_else(|| {
-        said(
-            "an entry names no workspace",
-            entry,
-            "directory-error-no-workspace",
-        )
-    })?;
-    tracing::info!(
-        target: JOIN_FLOW_TARGET,
-        entry = %entry,
-        workspace = %workspace,
-        "join: the workspace is entered through its entry"
-    );
-    Ok(Granted {
-        workspace,
-        way: Way::Entry {
-            entry: entry.clone(),
-            host: host.map(Box::new),
-        },
-    })
-}
-
-/// The home workspace of the community `site`: the name the site calls it,
-/// and the entry this device enters it through. `None` when the site serves
-/// no home workspace of its own, which is nothing to join.
-///
-/// This is the entry a listing's Join enters through: a community is joined
-/// as a public workspace is.
-pub async fn join_home(
-    client: &Client,
-    site: &url::Url,
-) -> Result<Option<(String, Granted)>, SiteError> {
-    let Some(home) = read_site(client, site).await?.home else {
-        return Ok(None);
-    };
-    let Some(entry) = home.admission else {
-        return Ok(None);
-    };
-    let granted = through_entry(&entry, home.host)?;
-    Ok(Some((home.name, granted)))
 }
 
 /// An invitation verified for `person`: the workspace it grants, and the text
@@ -628,9 +522,7 @@ pub fn invited_workspace(text: &str, person: &Person) -> Result<String, SiteErro
     match classify(text)? {
         Pasted::Invitation { text, .. } => verify_workspace(&text, person.user),
         Pasted::Native(link) => Ok(link.reference.workspace.to_string()),
-        Pasted::Sealed { .. } | Pasted::Site { .. } => {
-            Err(SiteError::Plain("that is not an invitation".to_owned()))
-        }
+        Pasted::Sealed { .. } => Err(SiteError::Plain("that is not an invitation".to_owned())),
     }
 }
 
@@ -654,8 +546,9 @@ pub struct Taken {
 }
 
 /// Join what the person pasted, as [`classify`] reads it: an invitation's
-/// text is redeemed where it says; a site or a workspace link is joined
-/// through the entry of the workspace it names, on the site it names.
+/// text is redeemed where it says, or the invitation a sealed link names.
+/// Nothing is entered through a site: a link to a site or a workspace that
+/// carries no invitation is no join.
 pub async fn take(client: &Result<Client, SiteError>, text: &str, person: &Person) -> Taken {
     let pasted = match classify(text) {
         Ok(pasted) => pasted,
@@ -695,46 +588,6 @@ pub async fn take(client: &Result<Client, SiteError>, text: &str, person: &Perso
                     .and_then(|sealed| verify_invitation(&sealed.invitation, person)),
             },
         },
-        Pasted::Site { entry, workspace } => match client {
-            Err(error) => Taken {
-                name: host_of(&entry),
-                granted: Err(error.clone()),
-            },
-            Ok(client) => match read_site(client, &entry).await {
-                Ok(read) => {
-                    let name = read
-                        .home
-                        .as_ref()
-                        .map_or_else(|| host_of(&entry), |home| home.name.clone());
-                    let granted = match read
-                        .home
-                        .and_then(|home| home.admission.map(|entry| (entry, home.host)))
-                    {
-                        Some((entry, host)) => {
-                            through_entry(&entry, host).and_then(|granted| match workspace {
-                                Some(workspace) if workspace.to_string() != granted.workspace => {
-                                    Err(SiteError::Plain(
-                                        "that link is for another workspace on this site: ask whoever shared it for an invitation"
-                                            .to_owned(),
-                                    ))
-                                }
-                                _ => Ok(granted),
-                            })
-                        }
-                        None => Err(said(
-                            "a site's home workspace has no entry",
-                            &entry,
-                            "directory-error-no-workspace",
-                        )),
-                    };
-                    Taken { name, granted }
-                }
-                Err(error) => Taken {
-                    name: host_of(&entry),
-                    granted: Err(error),
-                },
-            },
-        },
     }
 }
 
@@ -768,16 +621,10 @@ enum Pasted {
     Sealed {
         link: tilo_workspace_join::sealed::SealedLink,
     },
-    /// A site, whose home workspace its entry admits people to; with the workspace
-    /// a link named, which must be that workspace.
-    Site {
-        entry: url::Url,
-        workspace: Option<tilo_desktop_model::WorkspaceId>,
-    },
 }
 
-/// Read what the person pasted: a sealed link, an invitation's text, a
-/// workspace link, or a site.
+/// Read what the person pasted: a sealed link or an invitation's text, which
+/// a link may carry. A site or a workspace link without one is no join.
 fn classify(text: &str) -> Result<Pasted, SiteError> {
     let text = text.trim();
     if text.is_empty() {
@@ -819,29 +666,32 @@ fn classify(text: &str) -> Result<Pasted, SiteError> {
             if link.secrets.pair.is_some() {
                 return Err("that link pairs a device with a host, not a workspace".into());
             }
-            let tilo_reference::link::Scope::Workspace { id: room, .. } = link.target.scope else {
-                return Ok(Pasted::Site {
-                    entry,
-                    workspace: None,
-                });
+            let tilo_reference::link::Scope::Workspace { .. } = link.target.scope else {
+                return Err(
+                    "that link is for a site, not an invitation to one of its workspaces: ask \
+                     someone in the workspace you want to join for an invite link"
+                        .into(),
+                );
             };
-            let workspace = tilo_desktop_model::WorkspaceId::from(room);
             if let Some(invitation) = link.secrets.invite {
                 return Ok(Pasted::Invitation {
                     text: invitation.expose().to_owned(),
                     entry: Some(entry),
                 });
             }
-            return Ok(Pasted::Site {
-                entry,
-                workspace: Some(workspace),
-            });
+            return Err(
+                "that link names a workspace but carries no invitation: ask someone in it for \
+                 an invite link"
+                    .into(),
+            );
         }
     }
-    Ok(Pasted::Site {
-        entry: site_entry(text)?,
-        workspace: None,
-    })
+    site_entry(text)?;
+    Err(
+        "that is a site, not an invitation: a workspace is joined with an invite link someone \
+         in it sends you"
+            .into(),
+    )
 }
 
 /// Whether `text` is an invitation's text itself.

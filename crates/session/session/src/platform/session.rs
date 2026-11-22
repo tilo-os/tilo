@@ -1591,8 +1591,6 @@ impl Session {
             ui::process::ProcessServices::null().with_clipboard(Arc::new(clipboard.shell())),
         );
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
-        let community =
-            crate::community::Community::for_site(crate::platform::directory::community_site());
         // The person's mentions in the workspaces' records: told through those notifications, kept
         // in the records' store, and opened through this session's own API to the apps.
         let mentions = records_store.clone().map(|store| {
@@ -1707,7 +1705,6 @@ impl Session {
             directory_store,
             boot_join: RefCell::new(boot_join),
             hosted_browser: RefCell::new(options.hosted_browser.take()),
-            community: RefCell::new(community),
             portal,
             file_picker,
             lock,
