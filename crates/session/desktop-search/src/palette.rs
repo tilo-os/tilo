@@ -318,6 +318,9 @@ pub struct DesktopSearch {
     /// The row the host could not carry out, with why: it keeps the reason
     /// under its name until another row is chosen or search closes.
     refusal: Option<(Target, String)>,
+    /// The chosen action whose required arguments are being collected, one step
+    /// at a time, before it runs ([`Collecting`]).
+    collecting: Option<Collecting>,
 }
 
 impl Default for DesktopSearch {
@@ -330,6 +333,91 @@ impl Default for DesktopSearch {
 /// (kinds) it asks, in the desktop's language.
 fn placeholder() -> String {
     crate::i18n::t("search-placeholder")
+}
+
+/// One required parameter of a chosen action, as the step that collects it.
+struct NamedField {
+    /// The parameter's name, what its value is filed under.
+    name: String,
+    /// What the step asks and the control it uses.
+    spec: ui::ArgumentSpec,
+    /// Whether the value is a number, parsed before it is filed.
+    numeric: bool,
+}
+
+/// An action whose required arguments the palette collects one step at a time
+/// before it runs: the person filled the row's one line by choosing the rows the
+/// desktop offers, and an action that takes more than one is asked each in turn,
+/// each in the control its type asks for, so every action runs from the search.
+struct Collecting {
+    /// The row chosen: its id is what the steps answer under, its target what runs.
+    hit: Hit,
+    /// The parameters still unseen and the ones already answered, in order.
+    fields: Vec<NamedField>,
+    /// Which field the open step is collecting.
+    index: usize,
+    /// The values collected so far, by parameter name.
+    arguments: serde_json::Map<String, serde_json::Value>,
+    /// The modifier the person held over the row.
+    held: Option<ActivationModifier>,
+}
+
+/// What `param` asks for as a palette step, in the control its type takes;
+/// `None` for a type the palette has no control for, which is left to the app.
+fn field_of(param: &tilo_actions::ActionParam) -> Option<NamedField> {
+    use tilo_actions::ParamType;
+    let name = param.name.to_string();
+    let prompt = if param.description.is_empty() {
+        name.clone()
+    } else {
+        param.description.to_string()
+    };
+    let bound = |key: &str| {
+        param
+            .schema
+            .as_ref()
+            .and_then(|schema| schema.get(key))
+            .and_then(serde_json::Value::as_f64)
+    };
+    let (kind, numeric) = match param.ty {
+        ParamType::Text => (ui::ArgumentKind::Text, false),
+        ParamType::Secret => (ui::ArgumentKind::Secret, false),
+        ParamType::Integer | ParamType::Number => (
+            ui::ArgumentKind::Number {
+                min: bound("minimum"),
+                max: bound("maximum"),
+                step: 1.0,
+            },
+            true,
+        ),
+        _ => return None,
+    };
+    Some(NamedField {
+        name,
+        spec: ui::ArgumentSpec {
+            prompt,
+            placeholder: String::new(),
+            prefill: None,
+            kind,
+        },
+        numeric,
+    })
+}
+
+/// The required parameters of `invoke`'s action the person still has to answer,
+/// when there is more than the one the palette's own step collects: every
+/// required parameter gets a control, or `None` leaves the row to the app when
+/// one of them is a type the palette cannot ask.
+fn fields_to_collect(invoke: &crate::model::InvokeTarget) -> Option<Vec<NamedField>> {
+    let descriptor = invoke.descriptor.as_ref()?;
+    let mut fields = Vec::new();
+    for param in &descriptor.params {
+        if !param.required || invoke.arguments.contains_key(param.name.as_ref()) {
+            continue;
+        }
+        fields.push(field_of(param)?);
+    }
+    (fields.len() >= 2).then_some(fields)
 }
 
 impl DesktopSearch {
@@ -369,6 +457,7 @@ impl DesktopSearch {
             shown_rows: std::collections::HashMap::new(),
             scope: Scope::Workspace,
             refusal: None,
+            collecting: None,
         }
     }
 
@@ -1006,46 +1095,134 @@ impl DesktopSearch {
         ui::widget::Widget::set_focus(&mut self.palette, true);
     }
 
+    /// Open the step for the current field of the chosen action: the palette's
+    /// own field, in the control that field's type asks for.
+    fn open_current_field(&mut self) {
+        let Some(collecting) = self.collecting.as_ref() else {
+            return;
+        };
+        let Some(field) = collecting.fields.get(collecting.index) else {
+            return;
+        };
+        let (id, spec) = (collecting.hit.id.clone(), field.spec.clone());
+        self.palette.open_argument_step(id, spec);
+        ui::widget::Widget::set_focus(&mut self.palette, true);
+    }
+
+    /// File the value an open step answered, and open the next field or run the
+    /// action once every parameter has one. Returns whether the outcome was one
+    /// of the collected fields (and so is not a fresh row choice).
+    fn answered_collected_field(&mut self, outcome: &ui::CommandOutcome) -> bool {
+        let Some(value) = outcome.argument.as_ref() else {
+            return false;
+        };
+        let done = {
+            let Some(collecting) = self.collecting.as_mut() else {
+                return false;
+            };
+            if outcome.id != collecting.hit.id {
+                return false;
+            }
+            let Some(field) = collecting.fields.get(collecting.index) else {
+                return false;
+            };
+            let json = if field.numeric {
+                // A text that is not a number runs the action with the words as
+                // typed, which the action then says are no number in its own
+                // words; the step does not refuse it here.
+                let number = tilo_failure::ignored!(
+                    "a number step's text that is not a number is passed on as words",
+                    value.trim().parse::<f64>().ok()
+                );
+                number.and_then(serde_json::Number::from_f64).map_or_else(
+                    || serde_json::Value::String(value.clone()),
+                    serde_json::Value::Number,
+                )
+            } else {
+                serde_json::Value::String(value.clone())
+            };
+            let name = field.name.clone();
+            collecting.arguments.insert(name, json);
+            collecting.index = collecting.index.saturating_add(1);
+            collecting.index >= collecting.fields.len()
+        };
+        if done {
+            self.finish_collected();
+        } else {
+            self.open_current_field();
+        }
+        true
+    }
+
+    /// Run the chosen action now every required parameter has a value: the row
+    /// it came from, carried out with all of them at once.
+    fn finish_collected(&mut self) {
+        let Some(collecting) = self.collecting.take() else {
+            return;
+        };
+        let mut target = collecting.hit.target;
+        target.place_by(collecting.held);
+        if let Target::Invoke(invoke) = &mut target {
+            for (name, value) in collecting.arguments {
+                invoke.arguments.entry(name).or_insert(value);
+            }
+        }
+        self.choice = Some(target);
+        self.palette.close();
+    }
+
     /// Follow the palette after it handled input: take a chosen row, and
     /// notice that the palette closed itself (a choice or Escape). Returns
     /// whether search closed; the caller then [`refresh`](Self::refresh)es
     /// an open palette for its edited query.
     pub fn observe(&mut self) -> bool {
+        // Backing out of a step abandons the action it was collecting for; the
+        // list is where the person was, so the search stays open over it.
+        if self.palette.take_argument_cancelled() {
+            self.collecting = None;
+        }
         if let Some(outcome) = self.palette.take_outcome() {
-            let more = more_row(&outcome.id);
-            if let Some(more) = more {
-                self.expand(more);
-            } else if outcome.id == ALL_RESULTS_ID {
-                self.show_everything();
-            } else if outcome.id == ALL_APPS_ID {
-                // The catalogue of every app: the desktop lists them all,
-                // by name, as its empty shell's launchpad does.
-                self.choice = Some(Target::Command {
-                    id: crate::model::ALL_APPS_COMMAND.into(),
-                });
-                self.palette.close();
-            } else if outcome.argument.is_none()
-                && (self.shown_query.as_deref() != Some(self.palette.query())
-                    || (self.own_sources_owe()
-                        && self.auto_selected.as_deref() == Some(outcome.id.as_str())))
-            {
-                // Enter came in the same batch of input as the keys before it, ahead of the frame
-                // that answers them: the rows on screen are an earlier query's, and the row it
-                // named is one of those ("canvas" and Enter started a call, the top row of the
-                // empty search). Enter waits for the typed query's answer and takes its top row. A
-                // row's own line (an action's argument) is typed in the field after its query, so
-                // an Enter that carries one is never this. So is one on the row put first while the
-                // desktop's own sources are still out: the person pressed for the best row.
-                self.choose_top_of_typed_query();
-            } else if let Some(hit) = pressed_hit(self, &outcome.id) {
-                self.choose_hit(hit, outcome.argument, self.palette.chosen_with());
-            }
+            self.handle_outcome(outcome);
         }
         if self.sources.is_none() || self.palette.is_open() {
             return false;
         }
         self.finish();
         true
+    }
+
+    /// Take the row the palette handed out: a step of the action being
+    /// collected, a group asked whole, or a row the person chose.
+    fn handle_outcome(&mut self, outcome: ui::CommandOutcome) {
+        if self.answered_collected_field(&outcome) {
+            // A field of the action being collected: the next step, or the run.
+        } else if let Some(more) = more_row(&outcome.id) {
+            self.expand(more);
+        } else if outcome.id == ALL_RESULTS_ID {
+            self.show_everything();
+        } else if outcome.id == ALL_APPS_ID {
+            // The catalogue of every app: the desktop lists them all,
+            // by name, as its empty shell's launchpad does.
+            self.choice = Some(Target::Command {
+                id: crate::model::ALL_APPS_COMMAND.into(),
+            });
+            self.palette.close();
+        } else if outcome.argument.is_none()
+            && (self.shown_query.as_deref() != Some(self.palette.query())
+                || (self.own_sources_owe()
+                    && self.auto_selected.as_deref() == Some(outcome.id.as_str())))
+        {
+            // Enter came in the same batch of input as the keys before it, ahead of the frame
+            // that answers them: the rows on screen are an earlier query's, and the row it
+            // named is one of those ("canvas" and Enter started a call, the top row of the
+            // empty search). Enter waits for the typed query's answer and takes its top row. A
+            // row's own line (an action's argument) is typed in the field after its query, so
+            // an Enter that carries one is never this. So is one on the row put first while the
+            // desktop's own sources are still out: the person pressed for the best row.
+            self.choose_top_of_typed_query();
+        } else if let Some(hit) = pressed_hit(self, &outcome.id) {
+            self.choose_hit(hit, outcome.argument, self.palette.chosen_with());
+        }
     }
 
     /// Enter on what the field holds, typed before the search was up to show any of it: the top row
@@ -1070,6 +1247,25 @@ impl DesktopSearch {
     /// it is remembered, and its target is the choice. A switch stays in
     /// view, showing what it flipped to; anything else closes search.
     fn choose_hit(&mut self, hit: Hit, argument: Option<String>, held: Option<ActivationModifier>) {
+        // An action that takes more than the palette's one line collects every
+        // required parameter first, one step at a time, then runs: choosing the
+        // row opens the first step rather than running it short.
+        if argument.is_none()
+            && let Target::Invoke(invoke) = &hit.target
+            && let Some(fields) = fields_to_collect(invoke)
+        {
+            self.remember(&hit);
+            self.refusal = None;
+            self.collecting = Some(Collecting {
+                hit,
+                fields,
+                index: 0,
+                arguments: serde_json::Map::new(),
+                held,
+            });
+            self.open_current_field();
+            return;
+        }
         // A source switched off or on again: the rows change under the
         // switch, which stays where it is so it can be flipped back.
         if let Target::Prefer { source, enabled } = &hit.target {

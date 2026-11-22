@@ -1771,3 +1771,92 @@ pub(super) fn arrow_down(search: &mut DesktopSearch) -> bool {
     );
     search.palette().cursor() != before
 }
+
+/// An action that takes two values, as the workspace's catalogue offers one.
+fn two_valued() -> Vec<PublishedActions> {
+    let offer = tilo_actions::published::Offer {
+        resource: "terminal.machine-secrets",
+        resource_kind: "terminal.machine-secrets",
+        action: "add-secret",
+        label: "Add secret",
+        description: None,
+        kind: tilo_actions::ActionKind::Undoable,
+        operation: tilo_actions::OperationKind::Document,
+        confirm: false,
+        asks: None,
+        keywords: vec!["secret", "vault"],
+        icon: None,
+    };
+    let mut action = tilo_actions::published::PublishedAction::offered(&offer, "Terminal");
+    action.params = vec![
+        tilo_actions::ActionParam::required("variable", tilo_actions::ParamType::Text, "Variable"),
+        tilo_actions::ActionParam::required("item", tilo_actions::ParamType::Text, "Vault item"),
+    ];
+    vec![PublishedActions {
+        app: "so.tilo.terminal".into(),
+        workspace: "workspace".into(),
+        actions: vec![action.descriptor(tilo_actions::ExecutionLocus::ClientLocal)],
+        types: std::collections::BTreeMap::new(),
+    }]
+}
+
+#[test]
+fn an_action_taking_two_values_is_asked_each_in_turn_then_runs_with_both() {
+    let mut search = DesktopSearch::new();
+    search.open(SearchData {
+        published: two_valued(),
+        scope: Scope::Workspace,
+        ..data()
+    });
+    settled(&mut search);
+    search.set_query("secret");
+    settled(&mut search);
+    let at = search
+        .palette()
+        .visible_entries()
+        .iter()
+        .position(|entry| entry.label == "Add secret")
+        .expect("the action answers the query");
+    search.palette_mut().set_cursor(at);
+    search.palette_mut().activate_selected();
+    assert!(
+        !search.observe(),
+        "choosing a row that takes more asks its first value, leaving search open"
+    );
+    assert!(
+        search.palette().argument_buffer().is_some(),
+        "the first parameter is asked in the field"
+    );
+    let id = search
+        .collecting
+        .as_ref()
+        .expect("the action is being collected")
+        .hit
+        .id
+        .clone();
+    assert!(search.answered_collected_field(&ui::CommandOutcome {
+        id: id.clone(),
+        argument: Some("API_TOKEN".into()),
+    }));
+    assert!(
+        search.palette().argument_buffer().is_some(),
+        "the next parameter is asked before the action runs"
+    );
+    assert!(search.answered_collected_field(&ui::CommandOutcome {
+        id,
+        argument: Some("vault.item:0123456789abcdef0123456789abcdef".into()),
+    }));
+    let Some(Target::Invoke(invoke)) = search.take_choice() else {
+        panic!("the action runs by address once every value is given");
+    };
+    assert_eq!(
+        invoke.arguments.get("variable"),
+        Some(&serde_json::Value::String("API_TOKEN".into()))
+    );
+    assert_eq!(
+        invoke.arguments.get("item"),
+        Some(&serde_json::Value::String(
+            "vault.item:0123456789abcdef0123456789abcdef".into()
+        ))
+    );
+}

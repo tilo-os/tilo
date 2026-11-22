@@ -145,6 +145,42 @@ pub(super) fn always_shown(kind: &ResourceKind) -> bool {
 
 /// One hit as a palette row: an application wears its own artwork, else its
 /// own glyph, the one its windows wear, never the generic grid every app shared.
+/// The row one published action is: what the action says of itself, and the
+/// line it asks for here — or none, when the desktop collects every required
+/// parameter in turn instead.
+fn invoke_entry(id: String, hit: &Hit, invoke: &crate::model::InvokeTarget) -> CommandEntry {
+    let Some(descriptor) = &invoke.descriptor else {
+        // An item a row opens opens in a window of its own beside, as an app does.
+        return if invoke.address.action == crate::model::OPEN_ACTION {
+            CommandEntry::new(id, hit.title.clone()).alternate(
+                ui::search::ActivationModifier::Ctrl,
+                crate::i18n::t("search-open-beside"),
+            )
+        } else {
+            CommandEntry::new(id, hit.title.clone())
+        };
+    };
+    let mut entry = CommandEntry::from_descriptor(id, descriptor);
+    // A row whose one line is already decided — a capture, typed as the search
+    // itself — runs on Enter instead of asking for the line again. An action
+    // that takes more than the palette's one line is collected by the desktop,
+    // every required parameter in turn: the row hands the choice back rather
+    // than asking one here and running short.
+    if descriptor
+        .prompt_param()
+        .is_some_and(|param| invoke.arguments.contains_key(param))
+        || descriptor
+            .params
+            .iter()
+            .filter(|param| param.required)
+            .count()
+            >= 2
+    {
+        entry = entry.with_preset();
+    }
+    entry
+}
+
 pub(super) fn entry_for(hit: &Hit, id: String) -> CommandEntry {
     let (mut entry, icon) = match &hit.target {
         Target::Action(action) => {
@@ -175,29 +211,7 @@ pub(super) fn entry_for(hit: &Hit, id: String) -> CommandEntry {
             )
         }
         Target::Invoke(invoke) => (
-            match &invoke.descriptor {
-                Some(descriptor) => {
-                    let mut entry = CommandEntry::from_descriptor(id, descriptor);
-                    // A row whose one line is already decided — a capture,
-                    // typed as the search itself — runs on Enter instead of
-                    // asking for the line again.
-                    if descriptor
-                        .prompt_param()
-                        .is_some_and(|param| invoke.arguments.contains_key(param))
-                    {
-                        entry = entry.with_preset();
-                    }
-                    entry
-                }
-                // An item a row opens opens in a window of its own beside, as an app does.
-                None if invoke.address.action == crate::model::OPEN_ACTION => {
-                    CommandEntry::new(id, hit.title.clone()).alternate(
-                        ui::search::ActivationModifier::Ctrl,
-                        crate::i18n::t("search-open-beside"),
-                    )
-                }
-                None => CommandEntry::new(id, hit.title.clone()),
-            },
+            invoke_entry(id, hit, invoke),
             hit.icon
                 .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
         ),
