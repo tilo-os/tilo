@@ -674,7 +674,10 @@ workspace vault, despite their names.
 - **What is a person's alone** (their keys, devices, appearance, the list of
   their workspaces, their servers) lives in the person's own workspace,
   where no other person is a member (their agents may be, acting for
-  them). There is no second kind of store for it.
+  them). There is no second kind of store for it. A device enters the person's
+  own workspace from its ticket and certificate, and reads the list of the
+  person's workspaces from it, so that list never names the own workspace
+  itself.
 
 ### What goes
 
