@@ -54,9 +54,12 @@ for image in "${images[@]}"; do
       bins+=(tilo-api tilolang-process) ;;
     vm-host)
       # tilo-runtime already depends on the runtime packages the host serves from; one feature
-      # resolution for the three programs.
-      packages+=(-p linux-vm --bin tilo-linux-vm --bin tilo-hosted-jail -p tilo-runtime --bin tilo-runtime)
-      bins+=(tilo-linux-vm tilo-hosted-jail tilo-runtime) ;;
+      # resolution for its programs. The host joins its person's identity on first start with
+      # `tilo login` and the ticket it was given, which reaches the daemon beside it, and whoever
+      # starts it reads the device key that login left with tilo-device-admin.
+      packages+=(-p linux-vm --bin tilo-linux-vm --bin tilo-hosted-jail -p tilo-runtime --bin tilo-runtime \
+                 -p tilo-cli --bin tilo -p tilo-device-admin --bin tilo-device-admin)
+      bins+=(tilo-linux-vm tilo-hosted-jail tilo-runtime tilo tilo-device-admin) ;;
     server)
       # The command and the daemon beside it are what a volume first booting as one of a person's
       # devices runs: `tilo login` spends the ticket it was given, and reaches its own daemon,
