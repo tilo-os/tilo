@@ -32,7 +32,7 @@ mod workspaces;
 
 use crate::personal_devices::PersonalDevices;
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, profile, unix};
-use commits::{RecordCreation, ServiceCommits};
+use commits::{RecordCreation, service_commits};
 use service::ServiceWorkspaces;
 use std::{
     io,
@@ -354,7 +354,7 @@ fn start_broker(
         Some(workspaces as Arc<dyn WorkspaceAuthority>),
         PeerPublisher::with_optional_owner_commit(
             None,
-            ServiceCommits::new(parts.workspaces, Arc::clone(&parts.creation))
+            service_commits(parts.workspaces, Arc::clone(&parts.creation))
                 as Arc<dyn OwnerCommitService>,
         ),
         None,
