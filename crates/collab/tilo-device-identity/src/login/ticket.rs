@@ -58,11 +58,26 @@ pub struct Reached {
     pub direct: Vec<SocketAddr>,
 }
 
+/// What a ticket is for: a computer logging in as one of the person's devices, or a device
+/// approving the tab that showed the ticket.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Direction {
+    /// `tilo login <ticket>`: this computer becomes a device of the person.
+    #[default]
+    Login,
+    /// `tilo device add <ticket>`: a device of the person signs the tab's certificate.
+    SignIn,
+}
+
 /// What a new computer needs to be added to a person's devices: where the issuing device is
-/// reached, and the one-time secret it takes.
+/// reached, what the ticket is for, and the one-time secret it takes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ticket {
     pub issuer: Reached,
+    /// The direction the issuer serves the ticket in. Read explicitly, never guessed from the
+    /// ticket's shape: `tilo login` and `tilo device add` each take their own.
+    pub direction: Direction,
     pub secret: [u8; 32],
 }
 
@@ -76,10 +91,22 @@ impl Ticket {
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn new(issuer: Reached) -> Self {
+        Self::in_direction(Direction::Login, issuer)
+    }
+
+    /// A ticket `direction` is served in, for the device reached at `issuer`, with a fresh
+    /// secret.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn in_direction(direction: Direction, issuer: Reached) -> Self {
         use getrandom::rand_core::Rng as _;
         let mut secret = [0; 32];
         getrandom::rand_core::UnwrapErr(getrandom::SysRng).fill_bytes(&mut secret);
-        Self { issuer, secret }
+        Self {
+            issuer,
+            direction,
+            secret,
+        }
     }
 
     /// The ticket as the one string a person hands on.
