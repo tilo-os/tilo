@@ -22,7 +22,6 @@ exclude = [
     "activity",
     "assistant",
     "canvas",
-    "chat",
     "code-editor",
     "db-client",
     "diffmerge",

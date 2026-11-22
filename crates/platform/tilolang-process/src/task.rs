@@ -884,7 +884,7 @@ mod tests {
         native(
             "so.tilo.chat",
             "Chat",
-            include_str!("../../../../apps/chat/surface.toml"),
+            include_str!("../../tilolang-tilo/tests/native-chat/surface.toml"),
         )
     }
 
@@ -1704,7 +1704,7 @@ mod tests {
 
     /// `tilolang check`'s packages: what the apps' directories publish.
     fn checked() -> Vec<PackageMeta> {
-        let chat = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/chat");
+        let chat = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tilolang-tilo/tests/native-chat");
         tilolang_tilo::catalogue::published_packages(&[chat]).expect("the surfaces read")
     }
 }

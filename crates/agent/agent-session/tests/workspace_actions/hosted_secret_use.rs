@@ -384,7 +384,6 @@ impl Hosted {
             },
             Some(Arc::new(crate::common::catalogue)),
             None,
-            None,
             browsers.clone(),
         )
         .await

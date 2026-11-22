@@ -153,10 +153,9 @@ fn now_ms() -> u64 {
 
 /// Whether the content a record of `app` names is kept by another keeper: the
 /// shared desktop's layout, which names none and is written with every window
-/// moved, and Chat's, whose members' files are kept within a quota
-/// ([`crate::workspace_bots::attachments`]).
+/// moved. Chat's files are kept here as every other app's are.
 fn another_keeper(app: &str) -> bool {
-    app == tilo_desktop_model::ownership::DESKTOP_APP || app == tilo_app_id::apps::CHAT
+    app == tilo_desktop_model::ownership::DESKTOP_APP
 }
 
 /// How many blobs of the content the records of `workspace` name its host

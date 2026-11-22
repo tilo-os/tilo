@@ -15,15 +15,14 @@ apps' published state or the shell, never off the agent's own reply.
            folder's entries, and the device Files' changes are carried out on
   rename   `files.folder#rename` renames a file of the seeded folder: the new
            name is on disk, and Files' document holds the change, settled
-  share    the agent starts Chat (`chat#start`) and the file goes to one of
-           its conversations through Chat's `send`, the one action the
-           window's send box sends with
+  share    the agent makes a channel in Chat (`chat#new_channel`) and tells it
+           of the file through Chat's `send`, the one action the window's send
+           box sends with, and the message is there to read
   quiet    do not disturb is turned on through the session's own action, and
            the shell holds it
   ask      the person asks from the canvas: the question is their send to the
-           agent they keep, read back from Chat's messages as a message of
-           their direct conversation with it, and Chat opens that
-           conversation on the shell
+           agent they keep, which the workspace's search finds in Chat, and
+           Chat opens the conversation on the shell
 
 Usage:
   ./agent-files-story.py [--build] [--state DIR] [--shots DIR] [--remote-exec PREFIX]
@@ -32,7 +31,6 @@ Builds nothing unless `--build` is given; `TILO_NESTED_SESSION_BUILD_EXEC` is
 the build's command prefix, as for `real_apps.py`.
 """
 import argparse
-import base64
 import json
 import os
 import re
@@ -43,13 +41,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import real_apps as ra
 
-APPS = "file-explorer chat settings"
+APPS = "file-explorer settings"
+# The tilolang apps installed beside them, by their directory under apps/tl.
+TL_APPS = ["chat"]
+# The channel the agent tells of the file in.
+CHANNEL = "stories"
 SEEDED = "draft.txt"
 RENAMED = "story.txt"
 BODY = "the agent's story\n"
 QUESTION = "what did you just rename?"
-# Chat's first part of a workspace's messages (`chat::parts::part(0)`).
-MESSAGES = "derived:part.0@derived:messages@derived:default@tab:0000000000000000"
 
 failures: list[str] = []
 
@@ -130,37 +130,6 @@ def files_home(session: "ra.Session") -> Path:
     return home
 
 
-def put(agent: "ra.Agent", data: bytes) -> str:
-    """Upload `data` through the server's content puts; its content reference."""
-    begun, failed = call(agent, "tilo_put_begin", {"size": len(data)})
-    upload = int(re.search(r"\d+", begun).group()) if not failed else -1
-    call(agent, "tilo_put_append", {"upload": upload, "offset": 0,
-                                    "chunk": base64.b64encode(data).decode()})
-    finished, _ = call(agent, "tilo_put_finish", {"upload": upload})
-    found = re.search(r"tilo\.content:[0-9a-f]+", finished)
-    if not found:
-        raise ra.Failed(f"no content reference: {finished}")
-    return found.group()
-
-
-def asked_in(session: "ra.Session", text: str) -> str:
-    """The conversation the message saying `text` is in, as Chat's messages
-    read back through `record_read`; "" while no such message is there."""
-    answer = session.control({"op": "record_read", "app": "so.tilo.chat",
-                              "records": [MESSAGES], "wait_ms": 0}).get("answer") or {}
-
-    def found(value) -> str:
-        if isinstance(value, dict):
-            if value.get("text") == text and isinstance(value.get("channel"), str):
-                return value["channel"]
-            return next((hit for hit in map(found, value.values()) if hit), "")
-        if isinstance(value, list):
-            return next((hit for hit in map(found, value) if hit), "")
-        return ""
-
-    return found(answer)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--build", action="store_true", help="build the session first")
@@ -176,8 +145,9 @@ def main() -> int:
     shots = Path(options.shots or state / "shots")
     shots.mkdir(parents=True, exist_ok=True)
     ra.prepare(state, apps=APPS, built=options.build, remote=options.remote_exec)
+    tapps = ra.tl_packages(state, state / "tl", TL_APPS, build=options.build)
     with ra.Session(state) as session:
-        session.start(apps=APPS, fresh=True, tag="agent-story")
+        session.start(apps=APPS, fresh=True, tag="agent-story", tapps=tapps)
         home = files_home(session)
         (home / RENAMED).unlink(missing_ok=True)
         if (home / "notes").is_dir():
@@ -225,21 +195,16 @@ def main() -> int:
               and '"done"' in text, text[-200:])
         session.snapshot(shots / "renamed.png")
 
-        print("\n[share] the file goes to a conversation through Chat's send")
-        reference = put(agent, BODY.encode())
-        text, failed = call(agent, "tilo_do", {"path": "chat#start", "wait_ms": 30000}, session)
-        channel = re.search(r"^(\S+)/\s+chat\.workspace\.channels", text, re.M)
-        check("Chat lists a conversation to share into", not failed and bool(channel), text[:120])
-        conversation = channel.group(1) if channel else ""
-        send = {"path": "chat#send", "args": {
-            "to": [{"kind": "conversation", "id": conversation, "name": conversation}],
-            "attached": [{"kind": "file", "name": RENAMED,
-                          "blob": reference.removeprefix("tilo.content:"),
-                          "size": len(BODY.encode())}],
-            "text": "the renamed story"}}
-        text, failed = call(agent, "tilo_do", send, session)
-        check("Chat's send takes the file into the conversation", not failed
-              and '"accepted":true' in text.replace(" ", ""), text[:200])
+        print("\n[share] the agent tells a conversation of the file through Chat's send")
+        text, failed = call(agent, "tilo_do", {"path": "chat#new_channel", "args": {"name": CHANNEL},
+                                               "wait_ms": 30000}, session)
+        check("Chat makes a channel to share into", not failed, text[:200])
+        told = f"the renamed story is {RENAMED}"
+        text, failed = call(agent, "tilo_do", {"path": f"chat/{CHANNEL}#send", "args": {"body": told}},
+                            session)
+        check("Chat's send writes in the channel", not failed, text[:200])
+        text, _ = call(agent, "tilo_read", {"path": f"chat/{CHANNEL}"})
+        check("the channel holds the message", told in text, text[-300:])
         session.snapshot(shots / "shared.png")
         check("neither Files nor Chat got a window on the shell",
               no_window_of(session, "files") and no_window_of(session, "chat"),
@@ -262,19 +227,20 @@ def main() -> int:
             quiet = False
         check("the bar's bell says notifications are silenced", bool(quiet), str(quiet or before))
         session.snapshot(shots / "quiet.png")
-        agent.close()
 
         print("\n[ask] the person asks the agent they keep, from the canvas")
         # The canvas entry's own action, as the person submits it.
         session.invoke("so.tilo.session", "shell:layout\x1fplace-found",
                        {"text": QUESTION, "x": 80, "y": 60})
+        def found() -> str:
+            text, _ = call(agent, "tilo_find", {"query": QUESTION})
+            return text if "chat/" in text else ""
+
         try:
-            channel = ra.until("the question in Chat's messages",
-                               lambda: asked_in(session, QUESTION), 60, 0.25)
+            where = ra.until("the question in Chat, through the workspace's search", found, 60, 0.5)
         except ra.Failed:
-            channel = ""
-        check("the question lands in the person's direct conversation with the agent",
-              channel.startswith("direct:") and "agent:" in channel, channel)
+            where = ""
+        check("the question lands in Chat, where search finds it", bool(where), where[:300])
         try:
             opened = ra.until("Chat's window on the shell", lambda: any(
                 window.get("app_id") == ra.app_id("chat") for window in session.windows()),
@@ -284,6 +250,7 @@ def main() -> int:
         check("Chat opens the conversation on the shell", bool(opened),
               json.dumps(session.windows()))
         session.snapshot(shots / "asked.png")
+        agent.close()
 
     print()
     if failures:

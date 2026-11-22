@@ -1,12 +1,5 @@
-# Chat — Tilo application manifest.
-#
-# The conversation syncs through the collab service and calls run through
-# the shell's voice service, so the app opens no sockets of its own.
-#
-# Beyond the system read profile it needs, as a consented capability:
-# read on `/var/workspace` for the attachment picker.
-#
-
+# A native app as its manifest and committed surface describe it: what a session, a task and
+# `tilolang check` read a native app by. The tests read it in place of an app the build ships.
 
 [package]
 id       = "so.tilo.chat"

@@ -3,7 +3,7 @@
 
 One session (dist/dev/nested-session.sh, headless, lavapipe only) runs what a person's session
 runs: the shell with its broker and workspace host, the launcher and its sandboxes, the
-host, native Tasks, Chat and the agent runtime, and four tilolang apps built from apps/tl (Notes,
+host, native Tasks and the agent runtime, and four tilolang apps built from apps/tl (Notes,
 Tasks, Mail, Chat) and installed as signed packages. Every check below drives it the way a person,
 the REPL or an agent does, and each one is there because a bug in that path was invisible to the
 unit tests and found only by starting a session by hand:
@@ -39,8 +39,10 @@ unit tests and found only by starting a session by hand:
            a new one when they keep none — through the session's one send
            (`session:send-to#send`, the action a window's box, text typed on the canvas and an
            agent all run): the shell's search is typed into with the request, and its row "Send to
-           …" is chosen. The session then starts that agent, it asks the model, and its answer
-           lands in the person's conversation with it, where Chat shows it. The model is
+           …" is chosen. The request is written to the agent in the person's direct
+           conversation with it (Chat's `write_to`), which asks the agent; the session starts
+           that agent, it asks the model, and its answer is the ask's reply, which Chat shows
+           under the message. The model is
            TestOnlyFixedReplyModel below: a loopback OpenAI-compatible endpoint inside this script
            that gives one fixed reply. It exists for this test only; never point a live session at
            it.
@@ -104,10 +106,9 @@ sys.path.insert(0, str(HERE / "agent-tilolang"))
 from replay_model import OpenAiReplay  # noqa: E402
 
 # The tilolang apps, by their directory under apps/tl, and the native apps beside them: the
-# agent runtime that answers the person's asks, native Tasks, and Chat, which keeps the
-# conversations an agent works in and the agents a workspace keeps.
+# agent runtime that answers the person's asks, and native Tasks.
 TL_APPS = ["notes", "tasks", "mail", "chat"]
-NATIVE = "agent tasks chat"
+NATIVE = "agent tasks"
 # The provider the session publishes its own actions under, the shell's among them
 # (tilo_actions::remote::SESSION_ACTIONS_PROVIDER), and the resource the shell publishes, whose
 # `search` verb opens search on what was typed (tilo_desktop::verbs::SHELL_RESOURCE) and
@@ -132,9 +133,9 @@ TOOL_TURNS = [
     ("tilo_ls", {"path": "notes"}),
     ("tilo_do", {"path": "notes#new_note", "args": {"title": "Release checklist"}}),
 ]
-# Chat's messages as the workspace's record holds them: what was said and in which
-# conversation (apps/chat/src/record.rs, `derived:messages`).
-CHAT_MESSAGES = "derived:part.0@derived:messages@derived:default@tab:0000000000000000"
+# Each ask the workspace holds, what was asked in it and the agent's reply, as the REPL prints them
+# (apps/tl/agent app.tl `Agents.replies`): what Chat shows under the message the person wrote.
+ASKED = "agent.agents.replies.map(r -> [r.ask.said, r.body])"
 # What the session and its apps log when the ask or the run's own steps are refused
 # (crates/session/session/src/send_to.rs, apps.rs, apps/agent/src/session).
 RUN_REFUSALS = [
@@ -387,29 +388,6 @@ def windows_by_app(session: Session) -> dict[str, dict]:
     return {w.get("app_id"): w for w in session.windows()}
 
 
-def said(session: Session, wait_ms: int = 0) -> list[dict]:
-    """Chat's messages as the workspace's record holds them, each by the words it says and the
-    conversation it is in: what a person reads in Chat, read through the record API as they
-    read it. Held until the record moves or `wait_ms` passed when one is given."""
-    answer = session.control_json("raw", json.dumps({
-        "op": "resource_read", "app": "so.tilo.chat", "records": [CHAT_MESSAGES],
-        "wait_ms": wait_ms}))
-    messages: list[dict] = []
-
-    def walk(value: Any) -> None:
-        if isinstance(value, dict):
-            if isinstance(value.get("text"), str) and isinstance(value.get("channel"), str):
-                messages.append({"text": value["text"], "channel": value["channel"]})
-            for inner in value.values():
-                walk(inner)
-        elif isinstance(value, list):
-            for inner in value:
-                walk(inner)
-
-    walk(answer.get("answer") or {})
-    return messages
-
-
 class Repl:
     """`tilolang repl --session` on the session's own API, one entry at a time. Off a terminal the
     REPL echoes each line it reads after its prompt (`tl> entry`), so an entry's answer is what it
@@ -657,11 +635,11 @@ def check_repl(session: Session, out: Path) -> dict:
         (out / "repl-transcript.txt").write_text(repl.transcript)
 
 
-def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
+def check_ask(session: Session, model: TestOnlyFixedReplyModel, out: Path) -> dict:
     """Handing an agent work from search sends the person's request to the agent they keep (a new
     one when they keep none) through the session's one send, and the agent the session starts
-    answers it: it asks the model, and its answer lands in the person's conversation with it, where
-    Chat shows it."""
+    answers it: it asks the model, and its answer is the reply to the ask, which Chat shows under
+    the person's message."""
     session.provision(model)
     # What the person does: the shell's own search, with the request typed into it.
     shell = wait_for("the shell's search", lambda: next((
@@ -699,19 +677,23 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
     wait_for("the agent the ask made, asking the model", reached_the_agent,
              lambda: f"model errors {model.errors}\n{session.log_tail()}")
 
-    def answered() -> dict | None:
-        """The agent's answer, in the conversation the person's request is in: where a person
-        reads it."""
-        messages = said(session)
-        asked = next((m for m in messages if m["text"] == REQUEST), None)
-        if asked is None:
-            return None
-        return next((m for m in messages
-                     if m["channel"] == asked["channel"] and m["text"].strip() == FIXED_REPLY), None)
+    repl = Repl(session, out)
+    try:
+        def asked() -> str:
+            return repl(ASKED)
 
-    answer = wait_for("the agent's answer in the person's conversation with it", answered,
-                      lambda: f"turns {len(model.task_turns)}; the conversation holds "
-                              f"{[m['text'][:80] for m in said(session)]}\n{session.log_tail()}")
+        def answered() -> str | None:
+            """The agent's answer, as the reply to the person's request: where a person reads
+            it, under the message they wrote."""
+            said = asked()
+            return said if REQUEST in said and FIXED_REPLY in said else None
+
+        answer = wait_for("the agent's answer as the reply to the person's request", answered,
+                          lambda: f"turns {len(model.task_turns)}; the asks hold {asked()[-1500:]}\n"
+                                  f"{session.log_tail()}")
+    finally:
+        repl.close()
+        (out / "ask-repl-transcript.txt").write_text(repl.transcript)
     if refused := refusals(session):
         raise Failed("the ask or the run's own steps were refused:\n" + "\n".join(refused[:8]))
     answers = model.tool_answers()
@@ -723,7 +705,7 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
         raise Failed(f"tilo_do did not make the note: {answers[2][:400]}; Notes lists: {answers[1][:1500]}")
     return {"send": row["id"], "turns": len(model.task_turns),
             "tools": [answer[:160] for answer in answers],
-            "answer": answer["text"][:120]}
+            "answer": answer[-200:]}
 
 
 def check_restart(session: Session) -> dict:
@@ -914,7 +896,7 @@ def main() -> int:
             "open": lambda: check_open(session),
             "canvas": lambda: check_canvas(session),
             "repl": lambda: check_repl(session, out),
-            "ask": lambda: check_ask(session, model),
+            "ask": lambda: check_ask(session, model, out),
             "restart": lambda: check_restart(session),
             "dev": lambda: check_dev(session),
         }

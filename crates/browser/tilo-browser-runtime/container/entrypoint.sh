@@ -7,8 +7,6 @@
 #                       this machine (localhost, a name under it, 127.0.0.1)
 #   TILO_WEB_HOME_NAME  its name, required with a host
 #   TILO_WEB_HOME_APP   the app in front, optional (unset: its desktop)
-#   TILO_WEB_HOME_FEEDBACK  the id of its Chat channel members report
-#                       problems to, optional (unset: reports are not offered)
 #   TILO_WEB_HOME_ENTRY  the entry everyone joins it through: an https:// address
 #                       (http:// on this machine)
 #                       ending in /, which the entry's own paths hang off
@@ -96,7 +94,6 @@ here() {
 host=${TILO_WEB_HOME_HOST:-}
 name=${TILO_WEB_HOME_NAME:-}
 app=${TILO_WEB_HOME_APP:-}
-feedback=${TILO_WEB_HOME_FEEDBACK:-}
 entry=${TILO_WEB_HOME_ENTRY:-}
 info=${TILO_WEB_HOME_HOST_INFO:-}
 export TILO_WEB_SITE="${TILO_WEB_SITE:-/srv/tilo-web}"
@@ -106,13 +103,12 @@ caddyfile=${TILO_WEB_CADDYFILE:-/etc/caddy/Caddyfile}
 mkdir -p "$TILO_WEB_RUN"
 fields=
 if [ -z "$host" ]; then
-  [ -z "$name$app$feedback$entry$info" ] || { echo "TILO_WEB_HOME_NAME, TILO_WEB_HOME_APP, TILO_WEB_HOME_FEEDBACK, TILO_WEB_HOME_ENTRY and TILO_WEB_HOME_HOST_INFO need TILO_WEB_HOME_HOST" >&2; exit 2; }
+  [ -z "$name$app$entry$info" ] || { echo "TILO_WEB_HOME_NAME, TILO_WEB_HOME_APP, TILO_WEB_HOME_ENTRY and TILO_WEB_HOME_HOST_INFO need TILO_WEB_HOME_HOST" >&2; exit 2; }
 else
   # Values land in JSON as they are: only characters that need no escaping.
   case "$host" in *[!a-z0-9.:-]*) echo "TILO_WEB_HOME_HOST must be a host name: $host" >&2; exit 2 ;; esac
   case "$name" in '' | *[!A-Za-z0-9\ ._-]*) echo "TILO_WEB_HOME_NAME is required with a host and may use letters, digits, space, . _ -" >&2; exit 2 ;; esac
   case "$app" in *[!a-z0-9._-]*) echo "TILO_WEB_HOME_APP must be an app id" >&2; exit 2 ;; esac
-  case "$feedback" in *[!a-z0-9_]*) echo "TILO_WEB_HOME_FEEDBACK must be a channel id like c_feedback" >&2; exit 2 ;; esac
   case "$entry" in
     '' | https://*) ;;
     *) here "$entry" || { echo "TILO_WEB_HOME_ENTRY must be an https:// address (http:// on this machine): $entry" >&2; exit 2; } ;;
@@ -135,7 +131,6 @@ else
   quoted=$(printf '%s' "$info" | sed 's/"/\\"/g')
   front=
   [ -z "$app" ] || front=",\"app\":\"$app\""
-  [ -z "$feedback" ] || front="$front,\"feedback\":{\"channel\":\"$feedback\"}"
   [ -z "$entry" ] || front="$front,\"admission\":\"$entry\""
   scheme=https
   ! here "http://$host" || scheme=http

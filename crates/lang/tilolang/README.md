@@ -116,16 +116,16 @@ through the alias, `todo.finished(list, t)`, and runs as that package's own code
 nothing, so a call is as free as reading that package's resources, and the rule lives where it is
 written. Another package's actions are applied or invoked, never called.
 
-A package may also `use` a native app: `use so.tilo.chat as chat` reads what Chat publishes, the
-resources, records and enums of its committed `surface.toml`, as types (`chat.Workspace`,
-`chat.Conversation`, `chat.ChannelKind`) and its verbs as actions, and checks field reads and action
+A package may also `use` a native app: `use so.tilo.tasks as tasks` reads what Tasks publishes,
+the resources, records and enums of its committed `surface.toml`, as types (`tasks.Tracker`,
+`tasks.Issue`, `tasks.Person`) and its verbs as actions, and checks field reads and action
 signatures against them. The language's tool (`tilolang check`) finds native apps among the
-`--path` directories (`--path apps/chat`, or `--path apps`), and an agent's task is handed the
+`--path` directories (`--path apps/tasks`, or `--path apps`), and an agent's task is handed the
 same catalogue by the session it runs in: every installed app's surface for its workspace, read
 by one loader. Invoking a native app's verb, or setting a field of its record, is the app's own
 action: it goes to the app through the session's broker, which decides it as it decides the
 agent's own call and starts the app when it is not running, and the step sits in the task's
-history with every other. Reading a native record goes the same way: `find(chat.Conversation)` lists
+history with every other. Reading a native record goes the same way: `find(tasks.Issue)` lists
 the resources under the app's record as its directory does, and reading one, or a field of one,
 asks the app for it — the resource's own `read` view where its directory offers one, else the
 record's with the resource as its item, which is the read a window and `tilo_read` take too — as

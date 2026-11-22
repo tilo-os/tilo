@@ -938,8 +938,8 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::Observe { .. }
         | RemoteActionMessage::Cancel { .. }
         | RemoteActionMessage::ResourceRead { .. }
-        | RemoteActionMessage::FeedbackRequest { .. }
-        | RemoteActionMessage::FeedbackResponse { .. }
+        | RemoteActionMessage::RetiredFeedbackRequest { .. }
+        | RemoteActionMessage::RetiredFeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationRequest { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::Confirm { .. }

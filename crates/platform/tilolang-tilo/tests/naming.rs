@@ -17,7 +17,7 @@ const CHAT: (&str, &str) = (
     include_str!("../../../../apps/tl/chat/app.tl"),
     include_str!("../../../../apps/tl/chat/app.ids"),
 );
-const APP: &str = "so.tilo.lang.chat";
+const APP: &str = "so.tilo.chat";
 
 struct Refusing;
 

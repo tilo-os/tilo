@@ -16,8 +16,9 @@ use crate::{Span, SpanUnit};
 
 /// The app that keeps a discussion thread for a published text.
 use tilo_app_id::apps::CHAT as CHAT_APP;
-/// The kind of resource a discussion thread is, in the chat's own record.
-const THREAD_KIND: &str = "chat.channel";
+/// The kind of resource a discussion thread is, in Chat's record: a text channel, which keeps the
+/// id the channel had where it was first made.
+const THREAD_KIND: &str = "tl.so.tilo.chat.TextChannel";
 
 /// Parameters in their only order. `chars` and `bytes` share a slot: a span has one unit.
 const PARAMS: [(&str, u8); 9] = [

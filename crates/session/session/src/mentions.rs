@@ -47,18 +47,14 @@ pub struct Told {
 pub struct Look<'a> {
     /// The app keeping it.
     pub app: &'a str,
-    /// The record, as its route names it: empty for the app's own record of the workspace.
+    /// The record, as its route names it: empty for the app's own record of the workspace. A
+    /// mention in it opens there.
     pub record: &'a str,
-    /// The record a mention in it opens in, by route: the record itself, or the one whose items
-    /// a part keeps (a chat's part, published as the chat's items).
-    pub place: &'a str,
-    /// The kind of `place`, whose `open` shows an item of it; empty when unknown, and the record
-    /// then opens whole.
+    /// The kind of the record, whose `open` shows an item of it; empty when unknown, and the
+    /// record then opens whole.
     pub kind: &'a str,
     /// Its document.
     pub doc: &'a AutoCommit,
-    /// The document of `place`, when it is another record than this one.
-    pub tree: Option<&'a AutoCommit>,
     /// Take what it holds as seen: the person is looking at it, or it is what the workspace held
     /// before this device first followed it.
     pub quiet: bool,
@@ -71,59 +67,31 @@ pub struct Look<'a> {
 }
 
 impl Look<'_> {
-    /// Whether a window on screen shows the item at `anchor`, or the conversation `channel` it was
-    /// said in: the person sees there what a notice of it would tell.
-    fn on_screen(&self, anchor: &str, channel: Option<&str>) -> bool {
-        let conversation = channel.filter(|_| !self.kind.is_empty()).map(|channel| {
-            tilo_resource::items::item_resource_id_in(
-                self.kind,
-                ui::mentions::CHANNELS,
-                &tilo_resource::Id::from_raw(channel),
-            )
-        });
-        [anchor, conversation.as_deref().unwrap_or_default()]
-            .into_iter()
-            .any(|anchor| !anchor.is_empty() && (self.shown)(self.app, anchor))
+    /// Whether a window on screen shows the item at `anchor`: the person sees there what a notice
+    /// of it would tell.
+    fn on_screen(&self, anchor: &str) -> bool {
+        !anchor.is_empty() && (self.shown)(self.app, anchor)
     }
+}
 
-    /// What a notice of `mention` says: who wrote to the person, or who mentioned them and where.
-    fn title(
-        &self,
-        mention: &ui::mentions::Mention,
-        name: &dyn Fn(&ui::MemberId) -> String,
-    ) -> String {
-        let who = mention
-            .by
-            .as_ref()
-            .map_or_else(|| crate::i18n::t("mention-notice-someone"), name);
-        let channel = mention.channel.as_deref().and_then(|channel| {
-            self.tree
-                .and_then(|tree| ui::mentions::channel_name(tree, channel))
-        });
-        let direct = mention
-            .channel
-            .as_deref()
-            .is_some_and(|channel| ui::MemberId::direct_conversation_members(channel).is_some());
-        match (channel, &mention.title) {
-            _ if direct => {
-                crate::i18n::t_args("mention-notice-direct", &[("name", who.as_str().into())])
-            }
-            (Some(channel), _) => crate::i18n::t_args(
-                "mention-notice-channel",
-                &[
-                    ("name", who.as_str().into()),
-                    ("channel", channel.as_str().into()),
-                ],
-            ),
-            (None, Some(title)) => crate::i18n::t_args(
-                "mention-notice-title",
-                &[
-                    ("name", who.as_str().into()),
-                    ("place", title.as_str().into()),
-                ],
-            ),
-            (None, None) => crate::i18n::t_args("mention-notice", &[("name", who.as_str().into())]),
-        }
+/// What a notice of `mention` says: who mentioned the person, and where.
+fn notice_title(
+    mention: &ui::mentions::Mention,
+    name: &dyn Fn(&ui::MemberId) -> String,
+) -> String {
+    let who = mention
+        .by
+        .as_ref()
+        .map_or_else(|| crate::i18n::t("mention-notice-someone"), name);
+    match &mention.title {
+        Some(title) => crate::i18n::t_args(
+            "mention-notice-title",
+            &[
+                ("name", who.as_str().into()),
+                ("place", title.as_str().into()),
+            ],
+        ),
+        None => crate::i18n::t_args("mention-notice", &[("name", who.as_str().into())]),
     }
 }
 
@@ -186,7 +154,7 @@ impl Held {
             };
             let place = Place {
                 app: look.app.to_owned(),
-                record: look.place.to_owned(),
+                record: look.record.to_owned(),
                 resource,
                 anchor,
             };
@@ -198,10 +166,10 @@ impl Held {
             if live_tags.contains_key(&tag) {
                 continue;
             }
-            let seen = look.on_screen(&place.anchor, mention.channel.as_deref());
+            let seen = look.on_screen(&place.anchor);
             let notice = Notice::opens(
                 tilo_desktop_search::names::app_name(look.app),
-                look.title(&mention, name),
+                notice_title(&mention, name),
                 mention.excerpt,
                 place,
             )
@@ -441,7 +409,7 @@ impl Mentions {
                 unknown: changed.replayed && !held.knows(&changed.app, &changed.record),
             }
         };
-        let (mut doc, tree) = match reads.fetch(changed, ask, &self.0.me) {
+        let mut doc = match reads.fetch(changed, ask, &self.0.me) {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Fetched::Gone | Fetched::Unchanged) => return Poll::Ready(false),
             Poll::Ready(Fetched::Moved(heads)) => {
@@ -458,28 +426,24 @@ impl Mentions {
             }
             Poll::Ready(Fetched::Whole(whole)) => *whole,
         };
-        let place = ui::mentions::record_of_part(&changed.record);
-        let place = place.unwrap_or(&changed.record);
         // The kind of the record a mention opens in: the one its document names, else, for the
         // app's own record, which names none, the one its app's surface declares first.
-        let kind = if place.is_empty() {
+        let kind = if changed.record.is_empty() {
             ui::app_surface::primary_kind(&changed.app)
         } else {
-            resource_type(tree.as_ref().unwrap_or(&doc))
+            resource_type(&doc)
         }
         .unwrap_or_default();
         let mut held = self.0.held.borrow_mut();
-        self.read_where_seen(&mut held, changed, (place, &kind), &mut doc, tree.as_ref());
+        self.read_where_seen(&mut held, changed, &kind, &mut doc);
         // What the workspace held before this device followed the record is not news.
         let quiet = changed.replayed && !held.knows(&changed.app, &changed.record);
         let told = held.look(
             &Look {
                 app: &changed.app,
                 record: &changed.record,
-                place,
                 kind: &kind,
                 doc: &doc,
-                tree: tree.as_ref(),
                 quiet,
                 // Nobody here can tell what the person holds of what a text refers to: an
                 // excerpt names no resource, never a title they may not read.
@@ -513,9 +477,8 @@ impl Mentions {
         &self,
         held: &mut Held,
         changed: &Changed,
-        (place, kind): (&str, &str),
+        kind: &str,
         doc: &mut AutoCommit,
-        tree: Option<&AutoCommit>,
     ) {
         let key = (changed.app.clone(), changed.record.clone());
         let Some(heads) = held
@@ -533,10 +496,8 @@ impl Mentions {
             &Look {
                 app: &changed.app,
                 record: &changed.record,
-                place,
                 kind,
                 doc: &before,
-                tree,
                 quiet: true,
                 read: &ui::mentions::reading_nothing,
                 shown: &*self.0.shown,
@@ -657,8 +618,8 @@ enum Fetched {
     /// What the workspace held before this device followed it, at these heads: taken as seen
     /// there, unread.
     Before(Vec<automerge::ChangeHash>),
-    /// It whole, and the document a mention in it opens in when that is another.
-    Whole(Box<(AutoCommit, Option<AutoCommit>)>),
+    /// It whole.
+    Whole(Box<AutoCommit>),
 }
 
 /// Read what a look at `changed` needs of `from`, as `ask` says. A document looked at before is
@@ -695,9 +656,7 @@ fn fetch(from: &dyn Records, changed: &Changed, ask: &Ask, me: &BTreeSet<ui::Mem
     let Some(doc) = from.document(app, workspace, route) else {
         return Fetched::Gone;
     };
-    let tree =
-        ui::mentions::record_of_part(route).and_then(|place| from.document(app, workspace, place));
-    Fetched::Whole(Box::new((doc, tree)))
+    Fetched::Whole(Box::new(doc))
 }
 
 /// How the role reads the workspaces' documents: on the thread that steps it where a read

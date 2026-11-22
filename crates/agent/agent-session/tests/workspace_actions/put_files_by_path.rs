@@ -414,7 +414,6 @@ async fn with_no_page_open_the_server_keeps_a_folder_for_a_task_by_paths() {
         Some(std::sync::Arc::new(crate::common::catalogue)),
         None,
         None,
-        None,
     )
     .await
     .unwrap();
@@ -650,7 +649,6 @@ async fn with_no_page_open_a_folder_is_listed_and_a_file_read_back_by_its_path()
             revocations: tilo_user_identity::RevocationList::new(),
         },
         Some(std::sync::Arc::new(crate::common::catalogue)),
-        None,
         None,
         None,
     )
@@ -921,7 +919,6 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
         Some(std::sync::Arc::new(crate::common::catalogue)),
         None,
         None,
-        None,
     )
     .await
     .unwrap();
@@ -1180,7 +1177,6 @@ async fn with_no_page_open_a_file_is_written_from_text_and_from_content_and_take
             revocations: tilo_user_identity::RevocationList::new(),
         },
         Some(std::sync::Arc::new(crate::common::catalogue)),
-        None,
         None,
         None,
     )

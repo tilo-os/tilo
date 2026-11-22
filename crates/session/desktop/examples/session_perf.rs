@@ -195,7 +195,7 @@ fn fixture(
     let mut catalog = ApplicationCatalog::new();
     let definitions = [
         word_processor::definition(),
-        chat::definition(),
+        calendar::definition(),
         sheets::definition(),
     ];
     // The host's catalogue holds each app once, as a session's does; a tab names it again without
@@ -224,15 +224,15 @@ fn fixture(
                             id,
                             definition.resource_type.clone(),
                         );
-                        // Chat's tabs of one workspace share the package's record, so a tab that is
+                        // An app's tabs of one workspace share the package's record, so a tab that is
                         // not the first opens what one before it made.
                         if created.insert((definition.app_id().to_string(), checkout.id.clone())) {
                             store.create_resource(&checkout).unwrap();
-                            store.with(&checkout.id, |doc| match which {
-                                0 => word_processor::initialize_empty_document(doc).unwrap(),
-                                1 => chat::demo::start(doc, "author").unwrap(),
-                                // Sheets opens an empty workbook of its own on a blank record.
-                                _ => {}
+                            // Calendar and Sheets open empty ones of their own on a blank record.
+                            store.with(&checkout.id, |doc| {
+                                if which == 0 {
+                                    word_processor::initialize_empty_document(doc).unwrap();
+                                }
                             });
                         }
                         retained.push(store);

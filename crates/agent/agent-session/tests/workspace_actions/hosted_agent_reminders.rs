@@ -52,7 +52,6 @@ impl Up {
             AgentOptions {
                 state_dir: state.join("agents"),
                 catalogue: Some(Arc::new(crate::common::catalogue)),
-                feedback_reviewer: None,
                 shell: None,
                 browsers: None,
             },

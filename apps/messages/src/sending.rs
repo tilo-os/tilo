@@ -219,7 +219,7 @@ impl Sending {
     }
 
     /// Send `text` into the conversation with one of the workspace's people, through Chat's
-    /// operation for it: the same message Chat sends.
+    /// `write_to`: the same message Chat sends.
     fn send_direct(
         &self,
         sources: &Sources,
@@ -235,8 +235,7 @@ impl Sending {
         }
         let route = crate::history::current_route(sources, &selection.get(), choice)?;
         let peer = selection.get().person;
-        let call = crate::history::tilo_call(crate::history::SEND_DIRECT_MESSAGE, &peer)
-            .with(serde_json::json!({ "public_key": peer, "text": text }));
+        let call = crate::history::write_to(&peer, text);
         // The words are the message: an attempt that is asked for twice is the same
         // message, under the operation it was asked with.
         let answered = operation.to_owned();

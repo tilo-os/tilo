@@ -37,7 +37,7 @@ const HEIGHT: i32 = 800;
 /// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 /// The conversation the captures float, and the two windows it floats over.
-const CHAT: &str = "so.tilo.lang.chat";
+const CHAT: &str = "so.tilo.chat";
 const MAIL: &str = "so.tilo.mail";
 const NOTES: &str = "so.tilo.notes";
 /// The person's appearance section: the theme is chosen through its own published `field-edit` , as

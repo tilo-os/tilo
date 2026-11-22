@@ -65,7 +65,7 @@ fn workspace() -> Replica {
     .expect("the session's description reads");
     let mut imports: Vec<_> = [
         "so.tilo.lang.discussion",
-        "so.tilo.lang.chat",
+        "so.tilo.chat",
         "so.tilo.notes",
         "so.tilo.lang.tasks",
     ]
@@ -695,7 +695,7 @@ fn a_window_is_named_by_its_window_and_app_never_an_id() {
     );
     let tree = format!("{:?}", view.tree());
     assert!(
-        !tree.contains("so.tilo.lang.chat\""),
+        !tree.contains("so.tilo.chat\""),
         "the shell never shows the id it opens a place by: {tree}"
     );
 }

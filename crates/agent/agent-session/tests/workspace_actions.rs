@@ -128,9 +128,6 @@ mod device_writes;
 #[path = "workspace_actions/encrypted_resource.rs"]
 mod encrypted_resource;
 #[cfg(test)]
-#[path = "workspace_actions/feedback_journey.rs"]
-mod feedback_journey;
-#[cfg(test)]
 #[path = "workspace_actions/files_founded_page.rs"]
 mod files_founded_page;
 #[cfg(test)]
@@ -735,21 +732,7 @@ async fn start_browser(
     state: &Path,
     page: Option<&str>,
 ) -> Hosted {
-    start_lending(root, host, state, page, None).await
-}
-
-/// A host lending its workspaces' reporters `feedback_reviewer`.
-async fn start_lending(
-    root: &SigningKey,
-    host: &Device,
-    state: &Path,
-    page: Option<&str>,
-    feedback_reviewer: Option<Arc<dyn tilo_agent_session::FeedbackReviewer>>,
-) -> Hosted {
-    let options = Options {
-        feedback_reviewer,
-        ..Options::offering(crate::common::catalogue)
-    };
+    let options = Options::offering(crate::common::catalogue);
     let options = match page {
         Some(origin) => options.serving(origin),
         None => options,

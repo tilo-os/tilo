@@ -1840,7 +1840,7 @@ params = []
                 matches!(tasks, Response::GroupKeys { .. }),
                 "Today reads Tasks' record: {tasks:?}"
             );
-            let chat = keys_of("so.tilo.lang.chat");
+            let chat = keys_of("so.tilo.chat");
             assert!(
                 matches!(chat, Response::Denied(_)),
                 "Today declares no read of Chat: {chat:?}"

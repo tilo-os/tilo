@@ -199,7 +199,6 @@ impl AgentArgs {
         Ok(Some(tilo_server::agents::AgentOptions {
             state_dir,
             catalogue: None,
-            feedback_reviewer: None,
             shell: None,
             browsers: tilo_server::hosted_browser::HostedBrowsers::from_env()
                 .map_err(anyhow::Error::msg)?
@@ -271,36 +270,10 @@ fn announce_web_entry(cfg: &mut tilo_server::ServerConfig, args: &WebArgs) {
     allow(unused_variables, reason = "agents only")
 )]
 pub async fn start_server(
-    cfg: tilo_server::ServerConfig,
-    identity: ServerIdentity,
-    args: &WebArgs,
-    state_root: &Path,
-) -> anyhow::Result<HostedServer> {
-    start_server_lending(cfg, identity, args, state_root, Lent::default()).await
-}
-
-/// What a host lends its workspaces besides serving their records.
-#[derive(Default)]
-pub struct Lent {
-    /// The model its workspaces' reporters may have look over their reports.
-    #[cfg(feature = "agents")]
-    pub feedback_reviewer: Option<std::sync::Arc<dyn tilo_agent_session::FeedbackReviewer>>,
-}
-
-/// [`start_server`], lending the workspaces what `lent` holds.
-///
-/// # Errors
-/// The server did not start, or the agent state could not be read.
-#[cfg_attr(
-    not(feature = "agents"),
-    allow(unused_variables, reason = "agents only")
-)]
-pub async fn start_server_lending(
     mut cfg: tilo_server::ServerConfig,
     identity: ServerIdentity,
     args: &WebArgs,
     state_root: &Path,
-    lent: Lent,
 ) -> anyhow::Result<HostedServer> {
     if let Some(max) = env_count("TILO_SERVER_MAX_WORKSPACE_GRANTS") {
         cfg.max_workspace_grants = Some(max);
@@ -316,7 +289,6 @@ pub async fn start_server_lending(
     let options = args.agents.options(state_root.join("agents"))?;
     #[cfg(feature = "agents")]
     if let Some(mut options) = options {
-        options.feedback_reviewer = lent.feedback_reviewer;
         let shells = tilo_server::agents::host_shells(state_root.join("shells"))
             .map_err(anyhow::Error::msg)?;
         options.shell = Some(std::sync::Arc::clone(&shells));

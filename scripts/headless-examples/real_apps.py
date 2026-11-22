@@ -55,7 +55,7 @@ REPO = Path(__file__).resolve().parents[2]
 SESSION = REPO / "dist/dev/nested-session.sh"
 # The apps every session installs unless it names its own: what a check of a
 # desktop needs to see a person's work in it.
-APPS = "file-explorer chat settings terminal"
+APPS = "file-explorer settings terminal"
 # Where cargo builds, as cargo reads it.
 TARGET = Path(os.environ.get("CARGO_TARGET_DIR") or REPO / "target")
 # Where the nested-session build lands (dist/dev/nested-session-build.sh).
@@ -366,6 +366,28 @@ def prepare(state: Path, *, apps: str = APPS, built: bool = False, remote=None) 
         )
     run([str(SESSION), "--no-build", "--prepare-only", "--headless", "--apps", apps,
          "--state", str(state)], cwd=REPO)
+
+
+def tl_packages(state: Path, out: Path, names: list[str], *, build: bool = False) -> list[Path]:
+    """`tilolang build` each of `names` (directories under apps/tl) against the runtime installed
+    in `state`: their signed packages, for `Session.start(tapps=...)`."""
+    tool = REPO / "target/debug/tilolang"
+    if build:
+        print("==> building the tilolang tool", file=sys.stderr)
+        run(["cargo", "build", "-p", "tilolang-cli", "--bin", "tilolang"], cwd=REPO)
+    if not tool.is_file():
+        raise Failed(f"no tilolang tool at {tool} (cargo build -p tilolang-cli --bin tilolang)")
+    runtime = (state / "runtimes/.version").read_text().strip()
+    tapps = []
+    for name in names:
+        print(f"==> tilolang build {name}", file=sys.stderr)
+        run([str(tool), "build", str(REPO / "apps/tl" / name), "--search", str(REPO / "apps/tl"),
+             "--out", str(out), "--tilo-runtime", f"tilo-runtime/{runtime}"], cwd=REPO)
+        tapp = out / f"{name}.tapp"
+        if not tapp.is_file():
+            raise Failed(f"tilolang build made no {tapp}")
+        tapps.append(tapp)
+    return tapps
 
 
 class Agent:

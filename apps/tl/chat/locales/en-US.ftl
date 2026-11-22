@@ -1,7 +1,7 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
-d-so-tilo-lang-chat = Chat
+d-so-tilo-chat = Chat
 
 d-lmdoxbnn = Conversations
     .doc = The workspace's conversations in the sidebar's order: channels outside any category, the categories each with its own, and the direct messages, in the list as people.
@@ -144,6 +144,13 @@ d-abono4ra-name = Name
 d-aod7dups = Carry native chat
     .doc = The conversations the native Chat kept before this app took its id over, carried into these once: its categories and channels in the sidebar's order, each with its name and topic, and every message of a channel with what it said, whether it was pinned and the id it had there.
 
+d-uhenzjex = Report a problem
+    .doc = Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback channel, which the first report opens.
+    .did = reported a problem
+    .w-say-what-went-wrong-first = Say what went wrong first
+
+d-uhenzjex-body = Body
+
 d-3cetzzm3 = Message
     .doc = Opens the direct message with `who`, in the sidebar, or the one already open with them: a person has one conversation, not a new empty one each time.
 
@@ -162,6 +169,13 @@ d-peb7lz2j-to = To
 d-peb7lz2j-body = Body
 
 d-peb7lz2j-reply_to = Reply to
+
+d-634q3q33 = Write to
+    .doc = Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the one already open, else a new one in the sidebar.
+
+d-634q3q33-who = Who
+
+d-634q3q33-body = Body
 
 d-qaa5kdra = Send a view
     .doc = Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views.
@@ -207,6 +221,8 @@ d-6uysx57s-c = C
 d-6uysx57s-m = M
 
 d-6uysx57s-name = Name
+
+d-v6wnfixl = Report problem~present
 
 d-dgrvpxre = Send view~present
 

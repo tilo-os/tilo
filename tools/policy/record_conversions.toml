@@ -57,7 +57,37 @@ conversion = "apps/canvas/src/document.rs:open"
 kind = "chat.drafts"
 app = "chat"
 change = "left-own"
-conversion = "apps/chat/src/drafts.rs:import_previous"
+lost = "The words a person had typed into the native Chat and not sent. The tilolang Chat keeps no unsent words of its own, so they are not carried."
+
+[[change]]
+kind = "chat.drafts"
+app = "chat"
+change = "removed"
+lost = "The words a person had typed into the native Chat and not sent. The tilolang Chat keeps no unsent words of its own, so they are not carried."
+
+[[change]]
+kind = "chat.workspace"
+app = "chat"
+change = "removed"
+conversion = "apps/tl/chat/app.tl:carry_native_chat"
+
+[[change]]
+kind = "chat.messages"
+app = "chat"
+change = "removed"
+conversion = "apps/tl/chat/app.tl:carry_native_chat"
+
+[[change]]
+kind = "chat.skills"
+app = "chat"
+change = "removed"
+lost = "The skills a workspace had written for the native Chat's agents. Only that app's agent turns read them; the tilolang Chat has no skills of its own, so they are not carried."
+
+[[change]]
+kind = "tilo.workspace.emoji"
+app = "chat"
+change = "removed"
+lost = "Nothing a person kept: the workspace's emoji stay in their own record under Chat's id, which every app's framework and the workspace's settings read and write; only the native Chat's description of the kind goes."
 
 [[change]]
 kind = "chat.learned"

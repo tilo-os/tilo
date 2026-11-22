@@ -41,7 +41,6 @@ async fn a_members_terminal_on_a_fresh_tab_of_a_hosted_workspace_gets_its_shell(
             revocations: RevocationList::new(),
         },
         Some(Arc::new(crate::common::catalogue)),
-        None,
         Some(tilo_server::agents::host_shells(shells.path().join("shells")).unwrap()),
         None,
     )

@@ -108,7 +108,6 @@ impl OnTheirServer {
                 revocations: tilo_user_identity::RevocationList::new(),
             },
             Some(Arc::new(crate::common::catalogue)),
-            None,
             Some(shell),
             None,
         )

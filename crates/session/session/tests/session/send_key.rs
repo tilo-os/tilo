@@ -148,10 +148,9 @@ fn the_send_key_over_an_empty_shell_opens_chat() {
     );
 }
 
-/// The workspace and the conversation a report about Tilo itself goes to, as the config this test's
-/// computer is told names them.
+/// The workspace a report about Tilo itself goes to, as the config this test's computer is told
+/// names it.
 const FEEDBACK_WORKSPACE: &str = "w_tilo";
-const FEEDBACK_CHANNEL: &str = "c_feedback";
 
 /// A home told where a report about Tilo itself goes.
 fn told_where_reports_go() -> tilo_test_env::TestHome {
@@ -159,9 +158,7 @@ fn told_where_reports_go() -> tilo_test_env::TestHome {
     let config = home.home().join("community.toml");
     std::fs::write(
         &config,
-        format!(
-            "[feedback]\nworkspace = \"{FEEDBACK_WORKSPACE}\"\nchannel = \"{FEEDBACK_CHANNEL}\"\n"
-        ),
+        format!("[feedback]\nworkspace = \"{FEEDBACK_WORKSPACE}\"\n"),
     )
     .expect("a config naming where reports go");
     home.env().set("TILO_COMMUNITY_CONFIG", &config);
@@ -189,7 +186,7 @@ fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
         asked_for_box(&mut app, &mut session).expect("the window in front is asked");
     assert_eq!(asked.len(), 1, "a report goes to the one place it goes");
     assert_eq!(asked[0].kind, RecipientKind::Feedback);
-    assert_eq!(asked[0].id, FEEDBACK_CHANNEL);
+    assert_eq!(asked[0].id, FEEDBACK_WORKSPACE);
     assert!(
         pointing,
         "the window lights what is under the pointer, and the box is about what the person clicks"

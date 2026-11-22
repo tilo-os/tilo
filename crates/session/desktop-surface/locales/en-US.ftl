@@ -985,11 +985,8 @@ strip-switcher-remove-named = Remove { $name }
 strip-switcher-rename = Rename
 strip-switcher-remove = Remove
 
-## Reporting a problem by pointing at it
-feedback-report-problem = Report a problem…
 profile-action-settings = Settings
 profile-action-devices-access = Devices and access
-feedback-picker-hint = Click what isn’t working. Shift-click or drag to pick more, scroll to widen, Esc to leave.
 feedback-picker-picked = { $count ->
     [one] 1 part picked. Shift-click or drag to pick more.
    *[other] { $count } parts picked. Shift-click or drag to pick more.

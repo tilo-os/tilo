@@ -830,11 +830,13 @@ mod tests {
         assert_eq!(target.app.as_ref().map(AppId::as_str), Some("so.tilo.chat"));
         assert_eq!(target.record, Some(ResourceSegment::Primary));
         let resource = target.resource.as_ref().unwrap();
-        assert_eq!(resource.kind, "chat.channel");
+        assert_eq!(resource.kind, "tl.so.tilo.chat.TextChannel");
         assert_eq!(resource.id, "c_quiet_software");
         let url = arrived.to_url(&tilo()).unwrap();
         assert!(
-            url.ends_with("/so.tilo.chat/-/chat.channel/c_quiet_software?discuss=quiet-software"),
+            url.ends_with(
+                "/so.tilo.chat/-/tl.so.tilo.chat.TextChannel/c_quiet_software?discuss=quiet-software"
+            ),
             "{url}"
         );
         assert_eq!(

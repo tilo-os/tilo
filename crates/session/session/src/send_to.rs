@@ -3,12 +3,16 @@
 //! can go to, which every box (an app's and the shell's) searches.
 //! The window says what the box held — the recipients, what the message carries
 //! ([`tilo_reference::Attached`]) and its words — and nothing of how that becomes a conversation:
-//! Chat's `send` opens the conversation, posts what it carries and shows where it landed. Making
+//! Chat writes to each person or agent in the one direct conversation with them (`write_to`), and
+//! sends in a conversation named (`send`), the message saying the words and referring to what it
+//! carries. Making
 //! the agents a send names is the workspace's governance and Chat's record of its agents, both of
 //! which only the session holds, so it happens here first, so the message never goes to an agent
 //! the workspace does not list.
+//! The person's own send from a box opens where it landed: the message Chat answers with, through
+//! the layout's `open`, which brings the conversation forward where it stands.
 //! A box opened with the one place a report goes on it is the same send with that place on it: it
-//! is filed there as the channel's report ([`crate::feedback`]), one action of the person's own,
+//! is filed there as Chat's report ([`crate::feedback`]), one action of the person's own,
 //! and nothing opens over the window it is about.
 
 use std::cell::{Cell, RefCell};
@@ -74,9 +78,8 @@ struct Sending {
     text: String,
     workspace: Option<String>,
     /// The person's ask from the canvas this is, by the number [`Sends::ask`] gave it: the
-    /// conversation it lands in does not open, and the message Chat posts for it is kept under
-    /// that number ([`Sends::posted`]), for its turn to stand where the person asked. `None` for
-    /// a box's send, which opens the conversation where the box stood.
+    /// message Chat posts for it is kept under that number ([`Sends::posted`]), for its turn to
+    /// stand where the person asked. `None` for a box's send.
     asked: Option<u64>,
     /// The caller's answer: the pass completes it once the message is in the record, or says why
     /// it never landed.
@@ -123,13 +126,23 @@ pub(crate) struct Sends {
     settled: Settled,
 }
 
-/// What Chat answered each send, by its number: the message landed, or why it did not.
-type Settled = std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<(), String>)>>>;
+/// What Chat answered each send, by its number: one answer for each conversation it went to,
+/// the message that landed (when the answer names it) or why it did not.
+type Settled = std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<Option<String>, String>)>>>;
 
-/// A send handed to Chat, waiting for its answer: whom to tell.
+/// A send handed to Chat, waiting for its answers: whom to tell.
 struct Flying {
     /// Whether the person sitting here sent it, who is told when it did not land.
     by_person: bool,
+    /// How many of the conversations it went to have not answered yet.
+    waiting: usize,
+    /// Why it did not land in one of them, the first that said so.
+    refused: Option<String>,
+    /// Whether it opens where it landed once it did: a send from the person's own box, never an
+    /// ask from the canvas (its turn stands where they asked) nor a report.
+    opens: bool,
+    /// The first message it landed as, which opens.
+    landed: Option<String>,
     answer: tilo_actions::remote::Completer<Result<tilo_actions::ActionOutput, ApiError>>,
 }
 
@@ -280,10 +293,7 @@ impl Service for SendToService {
 /// The app that keeps a workspace's conversations.
 pub use ui::apps::CHAT;
 
-/// The resource Chat publishes a workspace's conversations under.
-const CHAT_WORKSPACE: &str = "chat.workspace";
-
-/// The action that sends a message to whom it names.
+/// The session's own action that sends a message to whom it names.
 pub(crate) const SEND: &str = "send";
 
 impl Shared {
@@ -314,7 +324,6 @@ impl Shared {
             let started = match refused {
                 Some(reason) => Err(reason),
                 None => self.send_to(
-                    sending.by.as_ref(),
                     (&workspace, number),
                     &sending.to,
                     &attached,
@@ -336,13 +345,26 @@ impl Shared {
             sent.drain(..over);
             drop(sent);
             self.sends.moved.set(true);
+            let by_person = sending.by.as_ref().is_none_or(|by| by.acting.is_person());
             let flying = Flying {
-                by_person: sending.by.as_ref().is_none_or(|by| by.acting.is_person()),
+                by_person,
+                waiting: 0,
+                refused: None,
+                opens: false,
+                landed: None,
                 answer: sending.answer,
             };
             match started {
-                Ok(()) => {
-                    self.sends.flying.borrow_mut().insert(number, flying);
+                Ok((waiting, message)) => {
+                    let opens = message && by_person && sending.asked.is_none();
+                    self.sends.flying.borrow_mut().insert(
+                        number,
+                        Flying {
+                            waiting,
+                            opens,
+                            ..flying
+                        },
+                    );
                 }
                 Err(reason) => self.settle_send(number, flying, Err(reason)),
             }
@@ -354,10 +376,30 @@ impl Shared {
             .map(|mut settled| std::mem::take(&mut *settled))
             .unwrap_or_default();
         for (number, outcome) in settled {
-            let flying = self.sends.flying.borrow_mut().remove(&number);
-            if let Some(flying) = flying {
-                self.settle_send(number, flying, outcome);
+            let mut flying = self.sends.flying.borrow_mut();
+            let Some(waiting) = flying.get_mut(&number) else {
+                continue;
+            };
+            waiting.waiting = waiting.waiting.saturating_sub(1);
+            match outcome {
+                Ok(landed) => {
+                    if waiting.landed.is_none() {
+                        waiting.landed = landed;
+                    }
+                }
+                Err(reason) => {
+                    waiting.refused.get_or_insert(reason);
+                }
             }
+            if waiting.waiting > 0 {
+                continue;
+            }
+            let Some(done) = flying.remove(&number) else {
+                continue;
+            };
+            drop(flying);
+            let outcome = done.refused.clone().map_or(Ok(()), Err);
+            self.settle_send(number, done, outcome);
         }
     }
 
@@ -365,7 +407,19 @@ impl Shared {
     /// caller is told, and a send of the person's own that did not land is told them too, with
     /// why: the box that sent it closed as it was sent, and nothing opened where it stood.
     fn settle_send(&self, number: u64, flying: Flying, outcome: Result<(), String>) {
-        let Flying { by_person, answer } = flying;
+        let Flying {
+            by_person,
+            answer,
+            opens,
+            landed,
+            ..
+        } = flying;
+        if outcome.is_ok()
+            && opens
+            && let Some(message) = landed
+        {
+            self.open_landed(&message);
+        }
         if let Err(reason) = &outcome {
             let mut sent = self.sends.sent.borrow_mut();
             let sent = sent.iter_mut().find(|sent| sent.number == number);
@@ -394,6 +448,21 @@ impl Shared {
             Err(reason) => Err(ApiError::Failed(reason)),
             Ok(()) => Ok(tilo_actions::ActionOutput::default()),
         });
+    }
+
+    /// Open `message`, where a send of the person's own landed, through the layout's `open`: the
+    /// conversation it is in comes forward where it stands.
+    fn open_landed(&self, message: &str) {
+        let mut arguments = Map::new();
+        arguments.insert("resource".into(), message.into());
+        let address = ActionAddress::new(tilo_session_core::layout::RESOURCE, "open");
+        if let Err(error) = self.published.invoke(
+            &address,
+            &arguments,
+            &mut tilo_session_core::surfaces::Look::none(),
+        ) {
+            tracing::warn!(%error, %message, "where a send landed did not open");
+        }
     }
 
     /// Read whom a message can go to again when the search's index moved, for the next reading of
@@ -434,96 +503,86 @@ impl Shared {
 
     /// Send what a window's box holds: an agent named as a new one is made in
     /// the workspace and kept by this person, and the message reaches Chat as
-    /// one action — `chat.workspace#send` — so one change carries every
-    /// recipient, what it is about and the words. A report is filed where it
-    /// goes, and nothing opens over the window it is about. What Chat answers
-    /// is settled under `number` ([`Self::deliver_sends`]).
+    /// one action for each person, agent or conversation it names
+    /// ([`send_targets`]). A report is filed where it goes, and nothing opens
+    /// over the window it is about. What Chat answers is settled under `number`
+    /// once every conversation answered ([`Self::deliver_sends`]); it returns
+    /// how many it went to.
     ///
     /// # Errors
     /// The workspace is not open here, an agent could not be made or admitted,
     /// or the action could not be handed to Chat.
+    ///
+    /// Answers how many actions it handed Chat, and whether the send is a message (a report is
+    /// not).
     fn send_to(
         &self,
-        by: Option<&tilo_actions::ActionInvoker>,
         (workspace, number): (&str, u64),
         to: &[Recipient],
         attached: &[tilo_reference::Attached],
         text: &str,
         asked: Option<u64>,
-    ) -> Result<(), String> {
+    ) -> Result<(usize, bool), String> {
         let text = text.trim();
         if text.is_empty() && attached.is_empty() {
             return Err("a message needs words or something to carry".into());
         }
-        let (workspace, target) = match addressed(self.feedback.as_ref(), workspace, to)? {
+        let (workspace, targets, message) = match addressed(self.feedback.as_ref(), workspace, to)?
+        {
             Addressed::Message { workspace, to } => {
                 let resolved = self.recipients_of(&workspace, &to, &agent_name(attached))?;
-                // Only a person's box opens the conversation where it stood.
-                let by_person = by.is_none_or(|by| by.acting.is_person());
-                let target = send_target(
-                    &workspace,
-                    &resolved,
-                    attached,
-                    text,
-                    asked.is_none() && by_person,
-                )?;
-                (workspace, target)
+                let targets = send_targets(&workspace, &resolved, attached, text)?;
+                (workspace, targets, true)
             }
             // A report is read where it lands, not floated over the window it was written over: it
             // is filed in the channel and nothing opens.
-            Addressed::Report(destination) => {
-                // The app the report was sent from: what its picked things came from.
-                let from = by
-                    .and_then(|invoker: &tilo_actions::ActionInvoker| {
-                        invoker
-                            .acting
-                            .app
-                            .as_ref()
-                            .or_else(|| invoker.acting.by.app())
-                    })
-                    .map_or(CHAT, |app| app.as_str());
-                let report = destination.report(from, attached, text)?;
-                (
-                    destination.workspace.clone(),
-                    report_target(&destination, &report)?,
-                )
-            }
+            Addressed::Report(destination) => (
+                destination.workspace.clone(),
+                vec![report_target(&destination, attached, text)?],
+                false,
+            ),
         };
-        let settled = std::sync::Arc::clone(&self.sends.settled);
-        // An ask from the canvas is told which message Chat posted: its turn stands by it.
-        let posted = asked.map(|asked| (asked, std::sync::Arc::clone(&self.sends.posted)));
-        let wake = std::sync::Arc::clone(&self.wake_handle);
-        self.search
-            .perform_answered(
-                &workspace,
-                target,
-                Box::new(move |answer| {
-                    if let Some((asked, posted)) = posted {
+        let sent = targets.len();
+        for target in targets {
+            let settled = std::sync::Arc::clone(&self.sends.settled);
+            // An ask from the canvas is told which message Chat posted: its turn stands by it.
+            let posted = asked.map(|asked| (asked, std::sync::Arc::clone(&self.sends.posted)));
+            let wake = std::sync::Arc::clone(&self.wake_handle);
+            self.search
+                .perform_answered(
+                    &workspace,
+                    target,
+                    Box::new(move |answer| {
+                        // The message is what the action made: the first resource it answers.
                         let message = answer
                             .as_ref()
                             .ok()
-                            .and_then(Option::as_ref)
-                            .and_then(|answer| answer.get("message"))
-                            .and_then(Value::as_str)
-                            .map(str::to_owned);
-                        match message {
-                            Some(message) => {
-                                if let Ok(mut posted) = posted.lock() {
-                                    posted.insert(asked, message);
+                            .and_then(|answer| answer.resources.first())
+                            .cloned();
+                        if let Some((asked, posted)) = posted {
+                            match message.clone() {
+                                Some(message) => {
+                                    if let Ok(mut posted) = posted.lock() {
+                                        posted.insert(asked, message);
+                                    }
+                                }
+                                None => {
+                                    tracing::warn!(
+                                        asked,
+                                        "Chat's answer to an ask names no message"
+                                    );
                                 }
                             }
-                            None => {
-                                tracing::warn!(asked, "Chat's answer to an ask names no message");
-                            }
                         }
-                    }
-                    if let Ok(mut settled) = settled.lock() {
-                        settled.push((number, answer.map(drop)));
-                    }
-                    wake();
-                }),
-            )
-            .map_err(|error| error.to_string())
+                        if let Ok(mut settled) = settled.lock() {
+                            settled.push((number, answer.map(|_| message)));
+                        }
+                        wake();
+                    }),
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        Ok((sent, message))
     }
 
     /// Who a message goes to, as the names a box holds: an agent named as a
@@ -706,47 +765,111 @@ fn addressed(
     Ok(Addressed::Report(destination.clone()))
 }
 
-/// The one action a report is: the channel's `submit-feedback` in the workspace that keeps it,
-/// carrying the report as its review filed it — nothing else, and no window opening over the one
-/// reported.
+/// The one action a report is: Chat's `report` in the workspace that keeps reports, saying what
+/// the person wrote and referring to what the window picked, as any message does
+/// ([`message_body`]) — nothing else, and no window opening over the one reported.
+///
+/// # Errors
+/// It carries an image, a video or a file.
 fn report_target(
     destination: &crate::feedback::Destination,
-    report: &tilo_feedback::Submission,
+    attached: &[tilo_reference::Attached],
+    text: &str,
 ) -> Result<Target, String> {
-    let report = serde_json::to_value(report).map_err(|error| error.to_string())?;
     Ok(Target::Invoke(Box::new(
         InvokeTarget::action(
             CHAT,
             &destination.workspace,
-            destination.item(),
-            tilo_feedback::destination::SUBMIT,
+            tilo_app_id::chat::CONVERSATIONS,
+            tilo_app_id::chat::REPORT_PROBLEM,
         )
-        .with_argument("submission", report),
+        .with_argument("body", message_body(text, attached)?),
     )))
 }
 
-/// The one action a send is: Chat's `send` in `workspace`, carrying whom the
-/// message goes to, what it carries and its words. Everything else a send
-/// does — making an agent, opening where the message landed — is Chat's part
-/// of that same action, never a second invocation, and where the window that
-/// sent it stands is this session's own: the session opens the conversation
-/// there, from what the action answers.
-fn send_target(
+/// The actions a send is, one for each conversation it goes to: Chat's `write_to` for a person
+/// or an agent, which writes in the one direct conversation with them, and Chat's `send` in a
+/// conversation named. Each carries the message as rich text: its words, then a reference to each
+/// thing it carries and the words it quotes ([`message_body`]).
+///
+/// # Errors
+/// What it carries holds a file, which a message refers to only once it is in the workspace.
+fn send_targets(
     workspace: &str,
     to: &[Recipient],
     attached: &[tilo_reference::Attached],
     text: &str,
-    opens: bool,
-) -> Result<Target, String> {
-    let to = serde_json::to_value(to).map_err(|error| error.to_string())?;
-    let attached = serde_json::to_value(attached).map_err(|error| error.to_string())?;
-    Ok(Target::Invoke(Box::new(
-        InvokeTarget::action(CHAT, workspace, CHAT_WORKSPACE, SEND)
-            .with_argument("to", to)
-            .with_argument("attached", attached)
-            .with_argument("text", text)
-            .with_argument("opens", opens),
-    )))
+) -> Result<Vec<Target>, String> {
+    let body = message_body(text, attached)?;
+    to.iter()
+        .map(|recipient| {
+            let target = match recipient.kind {
+                RecipientKind::Person => InvokeTarget::action(
+                    CHAT,
+                    workspace,
+                    tilo_app_id::chat::CONVERSATIONS,
+                    tilo_app_id::chat::WRITE_TO,
+                )
+                .with_argument("who", serde_json::json!({ "person": recipient.id }))
+                .with_argument("body", body.clone()),
+                RecipientKind::Agent => InvokeTarget::action(
+                    CHAT,
+                    workspace,
+                    tilo_app_id::chat::CONVERSATIONS,
+                    tilo_app_id::chat::WRITE_TO,
+                )
+                .with_argument("who", serde_json::json!({ "agent": recipient.id }))
+                .with_argument("body", body.clone()),
+                RecipientKind::Conversation => {
+                    InvokeTarget::action(CHAT, workspace, &recipient.id, tilo_app_id::chat::SEND)
+                        .with_argument("body", body.clone())
+                }
+                RecipientKind::NewAgent | RecipientKind::Feedback => {
+                    return Err(format!("{} is no conversation", recipient.name));
+                }
+            };
+            Ok(Target::Invoke(Box::new(target)))
+        })
+        .collect()
+}
+
+/// What a message says, as Chat's rich text takes it: the words, then each thing it carries as a
+/// reference to it and each quote in its own words, referring to where it was quoted from. Plain
+/// words travel as the text they are.
+///
+/// # Errors
+/// It carries an image, a video or a file.
+fn message_body(text: &str, attached: &[tilo_reference::Attached]) -> Result<Value, String> {
+    use tilo_reference::{Attached, Embed};
+    use tilolang_tilo::runtime::rich::RichValue;
+    let mut body = RichValue::from_text(text);
+    for carried in attached {
+        let separator = if body.is_empty() { "" } else { " " };
+        match carried {
+            Attached::Resource { at, label, .. } => {
+                body.push_text(separator);
+                body.push_reference(label, &Embed::Resource(at.clone()));
+            }
+            Attached::Text { text: quoted, from } => {
+                body.push_text(&format!("{separator}“{quoted}”"));
+                if let Some(from) = from {
+                    body.push_text(" ");
+                    body.push_reference(&from.reference.label, &Embed::Resource(from.clone()));
+                }
+            }
+            Attached::Image { name, .. }
+            | Attached::Video { name, .. }
+            | Attached::File { name, .. } => {
+                return Err(format!(
+                    "{name} is not in the workspace yet: add it to Files, then send it from there"
+                ));
+            }
+        }
+    }
+    if attached.is_empty() {
+        return Ok(Value::String(text.to_owned()));
+    }
+    tilolang_tilo::runtime::value::to_json(&tilolang_tilo::runtime::value::Value::Rich(body))
 }
 
 #[cfg(test)]
@@ -799,9 +922,9 @@ mod tests {
             );
         }
 
-        phase an_ask_from_the_canvas_opens_no_conversation_and_a_boxs_send_does;
-        // A box's send opens the conversation it lands in; the person's ask from the canvas does not,
-        // since its turn stands on the canvas where they asked.
+        phase each_ask_from_the_canvas_is_numbered_and_a_boxs_send_is_not;
+        // The person's ask from the canvas is numbered, for its turn to stand by the message Chat
+        // posts for it; a box's send is not an ask.
         {
             let sends = Sends::default();
             let arguments = serde_json::json!({
@@ -824,50 +947,75 @@ mod tests {
             assert_ne!(first, second, "each ask is one of its own");
         }
 
-        phase a_send_is_one_action_for_the_chat_naming_who_what_and_the_words;
-        // What a box holds reaches Chat as one action naming the recipients, what the message carries
-        // and its words: the app opens the conversation and posts there from that one action, nothing
-        // else.
+        phase a_send_writes_to_each_person_and_agent_and_sends_in_a_conversation;
+        // What a box holds reaches Chat as one action for each conversation: a person and an agent
+        // are written to in the one direct conversation with them, a conversation named is sent in,
+        // and each message says the words and refers to what it carries.
         {
             let ada =
                 Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada").with_detail("online");
-            let carried = Attached::Text {
-                text: "issue 42".into(),
-                from: None,
-            };
-            let Target::Invoke(target) = send_target(
+            let helper = Recipient::found(RecipientKind::Agent, "a_helper", "Helper");
+            let general = Recipient::found(
+                RecipientKind::Conversation,
+                "tl:so.tilo.chat:root-lmdoxbnn/c1",
+                "#general",
+            );
+            let targets = send_targets(
                 "ws",
-                std::slice::from_ref(&ada),
-                std::slice::from_ref(&carried),
+                &[ada.clone(), helper, general],
+                &[],
                 "look",
-                true,
             )
-            .expect("a send builds") else {
-                panic!("a send invokes the chat");
+            .expect("a send builds");
+            let invoked: Vec<_> = targets
+                .into_iter()
+                .map(|target| match target {
+                    Target::Invoke(target) => target,
+                    _ => panic!("a send invokes Chat"),
+                })
+                .collect();
+            assert_eq!(invoked.len(), 3, "one action for each conversation");
+            for target in &invoked {
+                assert_eq!(target.app, CHAT);
+                assert_eq!(target.workspace, "ws");
+                assert_eq!(target.arguments.get("body"), Some(&Value::String("look".into())));
+            }
+            assert_eq!(invoked[0].address.resource, tilo_app_id::chat::CONVERSATIONS);
+            assert_eq!(invoked[0].address.action, tilo_app_id::chat::WRITE_TO);
+            assert_eq!(
+                invoked[0].arguments.get("who"),
+                Some(&serde_json::json!({ "person": "ad".repeat(32) }))
+            );
+            assert_eq!(
+                invoked[1].arguments.get("who"),
+                Some(&serde_json::json!({ "agent": "a_helper" }))
+            );
+            assert_eq!(invoked[2].address.resource, "tl:so.tilo.chat:root-lmdoxbnn/c1");
+            assert_eq!(invoked[2].address.action, tilo_app_id::chat::SEND);
+
+            // What it carries is referred to in the message, after its words.
+            let at = tilo_reference::ResourceAt {
+                app: "so.tilo.tasks".to_owned(),
+                record: None,
+                reference: tilo_reference::ResourceRef::whole("tl.so.tilo.tasks.Task", "t1", "Ship"),
             };
-            assert_eq!(target.app, CHAT);
-            assert_eq!(target.workspace, "ws");
-            assert_eq!(target.address.resource, CHAT_WORKSPACE);
-            assert_eq!(target.address.action, SEND);
-            assert_eq!(
-                target.arguments.get("text"),
-                Some(&serde_json::Value::String("look".into()))
-            );
-            let to: Vec<Recipient> =
-                serde_json::from_value(target.arguments["to"].clone()).expect("the recipients");
-            assert_eq!(to, [ada]);
-            let attached: Vec<Attached> =
-                serde_json::from_value(target.arguments["attached"].clone()).expect("what it carries");
-            assert_eq!(attached, [carried]);
-            assert_eq!(
-                target.arguments.get("opens"),
-                Some(&serde_json::Value::Bool(true))
-            );
-            assert_eq!(
-                target.arguments.get("bounds"),
-                None,
-                "where the box stood is the shell's to place the conversation by, not the chat's"
-            );
+            let carried = [
+                Attached::resource(at, None, "Ship"),
+                Attached::Text {
+                    text: "issue 42".into(),
+                    from: None,
+                },
+            ];
+            let body = message_body("look", &carried).expect("a body");
+            let rich = body.get("rich").expect("rich text, since it refers to something");
+            assert!(rich.to_string().contains("issue 42"), "{rich}");
+            assert!(rich.to_string().contains("so.tilo.tasks"), "{rich}");
+            let file = Attached::File {
+                name: "notes.pdf".into(),
+                blob: "b".into(),
+                size: 1,
+            };
+            assert!(message_body("look", &[file]).is_err(), "a file is refused, saying why");
         }
 
         phase a_new_agent_is_named_by_what_it_is_sent_never_the_message;
@@ -891,15 +1039,14 @@ mod tests {
             assert_eq!(agent_name(&[chip("  ")]), "Agent");
         }
 
-        phase a_report_is_one_signed_report_filed_where_the_destination_names;
+        phase a_report_is_one_report_filed_in_the_workspace_the_destination_names;
         // A report's chip is the one place this computer sends reports: one send
-        // is one report, filed in the channel the destination names in the
-        // workspace that keeps it, carrying what the window picked and the words,
-        // and nothing opens over the window it is about.
+        // is one report, Chat's `report` in the workspace that keeps them, saying
+        // the words and what the window picked, and nothing opens over the window
+        // it is about.
         {
             let destination = crate::feedback::Destination {
                 workspace: "w_tilo".to_owned(),
-                channel: "c_feedback".to_owned(),
             };
             let report = destination.recipient();
             let Addressed::Report(place) =
@@ -909,46 +1056,26 @@ mod tests {
                 panic!("a report is not a message");
             };
             assert_eq!(place.workspace, "w_tilo", "in the workspace that keeps it");
-            assert_eq!(place.channel, "c_feedback");
             let carried = Attached::Text {
                 text: "issue 42".into(),
                 from: None,
             };
-            let filed = place
-                .report(
-                    "so.tilo.notes",
-                    std::slice::from_ref(&carried),
-                    "the button does nothing",
-                )
-                .expect("a report builds");
-            let Target::Invoke(target) = report_target(&place, &filed).expect("a report targets")
-            else {
-                panic!("a report invokes the channel");
+            let Target::Invoke(target) = report_target(
+                &place,
+                std::slice::from_ref(&carried),
+                "the button does nothing",
+            )
+            .expect("a report targets") else {
+                panic!("a report invokes Chat");
             };
             assert_eq!(target.app, CHAT);
             assert_eq!(target.workspace, "w_tilo");
-            assert_eq!(
-                target.address.resource, "chat.workspace/channels/c_feedback",
-                "the channel's own item files reports"
-            );
-            assert_eq!(target.address.action, "submit-feedback");
-            let submission: tilo_feedback::Submission =
-                serde_json::from_value(target.arguments["submission"].clone())
-                    .expect("the reviewed report");
-            assert_eq!(
-                submission.destination.workspace, "w_tilo",
-                "the report says where it is filed"
-            );
-            assert_eq!(submission.destination.channel, "c_feedback");
-            assert_eq!(submission.feedback.text, "the button does nothing");
-            let picked = &submission.feedback.selections[0];
-            assert_eq!(
-                picked.app, "so.tilo.notes",
-                "what the window picked came from the window reported"
-            );
-            assert_eq!(
-                picked.texts[0].parts[0].text, "issue 42",
-                "and its words go with the report"
+            assert_eq!(target.address.resource, tilo_app_id::chat::CONVERSATIONS);
+            assert_eq!(target.address.action, tilo_app_id::chat::REPORT_PROBLEM);
+            let body = target.arguments["body"].to_string();
+            assert!(
+                body.contains("the button does nothing") && body.contains("issue 42"),
+                "the words and what the window picked go with the report: {body}"
             );
 
             // A report goes to the one place it goes, and a computer told nowhere sends none.

@@ -25,7 +25,7 @@ from story import PROFILE, SWITCHER, Failed, Person, Story, front, until, walk, 
 
 SETTINGS = "so.tilo.settings"
 STRIPS = "Show strips, now on "
-APPS = "tasks chat file-explorer settings"
+APPS = "tasks file-explorer settings"
 
 
 def bar_workspace(one: Person) -> str | None:

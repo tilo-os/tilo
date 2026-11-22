@@ -8759,3277 +8759,6 @@
         "required": [],
         "description": ""
       },
-      "chat.workspace.begin-chat.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "chat.workspace.create-category.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "chat.workspace.create-channel.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "category": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "kind": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "enum": [
-                  "text",
-                  "voice"
-                ],
-                "type": "string"
-              }
-            ]
-          },
-          "topic": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "chat.workspace.create-channel-with-id.Arguments": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "category": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "kind": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "enum": [
-                  "text",
-                  "voice"
-                ],
-                "type": "string"
-              }
-            ]
-          },
-          "topic": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "members": {
-            "items": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "person": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "person"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "agent": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "agent"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "bot": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "bot"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "name"
-        ],
-        "description": ""
-      },
-      "chat.workspace.delete-category.Arguments": {
-        "type": "object",
-        "properties": {
-          "category": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "category"
-        ],
-        "description": ""
-      },
-      "chat.workspace.move-channel.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "up": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "channel",
-          "up"
-        ],
-        "description": ""
-      },
-      "chat.workspace.move-category.Arguments": {
-        "type": "object",
-        "properties": {
-          "category": {
-            "type": "string"
-          },
-          "up": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "category",
-          "up"
-        ],
-        "description": ""
-      },
-      "chat.workspace.arrange-channels.Arguments": {
-        "type": "object",
-        "properties": {
-          "categories": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "channels": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "category": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "channel": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "channel"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "categories",
-          "channels"
-        ],
-        "description": ""
-      },
-      "chat.workspace.set-channel-category.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "category": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "channel"
-        ],
-        "description": ""
-      },
-      "chat.workspace.rename-channel.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "channel",
-          "name"
-        ],
-        "description": ""
-      },
-      "chat.workspace.set-channel-topic.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "topic": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "channel",
-          "topic"
-        ],
-        "description": ""
-      },
-      "chat.workspace.archive-channel.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "archived": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "channel",
-          "archived"
-        ],
-        "description": ""
-      },
-      "chat.workspace.rename-category.Arguments": {
-        "type": "object",
-        "properties": {
-          "category": {
-            "type": "string"
-          },
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "category",
-          "name"
-        ],
-        "description": ""
-      },
-      "chat.workspace.delete-channel.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "channel"
-        ],
-        "description": ""
-      },
-      "chat.workspace.report-message.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "author": {
-            "oneOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "person": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "person"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "agent": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "agent"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "bot": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "bot"
-                ],
-                "type": "object"
-              }
-            ]
-          },
-          "reason": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "message",
-          "author",
-          "reason"
-        ],
-        "description": ""
-      },
-      "chat.workspace.report-person.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "oneOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "person": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "person"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "agent": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "agent"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "bot": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "bot"
-                ],
-                "type": "object"
-              }
-            ]
-          },
-          "reason": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "reason"
-        ],
-        "description": ""
-      },
-      "chat.workspace.decide-reports.Arguments": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "person": {
-            "oneOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "person": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "person"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "agent": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "agent"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "bot": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "bot"
-                ],
-                "type": "object"
-              }
-            ]
-          },
-          "reports": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "ruling": {
-            "additionalProperties": false,
-            "properties": {
-              "model": {
-                "type": "string"
-              },
-              "outcome": {
-                "enum": [
-                  "no-action",
-                  "restrict",
-                  "ban"
-                ],
-                "type": "string"
-              },
-              "reasoning": {
-                "type": "string"
-              },
-              "reverted": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "app": {
-                      "type": "string"
-                    },
-                    "changes": {
-                      "maximum": 4294967295,
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "record": {
-                      "type": "string"
-                    },
-                    "run": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "app",
-                    "record",
-                    "run",
-                    "changes"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "until_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "outcome",
-              "reasoning"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "id",
-          "person",
-          "reports",
-          "ruling"
-        ],
-        "description": ""
-      },
-      "chat.workspace.overturn-decision.Arguments": {
-        "type": "object",
-        "properties": {
-          "decision": {
-            "type": "string"
-          },
-          "note": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "decision",
-          "note"
-        ],
-        "description": ""
-      },
-      "chat.workspace.mark-read.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "part": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "seen": {
-            "maximum": 4294967295,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "channel",
-          "part",
-          "seen"
-        ],
-        "description": ""
-      },
-      "chat.workspace.keep-summary.Arguments": {
-        "type": "object",
-        "properties": {
-          "through": {
-            "type": "string"
-          },
-          "through_ts": {
-            "type": "integer"
-          },
-          "text": {
-            "type": "string"
-          },
-          "conversation": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "through",
-          "through_ts",
-          "text",
-          "conversation"
-        ],
-        "description": ""
-      },
-      "chat.workspace.submit-feedback.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "submission": {}
-        },
-        "required": [
-          "channel",
-          "submission"
-        ],
-        "description": ""
-      },
-      "chat.workspace.triage.Arguments": {
-        "type": "object",
-        "properties": {
-          "report": {
-            "type": "string"
-          },
-          "update": {}
-        },
-        "required": [
-          "report",
-          "update"
-        ],
-        "description": ""
-      },
-      "chat.workspace.export-content.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "format": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "channel"
-        ],
-        "description": ""
-      },
-      "chat.workspace.start-call.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "chat.workspace.select-input.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "input": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "channel",
-          "input"
-        ],
-        "description": ""
-      },
-      "chat.messages.post.Arguments": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "channel": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string"
-          },
-          "parent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "quoted": {
-            "additionalProperties": false,
-            "properties": {
-              "end": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "start": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "text": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "text",
-              "start",
-              "end"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "body": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "align": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "attrs": {
-                  "type": "object"
-                },
-                "kind": {
-                  "type": "string"
-                },
-                "level": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
-                },
-                "marks": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "end": {
-                        "minimum": 0,
-                        "type": "integer"
-                      },
-                      "name": {
-                        "type": "string"
-                      },
-                      "start": {
-                        "minimum": 0,
-                        "type": "integer"
-                      },
-                      "value": {
-                        "oneOf": [
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "Bool": {
-                                "type": "boolean"
-                              }
-                            },
-                            "required": [
-                              "Bool"
-                            ],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "Int": {
-                                "type": "integer"
-                              }
-                            },
-                            "required": [
-                              "Int"
-                            ],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "Str": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "Str"
-                            ],
-                            "type": "object"
-                          }
-                        ]
-                      }
-                    },
-                    "required": [
-                      "start",
-                      "end",
-                      "name",
-                      "value"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "ordered": {
-                  "type": [
-                    "boolean",
-                    "null"
-                  ]
-                },
-                "text": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "text",
-                "marks"
-              ],
-              "type": "object"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "attachments": {
-            "items": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "anchor": {
-                      "oneOf": [
-                        {
-                          "type": "null"
-                        },
-                        {
-                          "oneOf": [
-                            {
-                              "additionalProperties": false,
-                              "properties": {
-                                "Item": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "id": {
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": [
-                                    "id"
-                                  ],
-                                  "type": "object"
-                                }
-                              },
-                              "required": [
-                                "Item"
-                              ],
-                              "type": "object"
-                            },
-                            {
-                              "additionalProperties": false,
-                              "properties": {
-                                "Items": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "ids": {
-                                      "items": {
-                                        "type": "string"
-                                      },
-                                      "type": "array"
-                                    }
-                                  },
-                                  "required": [
-                                    "ids"
-                                  ],
-                                  "type": "object"
-                                }
-                              },
-                              "required": [
-                                "Items"
-                              ],
-                              "type": "object"
-                            },
-                            {
-                              "additionalProperties": false,
-                              "properties": {
-                                "Text": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "end": {
-                                      "type": "string"
-                                    },
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "start": {
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": [
-                                    "path",
-                                    "start",
-                                    "end"
-                                  ],
-                                  "type": "object"
-                                }
-                              },
-                              "required": [
-                                "Text"
-                              ],
-                              "type": "object"
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    "at": {
-                      "properties": {
-                        "app": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "id": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "kind": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "label": {
-                          "type": "string"
-                        },
-                        "record": {
-                          "minLength": 1,
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "app",
-                        "kind",
-                        "id",
-                        "label"
-                      ],
-                      "type": "object"
-                    },
-                    "kind": {
-                      "const": "resource",
-                      "type": "string"
-                    },
-                    "label": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "at",
-                    "label"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "from": {
-                      "properties": {
-                        "app": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "id": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "kind": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "label": {
-                          "type": "string"
-                        },
-                        "record": {
-                          "minLength": 1,
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "app",
-                        "kind",
-                        "id",
-                        "label"
-                      ],
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    },
-                    "kind": {
-                      "const": "text",
-                      "type": "string"
-                    },
-                    "text": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "text"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "blob": {
-                      "type": "string"
-                    },
-                    "h": {
-                      "maximum": 4294967295,
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "kind": {
-                      "const": "image",
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "w": {
-                      "maximum": 4294967295,
-                      "minimum": 0,
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "name",
-                    "blob",
-                    "w",
-                    "h"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "blob": {
-                      "type": "string"
-                    },
-                    "h": {
-                      "maximum": 4294967295,
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "kind": {
-                      "const": "video",
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "size": {
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "w": {
-                      "maximum": 4294967295,
-                      "minimum": 0,
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "name",
-                    "blob",
-                    "w",
-                    "h",
-                    "size"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "blob": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "file",
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "size": {
-                      "minimum": 0,
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "name",
-                    "blob",
-                    "size"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "type": "array"
-          },
-          "mentions": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "is_agent": {
-                  "type": "boolean"
-                },
-                "len": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "start": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "user": {
-                  "oneOf": [
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "person": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "person"
-                      ],
-                      "type": "object"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "agent": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "agent"
-                      ],
-                      "type": "object"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "bot": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "bot"
-                      ],
-                      "type": "object"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "user",
-                "start",
-                "len",
-                "is_agent"
-              ],
-              "type": "object"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "written": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "origin": {
-            "additionalProperties": false,
-            "properties": {
-              "author": {
-                "type": "string"
-              },
-              "created_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "handle": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "reference": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "source": {
-                "type": "string"
-              },
-              "updated_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "url": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "author",
-              "source"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "channel",
-          "text"
-        ],
-        "description": ""
-      },
-      "chat.messages.post-file.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "content": {
-            "content": true,
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "text": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "attachment": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "oneOf": [
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "anchor": {
-                        "oneOf": [
-                          {
-                            "type": "null"
-                          },
-                          {
-                            "oneOf": [
-                              {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "Item": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "id": {
-                                        "type": "string"
-                                      }
-                                    },
-                                    "required": [
-                                      "id"
-                                    ],
-                                    "type": "object"
-                                  }
-                                },
-                                "required": [
-                                  "Item"
-                                ],
-                                "type": "object"
-                              },
-                              {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "Items": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "ids": {
-                                        "items": {
-                                          "type": "string"
-                                        },
-                                        "type": "array"
-                                      }
-                                    },
-                                    "required": [
-                                      "ids"
-                                    ],
-                                    "type": "object"
-                                  }
-                                },
-                                "required": [
-                                  "Items"
-                                ],
-                                "type": "object"
-                              },
-                              {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "Text": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "end": {
-                                        "type": "string"
-                                      },
-                                      "path": {
-                                        "type": "string"
-                                      },
-                                      "start": {
-                                        "type": "string"
-                                      }
-                                    },
-                                    "required": [
-                                      "path",
-                                      "start",
-                                      "end"
-                                    ],
-                                    "type": "object"
-                                  }
-                                },
-                                "required": [
-                                  "Text"
-                                ],
-                                "type": "object"
-                              }
-                            ]
-                          }
-                        ]
-                      },
-                      "at": {
-                        "properties": {
-                          "app": {
-                            "minLength": 1,
-                            "type": "string"
-                          },
-                          "id": {
-                            "minLength": 1,
-                            "type": "string"
-                          },
-                          "kind": {
-                            "minLength": 1,
-                            "type": "string"
-                          },
-                          "label": {
-                            "type": "string"
-                          },
-                          "record": {
-                            "minLength": 1,
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "app",
-                          "kind",
-                          "id",
-                          "label"
-                        ],
-                        "type": "object"
-                      },
-                      "kind": {
-                        "const": "resource",
-                        "type": "string"
-                      },
-                      "label": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "kind",
-                      "at",
-                      "label"
-                    ],
-                    "type": "object"
-                  },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "from": {
-                        "properties": {
-                          "app": {
-                            "minLength": 1,
-                            "type": "string"
-                          },
-                          "id": {
-                            "minLength": 1,
-                            "type": "string"
-                          },
-                          "kind": {
-                            "minLength": 1,
-                            "type": "string"
-                          },
-                          "label": {
-                            "type": "string"
-                          },
-                          "record": {
-                            "minLength": 1,
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "app",
-                          "kind",
-                          "id",
-                          "label"
-                        ],
-                        "type": [
-                          "object",
-                          "null"
-                        ]
-                      },
-                      "kind": {
-                        "const": "text",
-                        "type": "string"
-                      },
-                      "text": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "kind",
-                      "text"
-                    ],
-                    "type": "object"
-                  },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "blob": {
-                        "type": "string"
-                      },
-                      "h": {
-                        "maximum": 4294967295,
-                        "minimum": 0,
-                        "type": "integer"
-                      },
-                      "kind": {
-                        "const": "image",
-                        "type": "string"
-                      },
-                      "name": {
-                        "type": "string"
-                      },
-                      "w": {
-                        "maximum": 4294967295,
-                        "minimum": 0,
-                        "type": "integer"
-                      }
-                    },
-                    "required": [
-                      "kind",
-                      "name",
-                      "blob",
-                      "w",
-                      "h"
-                    ],
-                    "type": "object"
-                  },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "blob": {
-                        "type": "string"
-                      },
-                      "h": {
-                        "maximum": 4294967295,
-                        "minimum": 0,
-                        "type": "integer"
-                      },
-                      "kind": {
-                        "const": "video",
-                        "type": "string"
-                      },
-                      "name": {
-                        "type": "string"
-                      },
-                      "size": {
-                        "minimum": 0,
-                        "type": "integer"
-                      },
-                      "w": {
-                        "maximum": 4294967295,
-                        "minimum": 0,
-                        "type": "integer"
-                      }
-                    },
-                    "required": [
-                      "kind",
-                      "name",
-                      "blob",
-                      "w",
-                      "h",
-                      "size"
-                    ],
-                    "type": "object"
-                  },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "blob": {
-                        "type": "string"
-                      },
-                      "kind": {
-                        "const": "file",
-                        "type": "string"
-                      },
-                      "name": {
-                        "type": "string"
-                      },
-                      "size": {
-                        "minimum": 0,
-                        "type": "integer"
-                      }
-                    },
-                    "required": [
-                      "kind",
-                      "name",
-                      "blob",
-                      "size"
-                    ],
-                    "type": "object"
-                  }
-                ]
-              }
-            ]
-          },
-          "mentions": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "is_agent": {
-                  "type": "boolean"
-                },
-                "len": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "start": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "user": {
-                  "oneOf": [
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "person": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "person"
-                      ],
-                      "type": "object"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "agent": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "agent"
-                      ],
-                      "type": "object"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "bot": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "bot"
-                      ],
-                      "type": "object"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "user",
-                "start",
-                "len",
-                "is_agent"
-              ],
-              "type": "object"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "channel",
-          "content",
-          "name"
-        ],
-        "description": ""
-      },
-      "chat.messages.share-resource.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "attached": {
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "type": "object"
-          },
-          "text": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "mentions": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "is_agent": {
-                  "type": "boolean"
-                },
-                "len": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "start": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "user": {
-                  "oneOf": [
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "person": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "person"
-                      ],
-                      "type": "object"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "agent": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "agent"
-                      ],
-                      "type": "object"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "bot": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "bot"
-                      ],
-                      "type": "object"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "user",
-                "start",
-                "len",
-                "is_agent"
-              ],
-              "type": "object"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "channel",
-          "attached"
-        ],
-        "description": ""
-      },
-      "chat.messages.share-window.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "attached": {
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "type": "object"
-          },
-          "access": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "oneOf": [
-                  {
-                    "const": "view",
-                    "type": "string"
-                  },
-                  {
-                    "const": "edit",
-                    "type": "string"
-                  }
-                ]
-              }
-            ]
-          },
-          "text": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "mentions": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "is_agent": {
-                  "type": "boolean"
-                },
-                "len": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "start": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "user": {
-                  "oneOf": [
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "person": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "person"
-                      ],
-                      "type": "object"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "agent": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "agent"
-                      ],
-                      "type": "object"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "bot": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "bot"
-                      ],
-                      "type": "object"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "user",
-                "start",
-                "len",
-                "is_agent"
-              ],
-              "type": "object"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "channel",
-          "attached"
-        ],
-        "description": ""
-      },
-      "chat.messages.stop-sharing.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "message"
-        ],
-        "description": ""
-      },
-      "chat.messages.set-share-access.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "access": {
-            "oneOf": [
-              {
-                "const": "view",
-                "type": "string"
-              },
-              {
-                "const": "edit",
-                "type": "string"
-              }
-            ]
-          }
-        },
-        "required": [
-          "message",
-          "access"
-        ],
-        "description": ""
-      },
-      "chat.messages.share-open.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "open": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "message",
-          "open"
-        ],
-        "description": ""
-      },
-      "chat.messages.deliver-message.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "author": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "body": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "ts": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "channel",
-          "author",
-          "body"
-        ],
-        "description": ""
-      },
-      "chat.messages.import-message.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string"
-          },
-          "origin": {
-            "additionalProperties": false,
-            "properties": {
-              "author": {
-                "type": "string"
-              },
-              "created_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "handle": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "reference": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "source": {
-                "type": "string"
-              },
-              "updated_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "url": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "author",
-              "source"
-            ],
-            "type": "object"
-          },
-          "parent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "attachments": {
-            "items": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "anchor": {
-                      "oneOf": [
-                        {
-                          "type": "null"
-                        },
-                        {
-                          "oneOf": [
-                            {
-                              "additionalProperties": false,
-                              "properties": {
-                                "Item": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "id": {
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": [
-                                    "id"
-                                  ],
-                                  "type": "object"
-                                }
-                              },
-                              "required": [
-                                "Item"
-                              ],
-                              "type": "object"
-                            },
-                            {
-                              "additionalProperties": false,
-                              "properties": {
-                                "Items": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "ids": {
-                                      "items": {
-                                        "type": "string"
-                                      },
-                                      "type": "array"
-                                    }
-                                  },
-                                  "required": [
-                                    "ids"
-                                  ],
-                                  "type": "object"
-                                }
-                              },
-                              "required": [
-                                "Items"
-                              ],
-                              "type": "object"
-                            },
-                            {
-                              "additionalProperties": false,
-                              "properties": {
-                                "Text": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "end": {
-                                      "type": "string"
-                                    },
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "start": {
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": [
-                                    "path",
-                                    "start",
-                                    "end"
-                                  ],
-                                  "type": "object"
-                                }
-                              },
-                              "required": [
-                                "Text"
-                              ],
-                              "type": "object"
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    "at": {
-                      "properties": {
-                        "app": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "id": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "kind": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "label": {
-                          "type": "string"
-                        },
-                        "record": {
-                          "minLength": 1,
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "app",
-                        "kind",
-                        "id",
-                        "label"
-                      ],
-                      "type": "object"
-                    },
-                    "kind": {
-                      "const": "resource",
-                      "type": "string"
-                    },
-                    "label": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "at",
-                    "label"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "from": {
-                      "properties": {
-                        "app": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "id": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "kind": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "label": {
-                          "type": "string"
-                        },
-                        "record": {
-                          "minLength": 1,
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "app",
-                        "kind",
-                        "id",
-                        "label"
-                      ],
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    },
-                    "kind": {
-                      "const": "text",
-                      "type": "string"
-                    },
-                    "text": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "text"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "blob": {
-                      "type": "string"
-                    },
-                    "h": {
-                      "maximum": 4294967295,
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "kind": {
-                      "const": "image",
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "w": {
-                      "maximum": 4294967295,
-                      "minimum": 0,
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "name",
-                    "blob",
-                    "w",
-                    "h"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "blob": {
-                      "type": "string"
-                    },
-                    "h": {
-                      "maximum": 4294967295,
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "kind": {
-                      "const": "video",
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "size": {
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "w": {
-                      "maximum": 4294967295,
-                      "minimum": 0,
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "name",
-                    "blob",
-                    "w",
-                    "h",
-                    "size"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "blob": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "file",
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "size": {
-                      "minimum": 0,
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "name",
-                    "blob",
-                    "size"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "channel",
-          "text",
-          "origin"
-        ],
-        "description": ""
-      },
-      "chat.messages.edit-message.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string"
-          },
-          "body": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "align": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "attrs": {
-                  "type": "object"
-                },
-                "kind": {
-                  "type": "string"
-                },
-                "level": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
-                },
-                "marks": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "end": {
-                        "minimum": 0,
-                        "type": "integer"
-                      },
-                      "name": {
-                        "type": "string"
-                      },
-                      "start": {
-                        "minimum": 0,
-                        "type": "integer"
-                      },
-                      "value": {
-                        "oneOf": [
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "Bool": {
-                                "type": "boolean"
-                              }
-                            },
-                            "required": [
-                              "Bool"
-                            ],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "Int": {
-                                "type": "integer"
-                              }
-                            },
-                            "required": [
-                              "Int"
-                            ],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "Str": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "Str"
-                            ],
-                            "type": "object"
-                          }
-                        ]
-                      }
-                    },
-                    "required": [
-                      "start",
-                      "end",
-                      "name",
-                      "value"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "ordered": {
-                  "type": [
-                    "boolean",
-                    "null"
-                  ]
-                },
-                "text": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "text",
-                "marks"
-              ],
-              "type": "object"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "mentions": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "is_agent": {
-                  "type": "boolean"
-                },
-                "len": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "start": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "user": {
-                  "oneOf": [
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "person": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "person"
-                      ],
-                      "type": "object"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "agent": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "agent"
-                      ],
-                      "type": "object"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "bot": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "bot"
-                      ],
-                      "type": "object"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "user",
-                "start",
-                "len",
-                "is_agent"
-              ],
-              "type": "object"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "message",
-          "text"
-        ],
-        "description": ""
-      },
-      "chat.messages.delete-message.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "message"
-        ],
-        "description": ""
-      },
-      "chat.messages.remove-message.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "message"
-        ],
-        "description": ""
-      },
-      "chat.messages.pin.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "pinned": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "message",
-          "pinned"
-        ],
-        "description": ""
-      },
-      "chat.messages.retry.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "reply": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "message",
-          "reply"
-        ],
-        "description": ""
-      },
-      "chat.messages.record-work.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "work": {
-            "additionalProperties": false,
-            "properties": {
-              "about": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "answered": {
-                "additionalProperties": false,
-                "properties": {
-                  "costMicros": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "label": {
-                    "type": "string"
-                  },
-                  "model": {
-                    "type": "string"
-                  },
-                  "provider": {
-                    "type": "string"
-                  },
-                  "tokens": {
-                    "minimum": 0,
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "provider",
-                  "model",
-                  "costMicros"
-                ],
-                "type": [
-                  "object",
-                  "null"
-                ]
-              },
-              "app": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "detail": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "did": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "state": {
-                "type": "string"
-              },
-              "trace": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "label": {
-                      "type": "string"
-                    },
-                    "outcome": {
-                      "type": "string"
-                    },
-                    "resource": {
-                      "type": "string"
-                    },
-                    "sequence": {
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "why": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "resource",
-                    "label",
-                    "outcome"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "state"
-            ],
-            "type": "object"
-          },
-          "say": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "message",
-          "work"
-        ],
-        "description": ""
-      },
-      "chat.messages.ask.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "text": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "answers": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "label": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id"
-              ],
-              "type": "object"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "kind": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "detail": {},
-          "parent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "channel",
-          "text"
-        ],
-        "description": ""
-      },
-      "chat.messages.answer-question.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "answer": {
-            "type": "string"
-          },
-          "device": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "message",
-          "answer"
-        ],
-        "description": ""
-      },
-      "chat.messages.withdraw-question.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "why": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "message"
-        ],
-        "description": ""
-      },
-      "chat.messages.settle-question.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "outcome": {
-            "type": "string"
-          },
-          "detail": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "message",
-          "outcome"
-        ],
-        "description": ""
-      },
-      "chat.messages.ask-agent.Arguments": {
-        "type": "object",
-        "properties": {
-          "text": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "channel": {
-            "type": "string"
-          },
-          "cause": {
-            "additionalProperties": false,
-            "properties": {
-              "key": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind",
-              "key"
-            ],
-            "type": "object"
-          },
-          "members": {
-            "items": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "person": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "person"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "agent": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "agent"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "bot": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "bot"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "message": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "text",
-          "channel",
-          "cause"
-        ],
-        "description": ""
-      },
-      "chat.messages.stop-agent.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "message"
-        ],
-        "description": ""
-      },
-      "chat.messages.post-view.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "text": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "source": {
-            "type": "string"
-          },
-          "reads": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "parent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "channel",
-          "text",
-          "source",
-          "reads"
-        ],
-        "description": ""
-      },
-      "chat.messages.answer-with-view.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "source": {
-            "type": "string"
-          },
-          "reads": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "say": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "message",
-          "source",
-          "reads"
-        ],
-        "description": ""
-      },
-      "chat.messages.rewrite-view.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "source": {
-            "type": "string"
-          },
-          "reads": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "message",
-          "source",
-          "reads"
-        ],
-        "description": ""
-      },
-      "chat.messages.carry-counts.Arguments": {
-        "type": "object",
-        "properties": {
-          "earlier": {
-            "type": "object"
-          }
-        },
-        "required": [
-          "earlier"
-        ],
-        "description": ""
-      },
-      "chat.messages.stream-output.Arguments": {
-        "type": "object",
-        "properties": {
-          "channel": {
-            "type": "string"
-          },
-          "reply": {
-            "type": "string"
-          },
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "event": {}
-        },
-        "required": [
-          "channel",
-          "reply",
-          "event"
-        ],
-        "description": ""
-      },
-      "chat.drafts.start-draft.Arguments": {
-        "type": "object",
-        "properties": {
-          "key": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "key"
-        ],
-        "description": ""
-      },
-      "chat.drafts.import-previous.Arguments": {
-        "type": "object",
-        "properties": {
-          "receipt": {
-            "type": "string"
-          },
-          "key": {
-            "type": "string"
-          },
-          "markdown": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "receipt",
-          "key",
-          "markdown"
-        ],
-        "description": ""
-      },
-      "tilo.workspace.emoji.add-emoji.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "image": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "image"
-        ],
-        "description": ""
-      },
-      "tilo.workspace.emoji.remove-emoji.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "tilo.workspace.emoji.remove-any-emoji.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "chat.skills.write-skill.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "work": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "how": {
-            "type": "string"
-          },
-          "form": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "model": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "name",
-          "work",
-          "how"
-        ],
-        "description": ""
-      },
-      "chat.skills.correct-skill.Arguments": {
-        "type": "object",
-        "properties": {
-          "skill": {
-            "type": "string"
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "work": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "how": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "form": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "model": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "skill"
-        ],
-        "description": ""
-      },
-      "chat.skills.keep-example.Arguments": {
-        "type": "object",
-        "properties": {
-          "skill": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string"
-          },
-          "accepted": {
-            "type": "boolean"
-          },
-          "note": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "skill",
-          "text",
-          "accepted"
-        ],
-        "description": ""
-      },
-      "chat.skills.drop-example.Arguments": {
-        "type": "object",
-        "properties": {
-          "skill": {
-            "type": "string"
-          },
-          "example": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "skill",
-          "example"
-        ],
-        "description": ""
-      },
-      "chat.skills.forget-skill.Arguments": {
-        "type": "object",
-        "properties": {
-          "skill": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "skill"
-        ],
-        "description": ""
-      },
       "chip_design.project.import-report.Arguments": {
         "type": "object",
         "properties": {
@@ -29310,13 +26039,13 @@
         "required": [],
         "description": "Adds a column at the right of the board."
       },
-      "tl.so.tilo.lang.chat.Conversations.$create.Arguments": {
+      "tl.so.tilo.chat.Conversations.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.chat.Conversations.edit-text.Arguments": {
+      "tl.so.tilo.chat.Conversations.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -29333,7 +26062,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.Conversations.edit-flag.Arguments": {
+      "tl.so.tilo.chat.Conversations.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -29351,7 +26080,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.Conversations.new_channel.Arguments": {
+      "tl.so.tilo.chat.Conversations.new_channel.Arguments": {
         "type": "object",
         "properties": {
           "name": {
@@ -29361,7 +26090,7 @@
         "required": [],
         "description": "Adds a text channel to the sidebar."
       },
-      "tl.so.tilo.lang.chat.Conversations.new_category.Arguments": {
+      "tl.so.tilo.chat.Conversations.new_category.Arguments": {
         "type": "object",
         "properties": {
           "name": {
@@ -29371,7 +26100,7 @@
         "required": [],
         "description": "Adds a category to the sidebar."
       },
-      "tl.so.tilo.lang.chat.Conversations.message_person.Arguments": {
+      "tl.so.tilo.chat.Conversations.message_person.Arguments": {
         "type": "object",
         "properties": {
           "who": {
@@ -29412,13 +26141,68 @@
         ],
         "description": "Opens the direct message with `who`, in the sidebar, or the one already open with them: a\nperson has one conversation, not a new empty one each time."
       },
-      "tl.so.tilo.lang.chat.Category.$create.Arguments": {
+      "tl.so.tilo.chat.Conversations.write_to.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "body": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "who",
+          "body"
+        ],
+        "description": "Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the\none already open, else a new one in the sidebar. The message is sent as every message is."
+      },
+      "tl.so.tilo.chat.Category.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.chat.Category.edit-text.Arguments": {
+      "tl.so.tilo.chat.Category.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -29437,7 +26221,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.Category.edit-flag.Arguments": {
+      "tl.so.tilo.chat.Category.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -29455,7 +26239,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.Category.add_channel.Arguments": {
+      "tl.so.tilo.chat.Category.add_channel.Arguments": {
         "type": "object",
         "properties": {
           "name": {
@@ -29465,13 +26249,13 @@
         "required": [],
         "description": "Adds a text channel to a category."
       },
-      "tl.so.tilo.lang.chat.TextChannel.$create.Arguments": {
+      "tl.so.tilo.chat.TextChannel.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.chat.TextChannel.edit-text.Arguments": {
+      "tl.so.tilo.chat.TextChannel.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -29491,7 +26275,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.TextChannel.edit-flag.Arguments": {
+      "tl.so.tilo.chat.TextChannel.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -29509,7 +26293,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.TextChannel.send.Arguments": {
+      "tl.so.tilo.chat.TextChannel.send.Arguments": {
         "type": "object",
         "properties": {
           "to": {},
@@ -29555,7 +26339,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.Message",
+            "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
           }
         },
@@ -29565,7 +26349,7 @@
         ],
         "description": "Posts a message in a channel, a thread or a direct conversation as the invoker, answering\nanother when `reply_to` names one. History and the catch-up say what a person did in its own\nwords, counting the messages a step of them holds."
       },
-      "tl.so.tilo.lang.chat.TextChannel.send_view.Arguments": {
+      "tl.so.tilo.chat.TextChannel.send_view.Arguments": {
         "type": "object",
         "properties": {
           "to": {},
@@ -29583,7 +26367,7 @@
         ],
         "description": "Sends a view as a message: its title as what the message says, its definition for anyone\nwho reads it to add to their own views."
       },
-      "tl.so.tilo.lang.chat.TextChannel.delete.Arguments": {
+      "tl.so.tilo.chat.TextChannel.delete.Arguments": {
         "type": "object",
         "properties": {
           "to": {},
@@ -29616,7 +26400,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.Message",
+            "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
           }
         },
@@ -29626,7 +26410,7 @@
         ],
         "description": "Deletes a message from the channel or thread it is in. Its author, or anyone the\nchannel's permissions allow, may: the platform undoes it rather than asking first, and the\nremoval is a version of the message, so who removed it stays answerable."
       },
-      "tl.so.tilo.lang.chat.TextChannel.start_thread.Arguments": {
+      "tl.so.tilo.chat.TextChannel.start_thread.Arguments": {
         "type": "object",
         "properties": {
           "c": {},
@@ -29659,7 +26443,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.Message",
+            "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
           },
           "name": {
@@ -29672,13 +26456,13 @@
         ],
         "description": "Starts a thread from a message of a channel or a direct conversation, named after what the\nmessage says."
       },
-      "tl.so.tilo.lang.chat.Message.$create.Arguments": {
+      "tl.so.tilo.chat.Message.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.chat.Message.edit-text.Arguments": {
+      "tl.so.tilo.chat.Message.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -29700,7 +26484,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.Message.edit-flag.Arguments": {
+      "tl.so.tilo.chat.Message.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -29720,7 +26504,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.Message.edit.Arguments": {
+      "tl.so.tilo.chat.Message.edit.Arguments": {
         "type": "object",
         "properties": {
           "body": {
@@ -29740,7 +26524,7 @@
         "required": [],
         "description": "Changes what a message says. Only its author may."
       },
-      "tl.so.tilo.lang.chat.Message.pin.Arguments": {
+      "tl.so.tilo.chat.Message.pin.Arguments": {
         "type": "object",
         "properties": {
           "pinned": {
@@ -29750,7 +26534,7 @@
         "required": [],
         "description": "Pins a message to its channel, or unpins it."
       },
-      "tl.so.tilo.lang.chat.Message.react.Arguments": {
+      "tl.so.tilo.chat.Message.react.Arguments": {
         "type": "object",
         "properties": {
           "emoji": {
@@ -29762,13 +26546,13 @@
         ],
         "description": "Adds your reaction with an emoji to a message, or takes it back when you had reacted with it."
       },
-      "tl.so.tilo.lang.chat.Thread.$create.Arguments": {
+      "tl.so.tilo.chat.Thread.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.chat.Thread.edit-text.Arguments": {
+      "tl.so.tilo.chat.Thread.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -29787,7 +26571,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.Thread.edit-flag.Arguments": {
+      "tl.so.tilo.chat.Thread.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -29807,7 +26591,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.Thread.send.Arguments": {
+      "tl.so.tilo.chat.Thread.send.Arguments": {
         "type": "object",
         "properties": {
           "to": {},
@@ -29853,7 +26637,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.Message",
+            "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
           }
         },
@@ -29863,7 +26647,7 @@
         ],
         "description": "Posts a message in a channel, a thread or a direct conversation as the invoker, answering\nanother when `reply_to` names one. History and the catch-up say what a person did in its own\nwords, counting the messages a step of them holds."
       },
-      "tl.so.tilo.lang.chat.Thread.send_view.Arguments": {
+      "tl.so.tilo.chat.Thread.send_view.Arguments": {
         "type": "object",
         "properties": {
           "to": {},
@@ -29881,7 +26665,7 @@
         ],
         "description": "Sends a view as a message: its title as what the message says, its definition for anyone\nwho reads it to add to their own views."
       },
-      "tl.so.tilo.lang.chat.Thread.delete.Arguments": {
+      "tl.so.tilo.chat.Thread.delete.Arguments": {
         "type": "object",
         "properties": {
           "to": {},
@@ -29914,7 +26698,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.Message",
+            "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
           }
         },
@@ -29924,13 +26708,13 @@
         ],
         "description": "Deletes a message from the channel or thread it is in. Its author, or anyone the\nchannel's permissions allow, may: the platform undoes it rather than asking first, and the\nremoval is a version of the message, so who removed it stays answerable."
       },
-      "tl.so.tilo.lang.chat.Direct.$create.Arguments": {
+      "tl.so.tilo.chat.Direct.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.chat.Direct.edit-text.Arguments": {
+      "tl.so.tilo.chat.Direct.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -29949,7 +26733,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.Direct.edit-flag.Arguments": {
+      "tl.so.tilo.chat.Direct.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -29967,7 +26751,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.Direct.send.Arguments": {
+      "tl.so.tilo.chat.Direct.send.Arguments": {
         "type": "object",
         "properties": {
           "to": {},
@@ -30013,7 +26797,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.Message",
+            "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
           }
         },
@@ -30023,7 +26807,7 @@
         ],
         "description": "Posts a message in a channel, a thread or a direct conversation as the invoker, answering\nanother when `reply_to` names one. History and the catch-up say what a person did in its own\nwords, counting the messages a step of them holds."
       },
-      "tl.so.tilo.lang.chat.Direct.send_view.Arguments": {
+      "tl.so.tilo.chat.Direct.send_view.Arguments": {
         "type": "object",
         "properties": {
           "to": {},
@@ -30041,7 +26825,7 @@
         ],
         "description": "Sends a view as a message: its title as what the message says, its definition for anyone\nwho reads it to add to their own views."
       },
-      "tl.so.tilo.lang.chat.Direct.delete.Arguments": {
+      "tl.so.tilo.chat.Direct.delete.Arguments": {
         "type": "object",
         "properties": {
           "to": {},
@@ -30074,7 +26858,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.Message",
+            "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
           }
         },
@@ -30084,7 +26868,7 @@
         ],
         "description": "Deletes a message from the channel or thread it is in. Its author, or anyone the\nchannel's permissions allow, may: the platform undoes it rather than asking first, and the\nremoval is a version of the message, so who removed it stays answerable."
       },
-      "tl.so.tilo.lang.chat.Direct.start_thread.Arguments": {
+      "tl.so.tilo.chat.Direct.start_thread.Arguments": {
         "type": "object",
         "properties": {
           "c": {},
@@ -30117,7 +26901,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.Message",
+            "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
           },
           "name": {
@@ -30130,13 +26914,13 @@
         ],
         "description": "Starts a thread from a message of a channel or a direct conversation, named after what the\nmessage says."
       },
-      "tl.so.tilo.lang.chat.Part.$create.Arguments": {
+      "tl.so.tilo.chat.Part.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.chat.Part.edit-text.Arguments": {
+      "tl.so.tilo.chat.Part.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -30156,7 +26940,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.Part.edit-flag.Arguments": {
+      "tl.so.tilo.chat.Part.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -30174,7 +26958,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.chat.send.Arguments": {
+      "tl.so.tilo.chat.send.Arguments": {
         "type": "object",
         "properties": {
           "to": {},
@@ -30220,7 +27004,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.Message",
+            "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
           }
         },
@@ -30230,7 +27014,7 @@
         ],
         "description": "Posts a message in a channel, a thread or a direct conversation as the invoker, answering\nanother when `reply_to` names one. History and the catch-up say what a person did in its own\nwords, counting the messages a step of them holds."
       },
-      "tl.so.tilo.lang.chat.send_view.Arguments": {
+      "tl.so.tilo.chat.send_view.Arguments": {
         "type": "object",
         "properties": {
           "to": {},
@@ -30248,7 +27032,7 @@
         ],
         "description": "Sends a view as a message: its title as what the message says, its definition for anyone\nwho reads it to add to their own views."
       },
-      "tl.so.tilo.lang.chat.delete.Arguments": {
+      "tl.so.tilo.chat.delete.Arguments": {
         "type": "object",
         "properties": {
           "to": {},
@@ -30281,7 +27065,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.Message",
+            "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
           }
         },
@@ -30291,7 +27075,7 @@
         ],
         "description": "Deletes a message from the channel or thread it is in. Its author, or anyone the\nchannel's permissions allow, may: the platform undoes it rather than asking first, and the\nremoval is a version of the message, so who removed it stays answerable."
       },
-      "tl.so.tilo.lang.chat.start_thread.Arguments": {
+      "tl.so.tilo.chat.start_thread.Arguments": {
         "type": "object",
         "properties": {
           "c": {},
@@ -30324,7 +27108,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.Message",
+            "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
           },
           "name": {
@@ -36704,7 +33488,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.TextChannel",
+            "resource_kind": "tl.so.tilo.chat.TextChannel",
             "type": "object"
           }
         },
@@ -36966,7 +33750,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.chat.Message",
+            "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
           }
         },
@@ -37735,372 +34519,6 @@
       "resource": "canvas.artwork",
       "action": "save-artwork",
       "arguments": "#/components/schemas/canvas.artwork.save-artwork.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "begin-chat",
-      "arguments": "#/components/schemas/chat.workspace.begin-chat.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "create-category",
-      "arguments": "#/components/schemas/chat.workspace.create-category.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "create-channel",
-      "arguments": "#/components/schemas/chat.workspace.create-channel.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "create-channel-with-id",
-      "arguments": "#/components/schemas/chat.workspace.create-channel-with-id.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "delete-category",
-      "arguments": "#/components/schemas/chat.workspace.delete-category.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "move-channel",
-      "arguments": "#/components/schemas/chat.workspace.move-channel.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "move-category",
-      "arguments": "#/components/schemas/chat.workspace.move-category.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "arrange-channels",
-      "arguments": "#/components/schemas/chat.workspace.arrange-channels.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "set-channel-category",
-      "arguments": "#/components/schemas/chat.workspace.set-channel-category.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "rename-channel",
-      "arguments": "#/components/schemas/chat.workspace.rename-channel.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "set-channel-topic",
-      "arguments": "#/components/schemas/chat.workspace.set-channel-topic.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "archive-channel",
-      "arguments": "#/components/schemas/chat.workspace.archive-channel.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "rename-category",
-      "arguments": "#/components/schemas/chat.workspace.rename-category.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "delete-channel",
-      "arguments": "#/components/schemas/chat.workspace.delete-channel.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "report-message",
-      "arguments": "#/components/schemas/chat.workspace.report-message.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "report-person",
-      "arguments": "#/components/schemas/chat.workspace.report-person.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "decide-reports",
-      "arguments": "#/components/schemas/chat.workspace.decide-reports.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "overturn-decision",
-      "arguments": "#/components/schemas/chat.workspace.overturn-decision.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "mark-read",
-      "arguments": "#/components/schemas/chat.workspace.mark-read.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "keep-summary",
-      "arguments": "#/components/schemas/chat.workspace.keep-summary.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "submit-feedback",
-      "arguments": "#/components/schemas/chat.workspace.submit-feedback.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "triage",
-      "arguments": "#/components/schemas/chat.workspace.triage.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "export-content",
-      "arguments": "#/components/schemas/chat.workspace.export-content.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "start-call",
-      "arguments": "#/components/schemas/chat.workspace.start-call.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "select-input",
-      "arguments": "#/components/schemas/chat.workspace.select-input.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "post",
-      "arguments": "#/components/schemas/chat.messages.post.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "post-file",
-      "arguments": "#/components/schemas/chat.messages.post-file.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "share-resource",
-      "arguments": "#/components/schemas/chat.messages.share-resource.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "share-window",
-      "arguments": "#/components/schemas/chat.messages.share-window.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "stop-sharing",
-      "arguments": "#/components/schemas/chat.messages.stop-sharing.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "set-share-access",
-      "arguments": "#/components/schemas/chat.messages.set-share-access.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "share-open",
-      "arguments": "#/components/schemas/chat.messages.share-open.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "deliver-message",
-      "arguments": "#/components/schemas/chat.messages.deliver-message.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "import-message",
-      "arguments": "#/components/schemas/chat.messages.import-message.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "edit-message",
-      "arguments": "#/components/schemas/chat.messages.edit-message.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "delete-message",
-      "arguments": "#/components/schemas/chat.messages.delete-message.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "remove-message",
-      "arguments": "#/components/schemas/chat.messages.remove-message.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "pin",
-      "arguments": "#/components/schemas/chat.messages.pin.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "retry",
-      "arguments": "#/components/schemas/chat.messages.retry.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "record-work",
-      "arguments": "#/components/schemas/chat.messages.record-work.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "ask",
-      "arguments": "#/components/schemas/chat.messages.ask.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "answer-question",
-      "arguments": "#/components/schemas/chat.messages.answer-question.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "withdraw-question",
-      "arguments": "#/components/schemas/chat.messages.withdraw-question.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "settle-question",
-      "arguments": "#/components/schemas/chat.messages.settle-question.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "ask-agent",
-      "arguments": "#/components/schemas/chat.messages.ask-agent.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "stop-agent",
-      "arguments": "#/components/schemas/chat.messages.stop-agent.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "post-view",
-      "arguments": "#/components/schemas/chat.messages.post-view.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "answer-with-view",
-      "arguments": "#/components/schemas/chat.messages.answer-with-view.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "rewrite-view",
-      "arguments": "#/components/schemas/chat.messages.rewrite-view.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "carry-counts",
-      "arguments": "#/components/schemas/chat.messages.carry-counts.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.messages",
-      "action": "stream-output",
-      "arguments": "#/components/schemas/chat.messages.stream-output.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.drafts",
-      "action": "start-draft",
-      "arguments": "#/components/schemas/chat.drafts.start-draft.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.drafts",
-      "action": "import-previous",
-      "arguments": "#/components/schemas/chat.drafts.import-previous.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "tilo.workspace.emoji",
-      "action": "add-emoji",
-      "arguments": "#/components/schemas/tilo.workspace.emoji.add-emoji.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "tilo.workspace.emoji",
-      "action": "remove-emoji",
-      "arguments": "#/components/schemas/tilo.workspace.emoji.remove-emoji.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "tilo.workspace.emoji",
-      "action": "remove-any-emoji",
-      "arguments": "#/components/schemas/tilo.workspace.emoji.remove-any-emoji.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.skills",
-      "action": "write-skill",
-      "arguments": "#/components/schemas/chat.skills.write-skill.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.skills",
-      "action": "correct-skill",
-      "arguments": "#/components/schemas/chat.skills.correct-skill.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.skills",
-      "action": "keep-example",
-      "arguments": "#/components/schemas/chat.skills.keep-example.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.skills",
-      "action": "drop-example",
-      "arguments": "#/components/schemas/chat.skills.drop-example.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.skills",
-      "action": "forget-skill",
-      "arguments": "#/components/schemas/chat.skills.forget-skill.Arguments"
     },
     {
       "app": "so.tilo.chip-design",
@@ -42381,292 +38799,298 @@
       "arguments": "#/components/schemas/tl.so.tilo.lang.board.Board.new_column.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
+      "app": "so.tilo.chat",
       "resource": "tl.host",
       "action": "commit",
       "arguments": "#/components/schemas/tl.host.commit.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
+      "app": "so.tilo.chat",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
+      "app": "so.tilo.chat",
       "resource": "tilolang.personal",
       "action": "seen",
       "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
+      "app": "so.tilo.chat",
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
+      "app": "so.tilo.chat",
       "resource": "tilolang.personal",
       "action": "reminded",
       "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Conversations",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Conversations.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Conversations",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Conversations.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Conversations",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Conversations.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Conversations",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
       "action": "new_channel",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Conversations.new_channel.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.new_channel.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Conversations",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
       "action": "new_category",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Conversations.new_category.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.new_category.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Conversations",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
       "action": "message_person",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Conversations.message_person.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.message_person.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Category",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
+      "action": "write_to",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.write_to.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Category",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Category.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Category.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Category",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Category",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Category.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Category.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Category",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Category",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Category.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Category.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Category",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Category",
       "action": "add_channel",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Category.add_channel.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Category.add_channel.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.TextChannel",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.TextChannel.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.TextChannel",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.TextChannel.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.TextChannel",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.TextChannel.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.TextChannel",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
       "action": "send",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.TextChannel.send.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.send.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.TextChannel",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
       "action": "send_view",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.TextChannel.send_view.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.send_view.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.TextChannel",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
       "action": "delete",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.TextChannel.delete.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.delete.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.TextChannel",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
       "action": "start_thread",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.TextChannel.start_thread.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.start_thread.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Message",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Message",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Message.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Message.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Message",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Message",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Message.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Message.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Message",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Message",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Message.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Message.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Message",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Message",
       "action": "edit",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Message.edit.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Message.edit.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Message",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Message",
       "action": "pin",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Message.pin.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Message.pin.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Message",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Message",
       "action": "react",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Message.react.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Message.react.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Thread",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Thread.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Thread",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Thread.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Thread",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Thread.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Thread",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
       "action": "send",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Thread.send.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.send.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Thread",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
       "action": "send_view",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Thread.send_view.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.send_view.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Thread",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
       "action": "delete",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Thread.delete.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.delete.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Direct",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Direct.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Direct",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Direct.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Direct",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Direct.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Direct",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
       "action": "send",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Direct.send.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.send.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Direct",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
       "action": "send_view",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Direct.send_view.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.send_view.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Direct",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
       "action": "delete",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Direct.delete.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.delete.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Direct",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
       "action": "start_thread",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Direct.start_thread.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.start_thread.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Part",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Part",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Part.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Part.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Part",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Part",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Part.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Part.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat.Part",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Part",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.Part.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Part.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat",
       "action": "send",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.send.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.send.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat",
       "action": "send_view",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.send_view.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.send_view.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat",
       "action": "delete",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.delete.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.delete.Arguments"
     },
     {
-      "app": "so.tilo.lang.chat",
-      "resource": "tl.so.tilo.lang.chat",
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat",
       "action": "start_thread",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.chat.start_thread.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.chat.start_thread.Arguments"
     },
     {
       "app": "so.tilo.lang.counter",

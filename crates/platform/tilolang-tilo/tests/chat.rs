@@ -14,7 +14,7 @@ const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 /// What a workspace of Chat runs: the agents it asks, and Chat.
 const PACKAGES: [(&str, &str); 2] = [crate::fixtures::AGENT, (CHAT, CHAT_IDS)];
-const APP: &str = "so.tilo.lang.chat";
+const APP: &str = "so.tilo.chat";
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
@@ -1476,7 +1476,7 @@ fn a_message_sent_in_a_channel_names_a_verb_the_channels_surface_publishes() {
     let surfaces = tilolang_tilo::surface::package_surfaces(&meta, &tilolang_runtime::SourceWords);
     for entry in committed {
         let action = &entry.action;
-        assert_eq!(action.kind, "tl.so.tilo.lang.chat.TextChannel");
+        assert_eq!(action.kind, "tl.so.tilo.chat.TextChannel");
         let surface = surfaces
             .iter()
             .find(|surface| surface.kind == action.kind)
@@ -1589,5 +1589,62 @@ fn each_message_to_an_agent_asks_it_once() {
     assert_eq!(
         said(&mut tide_view),
         ["What changed in the build?", "And the tests?", "Any news?"]
+    );
+}
+
+/// Two people reporting a problem apart, before either has seen the other's: each report opens
+/// the workspace's #feedback channel, and once they sync there is one channel holding both. A
+/// report that says nothing is refused.
+#[test]
+fn reports_filed_apart_stand_in_one_feedback_channel() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &PACKAGES);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let mut ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
+    ben.host.sync_from(&ben.doc);
+    call(
+        &ada,
+        "report_problem",
+        vec![all.clone(), rich("Search forgets my words")],
+    );
+    ada.commit();
+    call(
+        &ben,
+        "report_problem",
+        vec![all.clone(), rich("The dock hides behind the keyboard")],
+    );
+    ben.commit();
+    ada.sync_with(&mut ben);
+    for r in [&ada, &ben] {
+        let Value::List(channels) = r.host.runtime().read(&target(&all), "channels").unwrap()
+        else {
+            panic!("the channels read as a list");
+        };
+        assert_eq!(channels.len(), 1, "one #feedback channel");
+        let feedback = target(&channels[0]);
+        assert_eq!(
+            r.host.runtime().read(&feedback, "name").unwrap(),
+            Value::text("feedback")
+        );
+        let Value::List(messages) = r.host.runtime().read(&feedback, "messages").unwrap() else {
+            panic!("its messages read as a list");
+        };
+        assert_eq!(messages.len(), 2, "both reports stand in it");
+    }
+    let meta = ada.host.package(APP).unwrap().meta;
+    let report = meta
+        .actions
+        .iter()
+        .find(|a| a.name == "report_problem")
+        .unwrap()
+        .id
+        .clone();
+    let refused = ada.host.runtime().invoke_action(
+        &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        (report.as_str(), vec![all, rich("")]),
+    );
+    assert!(
+        !matches!(refused, Ok(InvokeOutcome::Done(_))),
+        "a report says what went wrong: {refused:?}"
     );
 }

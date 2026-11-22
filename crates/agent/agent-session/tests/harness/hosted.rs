@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_agent_session::{AgentService, AppCatalogue, FeedbackReviewer};
+use tilo_agent_session::{AgentService, AppCatalogue};
 use tilo_server::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
@@ -42,8 +42,6 @@ pub struct Options {
     pub web_entry: Option<String>,
     /// The origins a page may speak from.
     pub allowed_origins: Vec<String>,
-    /// The reviewer a host lends its workspaces' reporters.
-    pub feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     /// Where the host runs its workspaces' Terminal sessions.
     pub shell: Option<Arc<tilo_server::agents::HostShells>>,
     /// The Browser this host places for its workspaces.
@@ -89,7 +87,6 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
     let agents = tilo_server::agents::AgentOptions {
         state_dir: state.join("agents"),
         catalogue: options.catalogue,
-        feedback_reviewer: options.feedback_reviewer,
         shell: options.shell,
         browsers: options.browsers,
     };
@@ -152,7 +149,6 @@ pub async fn serving_documents_with_actions(
         Some(Arc::new(catalogue)),
         None,
         None,
-        None,
     )
     .await
     .unwrap()
@@ -187,7 +183,6 @@ pub async fn serving_documents(
             revocations: RevocationList::new(),
         },
         Some(Arc::new(catalogue)),
-        None,
         None,
         None,
     )

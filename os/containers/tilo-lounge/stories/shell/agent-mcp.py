@@ -28,7 +28,11 @@ from real_apps import Agent  # noqa: E402
 
 SHELL = "so.tilo.session"
 CHROME = "desktop:chrome"
-APPS = "file-explorer tasks chat settings activity"
+APPS = "file-explorer tasks settings activity"
+# The tilolang apps beside them, by their directory under apps/tl.
+TL_APPS = ("chat",)
+# The channel the agent posts in, made through Chat's own `new_channel`.
+CHANNEL = "spring"
 ACTIVITY = "so.tilo.activity"
 # The session's history of a workspace, which Activity's History draws.
 ACTIVITY_PROVIDER = "tilo.activity"
@@ -129,7 +133,7 @@ def steps(story: Story) -> None:
     ada.prepare(APPS)
 
     def ada_opens():
-        took = ada.start(apps=APPS)
+        took = ada.start(apps=APPS, tilolang=TL_APPS)
         story.timing("Ada's session start, to its first frame", took["tookMs"])
         story.timing("Ada's session start, to its first frame, with the development launcher's installing", took["launcherMs"])
         # Her own changes are under the name she gives, as History shows them beside the agent's.
@@ -200,11 +204,8 @@ def steps(story: Story) -> None:
     story.step("The agent writes one more issue", note)
 
     def chat():
-        work.do(["chat.workspace#begin-chat", "chat#begin-chat"], {})
-        read = work.call("tilo_read", {"path": "chat.workspace"})
-        channels = [c for c in dict.fromkeys(re.findall(r"\bc_[a-z0-9_-]+\b", read)) if c != "c_voice"]
-        work.do(["chat.messages#post", "chat#post"], {"channel": channels[0] if channels else "c_chat",
-                                                      "text": CHAT})
+        work.do(["chat#new_channel"], {"name": CHANNEL})
+        work.do([f"chat/{CHANNEL}#send"], {"body": CHAT})
         opened("chat", CHAT, "the message in Ada's Chat")
 
     story.step("The agent posts in Chat", chat)

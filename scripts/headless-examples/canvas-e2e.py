@@ -58,11 +58,11 @@ REPO = Path(__file__).resolve().parents[2]
 # The tilolang apps as the apps' own packages name them (their `app` declaration), by their
 # directory under apps/tl: the shell is the session's screen, and Board is a window it draws on
 # the canvas.
-TL_APPS = ["shell", "board"]
-# The apps the session's build installs beside them (`--apps`): Chat is where the canvas' ask
-# lands, the agent answers it there, and Tasks is installed and closed — an ask must not open
-# its window.
-NATIVE_APPS = "chat tasks agent"
+TL_APPS = ["shell", "board", "chat"]
+# Chat among them is where the canvas' ask lands, and the agent answers it there. The apps the
+# session's build installs beside them (`--apps`): the agent runtime, and Tasks, installed and
+# closed — an ask must not open its window.
+NATIVE_APPS = "tasks agent"
 # The style whose shell is the canvas, and the canvas' own entry, by the names the shell's
 # controls answer to.
 CANVAS = "Frames"
@@ -73,7 +73,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # The session this drives and the tools that act in it: the one harness every
 # check of a desktop with the tree's apps starts (scripts/headless-examples/real_apps.py).
 import real_apps  # noqa: E402
-from real_apps import Failed, run, until  # noqa: E402
+from real_apps import Failed, until  # noqa: E402
 
 
 def app_id(name: str) -> str:
@@ -143,23 +143,7 @@ def prepare(state: Path, build: bool) -> None:
 
 def build_tl_apps(state: Path, out: Path, build: bool) -> list[Path]:
     """`tilolang build` each of TL_APPS against the session's runtime: their signed packages."""
-    tool = REPO / "target/debug/tilolang"
-    if build:
-        print("==> building the tilolang tool", file=sys.stderr)
-        run(["cargo", "build", "-p", "tilolang-cli", "--bin", "tilolang"], cwd=REPO)
-    if not tool.is_file():
-        raise Failed(f"no tilolang tool at {tool} (cargo build -p tilolang-cli --bin tilolang)")
-    runtime = (state / "runtimes/.version").read_text().strip()
-    tapps = []
-    for name in TL_APPS:
-        print(f"==> tilolang build {name}", file=sys.stderr)
-        run([tool, "build", REPO / "apps/tl" / name, "--search", REPO / "apps/tl",
-             "--out", out / "build", "--tilo-runtime", f"tilo-runtime/{runtime}"])
-        tapp = out / "build" / f"{name}.tapp"
-        if not tapp.is_file():
-            raise Failed(f"tilolang build made no {tapp}")
-        tapps.append(tapp)
-    return tapps
+    return real_apps.tl_packages(state, out / "build", TL_APPS, build=build)
 
 
 # --- the shell --------------------------------------------------------------------------------

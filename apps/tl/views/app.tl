@@ -1,6 +1,6 @@
 app so.tilo.lang.views "Views" (icon: .eye, category: .system, resources: .profile)
 
-use so.tilo.lang.chat as chat
+use so.tilo.chat as chat
 
 /// A view of the person's own: a view written in tilolang, as an app declares one, kept as their
 /// code in their own document. They wrote it, their agent answered with it, or someone sent it to

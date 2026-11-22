@@ -26,11 +26,11 @@ __all__ = [
 
 class Today(Resource):
     """Today — `tl.so.tilo.lang.today.Today`."""
-    __surface__ = "so.tilo.lang.today@1827d0927b3e6cdc"
+    __surface__ = "so.tilo.lang.today@e31bf94ae910f654"
 
 class LangToday(Resource):
     """Today — `tl.so.tilo.lang.today`."""
-    __surface__ = "so.tilo.lang.today@1827d0927b3e6cdc"
+    __surface__ = "so.tilo.lang.today@e31bf94ae910f654"
     def morning_cleanup(self,
         *,
         list: Any,

@@ -49,7 +49,7 @@ class CheckAllTargetsTests(unittest.TestCase):
 
     def test_a_selection_none_of_which_checks_a_target_gets_no_features(self):
         with tempfile.TemporaryDirectory() as directory:
-            result = subprocess.run(["bash", str(HELPER), "-p", "chat"],
+            result = subprocess.run(["bash", str(HELPER), "-p", "calendar"],
                                     capture_output=True, text=True, check=True,
                                     env=fake_cargo(Path(directory), PRINT_ARGV))
             self.assertNotIn("--features", json.loads(result.stdout))

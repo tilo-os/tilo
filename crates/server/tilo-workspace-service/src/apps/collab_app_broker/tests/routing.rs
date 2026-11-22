@@ -117,7 +117,7 @@ async fn a_connection_calls_its_own_person_what_the_member_list_calls_them() {
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
-    let route = CrdtRoute::record("so.tilo.lang.chat", &workspace_id, "main");
+    let route = CrdtRoute::record("so.tilo.chat", &workspace_id, "main");
     // A connection that announced no name of its own, as an app's window or a tilolang
     // host's instance connects.
     let admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();

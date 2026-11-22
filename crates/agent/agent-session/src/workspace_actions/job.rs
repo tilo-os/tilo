@@ -17,12 +17,6 @@ pub(super) enum Urgency {
 
 /// What the worker thread is asked to do, one at a time.
 pub(super) enum Job {
-    Feedback {
-        workspace_id: WorkspaceId,
-        query: Box<tilo_actions::remote::feedback::FeedbackQuery>,
-        caller: Caller,
-        done: Completer<Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionCallError>>,
-    },
     Catalogue {
         workspace_id: WorkspaceId,
         query: Box<CatalogueQuery>,
@@ -137,7 +131,6 @@ pub(super) enum Job {
 impl Job {
     pub(super) const fn kind(&self) -> &'static str {
         match self {
-            Self::Feedback { .. } => "feedback",
             Self::Catalogue { .. } => "catalogue",
             Self::Invoke { .. } => "invoke",
             Self::Ran(_) => "ran",
@@ -203,7 +196,6 @@ impl Job {
             | Self::Changes { .. }
             | Self::Invocations { .. }
             | Self::Changed { .. }
-            | Self::Feedback { .. }
             | Self::Content { .. }
             | Self::ContentGet { .. }
             | Self::ContentLink { .. }
@@ -226,8 +218,7 @@ impl Job {
     /// alone, and a page acted on by its number ([`Worker::region_for`]).
     pub(super) const fn caller(&self) -> Option<&Caller> {
         match self {
-            Self::Feedback { caller, .. }
-            | Self::Catalogue { caller, .. }
+            Self::Catalogue { caller, .. }
             | Self::Content { caller, .. }
             | Self::ContentGet { caller, .. }
             | Self::ContentLink { caller, .. }
@@ -269,8 +260,7 @@ impl Job {
             | Self::Rename(workspace_id, _)
             | Self::Landed(workspace_id, _) => Some(*workspace_id),
             Self::Page(job) => Some(job.workspace()),
-            Self::Feedback { .. }
-            | Self::Ran(_)
+            Self::Ran(_)
             | Self::Opened(_)
             | Self::Typed(_)
             | Self::Joined(_)
@@ -292,8 +282,7 @@ impl Job {
             | Self::Invocations { .. }
             | Self::ReadDocument { .. }
             | Self::Changed { .. } => Keys::Workspace,
-            Self::Feedback { .. }
-            | Self::Invoke { .. }
+            Self::Invoke { .. }
             | Self::Ran(_)
             | Self::Opened(_)
             | Self::Typed(_)

@@ -35,12 +35,6 @@ const MAX_HITS: usize = 256;
 /// How many recipients the workspace's list holds: the most recent.
 const MAX_RECIPIENTS: usize = 500;
 
-/// The conversation a `chat.workspace/channels/<id>` row keeps.
-fn conversation_id(resource: &str) -> Option<&str> {
-    let id = resource.rsplit_once('/')?.1;
-    (!id.is_empty()).then_some(id)
-}
-
 /// The index at one generation, ready to search.
 pub struct Snapshot {
     pub generation: u64,
@@ -640,7 +634,8 @@ impl IndexedContent {
                         name.unwrap_or(&entry.title),
                     ));
                 }
-                let id = conversation_id(&entry.resource)?;
+                // The conversation is the resource the row opens: what a message to it is sent in.
+                let id = Some(entry.resource.as_str()).filter(|id| !id.is_empty())?;
                 let people: Vec<&str> = entry
                     .people
                     .iter()

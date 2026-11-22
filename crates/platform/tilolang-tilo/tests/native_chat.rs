@@ -14,7 +14,7 @@ use tilolang_runtime::{ResourceRef, Value};
 
 use crate::fixtures::{Replica, target};
 
-const CHAT_APP: &str = "so.tilo.lang.chat";
+const CHAT_APP: &str = "so.tilo.chat";
 const CHAT: (&str, &str) = (
     include_str!("../../../../apps/tl/chat/app.tl"),
     include_str!("../../../../apps/tl/chat/app.ids"),
@@ -326,4 +326,110 @@ fn step(replica: &mut Replica, again: bool) {
             step: None,
         }
     });
+}
+
+/// `documents` with a problem report the native Chat filed in its `#feedback` channel: the
+/// channel among the record's, and the report in its `feedback` collection, as that app kept it
+/// (the reviewed submission, who filed it and when).
+fn with_a_report(mut documents: Vec<(String, AutoCommit)>) -> Vec<(String, AutoCommit)> {
+    use automerge::transaction::Transactable as _;
+    use automerge::{ObjType, ROOT, ReadDoc as _};
+    let (_, record) = documents
+        .iter_mut()
+        .find(|(_, doc)| doc.get(&ROOT, "channels").ok().flatten().is_some())
+        .expect("the chat record");
+    let item = |doc: &mut AutoCommit, field: &str, id: &str, order: &str| {
+        let held = match doc.get(&ROOT, field).unwrap() {
+            Some((_, held)) => held,
+            None => doc.put_object(ROOT, field, ObjType::Map).unwrap(),
+        };
+        let entry = doc.put_object(&held, id, ObjType::Map).unwrap();
+        doc.put(&entry, "k", order).unwrap();
+        doc.put_object(&entry, "v", ObjType::Map).unwrap()
+    };
+    let channel = item(record, "channels", "c_feedback", "zz");
+    record.put(&channel, "name", "feedback").unwrap();
+    record.put(&channel, "topic", "").unwrap();
+    let report = item(record, "feedback", "0123456789abcdef0123456789abcdef", "a");
+    let submission = serde_json::json!({
+        "id": "0123456789abcdef0123456789abcdef",
+        "destination": {"workspace": "w", "provider": "so.tilo.chat", "channel": "c_feedback"},
+        "feedback": {
+            "text": "The picker misses a row",
+            "context": [],
+            "selections": [{"app": "so.tilo.notes", "app_name": "Notes"}],
+        },
+    });
+    record
+        .put(&report, "submission", submission.to_string())
+        .unwrap();
+    record
+        .put(&report, "author", "{\"person\":\"u_mia\"}")
+        .unwrap();
+    record.put(&report, "ts", 1_782_716_600_000_i64).unwrap();
+    documents
+}
+
+/// A report the native Chat filed stands in its channel as the message it showed there, and that
+/// channel is the one a report filed now goes to: the reports, old and new, in one place.
+#[test]
+fn a_native_report_is_carried_into_the_channel_reports_are_filed_in_now() {
+    let documents = with_a_report(native_documents());
+    let (mut ada, all) = opened(&documents);
+    assert_eq!(ada.host.migrate(), 1);
+    ada.commit();
+    let feedback = conversation(&ada, &all, "feedback");
+    assert_eq!(
+        said(&ada, &feedback),
+        [said_row(
+            "m_feedback_0123456789abcdef0123456789abcdef",
+            "The picker misses a row (in Notes)",
+            "u_mia",
+            ""
+        )],
+        "the report as its channel showed it, by whoever filed it"
+    );
+
+    let meta = ada.host.package(CHAT_APP).unwrap().meta;
+    let report = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "report_problem")
+        .expect("Chat files reports")
+        .id
+        .clone();
+    let outcome = ada.host.runtime().invoke_action(
+        &tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        (
+            report.as_str(),
+            vec![
+                Value::resource(&all),
+                Value::Rich(tilolang_runtime::rich::RichValue::from_text(
+                    "Search forgets my words",
+                )),
+            ],
+        ),
+    );
+    assert!(
+        matches!(outcome, Ok(tilolang_runtime::InvokeOutcome::Done(_))),
+        "a report is filed: {outcome:?}"
+    );
+    ada.commit();
+    let channels: Vec<String> = sidebar(&ada, &all)
+        .into_iter()
+        .filter(|name| name == "#feedback")
+        .collect();
+    assert_eq!(channels, ["#feedback"], "one channel holds the reports");
+    let bodies: Vec<String> = said(&ada, &conversation(&ada, &all, "feedback"))
+        .into_iter()
+        .map(|(_, body, _, _)| body)
+        .collect();
+    assert_eq!(
+        bodies,
+        [
+            "The picker misses a row (in Notes)",
+            "Search forgets my words"
+        ],
+        "the new report after the one carried"
+    );
 }

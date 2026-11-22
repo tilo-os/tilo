@@ -9,7 +9,7 @@ defaults are right for every app.
 ## The app
 
 ```
-app so.tilo.lang.chat "Chat" (icon: .message_circle, category: .network)
+app so.tilo.chat "Chat" (icon: .message_circle, category: .network)
 
 type Conversations {
     channels: Collection<Category | Channel>

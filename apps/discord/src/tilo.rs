@@ -172,8 +172,7 @@ impl ChatRead {
     /// Chat's resource of the workspace and the messages its parts hold, in
     /// order.
     #[must_use]
-    pub fn new(record: Value, mut messages: Vec<(String, Value)>) -> Self {
-        messages.extend(reports(&record));
+    pub fn new(record: Value, messages: Vec<(String, Value)>) -> Self {
         Self {
             record,
             messages,
@@ -228,35 +227,6 @@ fn entries(value: &Value, field: &str) -> Vec<(String, Value)> {
     items
         .into_iter()
         .map(|(_, id, value)| (id.to_owned(), value))
-        .collect()
-}
-
-/// Each filed report of `record` as the message its channel shows:
-/// [`crate::bridge::report_message`], by whoever filed it, its summary and
-/// picks read out ([`ui::feedback_read_out`]), its masked picture as an
-/// image and the reactions people answered it with.
-fn reports(record: &Value) -> Vec<(String, Value)> {
-    use ui::tilo_resource::Model as _;
-    entries(record, "feedback")
-        .into_iter()
-        .filter_map(|(report, filed)| {
-            let submission = ui::feedback::Submission::from_json(filed.get("submission")?).ok()?;
-            let picture = submission.feedback.screenshot.as_ref().map(|picture| {
-                serde_json::json!({
-                    "$variant": "image",
-                    "name": ui::feedback_read_out::PICTURE_NAME,
-                    "blob": picture.hash.to_ascii_lowercase(),
-                })
-            });
-            let message = serde_json::json!({
-                "channel": submission.destination.channel,
-                "author": filed.get("author").cloned().unwrap_or_default(),
-                "text": ui::feedback_read_out::lines(&submission.feedback).join("\n"),
-                "reactions": filed.get("reactions").cloned().unwrap_or_default(),
-                "attachments": picture.into_iter().collect::<Vec<_>>(),
-            });
-            Some((crate::bridge::report_message(&report), message))
-        })
         .collect()
 }
 

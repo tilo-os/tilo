@@ -75,17 +75,14 @@ enum Action {
 
 /// The launcher's handoff: a little-endian `u32` length, then JSON.
 const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(4096);
+/// The session's history: what its changes were, and the names over the runs
+/// of them, asked as one completion without tools, as Chat's are.
+use tilo_app_id::apps::ACTIVITY as ACTIVITY_APP;
 use tilo_app_id::apps::AGENT as AGENT_APP;
 use tilo_app_id::apps::CANVAS as CANVAS_APP;
 use tilo_app_id::apps::CHAT as CHAT_APP;
 use tilo_app_id::apps::PHOTOS as PHOTOS_APP;
 use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
-/// The desktop's report composer: its review asks a model which words of a
-/// report are personal, a completion without tools, as Chat's are.
-const FEEDBACK_APP: &str = "so.tilo.feedback-composer";
-/// The session's history: what its changes were, and the names over the runs
-/// of them, asked as one completion without tools, as Chat's are.
-use tilo_app_id::apps::ACTIVITY as ACTIVITY_APP;
 const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 /// Face batches are intentionally small.  A large library is scanned as
 /// bounded background batches by Photos, never materialized into one giant
@@ -510,7 +507,6 @@ async fn read_handoff(stream: &mut tokio::net::UnixStream) -> Result<Handoff, St
         || (!crate::caller::provider_admin_app(&handoff.app_id)
             && handoff.app_id != AGENT_APP
             && handoff.app_id != CHAT_APP
-            && handoff.app_id != FEEDBACK_APP
             && handoff.app_id != ACTIVITY_APP
             && handoff.app_id != PHOTOS_APP
             && handoff.app_id != CANVAS_APP)
@@ -552,7 +548,7 @@ pub(super) async fn handle_streaming(
     let result = match request {
         request @ (Request::Complete { .. } | Request::CompleteDefault { .. })
             if app_id == AGENT_APP
-                || ((app_id == CHAT_APP || app_id == FEEDBACK_APP || app_id == ACTIVITY_APP)
+                || ((app_id == CHAT_APP || app_id == ACTIVITY_APP)
                     && crate::caller::chat_completion(&request)) =>
         {
             return complete_request(request, emit)
@@ -1973,12 +1969,11 @@ mod tests {
 
     use super::*;
 
-    /// The report composer may ask a model which words are personal, and the
-    /// session's history may ask what a change was: a completion without
+    /// The session's history may ask what a change was: a completion without
     /// tools, and nothing more. An app the gateway does not know may ask
     /// nothing.
     #[tokio::test]
-    async fn the_report_composer_and_the_history_complete_text_and_are_refused_tools() {
+    async fn the_history_completes_text_and_is_refused_tools() {
         use agent_provider_config::protocol::{
             Message, ModelRequest, Role, ToolChoice, ToolDefinition,
         };
@@ -2002,7 +1997,7 @@ mod tests {
             description: "Send mail".into(),
             input_schema: serde_json::json!({"type": "object"}),
         };
-        let refused = handle(FEEDBACK_APP, ask(vec![tool]), &http).await;
+        let refused = handle(ACTIVITY_APP, ask(vec![tool]), &http).await;
         assert_eq!(
             refused.model_error.map(|error| error.kind),
             Some(ErrorKind::PermissionDenied)

@@ -34,7 +34,7 @@ const AGENT: (&str, &str) = (
     include_str!("../../../../apps/tl/agent/app.ids"),
 );
 const NOTES_APP: &str = "so.tilo.notes";
-const CHAT_APP: &str = "so.tilo.lang.chat";
+const CHAT_APP: &str = "so.tilo.chat";
 const AGENT_APP: &str = "so.tilo.lang.agent";
 
 fn helper() -> MemberId {
@@ -358,4 +358,89 @@ fn mentioning_a_person_asks_nobody() {
     let note = note(&mut ada, "Grace, have a look");
     mark(&mut ada, &note, "Grace", Some(&MemberId::person("grace")));
     assert!(asks(&ada).is_empty(), "{:#?}", asks(&ada));
+}
+
+#[test]
+fn two_devices_asking_from_one_message_apart_hold_one_ask_once_they_meet() {
+    let mut ada = workspace(true);
+    let all = Value::resource(&ada.host.root_of(CHAT_APP).unwrap());
+    let design = call(
+        &ada,
+        "ada",
+        CHAT_APP,
+        "new_channel",
+        vec![all, Value::text("design")],
+    );
+    settle(&mut ada);
+    let said = "Can someone review the shots?";
+    let message = call(
+        &ada,
+        "ada",
+        CHAT_APP,
+        "send",
+        vec![
+            design,
+            Value::Rich(RichValue::from_text(said)),
+            Value::Opt(None),
+        ],
+    );
+    settle(&mut ada);
+    let message = target(&message);
+    // The agents' asks exist on both before they part, so each device's ask goes into the
+    // same list.
+    let agents = ada.host.root_of(AGENT_APP).unwrap();
+    settle(&mut ada);
+    let mut grace = ada.fork("grace", &[DISCUSSION, NOTES, AGENT, CHAT]);
+    assert!(
+        asks(&ada).is_empty() && asks(&grace).is_empty(),
+        "nobody asked yet"
+    );
+
+    // Apart, each device asks Helper from the same message with the same mention, through the
+    // agents' own `ask` made from it.
+    let mention = Reference::Member(helper()).mark_value();
+    for (replica, who) in [(&mut ada, "ada"), (&mut grace, "grace")] {
+        let meta = replica.host.package(AGENT_APP).unwrap().meta;
+        let ask = meta
+            .actions
+            .iter()
+            .find(|action| action.name == "ask")
+            .expect("the agents' ask")
+            .id
+            .clone();
+        let asked = replica
+            .host
+            .runtime()
+            .invoke_action_from(
+                &MemberId::person(who).into(),
+                (
+                    ask.as_str(),
+                    vec![
+                        Value::resource(&agents),
+                        Value::Actor(helper().into()),
+                        Value::Rich(RichValue::from_text(said)),
+                        Value::text(&mention),
+                    ],
+                ),
+                &message,
+            )
+            .unwrap();
+        assert!(
+            matches!(asked, tilolang_runtime::InvokeOutcome::Done(_)),
+            "{who} asks: {asked:?}"
+        );
+        settle(replica);
+        assert_eq!(asks(replica).len(), 1, "{who}'s device holds its own ask");
+    }
+
+    ada.sync_with(&mut grace);
+    let (on_ada, on_grace) = (asks(&ada), asks(&grace));
+    assert_eq!(on_ada.len(), 1, "one ask, not one per device: {on_ada:#?}");
+    assert_eq!(on_grace.len(), 1, "{on_grace:#?}");
+    assert_eq!(on_ada[0].mention, mention);
+    assert_eq!(
+        on_ada[0].from.as_deref(),
+        Some(message.id_string().as_str())
+    );
+    assert_eq!(on_ada[0].from, on_grace[0].from, "both read the one ask");
 }

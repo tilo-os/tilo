@@ -313,11 +313,11 @@ mod tests {
     #[test]
     fn older_forms_still_read_as_the_resource_they_meant() {
         assert_eq!(
-            Embed::of_mark("tl:so.tilo.lang.chat:doc1/f2:m3"),
+            Embed::of_mark("tl:so.tilo.chat:doc1/f2:m3"),
             Some(Embed::resource(
-                "so.tilo.lang.chat",
+                "so.tilo.chat",
                 "",
-                "tl:so.tilo.lang.chat:doc1/f2:m3"
+                "tl:so.tilo.chat:doc1/f2:m3"
             ))
         );
         assert_eq!(

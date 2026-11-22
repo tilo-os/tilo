@@ -20,7 +20,6 @@ extern crate browser_model_wasm;
 extern crate calculator_model_wasm;
 extern crate calendar_model_wasm;
 extern crate camera_model_wasm;
-extern crate chat_model_wasm;
 extern crate clocks_model_wasm;
 extern crate console_model_wasm;
 extern crate contacts_model_wasm;

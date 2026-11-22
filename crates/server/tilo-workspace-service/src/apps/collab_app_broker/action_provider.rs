@@ -680,7 +680,7 @@ impl AppBrokerState {
                     None => as_app,
                 }
             }),
-            RemoteActionMessage::FeedbackRequest { .. }
+            RemoteActionMessage::RetiredFeedbackRequest { .. }
             // Questions travel between a person's own devices; an
             // application neither asks nor answers them.
             | RemoteActionMessage::ConfirmationRequest { .. }
@@ -705,7 +705,7 @@ impl AppBrokerState {
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::ResourceReading { .. }
-            | RemoteActionMessage::FeedbackResponse { .. }
+            | RemoteActionMessage::RetiredFeedbackResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::ConfirmResponse { .. }
             | RemoteActionMessage::ContentPutResponse { .. }

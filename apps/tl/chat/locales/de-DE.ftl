@@ -1,6 +1,6 @@
 # Chat auf Deutsch. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
 
-d-so-tilo-lang-chat = Chat
+d-so-tilo-chat = Chat
 
 d-lmdoxbnn = Unterhaltungen
     .doc = Die Unterhaltungen des Arbeitsbereichs in der Reihenfolge der Seitenleiste: Kanäle außerhalb jeder Kategorie, die Kategorien mit ihren eigenen, und die Direktnachrichten, in der Liste als Personen.
@@ -124,6 +124,15 @@ d-26f7sh5k = Neue Kategorie
 d-abono4ra = Neuer Kanal
     .doc = Fügt einer Kategorie einen Textkanal hinzu.
     .w-new-channel = new-channel
+
+d-uhenzjex = Problem melden
+    .doc = Meldet ein Problem, auf das jemand beim Benutzen von Tilo gestoßen ist, im Kanal #feedback des Arbeitsbereichs, den die erste Meldung eröffnet.
+    .did = hat ein Problem gemeldet
+    .w-say-what-went-wrong-first = Sag zuerst, was schiefgegangen ist
+
+d-uhenzjex-body = Text
+
+d-v6wnfixl = Problem melden~present
 
 d-3cetzzm3 = Nachricht
     .doc = Öffnet die Direktnachricht mit `who` in der Seitenleiste, oder die schon offene mit ihm: eine Person hat eine Unterhaltung, nicht jedes Mal eine neue leere.

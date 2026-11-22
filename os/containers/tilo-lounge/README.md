@@ -55,7 +55,6 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_NAME` | the name, capitalized | the name people see |
 | `TILO_WORKSPACES_DEFAULT_ROLE` | `editor` | the role everyone who joins through the entry gets |
 | `TILO_WORKSPACES_CHAT_CHANNELS` | `general` | comma-separated channels the Chat opens with |
-| `TILO_WORKSPACES_FEEDBACK_CHANNEL` | none | the channel members report problems to |
 | `TILO_WORKSPACES_SEED_APPS` | `so.tilo.chat` | comma-separated apps authored at the first start |
 | `TILO_WORKSPACES_BOTS` | none | `;`-separated bot specs (`<program or directory entry> key=value …`) |
 | `TILO_WORKSPACES_PERSON_STORAGE_GB` | `10` | gigabytes per person, shared by the workspaces of their own the host gives anyone who asks |

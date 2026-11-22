@@ -34,26 +34,6 @@ pub const EMOJI_KIND: &str = "tilo.workspace.emoji";
 /// The workspace's own governance resource kind, whose role changes the
 /// bridge mirrors.
 pub const WORKSPACE_KIND: &str = "tilo.workspace";
-/// Chat's verb filing a feedback report in a channel.
-pub const SUBMIT_FEEDBACK: &str = "submit-feedback";
-
-/// The message a filed feedback report shows as in its channel: Chat reads
-/// report `report` out as the message `m_feedback_<report>`, under the
-/// person who filed it, with its masked picture as the image.
-#[must_use]
-pub fn report_message(report: &str) -> String {
-    format!("m_feedback_{report}")
-}
-
-/// The report a `submit-feedback` change filed, as its message.
-fn filed_report(event: &Value) -> Option<String> {
-    event
-        .pointer("/arguments/submission/id")
-        .and_then(Value::as_str)
-        .filter(|report| !report.is_empty())
-        .map(report_message)
-}
-
 /// Every list the program loops over, by the verb each runs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct BridgePlan {
@@ -255,12 +235,10 @@ fn reacted(edit: &Value) -> Option<Reacted> {
     if path.len() != 3 || step(2, "field")? != "reactions" {
         return None;
     }
-    // A filed report takes reactions in the chat resource, on its message.
-    let message = match step(0, "field")? {
-        "messages" => step(1, "item")?.to_owned(),
-        "feedback" => report_message(step(1, "item")?),
-        _ => return None,
-    };
+    if step(0, "field")? != "messages" {
+        return None;
+    }
+    let message = step(1, "item")?.to_owned();
     Some(Reacted {
         message,
         emoji: edit.get("new")?.as_str()?.to_owned(),
@@ -378,8 +356,6 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
             for verb in &verbs {
                 let message = if posts(verb) {
                     posted(read.guild, read.chat, item, event).unwrap_or_default()
-                } else if verb == SUBMIT_FEEDBACK {
-                    filed_report(event).unwrap_or_default()
                 } else {
                     about(item, event).to_owned()
                 };
@@ -451,8 +427,7 @@ fn tilo_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, message: &s
         ..
     } = read;
     match verb {
-        // A filed report goes across as the message Chat reads it out as.
-        verb if posts(verb) || verb == SUBMIT_FEEDBACK => post(plan, guild, chat, message, context),
+        verb if posts(verb) => post(plan, guild, chat, message, context),
         verb if verb == "edit-message" || SHARE_CHANGES.contains(&verb) => {
             plan.edits
                 .extend(values(outbound::plan_edit(guild, chat, message, context)));

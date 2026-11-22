@@ -101,51 +101,6 @@ pub(crate) fn settle_chat(
         .map_err(|error| format!("write the chat: {error}"))
 }
 
-/// Give the chat `doc` the channel its members' problem reports go to
-/// (`name`), after its other channels, wherever it is missing. Unlike the
-/// starting channels it is there on every start: the site's pages send
-/// reports to it by its id ([`channel_id`]), so a chat without it would
-/// refuse every report.
-pub(crate) fn settle_feedback_channel(
-    doc: &mut automerge::AutoCommit,
-    name: &str,
-) -> Result<(), String> {
-    use chat::chat::{Conversation, VOICE_CHANNEL};
-    use tilo_resource::Id;
-
-    tilo_server::workspace_bots::opened::<chat::Chat>(doc)
-        .map_err(|error| format!("read the chat: {error}"))?;
-    let current = chat::Chat::read_fields(doc, &automerge::ROOT)
-        .map_err(|error| format!("read the chat: {error}"))?;
-    let id = Id::from_raw(channel_id(name));
-    if current.channels.contains(&id) {
-        return Ok(());
-    }
-    let mut target = current.clone();
-    // After the last channel of the workspace's own, above `#voice`.
-    let at = target
-        .channels
-        .iter()
-        .rposition(|(id, channel)| channel.is_channel() && id.as_str() != VOICE_CHANNEL)
-        .map_or(0, |index| index.saturating_add(1));
-    target.channels.insert(
-        at,
-        id,
-        Conversation {
-            name: name.to_owned(),
-            ..Conversation::default()
-        },
-    );
-    target
-        .write_changed_fields(
-            &current,
-            doc,
-            &automerge::ROOT,
-            &tilo_resource::Delta::default(),
-        )
-        .map_err(|error| format!("write the chat: {error}"))
-}
-
 /// Tell the chat `doc` what the host keeps of the files its members post
 /// (`files`), so a member's Chat refuses a file the host would not take,
 /// in plain words, instead of posting one that never reaches it.
@@ -259,35 +214,6 @@ mod tests {
             let chat = chat::Chat::read(&doc).unwrap();
             assert_eq!(channel_names(&doc), ["chat", "voice"]);
             assert!(chat.categories.is_empty());
-        }
-
-        phase the_feedback_channel_is_there_on_every_start;
-        // The feedback channel is added after the workspace's channels, and again
-        // after anyone removed it, but never twice.
-        {
-            let mut doc = prepared_chat();
-            settle_chat(&mut doc, &names(&["general", "help"])).unwrap();
-            settle_feedback_channel(&mut doc, "feedback").unwrap();
-            assert_eq!(
-                channel_names(&doc),
-                ["general", "help", "feedback", "voice"]
-            );
-            let heads = doc.get_heads();
-            settle_feedback_channel(&mut doc, "feedback").unwrap();
-            assert_eq!(doc.get_heads(), heads, "nothing to do the next time");
-            chat::demo::apply_as(
-                &mut doc,
-                "host",
-                chat::Chat::DELETE_CHANNEL.with(chat::chat::chat::DeleteChannel {
-                    channel: tilo_resource::Id::from_raw("c_feedback"),
-                }),
-            )
-            .unwrap();
-            settle_feedback_channel(&mut doc, "feedback").unwrap();
-            assert_eq!(
-                channel_names(&doc),
-                ["general", "help", "feedback", "voice"]
-            );
         }
 
         phase a_channel_name_maps_to_one_id;

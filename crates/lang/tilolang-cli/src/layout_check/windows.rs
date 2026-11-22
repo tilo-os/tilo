@@ -1870,7 +1870,7 @@ fn a_channel_counts_what_is_unseen_in_its_header_and_marks_no_message() {
     ui::clock::freeze_for_capture();
     let packages = app_packages("chat");
     let mut channels = stage::Staged::over(
-        "so.tilo.lang.chat",
+        "so.tilo.chat",
         &packages,
         "a team's channels",
         (1280, 800),
@@ -2306,7 +2306,7 @@ fn a_narrow_channels_mark_opens_its_catch_up() {
         ui::clock::freeze_for_capture();
         let packages = app_packages("chat");
         let mut channels = stage::Staged::over(
-            "so.tilo.lang.chat",
+            "so.tilo.chat",
             &packages,
             "a team's channels",
             (320, 568),
@@ -2396,7 +2396,7 @@ fn a_catch_up_row_counts_the_messages_a_step_holds_in_its_sentence() {
     let packages = app_packages("chat");
     // A thread two people wrote in: two posts, by two people, and nothing else since.
     let mut thread = stage::Staged::over(
-        "so.tilo.lang.chat",
+        "so.tilo.chat",
         &packages,
         "a thread",
         (1280, 800),

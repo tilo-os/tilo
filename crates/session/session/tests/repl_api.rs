@@ -245,7 +245,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_server() {
     // The session's records are listed, each row naming its type the way a program types it
     // (`tasks.Tasks`, `chat.Conversations` ): the name this listing is for, and the name a path
     // walks back by. Never the kind the app publishes it under (`tl.<app>.<Type>`), which no
-    // program writes; an app's own row names the app itself (`tl.so.tilo.lang.chat`), an id
+    // program writes; an app's own row names the app itself (`tl.so.tilo.chat`), an id
     // whose last part is no capitalised type.
     assert!(
         !listed.iter().any(|row| {

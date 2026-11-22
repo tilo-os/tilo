@@ -236,26 +236,28 @@ fn a_job_for_a_sub_agent_goes_to_the_main_agent_through_chats_own_send() {
     app.settle();
     let asked = chat.asked();
     assert_eq!(asked.len(), 1, "one message: {asked:?}");
-    // Chat's own `send`, in this workspace: the conversation is Chat's to open and post in.
-    let conversations = ResourceRef::whole("so.tilo.chat", "chat.workspace", "Chat");
+    // Chat's own `write_to`, in this workspace: Chat writes in the one conversation with the agent.
+    let conversations = ResourceRef::whole(
+        ui::chat::CONVERSATIONS_KIND,
+        ui::chat::CONVERSATIONS,
+        "Chat",
+    );
     assert_eq!(
         asked[0].target,
-        conversations.action_target(WORKSPACE, "so.tilo.chat", None, "send")
+        conversations.action_target(WORKSPACE, "so.tilo.chat", None, ui::chat::WRITE_TO)
     );
     assert_eq!(
         asked[0].argument,
         InvokeArgument::Json(
             json!({
-                "to": [{ "kind": "agent", "id": assistant, "name": "Assistant" }],
-                "attached": [],
-                "text": "Start a sub-agent for this job: Find out why sign-ups dropped",
-                "opens": false,
+                "who": { "agent": assistant },
+                "body": "Start a sub-agent for this job: Find out why sign-ups dropped",
             })
             .as_object()
             .unwrap()
             .clone()
         ),
-        "to the main agent, the job in the person's words, and nothing opens over the window"
+        "to the main agent, the job in the person's words"
     );
     // The job is handed over: the window is back on the main chat, where the message is.
     app.frame();

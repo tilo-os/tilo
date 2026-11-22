@@ -586,7 +586,7 @@ impl Apps {
                     use tilo_actions::remote::{InvocationReceipt, ReceiptStatus};
                     match answer {
                         Some(Ok(InvocationReceipt { status, invocation })) => match status {
-                            ReceiptStatus::Completed { output } => answered(Ok(output.value)),
+                            ReceiptStatus::Completed { output } => answered(Ok(output)),
                             // Admitted and running: its answer is read once it settled.
                             ReceiptStatus::Accepted => {
                                 if let Ok(mut held) = awaited.lock() {
@@ -2506,7 +2506,7 @@ impl AppActions for Apps {
                 .map(|state| state.update)
             {
                 Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-                    (awaited.answered)(Ok(output.value));
+                    (awaited.answered)(Ok(output));
                 }
                 Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
                     (awaited.answered)(Err(error.message));

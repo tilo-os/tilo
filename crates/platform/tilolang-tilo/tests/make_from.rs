@@ -18,7 +18,7 @@ const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const CHAT_APP: &str = "so.tilo.lang.chat";
+const CHAT_APP: &str = "so.tilo.chat";
 const TASKS_APP: &str = "so.tilo.lang.tasks";
 
 /// What Bo writes, and what the task made from it is called.

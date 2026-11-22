@@ -259,24 +259,19 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     let ada = Person::new("Ada");
     let mut site = Site::start(&ada, "Studio");
     let mut laptop = ada.device("Ada's laptop");
-    laptop.install_chat();
+    laptop.install_passwords();
     let hers = site.invite(ada.public, Role::Editor);
     laptop.join(&hers);
     laptop.wait_holding(&site.workspace);
     show(&laptop, &site);
-    laptop.open(CHAT);
-    laptop.wait_for_window(CHAT);
-    site.wait_for_record_of(CHAT, &laptop);
-    // Admitted, Chat runs what it is asked.
-    let me = hex::encode(ada.public);
-    let answer = laptop.chat().settled(
-        "open-direct-conversation",
-        &serde_json::json!({"public_key": me}),
-    );
+    laptop.open(PASSWORDS);
+    laptop.wait_for_window(PASSWORDS);
+    // Admitted, Passwords runs what it is asked.
+    let answer = laptop.app_act(PASSWORDS, LIST_LOGINS, &serde_json::json!({}));
     let state = answer["answer"]["receipt"]["update"]["state"].as_str();
     assert!(
         matches!(state, Some("succeeded" | "failed")),
-        "the laptop's Chat did not run its action: {answer}"
+        "the laptop's Passwords did not run its action: {answer}"
     );
 
     laptop.stop();
@@ -287,9 +282,10 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     show(&copy, &site);
 
     // The window the laptop left open waits for the host, and says so where it stands.
-    tilo_test_env::wait_until(format!("{} holding Chat for its host", copy.label), || {
-        copy.state().to_string().contains("to take this device in")
-    });
+    tilo_test_env::wait_until(
+        format!("{} holding Passwords for its host", copy.label),
+        || copy.state().to_string().contains("to take this device in"),
+    );
     // The copy says it holds the workspace but waits for its host, which is not this device: what
     // `tilo-vm vm branch` reads to know a branch was taken in.
     let row = held_row(&copy, &site);
@@ -297,17 +293,17 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     assert_eq!(row["hosted_here"], false, "{row}");
     // Opening an app meanwhile is refused at once, saying why.
     let asked = std::time::Instant::now();
-    let opened = copy.act("applications", CHAT, &serde_json::json!({}));
+    let opened = copy.act("applications", PASSWORDS, &serde_json::json!({}));
     assert!(
         opened.to_string().contains("hasn't been admitted to"),
         "an open while the host is away is refused with the reason: {opened}"
     );
     assert!(asked.elapsed() < std::time::Duration::from_secs(10));
-    // What the copy's shell offers of Chat, whose window the laptop left open, is refused at once,
-    // with the reason.
-    let (provider, id) = chat_row(&copy);
+    // What the copy's shell offers of Passwords, whose window the laptop left open, is refused at
+    // once, with the reason.
+    let (provider, id) = action_row(&copy, PASSWORDS, LIST_LOGINS);
     let started = std::time::Instant::now();
-    let refused = copy.act(&provider, &id, &serde_json::json!({"public_key": me}));
+    let refused = copy.act(&provider, &id, &serde_json::json!({}));
     let said = refused["err"]["message"].as_str().unwrap_or_default();
     assert_eq!(
         refused["err"]["code"], "remote_actions_unavailable",
@@ -333,20 +329,15 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     );
 }
 
-/// The app whose actions the copy is asked to run.
-const CHAT: &str = "so.tilo.chat";
-
-/// A row the shell lists of Chat's `open-direct-conversation`, by its provider and id.
-fn chat_row(device: &Device) -> (String, String) {
+/// A row the shell lists of `app`'s `operation`, by its provider and id.
+fn action_row(device: &Device, app: &str, operation: &str) -> (String, String) {
     let mut found = None;
-    tilo_test_env::wait_until(format!("{} listing Chat's actions", device.label), || {
+    tilo_test_env::wait_until(format!("{} listing {app}'s actions", device.label), || {
         found = device.actions()["answer"]["actions"]
             .as_array()
             .into_iter()
             .flatten()
-            .find(|row| {
-                row["application"] == CHAT && row["operation"] == "open-direct-conversation"
-            })
+            .find(|row| row["application"] == app && row["operation"] == operation)
             .map(|row| {
                 (
                     row["provider"].as_str().unwrap_or_default().to_owned(),
@@ -355,9 +346,11 @@ fn chat_row(device: &Device) -> (String, String) {
             });
         found.is_some()
     });
-    found.expect("a row of Chat's")
+    found.expect("a row of the app's")
 }
 
+/// Passwords' action that lists the logins of the vault.
+const LIST_LOGINS: &str = "list-logins";
 /// Passwords, as the person's devices install it.
 const PASSWORDS: &str = "so.tilo.passwords";
 /// Model Providers, as the person's devices install it.
@@ -370,7 +363,7 @@ const LOGIN: &str = "Branch mail";
 fn logins(device: &Device) -> Vec<String> {
     let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
     let answer = loop {
-        let answer = device.app_act(PASSWORDS, "list-logins", &serde_json::json!({}));
+        let answer = device.app_act(PASSWORDS, LIST_LOGINS, &serde_json::json!({}));
         if answer["answer"]["receipt"]["update"]["state"] == "succeeded" {
             break answer;
         }

@@ -73,10 +73,8 @@ struct Call {
     holder: DocumentRoute,
     /// The step of the request that asked it ([`Worker::hand`]).
     step: u32,
-    /// The request whose call it is, applied again once it answered: `None` for work its call
-    /// answers by itself, such as the feedback projection, which completes its caller from
-    /// there and is let go when it has.
-    request: Option<Held>,
+    /// The request whose call it is, applied again once it answered.
+    request: Held,
     /// Where its answer comes, for a call [`Worker::hand`] asked.
     answer: Option<mpsc::Receiver<Answer>>,
 }
@@ -358,29 +356,7 @@ impl Worker {
         let call = Call {
             holder,
             step,
-            request: Some(Held { queued, tried, job }),
-            answer: answer.map(|(_, answer)| answer),
-        };
-        self.call_waits
-            .running
-            .entry(workspace_id)
-            .or_default()
-            .calls
-            .push(call);
-    }
-
-    /// Hold the call the request being served handed off this thread, whose work answers its
-    /// caller by itself ([`Self::hand`]): nothing of it is applied again once it answered, and
-    /// what waits for what it reads is served when it has.
-    pub(super) fn await_completed(&mut self, workspace_id: WorkspaceId) {
-        let Some(HandedCall { holder, answer, .. }) = self.call_waits.held.take() else {
-            return;
-        };
-        let step = answer.as_ref().map_or(0, |(step, _)| *step);
-        let call = Call {
-            holder,
-            step,
-            request: None,
+            request: Held { queued, tried, job },
             answer: answer.map(|(_, answer)| answer),
         };
         self.call_waits
@@ -450,9 +426,7 @@ impl Worker {
             self.call_waits.running.insert(workspace_id, running);
         }
         for (call, answer) in answered {
-            let Some(Held { queued, tried, job }) = call.request else {
-                continue;
-            };
+            let Held { queued, tried, job } = call.request;
             self.part_waits.resume_with(tried);
             // The request whose call ran reads nothing of what changed since it handed it off:
             // the call answered already.

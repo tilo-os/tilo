@@ -1,8 +1,8 @@
 # Session replay
 
-A report can carry a recording of what happened, so whoever reads it can step
-through the same states the reporter saw. Tests, agents and anyone following a
-past session read the same recording.
+A recording of what happened lets whoever reads it step through the same
+states its author saw. Tests, agents and anyone following a past session read
+the same recording.
 
 Nothing new records anything. A resource is already an action log: every
 change names its author, its time and the action that made it, and History
@@ -12,8 +12,7 @@ log; replaying it is History over that stretch.
 
 ## What a recording holds
 
-One recording covers one record, the one the window the report is about
-shows, over a window of time that ends when the report is written:
+One recording covers one record over a window of time:
 
 - the record's state at the start of the window, as one change;
 - each change made to it during the window, in causal order, each with its
@@ -46,49 +45,17 @@ never recorded. Each desktop reads that declaration from the app's own
 windows, the native one also as an app in its own process asks for it, and
 the recorder checks nothing else. Recordings are bounded in steps and bytes
 (`recording::Limits`). A window with more steps than the bound starts later,
-so the last steps before the report are always there; a recording larger
+so the last steps before its end are always there; a recording larger
 than the byte bound is not offered.
 
-## How a person includes one
+## Where recordings come from
 
-The composer offers "Include a recording" only when the window the report is
-about shows a record of an app that may be recorded. Every way a report
-starts names that window the same way, on the native desktop and in a
-browser alike: Feedback from the palette or the person's card, a click on
-the control it is about, and parts picked in the window in front (parts picked
-in other apps are about no one window, and offer none). One recorder makes
-every recording (`tilo_desktop::feedback::recorder`); each desktop lends it
-only where it reads committed records and keeps content. It starts off, like the
-screenshot. The person sees, before they send, exactly what it includes: the
-app, the time range and the number of changes, and that whoever can read the
-report can see the record's whole state at the start of the range and every
-change during it, with who made it.
-
-The record is read as its workspace committed it, the state History and
-Activity read. Turning it on builds the recording on the device when the
-report is reviewed; nothing leaves it until the report is sent. Review covers the report's text and picks as before; the
-recording is shown as the scope above, since its content is the record
-itself.
-
-## How it is shared
-
-Like the report's picture. The submission carries a `RecordingRef`: the
-content hash of the recording's bytes, the app and kind it belongs to, the
-time range and the number of steps. The bytes are the report's content in the
-destination workspace's Chat record: the reporter's device keeps them, and
-whoever may read that Chat asks the record's route for them and gets them on
-it, end-to-end encrypted like every other content the record references. The
-workspace's host keeps its own copy, as it keeps report pictures, and the
-reporter's receipt waits until it does. There is no other transport and no
-server-side plaintext copy: the host keeps the content because it is a member
-of the workspace.
+A problem report is a message in the workspace's #feedback channel (Chat's
+`report_problem`) and carries no recording: there is no step yet that cuts one
+for a report. A test or an agent cuts one with `tilo_resource::recording` and
+opens it as below.
 
 ## How replay steps
-
-The report's message in Chat shows the recording's scope and a Replay
-button. The report item publishes the same step as its `replay-recording`
-action, so a script, an agent and assistive technology replay through the
-same action API.
 
 Replay opens the recorded app with the recording, the way any app opens
 content another app holds (`tilo_actions::remote::ApplicationLaunch`): the
@@ -124,18 +91,10 @@ past state. Nothing in replay is specific to feedback or to an app.
 
 - **Resources are action logs.** The recording is a stretch of the record's own
   log on a start snapshot; nothing records in parallel.
-- **One mechanism.** Recording reads History's data; sharing is the record
-  content path report pictures already take; opening it is the launch every
-  app uses to open content another app holds; replay is History of a
+- **One mechanism.** Recording reads History's data; opening it is the launch
+  every app uses to open content another app holds; replay is History of a
   record. No new transport, stream or viewer.
-- **Every button is an action.** Including a recording is a field of the
-  report the composer's actions set; Replay is a Chat action; stepping is
-  History's actions.
-- **Privacy.** Off by default, included only when the person chooses it, with
-  its scope shown before sending; the window excludes earlier history and every
-  other record; protected apps are never recorded; a replay opens only in a
-  private window, so it never becomes a record anyone else holds.
-- **End-to-end encryption.** The bytes reach only members of the destination
-  workspace, its host as a member included.
-- **Causes, not symptoms.** Content that has not arrived yet is waited for by
-  the content route's own arrival signal, never polled.
+- **Every button is an action.** Stepping is History's actions.
+- **Privacy.** The window excludes earlier history and every other record;
+  protected apps are never recorded; a replay opens only in a private window,
+  so it never becomes a record anyone else holds.

@@ -1,8 +1,8 @@
 //! The people in this workspace, found by name.
 //!
 //! Typing a member's name offers them. Choosing one opens this person's
-//! conversation with them: Chat's own `open-direct-conversation`, which starts
-//! Chat when it is closed. The people are the session's one list of who can be
+//! conversation with them: Chat's own `message_person`, which keeps one
+//! conversation with each person and starts Chat when it is closed. The people are the session's one list of who can be
 //! found, the list a box that sends a message reads too. Who is working where
 //! with nothing typed is [`super::happening`]'s.
 
@@ -12,11 +12,6 @@ use ui::search::system::{ResourceKind, rank_fields};
 use ui::search::{CommandRow, RowFace, SearchRow};
 
 use crate::model::{Hit, InvokeTarget, Source, Target};
-
-/// The app a person's row opens their conversation in, and its action on the row it publishes for
-/// the conversation with them.
-const CHAT: &str = "so.tilo.chat";
-const OPEN_DIRECT: &str = "open-direct-conversation";
 
 /// The kind people are grouped under, in the desktop's language.
 #[must_use]
@@ -80,12 +75,15 @@ impl Source for People {
                     facts: Vec::new(),
                     score,
                     icon: None,
-                    target: Target::Invoke(Box::new(InvokeTarget::action(
-                        CHAT,
-                        &self.workspace,
-                        format!("chat.conversation:{}", person.id),
-                        OPEN_DIRECT,
-                    ))),
+                    target: Target::Invoke(Box::new(
+                        InvokeTarget::action(
+                            ui::apps::CHAT,
+                            &self.workspace,
+                            ui::chat::CONVERSATIONS,
+                            ui::chat::MESSAGE_PERSON,
+                        )
+                        .with_argument("who", serde_json::json!({ "person": person.id })),
+                    )),
                 })
             })
             .collect()

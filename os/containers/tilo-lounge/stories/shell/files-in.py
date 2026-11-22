@@ -39,7 +39,7 @@ DOCUMENT = "letter.txt"
 LETTER = "The keys are under the flowerpot"
 CLI = os.environ.get("TILO_CLI_BIN", "")
 SWITCHER = "Switch workspace, now in "
-APPS = "file-explorer chat settings terminal tasks sheets pdf-viewer photos activity"
+APPS = "file-explorer settings terminal tasks sheets pdf-viewer photos activity"
 
 
 def photo(width: int, height: int) -> bytes:
