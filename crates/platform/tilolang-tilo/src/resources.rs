@@ -28,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::{Rc, Weak};
 
 use serde_json::Value as Json;
+pub use tilo_resource_store::wire::Turn;
 use tilo_resource_store::wire::{Command, Edit, Reply};
 use tilo_resource_store::{
     Absent, Cell, Cursor, Filter, Indexed, Order, PARENT, Query, Resource, Stamp, Value,
@@ -1450,6 +1451,40 @@ impl ResourceStore {
         })
     }
 
+    /// Whether this device runs the action `address` (`<app>/<resource>#<action>`) on `inputs`
+    /// now, an action that runs once in the workspace whichever device runs it: the device's
+    /// workspace service places it. A store that cannot be asked answers [`Turn::Later`], so nothing runs twice.
+    #[must_use]
+    pub fn take_turn(&self, address: &str, inputs: &Json) -> Turn {
+        match self.inner.port.command(Command::Turn {
+            address: address.to_owned(),
+            inputs: inputs.clone(),
+            answer: None,
+        }) {
+            Ok(Reply::Turn(turn)) => turn,
+            Ok(other) => {
+                tracing::warn!(address, ?other, "a turn was answered with no turn");
+                Turn::Later
+            }
+            Err(error) => {
+                tracing::debug!(address, %error, "a turn could not be asked for");
+                Turn::Later
+            }
+        }
+    }
+
+    /// Keep that this device ran the action [`Self::take_turn`] gave it, and what it answered:
+    /// no device runs it again, and each that asks is given `answer`.
+    pub fn turn_done(&self, address: &str, inputs: &Json, answer: Json) {
+        if let Err(error) = self.inner.port.command(Command::Turn {
+            address: address.to_owned(),
+            inputs: inputs.clone(),
+            answer: Some(answer),
+        }) {
+            tracing::warn!(address, %error, "a turn that ran was not kept done");
+        }
+    }
+
     /// Whether the migration `migration` ran on `at`, or `at` was made by a version that
     /// declares it.
     #[must_use]
@@ -1465,31 +1500,6 @@ impl ResourceStore {
             .and_then(|value| value.as_str().map(str::to_owned))
     }
 
-    /// Notes that the trigger `trigger` ran for `at` at `value`, as a change of the trigger
-    /// written by `by`, the person whose device ran it.
-    ///
-    /// # Errors
-    /// When the store refused it.
-    pub fn mark_triggered(
-        &self,
-        at: &ResourceRef,
-        trigger: &str,
-        value: &str,
-        by: &Actor,
-    ) -> Result<(), StoreError> {
-        self.mark(
-            at,
-            TRIGGERED,
-            trigger,
-            Json::String(value.to_owned()),
-            &ChangeNote {
-                action: trigger.to_owned(),
-                invoker: Some(by.clone()),
-                ..ChangeNote::default()
-            },
-        )
-    }
-
     /// Notes that the trigger `trigger` ran for `at` at `value` with the first commit of the run
     /// `run`, as part of the change it makes: what the trigger did is one change.
     pub fn mark_triggered_in_run(&self, run: &str, at: &ResourceRef, trigger: &str, value: &str) {
@@ -1501,13 +1511,13 @@ impl ResourceStore {
         });
     }
 
-    /// Drops what [`Self::mark_triggered_in_run`] left for the run `run` to write. Whether any
-    /// was left: the run committed nothing.
-    pub fn drop_run_marks(&self, run: &str) -> bool {
-        let mut marks = self.inner.run_marks.borrow_mut();
-        let before = marks.len();
-        marks.retain(|mark| mark.run != run);
-        marks.len() != before
+    /// Drops what [`Self::mark_triggered_in_run`] left for the run `run` to write: a run that
+    /// committed nothing notes nothing.
+    pub fn drop_run_marks(&self, run: &str) {
+        self.inner
+            .run_marks
+            .borrow_mut()
+            .retain(|mark| mark.run != run);
     }
 
     fn mark_in(

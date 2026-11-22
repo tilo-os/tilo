@@ -31,9 +31,6 @@ pub struct Connection {
     /// What arrived while a resource command waited, for the next frame.
     held: Rc<RefCell<VecDeque<CollabEvent>>>,
     route: RouteSpec,
-    /// Whether the workspace's documents are governed from this device: where the packages'
-    /// migrations and triggers run.
-    governs: bool,
     /// Whether there is no broker: an instance on this device alone.
     local: bool,
 }
@@ -48,17 +45,10 @@ impl Connection {
             .primary_route()
             .map(|joined| joined.route().clone())
             .ok_or_else(|| "the connection joined no route".to_owned())?;
-        // A route whose reads the broker commits has its origin elsewhere; one without is
-        // governed here.
-        let governs = collaboration::native_initial::PrimaryRead::of(&manager)
-            .ok()
-            .flatten()
-            .is_none();
         Ok(Self {
             manager: Rc::new(RefCell::new(manager)),
             held: Rc::default(),
             route,
-            governs,
             local: false,
         })
     }
@@ -70,15 +60,8 @@ impl Connection {
             manager: Rc::new(RefCell::new(CollaborationManager::disabled())),
             held: Rc::default(),
             route,
-            governs: true,
             local: true,
         }
-    }
-
-    /// Whether the workspace is governed from this device.
-    #[must_use]
-    pub const fn governs(&self) -> bool {
-        self.governs
     }
 
     /// Whether there is no broker.

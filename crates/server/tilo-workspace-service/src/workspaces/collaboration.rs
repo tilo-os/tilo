@@ -1263,7 +1263,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         lease: &str,
-    ) -> Result<bool, CollaborationError> {
+    ) -> Result<Option<serde_json::Value>, CollaborationError> {
         Ok(self
             .workspace(workspace)
             .await?
@@ -1272,7 +1272,7 @@ impl Workspaces {
             .peer()
             .workspace()
             .done(lease)
-            .is_some())
+            .map(|done| done.answer))
     }
 
     /// The latest fire time a device of `workspace` answered for the

@@ -352,9 +352,10 @@ impl DeviceWork {
                     work.run_linux(claim, &caller, *run, completer).await;
                     return;
                 }
-                // The take action asks for no agent's turn and no automation's
-                // firing: the agent engine and the trigger runner take those.
-                Turn::Agent { .. } | Turn::Firing { .. } => {
+                // The take action asks for no agent's turn, no automation's firing
+                // and no action that runs once: the agent engine, the trigger
+                // runner and the app's own process take those.
+                Turn::Agent { .. } | Turn::Firing { .. } | Turn::Once { .. } => {
                     work.log.lock_recover().abandon(&invocation);
                     completer.complete(Err(ActionCallError::UnknownAction));
                     return;
@@ -745,14 +746,19 @@ impl super::Workspaces {
     /// Whether `device` may run `job`'s action in `workspace` now, as the
     /// workspace's per-action permission says, whatever kind of member it is.
     pub(crate) async fn permits_job(&self, device: [u8; 32], workspace: &str, job: &Job) -> bool {
+        self.permits_action(device, workspace, (&job.app, &job.resource, &job.action))
+            .await
+    }
+
+    /// Whether `device` may run `action` (app, resource, action) in `workspace` now.
+    pub(crate) async fn permits_action(
+        &self,
+        device: [u8; 32],
+        workspace: &str,
+        (app, resource, action): (&str, &str, &str),
+    ) -> bool {
         self.reads_peer(workspace, |peer| {
-            peer.permits_app_action(
-                device,
-                &job.app,
-                &job.resource,
-                &job.action,
-                tilo_clock::wall(),
-            )
+            peer.permits_app_action(device, app, resource, action, tilo_clock::wall())
         })
         .await
     }

@@ -146,10 +146,6 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
     // pages are carried into it.
     let content = tilo_content::ContentStore::memory();
     let connection = Connection::new(manager).expect("the connection joined its route");
-    assert!(
-        connection.governs(),
-        "this device is the workspace's origin"
-    );
     let store = ResourceStore::new(Rc::new(connection.port(None)));
     // The native app's data home, of which the session grants the process the store it wrote;
     // the process keeps its own storage beside it.

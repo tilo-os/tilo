@@ -161,7 +161,7 @@ impl Transport for NoView {
 }
 
 /// The documents a native app of the package's id `app` kept in `record`'s workspace on this
-/// device, when this device governs the workspace (none elsewhere), each by the id it holds (a
+/// device, each by the id it holds (a
 /// store keys a document by a name made from its id), else by the key it is stored under: its
 /// records, which the package now under that id carries over once with a migration of
 /// its own. They are read under `app`, not under the id of `record`'s route: a package published
@@ -180,9 +180,6 @@ fn earlier_documents(
     let Some(documents) = documents else {
         return Vec::new();
     };
-    if !record.governs() {
-        return Vec::new();
-    }
     let workspace = record.route().cluster_id.to_string();
     let workspace = workspace.as_str();
     let keys = match documents.documents(app, workspace) {
@@ -1009,9 +1006,8 @@ impl Hosted {
             Rc::new(tilolang_tilo::names::Installed),
             window,
         );
-        // The device that governs the workspace is its documents' origin: the package's migrations
-        // run there, once, over what a native app of the package's id kept there too.
-        instance.set_origin(connection.governs());
+        // What a native app of the package's id kept on this device: the package's migrations carry
+        // it over on the device whose turn each one is.
         instance.set_earlier(earlier_documents(
             kept.earlier.as_ref(),
             &spec.app,

@@ -200,7 +200,6 @@ impl Staged {
             host.runtime().record_costs(true);
         }
         make_roots(&instance, app)?;
-        instance.set_origin(true);
         if seed > 0
             && let Some(host) = instance.host()
         {

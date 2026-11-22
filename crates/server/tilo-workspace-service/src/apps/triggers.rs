@@ -281,6 +281,66 @@ pub fn record_events(
         .collect()
 }
 
+/// The events of the changes to the resources the store document `record` of `app` keeps,
+/// committed since `since`: one for each resource a stamped change touched, named by its id and
+/// kind, by whoever invoked the verb. The store keeps no time in its changes, so a document's
+/// first look (no `since`) reports only the changes at its heads: the write that woke the runner,
+/// never what the document held before.
+#[must_use]
+pub fn store_events(
+    (workspace, app, record): (&str, &str, &str),
+    doc: &AutoCommit,
+    since: Option<&[ChangeHash]>,
+) -> Vec<DocumentEvent> {
+    let committed = doc.committed_document();
+    let heads = committed.get_heads();
+    if since.is_some_and(|since| heads == since) {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    for change in committed.get_changes(since.unwrap_or_default()) {
+        if since.is_none() && !heads.contains(&change.hash()) {
+            continue;
+        }
+        let (Some(stamp), Some(touched)) = (
+            collab_types::Stamp::of(&change),
+            tilo_resource_store::touches(committed, record, &change),
+        ) else {
+            continue;
+        };
+        let mut actor = tilo_actions::Acting::person(String::new());
+        if let Some(by) = stamp.invoked_by() {
+            actor.by = by;
+        }
+        for (id, touch) in touched.resources {
+            let Some(kind) = touch.kind else {
+                continue;
+            };
+            events.push(DocumentEvent {
+                workspace: workspace.to_owned(),
+                record: id,
+                did: tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new(app, &kind, &stamp.verb),
+                    [],
+                ),
+                kind,
+                change: change.hash().to_string(),
+                actor: actor.clone(),
+                arguments: Map::new(),
+                item: None,
+                before: None,
+                after: None,
+                caused_by: None,
+                incoming_message: false,
+                housekeeping: false,
+                shortcut: None,
+                invocation: None,
+            });
+        }
+    }
+    events
+}
+
 /// The daemon's trigger runner over the workspaces this device keeps.
 pub struct Runner {
     workspaces: Workspaces,
@@ -441,11 +501,19 @@ impl Runner {
                 tracing::warn!(%workspace, %app, %record, "a written record does not load; it fires nothing");
                 continue;
             };
+            let heads = doc.committed_heads();
+            let since = self.cursors.insert(key.clone(), heads);
+            if collab_types::is_store_document(record) {
+                events.extend(store_events(
+                    (workspace, app, record),
+                    &doc,
+                    since.as_deref(),
+                ));
+                continue;
+            }
             let kind = collab_types::document::identity::identity(&doc)
                 .map(|identity| identity.kind.as_str().to_owned())
                 .unwrap_or_default();
-            let heads = doc.committed_heads();
-            let since = self.cursors.insert(key.clone(), heads);
             events.extend(record_events(
                 (workspace, record, &kind),
                 &doc,
@@ -614,7 +682,7 @@ impl Runner {
                 Err(NotTaken::Waiting { .. } | NotTaken::TakenBy(_) | NotTaken::Unwritten(_)) => {
                     self.pending.insert(lease, waiting);
                 }
-                Err(NotTaken::Done) => {}
+                Err(NotTaken::Done(_)) => {}
                 Err(NotTaken::Ineligible(why)) => {
                     tracing::info!(shortcut = %firing.shortcut, %why, "a shortcut trigger fired for a device that may not start it");
                 }

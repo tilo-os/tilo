@@ -2,13 +2,16 @@
 //! runs, decided here and nowhere else.
 //!
 //! A turn is work that has to run on one device of a workspace: an offloaded
-//! action another device asked for, or a saved automation's trigger firing.
+//! action another device asked for, a saved automation's trigger firing, or an
+//! action that runs once in the workspace (a package's migration of a
+//! resource, a tilolang trigger's run).
 //! Each device that may take it calls [`takes_turn`], and the turn goes, in
 //! this order, to the device that started it if that device qualifies,
 //! otherwise to an always-on server of the person, otherwise to any other
 //! eligible device:
 //!
-//! - the starting device ([`Turn::starter`]) claims at once;
+//! - the starting device ([`Turn::starter`]) claims at once, and every device
+//!   that asks for an action that runs once ([`Turn::Once`]) is its starter;
 //! - an always-on server (its entry among the person's servers,
 //!   [`crate::workspaces::servers`]) claims at once when the starter asked it
 //!   to take the turn, which a device does only when it cannot run the work
@@ -42,8 +45,9 @@
 //! person it acts for (a server of theirs only where its entry offers compute and
 //! is not retired). Who started the turn does not decide where it runs: any
 //! member may start any agent's turn. For an automation's firing: this device
-//! acts for the person who saved the automation. No caller checks any of this
-//! itself.
+//! acts for the person who saved the automation. For an action that runs
+//! once: the workspace lets this device open the record the action acts on
+//! and run the action on it. No caller checks any of this itself.
 //!
 //! A run that needs Linux (a workspace's shell command, its terminal, its
 //! machine, its Browser) is asked the same way ([`Turn::Linux`], on
@@ -218,6 +222,14 @@ pub enum Turn {
         /// change that fired it was seen.
         came_up_ms: i64,
     },
+    /// An action that runs once in the workspace, whichever device runs it:
+    /// the same action on the same inputs is the same turn on every device.
+    Once {
+        /// The action and the resource it acts on, `<app>/<resource>#<action>`.
+        address: String,
+        /// What it is invoked with.
+        inputs: serde_json::Value,
+    },
 }
 
 impl Turn {
@@ -229,19 +241,21 @@ impl Turn {
             Self::Linux { id, .. } => format!("linux/{}", id.0),
             Self::Agent { agent, place, .. } => format!("turn/{agent}/{place}"),
             Self::Firing { firing, .. } => format!("firing/{firing}"),
+            Self::Once { address, inputs } => {
+                let inputs = serde_json::to_vec(&canonical(inputs)).unwrap_or_default();
+                format!("once/{address}/{}", blake3::hash(&inputs).to_hex())
+            }
         }
     }
 
-    /// The device the turn started on; `None` for an agent's turn, which
-    /// every device that may answer it starts.
+    /// The device the turn started on; `None` for an agent's turn or an action
+    /// that runs once, which every device that may take it starts.
     #[must_use]
     pub const fn starter(&self) -> Option<[u8; 32]> {
         match self {
-            Self::Invocation { requester, .. } | Self::Linux { requester, .. } => {
-                Some(*requester)
-            }
+            Self::Invocation { requester, .. } | Self::Linux { requester, .. } => Some(*requester),
             Self::Firing { starter, .. } => Some(*starter),
-            Self::Agent { .. } => None,
+            Self::Agent { .. } | Self::Once { .. } => None,
         }
     }
 
@@ -255,7 +269,10 @@ impl Turn {
     /// this device now.
     const fn came_up_ms(&self) -> Option<i64> {
         match self {
-            Self::Invocation { .. } | Self::Linux { .. } | Self::Agent { .. } => None,
+            Self::Invocation { .. }
+            | Self::Linux { .. }
+            | Self::Agent { .. }
+            | Self::Once { .. } => None,
             Self::Firing { came_up_ms, .. } => Some(*came_up_ms),
         }
     }
@@ -330,8 +347,8 @@ pub enum NotTaken {
         /// When this device's turn in the order comes.
         at_ms: i64,
     },
-    /// A device did the turn already, and kept that it did.
-    Done,
+    /// A device did the turn already, and kept that it did and what it answered.
+    Done(serde_json::Value),
 }
 
 impl fmt::Display for NotTaken {
@@ -345,7 +362,7 @@ impl fmt::Display for NotTaken {
             Self::Ineligible(why) => write!(f, "{why}"),
             Self::Unwritten(why) => write!(f, "the claim was not written: {why}"),
             Self::Waiting { .. } => f.write_str("waiting for the device that started it"),
-            Self::Done => f.write_str("the turn was done already"),
+            Self::Done(_) => f.write_str("the turn was done already"),
         }
     }
 }
@@ -430,8 +447,8 @@ pub async fn takes_turn_in(
     order: Order,
 ) -> Result<Claim, NotTaken> {
     let lease = turn.lease();
-    if turn_done(workspaces, workspace, turn).await {
-        return Err(NotTaken::Done);
+    if let Some(answer) = turn_done(workspaces, workspace, turn).await {
+        return Err(NotTaken::Done(answer));
     }
     eligibility(workspaces, workspace, turn)
         .await
@@ -505,12 +522,17 @@ async fn always_on(workspaces: &Workspaces) -> bool {
         .is_some_and(|entry| !entry.retired)
 }
 
-/// Whether a device of `workspace` kept that it did `turn`.
-pub async fn turn_done(workspaces: &Workspaces, workspace: &str, turn: &Turn) -> bool {
+/// What the device of `workspace` that did `turn` answered, once one kept that it did.
+pub async fn turn_done(
+    workspaces: &Workspaces,
+    workspace: &str,
+    turn: &Turn,
+) -> Option<serde_json::Value> {
     workspaces
         .lease_done(workspace, &turn.lease())
         .await
-        .unwrap_or(false)
+        .ok()
+        .flatten()
 }
 
 /// Keep that this device did `turn` of `workspace`, and what it answered:
@@ -626,6 +648,23 @@ async fn eligibility(
             }
             Ok(())
         }
+        Turn::Once { address, .. } => {
+            let (app, resource, action) = once_parts(address).ok_or(Ineligible::CannotOpen)?;
+            let device = workspaces.serving_certificate().device_public_key;
+            if !workspaces
+                .opens_record(device, workspace, app, resource)
+                .await
+            {
+                return Err(Ineligible::CannotOpen);
+            }
+            if !workspaces
+                .permits_action(device, workspace, (app, resource, action))
+                .await
+            {
+                return Err(Ineligible::NotPermitted);
+            }
+            Ok(())
+        }
     }
 }
 
@@ -666,6 +705,43 @@ pub trait AgentEngine: Send + Sync {
         agent: &'a str,
         acts_for: &'a [u8; 32],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>>;
+}
+
+/// `inputs` with every object's keys in order and every whole number as an integer: the same
+/// inputs, however they were written, hash to the same lease.
+fn canonical(inputs: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match inputs {
+        Value::Object(fields) => {
+            let mut sorted: Vec<_> = fields.iter().collect();
+            sorted.sort_by_key(|(key, _)| *key);
+            Value::Object(
+                sorted
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), canonical(value)))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
+        Value::Number(number) => number
+            .as_f64()
+            .filter(|float| float.fract() == 0.0 && float.abs() < 2f64.powi(53))
+            .filter(|_| number.is_f64())
+            .map_or_else(
+                || inputs.clone(),
+                #[expect(clippy::cast_possible_truncation, reason = "a whole number below 2^53")]
+                |whole| Value::from(whole as i64),
+            ),
+        _ => inputs.clone(),
+    }
+}
+
+/// The app, resource and action of an action address `<app>/<resource>#<action>`.
+fn once_parts(address: &str) -> Option<(&str, &str, &str)> {
+    let (at, action) = address.rsplit_once('#')?;
+    let (app, resource) = at.split_once('/')?;
+    (!app.is_empty() && !resource.is_empty() && !action.is_empty())
+        .then_some((app, resource, action))
 }
 
 /// The jobs a device runs for the devices of its workspaces: an offloadable

@@ -1059,9 +1059,7 @@ impl ShellPart {
         if roots.is_empty() {
             return;
         }
-        // The package's migrations run where the shell's resources originate, as an app's do:
-        // the roots' making first, then the seed that runs once they are had.
-        self.instance.set_origin(true);
+        // The roots' making first, then the seed that runs once they are had.
         for _ in 0..3 {
             self.instance.sync();
             if !self.commit() {

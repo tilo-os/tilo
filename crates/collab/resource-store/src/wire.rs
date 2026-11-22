@@ -104,6 +104,15 @@ pub enum Command {
     /// a reader taking a few fields of every resource of a kind (search, its titles) asks for,
     /// rather than each resource whole.
     Fields { query: Query, fields: Vec<String> },
+    /// Take the turn to run the action `address` (`<app>/<resource>#<action>`) on `inputs`,
+    /// which runs once in the workspace whichever device runs it; or, with an `answer`, keep that
+    /// this device ran it and what it answered, and let the turn go. Answered as [`Reply::Turn`].
+    /// No store holds turns: the device's workspace service places them, never [`read`].
+    Turn {
+        address: String,
+        inputs: Json,
+        answer: Option<Json>,
+    },
 }
 
 /// One edit of a resource's content.
@@ -166,6 +175,19 @@ pub enum Reply {
     /// The content of each resource asked for, in the order asked: as [`Self::Content`] answers
     /// one.
     Contents(Vec<Option<Json>>),
+    /// Whether this device runs an action that runs once ([`Command::Turn`]).
+    Turn(Turn),
+}
+
+/// Whether this device runs an action that runs once in the workspace.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Turn {
+    /// It is this device's turn: run it, then say it is done.
+    Take,
+    /// Another device runs it, or none may yet: ask again later.
+    Later,
+    /// A device ran it already, and answered this.
+    Done(Json),
 }
 
 impl Command {
@@ -301,7 +323,8 @@ fn write_into(
         | Command::Removed { .. }
         | Command::MadeFrom { .. }
         | Command::Contents { .. }
-        | Command::Fields { .. } => return Err(StoreError::NotAWrite),
+        | Command::Fields { .. }
+        | Command::Turn { .. } => return Err(StoreError::NotAWrite),
     }
     Ok(())
 }
@@ -392,7 +415,8 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
         | Command::Remove { .. }
         | Command::Undo { .. }
         | Command::Edit { .. }
-        | Command::Batch(_) => return None,
+        | Command::Batch(_)
+        | Command::Turn { .. } => return None,
     })
 }
 
