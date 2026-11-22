@@ -1,15 +1,13 @@
-
 //! The Discord bridge bot's program (discord-bridge.md §3), built here and
 //! kept as the canonical file `bridge/program.json` that the bot directory
 //! publishes. The test checks it against the real Chat and Discord action
 //! surfaces, stores the grant its steps derive, and fails when the file is
 //! stale; `BLESS=1` rewrites it.
 //!
-//! The program is a fixed run of loops: up to six passes each read Chat's
-//! resources through the resource api, ask `plan-event` what to do and loop over
-//! its lists. A pass runs only while
-//! the previous plan asked for another, so a reply waits for its thread and
-//! a post for its author's avatar.
+//! The program is a fixed run of loops: up to six passes each read tl Chat's tree through the
+//! core read, ask `plan-event` what to do and loop over its lists. A pass runs only while the
+//! previous plan asked for another, so a reply waits for its thread and a post for its
+//! author's avatar.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -20,23 +18,46 @@
 
 use std::collections::BTreeMap;
 
-use chat::resource::ChatShell;
-use discord::bridge::WORKSPACE_KIND;
+use discord::bridge;
 use discord::resource::Discord;
 use discord::{APP_ID, Guild, KIND};
 use serde_json::{Value, json};
-use tilo_automation::grant::{EDIT_PARAM, FIELD_EDIT};
 use tilo_automation::{
     ActorFilter, Binding, Condition, Selector, Shortcut, Step, StepKind, TriggerSpec,
 };
+use tilo_workspace_service::tl_records::runtime::Actor;
+use tilo_workspace_service::tl_records::runtime::Value as TlValue;
+use tilo_workspace_service::tl_records::{Opened, RecordBytes};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ActionKey;
 use ui::tilo_actions::params::{ActionParam, ParamType};
 use ui::tilo_actions::remote::CatalogueRow;
+use ui::tilo_resource::MemberId;
 
 const CHAT_APP: &str = "so.tilo.chat";
-const CHAT_KIND: &str = "chat.workspace";
-const MESSAGES_KIND: &str = "chat.messages";
+/// Chat's own package resource: the actions whose first parameter takes any of several kinds are
+/// published there, with the resource among their arguments.
+const PACKAGE: &str = "tl.so.tilo.chat";
+/// Chat's root kind: the sidebar's conversations.
+const CONVERSATIONS: &str = "tl.so.tilo.chat.Conversations";
+const CATEGORY: &str = "tl.so.tilo.chat.Category";
+const TEXT_CHANNEL: &str = "tl.so.tilo.chat.TextChannel";
+const VOICE_CHANNEL: &str = "tl.so.tilo.chat.VoiceChannel";
+const THREAD: &str = "tl.so.tilo.chat.Thread";
+const MESSAGE: &str = "tl.so.tilo.chat.Message";
+const DIRECT: &str = "tl.so.tilo.chat.Direct";
+const REPORT: &str = "tl.so.tilo.chat.Report";
+/// Every kind of Chat's the bridge follows.
+const CHAT_KINDS: [&str; 8] = [
+    CONVERSATIONS,
+    CATEGORY,
+    TEXT_CHANNEL,
+    VOICE_CHANNEL,
+    THREAD,
+    MESSAGE,
+    DIRECT,
+    REPORT,
+];
 const PASSES: usize = 6;
 /// The workspace's governance verbs the bridge follows.
 const MEMBER_VERBS: [&str; 5] = ["add-member", "set-role", "remove-member", "ban", "unban"];
@@ -59,13 +80,7 @@ fn text(value: &str) -> Binding {
     Binding::Literal(json!(value))
 }
 
-fn invoke(
-    id: &str,
-    key: ActionKey,
-    resource: Selector,
-    args: &[(&str, Binding)],
-    appearance: Option<Binding>,
-) -> Step {
+fn invoke(id: &str, key: ActionKey, resource: Selector, args: &[(&str, Binding)]) -> Step {
     Step::new(
         id,
         StepKind::Invoke {
@@ -75,7 +90,7 @@ fn invoke(
                 .iter()
                 .map(|(name, binding)| ((*name).to_owned(), binding.clone()))
                 .collect::<BTreeMap<_, _>>(),
-            appearance,
+            appearance: None,
         },
     )
 }
@@ -87,60 +102,68 @@ fn guild(id: &str, action: &str, args: &[(&str, Binding)]) -> Step {
         ActionKey::new(APP_ID, KIND, action),
         Selector::FirstOfKind(KIND.into()),
         args,
-        None,
     )
 }
 
-/// A Chat verb on the bridged Chat resource, naming its item by id.
-fn chat(id: &str, action: &str, args: &[(&str, Binding)], shown: bool) -> Step {
-    invoke(
+/// A Chat action on the target `selector`.
+fn chat(id: &str, kind: &str, action: &str, selector: Selector, args: &[(&str, Binding)]) -> Step {
+    invoke(id, ActionKey::new(CHAT_APP, kind, action), selector, args)
+}
+
+/// A Chat action whose first parameter takes a resource of several kinds: it is published on the
+/// package, with that resource among its arguments.
+fn on_package(id: &str, action: &str, args: &[(&str, Binding)]) -> Step {
+    chat(
         id,
-        ActionKey::new(CHAT_APP, CHAT_KIND, action),
-        Selector::FirstOfKind(CHAT_KIND.into()),
+        PACKAGE,
+        action,
+        Selector::FirstOfKind(PACKAGE.into()),
         args,
-        shown.then(|| item("appearance")),
     )
 }
 
-/// A Chat verb on the chat's messages, which the chat keeps in a chain of
-/// parts beside its resource and publishes as one resource, naming its
-/// message by id.
-fn message(id: &str, action: &str, args: &[(&str, Binding)], shown: bool) -> Step {
-    invoke(
+/// A Chat action on the sidebar's root: the package's own verb.
+fn on_chat(id: &str, action: &str, args: &[(&str, Binding)]) -> Step {
+    chat(
         id,
-        ActionKey::new(CHAT_APP, MESSAGES_KIND, action),
-        Selector::FirstOfKind(MESSAGES_KIND.into()),
+        CONVERSATIONS,
+        action,
+        Selector::FirstOfKind(CONVERSATIONS.into()),
         args,
-        shown.then(|| item("appearance")),
     )
 }
 
-/// The framework's `op` field edit (`react` or `unreact`) of the reactions
-/// of the loop item's message, with its emoji, as the Discord member it
-/// shows. The path is spelled out so every check decides the step where the
-/// workspace does, at the message's reactions.
-fn reaction(id: &str, op: &str) -> Step {
-    let step = |kind: &str, binding: Binding| {
-        Binding::Object(BTreeMap::from([(kind.to_owned(), binding)]))
-    };
-    let edit = Binding::Object(BTreeMap::from([
-        (
-            "path".to_owned(),
-            Binding::List(vec![
-                step("field", text("messages")),
-                step("item", item("message")),
-                step("field", text("reactions")),
-            ]),
-        ),
-        ("op".to_owned(), text(op)),
-        ("emoji".to_owned(), item("emoji")),
-    ]));
-    message(id, FIELD_EDIT, &[(EDIT_PARAM, edit)], true)
+/// A Chat action on the conversation or message a plan element names.
+fn on_item(id: &str, kind: &str, action: &str, pointer: &str, args: &[(&str, Binding)]) -> Step {
+    chat(id, kind, action, Selector::FromBinding(item(pointer)), args)
 }
 
 /// The id of the item step `step` created, as text.
 fn created(step: &str) -> Binding {
     Binding::Template(format!("{{{{step.{step}}}}}"))
+}
+
+/// A resource named by its published id, of one of a union's kinds: a `from` or `ch` argument
+/// that takes several kinds is given `{kind, id}`.
+fn union(kind: Binding, id: Binding) -> Binding {
+    Binding::Object(BTreeMap::from([
+        ("kind".to_owned(), kind),
+        ("id".to_owned(), id),
+    ]))
+}
+
+/// A file for Chat to keep with a relayed message: what the fetch answered, as Chat reads a
+/// `File`.
+fn fetched(step: &str) -> Binding {
+    Binding::Object(BTreeMap::from([(
+        "file".to_owned(),
+        Binding::Object(BTreeMap::from([
+            ("name".to_owned(), Binding::step(step, "/attachment/name")),
+            ("media".to_owned(), Binding::step(step, "/content_type")),
+            ("size".to_owned(), Binding::step(step, "/size")),
+            ("hash".to_owned(), Binding::step(step, "/blob")),
+        ])),
+    )]))
 }
 
 /// `map` a result: `tilo` and `discord` as bound, of `kind` and `origin`.
@@ -168,29 +191,26 @@ fn each(list: &str, body: Vec<Step>) -> Step {
     )
 }
 
-/// Mirror Discord messages into Chat: post with the author's appearance,
-/// then map the message the post created to its Discord counterpart.
-fn mirrored_post(step: &str, extra: &[(&str, Binding)]) -> Vec<Step> {
-    mirrored(step, "post", ("written", item("written")), extra)
-}
-
-/// Mirror what Discord wrote before the newest message its Tilo channel
-/// holds: import it, at its time and saying where it came from, then map it.
-fn mirrored_import(step: &str, extra: &[(&str, Binding)]) -> Vec<Step> {
-    mirrored(step, "import-message", ("origin", item("origin")), extra)
-}
-
-/// Write a Discord message into Chat with `verb`, which takes when it was
-/// written as `when`, then map the message it made to its Discord one.
-fn mirrored(step: &str, verb: &str, when: (&str, Binding), extra: &[(&str, Binding)]) -> Vec<Step> {
-    let mut args = vec![
-        ("channel", item("channel")),
-        ("text", item("text")),
-        ("parent", item("parent")),
-        when,
+/// Relay what Discord wrote into the conversation the plan names, then map the message it made.
+fn relayed(step: &str, with_files: bool, extra: &[(&str, Binding)]) -> Vec<Step> {
+    let posted = format!("{step}-relay");
+    let mut args: Vec<(&str, Binding)> = vec![
+        ("to", union(item("channel_kind"), item("channel"))),
+        ("body", item("text")),
+        ("by", item("by")),
+        ("written_in", item("written_in")),
+        ("written", item("written")),
+        ("reply_to", item("reply_to")),
     ];
+    if with_files {
+        let fetch = if step.starts_with("file-import") {
+            "fetch-imported-file"
+        } else {
+            "fetch-file"
+        };
+        args.push(("attachments", Binding::List(vec![fetched(fetch)])));
+    }
     args.extend(extra.iter().cloned());
-    let posted = format!("{step}-post");
     let mut mapped = map(
         &format!("{step}-map"),
         "message",
@@ -200,9 +220,8 @@ fn mirrored(step: &str, verb: &str, when: (&str, Binding), extra: &[(&str, Bindi
     );
     if let StepKind::Invoke { args, .. } = &mut mapped.kind {
         args.insert("persona".into(), item("persona"));
-        args.insert("root".into(), item("parent"));
     }
-    vec![message(&posted, verb, &args, true), mapped]
+    vec![on_package(&posted, "relay", &args), mapped]
 }
 
 #[allow(
@@ -212,64 +231,13 @@ fn mirrored(step: &str, verb: &str, when: (&str, Binding), extra: &[(&str, Bindi
 fn pass() -> Vec<Step> {
     let plan_step = |id: &str, pointer: &str| Binding::step(id, pointer);
     vec![
-        // Chat's resource of the workspace, and the newest part of its
-        // messages' chain: however long the chat, a pass reads no more.
+        // Chat's tree: every conversation with its channels, messages and threads.
         Step::new(
             "chat",
             StepKind::Read {
                 app: CHAT_APP.into(),
-                record: String::new(),
+                record: "tree".into(),
                 joined: false,
-            },
-        ),
-        Step::new(
-            "messages",
-            StepKind::Read {
-                app: CHAT_APP.into(),
-                record: ui::tilo_actions::document_sync::chain_head(chat::parts::chain().route()),
-                joined: false,
-            },
-        ),
-        // A change to a message of an earlier part (an edit, a reaction, a
-        // reply in its thread) is read in its part too.
-        Step::new(
-            "no-change",
-            StepKind::SetVar {
-                name: "changed".into(),
-                value: Binding::Literal(Value::Null),
-            },
-        ),
-        Step::new(
-            "changed-part",
-            StepKind::If {
-                cond: Condition::All(vec![
-                    Condition::Equals {
-                        left: input("event/kind"),
-                        right: text(MESSAGES_KIND),
-                    },
-                    Condition::Not(Box::new(Condition::Equals {
-                        left: input("event/record"),
-                        right: plan_step("messages", "/records/0/record"),
-                    })),
-                ]),
-                then: vec![
-                    Step::new(
-                        "changed",
-                        StepKind::Read {
-                            app: CHAT_APP.into(),
-                            record: "{{input.event/record}}".into(),
-                            joined: false,
-                        },
-                    ),
-                    Step::new(
-                        "changed-read",
-                        StepKind::SetVar {
-                            name: "changed".into(),
-                            value: plan_step("changed", ""),
-                        },
-                    ),
-                ],
-                otherwise: Vec::new(),
             },
         ),
         guild(
@@ -277,14 +245,7 @@ fn pass() -> Vec<Step> {
             "plan-event",
             &[
                 ("event", input("event")),
-                (
-                    "chat",
-                    Binding::Object(BTreeMap::from([
-                        ("chat".to_owned(), plan_step("chat", "")),
-                        ("messages".to_owned(), plan_step("messages", "")),
-                        ("changed".to_owned(), Binding::Var("changed".into())),
-                    ])),
-                ),
+                ("chat", plan_step("chat", "")),
                 ("context", input("context")),
                 // The host tells a program the workspace's members and
                 // their roles under this input's name.
@@ -500,51 +461,42 @@ fn pass() -> Vec<Step> {
                 ),
             ],
         ),
-        each("posts", mirrored_post("in", &[])),
+        each("posts", relayed("in", false, &[])),
         each("files", {
             let mut body = vec![guild("fetch-file", "fetch-asset", &[("op", item("fetch"))])];
-            body.extend(mirrored_post(
-                "file",
-                &[(
-                    "attachments",
-                    Binding::List(vec![plan_step("fetch-file", "/attachment")]),
-                )],
-            ));
+            body.extend(relayed("file", true, &[]));
             body
         }),
-        each("imports", mirrored_import("import", &[])),
+        each("imports", relayed("import", false, &[])),
         each("file_imports", {
             let mut body = vec![guild(
                 "fetch-imported-file",
                 "fetch-asset",
                 &[("op", item("fetch"))],
             )];
-            body.extend(mirrored_import(
-                "file-import",
-                &[(
-                    "attachments",
-                    Binding::List(vec![plan_step("fetch-imported-file", "/attachment")]),
-                )],
-            ));
+            body.extend(relayed("file-import", true, &[]));
             body
         }),
         each(
             "chat_edits",
-            vec![message(
+            vec![on_item(
                 "edit-message",
-                "edit-message",
-                &[("message", item("message")), ("text", item("text"))],
-                false,
+                MESSAGE,
+                "edit",
+                "message",
+                &[("body", item("text"))],
             )],
         ),
         each(
             "chat_deletes",
             vec![
-                message(
+                on_package(
                     "delete-message",
-                    "delete-message",
-                    &[("message", item("message"))],
-                    false,
+                    "delete",
+                    &[
+                        ("to", union(item("channel_kind"), item("channel"))),
+                        ("m", item("message")),
+                    ],
                 ),
                 guild(
                     "unmap-chat-deleted",
@@ -556,11 +508,13 @@ fn pass() -> Vec<Step> {
         each(
             "chat_removes",
             vec![
-                message(
+                on_package(
                     "remove-message",
-                    "remove-message",
-                    &[("message", item("message"))],
-                    false,
+                    "delete",
+                    &[
+                        ("to", union(item("channel_kind"), item("channel"))),
+                        ("m", item("message")),
+                    ],
                 ),
                 guild(
                     "unmap-removed",
@@ -569,8 +523,26 @@ fn pass() -> Vec<Step> {
                 ),
             ],
         ),
-        each("chat_reacts", vec![reaction("chat-react", "react")]),
-        each("chat_unreacts", vec![reaction("chat-unreact", "unreact")]),
+        each(
+            "chat_reacts",
+            vec![on_item(
+                "chat-react",
+                MESSAGE,
+                "react",
+                "message",
+                &[("emoji", item("emoji"))],
+            )],
+        ),
+        each(
+            "chat_unreacts",
+            vec![on_item(
+                "chat-unreact",
+                MESSAGE,
+                "react",
+                "message",
+                &[("emoji", item("emoji"))],
+            )],
+        ),
         each(
             "blocks",
             vec![guild(
@@ -661,44 +633,20 @@ fn pass() -> Vec<Step> {
                 ),
             ],
         ),
-        each("import_categories", {
-            let mut body = vec![chat(
-                "create-category",
-                "create-category",
-                &[("name", item("name"))],
-                false,
-            )];
-            body.push(map(
-                "map-category",
-                "category",
-                created("create-category"),
-                item("discord"),
-                "discord",
-            ));
-            body
-        }),
         each(
-            "import_channels",
+            "import_categories",
             vec![
-                chat(
-                    "create-channel",
-                    "create-channel",
-                    &[
-                        ("name", item("name")),
-                        ("category", item("category")),
-                        ("kind", item("kind")),
-                    ],
-                    false,
-                ),
+                on_chat("create-category", "new_category", &[("name", item("name"))]),
                 map(
-                    "map-imported",
-                    "channel",
-                    created("create-channel"),
+                    "map-category",
+                    "category",
+                    created("create-category"),
                     item("discord"),
                     "discord",
                 ),
             ],
         ),
+        each("import_channels", imported_channel()),
         each(
             "adopt",
             vec![guild(
@@ -714,43 +662,26 @@ fn pass() -> Vec<Step> {
         ),
         each(
             "file_channels",
-            vec![chat(
+            vec![on_chat(
                 "file-channel",
-                "set-channel-category",
-                &[("channel", item("channel")), ("category", item("category"))],
-                false,
+                "move_channel",
+                &[
+                    ("ch", union(item("kind"), item("channel"))),
+                    ("category", item("category")),
+                    ("at", Binding::Literal(json!(-1))),
+                ],
             )],
         ),
-        each(
-            "drop_channels",
-            vec![chat(
-                "drop-channel",
-                "delete-channel",
-                &[("channel", item("channel"))],
-                false,
-            )],
-        ),
+        each("drop_channels", dropped_channel()),
         each(
             "drop_categories",
-            vec![chat(
+            vec![on_chat(
                 "drop-category",
-                "delete-category",
-                &[("category", item("category"))],
-                false,
+                "delete_category",
+                &[("c", item("category"))],
             )],
         ),
-        each(
-            "chat_orders",
-            vec![chat(
-                "arrange-chat",
-                "arrange-channels",
-                &[
-                    ("categories", item("categories")),
-                    ("channels", item("channels")),
-                ],
-                false,
-            )],
-        ),
+        each("chat_moves", moved()),
         each(
             "finish",
             vec![guild(
@@ -769,45 +700,139 @@ fn pass() -> Vec<Step> {
     ]
 }
 
+/// A Discord channel imported into Chat: a category's channel or a top-level one, text or voice,
+/// then mapped to its Discord channel.
+fn imported_channel() -> Vec<Step> {
+    let made = |action: &str, target: Selector, id: &str| {
+        let args: Vec<(&str, Binding)> = if action.contains("voice") {
+            vec![("name", item("name"))]
+        } else {
+            vec![
+                ("name", item("name")),
+                ("topic", Binding::Literal(json!(""))),
+            ]
+        };
+        let mut steps = vec![chat(id, &kind_of(action), action, target, &args)];
+        steps.push(map(
+            &format!("map-{id}"),
+            "channel",
+            created(id),
+            item("discord"),
+            "discord",
+        ));
+        steps
+    };
+    let in_category =
+        |action: &str, id: &str| made(action, Selector::FromBinding(item("category")), id);
+    let at_top =
+        |action: &str, id: &str| made(action, Selector::FirstOfKind(CONVERSATIONS.into()), id);
+    vec![Step::new(
+        "import-channel-kind",
+        StepKind::If {
+            cond: Condition::Equals {
+                left: item("kind"),
+                right: text(VOICE_CHANNEL),
+            },
+            then: vec![Step::new(
+                "import-voice-place",
+                StepKind::If {
+                    cond: Condition::Truthy(item("category")),
+                    then: in_category("add_voice_channel", "add-voice"),
+                    otherwise: at_top("new_voice_channel", "new-voice"),
+                },
+            )],
+            otherwise: vec![Step::new(
+                "import-text-place",
+                StepKind::If {
+                    cond: Condition::Truthy(item("category")),
+                    then: in_category("add_channel", "add-text"),
+                    otherwise: at_top("new_channel", "new-text"),
+                },
+            )],
+        },
+    )]
+}
+
+/// The kind an action is published under: the type of the resource it is invoked on.
+fn kind_of(action: &str) -> String {
+    match action {
+        "add_voice_channel" | "add_channel" => CATEGORY.to_owned(),
+        _ => CONVERSATIONS.to_owned(),
+    }
+}
+
+/// A channel of the workspace's the server had no match for and nothing was written in: deleted
+/// from the category it is listed in, or from the sidebar.
+fn dropped_channel() -> Vec<Step> {
+    vec![on_package(
+        "drop-channel",
+        "delete_channel",
+        &[
+            ("from", union(item("from_kind"), item("from"))),
+            ("ch", item("channel")),
+        ],
+    )]
+}
+
+/// One move of Chat's sidebar into Discord's order: a category put at its place, or a channel put
+/// at its place in its category (or at the top).
+fn moved() -> Vec<Step> {
+    vec![Step::new(
+        "chat-move-kind",
+        StepKind::If {
+            cond: Condition::Equals {
+                left: item("kind"),
+                right: text("category"),
+            },
+            then: vec![on_chat(
+                "move-a-category",
+                "move_category",
+                &[("c", item("id")), ("at", item("at"))],
+            )],
+            otherwise: vec![on_chat(
+                "move-a-channel",
+                "move_channel",
+                &[
+                    ("ch", union(item("resource_kind"), item("id"))),
+                    ("category", item("category")),
+                    ("at", item("at")),
+                ],
+            )],
+        },
+    )]
+}
+
 fn triggers() -> Vec<TriggerSpec> {
-    let mut triggers = vec![
-        // Every Chat change by anyone but the bridge itself, which the
-        // dispatcher never fires on its own output: to the chat resource
-        // (channels, people) and to its messages.
-        TriggerSpec::ResourceChanged {
-            kind: CHAT_KIND.into(),
+    let mut triggers: Vec<TriggerSpec> = CHAT_KINDS
+        .iter()
+        .map(|kind| TriggerSpec::ResourceChanged {
+            kind: (*kind).into(),
             actions: Vec::new(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,
-        },
-        TriggerSpec::ResourceChanged {
-            kind: MESSAGES_KIND.into(),
-            actions: Vec::new(),
-            fields: Vec::new(),
-            by: ActorFilter::Anyone,
-        },
-        // The workspace's own governance: who joined, whose role changed,
-        // who was removed or banned.
-        TriggerSpec::ResourceChanged {
-            kind: WORKSPACE_KIND.into(),
-            actions: MEMBER_VERBS.map(str::to_owned).to_vec(),
-            fields: Vec::new(),
-            by: ActorFilter::Anyone,
-        },
-        // The workspace's emoji, which the bridge uploads to the server.
-        TriggerSpec::ResourceChanged {
-            kind: discord::bridge::EMOJI_KIND.into(),
-            actions: Vec::new(),
-            fields: Vec::new(),
-            by: ActorFilter::Anyone,
-        },
-        TriggerSpec::ResourceChanged {
-            kind: KIND.into(),
-            actions: vec!["block-persona".to_owned(), "complete-link".to_owned()],
-            fields: Vec::new(),
-            by: ActorFilter::Anyone,
-        },
-    ];
+        })
+        .collect();
+    // The workspace's own governance: who joined, whose role changed,
+    // who was removed or banned.
+    triggers.push(TriggerSpec::ResourceChanged {
+        kind: "tilo.workspace".into(),
+        actions: MEMBER_VERBS.map(str::to_owned).to_vec(),
+        fields: Vec::new(),
+        by: ActorFilter::Anyone,
+    });
+    // The workspace's emoji, which the bridge uploads to the server.
+    triggers.push(TriggerSpec::ResourceChanged {
+        kind: bridge::EMOJI_KIND.into(),
+        actions: Vec::new(),
+        fields: Vec::new(),
+        by: ActorFilter::Anyone,
+    });
+    triggers.push(TriggerSpec::ResourceChanged {
+        kind: KIND.into(),
+        actions: vec!["block-persona".to_owned(), "complete-link".to_owned()],
+        fields: Vec::new(),
+        by: ActorFilter::Anyone,
+    });
     triggers.extend(
         discord_wire::event::source::ALL
             .iter()
@@ -881,19 +906,80 @@ fn program() -> Shortcut {
     }
 }
 
-/// Every action a real Chat resource (with a channel and a message) and a
-/// connected guild publish.
-fn catalog() -> tilo_automation::ActionCatalog {
-    let mut chat = TestApp::<ChatShell>::new().unwrap();
-    chat.call("begin-chat", json!({})).unwrap();
-    let state = chat.state();
-    let (channel, _) = state.channels.iter().next().unwrap();
-    chat.call_on(
-        &ui::framework::chain_resource_id(&chat::parts::chain()),
-        "post",
-        json!({"channel": channel.as_str(), "text": "hello"}),
+/// tl Chat's record with a category, a text channel and a message, a thread and its reply, and a
+/// voice channel: every kind of resource its actions are published on.
+fn chat_record() -> Opened {
+    let packages = tilo_workspace_service::tl_records::built_in(CHAT_APP)
+        .unwrap()
+        .expect("Chat is built into this build");
+    let mut opened = Opened::open(
+        &RecordBytes::default(),
+        &packages,
+        Actor::App(tilo_workspace_service::tl_records::runtime::ids::AppId::from(CHAT_APP)),
+        None,
     )
-    .unwrap();
+    .expect("Chat opens on an empty record");
+    let root = opened.open_root().expect("Chat has its root");
+    let who = Actor::Member(MemberId::person("ada"));
+    let call = |opened: &mut Opened, action: &str, args: Vec<TlValue>| {
+        opened
+            .invoke(&who, (CHAT_APP, action), args, None)
+            .unwrap_or_else(|error| panic!("Chat's {action} runs: {error}"))
+    };
+    let chats = TlValue::resource(&root);
+    let general = call(
+        &mut opened,
+        "new_channel",
+        vec![
+            chats.clone(),
+            TlValue::Text("general".into()),
+            TlValue::Text(String::new()),
+        ],
+    );
+    let general = match general {
+        TlValue::Ref(reference) => (*reference.target).clone(),
+        other => panic!("new_channel made a channel, not {other:?}"),
+    };
+    call(
+        &mut opened,
+        "new_category",
+        vec![chats.clone(), TlValue::Text("talk".into())],
+    );
+    let message = call(
+        &mut opened,
+        "send",
+        vec![
+            TlValue::resource(&general),
+            TlValue::Rich(
+                tilo_workspace_service::tl_records::runtime::rich::RichValue::from_text("hello"),
+            ),
+            TlValue::Opt(None),
+        ],
+    );
+    let message = match message {
+        TlValue::Ref(reference) => (*reference.target).clone(),
+        other => panic!("send made a message, not {other:?}"),
+    };
+    call(
+        &mut opened,
+        "start_thread",
+        vec![
+            TlValue::resource(&general),
+            TlValue::resource(&message),
+            TlValue::Text("thread".into()),
+        ],
+    );
+    call(
+        &mut opened,
+        "new_voice_channel",
+        vec![chats, TlValue::Text("voice".into())],
+    );
+    opened
+}
+
+/// Every action a connected guild publishes and tl Chat's own.
+fn catalog() -> tilo_automation::ActionCatalog {
+    let chat = chat_record();
     let mut guild = TestApp::<Discord>::new().unwrap();
     guild
         .invoke(Guild::CONNECT.with(discord::guild::guild::Connect {
@@ -904,17 +990,14 @@ fn catalog() -> tilo_automation::ActionCatalog {
             map_roles: None,
         }))
         .unwrap();
-    let mut rows: Vec<CatalogueRow> = Vec::new();
-    for (app_id, actions) in [
-        (CHAT_APP, chat.actions().unwrap()),
-        (APP_ID, guild.actions().unwrap()),
-    ] {
-        rows.extend(
-            actions
-                .into_iter()
-                .map(|action| CatalogueRow::for_action(format!("{app_id}#1"), app_id, action)),
-        );
-    }
+    let mut rows: Vec<CatalogueRow> = chat.rows();
+    rows.extend(
+        guild
+            .actions()
+            .unwrap()
+            .into_iter()
+            .map(|action| CatalogueRow::for_action(format!("{APP_ID}#1"), APP_ID, action)),
+    );
     tilo_automation::ActionCatalog::new(rows)
 }
 
@@ -947,41 +1030,6 @@ fn the_bridge_program_checks_against_chat_and_discord_and_is_current() {
     );
 }
 
-/// The bridge reacts for Discord people through the field edit of Chat's
-/// messages, and no other resource of Chat's: the messages' other fields are
-/// read-only, so a reaction is all that field edit reaches.
-#[test]
-fn the_bridge_field_edits_only_chats_messages() {
-    let shortcut = program();
-    let grant = tilo_automation::grant::derived_rules(&shortcut, &catalog());
-    let field_edits: Vec<String> = grant
-        .iter()
-        .map(|rule| rule.node.to_string())
-        .filter(|node| node.contains("app:so.tilo.chat") && node.ends_with(FIELD_EDIT))
-        .collect();
-    assert_eq!(
-        field_edits,
-        ["workspace:*/app:so.tilo.chat/kind:chat.messages/resource:*/**/action:field-edit"]
-    );
-    // Where the bot's own api offers and admits the field edit (the
-    // resource), and where the workspace decides a reaction (its field).
-    let messages = ui::permissions::TreePath::workspace("workspace")
-        .app(CHAT_APP)
-        .kind(MESSAGES_KIND)
-        .resource("part-0");
-    let decided = |node: &ui::permissions::TreePath| {
-        tilo_automation::grant_answer(&grant, node, ui::permissions::ActionKind::Undoable).answer
-    };
-    assert_eq!(
-        decided(&messages.clone().action(FIELD_EDIT)),
-        ui::permissions::Answer::Allow
-    );
-    assert_eq!(
-        decided(&messages.item("m1").field("reactions").action(FIELD_EDIT)),
-        ui::permissions::Answer::Allow
-    );
-}
-
 #[test]
 fn the_program_names_only_the_discord_connector_and_chat() {
     let requirements = tilo_automation::requirements::requirements(&program());
@@ -990,10 +1038,6 @@ fn the_program_names_only_the_discord_connector_and_chat() {
         [APP_ID]
     );
     assert!(requirements.apps.contains(CHAT_APP));
-    assert!(
-        requirements.appearance,
-        "the bridge posts under Discord authors' names"
-    );
     let _: Value = serde_json::to_value(program()).unwrap();
 }
 
@@ -1063,8 +1107,10 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
         },
         &firing.inputs["event"],
     );
-    assert_eq!(
-        plan.chat_deletes,
-        [json!({"message": "m1"}), json!({"message": "m2"})]
-    );
+    let messages: Vec<Value> = plan
+        .chat_deletes
+        .iter()
+        .map(|item| item["message"].clone())
+        .collect();
+    assert_eq!(messages, [json!("m1"), json!("m2")]);
 }

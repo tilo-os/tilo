@@ -46,6 +46,9 @@ tilo-reference = { path = "../../crates/collab/reference" }
 tilo-automation = { path = "../../crates/collab/automation" }
 # One test function holds the cases of one subject (`tilo_test_env::scenario!`).
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# The bridge program is checked against tl Chat's real published actions: its package on a
+# record, read as the server reads it.
+tilo-workspace-service = { path = "../../crates/server/tilo-workspace-service", features = ["agents"] }
 
 [lints]
 workspace = true

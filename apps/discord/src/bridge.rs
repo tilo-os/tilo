@@ -465,15 +465,37 @@ fn reconcile(plan: &mut BridgePlan, read: Reading<'_>, arranged: bool) {
             })
         }));
     plan.adopt.extend(values(import.adopt));
-    plan.file_channels.extend(values(import.file));
+    plan.file_channels.extend(import.file.into_iter().map(|f| {
+        let kind = tilo.channels.iter().find(|c| c.id == f.channel).map_or(
+            "tl.so.tilo.chat.TextChannel",
+            |c| {
+                if c.voice {
+                    "tl.so.tilo.chat.VoiceChannel"
+                } else {
+                    "tl.so.tilo.chat.TextChannel"
+                }
+            },
+        );
+        json!({ "channel": f.channel, "category": f.category, "kind": kind })
+    }));
+    let sidebar = read.chat.root_item().unwrap_or_default();
     plan.drop_channels
         .extend(import.drop_channels.into_iter().map(|channel| {
-            let category = tilo
-                .channels
-                .iter()
-                .find(|c| c.id == channel)
-                .and_then(|c| c.category.clone());
-            json!({ "channel": channel, "category": category })
+            let found = tilo.channels.iter().find(|c| c.id == channel);
+            let category = found.and_then(|c| c.category.clone());
+            let from = category.clone().unwrap_or_else(|| sidebar.clone());
+            let from_kind = if category.is_some() {
+                "tl.so.tilo.chat.Category"
+            } else {
+                "tl.so.tilo.chat.Conversations"
+            };
+            let kind = if found.is_some_and(|c| c.voice) {
+                "tl.so.tilo.chat.VoiceChannel"
+            } else {
+                "tl.so.tilo.chat.TextChannel"
+            };
+            json!({ "channel": channel, "category": category, "from": from,
+                    "from_kind": from_kind, "kind": kind })
         }));
     plan.drop_categories.extend(
         import
@@ -657,9 +679,10 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
 
 /// What a Discord post becomes in Chat: a message relayed at the name and time it was written
 /// there, answering the message it replied to.
-fn relay_item(post: &inbound::PostItem) -> Value {
+fn relay_item(post: &inbound::PostItem, chat: &tilo::ChatRead) -> Value {
     json!({
         "channel": post.channel,
+        "channel_kind": chat.conversation_kind(&post.channel),
         "text": post.text,
         "reply_to": post.parent,
         "by": post.appearance.name,
@@ -674,16 +697,17 @@ fn relay_item(post: &inbound::PostItem) -> Value {
 fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) {
     plan.avatars.extend(values(inbound.avatars));
     plan.posts
-        .extend(inbound.posts.into_iter().map(|p| relay_item(&p)));
+        .extend(inbound.posts.iter().map(|p| relay_item(p, read.chat)));
     plan.files.extend(inbound.files.into_iter().map(|f| {
-        let mut item = relay_item(&f.post);
+        let mut item = relay_item(&f.post, read.chat);
         item["fetch"] = json!(f.fetch);
         item
     }));
-    plan.imports.extend(inbound.imports.iter().map(relay_item));
+    plan.imports
+        .extend(inbound.imports.iter().map(|p| relay_item(p, read.chat)));
     plan.file_imports
         .extend(inbound.file_imports.iter().map(|f| {
-            let mut item = relay_item(&f.post);
+            let mut item = relay_item(&f.post, read.chat);
             item["fetch"] = json!(f.fetch);
             item
         }));
@@ -695,13 +719,24 @@ fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) 
     );
     for id in inbound.deletes {
         let channel = read.chat.message(&id).map(|m| m.channel);
+        let kind = channel
+            .as_deref()
+            .map_or("tl.so.tilo.chat.TextChannel", |channel| {
+                read.chat.conversation_kind(channel)
+            });
         plan.chat_deletes
-            .push(json!({ "message": id, "channel": channel }));
+            .push(json!({ "message": id, "channel": channel, "channel_kind": kind }));
     }
     plan.chat_removes
         .extend(inbound.removes.into_iter().map(|r| {
             let channel = read.chat.message(&r.message).map(|m| m.channel);
-            json!({ "message": r.message, "channel": channel, "reason": r.reason })
+            let kind = channel
+                .as_deref()
+                .map_or("tl.so.tilo.chat.TextChannel", |channel| {
+                    read.chat.conversation_kind(channel)
+                });
+            json!({ "message": r.message, "channel": channel, "channel_kind": kind,
+                    "reason": r.reason })
         }));
     let reaction = |r: inbound::ReactItem| json!({ "message": r.message, "emoji": r.emoji });
     plan.chat_reacts

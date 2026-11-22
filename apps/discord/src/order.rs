@@ -43,6 +43,9 @@ use crate::tilo::WorkspaceChat;
 pub struct ChatMove {
     /// `category` or `channel`.
     pub kind: String,
+    /// Chat's kind of the resource moved: `tl.so.tilo.chat.Category`, `.TextChannel` or
+    /// `.VoiceChannel`.
+    pub resource_kind: String,
     /// The category's or channel's published id.
     pub id: String,
     pub at: i64,
@@ -401,6 +404,7 @@ pub fn to_chat(layout: &Guild, asked: &Guild, workspace: &WorkspaceChat) -> Vec<
         };
         moves.push(ChatMove {
             kind: "category".into(),
+            resource_kind: "tl.so.tilo.chat.Category".into(),
             id,
             at: i64::try_from(at).unwrap_or(i64::MAX),
             category: None,
@@ -429,6 +433,10 @@ pub fn to_chat(layout: &Guild, asked: &Guild, workspace: &WorkspaceChat) -> Vec<
                 let at = placed.entry(category.clone()).or_insert(0);
                 moves.push(ChatMove {
                     kind: "channel".into(),
+                    resource_kind: match item.class {
+                        Some(Class::Voice) => "tl.so.tilo.chat.VoiceChannel".to_owned(),
+                        _ => "tl.so.tilo.chat.TextChannel".to_owned(),
+                    },
                     id: item.tilo.clone(),
                     at: *at,
                     category,

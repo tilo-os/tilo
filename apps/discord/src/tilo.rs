@@ -122,6 +122,28 @@ impl ChatRead {
         self
     }
 
+    /// The published id of the app's root: the sidebar's conversations.
+    #[must_use]
+    pub fn root_item(&self) -> Option<String> {
+        self.root().map(item)
+    }
+
+    /// The kind of the conversation `id` names: a channel's, a thread's or a direct conversation's.
+    #[must_use]
+    pub fn conversation_kind(&self, id: &str) -> &'static str {
+        let wanted = publish(id);
+        let workspace = self.workspace();
+        if workspace.channels.iter().any(|c| c.id == wanted) {
+            if workspace.channels.iter().any(|c| c.id == wanted && c.voice) {
+                "tl.so.tilo.chat.VoiceChannel"
+            } else {
+                "tl.so.tilo.chat.TextChannel"
+            }
+        } else {
+            "tl.so.tilo.chat.Thread"
+        }
+    }
+
     /// The app's root record: the sidebar's conversations.
     fn root(&self) -> Option<&Value> {
         self.tree

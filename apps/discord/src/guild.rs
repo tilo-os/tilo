@@ -1561,7 +1561,7 @@ pub const MAX_PROBLEM_CHARS: usize = 300;
 
 /// Discord's limit for a bot's or webhook's upload.
 pub const MAX_UPLOAD_BYTES: u64 = 10 * 1024 * 1024;
-/// Chat's attachment limit (`chat::chat::MAX_ATTACHMENT_BYTES`).
+/// The most the bridge copies from Discord with one file.
 pub const MAX_FETCH_BYTES: u64 = 32 * 1024 * 1024;
 /// Discord's message length limit, in characters.
 pub const MAX_CONTENT_CHARS: usize = 2000;
