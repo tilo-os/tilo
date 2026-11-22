@@ -345,14 +345,16 @@ action send(
             // Writing to an agent asks it, made from the message, whose replies stand under it.
             // Nothing said goes to an agent that may not read it.
             if d.person.kind() == .agent {
-                agent.ask(
-                    agent.agents,
-                    d.person,
-                    if std.may_read(d.person, sent) { body } else { RichText("") },
-                ).made_from(sent)
+                agent
+                    .ask(
+                        agent.agents,
+                        d.person,
+                        if std.may_read(d.person, sent) { body } else { RichText("") },
+                    )
+                    .made_from(sent)
             }
             sent
-        },
+        }
     }
 }
 
@@ -844,7 +846,7 @@ view said(m: Message) {
         text(p.body)
     }
     if m.sent_view != "" {
-        ui.Text("A view, to add to your own views", role: .caption, secondary: true)
+        agent.sent_view()
     }
     if history(m).any(v -> v.is(edit)) {
         ui.Text("edited", role: .caption, secondary: true)

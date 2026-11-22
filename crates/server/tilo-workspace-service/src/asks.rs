@@ -17,9 +17,9 @@
 //! on into the reply's body as a card of it, live.
 
 use tilo_actions::MemberId;
+use tilolang_tilo::runtime::Value;
 use tilolang_tilo::runtime::rich::RichValue;
 use tilolang_tilo::runtime::store::Store as _;
-use tilolang_tilo::runtime::Value;
 use tilolang_tilo::runtime::value::EnumValue;
 
 use crate::tl_records::{Opened, Packages};
@@ -142,8 +142,11 @@ pub struct Replied {
     pub state: AskState,
     /// Its body, as written text.
     pub body: String,
-    /// What its body shows as cards of their own ([`show`]), in order.
-    pub shown: Vec<Reference>,
+    /// The views it answered with ([`show_view`]), in order: each one's title and definition.
+    pub views: Vec<(String, String)>,
+    /// The things it showed as cards ([`show`]), in order: what each card is called, and the
+    /// thing.
+    pub shown: Vec<(String, Reference)>,
     pub superseded: bool,
 }
 
@@ -285,20 +288,31 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
         let mut answers: Vec<Replied> = replies
             .iter()
             .filter(|(_, ask)| ask.as_ref().is_some_and(|ask| ask.same(&at)))
-            .map(|(reply, _)| {
-                let body = read(opened, reply, "body");
-                let shown = match &body {
-                    Some(Value::Rich(rich)) => rich.projections(),
-                    _ => Vec::new(),
-                };
-                (reply, body, shown)
-            })
-            .map(|(reply, body, shown)| Replied {
+            .map(|(reply, _)| Replied {
                 at: reply.clone(),
                 attempt: int(read(opened, reply, "attempt").as_ref()),
                 state: state_of(&meta, read(opened, reply, "state")),
-                body: text(body),
-                shown,
+                body: text(read(opened, reply, "body")),
+                views: items(opened, reply, "views")
+                    .iter()
+                    .map(|view| {
+                        (
+                            text(read(opened, view, "title")),
+                            text(read(opened, view, "definition")),
+                        )
+                    })
+                    .collect(),
+                shown: items(opened, reply, "shown")
+                    .iter()
+                    .filter_map(|shown| {
+                        let card = read(opened, shown, "card")?;
+                        let Value::Rich(rich) = &card else {
+                            return None;
+                        };
+                        let to = rich.projections().into_iter().next()?;
+                        Some((text(Some(card)), to))
+                    })
+                    .collect(),
                 superseded: matches!(read(opened, reply, "superseded"), Some(Value::Bool(true))),
             })
             .collect();
@@ -453,7 +467,11 @@ pub fn ask(
 ///
 /// # Errors
 /// The package refused it (the ask is no longer owed), or it failed.
-pub fn answer(opened: &mut Opened, agent: &MemberId, ask: &ResourceRef) -> Result<ResourceRef, String> {
+pub fn answer(
+    opened: &mut Opened,
+    agent: &MemberId,
+    ask: &ResourceRef,
+) -> Result<ResourceRef, String> {
     let made = opened.invoke(
         &self::agent(agent),
         (AGENT_APP, "answer"),
@@ -468,21 +486,29 @@ pub fn answer(opened: &mut Opened, agent: &MemberId, ask: &ResourceRef) -> Resul
 ///
 /// # Errors
 /// The reply is no longer working, or the package refused it.
-pub fn say(opened: &mut Opened, agent: &MemberId, reply: &ResourceRef, more: &str) -> Result<(), String> {
+pub fn say(
+    opened: &mut Opened,
+    agent: &MemberId,
+    reply: &ResourceRef,
+    more: &str,
+) -> Result<(), String> {
     opened
         .invoke(
             &self::agent(agent),
             (AGENT_APP, "say"),
-            vec![Value::resource(reply), Value::Rich(RichValue::from_text(more))],
+            vec![
+                Value::resource(reply),
+                Value::Rich(RichValue::from_text(more)),
+            ],
             None,
         )
         .map(drop)
 }
 
-/// Append to the body of `reply`, as `agent`, a paragraph of its own that shows `to` under
-/// `label`: a card of the thing the agent worked on, live where the reply is drawn, which opens
-/// it. It grants nothing: each reader reads it with what they hold, and one who may not read it
-/// reads only that something is there, never its label.
+/// Show on `reply`, as `agent`, a card of `to` under `label`: the thing the agent worked on,
+/// live where the reply is drawn, which opens it. It grants nothing: each reader reads it with
+/// what they hold, and one who may not read it reads only that something is there, never its
+/// label.
 ///
 /// # Errors
 /// The reply is no longer working, or the package refused it.
@@ -492,13 +518,38 @@ pub fn show(
     reply: &ResourceRef,
     (label, to): (&str, &Reference),
 ) -> Result<(), String> {
-    let mut shown = RichValue::default();
-    shown.push_projection(label, to);
+    let mut card = RichValue::default();
+    card.push_projection(label, to);
     opened
         .invoke(
             &self::agent(agent),
-            (AGENT_APP, "say"),
-            vec![Value::resource(reply), Value::Rich(shown)],
+            (AGENT_APP, "show"),
+            vec![Value::resource(reply), Value::Rich(card)],
+            None,
+        )
+        .map(drop)
+}
+
+/// Answer on `reply`, as `agent`, with the view `definition` (tilolang source) called `title`:
+/// each reader draws it live with what they may read, and may add it to their own views.
+///
+/// # Errors
+/// The reply is no longer working, the view is empty, or the package refused it.
+pub fn show_view(
+    opened: &mut Opened,
+    agent: &MemberId,
+    reply: &ResourceRef,
+    (title, definition): (&str, &str),
+) -> Result<(), String> {
+    opened
+        .invoke(
+            &self::agent(agent),
+            (AGENT_APP, "show_view"),
+            vec![
+                Value::resource(reply),
+                Value::Text(title.into()),
+                Value::Text(definition.into()),
+            ],
             None,
         )
         .map(drop)
@@ -565,7 +616,11 @@ pub fn claim(
         .invoke(
             &self::agent(agent),
             (AGENT_APP, "claim"),
-            vec![Value::resource(ask), Value::Text(device.into()), Value::Int(at)],
+            vec![
+                Value::resource(ask),
+                Value::Text(device.into()),
+                Value::Int(at),
+            ],
             None,
         )
         .map(drop)

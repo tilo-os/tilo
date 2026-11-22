@@ -308,6 +308,19 @@ impl Replying {
             .await
     }
 
+    /// Answer with the view `definition` called `title` on the turn's reply: each reader draws
+    /// it live with what they may read.
+    ///
+    /// # Errors
+    /// The reply did not take it.
+    pub(super) async fn show_view(&self, title: &str, definition: &str) -> Result<(), String> {
+        let reply = self.reply().await?;
+        let agent = self.agent.clone();
+        let (title, definition) = (title.to_owned(), definition.to_owned());
+        self.on_record(move |opened| asks::show_view(opened, &agent, &reply, (&title, &definition)))
+            .await
+    }
+
     /// End the turn as `outcome`: what it says goes onto the reply, then how it ended.
     ///
     /// # Errors

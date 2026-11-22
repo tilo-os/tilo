@@ -152,7 +152,8 @@ async fn a_poem_is_written_then_shown_live_then_changed() {
     let cards = cards(&shown);
     assert_eq!(cards.len(), 1, "one card: {shown:?}");
     assert_eq!(cards[0].0, WRITER);
-    assert_eq!(shown.body, "The poem\nThe poem is above.");
+    assert_eq!(shown.shown[0].0, "The poem");
+    assert_eq!(shown.body, "The poem is above.");
     let document = cards[0].1.clone().unwrap_or_default();
     let reads = read_by(&actions, &workspace, &person, &document)
         .await

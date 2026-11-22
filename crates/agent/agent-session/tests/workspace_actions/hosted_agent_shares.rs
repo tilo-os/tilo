@@ -1,7 +1,8 @@
 //! A turn of an agent on a workspace's server answers with the thing it worked on, shown live:
 //! a card of that document in its reply to the ask, written for the model's
-//! `answer_with_document` as the agent. Where it is shown and whose card it is are never the
-//! model's to say, and a thing the turn cannot read is not shown.
+//! `answer_with_document` as the agent; or with a view it wrote, for `answer_with_view`. Where
+//! it is shown and whose it is are never the model's to say, and a thing the turn cannot read is
+//! not shown.
 use super::*;
 use tilo_workspace_service::asks::{self, AskState, Reference};
 use tilo_workspace_service::tl_records::runtime::Value;
@@ -127,7 +128,7 @@ pub(super) fn cards(reply: &asks::Replied) -> Vec<(String, Option<String>)> {
     reply
         .shown
         .iter()
-        .map(|shown| match shown {
+        .map(|(_, shown)| match shown {
             Reference::Resource(at) => (at.app.clone(), at.record.clone()),
             Reference::Member(member) => panic!("a reply shows things, not {member:?}"),
         })
@@ -378,7 +379,7 @@ mod denied;
 
 /// The owner's case: asked to write a document and show it, the agent writes in the word
 /// processor and answers with that document shown live. The card stands in the agent's reply
-/// to the ask, before the model's words, and names the document the turn wrote in.
+/// to the ask, after the model's words, and names the document the turn wrote in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_a_server_answers_with_the_document_it_wrote_shown_live() {
     team!(root, browser, actions, workspaces, workspace, page);
@@ -428,16 +429,11 @@ async fn an_agent_on_a_server_answers_with_the_document_it_wrote_shown_live() {
     assert_eq!(cards.len(), 1, "one card: {reply:?}");
     let (app, document) = &cards[0];
     assert_eq!(app, WRITER);
-    assert!(
-        reply.body.starts_with("A poem\n"),
-        "the card is called by the first line of its title, before the words: {:?}",
-        reply.body
+    assert_eq!(
+        reply.shown[0].0, "A poem",
+        "the card is called by the first line of its title"
     );
-    assert!(
-        reply.body.ends_with("The poem is in the document above."),
-        "{:?}",
-        reply.body
-    );
+    assert_eq!(reply.body, "The poem is in the document above.");
     // The document is the one the turn wrote in, and its person reads it: what they read
     // there holds the line the agent wrote.
     let document = document.clone().unwrap_or_default();
@@ -459,3 +455,7 @@ async fn an_agent_on_a_server_answers_with_the_document_it_wrote_shown_live() {
 /// A poem written, then shown live a message later and changed.
 #[path = "hosted_poem.rs"]
 mod poem;
+
+/// An agent answers with a view it wrote.
+#[path = "hosted_agent_views.rs"]
+mod views;

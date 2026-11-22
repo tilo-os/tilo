@@ -61,6 +61,27 @@ d-cma7vgpx = Failed
 
 d-bryguujp-filter-failed = Failed
 
+d-xhzlueny = Sent view
+    .doc = A view an agent answered with, as a Chat message sends one: what it is called, and the view as tilolang source, drawn live for each reader as they read.
+    .noun = { $count ->
+        [one] sent view
+       *[other] sent views
+    }
+
+d-gdhl4pzx = Title
+
+d-ytw765gn = Definition
+
+d-bdijpmdi = Shown
+    .doc = A thing an agent shows in its reply: a card of it, live, which opens it.
+    .noun = { $count ->
+        [one] shown
+       *[other] showns
+    }
+
+d-mx5wcfl2 = Card
+    .doc = The card: one paragraph projecting the thing.
+
 d-uwopf5u7 = Reply
     .doc = An agent's answer to an ask, as it writes it.
     .noun = { $count ->
@@ -80,6 +101,12 @@ d-tnkzsmes = Attempt
 
 d-e36wbuu7 = Steps
     .doc = What the agent called on the way, in order.
+
+d-bnlsdtf6 = Views
+    .doc = The views it answered with, in order.
+
+d-mwwrjl52 = Shown
+    .doc = The things it showed, in order.
 
 d-eyh6zmbf = Superseded
     .doc = Whether another device's answer to the same ask stands instead: two devices offline at once may both have answered.
@@ -184,6 +211,23 @@ d-6s74tahg-answered = Answered
 
 d-6s74tahg-failed = Failed
 
+d-jriyp5ei = Show view
+    .doc = The agent answers with a view: `definition`, called `title`.
+    .w-only-the-agent-asked-may-answer = Only the agent asked may answer
+    .w-the-answer-is-finished = The answer is finished
+    .w-the-view-is-empty = The view is empty
+
+d-jriyp5ei-title = Title
+
+d-jriyp5ei-definition = Definition
+
+d-lym5tesj = Show
+    .doc = The agent shows the thing `card` projects in its answer, live.
+    .w-only-the-agent-asked-may-answer = Only the agent asked may answer
+    .w-the-answer-is-finished = The answer is finished
+
+d-lym5tesj-card = Card
+
 d-6koj42w5 = Finish
     .doc = The agent's turn ended as `state`: done, failed, or stopped when a person stopped it.
     .w-only-the-agent-asked-may-answer = Only the agent asked may answer
@@ -208,6 +252,10 @@ d-o6oeh6vp = Answer~present
 d-hdzxkm76 = Say~present
 
 d-k36fktxl = Step~present
+
+d-zasvncsi = Show view~present
+
+d-64ypkzcb = Show~present
 
 d-3ebfgkt2 = Finish~present
 

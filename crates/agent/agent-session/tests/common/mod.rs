@@ -8,7 +8,6 @@
     reason = "each test binary uses part of this; a fixture failure is the assertion"
 )]
 
-use chat::projection::ChatProjection as _;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::{Availability, ConfirmationPolicy, OperationKind, PROMPTED_PARAM, ParamType};
 use tilo_agent_session::{
@@ -100,38 +99,6 @@ pub trait Body {
 
 fn json(doc: &automerge::AutoCommit) -> String {
     serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap()
-}
-
-/// The chat `doc` holds its channel of `kind` in, as the sidebar names it.
-pub fn channel(
-    doc: &automerge::AutoCommit,
-    kind: chat::model::ChannelKind,
-) -> chat::model::Channel {
-    chat::projection::read(doc)
-        .channel_rows()
-        .into_iter()
-        .find(|channel| channel.kind == kind)
-        .unwrap()
-}
-
-/// Add a channel named `name` to the chat document `doc`, made by `author`.
-pub fn add_channel(
-    doc: &mut automerge::AutoCommit,
-    author: &str,
-    name: &str,
-    kind: Option<chat::model::ChannelKind>,
-) {
-    chat::demo::apply_as(
-        doc,
-        author,
-        chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
-            name: name.parse().unwrap(),
-            category: None,
-            kind,
-            topic: None,
-        }),
-    )
-    .unwrap();
 }
 
 impl Body for tilo_agent_session::Replica {

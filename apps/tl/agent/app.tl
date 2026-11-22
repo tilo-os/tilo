@@ -58,6 +58,20 @@ type Step {
     failed: Bool = false
 }
 
+/// A view an agent answered with, as a Chat message sends one: what it is called, and the view
+/// as tilolang source, drawn live for each reader as they read.
+type SentView {
+    title: Text
+    definition: Text
+}
+
+/// A thing an agent shows in its reply: a card of it, live, which opens it. Each reader reads it
+/// with what they hold: one who may not read it reads only that something is there.
+type Shown {
+    /// The card: one paragraph projecting the thing.
+    card: RichText
+}
+
 /// An agent's answer to an ask, as it writes it. Asking again makes a new reply.
 type Reply {
     ask: Ask
@@ -68,6 +82,10 @@ type Reply {
     attempt: Int = 1
     /// What the agent called on the way, in order.
     steps: Collection<Step>
+    /// The views it answered with, in order.
+    views: Collection<SentView>
+    /// The things it showed, in order.
+    shown: Collection<Shown>
     /// Whether another device's answer to the same ask stands instead: two devices offline at
     /// once may both have answered.
     superseded: Bool = false
@@ -107,9 +125,7 @@ action ask(all: Agents, agent: Actor, said: RichText, mention: Text = "") -> Ask
     }
     if let from = made_from {
         all.asks.insert(a, key: if mention == "" { from.id() } else { "{from.id()}|{mention}" })
-    } else {
-        all.asks.insert(a)
-    }
+    } else { all.asks.insert(a) }
 }
 
 /// Takes an ask back before a device took its turn. Only its asker may.
@@ -164,6 +180,21 @@ action step(r: Reply, called: Text, answered: RichText, failed: Bool = false) {
     r.steps.insert(Step(called: called, answered: answered, failed: failed))
 }
 
+/// The agent answers with a view: `definition`, called `title`.
+action show_view(r: Reply, title: Text, definition: Text) {
+    require invoker == r.ask.agent "Only the agent asked may answer"
+    require r.state == .working "The answer is finished"
+    require definition != "" "The view is empty"
+    r.views.insert(SentView(title: title, definition: definition))
+}
+
+/// The agent shows the thing `card` projects in its answer, live.
+action show(r: Reply, card: RichText) {
+    require invoker == r.ask.agent "Only the agent asked may answer"
+    require r.state == .working "The answer is finished"
+    r.shown.insert(Shown(card: card))
+}
+
 /// The agent's turn ended as `state`: done, failed, or stopped when a person stopped it.
 action finish(r: Reply, state: AskState) {
     require invoker == r.ask.agent "Only the agent asked may answer"
@@ -209,11 +240,27 @@ view reply(r: Reply) {
                 text(r.ask.agent.name(), role: .label)
             }
             rich_text(r.body)
+            for v in r.views {
+                sent_view(title: v.title)
+            }
+            for s in r.shown {
+                rich_text(s.card)
+            }
             for step in r.steps {
                 text(step.called, role: .caption, secondary: true)
             }
         }
     }
+}
+
+/// A view sent with what someone wrote, as a Chat message or an agent's reply carries one: what
+/// it is called, where it is called anything apart from the words, and that the reader can add
+/// it to their own views.
+view sent_view(title: Text = "") {
+    if title != "" {
+        text(title, role: .label)
+    }
+    ui.Text("A view, to add to your own views", role: .caption, secondary: true)
 }
 
 /// The replies to `a`, in the order it was asked.
