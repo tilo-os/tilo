@@ -258,10 +258,11 @@ set -- "$@" $(comma_flags "${TILO_WORKSPACES_OWNERS-}" --owner)
 # a stdin to write to.
 set -- "$@" --operator-socket "${TILO_WORKSPACES_OPERATOR_SOCKET:-$dir/operator.sock}"
 
-# A chat with no channel has nowhere for a visitor's first message to go, and
-# the workspace's apps are its Chat unless the deployment says otherwise.
+# A chat with no channel has nowhere for a visitor's first message to go. Chat
+# is a tilolang app whose record its first change founds, so no app is seeded
+# unless the deployment names one.
 set -- "$@" $(comma_flags "${TILO_WORKSPACES_CHAT_CHANNELS-general}" --chat-channel)
-set -- "$@" $(comma_flags "${TILO_WORKSPACES_SEED_APPS-so.tilo.chat}" --seed-app)
+set -- "$@" $(comma_flags "${TILO_WORKSPACES_SEED_APPS-}" --seed-app)
 # Records whose retained history lost the base its deltas were written over:
 # founded again at start from what the workspace still reads, their old
 # history archived beside the replay, never deleted. Named as

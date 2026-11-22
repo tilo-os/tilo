@@ -87,8 +87,6 @@ https://eu1.tilo.sh
 --fetch-proxy
 --chat-channel
 general
---seed-app
-so.tilo.chat
 EXPECTED
 lounge >"$work/args" || fail "the plain deployment did not start"
 subsequence "$work/want" "$work/args" || fail "the plain deployment maps other arguments"
@@ -111,7 +109,7 @@ lounge \
   TILO_WORKSPACES_SITE_ORIGINS='https://tilo.sh, https://tilo.so' \
   TILO_WORKSPACES_SERVER_ORIGINS_ALSO='https://eu1.wifi.example:9780, https://lounge.example/' \
   TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
-  TILO_WORKSPACES_SEED_APPS='so.tilo.chat,so.tilo.board' \
+  TILO_WORKSPACES_SEED_APPS='so.tilo.board' \
   TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
   TILO_WORKSPACES_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
   TILO_WORKSPACES_PERSON_STORAGE_GB=10 \
@@ -283,7 +281,6 @@ if [[ -n $server ]] && "$server" --version >/dev/null 2>&1; then
     TILO_WORKSPACES_NAME=Lounge \
     TILO_WORKSPACES_SITE_ORIGINS='https://tilo.sh,https://tilo.so' \
     TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
-    TILO_WORKSPACES_SEED_APPS='so.tilo.chat' \
     TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop' \
     TILO_WORKSPACES_LAYOUT=shared \
     TILO_WORKSPACES_LIVE=0.0.0.0:9881 \
