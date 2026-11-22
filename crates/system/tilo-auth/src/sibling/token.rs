@@ -97,13 +97,13 @@ impl Token {
 }
 
 /// Finds the sibling-unlock token, and its id, in the LUKS2 header's
-/// metadata (`cryptsetup luksDump --dump-json-metadata`). Its shape is not
+/// metadata (`cryptsetup luksDump --dump-json-metadata`). Its format is not
 /// checked here, so a token of an older format can still be found and
 /// removed; [`Token::validate`] is the caller's check.
 ///
 /// # Errors
-/// When the header carries a malformed or more than one sibling-unlock
-/// token. `Ok(None)` means the volume has no sibling factor.
+/// When the header carries a malformed, slot-ambiguous or more than one
+/// sibling-unlock token. `Ok(None)` means the volume has no sibling factor.
 pub fn find(metadata: &serde_json::Value) -> Result<Option<(u32, Token)>> {
     let Some(tokens) = metadata
         .get("tokens")
@@ -124,6 +124,7 @@ pub fn find(metadata: &serde_json::Value) -> Result<Option<(u32, Token)>> {
             .with_context(|| format!("token id {id:?} is not a number"))?;
         let token: Token = serde_json::from_value(token.clone())
             .context("the sibling-unlock token is malformed")?;
+        token.keyslot()?;
         found = Some((id, token));
     }
     Ok(found)
