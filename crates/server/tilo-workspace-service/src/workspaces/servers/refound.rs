@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::CopyRole;
 
-use super::{OWN_WORKSPACE_NAME, own_workspace_id, holds_own};
+use super::{PERSON_WORKSPACE_NAME, person_workspace_id, holds_person_workspace};
 use crate::workspaces::Workspaces;
 
 /// What the device founding the workspace again keeps of the old copy until
@@ -126,7 +126,7 @@ async fn found_again(
 /// founded again, or a record could not be written back.
 pub(super) async fn refound(workspaces: &Workspaces) -> Result<bool, String> {
     let own = workspaces.serving_certificate().clone();
-    let admin = own_workspace_id(&own.user_public_key);
+    let admin = person_workspace_id(&own.user_public_key);
     let kept = kept_at(workspaces, &admin);
     if !found_again(workspaces, &kept, &own, &admin).await? {
         return Ok(false);
@@ -134,9 +134,9 @@ pub(super) async fn refound(workspaces: &Workspaces) -> Result<bool, String> {
     let mut carried: Carried =
         postcard::from_bytes(&std::fs::read(&kept).map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())?;
-    if !holds_own(workspaces).await {
+    if !holds_person_workspace(workspaces).await {
         workspaces
-            .create_workspace(OWN_WORKSPACE_NAME, Some(&admin))
+            .create_workspace(PERSON_WORKSPACE_NAME, Some(&admin))
             .await?;
     }
     for (app, record, bytes) in std::mem::take(&mut carried.records) {

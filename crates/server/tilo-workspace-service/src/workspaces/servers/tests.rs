@@ -438,9 +438,9 @@ fn a_retired_server_holds_nothing_and_is_not_taken_in_again() {
 
 #[test]
 fn each_server_of_a_person_finds_the_same_admin_workspace() {
-    let ana = own_workspace_id(&[1; 32]);
-    assert_eq!(ana, own_workspace_id(&[1; 32]));
-    assert_ne!(ana, own_workspace_id(&[2; 32]));
+    let ana = person_workspace_id(&[1; 32]);
+    assert_eq!(ana, person_workspace_id(&[1; 32]));
+    assert_ne!(ana, person_workspace_id(&[2; 32]));
     assert!(uuid::Uuid::parse_str(&ana).is_ok());
 }
 

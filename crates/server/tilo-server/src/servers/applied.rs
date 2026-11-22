@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use tilo_workspace_service::workspaces::{Offer, ResourceWrite, Workspaces};
 
-use super::{SERVERS, own_workspace_id, device, device_id, policy, read};
+use super::{SERVERS, person_workspace_id, device, device_id, policy, read};
 use tilo_lock::MutexRecover as _;
 
 
@@ -206,7 +206,7 @@ pub fn follow(
     state_root: PathBuf,
 ) -> tokio::task::JoinHandle<()> {
     let workspaces = workspaces.clone();
-    let admin = own_workspace_id(&workspaces.serving_certificate().user_public_key);
+    let admin = person_workspace_id(&workspaces.serving_certificate().user_public_key);
     let mut writes = workspaces.document_writes();
     let mut governance = workspaces.governance_changes();
     // The requests one task here is running at a time: a write while it runs

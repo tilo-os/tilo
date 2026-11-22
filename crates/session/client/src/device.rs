@@ -540,6 +540,26 @@ impl Device {
         self.host_action(KEEP_PERSONAL, arguments).await.map(drop)
     }
 
+    /// Ask the host, a device that holds the person's workspace, to take this device into it, as
+    /// dialled at `endpoint`: this device holds the workspace from then on. What a device does with
+    /// the [`tilo_server_protocol::servers::Introducer`] it was handed when it was admitted.
+    ///
+    /// # Errors
+    /// The host did not answer, does not hold the person's workspace, or refused.
+    pub async fn take_into_person_workspace(&self, endpoint: &iroh_base::EndpointAddr) -> Result<(), DeviceRefusal> {
+        let mut arguments = Map::new();
+        arguments.insert(
+            "endpoint".to_owned(),
+            Value::String(
+                serde_json::to_string(endpoint)
+                    .map_err(|error| DeviceRefusal::malformed(error.to_string()))?,
+            ),
+        );
+        self.host_action(tilo_server_session::workspaces::TAKE_IN_PERSON, arguments)
+            .await
+            .map(drop)
+    }
+
     /// The server's own operation `action` with `arguments`, asked in the workspace this
     /// device entered ([`crate::session::HOST_ITSELF`] before it entered one): no
     /// workspace decides it, but an agent the session was handed to asks as its grants

@@ -19,7 +19,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_device_identity::persist;
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::servers::own_workspace_id;
+use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::transport::{
     Envelope, Opening, REMOTE_ACTION_ENVELOPE_VERSION, ServerAnswer, ServerOperation,
     ServerOperationResult, ServerStatus, UnlockMethod,
@@ -389,7 +389,7 @@ fn ask(server: &str, operation: &ServerOperation) -> Result<ServerOperationResul
         _ => iroh_addr(service)
             .with_context(|| format!("{} is not a server endpoint", peer.server_node_id))?,
     };
-    let admin = own_workspace_id(&user);
+    let admin = person_workspace_id(&user);
     let workspace_id = WorkspaceId::parse(&admin).context("the Servers workspace is not an id")?;
     let mut argument = serde_json::Map::new();
     argument.insert("server".into(), hex::encode(expected).into());

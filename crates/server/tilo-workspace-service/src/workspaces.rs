@@ -188,7 +188,7 @@ mod desktop_document;
 mod governed_grants_tests;
 #[cfg(test)]
 mod naming_tests;
-pub mod own_workspace;
+pub mod person_workspace;
 pub mod servers;
 mod shares;
 #[cfg(test)]

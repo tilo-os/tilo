@@ -26,7 +26,7 @@ use tilo_resource::{Collection, Id, Invoke, Model, Refusal, Replica, resource};
 use tilo_rollback::approval::{self, Approval};
 use tilo_seal::Label;
 
-use super::{Servers, UPDATES, own_workspace_id, device_id};
+use super::{Servers, UPDATES, person_workspace_id, device_id};
 use crate::workspaces::Workspaces;
 
 /// The admin workspace's resource of the floor key and the floor requests.
@@ -312,7 +312,7 @@ pub fn decide(
 /// # Errors
 /// The resource could not be read.
 pub async fn read(workspaces: &Workspaces) -> Result<Floor, String> {
-    let admin = own_workspace_id(&workspaces.serving_certificate().user_public_key);
+    let admin = person_workspace_id(&workspaces.serving_certificate().user_public_key);
     let Some(bytes) = workspaces
         .resource_document(&admin, FLOOR.0, FLOOR.1)
         .await
@@ -330,7 +330,7 @@ pub async fn read(workspaces: &Workspaces) -> Result<Floor, String> {
 /// # Errors
 /// The action was refused, or the resource could not be written.
 pub async fn apply(workspaces: &Workspaces, action: Invoke<Floor>) -> Result<(), String> {
-    let admin = own_workspace_id(&workspaces.serving_certificate().user_public_key);
+    let admin = person_workspace_id(&workspaces.serving_certificate().user_public_key);
     let cert = workspaces.serving_certificate().clone();
     workspaces
         .author_workspace_document(&admin, &cert, FLOOR, |doc| {

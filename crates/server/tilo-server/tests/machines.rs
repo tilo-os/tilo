@@ -13,7 +13,7 @@
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_server::ServerClient;
-use tilo_server::servers::{self, Servers, own_workspace_id};
+use tilo_server::servers::{self, Servers, person_workspace_id};
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::{DeviceCapabilities, Dial, RevocationList};
 
@@ -130,9 +130,9 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
     // The command is typed at one of their devices, reaching the device that
     // holds their Servers workspace.
     let session = own_session(&alice, &phone, &laptop_host).await;
-    let admin = own_workspace_id(&alice.user_pk);
+    let admin = person_workspace_id(&alice.user_pk);
     assert!(
-        !servers::holds_own(laptop_host.host.workspaces()).await,
+        !servers::holds_person_workspace(laptop_host.host.workspaces()).await,
         "the person has no Servers workspace yet"
     );
 
@@ -203,7 +203,7 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
     );
     assert!(said.contains("token "), "the token file is named: {said}");
     tilo_test_env::within("the Servers workspace to be founded", async {
-        while !servers::holds_own(laptop_host.host.workspaces()).await {
+        while !servers::holds_person_workspace(laptop_host.host.workspaces()).await {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
@@ -241,7 +241,7 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
     .await
     .unwrap();
     tilo_test_env::within("the other device to hold the Servers workspace", async {
-        while !servers::holds_own(tablet_host.host.workspaces()).await {
+        while !servers::holds_person_workspace(tablet_host.host.workspaces()).await {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
@@ -342,7 +342,7 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
         tilo_workspace_service::workspaces::servers::machine::step(&entry, &drives).unwrap(),
         tilo_workspace_service::workspaces::servers::machine::Step::Finished
     );
-    assert_eq!(admin, own_workspace_id(&alice.user_pk));
+    assert_eq!(admin, person_workspace_id(&alice.user_pk));
 }
 
 /// A person's own device approves a machine that enrolled with a plan's token,
@@ -425,7 +425,7 @@ async fn a_machine_that_enrolled_with_a_plan_installs_from_it_on_its_first_start
     .await
     .unwrap();
     tilo_test_env::within("the machine to hold the Servers workspace", async {
-        while !servers::holds_own(machine_host.host.workspaces()).await {
+        while !servers::holds_person_workspace(machine_host.host.workspaces()).await {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
@@ -564,7 +564,7 @@ async fn a_desktop_alone_hands_its_first_server_the_servers_workspace() {
         .await
         .unwrap();
     assert!(
-        !servers::holds_own(server_host.host.workspaces()).await,
+        !servers::holds_person_workspace(server_host.host.workspaces()).await,
         "the server holds nothing yet"
     );
 
@@ -587,7 +587,7 @@ async fn a_desktop_alone_hands_its_first_server_the_servers_workspace() {
         "the server to hold the workspace and read its entry",
         async {
             loop {
-                let held = servers::holds_own(server_host.host.workspaces()).await;
+                let held = servers::holds_person_workspace(server_host.host.workspaces()).await;
                 let named = servers::read(server_host.host.workspaces())
                     .await
                     .is_ok_and(|servers| {
@@ -606,7 +606,7 @@ async fn a_desktop_alone_hands_its_first_server_the_servers_workspace() {
         },
     )
     .await;
-    let admin = own_workspace_id(&alice.user_pk);
+    let admin = person_workspace_id(&alice.user_pk);
     let holders = desktop_host.host.workspaces().hosts(&admin).await.unwrap();
     assert_eq!(holders.len(), 2, "the desktop and the server hold it");
     assert!(
@@ -615,4 +615,70 @@ async fn a_desktop_alone_hands_its_first_server_the_servers_workspace() {
             .any(|hint| hint.host.device_public_key == nas.device_pubkey()),
         "the server is named among the workspace's holders"
     );
+}
+
+/// A device of the person without the person's workspace asks the device that
+/// introduces it to take it in, over that device's action: it holds the
+/// workspace from then on, and a resource written there reaches it. A device
+/// of another person is not taken in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_asks_its_introducer_into_its_persons_workspace() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let desktop = alice.enrol("desktop", DeviceCapabilities::member());
+    let laptop_host = own_host(&alice, &laptop).await;
+    let asking = own_host(&alice, &desktop).await;
+    servers::founded(laptop_host.host.workspaces()).await.unwrap();
+    servers::apply(
+        laptop_host.host.workspaces(),
+        Servers::ENROLL_SERVER.with((
+            hex::encode(laptop.device_pubkey()),
+            "laptop".into(),
+            serde_json::to_string(&laptop_host.host.node_addr()).unwrap(),
+        )),
+    )
+    .await
+    .unwrap();
+    assert!(!servers::holds_person_workspace(asking.host.workspaces()).await);
+
+    // The asking device speaks from the endpoint its own service answers on,
+    // where the laptop hands it the workspace.
+    let session = ServerClient::connect_v2_to_own_device(
+        asking.router.endpoint().clone(),
+        laptop_host.host.node_addr(),
+        alice.user_pk,
+        laptop_host.host.device_cert().device_public_key,
+        desktop.cert.clone(),
+        desktop.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let taken: serde_json::Value = host_action(
+        &session,
+        "person.take-in",
+        serde_json::json!({
+            "endpoint": serde_json::to_string(&asking.host.node_addr()).unwrap(),
+        }),
+    )
+    .await;
+    assert_eq!(taken["workspace"], person_workspace_id(&alice.user_pk));
+    tilo_test_env::within("the asking device to hold the workspace", async {
+        while !servers::holds_person_workspace(asking.host.workspaces()).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    entry_where(&asking, &hex::encode(laptop.device_pubkey()), |_| true).await;
+
+    // Bob's device is no device of Alice's: her host takes it into nothing.
+    let bob = TestUser::fresh("Bob");
+    let intruder = bob.enrol("laptop", DeviceCapabilities::primary());
+    let refused = servers::take_in(
+        laptop_host.host.workspaces(),
+        &intruder.cert,
+        &asking.host.node_addr(),
+    )
+    .await;
+    assert!(refused.is_err(), "another person's device is not taken in");
 }

@@ -61,7 +61,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 16] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 17] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -222,6 +222,16 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 16] = [
         },
         ServiceOperation::AdmitMachine,
     ),
+    (
+        Verb {
+            id: TAKE_IN_PERSON_DEVICE,
+            label: "Take one of your devices into your workspace",
+            check: TAKE_IN_PERSON_DEVICE,
+            kind: roles::GOVERNANCE_KIND,
+            params: take_in_person_device_params,
+        },
+        ServiceOperation::TakeInPersonDevice,
+    ),
 ];
 
 /// Plan a machine: the plan document the person's window or command wrote,
@@ -235,6 +245,15 @@ pub(super) const SHOW_MACHINE: &str = "machine.show";
 /// Take a machine that enrolled with a plan's token into its entry under its
 /// device key.
 pub(super) const ADMIT_MACHINE: &str = "machine.admit";
+use tilo_server_session::workspaces::TAKE_IN_PERSON as TAKE_IN_PERSON_DEVICE;
+
+fn take_in_person_device_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "endpoint",
+        ParamType::Text,
+        "Where the asking device is dialled, as its endpoint advertises it (JSON).",
+    )]
+}
 
 fn plan_machine_params() -> Vec<ActionParam> {
     vec![
@@ -667,6 +686,21 @@ impl Workspaces {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 Box::pin(machine::invoke(self, operation, &args)).await
+            }
+            ServiceOperation::TakeInPersonDevice => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                let endpoint: iroh_base::EndpointAddr =
+                    serde_json::from_str(args.required_text("endpoint")?)
+                        .map_err(|_| refused(&"a device's endpoint is its own JSON"))?;
+                crate::workspaces::servers::take_in(self, device, &endpoint)
+                    .await
+                    .map_err(|error| refused(&error))?;
+                Ok(serde_json::json!({
+                    "workspace": tilo_server_protocol::servers::person_workspace_id(
+                        &device.user_public_key
+                    )
+                }))
             }
             _ => Err(ActionCallError::UnknownAction),
         }

@@ -95,7 +95,7 @@ pub(crate) fn take_any(
         open,
     } = KEPT.with(|kept| kept.borrow_mut().remove(&kind))?;
     // What was kept as written into a transaction holds its own change.
-    let holds_own = open.is_some();
+    let holds_person_workspace = open.is_some();
     if let Some((actor, pending)) = open {
         let mut started = doc.base_heads();
         started.compact_sort();
@@ -148,7 +148,7 @@ pub(crate) fn take_any(
             });
         if ours {
             own_meta = Some((meta, count));
-            if !holds_own {
+            if !holds_person_workspace {
                 own = Some(committed.get_change_by_hash(&meta.hash)?);
             }
         } else {
@@ -166,7 +166,7 @@ pub(crate) fn take_any(
     // of it, and its own change alone is taken as it was written, every item
     // it stored as it reads back, rather than read.
     let alone = foreign == 0 && own_meta.is_some_and(|(meta, _)| stored_by(meta).is_some());
-    if let Some((_, count)) = own_meta.filter(|_| !holds_own && !alone) {
+    if let Some((_, count)) = own_meta.filter(|_| !holds_person_workspace && !alone) {
         ops = ops.checked_add(count)?;
     }
     if ops > MAX_OPS {

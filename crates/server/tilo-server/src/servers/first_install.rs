@@ -23,7 +23,7 @@ use tilo_workspace_service::workspaces::servers::machine::{self, Step};
 use tilo_workspace_service::workspaces::servers::{Servers, device, device_id};
 use tilo_workspace_service::workspaces::{ResourceWrite, Workspaces};
 
-use super::{SERVERS, own_workspace_id, apply, read};
+use super::{SERVERS, person_workspace_id, apply, read};
 
 /// Where the token's nonce is kept for this machine: written by
 /// `tilo-enroll enroll` when it enrolled with a plan's token, and read here
@@ -253,7 +253,7 @@ struct EntryChanges {
 impl EntryChanges {
     fn of(workspaces: &Workspaces) -> Self {
         Self {
-            admin: own_workspace_id(&workspaces.serving_certificate().user_public_key),
+            admin: person_workspace_id(&workspaces.serving_certificate().user_public_key),
             writes: workspaces.document_writes(),
             governance: workspaces.governance_changes(),
         }

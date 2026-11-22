@@ -269,6 +269,12 @@ pub const PERSONAL_DEVICE_NAME: &str = "workspace.personal.name";
 /// ([`PersonalWorkspace::enter_at`]): where a device of the person's that
 /// does not hold it yet asks to be taken in.
 pub const LIST_PERSONAL: &str = "workspace.personal";
+/// The action that takes the asking device, another of the host's person's,
+/// into the person's workspace, which the host holds
+/// ([`tilo_server_protocol::servers::Introducer`] names such a host), with
+/// the device's own address (`{endpoint}`, its `EndpointAddr` as JSON).
+/// Answers `{"workspace": id}`; the device holds the workspace from then on.
+pub const TAKE_IN_PERSON: &str = "person.take-in";
 /// The most workspaces a kept list names.
 pub const MAX_PERSONAL_WORKSPACES: usize = 4096;
 /// The most devices a person's record keeps.

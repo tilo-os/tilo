@@ -681,7 +681,7 @@ mod tests {
         .expect("a session");
         let engine = session.shared.engine.clone().expect("this device's engine");
         let person = engine.identity().device_cert.user_public_key;
-        let admin = tilo_server_protocol::servers::own_workspace_id(&person);
+        let admin = tilo_server_protocol::servers::person_workspace_id(&person);
 
         // The machine's own key, as it enrolled with the token the plan names.
         let machine = "cd".repeat(32);
@@ -813,7 +813,7 @@ mod tests {
                 );
                 assert_eq!(
                     admin,
-                    tilo_server_protocol::servers::own_workspace_id(&person)
+                    tilo_server_protocol::servers::person_workspace_id(&person)
                 );
                 return;
             }

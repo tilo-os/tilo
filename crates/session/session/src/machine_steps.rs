@@ -77,7 +77,7 @@ impl MachineSteps {
             // person keeps, and entered by the engine as its founder.
             #[cfg(target_os = "linux")]
             if planning {
-                let admin = tilo_server_protocol::servers::own_workspace_id(
+                let admin = tilo_server_protocol::servers::person_workspace_id(
                     &engine.identity().device_cert.user_public_key,
                 );
                 if !engine.is_holder(&admin) {

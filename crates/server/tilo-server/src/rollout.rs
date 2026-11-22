@@ -284,7 +284,7 @@ impl ServerMachine {
     }
 
     fn admin(&self) -> String {
-        servers::own_workspace_id(&self.device().user_public_key)
+        servers::person_workspace_id(&self.device().user_public_key)
     }
 
     fn pending_path(&self) -> PathBuf {

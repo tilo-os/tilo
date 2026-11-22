@@ -111,6 +111,10 @@ pub enum ServiceOperation {
     /// its device key: the person's device that approved it does this, and the
     /// machine's own report follows when it holds the workspace.
     AdmitMachine,
+    /// Take the asking device, another of the host's person's, into the
+    /// person's workspace, which the host holds: it holds the workspace from
+    /// then on. Only a device of the person, never an agent's grant.
+    TakeInPersonDevice,
 }
 
 impl ServiceOperation {
@@ -139,6 +143,7 @@ impl ServiceOperation {
             Self::ListMachines => "machine.list",
             Self::ShowMachine => "machine.show",
             Self::AdmitMachine => "machine.admit",
+            Self::TakeInPersonDevice => "person.take-in",
         }
     }
 
@@ -205,7 +210,8 @@ impl ServiceOperation {
             | Self::PlanMachine
             | Self::ListMachines
             | Self::ShowMachine
-            | Self::AdmitMachine => false,
+            | Self::AdmitMachine
+            | Self::TakeInPersonDevice => false,
         }
     }
 }
@@ -215,7 +221,7 @@ mod tests {
     use super::ServiceOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [ServiceOperation; 21] = [
+    const ALL: [ServiceOperation; 22] = [
         ServiceOperation::CreateWorkspace,
         ServiceOperation::ListWorkspaces,
         ServiceOperation::EnterWorkspace,
@@ -237,6 +243,7 @@ mod tests {
         ServiceOperation::ListMachines,
         ServiceOperation::ShowMachine,
         ServiceOperation::AdmitMachine,
+        ServiceOperation::TakeInPersonDevice,
     ];
 
     fn device(person: [u8; 32], capabilities: DeviceCapabilities) -> DeviceCert {

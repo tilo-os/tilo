@@ -195,7 +195,7 @@ impl Workspaces {
     /// `caller`'s device, when `caller` may ask what its person's servers are
     /// to do: one of their devices speaking for themselves, or the agent their
     /// device, and the workspace their own
-    /// ([`own_workspace_id`](tilo_server_protocol::servers::own_workspace_id)).
+    /// ([`person_workspace_id`](tilo_server_protocol::servers::person_workspace_id)).
     /// Another person's device, or an agent of theirs, reaches no server of
     /// this person's. Unknown and forbidden are the same answer.
     pub(super) async fn server_operator(
@@ -208,7 +208,7 @@ impl Workspaces {
         let person = caller.user_public_key()?;
         if certificate.user_public_key != *person
             || caller.device_public_key() != Some(&certificate.device_public_key)
-            || workspace_id.to_string() != tilo_server_protocol::servers::own_workspace_id(person)
+            || workspace_id.to_string() != tilo_server_protocol::servers::person_workspace_id(person)
             || !(caller.acting().is_person() || caller.is_session_delegated())
         {
             return None;
