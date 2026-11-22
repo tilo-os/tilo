@@ -65,7 +65,7 @@ fn loads_style(chosen: Text) -> Bool {
 /// so.
 view clock() {
     row(gap: .tight, align: .center) {
-        ui.Text(device.time.clock, role: .subheading, numeric: true)
+        ui.Text(device.time.clock, role: .subheading, numeric: true, lines: 1)
         if device.time.timer != "" {
             ui.Text(device.time.timer, role: .caption)
             if device.time.timer_paused {
@@ -224,6 +224,9 @@ view bar_part(part: BarPart) {
             if not space.compact {
                 volume_status()
             }
+            if not space.compact or folders_need_person(device.folders.folders) {
+                sync_status()
+            }
             network_status()
             battery_status()
             bell()
@@ -240,7 +243,9 @@ view bar_part(part: BarPart) {
 /// workspace the session has not published a name for still opens by the workspaces' name.
 view workspace_menu() {
     let name = if front_workspace_name() != "" { front_workspace_name() } else { "Workspaces" }
+    // On a phone the status cluster takes the name's room while a folder needs the person.
     let icon_only = bar_is_narrow(space.width)
+        or (space.compact and folders_need_person(device.folders.folders))
     ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
         for w in layout.workspaces {
             ui.MenuItem(w.name, checked: w.current) {
@@ -339,6 +344,116 @@ view network_status() {
         ) {
             on press: device.show_surface(device.overlays, surface: "quick-settings")
         }
+    }
+}
+
+/// Whether what a person puts in their workspaces' folders on this computer has reached the
+/// server keeping each workspace: the glyph of the folder that needs the person most, named in
+/// full for assistive technology, opening every folder's state. Files that never reach the server
+/// while the person believes they did are lost when this computer is, so a folder that is not in
+/// sync says so here, where the person looks, and why. Nothing while this computer keeps no
+/// folder.
+view sync_status() {
+    let folders = device.folders.folders
+    if let first = folders.first() {
+        let shown = needing_most(folders) ?? first
+        let f = shown
+        ui.MenuButton(
+            folder_line(f),
+            icon: if f.state == "stuck" {
+                .triangle_alert
+            } else if f.state == "sending" {
+                .refresh
+            } else if f.state == "content-going-out" {
+                .upload
+            } else if f.state == "paused" {
+                .pause
+            } else if f.state == "opening" or f.state == "waiting-for-workspace" {
+                .hourglass
+            } else { .cloud },
+            icon_only: true,
+            role: .bar,
+        ) {
+            for f in folders {
+                ui.MenuItem(
+                    folder_line(f),
+                    icon: if f.state == "stuck" {
+                        .triangle_alert
+                    } else if f.state == "sending" {
+                        .refresh
+                    } else if f.state == "content-going-out" {
+                        .upload
+                    } else if f.state == "paused" {
+                        .pause
+                    } else if f.state == "opening" or f.state == "waiting-for-workspace" {
+                        .hourglass
+                    } else { .cloud },
+                ) {
+                    on choose: session.open_app(app: "so.tilo.file-explorer")
+                }
+            }
+        }
+    }
+}
+
+/// Whether a folder needs the person to look: its changes wait, or it is paused. A phone's bar
+/// keeps the folders' glyph only then; the folders that are in sync or sending need no glance.
+fn folders_need_person(folders: List<device.Folder>) -> Bool {
+    return folders.any(f -> f.state == "stuck" or f.state == "paused")
+}
+
+/// The folder a person most needs to hear about: one whose changes wait, then one sending, then
+/// one whose files aren't all on the server yet, then one still opening.
+fn needing_most(folders: List<device.Folder>) -> Option<device.Folder> {
+    return folders.find(f -> f.state == "stuck")
+        ?? folders.find(f -> f.state == "sending")
+        ?? folders.find(f -> f.state == "content-going-out")
+        ?? folders.find(f -> f.state == "opening" or f.state == "waiting-for-workspace")
+}
+
+/// Where a folder stands, in one sentence naming its workspace and the server keeping it.
+fn folder_line(f: device.Folder) -> Text {
+    let name = if f.name != "" { f.name } else { std.say("Your workspace") }
+    let server = if f.server != "" { f.server } else { std.say("the server") }
+    if f.state == "paused" {
+        std.say("{name} is paused")
+    } else if f.state == "waiting-for-workspace" {
+        std.say("{name} hasn't reached this computer yet")
+    } else if f.state == "opening" {
+        std.say("{name} is waiting for {server}")
+    } else if f.state == "stuck" {
+        std.say("{name} isn't syncing: {stuck_reason(f, server)}")
+    } else if f.state == "sending" {
+        std.say("Sending changes in {name} to {server}")
+    } else if f.state == "content-going-out" {
+        std.say("Some files in {name} aren't on {server} yet")
+    } else {
+        std.say("{name} is in sync with {server}")
+    }
+}
+
+/// Why a folder's changes wait, from the reason the folder gives, in this package's words.
+fn stuck_reason(f: device.Folder, server: Text) -> Text {
+    if f.stuck == "unopened" {
+        std.say("{server} hasn't said which files it holds yet")
+    } else if f.stuck == "unanswered" {
+        std.say("{server} hasn't answered for some files yet")
+    } else if f.stuck == "unarrived" {
+        std.say("part of the file list hasn't arrived from {server} yet")
+    } else if f.stuck == "ordered" {
+        std.say("some changes wait for others to reach {server} first")
+    } else if f.stuck == "refused" and f.refused == "history-full" {
+        std.say("{server} has no room for more changes yet; they're kept here until it has")
+    } else if f.stuck == "refused" and f.refused == "not-permitted" {
+        std.say("the workspace doesn't let you make some of these changes; ask one of its owners")
+    } else if f.stuck == "refused" and f.refused == "unanswered" {
+        std.say("{server} isn't answering; changes are sent again shortly")
+    } else if f.stuck == "refused" {
+        std.say("{server} didn't take some changes; they're sent again shortly")
+    } else if f.stuck == "lacking" {
+        std.say("some files' details are on neither this computer nor {server}")
+    } else {
+        std.say("some changes haven't reached {server} yet; sending them again")
     }
 }
 

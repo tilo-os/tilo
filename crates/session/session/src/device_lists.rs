@@ -5,6 +5,7 @@
 
 use std::rc::Rc;
 
+use fs::tree_sync::{Refusal, Waiting};
 use serde_json::{Map, Value};
 use tilo_actions::remote::session_actions::INVITE_RESOURCE;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
@@ -23,7 +24,7 @@ use crate::windows::{reaching, windows};
 /// What the device's lists are made from ([`DeviceLists::lists_key`]), one entry per resource: the
 /// windows, the tray, the agents and the styles. An entry that moved is a reading that moved.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct ListsKey([(u64, u64, u64, bool); 4]);
+pub(crate) struct ListsKey([(u64, u64, u64, bool); 5]);
 
 /// The shell's windows, every workspace's: what the switcher, the dock and the launcher list.
 pub(crate) const WINDOWS_RESOURCE: &str = "session:windows";
@@ -33,6 +34,8 @@ pub(crate) const TRAY_RESOURCE: &str = "session:tray";
 pub(crate) const AGENTS_RESOURCE: &str = "session:agents";
 /// The styles every installed package offers.
 pub(crate) const STYLES_RESOURCE: &str = "session:styles";
+/// The workspaces' folders on this computer, and whether what is put in them reached the server.
+pub(crate) const FOLDERS_RESOURCE: &str = "session:folders";
 
 /// The windows as a view of another language reads them (`device.windows`).
 #[must_use]
@@ -62,6 +65,108 @@ pub fn styles_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<OfferedStyles, tilo_resource::NoEffect>(
         "styles", "Styles",
     )
+}
+
+/// The folders as a view of another language reads them (`device.folders`).
+#[must_use]
+pub fn folders_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Folders, tilo_resource::NoEffect>(
+        "folders", "Folders",
+    )
+}
+
+/// The workspaces' folders on this computer, by workspace.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct Folders {
+    pub folders: Vec<Folder>,
+}
+
+/// One workspace's folder, as the person is told where it stands.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct Folder {
+    /// The workspace, by its key.
+    pub workspace: String,
+    /// The workspace's name, empty while it has none.
+    pub name: String,
+    /// The name of the device that keeps the workspace's files, empty while none is named.
+    pub server: String,
+    /// What the folder is doing: `paused`, `waiting-for-workspace`, `opening`, `stuck`,
+    /// `sending`, `content-going-out` (every change went out, and the server still lacks some
+    /// files' contents) or `in-sync`.
+    pub state: String,
+    /// Why changes made here wait, while they do, as the reason the person needs to hear first:
+    /// `unopened` (the workspace hasn't said which files it holds), `unanswered` (it hasn't
+    /// answered for some of them), `unarrived` (part of its file list hasn't arrived here),
+    /// `ordered` (changes wait for others to arrive first), `refused` (the workspace refused some,
+    /// for [`Self::refused`]), `unsent` (some are sent again) or `lacking` (files whose details
+    /// nobody holds); empty otherwise.
+    pub stuck: String,
+    /// Why the workspace refused changes, while that is why they wait: `history-full` (the
+    /// record's history there has no room until it is compacted), `not-permitted` (the
+    /// workspace's rules don't let the person make them), `unanswered` (it didn't answer in
+    /// time) or `other`; empty otherwise.
+    pub refused: String,
+    /// The files in the folder.
+    pub files: u64,
+}
+
+impl From<tilo_workspace_service::files::Folder> for Folder {
+    fn from(folder: tilo_workspace_service::files::Folder) -> Self {
+        let state = serde_json::to_value(&folder.status.state)
+            .ok()
+            .and_then(|state| state.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        let (stuck, refused) = match folder.status.stuck.into_iter().next() {
+            Some(Waiting::Refused(reason)) => ("refused".to_owned(), refusal_kind(&reason)),
+            Some(waiting) => (
+                serde_json::to_value(&waiting)
+                    .ok()
+                    .and_then(|said| said.as_str().map(str::to_owned))
+                    .unwrap_or_default(),
+                String::new(),
+            ),
+            None => (String::new(), String::new()),
+        };
+        Self {
+            workspace: folder.workspace,
+            name: folder.name,
+            server: folder.server,
+            state,
+            stuck,
+            refused,
+            files: u64::try_from(folder.status.files).unwrap_or(u64::MAX),
+        }
+    }
+}
+
+/// The kind of `refusal`, by the name a view words it from: the detail of any other refusal is
+/// in the words of whoever refused it, which no view shows a person.
+fn refusal_kind(refusal: &Refusal) -> String {
+    match refusal {
+        Refusal::Other(_) => "other".to_owned(),
+        kind => serde_json::to_value(kind)
+            .ok()
+            .and_then(|said| said.as_str().map(str::to_owned))
+            .unwrap_or_default(),
+    }
 }
 
 /// The running applications' tray items, in the order they registered.
@@ -431,6 +536,8 @@ pub(crate) struct DeviceLists {
     /// (shell.md §6): what the person's switch offers. The session fills it from its package
     /// store, and moves it when a package is installed or taken away.
     pub(crate) styles: std::rc::Rc<std::cell::RefCell<Styles>>,
+    /// The workspaces' folders on this computer, as the files daemon last said each stands.
+    pub(crate) folders: tilo_workspace_service::files::Folders,
     /// What the lists were last published from.
     pub(crate) lists: Option<ListsKey>,
 }
@@ -446,6 +553,7 @@ pub(crate) struct Shared {
     pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
+    pub(crate) folders: tilo_workspace_service::files::Folders,
 }
 
 /// A factory making the session's shell, its styles read from the person's store as they move
@@ -463,6 +571,7 @@ pub(crate) fn device_lists_from(shared: Shared) -> impl Fn() -> DeviceLists {
         engine: shared.engine.clone(),
         asks: Rc::clone(&shared.asks),
         styles: Rc::clone(&styles),
+        folders: shared.folders.clone(),
         lists: None,
     }
 }
@@ -486,6 +595,7 @@ impl DeviceLists {
             ),
             (self.agent_sessions.revision(), 0, 0, false),
             (self.styles.borrow().revision, 0, 0, false),
+            (self.folders.revision(), 0, 0, false),
         ])
     }
 
@@ -505,6 +615,9 @@ impl DeviceLists {
             })),
             STYLES_RESOURCE => Some(reading(&OfferedStyles {
                 offered: self.styles.borrow().list.clone(),
+            })),
+            FOLDERS_RESOURCE => Some(reading(&Folders {
+                folders: self.folders.all().into_iter().map(Folder::from).collect(),
             })),
             _ => None,
         }
@@ -923,6 +1036,10 @@ pub(crate) struct InviteRoot;
 #[row(kind = "session", label = "Styles")]
 pub(crate) struct StylesRoot;
 
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Folders")]
+pub(crate) struct FoldersRoot;
+
 impl Service for DeviceLists {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
@@ -955,6 +1072,11 @@ impl Service for DeviceLists {
             tilo_resource::LiveRow::typed::<StylesRoot>(
                 STYLES_RESOURCE,
                 crate::i18n::t("session-styles"),
+            )
+            .into_resource(),
+            tilo_resource::LiveRow::typed::<FoldersRoot>(
+                FOLDERS_RESOURCE,
+                crate::i18n::t("session-folders"),
             )
             .into_resource(),
         ]

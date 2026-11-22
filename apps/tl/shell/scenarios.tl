@@ -1351,6 +1351,156 @@ scenario "the bar's status" {
     d.people.insert(LayoutPerson(key: "sam", name: "Sam Okafor"))
 }
 
+/// Whether the files in a workspace's folder reached its server, on the bar: in sync.
+scenario "the folders, in sync" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(
+        device.folders,
+        device.Folders(
+            folders: [
+                device.Folder(
+                    workspace: "studio",
+                    name: "Studio",
+                    server: "ada-laptop-server",
+                    state: "in-sync",
+                    stuck: "",
+                    files: 1240,
+                ),
+            ],
+        ),
+    )
+}
+
+/// Whether the files in a workspace's folder reached its server, on the bar: sending.
+scenario "the folders, sending" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(
+        device.folders,
+        device.Folders(
+            folders: [
+                device.Folder(
+                    workspace: "studio",
+                    name: "Studio",
+                    server: "ada-laptop-server",
+                    state: "sending",
+                    stuck: "",
+                    files: 1240,
+                ),
+                device.Folder(
+                    workspace: "home",
+                    name: "Home",
+                    server: "ada-laptop-server",
+                    state: "in-sync",
+                    stuck: "",
+                    files: 1240,
+                ),
+            ],
+        ),
+    )
+}
+
+/// Whether the files in a workspace's folder reached its server, on the bar: one stuck.
+scenario "the folders, one stuck" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(
+        device.folders,
+        device.Folders(
+            folders: [
+                device.Folder(
+                    workspace: "studio",
+                    name: "Studio",
+                    server: "ada-laptop-server",
+                    state: "stuck",
+                    stuck: "refused",
+                    refused: "history-full",
+                    files: 1240,
+                ),
+                device.Folder(
+                    workspace: "home",
+                    name: "Home",
+                    server: "ada-laptop-server",
+                    state: "in-sync",
+                    stuck: "",
+                    files: 1240,
+                ),
+            ],
+        ),
+    )
+}
+
+/// Whether the files in a workspace's folder reached its server, on the bar: files not on the server yet.
+scenario "the folders, files not on the server yet" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(
+        device.folders,
+        device.Folders(
+            folders: [
+                device.Folder(
+                    workspace: "studio",
+                    name: "Studio",
+                    server: "ada-laptop-server",
+                    state: "content-going-out",
+                    stuck: "",
+                    files: 1240,
+                ),
+            ],
+        ),
+    )
+}
+
+/// Whether the files in a workspace's folder reached its server, on the bar: a long server name.
+scenario "the folders, a long server name" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(
+        device.folders,
+        device.Folders(
+            folders: [
+                device.Folder(
+                    workspace: "studio",
+                    name: "Release planning for the autumn launch",
+                    server: "the shared storage server in the Hamburg office basement",
+                    state: "content-going-out",
+                    stuck: "",
+                    files: 1240,
+                ),
+                device.Folder(
+                    workspace: "home",
+                    name: "Home",
+                    server: "the shared storage server in the Hamburg office basement",
+                    state: "in-sync",
+                    stuck: "",
+                    files: 1240,
+                ),
+            ],
+        ),
+    )
+}
+
 /// Who is here, and the menu a person's presence opens.
 scenario "a person's menu" {
     let d = root Layout

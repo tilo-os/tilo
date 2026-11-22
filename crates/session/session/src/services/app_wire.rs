@@ -213,6 +213,8 @@ pub(crate) struct Knitted {
     pub(crate) agent_sessions:
         Option<std::sync::Arc<dyn tilo_broker_core::services::AgentSessions>>,
     pub(crate) tools: Option<crate::tools::Handle>,
+    /// Where each folder the files daemon holds stands, as it says over the tree socket.
+    pub(crate) folders: tilo_workspace_service::files::Folders,
 }
 
 #[expect(
@@ -360,7 +362,13 @@ pub(crate) fn start_app_wire(
         actions.install(broker.device_host());
         attach_remote_use(&actions, options);
     }
-    let files_tree = serve_files_tree(&path, service, content.as_deref(), options)?;
+    let files_tree = serve_files_tree(
+        &path,
+        service,
+        content.as_deref(),
+        options,
+        services.folders,
+    )?;
     Ok(Some(AppWire {
         link,
         path,
@@ -386,6 +394,7 @@ fn serve_files_tree(
     service: tilo_workspace_service::service::ServiceSlot,
     content: Option<&crate::content::ContentService>,
     options: &Options,
+    folders: tilo_workspace_service::files::Folders,
 ) -> Result<Option<tilo_workspace_service::files::socket::Serving>, Error> {
     use tilo_workspace_service::apps::services::LauncherServices as _;
     let Some(content) = content else {
@@ -413,6 +422,7 @@ fn serve_files_tree(
             launches.attest_process(pid, ui::apps::FILE_EXPLORER, workspace)
         }),
         content.files_offers(keys),
+        folders,
     )?))
 }
 

@@ -174,10 +174,10 @@ pub trait TreePeer: collab_types::signer::MaybeSendSync {
 
 /// A write of one record under way, for the tree sync's own task.
 pub type WriteFuture<'a> =
-    Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+    Pin<Box<dyn std::future::Future<Output = Result<(), Refusal>> + Send + 'a>>;
 
 /// The wait that a set of this device's writes is held by the serving side.
-pub type Served = Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'static>>;
+pub type Served = Pin<Box<dyn std::future::Future<Output = Result<(), Refusal>> + Send + 'static>>;
 
 /// The records of a workspace's tree, written as this device itself: the tree's own record and
 /// its chunks, one write per record.
@@ -212,7 +212,7 @@ pub enum Wake {
     /// The workspace's host takes part again: every record of the tree is opened again.
     HostReady,
     /// The host refused a write of this device's to `chunk`, for `reason`.
-    Refused { chunk: TreeChunk, reason: String },
+    Refused { chunk: TreeChunk, reason: Refusal },
     /// The host answered for `chunk` what it holds of it.
     Opened {
         chunk: TreeChunk,
@@ -228,7 +228,7 @@ pub enum Wake {
     clippy::struct_excessive_bools,
     reason = "each is a fact `tilo status` reports on its own"
 )]
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Status {
     /// The workspace's host answered for the tree: what it holds is merged.
     pub opened: bool,
@@ -249,19 +249,71 @@ pub struct Status {
     /// Not syncing, as the person asked.
     pub paused: bool,
     /// Why changes made here have waited for longer than [`STUCK_AFTER`] without going out,
-    /// while they do.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stuck: Option<String>,
+    /// while they do, the one a person most needs to hear first; empty while nothing waits.
+    pub stuck: Vec<Waiting>,
     /// How many blobs of the workspace's content the holder that keeps the most of it still
     /// lacks, by the holders' own word: `None` while none said.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub host_lacks: Option<u32>,
     /// What the folder is doing, from the facts above: the one thing a person is told of it.
     pub state: FolderState,
 }
 
+/// Why changes made in a folder wait, which whoever tells a person words in the person's language.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Waiting {
+    /// The workspace has not said which files it holds yet, so nothing changed here goes out.
+    Unopened,
+    /// The workspace has not answered for some of its files yet.
+    Unanswered,
+    /// Some of the workspace's file list has not arrived on this computer; it is asked for again
+    /// every few minutes.
+    Unarrived,
+    /// Some changes wait for others to reach the workspace first.
+    Ordered,
+    /// The workspace refused some changes, for the reason it gave; they are sent again after a
+    /// wait.
+    Refused(Refusal),
+    /// Some changes have not reached the workspace yet and are sent again.
+    Unsent,
+    /// The folder names files whose details neither this computer nor the workspace holds.
+    Lacking,
+}
+
+/// Why the workspace did not take a write of this device's to a folder's tree.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Refusal {
+    /// The record's history at the workspace has no room for more changes until it is
+    /// compacted.
+    HistoryFull,
+    /// The workspace's rules do not let this person make the change.
+    NotPermitted,
+    /// The workspace did not answer the write within the wait.
+    Unanswered,
+    /// Any other refusal, in the words of whoever refused it: for logs and `tilo folders`.
+    Other(String),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HistoryFull => f.write_str("the record's history at the workspace is full"),
+            Self::NotPermitted => f.write_str("the workspace's rules do not take the change"),
+            Self::Unanswered => f.write_str("the workspace did not answer within the wait"),
+            Self::Other(why) => f.write_str(why),
+        }
+    }
+}
+
+impl From<String> for Refusal {
+    fn from(why: String) -> Self {
+        Self::Other(why)
+    }
+}
+
 /// What a folder is doing, as a person is told it: one state, the first that holds of these.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FolderState {
     /// Not syncing, as the person asked.
@@ -292,7 +344,7 @@ impl Status {
             FolderState::WaitingForWorkspace
         } else if !self.opened {
             FolderState::Opening
-        } else if self.stuck.is_some() {
+        } else if !self.stuck.is_empty() {
             FolderState::Stuck
         } else if !(self.sent && self.durable) {
             FolderState::Sending
@@ -327,12 +379,44 @@ pub struct Config {
     pub wakes: tokio::sync::mpsc::UnboundedReceiver<Wake>,
 }
 
+/// Where a tree's sync stands, and its changes: what a status reader follows instead of asking
+/// again and again.
+struct Shown {
+    status: Mutex<Status>,
+    changed: tokio::sync::watch::Sender<Status>,
+}
+
+impl Shown {
+    fn new() -> Self {
+        Self {
+            status: Mutex::new(Status::default()),
+            changed: tokio::sync::watch::channel(Status::default()).0,
+        }
+    }
+
+    fn lock_recover(&self) -> std::sync::MutexGuard<'_, Status> {
+        self.status.lock_recover()
+    }
+
+    /// Tell the followers where the sync stands now, when that changed.
+    fn publish(&self) {
+        let now = self.status.lock_recover().clone();
+        self.changed.send_if_modified(|shown| {
+            let changed = *shown != now;
+            if changed {
+                *shown = now;
+            }
+            changed
+        });
+    }
+}
+
 /// One workspace's tree, held while this value lives.
 pub struct TreeSync {
     /// The tree, as the mount and the tests read it.
     pub namespace: Arc<Mutex<Namespace>>,
     kept: Arc<KeptDocuments>,
-    status: Arc<Mutex<Status>>,
+    status: Arc<Shown>,
     paused: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
     /// Waited on by whatever notices the peer changed ([`Self::wake`]), and poked by
@@ -431,7 +515,7 @@ impl TreeSync {
         .await
         .map_err(std::io::Error::other)??;
         let namespace = Arc::new(Mutex::new(namespace));
-        let status = Arc::new(Mutex::new(Status::default()));
+        let status = Arc::new(Shown::new());
         let paused = Arc::new(AtomicBool::new(false));
         let stopping = Arc::new(AtomicBool::new(false));
         let wake = Arc::new(tokio::sync::Notify::new());
@@ -538,6 +622,12 @@ impl TreeSync {
         self.status.lock_recover().clone()
     }
 
+    /// Where the sync stands each time that changes.
+    #[must_use]
+    pub fn status_changes(&self) -> tokio::sync::watch::Receiver<Status> {
+        self.status.changed.subscribe()
+    }
+
     /// Stop syncing (changes made here wait to go out, and none come in), or start again.
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
@@ -546,6 +636,7 @@ impl TreeSync {
         status.paused = paused;
         status.state = status.folder_state();
         drop(status);
+        self.status.publish();
         self.wake.notify_waiters();
     }
 }
@@ -758,7 +849,7 @@ struct Refusals {
     /// When the next write may go out.
     until: Option<Instant>,
     /// When the last refusal came, and why the workspace refused.
-    last: Option<(Instant, String)>,
+    last: Option<(Instant, Refusal)>,
 }
 
 /// How long one write may take to reach the workspace before it counts as refused: a write
@@ -839,7 +930,7 @@ struct Sync {
     counting: Paced,
     /// The heads the files and bytes in `status` were counted at.
     counted_heads: Option<Vec<automerge::ChangeHash>>,
-    status: Arc<Mutex<Status>>,
+    status: Arc<Shown>,
     /// The files the tree names as last counted, each with the hash of its content and its size:
     /// what the bytes this computer holds are counted again from as content arrives, without
     /// walking the tree.
@@ -978,10 +1069,12 @@ impl Sync {
 
     /// Why changes made here wait, once they waited for longer than [`STUCK_AFTER`]: for the
     /// workspace's word of whether it holds a part of the tree, for a part that does not read
-    /// here, or for the parts a part names to reach the workspace first; `None` while they go out
+    /// here, or for the parts a part names to reach the workspace first; none while they go out
     /// or have not waited that long.
-    fn stuck(&self, opened: bool) -> Option<String> {
-        let since = self.dirty_since?;
+    fn stuck(&self, opened: bool) -> Vec<Waiting> {
+        let Some(since) = self.dirty_since else {
+            return Vec::new();
+        };
         let long = |since: Instant| since.elapsed() >= STUCK_AFTER;
         // A part waits long either for the workspace's first word of whether it holds it, or,
         // once it said it does, for the part itself to arrive here.
@@ -1003,70 +1096,40 @@ impl Sync {
         let lacking = self.lacking.len();
         let ordered = if long(since) { self.ordered.len() } else { 0 };
         // A change the workspace keeps refusing goes again after each wait, and says why.
-        let refused: Vec<&str> = if long(since) {
+        let refused: Vec<&Refusal> = if long(since) {
             self.documents
                 .values()
                 .filter_map(|held| held.refused.last.as_ref())
                 .filter(|(at, _)| at.elapsed() <= MOST_REFUSED_WAIT.saturating_mul(2))
-                .map(|(_, reason)| reason.as_str())
+                .map(|(_, reason)| reason)
                 .collect()
         } else {
             Vec::new()
         };
         let unsent = if long(since) { self.unsent } else { 0 };
-        let unopened = !opened;
-        if unanswered == 0
-            && waiting == 0
-            && lacking == 0
-            && ordered == 0
-            && unsent == 0
-            && refused.is_empty()
-            && !unopened
-        {
-            return None;
-        }
         let mut why = Vec::new();
-        if unopened {
-            why.push(
-                "the workspace hasn't said which files it holds yet, so nothing changed here goes \
-                 out"
-                .to_owned(),
-            );
+        if !opened {
+            why.push(Waiting::Unopened);
         }
         if unanswered > 0 {
-            why.push("the workspace hasn't answered for some of its files yet".to_owned());
+            why.push(Waiting::Unanswered);
         }
         if waiting > 0 {
-            why.push(
-                "some of the workspace's file list hasn't arrived on this computer yet and is \
-                 asked for again every few minutes"
-                    .to_owned(),
-            );
+            why.push(Waiting::Unarrived);
         }
         if ordered > 0 {
-            why.push("some changes wait for others to reach the workspace first".to_owned());
+            why.push(Waiting::Ordered);
         }
         if let Some(reason) = refused.first() {
-            why.push(format!(
-                "the workspace refused some changes ({reason}); they're sent again after a wait"
-            ));
+            why.push(Waiting::Refused((*reason).clone()));
         }
         if unsent > 0 {
-            why.push(
-                "some changes haven't reached the workspace yet and are sent again".to_owned(),
-            );
+            why.push(Waiting::Unsent);
         }
         if lacking > 0 {
-            why.push(
-                "the folder names files whose details neither this computer nor the workspace \
-                 holds"
-                    .to_owned(),
-            );
+            why.push(Waiting::Lacking);
         }
-        Some(format!(
-            "{}; changes made here are kept on this computer until then",
-            why.join(", and ")
-        ))
+        why
     }
 
     /// Ask the peer for record `chunk` of the tree, and to take part in its channel.
@@ -1122,7 +1185,7 @@ impl Sync {
     /// The host did not take this device's writes to `chunk`, for `reason`: their changes are
     /// still this namespace's, and go out again, with all made since, once the record's wait is
     /// over. What the host holds is what was last merged from it.
-    fn refused(&mut self, chunk: TreeChunk, reason: &str) {
+    fn refused(&mut self, chunk: TreeChunk, reason: &Refusal) {
         let held = self.documents.entry(chunk).or_default();
         held.sent = held
             .merged
@@ -1131,7 +1194,7 @@ impl Sync {
             .map(|hash| automerge::ChangeHash(*hash))
             .collect();
         let now = Instant::now();
-        held.refused.last = Some((now, reason.to_owned()));
+        held.refused.last = Some((now, reason.clone()));
         if held.refused.refused(now) {
             tracing::warn!(%reason, workspace = %self.workspace, chunk, "the workspace refused a change to its files; it goes again after a wait");
         }
@@ -1147,14 +1210,13 @@ impl Sync {
         changes: &[u8],
         founding: bool,
         snapshot: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         let writing = self.writer.write(chunk, changes, founding, snapshot);
         if let Ok(written) = tokio::time::timeout(WRITE_WITHIN, writing).await {
             return written;
         }
-        let why = format!("no answer within {} s", WRITE_WITHIN.as_secs());
-        self.refused(chunk, &why);
-        Err(why)
+        self.refused(chunk, &Refusal::Unanswered);
+        Err(Refusal::Unanswered)
     }
 
     /// Merge what each opened record holds that this namespace has not merged yet, and open
@@ -1623,6 +1685,8 @@ impl Sync {
         status.stuck = self.stuck(opened);
         status.host_lacks = self.peer.host_lacks();
         status.state = status.folder_state();
+        drop(status);
+        self.status.publish();
     }
 
     /// The files, bytes and local bytes as last counted, with the local bytes counted again when
@@ -1669,7 +1733,7 @@ impl Sync {
 }
 
 /// What a [`Served`] said when it answered, or nothing while it has not.
-fn answered(served: &mut Served) -> Option<Result<(), String>> {
+fn answered(served: &mut Served) -> Option<Result<(), Refusal>> {
     futures_util::FutureExt::now_or_never(served.as_mut())
 }
 

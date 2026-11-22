@@ -241,6 +241,7 @@ session-tray = Tray
 session-invite = Invite
 session-agents = Agents
 session-styles = Styles
+session-folders = Folders
 session-notifications-dismiss = Dismiss the notification
 session-notifications-act = Run the notification's action
 session-notifications-clear = Clear the notification centre

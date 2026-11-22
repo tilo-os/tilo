@@ -38,9 +38,14 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::content::{ContentScope, ContentShelf, ContentState, CrdtRoute, RouteContent};
 use crate::device_documents::{ServiceDocuments, ServiceWrites};
 use crate::workspaces::Workspaces;
+use tilo_fs::tree_sync::Refusal;
+use tilo_peer_state::owner::WriteRefusal;
 
 pub mod access;
+mod folders;
 pub mod socket;
+
+pub use folders::{Folder, Folders};
 
 /// How long the serving device's word that it holds a write is waited for. It answers only the
 /// writes it decides on: one it keeps while it waits for something it lacks gets no word, so a
@@ -365,14 +370,10 @@ fn served(copy: &Copy, chunks: &[TreeChunk]) -> Option<tilo_fs::tree_sync::Serve
         .collect();
     let served = copy.writes.served(&copy.name, &named)?;
     Some(Box::pin(async move {
-        tokio::time::timeout(SERVED_WITHIN, served)
-            .await
-            .unwrap_or_else(|_| {
-                Err(format!(
-                    "the workspace's server did not say within {}s that it holds the change",
-                    SERVED_WITHIN.as_secs()
-                ))
-            })
+        match tokio::time::timeout(SERVED_WITHIN, served).await {
+            Ok(served) => served.map_err(Refusal::Other),
+            Err(_) => Err(Refusal::Unanswered),
+        }
     }))
 }
 
@@ -384,10 +385,14 @@ async fn write_as_device(
     chunk: TreeChunk,
     changes: &[u8],
     (founding, snapshot): (bool, bool),
-) -> Result<(), String> {
+) -> Result<(), Refusal> {
     let route = route(copy.workspace, chunk);
     let keys = match copy.workspaces.own_route_keys(&route, founding).await {
-        Some(Err(why)) => return Err(format!("the keys of the workspace's files: {why}")),
+        Some(Err(why)) => {
+            return Err(Refusal::Other(format!(
+                "the keys of the workspace's files: {why}"
+            )));
+        }
         keys => keys.and_then(Result::ok),
     };
     copy.writes
@@ -405,7 +410,11 @@ async fn write_as_device(
         )
         .await
         .map(drop)
-        .map_err(|refusal| refusal.to_string())
+        .map_err(|refusal| match refusal {
+            WriteRefusal::HistoryFull { .. } => Refusal::HistoryFull,
+            WriteRefusal::ChangeRefused(_) => Refusal::NotPermitted,
+            refusal => Refusal::Other(refusal.to_string()),
+        })
 }
 
 /// Count a write of this device's to `document` as unserved until the serving device answers

@@ -607,7 +607,7 @@ impl Peer {
             // Tilo out for as long as that part takes, which may be until a restart.
             if !status.paused
                 && status.opened
-                && status.stuck.is_none()
+                && status.stuck.is_empty()
                 && !(status.sent && status.durable)
             {
                 return Some(format!(

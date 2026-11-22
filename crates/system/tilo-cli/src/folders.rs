@@ -16,6 +16,7 @@ use clap::Subcommand;
 use serde_json::{Value, json};
 
 use tilo_api::daemon::folders::{self, Folders};
+use tilo_fs::tree_sync::{Refusal, Waiting};
 
 /// How long a command waits for the peer to apply what it changed.
 const APPLYING: Duration = Duration::from_secs(20);
@@ -653,6 +654,42 @@ pub(crate) fn describe(status: &serde_json::Value) -> String {
     said
 }
 
+/// Why a folder's changes wait, in a person's words.
+fn waiting(why: &Waiting) -> String {
+    match why {
+        Waiting::Unopened => {
+            "the workspace hasn't said which files it holds yet, so nothing changed here goes out"
+                .to_owned()
+        }
+        Waiting::Unanswered => "the workspace hasn't answered for some of its files yet".to_owned(),
+        Waiting::Unarrived => "some of the workspace's file list hasn't arrived on this computer \
+                               yet and is asked for again every few minutes"
+            .to_owned(),
+        Waiting::Ordered => "some changes wait for others to reach the workspace first".to_owned(),
+        Waiting::Refused(Refusal::HistoryFull) => "the server has no room for more changes to \
+                                                    this folder yet; they're kept on this \
+                                                    computer until it has"
+            .to_owned(),
+        Waiting::Refused(Refusal::NotPermitted) => "the workspace's rules don't let you make some \
+                                                     of these changes; ask an owner of the \
+                                                     workspace"
+            .to_owned(),
+        Waiting::Refused(Refusal::Unanswered) => {
+            "the server isn't answering; changes are sent again shortly".to_owned()
+        }
+        Waiting::Refused(Refusal::Other(why)) => {
+            format!("the server didn't take some changes ({why}); they're sent again shortly")
+        }
+        Waiting::Unsent => {
+            "some changes haven't reached the workspace yet and are sent again".to_owned()
+        }
+        Waiting::Lacking => {
+            "the folder names files whose details neither this computer nor the workspace holds"
+                .to_owned()
+        }
+    }
+}
+
 /// One folder in a sentence: where, what state, and how much is here.
 pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
     let field = |key: &str| {
@@ -682,8 +719,9 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
         .unwrap_or(true);
     let stuck = workspace
         .get("stuck")
-        .and_then(serde_json::Value::as_str)
-        .map(|why| format!("changes made here wait: {why}"));
+        .and_then(|why| serde_json::from_value::<Vec<Waiting>>(why.clone()).ok())
+        .and_then(|why| why.into_iter().next())
+        .map(|why| format!("changes made here wait: {}", waiting(&why)));
     // The folder says what it is doing as one state; only whether this computer reaches the
     // workspace at all is the daemon's own word beside it.
     let said = workspace
@@ -798,13 +836,16 @@ mod tests {
         assert!(said(sending.clone(), true).contains("(sending changes;"));
         let waiting = said(
             tilo_fs::tree_sync::Status {
-                stuck: Some("a part has not arrived".to_owned()),
+                stuck: vec![tilo_fs::tree_sync::Waiting::Unarrived],
                 ..sending
             },
             true,
         );
         assert!(
-            waiting.contains("(changes made here wait: a part has not arrived;"),
+            waiting.contains(
+                "(changes made here wait: some of the workspace's file list hasn't arrived on \
+                 this computer yet"
+            ),
             "{waiting}"
         );
     }

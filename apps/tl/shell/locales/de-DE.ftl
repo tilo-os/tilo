@@ -497,6 +497,31 @@ d-iwv7cd5i = Netzwerk
     .w-wired-2 = Kabel
     .w-offline = Offline
 
+d-4xei7g27 = Ordnerzeile
+    .w-your-workspace = Dein Arbeitsbereich
+    .w-the-server = den Server
+    .w-is-paused = { $name } ist pausiert
+    .w-hasn-t-reached-this-computer-yet = { $name } ist noch nicht auf diesem Computer
+    .w-is-waiting-for = { $name } wartet auf { $server }
+    .w-isn-t-syncing = { $name } wird nicht synchronisiert: { $stuck_reason }
+    .w-sending-changes-in-to = Änderungen in { $name } werden an { $server } gesendet
+    .w-some-files-in-aren-t-on = Einige Dateien in { $name } haben { $server } noch nicht erreicht
+    .w-is-in-sync-with = Alle Dateien in { $name } haben { $server } erreicht
+
+d-dywbbsoi = Grund des Wartens
+    .w-hasn-t-said-which-files-it = { $server } hat noch nicht gesagt, welche Dateien es hat
+    .w-hasn-t-answered-for-some-files = { $server } hat für einige Dateien noch nicht geantwortet
+    .w-part-of-the-file-list-hasn = ein Teil der Dateiliste ist von { $server } noch nicht angekommen
+    .w-some-changes-wait-for-others-to = einige Änderungen warten, bis andere { $server } erreicht haben
+    .w-has-no-room-for-more-changes = { $server } hat noch keinen Platz für weitere Änderungen; sie bleiben hier, bis Platz ist
+    .w-the-workspace-doesn-t-let-you = der Arbeitsbereich erlaubt dir einige dieser Änderungen nicht; frag eine der Personen, denen er gehört
+    .w-isn-t-answering-changes-are-sent = { $server } antwortet nicht; die Änderungen werden gleich erneut gesendet
+    .w-didn-t-take-some-changes-they = { $server } hat einige Änderungen nicht angenommen; sie werden gleich erneut gesendet
+    .w-some-files-details-are-on-neither = zu einigen Dateien fehlen die Angaben, auf diesem Computer und auf { $server }
+    .w-some-changes-haven-t-reached-yet = einige Änderungen haben { $server } noch nicht erreicht und werden erneut gesendet
+
+d-vipg3gla = Synchronisierung
+
 d-agni63m4 = Akku
     .w-charging = { $percentage } %, wird geladen
 

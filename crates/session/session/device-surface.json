@@ -2596,6 +2596,60 @@
       ]
     },
     {
+      "kind": "folders",
+      "label": "Folders",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "folders",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Folder"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Folder",
+          "doc": "One workspace's folder, as the person is told where it stands.",
+          "fields": [
+            {
+              "name": "workspace",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "server",
+              "type": "text"
+            },
+            {
+              "name": "state",
+              "type": "text"
+            },
+            {
+              "name": "stuck",
+              "type": "text"
+            },
+            {
+              "name": "refused",
+              "type": "text"
+            },
+            {
+              "name": "files",
+              "type": "int"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "overlays",
       "label": "Overlays",
       "version": 1,

@@ -36,7 +36,8 @@ use tilo_server_protocol::DocumentAnswer;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    Config, FILES_APP, Reading, Records, Served, TreePeer, TreeSync, TreeWriter, Wake, WriteFuture,
+    Config, FILES_APP, Reading, Records, Served, Status, TreePeer, TreeSync, TreeWriter, Wake,
+    WriteFuture,
 };
 
 /// The frames both sides send: a little-endian `u32` length, then one postcard value. A whole
@@ -81,6 +82,9 @@ pub enum Ask {
     Keys { id: u64, workspace: String },
     /// The answer to [`Told::Lend`]: the bytes this device keeps under that hash, if any.
     Lent { id: u64, bytes: Option<Vec<u8>> },
+    /// Where the folder stands now, which the session shows: said when it changes, and on each
+    /// connection.
+    Status(super::Status),
 }
 
 /// What the session tells the daemon.
@@ -94,11 +98,11 @@ pub enum Told {
     },
     Written {
         id: u64,
-        written: Result<(), String>,
+        written: Result<(), super::Refusal>,
     },
     Served {
         id: u64,
-        served: Result<(), String>,
+        served: Result<(), super::Refusal>,
     },
     /// What the service has now: the parts of the tree it has anything of, among those
     /// this connection named, how many of this device's writes it still keeps, whether this
@@ -157,6 +161,7 @@ pub async fn start(
         state: Mutex::new(PeerState::default()),
         store: Arc::clone(&content),
         access: tokio::sync::watch::channel(None).0,
+        shown: Mutex::new(None),
     });
     let (wakes, wake_events) = mpsc::unbounded_channel();
     tokio::spawn(keep_linked(Arc::clone(&link), socket, wakes));
@@ -172,7 +177,20 @@ pub async fn start(
         wakes: wake_events,
     })
     .await?;
+    tokio::spawn(tell_status(Arc::clone(&link), tree.status_changes()));
     Ok((tree, Service(link)))
+}
+
+/// Tell the session where the folder stands each time that changes, until the sync is gone.
+async fn tell_status(link: Arc<Link>, mut changes: tokio::sync::watch::Receiver<Status>) {
+    loop {
+        let now = changes.borrow_and_update().clone();
+        *link.shown.lock_recover() = Some(now.clone());
+        link.send(Ask::Status(now));
+        if changes.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 /// What the session's connection carries beside the tree: file bytes, keys and access.
@@ -245,6 +263,8 @@ struct Link {
     store: Arc<crate::ContentStore>,
     /// The access the session said last.
     access: tokio::sync::watch::Sender<Option<String>>,
+    /// Where the folder stood when it last said: what a new connection says first.
+    shown: Mutex<Option<Status>>,
 }
 
 /// What a sync is told when the session is not reachable.
@@ -411,6 +431,10 @@ async fn linked_once(
         .await
         .map_err(|error| error.to_string())?;
     let (out, mut outgoing) = mpsc::unbounded_channel();
+    let shown = link.shown.lock_recover().clone();
+    if let Some(shown) = shown {
+        let _ = out.send(Ask::Status(shown));
+    }
     *link.out.lock_recover() = Some(out);
     // Whatever was opened before is opened again on this connection.
     let _ = wakes.send(Wake::HostReady);
@@ -563,9 +587,12 @@ impl TreeWriter for Remote {
             snapshot,
         });
         Box::pin(async move {
-            match told.ok_or(UNREACHABLE)?.await {
-                Ok(Told::Written { written, .. }) => written,
-                _ => Err(UNREACHABLE.to_owned()),
+            match told {
+                Some(told) => match told.await {
+                    Ok(Told::Written { written, .. }) => written,
+                    _ => Err(UNREACHABLE.to_owned().into()),
+                },
+                None => Err(UNREACHABLE.to_owned().into()),
             }
         })
     }
@@ -576,9 +603,12 @@ impl TreeWriter for Remote {
             chunks: chunks.to_vec(),
         });
         Some(Box::pin(async move {
-            match told.ok_or(UNREACHABLE)?.await {
-                Ok(Told::Served { served, .. }) => served,
-                _ => Err(UNREACHABLE.to_owned()),
+            match told {
+                Some(told) => match told.await {
+                    Ok(Told::Served { served, .. }) => served,
+                    _ => Err(UNREACHABLE.to_owned().into()),
+                },
+                None => Err(UNREACHABLE.to_owned().into()),
             }
         }))
     }

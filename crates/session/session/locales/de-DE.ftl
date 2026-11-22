@@ -246,6 +246,7 @@ session-tray = Statusleiste
 session-invite = Einladen
 session-agents = Agenten
 session-styles = Stile
+session-folders = Ordner
 session-notifications-dismiss = Die Benachrichtigung verwerfen
 session-notifications-act = Die Aktion der Benachrichtigung ausführen
 session-notifications-clear = Das Benachrichtigungszentrum leeren

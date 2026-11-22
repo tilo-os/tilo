@@ -72,7 +72,8 @@ impl Drop for Serving {
 }
 
 /// Serve the trees of the workspaces `service` holds at `path`, to the processes `attest`
-/// admits, with `content` asked again for the bytes whose answer stalled.
+/// admits, with `content` asked again for the bytes whose answer stalled; where each folder
+/// stands is shown in `folders`.
 ///
 /// # Errors
 /// The socket cannot be bound.
@@ -82,6 +83,7 @@ pub fn serve(
     content: Arc<RouteContent>,
     attest: Attest,
     offers: Offers,
+    folders: super::Folders,
 ) -> std::io::Result<Serving> {
     let listener = tilo_files::native::private::bind_socket(path)?;
     listener.set_nonblocking(true)?;
@@ -97,14 +99,17 @@ pub fn serve(
             let Ok((stream, _)) = listener.accept().await else {
                 continue;
             };
-            let (service, content, attest, offers) = (
+            let (service, content, attest, offers, folders) = (
                 service.clone(),
                 Arc::clone(&content),
                 Arc::clone(&attest),
                 offers.clone(),
+                folders.clone(),
             );
             tokio::spawn(async move {
-                if let Err(error) = serve_one(stream, &service, content, &attest, offers).await {
+                if let Err(error) =
+                    serve_one(stream, &service, content, &attest, offers, folders).await
+                {
                     tracing::debug!(%error, "a workspace tree's connection ended");
                 }
             });
@@ -120,6 +125,7 @@ async fn serve_one(
     content: Arc<RouteContent>,
     attest: &Attest,
     offers: Offers,
+    folders: super::Folders,
 ) -> Result<(), String> {
     let credentials = stream.peer_cred().map_err(|error| error.to_string())?;
     let pid = credentials
@@ -158,7 +164,8 @@ async fn serve_one(
         next: AtomicU64::new(0),
     });
     offers.daemons.connected(&workspace.to_string(), &lender);
-    Connection {
+    let name = copy.name.clone();
+    let served = Connection {
         copy,
         reads: Arc::new(reads),
         writer: Arc::new(tokio::sync::Mutex::new(writer)),
@@ -169,9 +176,13 @@ async fn serve_one(
         source: Arc::new(source),
         keys: offers.keys,
         lender,
+        folders: folders.clone(),
     }
     .run(reader, wakes, offers.access)
-    .await
+    .await;
+    // The daemon that held the folder is gone: nothing says where it stands any more.
+    folders.gone(&name);
+    served
 }
 
 /// The workspace the connection's first frame names, in the service this device runs, once
@@ -234,6 +245,7 @@ struct Connection {
     keys: Keys,
     /// The daemon's store, as the service's record content reaches it.
     lender: Arc<Lender>,
+    folders: super::Folders,
 }
 
 impl Connection {
@@ -303,6 +315,21 @@ impl Connection {
         });
     }
 
+    /// Show where the daemon's folder stands, under the names a person knows its workspace and
+    /// server by.
+    fn show(&self, status: tilo_fs::tree_sync::Status) {
+        let (copy, folders) = (Arc::clone(&self.copy), self.folders.clone());
+        tokio::spawn(async move {
+            let (name, server) = names(&copy).await;
+            folders.show(super::Folder {
+                workspace: copy.name.clone(),
+                name,
+                server,
+                status,
+            });
+        });
+    }
+
     fn take(&self, ask: Ask) -> Result<(), String> {
         match ask {
             Ask::Hello { .. } => return Err("a connection names its workspace once".to_owned()),
@@ -311,6 +338,7 @@ impl Connection {
                 self.copy.open(chunk);
             }
             Ask::ReaskContent => self.copy.reask_content(),
+            Ask::Status(status) => self.show(status),
             Ask::Read {
                 id,
                 resource,
@@ -528,6 +556,23 @@ impl Daemons {
     }
 }
 
+/// The names a person knows `copy`'s workspace by, and the device that keeps its content (the
+/// first its governance names), each empty while none is said.
+async fn names(copy: &Copy) -> (String, String) {
+    let Some(state) = copy.workspaces.state(&copy.name).await else {
+        return (String::new(), String::new());
+    };
+    let governance = state.governance();
+    let name = governance.workspace_name().unwrap_or_default();
+    let server = governance
+        .keeping_devices()
+        .into_iter()
+        .next()
+        .map(|kept| kept.host.device_label)
+        .unwrap_or_default();
+    (name, server)
+}
+
 /// Tell `tell` which of the `named` parts `copy` has and how many writes it still keeps,
 /// when that changed since `told` or `always`.
 fn tell_peer(
@@ -606,6 +651,7 @@ mod tests {
                 keys: Arc::new(|_| Box::pin(async { Err("no keys here".to_owned()) })),
                 access: watch::channel(None).1,
             },
+            crate::files::Folders::new(Arc::new(|| {})),
         )
         .unwrap();
         let stream = tokio::net::UnixStream::connect(&path).await.unwrap();

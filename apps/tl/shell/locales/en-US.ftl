@@ -816,6 +816,29 @@ d-lfa3rl6s = Snap places to a grid
 
 d-lfa3rl6s-on = On
 
+d-4xei7g27 = Folder line
+    .w-your-workspace = Your workspace
+    .w-the-server = the server
+    .w-is-paused = { $name } is paused
+    .w-hasn-t-reached-this-computer-yet = { $name } hasn't reached this computer yet
+    .w-is-waiting-for = { $name } is waiting for { $server }
+    .w-isn-t-syncing = { $name } isn't syncing: { $stuck_reason }
+    .w-sending-changes-in-to = Sending changes in { $name } to { $server }
+    .w-some-files-in-aren-t-on = Some files in { $name } aren't on { $server } yet
+    .w-is-in-sync-with = { $name } is in sync with { $server }
+
+d-dywbbsoi = Stuck reason
+    .w-hasn-t-said-which-files-it = { $server } hasn't said which files it holds yet
+    .w-hasn-t-answered-for-some-files = { $server } hasn't answered for some files yet
+    .w-part-of-the-file-list-hasn = part of the file list hasn't arrived from { $server } yet
+    .w-some-changes-wait-for-others-to = some changes wait for others to reach { $server } first
+    .w-has-no-room-for-more-changes = { $server } has no room for more changes yet; they're kept here until it has
+    .w-the-workspace-doesn-t-let-you = the workspace doesn't let you make some of these changes; ask one of its owners
+    .w-isn-t-answering-changes-are-sent = { $server } isn't answering; changes are sent again shortly
+    .w-didn-t-take-some-changes-they = { $server } didn't take some changes; they're sent again shortly
+    .w-some-files-details-are-on-neither = some files' details are on neither this computer nor { $server }
+    .w-some-changes-haven-t-reached-yet = some changes haven't reached { $server } yet; sending them again
+
 d-qxbh2c44 = Part name
     .w-tilo = Tilo
     .w-workspace = Workspace
@@ -870,6 +893,8 @@ d-iwv7cd5i = Network status
     .w-wired = Wired, { $called }
     .w-wired-2 = Wired
     .w-offline = Offline
+
+d-vipg3gla = Sync status
 
 d-agni63m4 = Battery status
     .w-charging = { $percentage }%, charging

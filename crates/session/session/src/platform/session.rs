@@ -472,6 +472,9 @@ impl Session {
         // and what the broker admits each session on.
         let agent_sessions = crate::agent_sessions::AgentSessions::new();
         agent_sessions.wake_on_spend(options.wake.handle());
+        // Where each workspace's folder on this computer stands, as the files daemon says it over
+        // the tree socket: what the shell shows, so a person knows what reached the server.
+        let folders = tilo_workspace_service::files::Folders::new(options.wake.handle());
         let conversations = Rc::new(crate::conversations::Conversations::new(
             records.clone(),
             std::sync::Arc::clone(&agent_sessions),
@@ -978,6 +981,7 @@ impl Session {
             engine: engine.clone(),
             // The invite sheet is the session's own surface: the shell asks for it here.
             asks: Rc::clone(&asks),
+            folders: folders.clone(),
         });
         let shell_service = shell();
         let shell = if options.shell {
@@ -1228,6 +1232,7 @@ impl Session {
                 agents: Some(agents.roster()),
                 agent_sessions: Some(std::sync::Arc::clone(&agent_sessions) as _),
                 tools: Some(tools.clone()),
+                folders,
             },
             crate::services::app_wire::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
