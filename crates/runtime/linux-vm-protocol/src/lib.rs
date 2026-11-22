@@ -44,7 +44,6 @@ use wire_frame::{FrameError, Framing};
 pub mod client;
 pub mod files;
 pub mod link;
-pub mod served;
 #[cfg(target_os = "linux")]
 pub mod vsock;
 pub mod waypipe;

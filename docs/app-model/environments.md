@@ -534,27 +534,6 @@ that workspace environment's own, never in a guest sharing the host's kernel
   It joins the workspace as a device like Browser's and shares every window
   its apps open with the workspace's members, over the live session. Opening one
   is a Linux action: it needs the plan and the card.
-- **Served runs:** a program that needs what only its host may hold (a
-  person's model, the workspace's actions, a sign-in) is started through the
-  guest agent's serving mode, `tilo-linux-vm-agent serve-run`
-  ([`served.rs`](../../crates/runtime/linux-vm-agent/src/served.rs)). It runs as
-  the tenant like any program, so the VM counts it as running and does not
-  sleep under it, and nothing bounds how long it lasts. The launcher opens the
-  endpoints it was asked for on the VM's loopback, writes their addresses into
-  the program's arguments and variables, and carries every request made there
-  to the host as frames on its own output
-  (`linux_vm_protocol::served`); the host answers on its input. An
-  endpoint answers only the run's own processes: the launcher finds each
-  caller's socket in the kernel's table and among the files of the processes
-  it started, and turns anything else away without a byte. What a request
-  carries to sign itself in is dropped before it leaves the VM, so no key of a
-  person's has to be in the VM for a program there to use their model. A stop
-  interrupts the program, then asks it to end, then ends it; a host that goes
-  away has it asked to end at once, and what the program left running ends
-  with it. The tenant has sudo in its VM, so this is a rule among the VM's
-  ordinary processes and no wall against its own administrator: what an
-  endpoint gives is bounded on the host, where the person and their limits
-  are known. The host's side is `ush::served_runs`.
 
 ## Members that take work
 

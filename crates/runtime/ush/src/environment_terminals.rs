@@ -38,7 +38,8 @@ use std::time::{Duration, Instant};
 use linux_vm_protocol::TerminalSize;
 use tilo_actions::remote::environment_commands::{Person, VmSecret};
 
-pub use crate::environment_programs::LEFT_AFTER;
+/// How long a session is kept when its stream went away and nobody took it again.
+pub const LEFT_AFTER: Duration = Duration::from_secs(90);
 
 /// The protocol a device dials a host's terminal streams on.
 pub use runtime_portal::workspace_terminal::ALPN;

@@ -416,34 +416,6 @@ impl WorkspaceShells {
             })
     }
 
-    /// `workspace`'s machine as a place to run programs, with its files
-    /// shared into it as a session's shell shares them, and where those
-    /// files are; `None` on a host that runs no machines.
-    ///
-    /// # Errors
-    ///
-    /// The workspace's directory could not be made.
-    pub(crate) fn machine(
-        &self,
-        workspace: &str,
-        payer: Option<&Payer>,
-    ) -> io::Result<Option<(HostedPrograms, PathBuf)>> {
-        let files = self.files(workspace);
-        std::fs::create_dir_all(&files)?;
-        let Some(target) = self.target_for(payer) else {
-            return Ok(None);
-        };
-        let shared = files.clone();
-        let programs = HostedPrograms::new(
-            target,
-            workspace.to_owned(),
-            ENVIRONMENT.to_owned(),
-            shared.clone(),
-            Box::new(move || shares_of(vec![shared.clone()], Vec::new())),
-        );
-        Ok(Some((programs, files)))
-    }
-
     fn open(&self, workspace: &str, session: &str, payer: Option<&Payer>) -> io::Result<Session> {
         let root = self.state.join(safe(workspace));
         let files = self.files(workspace);

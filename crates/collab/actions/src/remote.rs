@@ -56,7 +56,6 @@ pub mod crash_reports;
 pub mod downloaded_apps;
 pub mod environment_commands;
 pub mod environment_machines;
-pub mod environment_programs;
 pub mod environment_terminals;
 pub mod feedback;
 mod nodes;
