@@ -945,7 +945,7 @@ mod tests {
     /// A process reads what an earlier version of its app kept in its own workspace, and nothing
     /// of another workspace's or another app's: the session grants the one directory.
     #[test]
-    fn a_process_reads_only_its_apps_documents_of_its_own_workspace() {
+    fn a_process_reads_only_its_apps_documents_of_the_persons_workspace() {
         const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000e1";
         const ELSEWHERE: &str = "7a110d00-0000-4000-8000-0000000000e2";
         const ANOTHER_APP: &str = "so.tilo.chat";
