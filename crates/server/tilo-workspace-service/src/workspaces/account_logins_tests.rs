@@ -421,6 +421,7 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
 /// A calendar account added in Settings keeps its password in the workspace's one vault, and the
 /// Calendar's sign-in is released it by the sign-ins route: decided for the device, at the
 /// account's server alone, and written down in the entry. No device vault keeps one.
+#[cfg(feature = "agents")]
 #[tokio::test]
 async fn a_calendar_account_added_in_settings_signs_in_with_the_workspaces_vault() {
     use accounts::vault_items::Place;

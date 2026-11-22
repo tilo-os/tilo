@@ -173,7 +173,7 @@ mod tests {
             assert!(!format!("{config:?}").contains("private-calendar-password"));
         }
 
-        phase account_store_round_trips_accounts_and_visibility;
+        phase saved_calendar_accounts_load_again_with_their_calendars_and_which_show;
         {
             {
                 let root = temp_root();
