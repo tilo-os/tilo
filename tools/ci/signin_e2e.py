@@ -137,6 +137,13 @@ def guest_memory() -> str:
     return str(memory)
 
 
+# The device daemon serves the installer, the greeter and every app: each daemon profile's log
+# and the startup steps it reached, whichever account started it.
+DAEMON_LOGS = ("for f in $(find /home /root /var /run /tmp -path '*/tilo/runtime/*' "
+               "\\( -name daemon.log -o -name startup.stages \\) 2>/dev/null); "
+               "do echo \"== $f\"; tail -n 400 \"$f\"; done")
+
+
 class Cycle:
     """One named vm.sh cycle: an installer boot, then any number of target boots."""
 
@@ -518,6 +525,7 @@ class Run:
                     encoding="utf-8")
                 say("the live installer's QEMU log ends:\n" + SECRETS.redact(
                     qemu.read_text(encoding="utf-8", errors="replace")[-3000:]))
+            self.collect_live_installer(f"{self.variant}-installer-never-answered")
             raise Failed("the live installer never answered on its console (the VM: "
                          f"{(status.stdout + status.stderr).strip()[-300:] or 'no status'}; "
                          f"its screenshot: {shot.stderr.strip()[-300:] or 'taken'})") from error
@@ -536,6 +544,36 @@ class Run:
             c.stop()
         (self.out / "serial-installer-withheld.log").write_text(
             "withheld: the live installer's serial may carry the one-time recovery key\n")
+
+    LIVE_INSTALLER_STATE = {
+        "journal": "journalctl -b --no-pager -o short-monotonic | tail -n 6000",
+        "daemon": DAEMON_LOGS,
+        "processes": "ps -eo pid,user,etimes,args --sort=pid | grep -E 'tilo|cage|greetd' | grep -v grep",
+        "units": "systemctl --failed --no-pager --plain --no-legend; "
+                 "journalctl -b --no-pager -o short-monotonic -u greetd -u 'tilo-*' | tail -n 400",
+        "avc": "journalctl -b --no-pager -o cat | grep -E 'avc: +denied' | tail -n 100",
+    }
+
+    def collect_live_installer(self, label: str) -> None:
+        """The live installer never answered: the boot's journal and the device daemon's log,
+        read through the medium's tty2 root shell. No install has run, so nothing here is a
+        secret; it is redacted and scrubbed with every other output all the same."""
+        try:
+            sh = self.live_shell()
+        except Failed as error:
+            say(f"{label}: no live shell to collect the journal from: {error}")
+            return
+        try:
+            for name, command in self.LIVE_INSTALLER_STATE.items():
+                try:
+                    _, text = sh.run(command, 120, quiet=True)
+                except Failed as error:
+                    text = f"could not be read: {error}\n"
+                self.save(f"{label}-{name}.txt", text)
+                if name == "daemon":
+                    say(f"{label}: the device daemon's log ends:\n" + SECRETS.redact(text[-3000:]))
+        finally:
+            sh.close()
 
     def run_unattended(self, sh: Shell) -> None:
         c = self.cycle
@@ -884,6 +922,7 @@ cryptsetup close e2e-target
         "failed": "systemctl --failed --no-pager --plain --no-legend; "
                   "systemctl status --no-pager tilo-authd.socket tilo-authd.service greetd | tail -n 60",
         "sessions": "loginctl list-sessions --no-pager",
+        "daemon": DAEMON_LOGS,
         "tpm2-setup": "systemctl show -P ActiveState -P Result systemd-tpm2-setup.service "
                       "| paste -sd ' '",
         "initrd": "journalctl -b --no-pager -o short-monotonic | grep -E "
