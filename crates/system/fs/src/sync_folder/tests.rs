@@ -560,16 +560,20 @@ async fn files_sealed_while_the_keys_moved_are_sealed_again_at_once() {
         std::fs::write(fx.local(&format!("f{file}.txt")), bytes(file, 700)).unwrap();
     }
 
-    let started = Instant::now();
     let first = folder.reconcile().unwrap();
     assert_eq!((first.imported, first.deferred, first.failed), (5, 5, 0));
     assert!(first.more(), "the files are sealed again straight away");
+    // None waits for a retry: a path that failed would be held back until its wait is over.
+    assert_eq!(
+        folder.unsynced().count(),
+        0,
+        "a file sealed under keys that moved waits for a retry"
+    );
     assert_eq!(
         sealed_under(&fx, "f0.txt").await,
         *before.workspace().as_uuid().as_bytes()
     );
     assert_eq!(folder.reconcile().unwrap(), pass(5, 0, 0, 0));
-    assert!(started.elapsed() < super::FIRST_RETRY);
     assert_eq!(folder.reconcile().unwrap(), Pass::default());
     for file in 0..5_u32 {
         let path = format!("f{file}.txt");
