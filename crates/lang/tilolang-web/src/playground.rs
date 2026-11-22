@@ -24,6 +24,7 @@ const EXTRA_KEYWORDS: &[&str] = &[
     "primary",
     "destructive",
     "initial",
+    "opened",
     "migration",
     "scenario",
     "trigger",

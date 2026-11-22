@@ -417,6 +417,9 @@ d-trjwm3gb = Mark as unread
 
 d-trjwm3gb-unread = Unread
 
+d-hk43bpjp = Read on open
+    .doc = Opening a conversation reads it, wherever it is opened from: the list, search, a link or an agent.
+
 d-7zk6ua6p = Send from
     .doc = Sends the message from another workspace account.
     .w-this-message-went-already = This message went already

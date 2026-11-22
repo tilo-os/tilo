@@ -797,6 +797,12 @@ action mark_read(t: Thread, unread: Bool = not t.unread) (
     }
 }
 
+/// Opening a conversation reads it, wherever it is opened from: the list, search, a link or an
+/// agent.
+opened action read_on_open(t: Thread) {
+    mark_read(t, false)
+}
+
 /// Sends the message from another workspace account.
 action send_from(d: Draft, a: Account) (icon: .user) {
     require not d.sent or d.recalled "This message went already"
@@ -1145,8 +1151,8 @@ view thread_list(shown: List<Thread>) {
         ui.EmptyState("Nothing here", icon: .inbox)
     } else {
         ui.VirtualList(selection_follows_focus: true, in_column: true) {
-            on select(x: Thread): open(x, front: false).then(mark_read(x, false))
-            on activate(x: Thread): open(x).then(mark_read(x, false))
+            on select(x: Thread): open(x, front: false)
+            on activate(x: Thread): open(x)
             for x in shown {
                 ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
                     thread_row(x)

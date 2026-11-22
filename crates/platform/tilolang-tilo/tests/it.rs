@@ -45,6 +45,7 @@ mod notebook_order;
 mod notes;
 mod notes_checklist;
 mod notices;
+mod opened;
 mod outbox;
 mod outcomes;
 mod policy;

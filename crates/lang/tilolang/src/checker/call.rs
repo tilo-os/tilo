@@ -639,6 +639,14 @@ impl Checker<'_> {
                 self.err("E143", span, format!("`{}` is what a new `{target}` starts with: the platform writes it as each one is made, and nothing invokes it. Insert the `{target}` where it belongs", c.name));
                 Ex::error()
             }
+            (CKind::Action, _) if c.present.role.as_deref() == Some("opened") => {
+                let target = c
+                    .params
+                    .first()
+                    .map_or_else(String::new, |p| p.ty.to_string());
+                self.err("E143", span, format!("`{}` is what opening a `{target}` does: the platform runs it as the person opens one, wherever from, and nothing invokes it. Open the `{target}` instead (`open(x)`)", c.name));
+                Ex::error()
+            }
             (CKind::Action, Ctx::Action) if self.st.role.as_deref() == Some("initial") => {
                 self.err("E143", span, format!("an initial action is part of making its resource, one change, and `{}` is an action, a change of its own. Write what it does in the initial action itself", c.name));
                 Ex::error()

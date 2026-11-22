@@ -1715,6 +1715,7 @@ impl Resolver<'_> {
         }
         self.one_primary(module);
         self.initial_actions(module);
+        self.opened_actions(module);
     }
 
     /// A view of the module expanded where it is called: its name taken, its body checked at each
@@ -1995,6 +1996,56 @@ impl Resolver<'_> {
             }
             if let Some((_, first)) = seen.iter().find(|(k, _)| *k == target) {
                 self.err("E143", span, format!("`{}` already starts with `{first}`; a type has one initial action. Write what `{name}` adds in `{first}`", target.name));
+                continue;
+            }
+            seen.push((target, name.clone()));
+        }
+    }
+
+    /// What an `opened action` may be: it takes one resource of a type of the package's own and
+    /// nothing else, and answers nothing, since the platform runs it with nothing but the resource
+    /// a person opened. A type has one.
+    fn opened_actions(&mut self, module: &ast::Module) {
+        let mut seen: Vec<(TypeKey, String)> = Vec::new();
+        for item in &module.items {
+            let Item::Action(a) = item else { continue };
+            let Some((ast::ActionRole::Opened, span)) = a.role else {
+                continue;
+            };
+            let name = &a.name.name;
+            let target = self
+                .env
+                .own_callable(name)
+                .and_then(|c| c.params.first())
+                .and_then(|p| match &p.ty {
+                    Ty::Record(key) if key.app == self.env.app && !crate::host::is_value(key) => {
+                        Some(key.clone())
+                    }
+                    _ => None,
+                });
+            let Some(target) = target else {
+                self.err("E143", span, format!("an opened action says what opening a resource of one of the package's types does, so it takes that resource first; `{name}` takes none. Write `opened action {name}(r: T)` with `T` a type of this package"));
+                continue;
+            };
+            let refusal = if a.params.len() > 1 {
+                Some(format!(
+                    "the platform runs `{name}` as a `{0}` is opened, with nothing but that `{0}`; it takes no other parameter. Remove the others",
+                    target.name
+                ))
+            } else if a.result.is_some() {
+                Some(format!(
+                    "the platform runs `{name}` as a `{}` is opened and reads no answer; remove its result type",
+                    target.name
+                ))
+            } else {
+                None
+            };
+            if let Some(refusal) = refusal {
+                self.err("E143", span, refusal);
+                continue;
+            }
+            if let Some((_, first)) = seen.iter().find(|(k, _)| *k == target) {
+                self.err("E143", span, format!("opening a `{}` already runs `{first}`; a type has one opened action. Write what `{name}` adds in `{first}`", target.name));
                 continue;
             }
             seen.push((target, name.clone()));

@@ -14,7 +14,7 @@ use tilolang_runtime::store::StoreError;
 use super::rows::{FIRST_ROWS, ListRows};
 use super::wire;
 use super::{
-    HistoryAsk, Instance, Shown, bound_values, convert_with, facts, patch_in_place,
+    HistoryAsk, Instance, Mode, Shown, bound_values, convert_with, facts, patch_in_place,
     referenced_resource, rows_message, show_content_rows, sort, virtual_list_paths, window_tree,
 };
 use crate::host::Host;
@@ -130,6 +130,8 @@ impl Instance {
                 return;
             };
             self.open_facts(target, tree, front);
+            self.run_opened(target);
+            self.commit_planned();
             return;
         };
         match app.open_resource(target, Some(&view)) {
@@ -144,6 +146,7 @@ impl Instance {
                 }
                 self.lenses_changed = true;
                 self.send_open(Level::Detail, front);
+                self.run_opened(target);
                 self.commit_planned();
             }
             Err(error) => {
@@ -201,9 +204,37 @@ impl Instance {
                     shows: Some((press, wire::resource(target))),
                 });
             }
+            self.run_opened(target);
             return;
         }
         self.open_detail(target, None, front);
+    }
+
+    /// Run what opening `target` does, its type's `opened action`, as the person who opened it:
+    /// wherever it was opened from (a list, search, a link, an agent, another app), since every
+    /// opening comes here. A person who may not change it opens it all the same, without the
+    /// change. A past version or a scenario's capture is nobody opening anything, and changes
+    /// nothing. The caller commits what it planned.
+    fn run_opened(&self, target: &ResourceRef) {
+        if self.mode != Mode::Live {
+            return;
+        }
+        let Some(host) = self.host() else {
+            return;
+        };
+        let Some(action) = host.runtime().opened_action(&target.ty) else {
+            return;
+        };
+        let opened = host.runtime().invoke_action(
+            &self.me_actor(),
+            (
+                action.as_str(),
+                vec![tilolang_runtime::Value::resource(target)],
+            ),
+        );
+        if let Err(error) = opened {
+            tracing::debug!(%error, ty = %target.ty, "opening a resource did not change it");
+        }
     }
 
     /// Show `target` where the window's list shows it: what the root view answers for an item of

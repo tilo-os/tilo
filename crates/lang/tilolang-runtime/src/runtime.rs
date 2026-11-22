@@ -859,6 +859,14 @@ impl Runtime {
         )
     }
 
+    /// The `opened action` of the resource type `ty` (an id), by its id: what opening one of its
+    /// resources runs, as the person who opens it. `None` for a type that declares none.
+    pub fn opened_action(&self, ty: &str) -> Option<String> {
+        let registry = self.core.registry.borrow();
+        let (pkg, info) = registry.type_info(ty)?;
+        pkg.meta.opened_of(&info.id).map(|action| action.id.clone())
+    }
+
     /// The view a window of the resource type `ty` (an id) shows by default.
     pub fn default_view(&self, ty: &str) -> Option<String> {
         self.core.registry.borrow().default_view(ty)
