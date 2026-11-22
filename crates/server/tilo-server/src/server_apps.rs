@@ -248,27 +248,70 @@ pub use brokers::{ServerApps, ServerWorkspaces, Shipped};
 #[cfg(feature = "agents")]
 pub use pages::{Readers, Reading, ServerPages};
 
-/// The processes this server runs its workspaces' apps in: started through its launcher, each
-/// running the package its workspace installed, as `packages` verifies it, and keeping what it
-/// keeps under `data_home`.
+/// The processes this server runs its workspaces' apps in: started as `starts` starts them
+/// (through its launcher), each running the package its workspace installed, as `packages`
+/// verifies it, and keeping what it keeps under `data_home`.
 #[cfg(feature = "agents")]
 pub fn server_processes(
     workspaces: ServerWorkspaces,
     packages: std::sync::Arc<WorkspacePackages>,
     data_home: PathBuf,
-) -> ProcessStart {
+    starts: Box<tilo_app_launch::tilolang_processes::Starts>,
+) -> std::sync::Arc<tilo_app_launch::tilolang_processes::Processes> {
     use tilo_app_launch::tilolang_processes::Processes;
-    let launcher = tilo_launcher(&launcher_candidates())?;
-    Ok(Processes::with(
+    Processes::with(
         data_home,
-        Processes::started_through(launcher),
+        starts,
         Box::new(move |workspace, app| {
             let tapp = workspaces
                 .installed_package(workspace, app)
                 .ok_or_else(|| format!("this workspace has not installed {app}"))?;
             packages.verified(workspace, app, &tapp)
         }),
-    ))
+    )
+}
+
+/// The longest path a Unix socket can be connected by (`sun_path`, less its terminating NUL).
+#[cfg(feature = "agents")]
+const MAX_SOCKET_PATH: usize = 107;
+
+/// Where the services of the apps of the server whose state is `state_root` listen: a directory
+/// only it may enter, among the login's services ([`tilo_paths::xdg::services_dir`]) as a
+/// device's are, named for that state so two servers of one account keep apart. A run reaches
+/// them by path, which a socket allows only [`MAX_SOCKET_PATH`] bytes: they are never under the
+/// state, however deep that lies.
+///
+/// # Errors
+/// The account has no runtime directory, or one too deep for a workspace's socket in it.
+#[cfg(feature = "agents")]
+pub fn app_sockets(state_root: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    let runtime = tilo_paths::xdg::runtime_dir_or_default();
+    if !runtime.is_dir() {
+        return Err(format!(
+            "this server's apps listen in its account's runtime directory, and there is none at \
+             {}: set XDG_RUNTIME_DIR to a private directory",
+            runtime.display()
+        ));
+    }
+    let state = blake3::hash(state_root.as_os_str().as_encoded_bytes());
+    let sockets = tilo_paths::xdg::services_dir()
+        .join(format!("server-{}", hex::encode(&state.as_bytes()[..6])));
+    // The longest socket there: a workspace's broker, named by the workspace's id.
+    let longest = sockets.join(format!("{}.sock", tilo_desktop_model::WorkspaceId::nil()));
+    if longest.as_os_str().len() > MAX_SOCKET_PATH {
+        return Err(format!(
+            "the runtime directory {} is too deep for this server's apps' sockets ({} is over {MAX_SOCKET_PATH} bytes): set XDG_RUNTIME_DIR to a shorter one",
+            runtime.display(),
+            longest.display(),
+        ));
+    }
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&sockets)
+        .map_err(|error| format!("make {}: {error}", sockets.display()))?;
+    Ok(sockets)
 }
 
 /// This server's device, as its apps' requests are signed by it.
@@ -333,15 +376,16 @@ fn shipped_packages(dir: &Path) -> Result<Vec<Vec<u8>>, String> {
 }
 
 /// Start the apps of the workspaces `workspaces` keeps on this server, whose device is `device`:
-/// the content store they keep their files in and the identity service that signs their changes
-/// as this device for the callers they serve, both under `state_root` with the sockets of the
-/// workspaces' brokers, and the processes that run each workspace's packages. The packages in
-/// `shipped` are installed in every workspace whose apps this server sets up. Their pages show
-/// beside those of `pages`, the server's own, when it shows any.
+/// the content store they keep their files in under `state_root` and the identity service that
+/// signs their changes as this device for the callers they serve, both listening with the
+/// workspaces' brokers where [`app_sockets`] says, and the processes that run each workspace's
+/// packages through its launcher. The packages in `shipped` are installed in every workspace
+/// whose apps this server sets up. Their pages show beside those of `pages`, the server's own,
+/// when it shows any.
 ///
 /// # Errors
-/// Why this server can run no app: the packages it ships do not read, or its content store,
-/// identity service, data home or launcher is missing.
+/// Why this server can run no app: the packages it ships do not read, or its launcher, sockets'
+/// directory, content store, identity service or data home is missing.
 #[cfg(feature = "agents")]
 pub async fn start(
     workspaces: crate::workspaces::Workspaces,
@@ -350,21 +394,32 @@ pub async fn start(
     shipped: Option<&Path>,
     pages: Option<std::sync::Arc<dyn crate::app_serving::AppActionServer>>,
 ) -> Result<Serving, String> {
-    use std::os::unix::fs::DirBuilderExt as _;
+    let launcher = tilo_launcher(&launcher_candidates())?;
+    start_through(
+        workspaces,
+        device,
+        (state_root, shipped),
+        pages,
+        tilo_app_launch::tilolang_processes::Processes::started_through(launcher),
+    )
+    .await
+}
+
+/// [`start`], with each process started as `starts` starts it.
+#[cfg(feature = "agents")]
+async fn start_through(
+    workspaces: crate::workspaces::Workspaces,
+    device: Device,
+    (state_root, shipped): (&Path, Option<&Path>),
+    pages: Option<std::sync::Arc<dyn crate::app_serving::AppActionServer>>,
+    starts: Box<tilo_app_launch::tilolang_processes::Starts>,
+) -> Result<Serving, String> {
     let shipped = shipped
         .map(shipped_packages)
         .transpose()?
         .unwrap_or_default();
     let apps = state_root.join("apps");
-    // The services of this server's apps listen in a directory only it may enter, under its own
-    // state: never a default of the machine's, which a server running as its own user may not
-    // be able to make.
-    let sockets = apps.join("sockets");
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&sockets)
-        .map_err(|error| format!("make {}: {error}", sockets.display()))?;
+    let sockets = app_sockets(state_root)?;
     let content = ContentService::start(
         &apps.join("content"),
         &sockets.join(brokers::CONTENT_SOCKET),
@@ -402,8 +457,12 @@ pub async fn start(
         packages = packages.shipping(&data_home.join("tilo").join("shipped-packages"), &shipped)?;
     }
     let packages = std::sync::Arc::new(packages);
-    let processes = server_processes(server.clone(), std::sync::Arc::clone(&packages), data_home);
-    let processes = std::sync::Arc::clone(processes.as_ref()?);
+    let processes = server_processes(
+        server.clone(),
+        std::sync::Arc::clone(&packages),
+        data_home,
+        starts,
+    );
     let apps = ServerApps::new(
         server,
         sockets,

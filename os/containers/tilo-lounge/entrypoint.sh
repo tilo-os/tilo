@@ -345,4 +345,11 @@ if [ -r "$token" ]; then
   set -- "$@" --discord-token-file "$token"
 fi
 
+# A container has no login, so no runtime directory: the apps the server runs
+# listen in one of its own, made private and short, as a login's is.
+if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ ! -d "/run/user/$(id -u)" ]; then
+  XDG_RUNTIME_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tilo-run.XXXXXX")
+  export XDG_RUNTIME_DIR
+fi
+
 exec tilo-server "$@"

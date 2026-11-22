@@ -8,8 +8,9 @@
 //!
 //! The system's apps a server ships are installed in every workspace it serves whose apps it sets
 //! up, as the apps they replace were in every workspace: when it starts and finds one that lacks
-//! them, and when it starts serving one. Installing a package is what carries what the native app of
-//! its id kept there ([`ServerApps::carry_installed`]).
+//! them, and when it starts serving one. A package installed there carries what the native app of
+//! its id kept, when its apps start here and when it is installed
+//! ([`ServerApps::carry_installed`]); its migrations' marks say whether that was done.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -184,9 +185,9 @@ impl WorkspaceAuthority for OneWorkspace {
 struct Running {
     _broker: BrokerHandle,
     launcher: Arc<ServerLauncher>,
-    /// The releases the workspace had installed when its apps started here, and each installed
-    /// since whose carry has run: each is carried once, when it is installed.
-    installed: Arc<Mutex<BTreeSet<(String, String)>>>,
+    /// The releases whose carry ran since the workspace's apps started here: each runs once in
+    /// that time, whether its migrations carried anything or found their marks.
+    carried: Arc<Mutex<BTreeSet<(String, String)>>>,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
 }
@@ -332,12 +333,8 @@ impl ServerApps {
             .into_iter()
             .filter_map(|summary| WorkspaceId::parse(&summary.workspace))
             .collect();
-        // What each workspace whose apps start now had installed, before this server installs
-        // the system's apps it lacks: those it installs are carried as every install is.
         let running = self.workspaces();
-        let mut found = BTreeMap::new();
         for workspace in kept.iter().filter(|workspace| !running.contains(workspace)) {
-            found.insert(*workspace, self.releases(*workspace).await);
             self.install_shipped(*workspace).await;
         }
         let apps = Arc::clone(self);
@@ -358,8 +355,7 @@ impl ServerApps {
                 if apps.running().contains_key(workspace) {
                     continue;
                 }
-                let installed = found.remove(workspace).unwrap_or_default();
-                match apps.start(*workspace, installed) {
+                match apps.start(*workspace) {
                     Ok(running) => {
                         apps.running().insert(*workspace, running);
                     }
@@ -378,18 +374,6 @@ impl ServerApps {
             Ok(refused) => refused,
             Err(error) => std::panic::resume_unwind(error.into_panic()),
         }
-    }
-
-    /// The releases `workspace` runs now, each its app and package.
-    async fn releases(&self, workspace: WorkspaceId) -> BTreeSet<(String, String)> {
-        self.workspaces
-            .workspaces
-            .app_versions(&workspace.to_string())
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|installed| (installed.release.app, installed.release.package))
-            .collect()
     }
 
     /// Install each package this server ships that `workspace` does not run yet, when this
@@ -415,18 +399,20 @@ impl ServerApps {
         }
     }
 
-    /// Carry what a native app kept in `workspace` into each package installed there since its
-    /// apps started here, under the native app's id: a run that shows nothing, for the
-    /// workspace's server, whose migrations carry those documents. The run reads the server's own
-    /// copy of that native app's documents in this workspace alone; its migration marks what it
-    /// carried, and it ends once its migrations ran, as does a package with none that read them.
+    /// Carry what a native app kept in `workspace` into each package installed there under the
+    /// native app's id whose carry has not run since its apps started here: a run that shows
+    /// nothing, for the workspace's server, whose migrations carry those documents. The run reads
+    /// the server's own copy of that native app's documents in this workspace alone. Its
+    /// migrations mark what they carried, so a run that finds their marks carries nothing again
+    /// and a carry that failed (a run that could not start, a server stopped while it ran) runs
+    /// again on the next start; it ends once its migrations ran, as does a package with none that
+    /// read them.
     fn carry_installed(&self, workspace: WorkspaceId) {
-        let Some((launcher, carried)) = self.running().get(&workspace).map(|running| {
-            (
-                Arc::clone(&running.launcher),
-                Arc::clone(&running.installed),
-            )
-        }) else {
+        let Some((launcher, carried)) = self
+            .running()
+            .get(&workspace)
+            .map(|running| (Arc::clone(&running.launcher), Arc::clone(&running.carried)))
+        else {
             return;
         };
         for installed in self.workspaces.installed(workspace) {
@@ -470,12 +456,8 @@ impl ServerApps {
         }
     }
 
-    /// Start `workspace`'s broker, whose workspace runs the releases `installed` as it starts.
-    fn start(
-        &self,
-        workspace: WorkspaceId,
-        installed: BTreeSet<(String, String)>,
-    ) -> std::io::Result<Running> {
+    /// Start `workspace`'s broker.
+    fn start(&self, workspace: WorkspaceId) -> std::io::Result<Running> {
         use std::os::unix::fs::DirBuilderExt as _;
         // Only this server's own processes reach a workspace's broker, and each workspace's
         // journal is a private directory of its own: both under directories only it may enter.
@@ -523,7 +505,7 @@ impl ServerApps {
         Ok(Running {
             _broker: broker,
             launcher,
-            installed: Arc::new(Mutex::new(installed)),
+            carried: Arc::default(),
             channels,
             fanout,
         })

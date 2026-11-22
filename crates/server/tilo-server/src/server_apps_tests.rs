@@ -696,3 +696,169 @@ async fn a_page_shows_nothing_to_someone_who_may_not_read_its_app() {
         "a member kept from the app is shown none of it"
     );
 }
+
+/// A runtime directory as short as a login's (`/run/user/<uid>`), where a test's own scratch
+/// directory may lie too deep for a socket.
+#[cfg(feature = "agents")]
+fn short_runtime_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("run")
+        .tempdir_in("/tmp")
+        .unwrap()
+}
+
+/// The apps of a server whose state lies deep listen where a run reaches them, and a carry that
+/// failed when the package was installed runs when the server starts again: once, through the
+/// sockets, the identity service and the process start a real carry goes through.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the host serves its workspaces until the test ends"
+)]
+async fn a_carry_that_failed_at_its_install_runs_at_the_next_start() {
+    use tilo_peer_state::workspace_documents::{DeviceWrites as _, DocumentWriting};
+    let scratch = tempfile::tempdir().unwrap();
+    let runtime = short_runtime_dir();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
+    env.set("XDG_DATA_HOME", scratch.path().join("data"));
+    // As deep as a deployment's volume may put it: far deeper than a socket's path may be.
+    let state_root = scratch.path().join("state".repeat(32));
+    std::fs::create_dir_all(&state_root).unwrap();
+    assert!(state_root.as_os_str().len() > 150);
+    let (key, cert) = crate::workspaces::fixtures::governor();
+    let host =
+        crate::workspaces::fixtures::test_host(&state_root.join("server"), &key, &cert).await;
+    let workspaces = host.workspaces().clone();
+    let team = workspaces.create("Team").await.unwrap().workspace;
+
+    // What the native app of the package's id kept in the workspace.
+    let record = "uuid:0b6f2a1e-4c2d-4e8a-9f1b-6d3c2e1a0f4b";
+    let sealed = workspaces
+        .own_route_keys(
+            &tilo_peer_state::document_frame::DocumentRoute {
+                app_id: APP.into(),
+                cluster_id: team.clone(),
+                document: record.into(),
+            },
+            true,
+        )
+        .await
+        .and_then(Result::ok);
+    let mut kept = automerge::AutoCommit::new();
+    automerge::transaction::Transactable::put(&mut kept, automerge::ROOT, "title", "Kept").unwrap();
+    tilo_workspace_service::device_documents::ServiceWrites::of(workspaces.clone())
+        .write(
+            &team,
+            &kept.save(),
+            DocumentWriting {
+                app: APP,
+                document: record,
+                readers: None,
+                founding: true,
+                snapshot: true,
+                sealed: sealed.as_ref(),
+            },
+        )
+        .await
+        .expect("the native app's record is kept");
+
+    let shipped = scratch.path().join("shipped");
+    std::fs::create_dir_all(&shipped).unwrap();
+    std::fs::write(
+        shipped.join("fixture.tapp"),
+        tilolang_package(APP, &SigningIdentity::generate()),
+    )
+    .unwrap();
+    // Each process the server starts for the package: started as the launcher would start it.
+    let starting = |started: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+                    program: &'static str| {
+        let started = std::sync::Arc::clone(started);
+        let starts: Box<tilo_app_launch::tilolang_processes::Starts> =
+            Box::new(move |_, _, _, _| {
+                started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::process::Command::new(program)
+            });
+        starts
+    };
+    // A test's process outlives the server it stops, and that server's content store stays
+    // open in it: the next start keeps its own apps' state beside the first's, over the same
+    // workspaces.
+    let again_root = scratch.path().join("again".repeat(32));
+    let start = |root: PathBuf, starts: Box<tilo_app_launch::tilolang_processes::Starts>| {
+        let (workspaces, cert, shipped) = (workspaces.clone(), cert.clone(), shipped.clone());
+        let identity_root = scratch.path().join("identity");
+        async move {
+            start_through(
+                workspaces,
+                Device {
+                    identity_root,
+                    cert,
+                    keys: None,
+                },
+                (&root, Some(&shipped)),
+                None,
+                starts,
+            )
+            .await
+        }
+    };
+
+    // The first start installs the package, and its carry fails: its process cannot start.
+    let failed = std::sync::Arc::default();
+    let first = start(
+        state_root.clone(),
+        starting(&failed, "/nonexistent/tilo-launcher"),
+    )
+    .await
+    .expect("the apps start");
+    first.apps.reconcile().await;
+    drop(first);
+    assert_eq!(
+        failed.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the carry was tried"
+    );
+
+    // The next start carries it, and only once while it runs.
+    let carried = std::sync::Arc::default();
+    let again = start(again_root, starting(&carried, "true"))
+        .await
+        .expect("the apps start again");
+    again.apps.reconcile().await;
+    again.apps.reconcile().await;
+    assert_eq!(
+        carried.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the carry ran once"
+    );
+    drop(again);
+}
+
+/// A server's apps listen in its login's runtime directory, never under its state; a login with
+/// none, or one too deep for a socket in it, starts no app.
+#[cfg(feature = "agents")]
+#[test]
+fn a_server_without_a_runtime_directory_starts_no_app() {
+    let scratch = tempfile::tempdir().unwrap();
+    let state = scratch.path().join("state");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_RUNTIME_DIR", scratch.path().join("gone"));
+    let refused = app_sockets(&state).expect_err("no runtime directory, no sockets");
+    assert!(refused.contains("set XDG_RUNTIME_DIR"), "{refused}");
+    let deep = scratch.path().join("run".repeat(40));
+    std::fs::create_dir_all(&deep).unwrap();
+    env.set("XDG_RUNTIME_DIR", &deep);
+    let refused = app_sockets(&state).expect_err("too deep for a socket");
+    assert!(refused.contains("too deep"), "{refused}");
+    let runtime = short_runtime_dir();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
+    let sockets = app_sockets(&state).unwrap();
+    assert!(sockets.starts_with(runtime.path()) && !sockets.starts_with(&state));
+    assert_ne!(
+        sockets,
+        app_sockets(&scratch.path().join("other")).unwrap(),
+        "two servers keep apart"
+    );
+}
