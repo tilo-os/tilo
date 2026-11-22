@@ -113,6 +113,45 @@ fn a_changed_draw_is_the_only_region_and_repainting_it_matches_a_full_render() {
     assert_eq!(raster.changed_regions(W, H), Some(Vec::new()));
 }
 
+/// A scene drawing one picture, handed over in a blob of its own.
+fn picture(rgba: &[u8]) -> Scene {
+    let image = vello::peniko::ImageData {
+        data: vello::peniko::Blob::new(std::sync::Arc::new(rgba.to_vec())),
+        format: vello::peniko::ImageFormat::Rgba8,
+        alpha_type: vello::peniko::ImageAlphaType::Alpha,
+        width: 8,
+        height: 8,
+    };
+    let mut scene = Scene::new();
+    scene.draw_image(
+        &vello::peniko::ImageBrush::new(image),
+        Affine::translate((16.0, 16.0)),
+    );
+    scene
+}
+
+#[test]
+fn a_picture_handed_over_again_in_a_new_blob_is_not_a_change() {
+    let pixels: Vec<u8> = (0..64u8).flat_map(|i| [i * 4, 120, 200, 255]).collect();
+    let mut raster = CpuRasterizer::new(Options::default());
+    let mut frame = vec![0u8; (W * H * 4) as usize];
+    {
+        let mut target = Target::new(&mut frame, W, H, W as usize * 4).unwrap();
+        raster.render(picture(&pixels).encoding(), &mut target, None, Color::BLACK);
+    }
+    // The same pixels, made anew: nothing to draw again.
+    raster.prepare(picture(&pixels).encoding());
+    assert_eq!(raster.changed_regions(W, H), Some(Vec::new()));
+
+    // Other pixels are a change where the picture stands.
+    let mut other = pixels;
+    other[0] = 255;
+    raster.prepare(picture(&other).encoding());
+    let regions = raster.changed_regions(W, H).unwrap();
+    assert!(covers(&regions, 18, 18), "the changed picture: {regions:?}");
+    assert!(!covers(&regions, 100, 80), "nothing else: {regions:?}");
+}
+
 const PW: u32 = 256;
 const PH: u32 = 160;
 
