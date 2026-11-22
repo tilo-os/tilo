@@ -81,8 +81,6 @@ mod delete_workspace;
 mod desktop_services;
 #[path = "dev_session_apps.rs"]
 mod dev_session_apps;
-#[path = "device_agents.rs"]
-mod device_agents;
 #[path = "device_branch.rs"]
 mod device_branch;
 #[path = "device_record.rs"]

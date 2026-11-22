@@ -35,8 +35,6 @@ pub mod offload;
 #[cfg(unix)]
 mod os_search;
 #[cfg(unix)]
-pub mod other_devices;
-#[cfg(unix)]
 pub mod personal_devices;
 #[cfg(unix)]
 pub mod profile;
@@ -134,12 +132,6 @@ pub trait RuntimeServices: Sized {
     /// Where MCP answers read the content apps stored; `None` for a host
     /// without a content service.
     fn media(&self) -> Option<std::sync::Arc<dyn tilo_mcp::MediaReader>> {
-        None
-    }
-
-    /// The person's other devices, as this host asks them from its own endpoint: where a
-    /// `--connect --device` client works. `None` for a host that reaches none.
-    fn other_devices(&self) -> Option<other_devices::OtherDevices> {
         None
     }
 }

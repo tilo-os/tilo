@@ -13,10 +13,14 @@
 //! the agent's: it cannot make the key, and it never signs in its place.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use ed25519_dalek::SigningKey;
-use tilo_actions::remote::InvokeRequest;
+use tilo_actions::InvocationId;
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending,
+};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{AgentScope, DeviceCert};
@@ -179,6 +183,200 @@ impl AgentKeys for FleetAgentKeys {
         .map_err(|error| error.to_string())?;
         request.signed = Some(Box::new(invocation));
         Ok(())
+    }
+}
+
+/// The keys this device's agents sign with, made from the identity store the process's
+/// environment names: one for the process, so a key made once is held while it runs.
+///
+/// # Errors
+/// The environment names no identity store.
+pub fn this_device() -> Result<Arc<dyn AgentKeys>, String> {
+    static KEYS: OnceLock<Arc<dyn AgentKeys>> = OnceLock::new();
+    if let Some(keys) = KEYS.get() {
+        return Ok(Arc::clone(keys));
+    }
+    let keys = FleetAgentKeys::from_env()
+        .map_err(|error| format!("this device's identity store is not open: {error}"))?;
+    Ok(Arc::clone(KEYS.get_or_init(|| Arc::new(keys))))
+}
+
+/// One agent's key in one workspace, as this device made it: what signs every call the agent
+/// makes there.
+#[derive(Clone)]
+pub struct AgentSigner {
+    keys: Arc<dyn AgentKeys>,
+    workspace: WorkspaceId,
+    key: [u8; 32],
+}
+
+impl AgentSigner {
+    /// Agent `agent`, which its person's devices list as `name`, working for the person `person`
+    /// (a person id) in `workspace`, under a key of its own from `keys`: what signs its calls, and
+    /// the caller they go as. An MCP client is such an agent: its record keeps no bound of its
+    /// own, so it acts with what its person's grant gives an agent.
+    ///
+    /// # Errors
+    /// The workspace or the person is not one, or [`AgentKeys::grant`] refused the key.
+    pub fn grant(
+        keys: Arc<dyn AgentKeys>,
+        workspace: &str,
+        (agent, name): (&str, &str),
+        person: &str,
+    ) -> Result<(Self, Caller), String> {
+        let id = WorkspaceId::parse(workspace).ok_or("the agent's workspace is no workspace id")?;
+        let root = tilo_action_policy::PersonId::parse(person)
+            .ok()
+            .and_then(|person| person.root())
+            .ok_or("the agent belongs to no person")?;
+        let key = keys.grant(id, agent, name, root)?;
+        let caller = Caller::delegated_agent(agent, root, key)
+            .in_workspace(workspace)
+            .named(name)
+            .held_to(Vec::new());
+        Ok((
+            Self {
+                keys,
+                workspace: id,
+                key,
+            },
+            caller,
+        ))
+    }
+
+    /// Sign `request` with the agent's key.
+    ///
+    /// # Errors
+    /// The key does not sign.
+    pub fn sign(&self, request: &mut InvokeRequest) -> Result<(), ActionCallError> {
+        self.keys
+            .sign(self.workspace, &self.key, request)
+            .map_err(|reason| ActionCallError::Refused { reason })
+    }
+}
+
+/// `provider`, with every call asked of it signed by the agent's key, where an agent asks: what
+/// an agent's tools call through, so nothing it asks goes under the device's key.
+pub struct Signed<P> {
+    provider: P,
+    signer: Option<AgentSigner>,
+}
+
+impl<P> Signed<P> {
+    #[must_use]
+    pub const fn new(provider: P, signer: Option<AgentSigner>) -> Self {
+        Self { provider, signer }
+    }
+
+    fn signed(&self, mut request: InvokeRequest) -> Result<InvokeRequest, ActionCallError> {
+        if let Some(signer) = &self.signer {
+            signer.sign(&mut request)?;
+        }
+        Ok(request)
+    }
+}
+
+impl<P: ActionProvider> ActionProvider for Signed<P> {
+    fn retire_execution(&self, caller: &Caller) {
+        self.provider.retire_execution(caller);
+    }
+
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        self.provider.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        match self.signed(request) {
+            Ok(request) => self.provider.invoke(caller, request),
+            Err(error) => Pending::ready(Err(error)),
+        }
+    }
+
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.provider.observe(caller, id)
+    }
+
+    fn observed(&self, caller: &Caller, id: &InvocationId, state: Option<&InvocationState>) {
+        self.provider.observed(caller, id, state);
+    }
+
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        self.provider.next_change(caller, id)
+    }
+
+    fn session_state(&self, caller: &Caller) -> Option<tilo_actions::remote::SessionState> {
+        self.provider.session_state(caller)
+    }
+
+    fn session_state_changed(&self, caller: &Caller) -> Option<Pending<()>> {
+        self.provider.session_state_changed(caller)
+    }
+
+    fn changed(
+        &self,
+        caller: &Caller,
+        scope: tilo_actions::remote::WatchScope,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        self.provider.changed(caller, scope)
+    }
+
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        self.provider.cancel(caller, id)
+    }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
+        match self.signed(request.clone()) {
+            Ok(request) => self.provider.confirm(caller, &request),
+            Err(error) => Pending::ready(Err(error)),
+        }
+    }
+
+    fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        self.provider.content_puts()
+    }
+
+    fn content_gets(&self) -> Option<Arc<dyn tilo_actions::remote::ContentGets>> {
+        self.provider.content_gets()
+    }
+
+    fn here(&self, caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
+        self.provider.here(caller)
+    }
+
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        self.provider.resource_reads()
+    }
+
+    fn readings(&self) -> Option<Arc<dyn tilo_actions::remote::Readings>> {
+        self.provider.readings()
+    }
+
+    fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
+        self.provider.resource_changes()
+    }
+
+    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        self.provider.resource_search()
+    }
+
+    fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
+        self.provider.change_feed()
+    }
+
+    fn installed_surface(&self, app_id: &str) -> Pending<Option<Vec<u8>>> {
+        self.provider.installed_surface(app_id)
     }
 }
 

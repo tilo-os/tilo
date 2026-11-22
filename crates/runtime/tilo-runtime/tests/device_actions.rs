@@ -9,8 +9,6 @@
 //! the person revoked is refused with the reason, before its request reaches
 //! the actions there.
 
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;
@@ -23,11 +21,9 @@ use tilo_actions::remote::{
     ReceiptStatus,
 };
 use tilo_mcp::McpServer;
-use tilo_mcp::devices::{Forward, ask_forward, forward_request};
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions, RemoteDevice};
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
-use tilo_runtime::other_devices::{OtherDevices, Whereabouts};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
     sign_device_cert, sign_revocation_entry,
@@ -419,122 +415,4 @@ async fn a_device_the_person_revoked_is_refused_from_then_on() {
     );
     assert!(b.host.invoked.lock().unwrap().is_empty());
     a_endpoint.close().await;
-}
-
-/// Where A finds B: the one workspace it holds, B connected at its address.
-struct Places(EndpointAddr);
-
-impl Whereabouts for Places {
-    fn workspaces(&self) -> Vec<String> {
-        vec![WORKSPACE.to_owned()]
-    }
-
-    fn reachable(&self, _workspace: &str, _device: [u8; 32]) -> bool {
-        true
-    }
-
-    fn addr(&self, _id: iroh::EndpointId) -> EndpointAddr {
-        self.0.clone()
-    }
-}
-
-/// A client of A's login asking, as an agent configured with `tilo-runtime --connect --device`
-/// does, to work on the device `named`: A reads the line it opens with, as its host does, and
-/// serves it on a thread of its own. The client's end of the socket, once A answered.
-fn connect(a: &OtherDevices, named: &str) -> std::io::Result<UnixStream> {
-    let (mut client, mut served) = UnixStream::pair().unwrap();
-    let a = a.clone();
-    std::thread::spawn(move || {
-        let mut first = Vec::new();
-        let mut byte = [0_u8; 1];
-        while served.read(&mut byte).unwrap() == 1 && byte != *b"\n" {
-            first.extend_from_slice(&byte);
-        }
-        let forward = forward_request(&first).expect("a forward line opens the connection");
-        a.serve_forward(served, &forward);
-    });
-    ask_forward(
-        &mut client,
-        &Forward {
-            device: named.into(),
-            workspace: None,
-        },
-    )?;
-    Ok(client)
-}
-
-/// The answer to the request `id` the client sent on `lines`.
-fn answer(lines: &mut impl Iterator<Item = std::io::Result<String>>, id: u64) -> Value {
-    loop {
-        let line = lines.next().expect("A answers").unwrap();
-        let value: Value = serde_json::from_str(&line).unwrap();
-        if value["id"] == id {
-            return value;
-        }
-    }
-}
-
-/// `tilo-runtime --connect --device`: a client of A's login names B, and A serves it MCP, sending
-/// each of its requests to B as the agent's, for the person and never as the person. A name no
-/// device of the person's goes by is refused, saying which devices there are.
-#[test]
-fn a_client_that_names_another_device_works_there_as_its_agent() {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap();
-    let person = Person::new();
-    let members = [person.a.1.clone(), person.b.1.clone()];
-    let (b, a) = runtime.block_on(async {
-        let b = B::keeping(person.b.clone(), &members).await;
-        let a_endpoint = endpoint(&person.a.0).await;
-        let actions = ActionService::new(person.a.0.clone(), Arc::new(NoActions));
-        actions.hold(Replica::new(workspace(&person.b, &members)));
-        let a = OtherDevices::new(
-            actions,
-            a_endpoint,
-            tokio::runtime::Handle::current(),
-            (person.a.1.user_public_key, person.a.1.device_public_key),
-            Arc::new(Places(addr(&b.endpoint))),
-        );
-        (b, a)
-    });
-
-    let refused = connect(&a, "Phone").map(drop).unwrap_err();
-    assert!(refused.to_string().contains("Build box"), "{refused}");
-    assert_eq!(b.reached(), 0, "a refused client asked B nothing");
-
-    let mut client = connect(&a, "build BOX").expect("A carries the client to B");
-    let mut lines = BufReader::new(client.try_clone().unwrap()).lines();
-    for request in [
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18",
-            "capabilities":{},"clientInfo":{"name":"Claude Code","version":"2"}}}),
-        tool(2, "tilo_ls", &json!({})),
-    ] {
-        writeln!(client, "{request}").unwrap();
-    }
-    assert!(answer(&mut lines, 1).get("result").is_some());
-    let apps = answer(&mut lines, 2);
-    assert_eq!(apps["result"]["isError"], false, "{apps}");
-    assert!(text(&apps).contains("notes"), "B's apps: {apps}");
-
-    let root = person.root.verifying_key().to_bytes();
-    let agent = tilo_actions::remote::device_agent_id(&root, "Claude Code");
-    let callers = b.host.callers.lock().unwrap().clone();
-    assert!(!callers.is_empty());
-    for caller in &callers {
-        assert_eq!(
-            caller.acting().agent_id(),
-            Some(agent.as_str()),
-            "{caller:?}"
-        );
-        assert!(!caller.acting().is_person(), "never the person: {caller:?}");
-        assert_eq!(caller.acting_for_person(), Some(hex::encode(root).as_str()));
-        assert_eq!(
-            caller.device_public_key(),
-            Some(&person.a.1.device_public_key)
-        );
-    }
-    drop(client);
 }

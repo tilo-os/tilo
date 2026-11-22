@@ -938,7 +938,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             caller = caller.acting_for(person);
         }
         let caller = caller.in_workspace(workspace.clone()).in_new_execution();
-        Self::from_caller(host, workspace, format!("agent:{agent_id}"), caller)
+        Self::from_caller(host, workspace, caller)
     }
 
     /// Attribute every invocation of this session to `group`, the run of a task whose own

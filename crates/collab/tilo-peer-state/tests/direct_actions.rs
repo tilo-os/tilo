@@ -11,7 +11,7 @@ use ed25519_dalek::SigningKey;
 use iroh::endpoint::RecvStream;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr};
-use neighbour_wire::actions::{ActionServiceFrame, DeviceAction, HandedAgent, SignedDeviceAction};
+use neighbour_wire::actions::{ActionServiceFrame, DeviceAction, SignedDeviceAction};
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_actions::remote::{
@@ -470,110 +470,6 @@ async fn a_revoked_device_is_refused_from_that_moment_on() {
 
     engine.close().await;
     b_endpoint.close().await;
-}
-
-/// A device of the person's that names the agent it handed a request to is answered as that
-/// agent, for the person, in the session it named: never as the person themselves. A device that
-/// is already not its person, an agent's own, hands nothing on and is refused before anything
-/// runs.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_request_handed_to_an_agent_is_the_agents_and_never_more_than_its_person() {
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let person = root.verifying_key().to_bytes();
-    let a = device(&root, 2);
-    let b = device(&root, 3);
-    let helper = agent_device(&root, 4);
-    let roster = vec![a.1.clone(), b.1.clone()];
-    let dispatcher = Arc::new(TestProvider::new());
-    let engine = Engine::serving(
-        Replica::new(workspace(WORKSPACE, &a, &roster)),
-        a.0.clone(),
-        dispatcher.clone(),
-        Bounds::default(),
-    )
-    .await;
-    let claude = || HandedAgent {
-        client: "Claude Code".into(),
-        session: "laptop-session-1".into(),
-    };
-
-    let (b_endpoint, b_action_service) = asking(&b.0).await;
-    let remote =
-        b_action_service.remote_for_agent(&b_endpoint, &engine.addr(), WORKSPACE, claude());
-    let caller = Caller::authenticated(person, b.1.device_public_key);
-    assert_eq!(queried(&remote, &caller).await, Ok(()));
-    let answered_as = dispatcher.callers()[0].clone();
-    let agent = tilo_actions::remote::device_agent_id(&person, "Claude Code");
-    assert_eq!(answered_as.acting().agent_id(), Some(agent.as_str()));
-    assert!(!answered_as.acting().is_person(), "never the person");
-    assert!(
-        answered_as.is_session_delegated(),
-        "handed by their own device"
-    );
-    assert_eq!(
-        answered_as.acting_for_person(),
-        Some(hex::encode(person).as_str()),
-        "for the person"
-    );
-    assert_eq!(answered_as.agent_name(), Some("Claude Code"));
-    assert_eq!(
-        answered_as
-            .acting()
-            .agent_session
-            .as_ref()
-            .map(tilo_action_policy::AgentSessionId::as_str),
-        Some("laptop-session-1")
-    );
-    assert_eq!(
-        answered_as.device_public_key(),
-        Some(&b.1.device_public_key)
-    );
-
-    let now = tilo_clock::wall();
-    let delegation = Delegation::sign(
-        &root,
-        helper.1.device_public_key,
-        Delegate::Agent {
-            agent_id: "scribe".into(),
-        },
-        "Scribe",
-        [10, 20, 30],
-        DelegateScope {
-            workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
-            apps: Vec::new(),
-        },
-        ns(now.checked_sub(Duration::from_secs(1)).unwrap()),
-        ns(now.checked_add(Duration::from_secs(3600)).unwrap()),
-    )
-    .unwrap();
-    assert!(
-        engine
-            .replica
-            .write(|peer| peer.governance_mut().admit_agent(
-                helper.1.clone(),
-                delegation,
-                &a.0,
-                now
-            ))
-            .unwrap()
-    );
-    let (helper_endpoint, helper_action_service) = asking(&helper.0).await;
-    let remote = helper_action_service.remote_for_agent(
-        &helper_endpoint,
-        &engine.addr(),
-        WORKSPACE,
-        claude(),
-    );
-    let caller = Caller::delegated_agent("scribe", person, helper.1.device_public_key);
-    assert_eq!(
-        queried(&remote, &caller).await,
-        Err(ActionCallError::NotPermitted)
-    );
-    assert_eq!(dispatcher.callers().len(), 1, "nothing ran for it");
-
-    engine.close().await;
-    b_endpoint.close().await;
-    helper_endpoint.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

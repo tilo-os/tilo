@@ -61,9 +61,6 @@ struct Connection {
     /// The environment's server it came in by: none for the session's own. It ends with that
     /// environment.
     environment: Option<Entered>,
-    /// The other device of the person's it came from, as the remote server verified it: none for a
-    /// program of this login.
-    origin: Option<tilo_actions::InvokerDevice>,
     /// What the person allowed it for every later step like one it asked about.
     answers: Vec<tilo_action_policy::Grant>,
     /// Whether it works through the broker as its own agent session: what taking its work back
@@ -149,19 +146,13 @@ impl AgentSessions {
     }
 
     /// A new connection, by the environment's server `environment` (none for the session's own),
-    /// from the person's other device `origin` (none for a program of this login), before the
-    /// person answers for it: nothing of it shows until it is admitted.
-    pub(crate) fn joining(
-        &self,
-        environment: Option<Entered>,
-        origin: Option<tilo_actions::InvokerDevice>,
-    ) -> AgentSessionId {
+    /// before the person answers for it: nothing of it shows until it is admitted.
+    pub(crate) fn joining(&self, environment: Option<Entered>) -> AgentSessionId {
         let session = new_session();
         self.inner.lock_recover().sessions.insert(
             session.clone(),
             Connection {
                 environment,
-                origin,
                 ..Connection::default()
             },
         );
@@ -230,7 +221,6 @@ impl AgentSessions {
                 workspace_name: connection.workspace_name.clone(),
                 doing: connection.doing.clone(),
                 working: connection.doing.is_some(),
-                origin: connection.origin.clone(),
                 environment: connection.environment.clone(),
             })
             .collect();
@@ -256,17 +246,6 @@ impl AgentSessions {
         if let Some(connection) = self.inner.lock_recover().sessions.get_mut(session) {
             connection.certified = true;
         }
-    }
-
-    /// The name of `session` in `workspace` while it lasts, when it came from another of the
-    /// person's own devices.
-    pub(crate) fn own_device_session(&self, workspace: &str, session: &str) -> Option<String> {
-        self.inner
-            .lock_recover()
-            .sessions
-            .get(&AgentSessionId::new(session))
-            .filter(|connection| connection.origin.is_some() && connection.workspace == workspace)
-            .map(|connection| connection.name.clone())
     }
 
     /// `session` changed `record` of `app`: one of the records taking its work back undoes.
@@ -389,10 +368,6 @@ impl AgentSessions {
             .map(|present| {
                 // Where it works from is said beside its name, never inside it: two sessions of
                 // one client are told apart by it, whatever each is called.
-                let (device, device_name) = present
-                    .origin
-                    .map(|origin| (origin.id, origin.name))
-                    .unwrap_or_default();
                 let (environment, environment_id) = present
                     .environment
                     .map(|entered| (entered.name, entered.id))
@@ -404,8 +379,6 @@ impl AgentSessions {
                     doing: present.workspace_name,
                     mark: String::new(),
                     unseen: 0,
-                    device,
-                    device_name,
                     environment,
                     environment_id,
                 }
@@ -432,7 +405,7 @@ impl tilo_broker_core::services::AgentSessions for AgentSessions {
             .get(&AgentSessionId::new(session))
             .filter(|connection| connection.workspace == workspace && connection.agent == agent)
             .map(|connection| tilo_broker_core::services::GoingSession {
-                origin: connection.origin.clone(),
+                origin: None,
                 answers: connection.answers.clone(),
             });
         let going = connection.or_else(|| {
@@ -560,8 +533,6 @@ pub(crate) struct Present {
     pub(crate) doing: Option<Doing>,
     /// It is at work: it took a step, or a turn of it goes.
     pub(crate) working: bool,
-    /// The other device of the person's it works from: none for a program of this login.
-    pub(crate) origin: Option<tilo_actions::InvokerDevice>,
     /// The environment whose server it came in by: none for the session's own.
     pub(crate) environment: Option<Entered>,
 }
@@ -629,11 +600,6 @@ pub(crate) struct Agent {
     pub doing: String,
     pub mark: String,
     pub unseen: i64,
-    /// The other device of the person's it works from, as the server that let it in verified: its
-    /// key in hex. Empty for a program of this device.
-    pub device: String,
-    /// What that device is called, as its certificate labels it.
-    pub device_name: String,
     /// The environment it works in, when it came in by an environment's own server: what the
     /// person calls that environment. Empty for a session that came in by the session's own.
     pub environment: String,
@@ -663,7 +629,7 @@ mod tests {
         let sessions = AgentSessions::new();
         let (first, _first_peer) = UnixStream::pair().unwrap();
         let (second, mut second_peer) = UnixStream::pair().unwrap();
-        let one = sessions.joining(None, None);
+        let one = sessions.joining(None);
         assert!(
             sessions.readings().is_empty(),
             "nothing shows before it is admitted"
@@ -672,7 +638,7 @@ mod tests {
         admit(&sessions, &one, "Claude Code");
         sessions.attached(&one, &first);
         assert!(sessions.revision() > shown, "the shell is told");
-        let two = sessions.joining(None, None);
+        let two = sessions.joining(None);
         admit(&sessions, &two, "Claude Code");
         sessions.attached(&two, &second);
         let here = sessions.here();
@@ -728,48 +694,6 @@ mod tests {
         assert!(sessions.here().is_empty());
     }
 
-    /// A session that came in from another of the person's devices is listed with that device
-    /// beside its name, and a program of this login with none: the name is the same either way.
-    #[test]
-    fn a_session_from_another_device_is_listed_with_that_device_beside_its_name() {
-        let sessions = AgentSessions::new();
-        let laptop = tilo_actions::InvokerDevice::certified([0x4c; 32], "Studio laptop");
-        let remote = sessions.joining(None, Some(laptop.clone()));
-        assert!(
-            sessions.readings().is_empty(),
-            "nothing shows before it is admitted"
-        );
-        admit(&sessions, &remote, "Claude Code");
-        let local = sessions.joining(None, None);
-        admit(&sessions, &local, "Claude Code");
-        let listed = sessions.readings();
-        let listed = |session: &AgentSessionId| {
-            listed
-                .iter()
-                .find(|agent| agent.key == session.as_str())
-                .map(|agent| {
-                    (
-                        agent.name.clone(),
-                        agent.device.clone(),
-                        agent.device_name.clone(),
-                    )
-                })
-        };
-        assert_eq!(
-            listed(&remote),
-            Some((
-                "Claude Code".to_owned(),
-                laptop.id,
-                "Studio laptop".to_owned()
-            ))
-        );
-        assert_eq!(
-            listed(&local),
-            Some(("Claude Code".to_owned(), String::new(), String::new())),
-            "a program of this login came from no other device"
-        );
-    }
-
     /// A session that came in by an environment's own server is listed with that environment
     /// beside its name, by what the person calls it and by its id, and one that came in by the
     /// session's own server with none. It ends with its environment, and only it does.
@@ -781,9 +705,9 @@ mod tests {
             id: "w1/Dev.Box".to_owned(),
             name: "Dev box".to_owned(),
         };
-        let inside = sessions.joining(Some(entered), None);
+        let inside = sessions.joining(Some(entered));
         admit(&sessions, &inside, "Claude Code");
-        let outside = sessions.joining(None, None);
+        let outside = sessions.joining(None);
         admit(&sessions, &outside, "Claude Code");
         let listed = sessions.readings();
         let listed = |session: &AgentSessionId| {
@@ -819,7 +743,7 @@ mod tests {
     #[test]
     fn a_session_is_found_by_its_presence_key() {
         let sessions = AgentSessions::new();
-        let one = sessions.joining(None, None);
+        let one = sessions.joining(None);
         admit(&sessions, &one, "Claude Code");
         let speaker = [7; 32];
         let member = hex::encode(collab_types::presence::stand_in(speaker, one.as_str()));

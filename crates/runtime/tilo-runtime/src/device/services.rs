@@ -89,8 +89,6 @@ pub struct Daemon {
     /// The endpoint's router, held so the workspace host, the device actions, the work this
     /// device takes and a ticket's certify call answer for as long as this runtime runs.
     _endpoint_router: iroh::protocol::Router,
-    /// The person's other devices, asked from this runtime's endpoint as this device.
-    other_devices: Option<crate::other_devices::OtherDevices>,
     /// The apps installed for this profile: what each publishes, before it runs here.
     apps: Arc<apps::Apps>,
     /// The login this daemon serves, when this computer logged in.
@@ -481,7 +479,6 @@ impl Daemon {
             policy_origin,
             broker,
             apps,
-            other_devices: other_devices(&workspaces),
             workspaces,
             _identity: identity_broker,
             workspace: workspace_id,
@@ -863,10 +860,6 @@ impl RuntimeServices for Daemon {
             &self.blob_socket,
             &self.workspace,
         )))
-    }
-
-    fn other_devices(&self) -> Option<crate::other_devices::OtherDevices> {
-        self.other_devices.clone()
     }
 }
 
@@ -1521,42 +1514,6 @@ fn serve_device_endpoint(serving: EndpointServing<'_>) -> iroh::protocol::Router
     }
     router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, actions);
     router.spawn()
-}
-
-/// The person's other devices, asked over the action frame from `workspaces`' endpoint as this
-/// device, in the workspaces it holds.
-fn other_devices(
-    workspaces: &Arc<ServiceWorkspaces>,
-) -> Option<crate::other_devices::OtherDevices> {
-    let (actions, endpoint, runtime) = workspaces.turn_action_service()?;
-    let cert = workspaces.device_cert();
-    Some(crate::other_devices::OtherDevices::new(
-        actions,
-        endpoint,
-        runtime,
-        (cert.user_public_key, cert.device_public_key),
-        Arc::new(Held(Arc::downgrade(workspaces))),
-    ))
-}
-
-/// The workspaces this device holds, as its other devices are looked up in them. Whether one of
-/// them is connected here now is not known: each is asked, and says so when it is away.
-struct Held(std::sync::Weak<ServiceWorkspaces>);
-
-impl crate::other_devices::Whereabouts for Held {
-    fn workspaces(&self) -> Vec<String> {
-        self.0.upgrade().map_or_else(Vec::new, |workspaces| {
-            workspaces
-                .held()
-                .into_iter()
-                .map(|(workspace, ..)| workspace.to_string())
-                .collect()
-        })
-    }
-
-    fn reachable(&self, _workspace: &str, _device: [u8; 32]) -> bool {
-        true
-    }
 }
 
 /// The broker's channel state, with the profile's durable collaboration

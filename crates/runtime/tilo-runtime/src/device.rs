@@ -61,6 +61,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
 use tilo_session_client::device::{Device as Entered, DeviceActions};
+use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed};
 
 use tilo_api::daemon::enter::{self, NOT_LOGGED_IN};
 use tilo_api::daemon::{PEER_STATUS, unreachable_answer};
@@ -411,7 +412,7 @@ pub(crate) struct Connection<E> {
 /// and the device entered anew) goes then, not with the last agent connection that used it.
 struct Served {
     session: std::sync::Weak<Session>,
-    server: McpServer<DeviceActions>,
+    server: McpServer<Signed<DeviceActions>>,
 }
 
 impl Served {
@@ -447,7 +448,7 @@ impl<E: Enter> Connection<E> {
         // Only a connection that starts enters again in place of a session the person stopped.
         let session = self.shared.session(held.is_none(), Ask::Agent).await?;
         let device = self.shared.device.as_ref().map_err(Clone::clone)?;
-        let served = Arc::new(open(&session, device, &self.run));
+        let served = Arc::new(open(&session, device, &self.run)?);
         *held = Some(Arc::clone(&served));
         drop(held);
         Ok((served, session))
@@ -455,8 +456,12 @@ impl<E: Enter> Connection<E> {
 }
 
 /// The projection over the workspace `session` is in, its actions asked of
-/// the workspace's host.
-fn open(session: &Arc<Session>, device: &Device, run: &str) -> Served {
+/// the workspace's host and signed by the agent's own key: the host takes them as the agent's,
+/// and nothing the agent asks goes under this computer's key.
+///
+/// # Errors
+/// This computer cannot make the agent a key of its own, so it serves the agent nothing.
+fn open(session: &Arc<Session>, device: &Device, run: &str) -> Result<Served, String> {
     let workspace_id = session.device.workspace_id();
     let user = device.cert.user_public_key;
     let actions = session.device.workspace_actions(workspace_id);
@@ -464,6 +469,11 @@ fn open(session: &Arc<Session>, device: &Device, run: &str) -> Served {
     // Every session of this agent, on any computer of the person's, is the one agent the host
     // and the workspace's record of its agents know it by.
     let agent = tilo_actions::remote::device_agent_id(&user, &device.agent);
+    let (signer, caller) = tilo_workspace_service::agents::agent_keys::this_device()
+        .and_then(|keys| {
+            AgentSigner::grant(keys, &device.workspace, (&agent, &device.agent), &person)
+        })
+        .inspect_err(|why| tracing::warn!(%agent, %why, "the agent has no key of its own here"))?;
     // The apps the workspace's host lists: what this connection's task programs compile against
     // there, so `tilo run` works where the workspace is hosted elsewhere.
     let cert = session.device.cert();
@@ -471,16 +481,17 @@ fn open(session: &Arc<Session>, device: &Device, run: &str) -> Served {
         actions.clone(),
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key),
     );
-    let server = McpServer::for_agent(actions, device.workspace.clone(), &agent, &person)
+    let server = McpServer::for_delegated(Signed::new(actions, Some(signer)), caller)
+        .map_err(|why| why.to_string())?
         .with_agent_session(run)
         .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
             Some(&person),
             Arc::new(catalogue),
         ))));
-    Served {
+    Ok(Served {
         session: Arc::downgrade(session),
         server,
-    }
+    })
 }
 
 /// The answer to one JSON-RPC line on `connection`, or `None` for a

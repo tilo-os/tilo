@@ -560,21 +560,7 @@ impl ActionService {
         addr: &EndpointAddr,
         workspace: &str,
     ) -> RemoteDevice {
-        RemoteDevice(self.device_at(endpoint, addr, workspace, None, None))
-    }
-
-    /// [`Self::remote`] for `agent`, which this device's person handed the requests to: every
-    /// request names it, and the device that answers acts on each as that agent, for this
-    /// device's person, under the agent's grants there.
-    #[must_use]
-    pub fn remote_for_agent(
-        &self,
-        endpoint: &Endpoint,
-        addr: &EndpointAddr,
-        workspace: &str,
-        agent: neighbour_wire::actions::HandedAgent,
-    ) -> RemoteDevice {
-        RemoteDevice(self.device_at(endpoint, addr, workspace, None, Some(agent)))
+        RemoteDevice(self.device_at(endpoint, addr, workspace, None))
     }
 
     /// [`Self::remote`] for a device this device places `workspace`'s work on: every request
@@ -589,7 +575,7 @@ impl ActionService {
         placement: &crate::join::TransportHint,
     ) -> RemoteDevice {
         let placement = postcard::to_allocvec(placement).ok();
-        RemoteDevice(self.device_at(endpoint, addr, workspace, placement, None))
+        RemoteDevice(self.device_at(endpoint, addr, workspace, placement))
     }
 
     /// The connection to one device, opened on first use and kept while it
@@ -600,14 +586,12 @@ impl ActionService {
         addr: &EndpointAddr,
         workspace: &str,
         placement: Option<Vec<u8>>,
-        agent: Option<neighbour_wire::actions::HandedAgent>,
     ) -> Arc<Device> {
         Arc::new(Device {
             endpoint: endpoint.clone(),
             addr: addr.clone(),
             workspace: workspace.to_owned(),
             placement,
-            agent,
             target: self.device_of(*addr.id.as_bytes()),
             key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
@@ -761,10 +745,6 @@ impl ActionService {
             }
             _ => Caller::authenticated(certificate.user_public_key, source),
         };
-        let caller = match &action.agent {
-            None => caller,
-            Some(agent) => handed(caller, agent)?,
-        };
         Ok((
             caller
                 .in_workspace(action.workspace.clone())
@@ -854,18 +834,6 @@ impl ActionService {
                 Some(RemoteActionMessage::ContentPutResponse {
                     correlation: *correlation,
                     result: self.put_content(dispatcher, caller, step),
-                })
-            }
-            // An agent the person's device handed its requests to asks its person here, where its
-            // session is, as an agent of this device does; a device itself confirms nothing here.
-            RemoteActionMessage::Confirm {
-                correlation,
-                request,
-            } if caller.is_session_delegated() && caller.acting().is_agent() => {
-                let result = await_answer(dispatcher.confirm(caller, request)).await;
-                Some(RemoteActionMessage::ConfirmResponse {
-                    correlation: *correlation,
-                    result: result.map(Box::new),
                 })
             }
             // A request this device does not answer is said so, never left
@@ -1160,40 +1128,6 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionCal
     }
 }
 
-/// `caller`, a person at their own device, as the agent the device says it handed the request
-/// to: that agent, for the person, held to what both the person and the agent's grants allow,
-/// under the id the person's device gives an agent of that client
-/// ([`tilo_actions::remote::device_agent_id`]). The claim only narrows, so the device's word is
-/// taken for it; a caller that is already not the person (an agent's or a bot's own device)
-/// hands nothing on.
-fn handed(
-    caller: Caller,
-    agent: &neighbour_wire::actions::HandedAgent,
-) -> Result<Caller, tilo_actions::remote::ActionCallError> {
-    use tilo_actions::remote::ActionCallError;
-    if !caller.acting().is_person() {
-        return Err(ActionCallError::NotPermitted);
-    }
-    let said = |text: &str| !text.trim().is_empty() && text.len() <= MAX_HANDED;
-    if !(said(&agent.client) && said(&agent.session)) {
-        return Err(ActionCallError::InvalidRequest {
-            reason: "the agent the request names has no client or session".into(),
-        });
-    }
-    let person = caller
-        .user_public_key()
-        .copied()
-        .ok_or(ActionCallError::NotPermitted)?;
-    let id = tilo_actions::remote::device_agent_id(&person, &agent.client);
-    Ok(caller
-        .delegated_to(id)
-        .named(&agent.client)
-        .in_agent_session(agent.session.clone()))
-}
-
-/// The longest client or session a handed agent is named by.
-const MAX_HANDED: usize = 256;
-
 /// The answer a dispatcher's pending gives, or the refusal of one it
 /// abandoned.
 async fn await_answer<T: Send + 'static>(
@@ -1219,9 +1153,6 @@ struct Device {
     /// What every request carries of where this device serves the workspace, when it places the
     /// workspace's work on the device ([`ActionService::placing`]).
     placement: Option<Vec<u8>>,
-    /// The agent this device's person handed every request to, when it is one
-    /// ([`ActionService::remote_for_agent`]).
-    agent: Option<neighbour_wire::actions::HandedAgent>,
     target: [u8; 32],
     key: Arc<dyn DeviceSigner>,
     runtime: tokio::runtime::Handle,
@@ -1365,7 +1296,7 @@ impl Device {
                 target: self.target,
                 message,
                 placement: self.placement.clone(),
-                agent: self.agent.clone(),
+                agent: None,
             },
             now_ns(),
             self.key.as_ref(),
@@ -1672,28 +1603,6 @@ impl ActionProvider for RemoteDevice {
             RemoteActionMessage::Cancel { invocation: *id },
             |answer| match answer {
                 RemoteActionMessage::CancelResponse { result, .. } => result,
-                _ => Err(unexpected()),
-            },
-        )
-    }
-
-    /// The person put `request` to on the device, where an agent this device handed its requests
-    /// to works: that device asks them as it asks about any of its agents' steps.
-    fn confirm(
-        &self,
-        _caller: &Caller,
-        request: &tilo_actions::remote::InvokeRequest,
-    ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionCallError>,
-    > {
-        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
-        self.ask(
-            RemoteActionMessage::Confirm {
-                correlation,
-                request: Box::new(request.clone()),
-            },
-            |answer| match answer {
-                RemoteActionMessage::ConfirmResponse { result, .. } => result.map(|answer| *answer),
                 _ => Err(unexpected()),
             },
         )

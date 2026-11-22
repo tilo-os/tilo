@@ -439,75 +439,6 @@ tilo_test_env::scenario! {
         assert!(args(&["--profile", "/tmp/profile", "--dev", "--dev"]).is_err());
     }
 
-    phase a_device_and_its_workspace_choose_where_connect_goes;
-    // `--device` carries `--connect` on to another of the person's devices, in
-    // the workspace `--workspace` names there; neither means anything elsewhere.
-    {
-        let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
-        let workspace = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-        assert_eq!(
-            args(&[
-                "--profile",
-                "/tmp/p",
-                "--connect",
-                "--device",
-                " Build box "
-            ])
-            .unwrap()
-            .forward,
-            Some(tilo_mcp::devices::Forward {
-                device: "Build box".into(),
-                workspace: None
-            })
-        );
-        assert_eq!(
-            args(&[
-                "--profile",
-                "/tmp/p",
-                "--connect",
-                "--device",
-                "b",
-                "--workspace",
-                workspace
-            ])
-            .unwrap()
-            .forward
-            .and_then(|forward| forward.workspace)
-            .as_deref(),
-            Some(workspace)
-        );
-        assert_eq!(
-            args(&["--profile", "/tmp/p", "--connect"]).unwrap().forward,
-            None
-        );
-        for refused in [
-            &["--profile", "/tmp/p", "--device", "b"][..],
-            &["--profile", "/tmp/p", "--connect", "--workspace", workspace],
-            &[
-                "--profile",
-                "/tmp/p",
-                "--connect",
-                "--device",
-                "b",
-                "--workspace",
-                "Studio",
-            ],
-            &["--profile", "/tmp/p", "--connect", "--device", "  "],
-            &["--profile", "/tmp/p", "--connect", "--device"],
-            &[
-                "--profile",
-                "/tmp/p",
-                "--connect",
-                "--device",
-                "a",
-                "--device",
-                "b",
-            ],
-        ] {
-            assert!(args(refused).is_err(), "{refused:?}");
-        }
-    }
-
     phase connect_asks_for_a_workspace_by_its_id;
     // `--connect --workspace ID` asks the desktop's API for that workspace: it
     // is a client's request of the person, so it goes with `--connect` alone,
@@ -519,7 +450,6 @@ tilo_test_env::scenario! {
         assert_eq!(asked.mode, Mode::Connect);
         assert_eq!(asked.workspace.as_deref(), Some(workspace));
         assert_eq!(args(&["--connect"]).unwrap().workspace, None);
-        assert_eq!(asked.forward, None, "this desktop's own API");
         let elsewhere = args(&["--connect", "--device", "b", "--workspace", workspace]).unwrap();
         assert_eq!(
             elsewhere.workspace, None,
@@ -871,10 +801,11 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     // The person's services run, answering as the workspace `home`.
     native.serve_the_person(super::Endpoint {
         session_factory: std::sync::Arc::new(move || {
-            Ok(tilo_mcp::McpServer::new(
+            Ok(tilo_mcp::McpServer::for_agent(
                 answers.clone(),
                 String::new(),
-                String::new(),
+                "agent",
+                "",
             ))
         }),
         status: super::Status {
