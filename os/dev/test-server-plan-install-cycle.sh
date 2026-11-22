@@ -99,9 +99,18 @@ out="$(cd "$out" && pwd)"
 evidence="$out/evidence"
 mkdir -p "$evidence"
 export TILO_VM_CYCLE="${TILO_VM_CYCLE:-server-plan-cycle-$$}"
-# Each VM's run directory holds Unix sockets, whose paths a kernel bounds at
-# 108 bytes, so keep this beside the artifacts under a short name.
-storage="${TILO_SERVER_CYCLE_STORAGE:-$(dirname "$out")/.plan-cycle-$TILO_VM_CYCLE}"
+# The guests' disks, kept on this machine's own disk rather than beside the
+# artifacts: under t the artifacts' directory is a virtio-fs share, and the
+# guests' block I/O through it took a retained Fedora's boot and the staging
+# from minutes to half an hour each. Each VM's run directory holds Unix
+# sockets, whose paths a kernel bounds at 108 bytes, so the name stays short.
+if [ -n "${TILO_SERVER_CYCLE_STORAGE:-}" ]; then
+  storage="$TILO_SERVER_CYCLE_STORAGE"
+  own_storage=""
+else
+  storage="/var/tmp/plan-cycle-$TILO_VM_CYCLE"
+  own_storage=1
+fi
 mkdir -p "$storage"
 cycle_dir="$storage"
 mkdir -p "$cycle_dir"
@@ -211,6 +220,7 @@ cleanup() {
   owner stop >/dev/null 2>&1 || true
   server_vm stop >/dev/null 2>&1 || true
   printf '{"exit_status":%d,"phase":"%s"}\n' "$rc" "$phase" > "$evidence/verdict.json"
+  [ -z "$own_storage" ] || rm -rf -- "$storage"
   exit "$rc"
 }
 trap cleanup EXIT
