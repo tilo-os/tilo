@@ -32,16 +32,6 @@ use crate::meta::{MetaExt as _, action_kind};
 /// Where the host reads the person's access in the workspace, each time it decides.
 pub type AccessSource = dyn Fn() -> Option<MemberAccess>;
 
-/// The access of `person` holding nothing: for a host that only reads, so that nothing its
-/// runtime might invoke runs.
-pub fn holding_nothing(person: &str) -> impl Fn() -> Option<MemberAccess> + 'static {
-    let access = MemberAccess::person(
-        tilo_action_policy::WorkspacePolicy::new(NO_WORKSPACE, format!("{person}'s owner")),
-        person,
-    );
-    move || Some(access.clone())
-}
-
 /// The workspace a host without an access decides in.
 const NO_WORKSPACE: &str = "local";
 

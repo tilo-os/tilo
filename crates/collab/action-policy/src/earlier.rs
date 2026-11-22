@@ -189,12 +189,6 @@ pub fn held() -> EarlierIds {
     HELD.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
-/// The ids this process was told `app` had before ([`register`]).
-#[must_use]
-pub fn held_of(app: &str) -> Vec<String> {
-    with_held(|held| held.of(app).to_vec()).unwrap_or_default()
-}
-
 /// The app `id` names now, as this process was told ([`EarlierIds::current`]).
 #[must_use]
 pub fn held_current(id: &str) -> String {

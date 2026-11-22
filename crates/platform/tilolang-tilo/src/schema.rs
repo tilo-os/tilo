@@ -245,13 +245,6 @@ impl TypeSchema {
         );
         scan
     }
-
-    /// Where the field `id` stands in [`Self::naming_scan`]: a change to a field at or before
-    /// this one may move the resource's name, a change to one after it cannot.
-    #[must_use]
-    pub fn naming_position(&self, id: &str) -> Option<usize> {
-        self.naming_scan().iter().position(|field| field.id == id)
-    }
 }
 
 thread_local! {
@@ -512,12 +505,6 @@ pub fn register_previously(app: &str, before: &[String]) {
     tilo_action_policy::earlier::register(app, before.iter().cloned());
 }
 
-/// The ids `app` was published under before.
-#[must_use]
-pub fn previously(app: &str) -> Vec<String> {
-    tilo_action_policy::earlier::held_of(app)
-}
-
 /// The app the documents stored under `stored` belong to: the app that was published as `stored`
 /// before (`previously:`), else `stored` itself.
 ///
@@ -534,12 +521,4 @@ pub fn successor(stored: &str) -> String {
 #[must_use]
 pub fn earlier_ids() -> EarlierIds {
     tilo_action_policy::earlier::held()
-}
-
-/// The keys the documents of `app` may be stored under: its own id, then each it had before.
-#[must_use]
-pub fn stored_under(app: &str) -> Vec<String> {
-    let mut out = vec![app.to_owned()];
-    out.extend(previously(app));
-    out
 }

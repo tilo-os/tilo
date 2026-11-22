@@ -277,8 +277,6 @@ struct Subscription {
 struct Inner {
     port: Rc<dyn Port>,
     kinds: RefCell<Kinds>,
-    /// Who may read what this store writes: `*` for every member of the workspace.
-    readers: RefCell<String>,
     /// The person whose device writes here: who the platform's own writes are by (a root
     /// made, an outside effect handed over, a mark), [`PLATFORM_WRITES`].
     writer: RefCell<Option<Actor>>,
@@ -567,7 +565,6 @@ impl ResourceStore {
             inner: Rc::new(Inner {
                 port,
                 kinds: RefCell::new(Kinds::default()),
-                readers: RefCell::new("*".to_owned()),
                 writer: RefCell::default(),
                 cache: RefCell::default(),
                 local: RefCell::default(),
@@ -754,12 +751,6 @@ impl ResourceStore {
     #[must_use]
     pub fn kinds(&self) -> std::cell::Ref<'_, Kinds> {
         self.inner.kinds.borrow()
-    }
-
-    /// Who may read what this store writes from here on: `*` for every member of the
-    /// workspace, else whatever names the people (a person's own resources).
-    pub fn set_readers(&self, readers: impl Into<String>) {
-        *self.inner.readers.borrow_mut() = readers.into();
     }
 
     /// The person whose device writes here: who the platform's own writes are by.
@@ -2640,6 +2631,25 @@ impl ResourceStore {
         Ok(())
     }
 
+    /// The item `item` of `at`'s collection `field`.
+    fn item_of(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        item: &str,
+    ) -> Result<ResourceRef, StoreError> {
+        if self
+            .field(&at.ty, field)
+            .is_none_or(|entry| entry.items.is_empty())
+        {
+            return Err(StoreError::Invalid(format!("{field} is not a collection")));
+        }
+        let ty = self
+            .type_of_id(&at.item(item, String::new()).id_string())
+            .unwrap_or_default();
+        Ok(at.item(item, ty))
+    }
+
     /// [`Store::apply`] of a mutation of a collection or an outbox: `None` for a write of a
     /// field.
     fn apply_structure(
@@ -2675,32 +2685,14 @@ impl ResourceStore {
                 Ok(Some(Applied::Item(item_id)))
             }
             Mutation::CollRemove { field, item } => {
-                if self
-                    .field(&at.ty, field)
-                    .is_none_or(|entry| entry.items.is_empty())
-                {
-                    return Err(StoreError::Invalid(format!("{field} is not a collection")));
-                }
-                let ty = self
-                    .type_of_id(&at.item(item, String::new()).id_string())
-                    .unwrap_or_default();
-                let child = at.item(item, ty);
+                let child = self.item_of(at, field, item)?;
                 self.remove_tree(txn, &child)?;
                 self.touch(txn, at, field, true)?;
                 self.touch(txn, &child, ANY_FIELD, false)?;
                 Ok(Some(Applied::Done))
             }
             Mutation::CollMove { field, item, index } => {
-                if self
-                    .field(&at.ty, field)
-                    .is_none_or(|entry| entry.items.is_empty())
-                {
-                    return Err(StoreError::Invalid(format!("{field} is not a collection")));
-                }
-                let ty = self
-                    .type_of_id(&at.item(item, String::new()).id_string())
-                    .unwrap_or_default();
-                let child = at.item(item, ty);
+                let child = self.item_of(at, field, item)?;
                 let mut held = self.held_at(&child)?;
                 let old = held.parent.clone();
                 held.order = Some(self.insert_key(at, field, Some(*index), Some(item))?);
@@ -3423,7 +3415,8 @@ impl ResourceStore {
                     kind: held.kind.clone(),
                     id: id.clone(),
                     resource: Resource {
-                        readers: self.inner.readers.borrow().clone(),
+                        // Every member of the workspace reads what an app writes.
+                        readers: "*".to_owned(),
                         parent: held.parent.clone(),
                         order: held.order.clone(),
                         fields: held.fields.clone(),
