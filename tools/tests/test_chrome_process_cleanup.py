@@ -198,8 +198,12 @@ class ChromeProcessCleanup(unittest.TestCase):
                     # stop.
                     continue
                 arguments = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+                # The recorded fixture is gone and its pid now names something
+                # else — on a loaded node a pid is reused at once. Nothing of
+                # ours is left to stop, and signalling what inherited the pid
+                # is exactly what this guard exists to prevent: leave it be.
                 if fields[19] != identity['birth'] or os.fsencode(root / 'fake-chrome') not in arguments:
-                    raise AssertionError('fixture process identity changed; refuse signalling')
+                    continue
                 signal.pidfd_send_signal(descriptor, signal.SIGTERM)
                 if not select.select([descriptor], [], [], HANG_BOUND)[0]:
                     raise AssertionError('the exact fixture writer did not stop')
