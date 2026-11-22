@@ -138,7 +138,8 @@ impl Shared {
                 // came for is not a window. After that, a window someone else opened in the
                 // workspace is one this device shows through its own instance of the app, on the
                 // same record, and its app is asked for it as a window this device left open is.
-                if !restore.start(&before, &mut tree) {
+                let under_way = |tab| self.desktop.with_policy(|policy| policy.on_its_way(tab));
+                if !restore.start(&before, &mut tree, &under_way) {
                     restore.arrived(&before, &tree);
                 }
             }

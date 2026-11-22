@@ -163,12 +163,19 @@ impl Restore {
     /// workspaces' layouts: every window that opens again, the ones on the shell in front first, then
     /// the rest in the order the person left them. Whether this is that first time, in which case
     /// what it took is all of them and no window is one that arrived.
-    pub(crate) fn start(&mut self, before: &Layout, tree: &mut Layout) -> bool {
+    /// `under_way` says which of this device's places a launch of this session holds for the window
+    /// it started: the person may open an app before the first layout is laid out.
+    pub(crate) fn start(
+        &mut self,
+        before: &Layout,
+        tree: &mut Layout,
+        under_way: &dyn Fn(TabId) -> bool,
+    ) -> bool {
         if self.seeded {
             return false;
         }
         self.seeded = true;
-        without_unfilled(tree);
+        without_unfilled(tree, under_way);
         // A window this device already shows is one it opened: its app is running here, and there
         // is nothing to wait for. What the workspace's layout brought is what waits for its app.
         #[expect(
@@ -396,7 +403,9 @@ impl Restore {
         let launched = desktop.with_policy(|policy| policy.launch_tab_of(&saved.app));
         let theirs = launched.filter(|tab| {
             *tab != saved.tab
-                && desktop.with_policy(|policy| policy.waits_for_window(*tab))
+                && desktop.with_policy(|policy| {
+                    policy.waits_for_window(*tab) || policy.holds_a_place(*tab)
+                })
                 && same_workspace(desktop, *tab, saved.tab)
         });
         // A launch whose tab the shell has not made yet holds a place all the same.
@@ -851,8 +860,9 @@ fn tabs_laid_out(kept: &tilo_app_launch::Adopted, waiting: &VecDeque<Saved>) -> 
 /// Only this device's own places are its earlier session's: a place another device minted is that
 /// device's launch, under way while this one starts, and the workspace's layout holds it until its
 /// window comes. Closing it here would be a close this device writes, which takes the window away
-/// from the device that opened it.
-pub(crate) fn without_unfilled(tree: &mut Layout) {
+/// from the device that opened it. A place a launch of this session holds (`under_way`) is the same:
+/// the person opened the app before the layout was first laid out, and its window takes that place.
+pub(crate) fn without_unfilled(tree: &mut Layout, under_way: &dyn Fn(TabId) -> bool) {
     let salt = tree.salt;
     let unfilled: Vec<TabId> = tree
         .workspaces
@@ -863,6 +873,7 @@ pub(crate) fn without_unfilled(tree: &mut Layout) {
         .filter(|tab| matches!(tab.tile, TileContent::AppPlaceholder { .. }))
         .filter(|tab| tilo_desktop_model::peer_salt_of(tab.id) == salt)
         .map(|tab| tab.id)
+        .filter(|tab| !under_way(*tab))
         .collect();
     for tab in unfilled {
         tree.close_tab(tab);
@@ -1061,7 +1072,7 @@ mod tests {
         let theirs = tilo_desktop_model::compose_id(8, 5);
         let mut tree = layout(vec![window(own, place()), window(theirs, place())]);
         tree.salt = 7;
-        super::without_unfilled(&mut tree);
+        super::without_unfilled(&mut tree, &|_| false);
         let left: Vec<u64> = tree
             .workspaces
             .iter()
@@ -1273,7 +1284,7 @@ mod tests {
         });
         let mut restore = Restore::default();
         restore.begin();
-        assert!(restore.start(&Layout::default(), &mut tree));
+        assert!(restore.start(&Layout::default(), &mut tree, &|_| false));
         desktop.with_policy(|policy| policy.handle().replace_tree(tree.clone()));
         restore.kept = vec![kept(&[
             ("w2", Some("999")),
@@ -1333,7 +1344,7 @@ mod tests {
         });
         let mut restore = Restore::default();
         restore.begin();
-        assert!(restore.start(&Layout::default(), &mut tree));
+        assert!(restore.start(&Layout::default(), &mut tree, &|_| false));
         desktop.with_policy(|policy| policy.handle().replace_tree(tree.clone()));
         let mut cube = kept(&[("w1", Some("44"))]);
         cube.windows[0].app_id = None;
@@ -1389,7 +1400,7 @@ mod tests {
         assert!(restore.next_deadline().is_some(), "for a bounded time");
 
         let mut tree = kept_layout();
-        assert!(restore.start(&Layout::default(), &mut tree));
+        assert!(restore.start(&Layout::default(), &mut tree, &|_| false));
         desktop.with_policy(|policy| policy.handle().replace_tree(tree.clone()));
         assert_eq!(
             tabs(&desktop),
@@ -1429,7 +1440,7 @@ mod tests {
         partly.begin();
         let mut first = kept_layout();
         first.workspaces.truncate(1);
-        assert!(partly.start(&Layout::default(), &mut first));
+        assert!(partly.start(&Layout::default(), &mut first, &|_| false));
         partly.kept = vec![kept(&[("w1", Some("41")), ("w2", Some("42"))])];
         partly.kept_since = Some(std::time::Instant::now());
         assert!(
@@ -1443,7 +1454,7 @@ mod tests {
         late.kept_since = std::time::Instant::now().checked_sub(super::KEPT_WAIT);
         assert_eq!(late.claim_kept(&desktop), [50], "it waited long enough");
         let mut tree = kept_layout();
-        assert!(late.start(&Layout::default(), &mut tree));
+        assert!(late.start(&Layout::default(), &mut tree, &|_| false));
         let saved: Vec<u64> = tree
             .workspaces
             .iter()
@@ -1537,7 +1548,7 @@ mod tests {
         });
         let mut restore = Restore::default();
         restore.begin();
-        assert!(restore.start(&Layout::default(), &mut tree));
+        assert!(restore.start(&Layout::default(), &mut tree, &|_| false));
         desktop.with_policy(|policy| policy.handle().replace_tree(tree));
         assert_eq!(
             restore
