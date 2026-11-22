@@ -178,7 +178,7 @@ def control_call(socket_path: Path | str, payload: dict | str, timeout: float = 
 
 
 # The action model's frame version, as `tilo_actions::remote::REMOTE_ACTIONS_VERSION` names it.
-FRAME_VERSION = 2
+FRAME_VERSION = 3
 
 
 def frame(message: dict) -> dict:

@@ -118,7 +118,7 @@ def invoke(path: str, provider: str, action: str, arguments: dict, phrase: str |
     if not at:
         raise Refused("invalid_arguments", f"{action}: name the action as ACTION@RESOURCE")
     invocation = str(uuid.uuid4())
-    frame = {"version": 2, "message": {"Invoke": {
+    frame = {"version": 3, "message": {"Invoke": {
         "invocation": invocation,
         "target": {"provider": provider, "address": {"resource": resource, "action": name}},
         "argument": {"Json": arguments},
