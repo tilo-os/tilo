@@ -867,7 +867,8 @@ fi
 # through. Without it a Nextcloud or WebDAV account signs in and never shows its files.
 mkdir -p "$HOME/Remote" "$XDG_STATE_HOME/tilo/cloud" "$runtime/tilo-fs-cloud" "$runtime/tilo-fs-cloud-files"
 chmod 700 "$runtime/tilo-fs-cloud" "$runtime/tilo-fs-cloud-files"
-setsid "$bin/fs" cloud-service --mounts-root "$HOME/Remote" --state-root "$XDG_STATE_HOME/tilo/cloud" \
+# What it does with each account is logged too: a cloud account that never shows its files says why.
+RUST_LOG="$RUST_LOG,fs::cloud=info" setsid "$bin/fs" cloud-service --mounts-root "$HOME/Remote" --state-root "$XDG_STATE_HOME/tilo/cloud" \
     --fs-binary "$bin/fs" \
     --control-socket "$runtime/tilo-fs-cloud/control.sock" \
     --file-socket "$runtime/tilo-fs-cloud-files/files.sock" > "$logs/cloud.log" 2>&1 &

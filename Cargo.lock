@@ -19849,6 +19849,7 @@ dependencies = [
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "wire-frame",
  "workspace-hack",

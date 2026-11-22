@@ -436,6 +436,15 @@ fn main() -> Result<()> {
         std::process::exit(i32::from(code));
     }
     let cli = Cli::parse();
+    // What the daemon says goes to its standard error, which its service's log keeps: its
+    // warnings, and what the cloud service does with each file account.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,fs::cloud=info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
     if let Command::ServePrimary(args) = &cli.command {
         std::process::exit(primary_workspace::run(args));
     }

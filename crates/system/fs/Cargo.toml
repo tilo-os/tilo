@@ -179,6 +179,8 @@ cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", op
 cloud-source-icloud = { version = "0.1.0", path = "../cloud-source-icloud", optional = true }
 zeroize = { workspace = true, optional = true }
 tracing.workspace = true
+# The daemon's log, on its standard error.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 wire-frame = { version = "0.1.0", path = "../wire-frame", optional = true, features = ["tokio", "postcard"] }
 # The daemon's tree writer joins the session's record route as the Files app does.
 runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false, features = ["client"], optional = true }

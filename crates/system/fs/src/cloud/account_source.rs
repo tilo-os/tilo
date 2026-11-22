@@ -91,6 +91,9 @@ impl Inner {
             Answer::Accounts { revision, accounts } => {
                 let mut latest = self.latest.lock_recover();
                 let changed = latest.as_ref().is_none_or(|(held, _)| *held != revision);
+                if changed {
+                    tracing::info!(accounts = accounts.len(), "the session told other file accounts");
+                }
                 *latest = Some((revision, accounts));
                 Ok(changed)
             }
@@ -146,7 +149,7 @@ impl AccountSource for SessionAccounts {
                         Ok(true) if !stopped.load(Ordering::SeqCst) => changed(),
                         Ok(_) => {}
                         Err(error) => {
-                            tracing::debug!(%error, "the session's file accounts are not told yet");
+                            tracing::info!(%error, "the session's file accounts are not told yet");
                             std::thread::sleep(RECONNECT);
                         }
                     }

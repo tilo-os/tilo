@@ -237,6 +237,11 @@ impl CloudService {
                 .is_some_and(|a| providers::source_spec(a).is_some())
         });
         let wanted: Vec<MountSpec> = store.all().iter().filter_map(providers::spec_for).collect();
+        tracing::info!(
+            accounts = store.all().len(),
+            mounts = ?wanted.iter().map(|spec| spec.account_id.as_str()).collect::<Vec<_>>(),
+            "the cloud service follows the file accounts"
+        );
         let labels: Vec<(&str, &str)> = store
             .all()
             .iter()
@@ -301,6 +306,7 @@ impl CloudService {
                 .start(&started, &credential, &mount_point, &state_dir, events)
             {
                 Ok(running) => {
+                    tracing::info!(account = %spec.account_id, "a cloud account's mount started");
                     self.mounts.insert(
                         spec.account_id.clone(),
                         Mounted {
