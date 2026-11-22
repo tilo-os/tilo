@@ -1405,6 +1405,11 @@ impl AttachedView {
     /// first: a chain follows what arrived only when it is read, so the part
     /// just handed to it is taken up, and a chain read whole asks for the
     /// parts before its head. Only the chains are read, not the view's tree.
+    ///
+    /// What the app keeps for its whole workspace that the view was told nothing of yet is
+    /// wanted too: it opens only on the workspace's word ([`Self::workspace_answered`]), and
+    /// the view waits for what its app declared of it, so a host that answers what the view
+    /// wants answers that as well.
     #[must_use]
     pub fn wanted_resources(&self) -> Vec<ui_core::resource::DocumentId> {
         // What reached the view from elsewhere asks for what a frame of it
@@ -1424,7 +1429,13 @@ impl AttachedView {
                 .frame_as_is()
                 .resource(&super::chain_resource_id(chain));
         }
-        self.records.wanted_resources()
+        let mut wanted = self.records.wanted_resources();
+        for kept in self.awaited.borrow().iter() {
+            if !wanted.contains(kept) {
+                wanted.push(kept.clone());
+            }
+        }
+        wanted
     }
 
     /// The workspace's hosts sent all they hold of `record`, none of it

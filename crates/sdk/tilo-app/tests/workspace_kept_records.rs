@@ -189,3 +189,35 @@ fn a_window_shows_the_workspaces_record_once_it_arrived() {
         "the window shows what the other member kept, with no reload"
     );
 }
+
+/// A window waiting for the workspace's record shows its view once the workspace answers that it
+/// holds none of it: the record is new here, empty, and the view reads it as such.
+#[test]
+fn a_window_shows_the_workspaces_record_empty_once_the_workspace_holds_none() {
+    use tilo_app::resource::WorkspaceAnswer;
+    let mut app = TestApp::<ReadsOnce>::awaiting_the_workspace(
+        tilo_app::framework::headless::TEST_WORKSPACE,
+        BROWSER,
+    )
+    .unwrap();
+    app.frame();
+    assert!(
+        !says(&mut app, "nothing bookmarked"),
+        "on their way, not read as none"
+    );
+    let wanted = app.wanted_resources();
+    assert!(
+        !wanted.is_empty(),
+        "the window asks the workspace for its bookmarks"
+    );
+    for record in wanted {
+        app.workspace_answered(record, WorkspaceAnswer::HoldsNone);
+    }
+    for _ in 0..4 {
+        app.frame();
+    }
+    assert!(
+        says(&mut app, "nothing bookmarked"),
+        "the workspace holds none: the window shows its bookmarks, empty"
+    );
+}

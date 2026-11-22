@@ -397,6 +397,11 @@ pub(super) fn wanted_untold(
         .wanted_resources()
         .into_iter()
         .filter(|document| document != own)
+        // What the app keeps for its whole workspace is wanted until it is told of it, which
+        // [`kept_untold`] does.
+        .filter(|document| {
+            collab_types::workspace_document(&holder.app_id, document.as_str()).is_none()
+        })
         .map(|document| DocumentRoute {
             app_id: holder.app_id.clone(),
             cluster_id: holder.cluster_id.clone(),
