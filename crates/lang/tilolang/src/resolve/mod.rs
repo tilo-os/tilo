@@ -448,6 +448,7 @@ impl Env {
                 group: a.group.clone(),
                 did: a.did.clone(),
                 opens: a.opens.clone(),
+                moderates: a.moderates,
             };
             add(
                 CKind::Action,
@@ -1802,6 +1803,7 @@ impl Resolver<'_> {
             group: None,
             did: None,
             opens: Vec::new(),
+            moderates: false,
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -1911,10 +1913,18 @@ impl Resolver<'_> {
                     opt.value.span,
                     "`opens:` takes a list of the kinds of file the action opens, each a media type in quotes or an extension with a dot: `opens: [\"text/markdown\", .md, .markdown]`",
                 ),
+                // `moderates: true`: the action acts on other people's content, which the
+                // workspace's roles decide as moderation.
+                ("moderates", ExprKind::Bool(on)) => out.moderates = *on,
+                ("moderates", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`moderates:` is `true` for an action only moderators may run: `moderates: true`",
+                ),
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:` and `opens:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:`, `opens:` and `moderates:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }

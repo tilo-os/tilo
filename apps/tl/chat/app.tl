@@ -40,6 +40,8 @@ type TextChannel {
     /// The threads its messages started, each the one a message's `thread` names.
     /// TODO(language): an owned `Option<Thread>` on the message; a reference needs a home.
     threads: Collection<Thread>
+    /// The reports filed about its messages, for the workspace's moderators.
+    reports: Collection<Report>
 
     search {
         kind conversation
@@ -64,11 +66,13 @@ type Message {
     /// their own views, and its author is whoever sent the message. Empty for a message that
     /// sends none.
     sent_view: Text
-    /// Who wrote it in the native Chat, as that app named them, for a message carried over from
-    /// there: its own history names whoever carried it, when it was carried.
+    /// Who wrote it where it was written, as that place named them, for a message carried over
+    /// from the native Chat or relayed from another service: its own history names whoever
+    /// carried or relayed it.
     by: Text = ""
-    /// When it was written in the native Chat, in milliseconds since 1970; 0 for a message
-    /// written here.
+    /// Where a message carried or relayed here was written.
+    written_in: Text = "the native Chat"
+    /// When it was written there, in milliseconds since 1970; 0 for a message written here.
     written: Int = 0
     /// The reactions it had in the native Chat, each emoji with how many reacted with it: who
     /// reacted there is not carried, since this app names people only as its own members.
@@ -80,11 +84,29 @@ type Message {
     }
 }
 
+/// One person's report of a message to the workspace's moderators, kept by the conversation
+/// the message is in so it outlives the message: who filed it is its history's.
+type Report {
+    /// The message reported; none once it was deleted.
+    message: Option<Message>
+    /// Who wrote the reported message.
+    person: Option<Actor>
+    /// What the message said when it was reported, read again after it was deleted.
+    said: Text
+    /// Why, in the reporter's words.
+    reason: Text
+    /// What a moderator, or the workspace's moderation agent, decided about it: empty while it
+    /// is open.
+    decision: Text = ""
+}
+
 /// A side conversation branched off one message.
 type Thread {
     name: Text
     messages: Collection<Message>
     archived: Bool = false
+    /// The reports filed about its messages, for the workspace's moderators.
+    reports: Collection<Report>
 }
 
 /// A private conversation: one other person, or a named group of them, in the same message
@@ -98,6 +120,8 @@ type Direct {
     person: Actor
     messages: Collection<Message>
     threads: Collection<Thread>
+    /// The reports filed about its messages, for the workspace's moderators.
+    reports: Collection<Report>
 
     search {
         kind conversation
@@ -130,12 +154,13 @@ row view category_summary for Category
 
 row view voice_summary for VoiceChannel
 
-/// Adds a text channel to the sidebar.
-primary action new_channel(all: Conversations, name: Text = std.say("new-channel")) -> TextChannel (
-    icon: .plus,
-    label: "New channel",
-) {
-    all.channels.insert(TextChannel(name: name))
+/// Adds a text channel to the sidebar, about `topic` when it is given.
+primary action new_channel(
+    all: Conversations,
+    name: Text = std.say("new-channel"),
+    topic: Text = "",
+) -> TextChannel (icon: .plus, label: "New channel") {
+    all.channels.insert(TextChannel(name: name, topic: topic))
 }
 
 /// Adds a category to the sidebar.
@@ -146,12 +171,13 @@ action new_category(all: Conversations, name: Text = std.say("New category")) ->
     all.channels.insert(Category(name: name))
 }
 
-/// Adds a text channel to a category.
-action add_channel(c: Category, name: Text = std.say("new-channel")) -> TextChannel (
-    icon: .plus,
-    label: "New channel",
-) {
-    c.channels.insert(TextChannel(name: name))
+/// Adds a text channel to a category, about `topic` when it is given.
+action add_channel(
+    c: Category,
+    name: Text = std.say("new-channel"),
+    topic: Text = "",
+) -> TextChannel (icon: .plus, label: "New channel") {
+    c.channels.insert(TextChannel(name: name, topic: topic))
 }
 
 /// Adds a voice channel to the sidebar.
@@ -480,6 +506,54 @@ action send_view(to: TextChannel | Thread | Direct, title: Text, definition: Tex
     }
 }
 
+/// Posts a message written on another service, as it was written there: who wrote it, as that
+/// service names them, where and when. A bridge relays another service's conversation this
+/// way; the message's history names the bridge, and the message says whom it relays.
+action relay(
+    to: TextChannel | Thread | Direct,
+    body: RichText,
+    by: Text,
+    written_in: Text,
+    written: Int = 0,
+    reply_to: Option<Message> = .none,
+) -> Message (icon: .send, label: "Relay", did: "relayed a message") {
+    require by.trim() != "" "Say who wrote the message"
+    let m = Message(
+        body: body,
+        reply_to: reply_to,
+        by: by.trim(),
+        written_in: written_in,
+        written: written,
+    )
+    match to {
+        c: TextChannel => c.messages.insert(m),
+        t: Thread => t.messages.insert(m),
+        d: Direct => d.messages.insert(m),
+    }
+}
+
+/// Deletes a channel and what was said in it, from the sidebar or the category it is in.
+destructive action delete_channel(from: Conversations | Category, ch: TextChannel) (
+    icon: .trash,
+    label: "Delete channel",
+    moderates: true,
+) {
+    match from {
+        all: Conversations => all.channels.remove(ch),
+        c: Category => c.channels.remove(ch),
+    }
+}
+
+/// Deletes a category that holds no channel.
+destructive action delete_category(all: Conversations, c: Category) (
+    icon: .trash,
+    label: "Delete category",
+    moderates: true,
+) {
+    require c.channels.is_empty() "Move or delete its channels first"
+    all.channels.remove(c)
+}
+
 /// Changes what a message says. Only its author may.
 action edit(m: Message, body: RichText = m.body) (icon: .pencil, label: "Edit") {
     require created(m)?.who == invoker "Only its author can edit a message"
@@ -489,15 +563,31 @@ action edit(m: Message, body: RichText = m.body) (icon: .pencil, label: "Edit") 
 
 /// Deletes a message from the channel or thread it is in. Its author, or anyone the
 /// channel's permissions allow, may: the platform undoes it rather than asking first, and the
-/// removal is a version of the message, so who removed it stays answerable.
+/// removal is a version of the message, so who removed it stays answerable. Its reports stay,
+/// saying it was deleted.
 destructive action delete(to: TextChannel | Thread | Direct, m: Message) (
     icon: .trash,
     label: "Delete",
 ) {
     match to {
-        c: TextChannel => c.messages.remove(m),
-        t: Thread => t.messages.remove(m),
-        d: Direct => d.messages.remove(m),
+        c: TextChannel => {
+            for r in c.reports.filter(r -> r.message == m) {
+                r.message = .none
+            }
+            c.messages.remove(m)
+        }
+        t: Thread => {
+            for r in t.reports.filter(r -> r.message == m) {
+                r.message = .none
+            }
+            t.messages.remove(m)
+        }
+        d: Direct => {
+            for r in d.reports.filter(r -> r.message == m) {
+                r.message = .none
+            }
+            d.messages.remove(m)
+        }
     }
 }
 
@@ -514,6 +604,34 @@ action pin(m: Message, pinned: Bool = not m.pinned) (
 action react(m: Message, emoji: Text) (icon: .smile_plus, label: "React") {
     let mine = if let who = m.reactions.get(emoji) { who.any(p -> p == invoker) } else { false }
     if mine { m.reactions.remove(emoji, invoker) } else { m.reactions.add(emoji, invoker) }
+}
+
+/// Reports a message of a conversation to the workspace's moderators, saying why when the
+/// reporter does. Who reported it is the report's history's, so moderators see who asked; the
+/// conversation keeps it, with who wrote the message and what it said, after the message is
+/// deleted.
+action report(to: TextChannel | Thread | Direct, m: Message, reason: Text = "") -> Report (
+    icon: .flag,
+    label: "Report",
+    did: "reported a message",
+) {
+    let filed = Report(
+        message: m,
+        person: created(m)?.who,
+        said: m.body.excerpt,
+        reason: reason.trim(),
+    )
+    match to {
+        c: TextChannel => c.reports.insert(filed),
+        t: Thread => t.reports.insert(filed),
+        d: Direct => d.reports.insert(filed),
+    }
+}
+
+/// Settles a report: what a moderator, or the moderation agent, decided about it.
+action decide(r: Report, decision: Text) (icon: .shield, label: "Decide", moderates: true) {
+    require decision.trim() != "" "Say what was decided"
+    r.decision = decision.trim()
 }
 
 /// Starts a thread from a message of a channel or a direct conversation, named after what the
@@ -862,6 +980,7 @@ view direct_message(
         }
         edit_button(m, editing, revised)
         button(pin(m), icon_only: true)
+        button(report(d, m), icon_only: true)
         ui.EmojiPicker {
             on pick(e): react(m, e)
         }
@@ -887,6 +1006,7 @@ view channel_message(
         }
         edit_button(m, editing, revised)
         button(pin(m), icon_only: true)
+        button(report(c, m), icon_only: true)
         ui.EmojiPicker {
             on pick(e): react(m, e)
         }
@@ -900,7 +1020,7 @@ view thread(t: Thread) {
     state editing: Option<Message> = .none
     state revised: RichText = RichText("")
     std.transcript(t, t.messages) { m ->
-        thread_message(m, t.messages, replying, editing, revised)
+        thread_message(t, m, t.messages, replying, editing, revised)
         composer: {
             thread_typing_here(t)
             composer(t, t.messages, draft, replying, "Message {t.name}")
@@ -910,6 +1030,7 @@ view thread(t: Thread) {
 
 /// A message of a thread, with what can be done to it on hover.
 view thread_message(
+    t: Thread,
     m: Message,
     shown: List<Message>,
     replying: State<Option<Message>>,
@@ -923,6 +1044,7 @@ view thread_message(
         }
         edit_button(m, editing, revised)
         button(pin(m), icon_only: true)
+        button(report(t, m), icon_only: true)
         ui.EmojiPicker {
             on pick(e): react(m, e)
         }
@@ -1020,7 +1142,7 @@ view message(
     }
     std.origin(m)
     if m.by != "" {
-        ui.Text("{m.by} wrote this in the native Chat", role: .caption, secondary: true)
+        ui.Text("{m.by} wrote this in {m.written_in}", role: .caption, secondary: true)
     }
     if m.pinned {
         ui.Text("Pinned", role: .caption, secondary: true)

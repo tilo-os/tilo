@@ -667,6 +667,7 @@ fn build_meta(
                     guard: false,
                     applies: false,
                     outside: Vec::new(),
+                    moderates: false,
                     opens: Vec::new(),
                 });
                 meta.scenarios.push(ScenarioMeta {
@@ -766,6 +767,7 @@ fn build_meta(
                         .map(|f| f.facts.outside_caps.iter().cloned().collect())
                         .unwrap_or_default(),
                     opens: c.present.opens.clone(),
+                    moderates: c.present.moderates,
                 });
                 if let Some(v) = env.callables.iter().find(|v| {
                     v.own && v.kind == CKind::View && Some(&v.id) == c.present.view.as_ref()
@@ -1041,6 +1043,7 @@ pub fn compile_program_reading(
             invokes: false,
             carries: false,
             outside: Vec::new(),
+            moderates: false,
             opens: Vec::new(),
         }],
         ..PackageMeta::default()

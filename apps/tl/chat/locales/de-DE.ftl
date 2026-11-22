@@ -114,15 +114,17 @@ d-zevnbs3i = Art
 d-3hkzkqvr = Text
 
 d-msf7yzn7 = Neuer Kanal
-    .doc = Fügt der Seitenleiste einen Textkanal hinzu.
+    .doc = Fügt der Seitenleiste einen Textkanal hinzu, über `topic`, wenn es angegeben ist.
     .w-new-channel = new-channel
+
+d-msf7yzn7-topic = Thema
 
 d-26f7sh5k = Neue Kategorie
     .doc = Fügt der Seitenleiste eine Kategorie hinzu.
     .w-new-category = Neue Kategorie
 
 d-abono4ra = Neuer Kanal
-    .doc = Fügt einer Kategorie einen Textkanal hinzu.
+    .doc = Fügt einer Kategorie einen Textkanal hinzu, über `topic`, wenn es angegeben ist.
     .w-new-channel = new-channel
 
 d-uhenzjex = Problem melden
@@ -133,6 +135,8 @@ d-uhenzjex = Problem melden
 d-uhenzjex-body = Text
 
 d-v6wnfixl = Problem melden~present
+
+d-abono4ra-topic = Thema
 
 d-3cetzzm3 = Nachricht
     .doc = Öffnet die Direktnachricht mit `who` in der Seitenleiste, oder die schon offene mit ihm: eine Person hat eine Unterhaltung, nicht jedes Mal eine neue leere.
@@ -299,3 +303,105 @@ d-jcgolgdf = Reagiert
 
 d-aod7dups = Früheren Chat übernehmen
     .doc = Die Unterhaltungen, die der frühere Chat vor der Übernahme dieser Kennung hielt, einmalig in diese übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jeweils mit Name und Thema, und jede Nachricht eines Kanals mit ihrem Wortlaut, ob sie angeheftet war und welche Kennung sie dort hatte.
+
+d-4da5gcom = Geschrieben in
+    .doc = Wo eine hierher übernommene oder weitergeleitete Nachricht geschrieben wurde.
+
+d-y3mwdnru = Meldung
+    .doc = Die Meldung einer Nachricht an die Moderatoren des Arbeitsbereichs, aufbewahrt von der Unterhaltung, in der die Nachricht steht, damit sie die Nachricht überdauert: wer sie eingereicht hat, steht in ihrem Verlauf.
+    .noun = { $count ->
+        [one] Meldung
+       *[other] Meldungen
+    }
+
+d-jqcabz2h = Nachricht
+    .doc = Die gemeldete Nachricht; keine mehr, sobald sie gelöscht wurde.
+
+d-e3zqz33a = Person
+    .doc = Wer die gemeldete Nachricht geschrieben hat.
+
+d-adip7bw4 = Inhalt
+    .doc = Was die Nachricht sagte, als sie gemeldet wurde, auch nach ihrer Löschung lesbar.
+
+d-y3mwdnru-filter-message = Nachricht
+
+d-y3mwdnru-filter-person = Person
+
+d-kgihivmr = Meldungen
+    .doc = Die Meldungen zu seinen Nachrichten, für die Moderatoren des Arbeitsbereichs.
+
+d-ep7fvntj = Meldungen
+    .doc = Die Meldungen zu seinen Nachrichten, für die Moderatoren des Arbeitsbereichs.
+
+d-doiukw5i = Meldungen
+    .doc = Die Meldungen zu ihren Nachrichten, für die Moderatoren des Arbeitsbereichs.
+
+d-bmfbgqt6 = Grund
+    .doc = Warum, in den Worten der meldenden Person.
+
+d-3oner4zg = Entscheidung
+    .doc = Was eine Moderatorin oder der Moderationsagent dazu entschieden hat; leer, solange sie offen ist.
+
+d-6372fg6z = Weiterleiten
+    .doc = Stellt eine Nachricht ein, die auf einem anderen Dienst geschrieben wurde, so wie sie dort geschrieben wurde.
+    .did = hat eine Nachricht weitergeleitet
+    .w-say-who-wrote-the-message = Sag, wer die Nachricht geschrieben hat
+
+d-jozxp5qy = Kanal löschen
+    .doc = Löscht einen Kanal und was darin gesagt wurde.
+
+d-uukhgkjq = Kategorie löschen
+    .doc = Löscht eine Kategorie, die keinen Kanal enthält.
+    .w-move-or-delete-its-channels-first = Verschiebe oder lösche zuerst ihre Kanäle
+
+d-7sjai347 = Melden
+    .doc = Meldet eine Nachricht einer Unterhaltung an die Moderatoren des Arbeitsbereichs, mit Grund, wenn die meldende Person einen nennt.
+    .did = hat eine Nachricht gemeldet
+
+d-7sjai347-to = In
+
+d-7sjai347-m = Nachricht
+
+d-7sjai347-reason = Grund
+
+d-qfzfo5jh = Entscheiden
+    .doc = Schließt eine Meldung ab: was eine Moderatorin oder der Moderationsagent entschieden hat.
+    .w-say-what-was-decided = Sag, was entschieden wurde
+
+d-qfzfo5jh-decision = Entscheidung
+
+d-tz5yw5dt = Von
+    .doc = Wer sie dort geschrieben hat, wo sie geschrieben wurde, so wie dieser Ort die Person nannte, bei einer aus dem nativen Chat übernommenen oder von einem anderen Dienst weitergeleiteten Nachricht: ihr eigener Verlauf nennt, wer sie übernommen oder weitergeleitet hat.
+
+d-mmlcexsa = Geschrieben
+    .doc = Wann sie dort geschrieben wurde, in Millisekunden seit 1970; 0 bei einer hier geschriebenen Nachricht.
+
+d-jcgolgdf = Reaktionen dort
+    .doc = Die Reaktionen, die sie im nativen Chat hatte, jedes Emoji mit der Zahl derer, die damit reagiert haben: wer dort reagiert hat, wird nicht übernommen, da diese App Personen nur als ihre eigenen Mitglieder nennt.
+
+d-aod7dups = Nativen Chat übernehmen
+    .doc = Die Unterhaltungen, die der native Chat führte, bevor diese App seine Kennung übernahm, einmal hierher übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jeder mit Name und Thema, und jede Nachricht eines Kanals mit dem, was sie sagte, ob sie angeheftet war, und der Kennung, die sie dort hatte.
+
+d-6372fg6z-to = In
+
+d-6372fg6z-body = Text
+
+d-6372fg6z-by = Von
+
+d-6372fg6z-written_in = Geschrieben in
+
+d-6372fg6z-written = Geschrieben
+
+d-6372fg6z-reply_to = Antwort auf
+
+d-jozxp5qy-from = Aus
+
+d-jozxp5qy-ch = Kanal
+
+d-uukhgkjq-c = Kategorie
+
+d-psjj65el = Weiterleiten~present
+
+d-gwrwo3w5 = Kategorie löschen~present
+
+d-5ips5yl3 = Entscheiden~present

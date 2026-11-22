@@ -224,6 +224,9 @@ pub struct Presentation {
     /// (`text/markdown`) or an extension (`md`). The platform opens a file of one of them with this
     /// action ([`crate::meta::ActionMeta::opens`]).
     pub opens: Vec<String>,
+    /// `moderates: true`: the workspace decides the action as moderation
+    /// ([`crate::meta::ActionMeta::moderates`]).
+    pub moderates: bool,
 }
 
 /// The shortcut an action's `key:` declares, as it is published and compared: the modifiers in one

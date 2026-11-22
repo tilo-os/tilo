@@ -1,22 +1,14 @@
 //! A chat's messages: reading a part, and the ids a page holds beside its
 //! chat's document.
 
-use super::super::{CHAT, Workspaces};
+use crate::workspaces::Workspaces;
 use automerge::AutoCommit;
 use tilo_agent_session::Replica;
+use tilo_app_id::apps::CHAT;
 use tilo_resource::Resource as _;
 
 pub(crate) fn chat_of(bytes: &[u8]) -> chat::Chat {
     chat::Chat::read(&AutoCommit::load(bytes).unwrap()).unwrap()
-}
-
-pub(crate) fn texts_by(posts: &[chat::chat::Message], person: [u8; 32]) -> Vec<String> {
-    let person = hex::encode(person);
-    posts
-        .iter()
-        .filter(|message| message.author.person_id() == Some(person.as_str()))
-        .map(|message| message.text.clone())
-        .collect()
 }
 
 /// The chat's first part of messages, as a document of the workspace.

@@ -73,8 +73,12 @@ pub const MODERATION: &str = "moderation";
 /// turning moderation off revokes it by name.
 pub const MODERATION_GRANT: &str = "bot:moderation";
 
+/// The app the moderation agent acts in: the workspace's Chat, where reports are filed and
+/// decided.
+pub const MODERATED_APP: &str = tilo_app_id::apps::CHAT;
+
 /// The grant a person gives the server's moderation agent when they turn it on
-/// in `workspace`: reading and undoable changes in Chat, where reports are
+/// in `workspace`: reading and undoable changes in Chat ([`MODERATED_APP`]), where reports are
 /// filed and decided, and nothing outside it. `person` is the grantor, a user
 /// root, hex.
 #[must_use]
@@ -82,7 +86,7 @@ pub fn moderation_grant(workspace: &str, person: &str) -> Grant {
     Grant::new(
         MODERATION_GRANT,
         Grantee::bot(MODERATION),
-        TreePath::workspace(workspace).app(tilo_app_id::apps::CHAT),
+        TreePath::workspace(workspace).app(MODERATED_APP),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
         Grantee::person(person.to_owned()),

@@ -943,10 +943,6 @@ mod hard_stops;
 mod app_push;
 
 #[cfg(feature = "agents")]
-#[path = "governed_workspaces/member_files.rs"]
-mod member_files;
-
-#[cfg(feature = "agents")]
 #[path = "governed_workspaces/key_place.rs"]
 mod key_place;
 

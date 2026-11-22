@@ -685,6 +685,11 @@ pub struct ActionMeta {
     /// app with this action, which the platform knows by the manifest's `[providers]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub opens: Vec<String>,
+    /// `moderates: true`: the action acts on what other people made, as a moderator does
+    /// (settling a report, deleting a channel). The workspace decides it on its moderation node,
+    /// so the roles' own grants say who may: Moderators and administrators, not plain members.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub moderates: bool,
 }
 
 impl ActionMeta {

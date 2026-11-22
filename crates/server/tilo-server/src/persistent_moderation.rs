@@ -4,9 +4,9 @@
 //! The key is kept in this host's secret store like every provider key, and
 //! the agent's verdicts are enforced through the workspace's own governance, as
 //! the workspace's root: a restriction is the workspace's expiring `restrict:<person>`
-//! Deny, a ban the workspace's ban. Reports, history, decisions and undos go
-//! through the bot's replica of the chat record; the host runs it as the
-//! workspace's moderation bot ([`tilo_server::workspace_bots::ModerationBot`]).
+//! Deny, a ban the workspace's ban. Reports are read, and messages taken back and
+//! reports settled, through Chat's own actions as the moderation bot; the host runs
+//! it as the workspace's moderation bot ([`tilo_server::workspace_bots::ModerationBot`]).
 
 use std::path::Path;
 

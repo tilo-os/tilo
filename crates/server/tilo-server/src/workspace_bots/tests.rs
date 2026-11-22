@@ -13,12 +13,16 @@ use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
 use crate::workspaces::fixtures::{governor, test_host, test_host_taking_part};
+use automerge::AutoCommit;
+use collab_types::DocumentMutation;
 use serde_json::Value;
 use tilo_action_policy::{Answer, KindSet, TreePath};
 use tilo_actions::MemberId;
 use tilo_agent_session::bot::host_steps::{
     HostStepError, HostSteps, Instruction, Judgement, Question,
 };
+use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
+use tilo_app_id::apps::CHAT;
 
 /// A workspace's events through the host's own actions.
 mod events;
@@ -286,65 +290,6 @@ async fn post_with(
         }
     }
     id
-}
-
-/// The workspace's `#general`, where Mallory floods it.
-fn flood(doc: &mut AutoCommit) -> Result<String, tilo_actions::api::ApiError> {
-    chat::demo::apply_as(
-        doc,
-        &hex::encode(governor().1.user_public_key),
-        chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
-            name: "general".parse().unwrap(),
-            category: None,
-            kind: None,
-            topic: None,
-        }),
-    )?;
-    let general = chat::projection::read(doc)
-        .channel_rows()
-        .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
-        .expect("the chat has a text channel")
-        .id;
-    Ok(general)
-}
-
-/// Mallory's three identical posts in `general` beside Ada's, and Ada's
-/// report of one.
-async fn flood_posts(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert, general: &str) {
-    let (ada, mallory) = (hex::encode(ADA), hex::encode(MALLORY));
-    post_in(
-        workspaces,
-        workspace,
-        cert,
-        (&ada, general, "hello everyone"),
-    )
-    .await;
-    let mut spam = String::new();
-    for _ in 0..3 {
-        spam = post_in(
-            workspaces,
-            workspace,
-            cert,
-            (&mallory, general, "cheap links here"),
-        )
-        .await;
-    }
-    workspaces
-        .author_application(workspace, cert, &AppCatalogue::native(), CHAT, "", |doc| {
-            chat::demo::apply_as(
-                doc,
-                &ada,
-                chat::Chat::REPORT_MESSAGE.with(chat::chat::chat::ReportMessage {
-                    message: spam,
-                    author: MemberId::person(mallory),
-                    reason: "spam".parse().unwrap(),
-                }),
-            )
-            .map_err(|error| error.to_string())
-        })
-        .await
-        .unwrap();
 }
 
 /// A bot that answers every person's post in `channel`.
@@ -2265,216 +2210,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     );
 }
 
-/// The files the chat's first part references, as the workspace holds it.
-async fn referenced_in(workspaces: &Workspaces, workspace: &str) -> Vec<attachments::Referenced> {
-    attachments::referenced(
-        &workspaces
-            .resource_document(workspace, CHAT, &first_part())
-            .await
-            .unwrap()
-            .unwrap(),
-    )
-}
-
-/// The file `bytes` as a message's attachment.
-fn file(name: &str, bytes: &[u8]) -> serde_json::Value {
-    serde_json::json!({
-        "kind": "file",
-        "name": name,
-        "blob": blake3::hash(bytes).to_hex().to_string(),
-        "size": bytes.len(),
-    })
-}
-
-/// The one piece `device` answers `want` with when it keeps `bytes`, as a
-/// member's device answers.
-fn answer(want: &[u8], device: [u8; 32], bytes: &[u8]) -> Vec<u8> {
-    let neighbour_wire::NeighbourMsg::DocumentContentWant {
-        requester,
-        app_id,
-        cluster_id,
-        hash,
-        ..
-    } = postcard::from_bytes(want).unwrap()
-    else {
-        panic!("a request for content")
-    };
-    postcard::to_allocvec(&neighbour_wire::NeighbourMsg::DocumentContentPiece {
-        responder: tilo_peer_state::peer_handle(&device),
-        requester,
-        app_id,
-        cluster_id,
-        hash,
-        total: u64::try_from(bytes.len()).unwrap(),
-        offset: 0,
-        bytes: bytes.to_vec(),
-    })
-    .unwrap()
-}
-
-/// What the workspace answers `device` asking it for `bytes`, assembled.
-fn opened(
-    workspaces: &Workspaces,
-    workspace: &str,
-    device: [u8; 32],
-    bytes: &[u8],
-) -> Option<Vec<u8>> {
-    let want = postcard::to_allocvec(&neighbour_wire::NeighbourMsg::DocumentContentWant {
-        requester: tilo_peer_state::peer_handle(&device),
-        app_id: CHAT.into(),
-        cluster_id: workspace.into(),
-        hash: blake3::hash(bytes).to_hex().to_string(),
-        have: Vec::new(),
-    })
-    .unwrap();
-    let mut whole = Vec::new();
-    for frame in workspaces.content_answer(workspace, &device, &want) {
-        match postcard::from_bytes(&frame).unwrap() {
-            neighbour_wire::NeighbourMsg::DocumentContentPiece { bytes, .. } => whole.extend(bytes),
-            neighbour_wire::NeighbourMsg::DocumentContentLacks { .. } => return None,
-            _ => panic!("a piece of content, or word that the host keeps none"),
-        }
-    }
-    (!whole.is_empty()).then_some(whole)
-}
-
-/// Ada posts a file in the workspace's Chat. While her device is online it
-/// answers the host's request for it; once she left, Bo opens the file
-/// from the host's copy. Past Ada's quota her oldest file goes, and a file
-/// over the cap is not asked for at all.
-#[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one story: posting, leaving, the host's copy, the quota and the cap"
-)]
-async fn a_file_a_member_posted_stays_in_the_workspace_after_they_leave() {
-    const BO: [u8; 32] = [9; 32];
-    let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
-    let workspaces = server.workspaces().clone();
-    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
-    let content = crate::content::stores(scratch.path());
-    workspaces.serve_content(std::sync::Arc::new(crate::content::StoresContent(
-        content.clone(),
-    )));
-    let blobs = content.get(&workspace).unwrap();
-    let attachments_of = |limits| {
-        attachments::WorkspaceAttachments::new(
-            workspaces.clone(),
-            workspace.clone(),
-            cert.device_public_key,
-            blobs.clone(),
-            scratch.path().join("attachments.json"),
-            limits,
-        )
-    };
-    let keeper = attachments_of(attachments::AttachmentLimits {
-        file_bytes: 64,
-        member_bytes: 40,
-        workspace_bytes: 1000,
-    });
-    let kept: std::sync::Arc<dyn crate::workspaces::ContentKeeper> = keeper.clone();
-    workspaces.keep_content(&kept);
-    let ada = hex::encode(ADA);
-
-    let notes = b"the meeting notes, version one".to_vec();
-    post_with(
-        &workspaces,
-        &workspace,
-        &cert,
-        (&ada, &general, "notes"),
-        Some(file("notes.txt", &notes)),
-    )
-    .await;
-    let asks = keeper.asks(&referenced_in(&workspaces, &workspace).await, 0);
-    assert_eq!(
-        asks.len(),
-        1,
-        "the host asks the workspace for the file it lacks"
-    );
-    assert!(
-        keeper
-            .asks(&referenced_in(&workspaces, &workspace).await, 1)
-            .is_empty(),
-        "and only once a while"
-    );
-    // Ada's device answers the host; then she leaves.
-    workspaces.content_for_host(&workspace, ADA, &answer(&asks[0], ADA, &notes));
-    assert_eq!(
-        keeper.kept_for(&blake3::hash(&notes).to_hex()),
-        Some(MemberId::person(ada.as_str()))
-    );
-    assert_eq!(
-        opened(&workspaces, &workspace, BO, &notes),
-        Some(notes.clone()),
-        "Bo opens it from the host"
-    );
-
-    // A second file takes Ada past her quota: her oldest goes.
-    let slides = b"the slides that came after them".to_vec();
-    post_with(
-        &workspaces,
-        &workspace,
-        &cert,
-        (&ada, &general, "slides"),
-        Some(file("slides.txt", &slides)),
-    )
-    .await;
-    assert!(
-        keeper
-            .asks(&referenced_in(&workspaces, &workspace).await, 2)
-            .is_empty(),
-        "within the hour her quota has no workspace for it"
-    );
-    let an_hour_later = 3_600_000 + 2;
-    let asks = keeper.asks(&referenced_in(&workspaces, &workspace).await, an_hour_later);
-    assert_eq!(
-        asks.len(),
-        1,
-        "an hour later only the new file is asked for"
-    );
-    workspaces.content_for_host(&workspace, ADA, &answer(&asks[0], ADA, &slides));
-    assert_eq!(
-        opened(&workspaces, &workspace, BO, &slides),
-        Some(slides.clone())
-    );
-    assert_eq!(
-        opened(&workspaces, &workspace, BO, &notes),
-        None,
-        "the oldest went past her quota"
-    );
-
-    // A file over the cap stays with its poster.
-    let video = vec![7_u8; 65];
-    post_with(
-        &workspaces,
-        &workspace,
-        &cert,
-        (&ada, &general, "a video"),
-        Some(file("big.bin", &video)),
-    )
-    .await;
-    assert!(
-        keeper
-            .asks(
-                &referenced_in(&workspaces, &workspace).await,
-                an_hour_later + 1
-            )
-            .is_empty()
-    );
-
-    // A restart keeps counting what it kept.
-    drop(keeper);
-    let again = attachments_of(attachments::AttachmentLimits::default());
-    assert_eq!(
-        again.kept_for(&blake3::hash(&slides).to_hex()),
-        Some(MemberId::person(ada.as_str()))
-    );
-    assert_eq!(again.kept_for(&blake3::hash(&notes).to_hex()), None);
-}
-
-/// The Discord bridge as the host installs it, its program as shipped.
+/// The Discord bridge as a workspace installs it.
 pub(super) fn discord_bridge() -> installed::InstalledBot {
     installed::InstalledBot {
         installation: "5b8d2278-de54-4bf8-a0b8-8ae4f0587eed".into(),

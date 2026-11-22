@@ -54,9 +54,9 @@ pub struct PersistentArgs {
     #[arg(long = "workspace-name", value_name = "NAME", requires = "persistent")]
     pub workspace_name: Option<String>,
     /// A channel the workspace's Chat opens with while it has none, by name
-    /// (lowercase letters, digits and `-`); repeatable, in order. Its id is
-    /// `c_<name>` with `-` as `_`, the same on every start, so what maps
-    /// onto it (a bridged Discord server's channels) finds it again.
+    /// (lowercase letters, digits and `-`); repeatable, in order. It is found
+    /// again by its name on every start, so what maps onto it (a bridged
+    /// Discord server's channels) finds it again.
     #[arg(
         long = "chat-channel",
         value_name = "NAME",
@@ -284,19 +284,6 @@ pub struct PersistentArgs {
     /// workspace announces once it serves.
     #[arg(long = "http", value_name = "ADDR", requires = "persistent")]
     pub http: Option<std::net::SocketAddr>,
-    /// The largest file a member posts in the workspace's Chat that the workspace
-    /// keeps once they left, in MiB; a larger one stays with its poster.
-    #[arg(long = "attachment-max-mib", default_value_t = 25, value_parser = clap::value_parser!(u64).range(0..=64))]
-    pub attachment_max_mib: u64,
-    /// What one member's kept files may take together, in MiB; past it
-    /// their oldest go first. The workspace takes in no more of one member's
-    /// files in an hour either.
-    #[arg(long = "attachment-member-mib", default_value_t = 250)]
-    pub attachment_member_mib: u64,
-    /// What all members' kept files may take together, in MiB; past it the
-    /// oldest go first. `0` keeps none.
-    #[arg(long = "attachment-workspace-mib", default_value_t = 2048)]
-    pub attachment_room_mib: u64,
     /// Refound `APP/RECORD` from what the workspace can still read, at start,
     /// because its retained history lost the base its deltas were written
     /// over: the record is published again as the workspace's next checkpoint
@@ -979,66 +966,32 @@ pub(crate) async fn seed_apps(
     Ok(())
 }
 
-/// What the workspace keeps of the files members post in its Chat; `None`
-/// when it keeps none.
-fn attachment_limits(
-    persistent: &PersistentArgs,
-) -> Option<tilo_server::workspace_bots::attachments::AttachmentLimits> {
-    const MIB: u64 = 1024 * 1024;
-    (persistent.attachment_room_mib > 0).then(|| {
-        tilo_server::workspace_bots::attachments::AttachmentLimits {
-            file_bytes: persistent.attachment_max_mib.saturating_mul(MIB),
-            member_bytes: persistent.attachment_member_mib.saturating_mul(MIB),
-            workspace_bytes: persistent.attachment_room_mib.saturating_mul(MIB),
-        }
-    })
-}
-
-/// [`attachment_limits`] as the workspace's Chat reads them.
-fn workspace_files(persistent: &PersistentArgs) -> chat::chat::WorkspaceFiles {
-    attachment_limits(persistent).map_or_else(Default::default, |limits| {
-        chat::chat::WorkspaceFiles {
-            largest: limits.file_bytes,
-            member_hourly: limits.member_bytes,
-        }
-    })
-}
-
-/// Give the workspace's chat, when it is seeded and while it has only the
-/// channels every workspace opens with, the operator's starting `channels`, and
-/// tell it what the workspace keeps of members' `files`. What people wrote is
-/// never touched, and a chat with channels keeps exactly those.
+/// Give the workspace's Chat the operator's starting `channels` while it has none, and a thread
+/// for each of `discussions`, each made through Chat's own actions as the workspace's owner (`cert`'s person). What people made or
+/// wrote is never touched, and a Chat with channels keeps exactly those.
 pub(crate) async fn settle_chat(
     workspaces: &Workspaces,
     workspace: &str,
     cert: &DeviceCert,
-    apps: &[String],
     channels: &[String],
-    files: chat::chat::WorkspaceFiles,
     discussions: &[crate::workspace_discussions::Published],
 ) -> anyhow::Result<()> {
-    if !apps
-        .iter()
-        .any(|app| app == crate::workspace_chat::CHAT_APP)
-    {
+    if channels.is_empty() && discussions.is_empty() {
         return Ok(());
     }
-    let catalogue = tilo_agent_session::AppCatalogue::native();
-    let record = tilo_server::workspace_bots::workspace_resource(
-        &catalogue,
-        crate::workspace_chat::CHAT_APP,
-    );
+    let packages = tilo_server::tl_chat::packages().map_err(|error| anyhow::anyhow!("{error}"))?;
+    let owner = tilo_server::tl_chat::member(tilo_actions::MemberId::person(hex::encode(
+        cert.user_public_key,
+    )));
+    let (channels, discussions) = (channels.to_vec(), discussions.to_vec());
     workspaces
-        .author_application(
+        .with_tl_record(
             workspace,
-            cert,
-            &catalogue,
-            crate::workspace_chat::CHAT_APP,
-            &record,
-            |doc| {
-                crate::workspace_chat::settle_chat(doc, channels)?;
-                crate::workspace_chat::settle_files(doc, files)?;
-                crate::workspace_discussions::settle_threads(doc, discussions).map(drop)
+            &packages,
+            tilo_server::tl_chat::viewer(),
+            move |opened| {
+                crate::workspace_chat::settle_chat(opened, &owner, &channels)?;
+                crate::workspace_discussions::settle_threads(opened, &owner, &discussions).map(drop)
             },
         )
         .await
@@ -1502,9 +1455,7 @@ pub(crate) async fn run(
                 &workspaces,
                 &workspace,
                 &server_cert,
-                &persistent.seed_apps,
                 &persistent.chat_channels,
-                workspace_files(&persistent),
                 &persistent.discussions,
             )
             .await?;
@@ -1647,24 +1598,6 @@ pub(crate) async fn run(
         if let Some(discord) = &discord {
             offer_sign_in(discord, &persistent).await;
         }
-        // The files members post in the workspace's Chat, kept in the same store
-        // as what the bots fetch, so they stay once their poster left.
-        let posted = connector_host
-            .store(&workspace)
-            .map_err(|error| anyhow::anyhow!("the workspace's content: {error}"))?;
-        let attachments = attachment_limits(&persistent).map(|limits| {
-            tokio::spawn(
-                tilo_server::workspace_bots::attachments::WorkspaceAttachments::new(
-                    workspaces.clone(),
-                    workspace.clone(),
-                    server_cert.device_public_key,
-                    posted,
-                    state.join("attachments.json"),
-                    limits,
-                )
-                .run(),
-            )
-        });
         // Bots the workspaces' members ask for, beside the operator's: one
         // follower for every workspace this host governs, the Lounge and the
         // workspaces its people keep of their own, as each of them is made.
@@ -1741,7 +1674,6 @@ pub(crate) async fn run(
         Ok::<Serving, anyhow::Error>(Serving {
             moderator,
             runners,
-            attachments,
             requested,
             context,
             management,
@@ -1762,7 +1694,6 @@ pub(crate) async fn run(
     let Serving {
         moderator,
         runners,
-        attachments,
         requested,
         context,
         management: _management,
@@ -1790,7 +1721,6 @@ pub(crate) async fn run(
     for runner in moderator
         .into_iter()
         .chain(runners)
-        .chain(attachments)
         .chain(std::iter::once(requested))
     {
         runner.abort();
@@ -1806,8 +1736,6 @@ struct Serving {
     moderator: Option<tokio::task::JoinHandle<()>>,
     /// The bots' tasks.
     runners: Vec<tokio::task::JoinHandle<()>>,
-    /// The task posting the files members keep in the workspace's Chat.
-    attachments: Option<tokio::task::JoinHandle<()>>,
     /// The task following the bots the governed workspaces' members ask for.
     requested: tokio::task::JoinHandle<()>,
     /// The workspace the operator's loop serves.

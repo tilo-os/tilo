@@ -23,8 +23,8 @@
 //!   that branch, with everything that builds on it, is the record as members
 //!   read it now;
 //! - reads each other branch (the change it left out and everything built on
-//!   it) and carries what it wrote that the kept record lacks (messages,
-//!   attachments, edits, deletions) forward onto the kept record;
+//!   it) and carries what it wrote that the kept record lacks (entries
+//!   added, edits, deletions) forward onto the kept record;
 //! - compacts the record's sealed history into the kept branch, as the host
 //!   compacts any sealed history it governs (one sealed checkpoint every
 //!   member takes in place of exactly the writes it covers), and then writes
@@ -34,9 +34,9 @@
 //!
 //! It prints what it found and did: each record, the writers and sequences
 //! held twice, the changes it kept and those whose content it wrote again,
-//! and how many messages the record shows before and after. It then starts
+//! and how many entries the record holds at its top before and after. It then starts
 //! the host again on the repaired state and reads each repaired record back
-//! as the host will serve it: whole, and with how many messages.
+//! as the host will serve it: whole, and with how many entries.
 //!
 //! A record whose history holds writes that build on changes it never received
 //! (and so never read whole) is repaired the same way, with nothing to carry:
@@ -77,7 +77,6 @@ use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCert, RevocationList, sign_device_cert};
 use tilo_workspace_service::workspaces::Workspaces;
 
-const CHAT: &str = "so.tilo.chat";
 /// Where the changes a repaired record leaves out are kept, under the host's
 /// state: `<workspace>/<app>/<record>/<hash>.change`, each as it was written.
 /// The host takes each in again once its record holds what it builds on.
@@ -288,8 +287,7 @@ struct RecordReport {
     carried: Vec<ChangeHash>,
     /// Changes in no branch: they build on changes nobody holds.
     waiting: usize,
-    /// Messages (or, for a record that is no part of a chat, its keys at
-    /// the top) as the record reads before, in every branch together, and
+    /// The keys at the record's top as it reads before, in every branch together, and
     /// after.
     before: Option<usize>,
     union: Option<usize>,
@@ -379,7 +377,7 @@ impl RecordReport {
         }
         let count = |count: Option<usize>| count.map_or_else(|| "-".to_owned(), |n| n.to_string());
         println!(
-            "  messages: {} as it reads now, {} across every branch, {} {}",
+            "  entries: {} as it reads now, {} across every branch, {} {}",
             count(self.before),
             count(self.union),
             count(self.after),
@@ -413,7 +411,7 @@ impl RecordReport {
                 self.workspace, self.app
             ),
             (None, Some(true)) => println!(
-                "{} {}/{name}: reads whole, {messages} messages",
+                "{} {}/{name}: reads whole, {messages} entries",
                 self.workspace, self.app
             ),
             (None, _) => println!("{} {}/{name}: was not read back", self.workspace, self.app),
@@ -568,7 +566,7 @@ async fn apply(
 
 /// Read each repaired record back from the host started again on the
 /// repaired state, as it serves it from now on: whether it reads whole, and
-/// how many messages it shows.
+/// how many entries it holds.
 async fn verify(workspaces: &Workspaces, reports: &mut [RecordReport]) {
     for report in reports.iter_mut().filter(|report| report.repaired) {
         let (workspace, app, record) = (
@@ -591,7 +589,7 @@ async fn verify(workspaces: &Workspaces, reports: &mut [RecordReport]) {
         if let Ok(Some(bytes)) = workspaces.resource_document(workspace, app, record).await
             && let Ok(after) = AutoCommit::load(&bytes)
         {
-            report.after = Some(count(app, record, &after).len());
+            report.after = Some(count(&after).len());
         }
         report.print_verified();
     }
@@ -788,11 +786,10 @@ impl Analysis {
             .into_iter()
             .collect();
         report.waiting = self.waiting;
-        let (app, record) = (report.app.as_str(), report.record.as_str());
-        let mut union = count(app, record, &self.kept);
+        let mut union = count(&self.kept);
         report.before = Some(union.len());
         for branch in &self.branches {
-            union.extend(count(app, record, &branch.document));
+            union.extend(count(&branch.document));
         }
         report.union = Some(union.len());
         // What the repair would make of it, worked out on a copy.
@@ -805,7 +802,7 @@ impl Analysis {
                     .push(format!("(cannot be carried: {error})")),
             }
         }
-        report.after = Some(count(app, record, &repaired).len());
+        report.after = Some(count(&repaired).len());
     }
 }
 
@@ -854,18 +851,8 @@ fn build(
     (document, held)
 }
 
-/// The messages of a part of a chat's messages, by id; for any other record,
-/// the keys at its top.
-fn count(app: &str, record: &str, doc: &AutoCommit) -> BTreeSet<String> {
-    let part = collab_types::document::DocumentId::parse(record)
-        .is_some_and(|id| app == CHAT && chat::parts::part_index(&id).is_some());
-    if part {
-        return chat::messages::read_part(doc)
-            .messages
-            .ids()
-            .map(ToString::to_string)
-            .collect();
-    }
+/// The keys at the top of a record: what a record holds, however its app lays it out.
+fn count(doc: &AutoCommit) -> BTreeSet<String> {
     doc.keys(automerge::ROOT).collect()
 }
 
@@ -1133,104 +1120,74 @@ mod tests {
 
     use super::*;
 
+    /// The app whose records the tests write: any app's record is repaired alike.
+    const APP: &str = "so.tilo.notes";
+    /// The record the governor founds, which the pages take part in.
+    const FOUNDED: &str = "welcome";
+
+    /// The record the pages write, which they start sealed.
     fn part() -> String {
-        chat::parts::part(0).as_str().to_owned()
+        "lines".to_owned()
     }
 
+    /// What the record holds: each line a page wrote, as a key of its own.
     fn texts(doc: &AutoCommit) -> BTreeSet<String> {
-        chat::messages::read_part(doc)
-            .messages
-            .values()
-            .map(|message| message.text.clone())
-            .collect()
+        doc.keys(automerge::ROOT).collect()
     }
 
-    /// A member's page posts `text` in `channel`, writing under `writer` as
-    /// the page that reused the writer a saved row carried did.
+    /// A member's page writes the line `text`, under `writer` as the page
+    /// that reused the writer a saved row carried did.
     async fn posts(
         page: &SealingMember,
         workspaces: &Workspaces,
         workspace: &str,
-        (chat, channel): (&chat::Chat, &str),
-        (author, writer): (&str, &automerge::ActorId),
+        writer: &automerge::ActorId,
         text: &str,
     ) {
         page.writes(workspaces, workspace, |doc| {
             doc.set_actor(writer.clone());
-            chat::demo::say_in_part(doc, chat, author, channel, text).unwrap();
+            doc.put(automerge::ROOT, text, text).unwrap();
         })
         .await;
     }
 
-    /// Ada's two pages post in the Lounge's chat under the one writer: her
-    /// first page starts the messages' first part and posts, her second takes
-    /// that in, then each posts twice more from there.
+    /// The record the pages take part in, founded by the governor.
+    async fn founded(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert) {
+        workspaces
+            .author_workspace_document(workspace, cert, (APP, FOUNDED), |doc| {
+                doc.put(automerge::ROOT, "title", "Welcome")
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .unwrap();
+    }
+
+    /// Ada's two pages write one record under the one writer: her first page
+    /// starts it and writes, her second takes that in, then each writes twice
+    /// more from there.
     async fn two_pages_write_one_writer(
         workspaces: &Workspaces,
         workspace: &str,
         (key, cert): (&SigningKey, &DeviceCert),
     ) {
-        let catalogue = tilo_agent_session::AppCatalogue::native();
-        workspaces
-            .prepare_application(workspace, cert, &catalogue, CHAT, "")
-            .await
-            .unwrap();
-        let primary = workspaces
-            .resource_document(workspace, CHAT, "")
-            .await
-            .unwrap()
-            .unwrap();
-        let chat =
-            <chat::Chat as tilo_resource::Resource>::read(&AutoCommit::load(&primary).unwrap())
-                .unwrap();
-        let channel = chat
-            .channels
-            .iter()
-            .find(|(_, channel)| channel.is_channel())
-            .map(|(id, _)| id.to_string())
-            .expect("the chat has a channel");
-        let ada = hex::encode([9; 32]);
+        founded(workspaces, workspace, cert).await;
 
-        // Ada's first page starts the part and posts; her second page takes
-        // that in. Both write under the one writer.
+        // Ada's first page starts the record and writes; her second page
+        // takes that in. Both write under the one writer.
         let (first_key, _) = member_device(workspaces, workspace, (key, cert), 9).await;
         let (second_key, _) = member_device(workspaces, workspace, (key, cert), 10).await;
-        let joined = SealingMember::join(workspaces, workspace, (CHAT, ""), first_key).await;
+        let joined = SealingMember::join(workspaces, workspace, (APP, FOUNDED), first_key).await;
         let first = joined.part(workspaces, workspace, &part()).await;
         let writer = automerge::ActorId::random();
-        posts(
-            &first,
-            workspaces,
-            workspace,
-            (&chat, &channel),
-            (&ada, &writer),
-            "hello",
-        )
-        .await;
-        let joined = SealingMember::join(workspaces, workspace, (CHAT, ""), second_key).await;
+        posts(&first, workspaces, workspace, &writer, "hello").await;
+        let joined = SealingMember::join(workspaces, workspace, (APP, FOUNDED), second_key).await;
         let second = joined.part(workspaces, workspace, &part()).await;
         second.catch_up(workspaces, workspace).await;
         for text in ["first page one", "first page two"] {
-            posts(
-                &first,
-                workspaces,
-                workspace,
-                (&chat, &channel),
-                (&ada, &writer),
-                text,
-            )
-            .await;
+            posts(&first, workspaces, workspace, &writer, text).await;
         }
         for text in ["second page one", "second page two"] {
-            posts(
-                &second,
-                workspaces,
-                workspace,
-                (&chat, &channel),
-                (&ada, &writer),
-                text,
-            )
-            .await;
+            posts(&second, workspaces, workspace, &writer, text).await;
         }
     }
 
@@ -1245,7 +1202,7 @@ mod tests {
         let reports = repair_workspace(
             workspaces,
             workspace,
-            Some(CHAT),
+            Some(APP),
             true,
             &scratch.join(ARCHIVE),
         )
@@ -1279,15 +1236,15 @@ mod tests {
         );
     }
 
-    /// Two pages of one person write the chat's messages under the one writer
-    /// a saved row carried, each from the same messages: both number their
+    /// Two pages of one person write one record under the one writer
+    /// a saved row carried, each from the same record: both number their
     /// next changes the same, and the server keeps both writes in the record's
     /// sealed history. The record then no longer reads whole. The repair
     /// keeps one branch, writes what the other posted again as the host, and
-    /// every message of both is in the record, which reads whole and is
+    /// every line of both is in the record, which reads whole and is
     /// served whole to a member who joins after.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_record_that_holds_a_sequence_twice_is_repaired_with_every_message() {
+    async fn a_record_that_holds_a_sequence_twice_is_repaired_with_every_line() {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
         let _ = tilo_agent_session::AppCatalogue::native();
@@ -1304,7 +1261,7 @@ mod tests {
             (&key, &cert),
         ))
         .await;
-        let route = BTreeSet::from([(CHAT.to_owned(), part())]);
+        let route = BTreeSet::from([(APP.to_owned(), part())]);
         assert!(
             !workspaces
                 .whole_documents(&workspace, Some(&route))
@@ -1319,7 +1276,7 @@ mod tests {
         let mut reports = repair_workspace(
             &workspaces,
             &workspace,
-            Some(CHAT),
+            Some(APP),
             false,
             &scratch.path().join(ARCHIVE),
         )
@@ -1358,7 +1315,7 @@ mod tests {
         .map(str::to_owned)
         .collect();
         let read = workspaces
-            .resource_document(&workspace, CHAT, &part())
+            .resource_document(&workspace, APP, &part())
             .await
             .unwrap()
             .unwrap();
@@ -1366,7 +1323,7 @@ mod tests {
 
         // A member who joins now is served the record whole.
         let (later_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 11).await;
-        let later = SealingMember::join(&workspaces, &workspace, (CHAT, ""), later_key).await;
+        let later = SealingMember::join(&workspaces, &workspace, (APP, FOUNDED), later_key).await;
         let later = later.part(&workspaces, &workspace, &part()).await;
         later.catch_up(&workspaces, &workspace).await;
         assert_eq!(texts(&later.document()), all);
@@ -1376,7 +1333,7 @@ mod tests {
             repair_workspace(
                 &workspaces,
                 &workspace,
-                Some(CHAT),
+                Some(APP),
                 false,
                 &scratch.path().join(ARCHIVE)
             )
@@ -1400,42 +1357,23 @@ mod tests {
             test_host_holding(scratch.path(), &key, &cert, std::sync::Arc::clone(&keys)).await;
         let workspaces = server.workspaces().clone();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-        let catalogue = tilo_agent_session::AppCatalogue::native();
-        workspaces
-            .prepare_application(&workspace, &cert, &catalogue, CHAT, "")
-            .await
-            .unwrap();
-        let primary = workspaces
-            .resource_document(&workspace, CHAT, "")
-            .await
-            .unwrap()
-            .unwrap();
-        let chat =
-            <chat::Chat as tilo_resource::Resource>::read(&AutoCommit::load(&primary).unwrap())
-                .unwrap();
-        let channel = chat
-            .channels
-            .iter()
-            .find(|(_, channel)| channel.is_channel())
-            .map(|(id, _)| id.to_string())
-            .unwrap();
-        let ada = hex::encode([9; 32]);
+        founded(&workspaces, &workspace, &cert).await;
         let (page_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 9).await;
-        let joined = SealingMember::join(&workspaces, &workspace, (CHAT, ""), page_key).await;
+        let joined = SealingMember::join(&workspaces, &workspace, (APP, FOUNDED), page_key).await;
         let page = joined.part(&workspaces, &workspace, &part()).await;
         let writer = automerge::ActorId::random();
         let say = |text: &'static str| {
-            let (chat, channel, ada, writer) = (&chat, &channel, &ada, &writer);
+            let writer = &writer;
             move |doc: &mut AutoCommit| {
                 doc.set_actor(writer.clone());
-                chat::demo::say_in_part(doc, chat, ada, channel, text).unwrap();
+                doc.put(automerge::ROOT, text, text).unwrap();
             }
         };
         page.writes(&workspaces, &workspace, say("hello")).await;
         // Written, never sent.
         let ((), _never_sent) = page.seal(&workspace, say("lost on the way"));
         page.writes(&workspaces, &workspace, say("after it")).await;
-        let route = BTreeSet::from([(CHAT.to_owned(), part())]);
+        let route = BTreeSet::from([(APP.to_owned(), part())]);
         assert!(
             !workspaces
                 .whole_documents(&workspace, Some(&route))
@@ -1445,7 +1383,7 @@ mod tests {
         );
 
         let archive = scratch.path().join(ARCHIVE);
-        let mut reports = repair_workspace(&workspaces, &workspace, Some(CHAT), false, &archive)
+        let mut reports = repair_workspace(&workspaces, &workspace, Some(APP), false, &archive)
             .await
             .unwrap();
         let [report] = reports.as_slice() else {
@@ -1470,7 +1408,7 @@ mod tests {
         verify(&workspaces, &mut reports).await;
         assert_eq!(reports[0].reads_whole, Some(true), "{:?}", reports[0]);
         let read = workspaces
-            .resource_document(&workspace, CHAT, &part())
+            .resource_document(&workspace, APP, &part())
             .await
             .unwrap()
             .unwrap();

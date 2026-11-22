@@ -1,16 +1,17 @@
-//! The chat a persistent public workspace opens with: the channels its operator
-//! names, in place of the `#chat` every workspace opens with, and its `#voice`.
-//! Their ids are derived from their names, so what maps onto them (a bridged
-//! Discord server's channels) finds the same ones on every start.
+//! The Chat a persistent public workspace opens with: the channels its operator names, made
+//! through Chat's own `new_channel` while the workspace has no channel yet, and the channel its
+//! members report problems to, there on every start. They are found again by their names, so
+//! what maps onto them (a bridged Discord server's channels) finds the same ones on every start.
 
-use tilo_resource::Fields;
+use tilo_server::tl_chat;
+use tilo_workspace_service::tl_records::Opened;
+use tilo_workspace_service::tl_records::runtime::Actor;
 
-pub use tilo_app_id::apps::CHAT as CHAT_APP;
 /// The longest starting channel name.
 const CHANNEL_NAME_MAX: usize = 64;
 
-/// `name` as a starting channel's name: lowercase letters, digits and `-`,
-/// so its id ([`channel_id`]) is one no other name shares.
+/// `name` as a starting channel's name: lowercase letters, digits and `-`, so no two names the
+/// operator gives read alike.
 pub(crate) fn channel_name(name: &str) -> Result<String, String> {
     let valid = (1..=CHANNEL_NAME_MAX).contains(&name.len())
         && name
@@ -25,106 +26,27 @@ pub(crate) fn channel_name(name: &str) -> Result<String, String> {
     }
 }
 
-/// The id of the starting channel `name`: `c_<name>` with `-` as `_`.
-pub(crate) fn channel_id(name: &str) -> String {
-    format!("c_{}", name.replace('-', "_"))
-}
-
-/// Give the chat `doc` the starting `channels` (names) while it has only
-/// the `#chat` and `#voice` every workspace opens with. They take `#chat`'s
-/// place: a visitor's first channel is the operator's first, not an empty
-/// `#chat` apart from the rest, and they list uncategorised above `#voice`,
-/// since the sidebar is titled "Channels" already. `#chat` goes only while
-/// nobody has read it, so nothing anyone wrote is lost; nothing else is
-/// ever removed, so this runs at every start and never resets.
+/// Give the workspace's Chat, opened as `opened`, the starting `channels` (names, in order)
+/// while it has no channel at all, each made by `who`, the workspace's owner. Nothing anyone made or wrote is changed, so this
+/// runs at every start and never resets: a workspace whose people deleted a starting channel
+/// keeps it deleted. Answers whether it made a channel.
 ///
-/// The channels are written as they stand, not as field edits: the chat
-/// keeps its layout to its moderators' actions and refuses every generic
-/// edit of it, and those actions mint their own ids where these are
-/// derived from the names.
+/// # Errors
+/// Chat refused a channel.
 pub(crate) fn settle_chat(
-    doc: &mut automerge::AutoCommit,
+    opened: &mut Opened,
+    who: &Actor,
     channels: &[String],
-) -> Result<(), String> {
-    use chat::chat::{CHAT_CHANNEL, Conversation, VOICE_CHANNEL};
-    use tilo_resource::Id;
-
-    tilo_server::workspace_bots::opened::<chat::Chat>(doc)
-        .map_err(|error| format!("read the chat: {error}"))?;
-    let current = chat::Chat::read_fields(doc, &automerge::ROOT)
-        .map_err(|error| format!("read the chat: {error}"))?;
-    let mut target = current.clone();
-    let opened_with = |id: &Id| id.as_str() == CHAT_CHANNEL || id.as_str() == VOICE_CHANNEL;
-    let has_channels = target
-        .channels
-        .iter()
-        .any(|(id, channel)| channel.is_channel() && !opened_with(id));
-    if !has_channels && !channels.is_empty() {
-        let opener = Id::from_raw(CHAT_CHANNEL);
-        let read = target
-            .read
-            .values()
-            .any(|marks| marks.contains_key(CHAT_CHANNEL));
-        if !read {
-            target.channels.remove(&opener);
-        }
-        // Above `#voice` and whatever else opened the workspace, in the
-        // operator's order.
-        let mut at = target
-            .channels
-            .iter()
-            .position(|(id, _)| *id == opener)
-            .map_or(0, |index| index.saturating_add(1));
+) -> Result<bool, String> {
+    let sidebar = tl_chat::sidebar(opened)?;
+    let mut made = false;
+    if sidebar.channels.is_empty() {
         for name in channels {
-            let id = Id::from_raw(channel_id(name));
-            if target.channels.contains(&id) {
-                continue;
-            }
-            target.channels.insert(
-                at,
-                id,
-                Conversation {
-                    name: name.clone(),
-                    ..Conversation::default()
-                },
-            );
-            at = at.saturating_add(1);
+            tl_chat::new_channel(opened, who, (name, ""), None)?;
+            made = true;
         }
     }
-    target
-        .write_changed_fields(
-            &current,
-            doc,
-            &automerge::ROOT,
-            &tilo_resource::Delta::default(),
-        )
-        .map_err(|error| format!("write the chat: {error}"))
-}
-
-/// Tell the chat `doc` what the host keeps of the files its members post
-/// (`files`), so a member's Chat refuses a file the host would not take,
-/// in plain words, instead of posting one that never reaches it.
-pub(crate) fn settle_files(
-    doc: &mut automerge::AutoCommit,
-    files: chat::chat::WorkspaceFiles,
-) -> Result<(), String> {
-    tilo_server::workspace_bots::opened::<chat::Chat>(doc)
-        .map_err(|error| format!("read the chat: {error}"))?;
-    let current = chat::Chat::read_fields(doc, &automerge::ROOT)
-        .map_err(|error| format!("read the chat: {error}"))?;
-    if current.files == files {
-        return Ok(());
-    }
-    let mut target = current.clone();
-    target.files = files;
-    target
-        .write_changed_fields(
-            &current,
-            doc,
-            &automerge::ROOT,
-            &tilo_resource::Delta::default(),
-        )
-        .map_err(|error| format!("write the chat: {error}"))
+    Ok(made)
 }
 
 #[cfg(test)]
@@ -135,29 +57,33 @@ pub(crate) fn settle_files(
 )]
 mod tests {
     use super::*;
-    use tilo_resource::{Replica, Resource};
+    use tilo_actions::MemberId;
+    use tilo_workspace_service::tl_records::RecordBytes;
 
-    fn record<R: Resource>() -> automerge::AutoCommit {
-        Replica::<R>::new().doc().clone()
+    /// The workspace's Chat as a workspace starts with it: empty.
+    fn empty_chat() -> Opened {
+        Opened::open(
+            &RecordBytes::default(),
+            &tl_chat::packages().unwrap(),
+            tl_chat::viewer(),
+        )
+        .unwrap()
     }
 
-    /// The chat as the workspace's host prepares it: opened with `#chat` and
-    /// `#voice`.
-    fn prepared_chat() -> automerge::AutoCommit {
-        let mut doc = record::<chat::Chat>();
-        chat::demo::start(&mut doc, "host").unwrap();
-        doc
+    fn owner() -> Actor {
+        tl_chat::member(MemberId::person("ab".repeat(32)))
     }
 
-    fn channel_names(doc: &automerge::AutoCommit) -> Vec<String> {
-        let chat = chat::Chat::read(doc).unwrap();
-        chat.channels
-            .values()
-            .map(|channel| channel.name.clone())
+    fn names(opened: &Opened) -> Vec<String> {
+        tl_chat::sidebar(opened)
+            .unwrap()
+            .channels
+            .into_iter()
+            .map(|channel| channel.name)
             .collect()
     }
 
-    fn names(names: &[&str]) -> Vec<String> {
+    fn owned(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| (*name).to_owned()).collect()
     }
 
@@ -166,141 +92,30 @@ mod tests {
 
         phase the_chat_opens_with_the_named_channels;
         {
-            let mut doc = prepared_chat();
-            let channels = names(&["general", "help", "show-and-tell"]);
-            settle_chat(&mut doc, &channels).unwrap();
-            let chat = chat::Chat::read(&doc).unwrap();
-            // The operator's channels take the unread `#chat`'s place, first
-            // and uncategorised, so a visitor lands in `#general` and the
-            // sidebar has no second "Channels" heading.
-            assert_eq!(
-                channel_names(&doc),
-                ["general", "help", "show-and-tell", "voice"]
-            );
-            let ids: Vec<&str> = chat.channels.iter().map(|(id, _)| id.as_str()).collect();
-            assert_eq!(ids, ["c_general", "c_help", "c_show_and_tell", "c_voice"]);
-            assert!(chat.categories.is_empty());
-            assert!(
-                chat.channels
-                    .values()
-                    .all(|channel| channel.category.is_none())
-            );
+            let mut chat = empty_chat();
+            let channels = owned(&["general", "help", "show-and-tell"]);
+            assert!(settle_chat(&mut chat, &owner(), &channels).unwrap());
+            assert_eq!(names(&chat), ["general", "help", "show-and-tell"]);
         }
 
-        phase a_chat_someone_has_read_keeps_its_chat_channel;
+        phase settling_again_keeps_what_people_did;
+        // A start after people deleted a starting channel brings nothing back.
         {
-            let mut doc = prepared_chat();
-            let mut chat = chat::Chat::read_fields(&doc, &automerge::ROOT).unwrap();
-            let before = chat.clone();
-            chat.read.entry("host".into()).or_default().insert(
-                chat::chat::CHAT_CHANNEL.into(),
-                chat::parts::ReadMark::default(),
-            );
-            chat.write_changed_fields(
-                &before,
-                &mut doc,
-                &automerge::ROOT,
-                &tilo_resource::Delta::default(),
-            )
-            .unwrap();
-            settle_chat(&mut doc, &names(&["general"])).unwrap();
-            assert_eq!(channel_names(&doc), ["chat", "general", "voice"]);
+            let mut chat = empty_chat();
+            let channels = owned(&["general", "help", "show-and-tell"]);
+            settle_chat(&mut chat, &owner(), &channels).unwrap();
+            let help = tl_chat::sidebar(&chat).unwrap().channel_named("help").unwrap().at.clone();
+            tl_chat::delete_channel(&mut chat, &owner(), &help, None).unwrap();
+            assert!(!settle_chat(&mut chat, &owner(), &channels).unwrap());
+            assert_eq!(names(&chat), ["general", "show-and-tell"]);
         }
 
-        phase without_channels_named_the_chat_opens_with_chat_and_voice;
-        {
-            let mut doc = prepared_chat();
-            settle_chat(&mut doc, &[]).unwrap();
-            let chat = chat::Chat::read(&doc).unwrap();
-            assert_eq!(channel_names(&doc), ["chat", "voice"]);
-            assert!(chat.categories.is_empty());
-        }
-
-        phase a_channel_name_maps_to_one_id;
+        phase a_channel_name_is_a_slug;
         {
             assert_eq!(channel_name("show-and-tell").unwrap(), "show-and-tell");
-            assert_eq!(channel_id("show-and-tell"), "c_show_and_tell");
             for bad in ["", "Help", "a_b", "a b", &"x".repeat(CHANNEL_NAME_MAX + 1)] {
                 assert!(channel_name(bad).is_err(), "{bad:?}");
             }
-        }
-
-        phase settling_the_chat_again_keeps_what_people_did;
-        // Every start settles the chat again: it never brings back or doubles
-        // channels, nor undoes what people did. (What they
-        // wrote is kept in the chat's message parts, which settling never
-        // opens.)
-        {
-            let mut doc = prepared_chat();
-            let channels = names(&["general", "help", "show-and-tell"]);
-            settle_chat(&mut doc, &channels).unwrap();
-            chat::demo::apply_as(
-                &mut doc,
-                "host",
-                chat::Chat::DELETE_CHANNEL.with(chat::chat::chat::DeleteChannel {
-                    channel: tilo_resource::Id::from_raw("c_help"),
-                }),
-            )
-            .unwrap();
-            settle_chat(&mut doc, &channels).unwrap();
-            assert_eq!(channel_names(&doc), ["general", "show-and-tell", "voice"]);
-        }
-
-        phase settling_again_after_a_server_is_adopted_neither_doubles_nor_moves_back;
-        // A bridged server adopts the starting channels: `#general` is joined
-        // with the server's and may sit in the server's category, beside the
-        // channels the server brought. A later start leaves all of that be.
-        {
-            use tilo_resource::Id;
-            let mut doc = prepared_chat();
-            let channels = names(&["general"]);
-            settle_chat(&mut doc, &channels).unwrap();
-            // The server's category and channel, under the ids the bridge maps
-            // them to.
-            chat::demo::insert_category(&mut doc, "k_chat", "chat").unwrap();
-            chat::demo::insert_channel(
-                &mut doc,
-                "c_goal",
-                "",
-                "goal",
-                chat::model::ChannelKind::Text,
-            )
-            .unwrap();
-            chat::demo::apply_as(
-                &mut doc,
-                "host",
-                chat::Chat::SET_CHANNEL_CATEGORY.with(chat::chat::chat::SetChannelCategory {
-                    channel: Id::from_raw("c_general"),
-                    category: Some(Id::from_raw("k_chat")),
-                }),
-            )
-            .unwrap();
-            settle_chat(&mut doc, &channels).unwrap();
-            let chat = chat::Chat::read(&doc).unwrap();
-            assert_eq!(channel_names(&doc), ["general", "voice", "goal"]);
-            assert_eq!(
-                chat.channels
-                    .get(&Id::from_raw("c_general"))
-                    .unwrap()
-                    .category,
-                Some(Id::from_raw("k_chat"))
-            );
-        }
-
-        phase the_chat_learns_what_files_the_host_keeps;
-        // The host tells the chat what it keeps of members' files, and says
-        // it again only when that changed.
-        {
-            let mut doc = prepared_chat();
-            let files = chat::chat::WorkspaceFiles {
-                largest: 25 << 20,
-                member_hourly: 250 << 20,
-            };
-            settle_files(&mut doc, files).unwrap();
-            assert_eq!(chat::Chat::read(&doc).unwrap().files, files);
-            let heads = doc.get_heads();
-            settle_files(&mut doc, files).unwrap();
-            assert_eq!(doc.get_heads(), heads, "unchanged, nothing is written");
         }
     }
 }

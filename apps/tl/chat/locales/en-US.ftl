@@ -49,6 +49,9 @@ d-ksuxpopi = Messages
 d-ztou5nin = Threads
     .doc = The threads its messages started, each the one a message's `thread` names.
 
+d-kgihivmr = Reports
+    .doc = The reports filed about its messages, for the workspace's moderators.
+
 d-hk2t6bvk = Message
     .doc = A message.
     .noun = { $count ->
@@ -77,15 +80,44 @@ d-dh6346no = Sent view
     .doc = A view the message sends, as its sender had it among their views: a reader adds it to their own views, and its author is whoever sent the message.
 
 d-tz5yw5dt = By
-    .doc = Who wrote it in the native Chat, as that app named them, for a message carried over from there: its own history names whoever carried it, when it was carried.
+    .doc = Who wrote it where it was written, as that place named them, for a message carried over from the native Chat or relayed from another service: its own history names whoever carried or relayed it.
+
+d-4da5gcom = Written in
+    .doc = Where a message carried or relayed here was written.
 
 d-mmlcexsa = Written
-    .doc = When it was written in the native Chat, in milliseconds since 1970; 0 for a message written here.
+    .doc = When it was written there, in milliseconds since 1970; 0 for a message written here.
 
 d-jcgolgdf = Reacted
     .doc = The reactions it had in the native Chat, each emoji with how many reacted with it: who reacted there is not carried, since this app names people only as its own members.
 
 d-hk2t6bvk-filter-pinned = Pinned
+
+d-y3mwdnru = Report
+    .doc = One person's report of a message to the workspace's moderators, kept by the conversation the message is in so it outlives the message: who filed it is its history's.
+    .noun = { $count ->
+        [one] report
+       *[other] reports
+    }
+
+d-jqcabz2h = Message
+    .doc = The message reported; none once it was deleted.
+
+d-e3zqz33a = Person
+    .doc = Who wrote the reported message.
+
+d-adip7bw4 = Said
+    .doc = What the message said when it was reported, read again after it was deleted.
+
+d-bmfbgqt6 = Reason
+    .doc = Why, in the reporter's words.
+
+d-3oner4zg = Decision
+    .doc = What a moderator, or the workspace's moderation agent, decided about it: empty while it is open.
+
+d-y3mwdnru-filter-message = Message
+
+d-y3mwdnru-filter-person = Person
 
 d-6qpql3pg = Thread
     .doc = A side conversation branched off one message.
@@ -99,6 +131,9 @@ d-xuvfifa5 = Name
 d-ijy454g6 = Messages
 
 d-2ki7h2z5 = Archived
+
+d-ep7fvntj = Reports
+    .doc = The reports filed about its messages, for the workspace's moderators.
 
 d-6qpql3pg-filter-archived = Archived
 
@@ -118,6 +153,9 @@ d-y65whtrn = Messages
 
 d-3p73kpuw = Threads
 
+d-doiukw5i = Reports
+    .doc = The reports filed about its messages, for the workspace's moderators.
+
 d-5nkbpj6q-filter-person = Person
 
 d-yx5sbebu = Part
@@ -133,10 +171,12 @@ d-zevnbs3i = Kind
 d-3hkzkqvr = Body
 
 d-msf7yzn7 = New channel
-    .doc = Adds a text channel to the sidebar.
+    .doc = Adds a text channel to the sidebar, about `topic` when it is given.
     .w-new-channel = new-channel
 
 d-msf7yzn7-name = Name
+
+d-msf7yzn7-topic = Topic
 
 d-26f7sh5k = New category
     .doc = Adds a category to the sidebar.
@@ -145,10 +185,12 @@ d-26f7sh5k = New category
 d-26f7sh5k-name = Name
 
 d-abono4ra = New channel
-    .doc = Adds a text channel to a category.
+    .doc = Adds a text channel to a category, about `topic` when it is given.
     .w-new-channel = new-channel
 
 d-abono4ra-name = Name
+
+d-abono4ra-topic = Topic
 
 d-egiu6ag4 = New voice channel
     .doc = Adds a voice channel to the sidebar.
@@ -208,6 +250,36 @@ d-qaa5kdra-title = Title
 
 d-qaa5kdra-definition = Definition
 
+d-6372fg6z = Relay
+    .doc = Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when.
+    .did = relayed a message
+    .w-say-who-wrote-the-message = Say who wrote the message
+
+d-6372fg6z-to = To
+
+d-6372fg6z-body = Body
+
+d-6372fg6z-by = By
+
+d-6372fg6z-written_in = Written in
+
+d-6372fg6z-written = Written
+
+d-6372fg6z-reply_to = Reply to
+
+d-jozxp5qy = Delete channel
+    .doc = Deletes a channel and what was said in it, from the sidebar or the category it is in.
+
+d-jozxp5qy-from = From
+
+d-jozxp5qy-ch = Ch
+
+d-uukhgkjq = Delete category
+    .doc = Deletes a category that holds no channel.
+    .w-move-or-delete-its-channels-first = Move or delete its channels first
+
+d-uukhgkjq-c = C
+
 d-255qjx7d = Edit
     .doc = Changes what a message says.
     .w-only-its-author-can-edit-a = Only its author can edit a message
@@ -234,6 +306,22 @@ d-np3mn65k = React
 
 d-np3mn65k-emoji = Emoji
 
+d-7sjai347 = Report
+    .doc = Reports a message of a conversation to the workspace's moderators, saying why when the reporter does.
+    .did = reported a message
+
+d-7sjai347-to = To
+
+d-7sjai347-m = M
+
+d-7sjai347-reason = Reason
+
+d-qfzfo5jh = Decide
+    .doc = Settles a report: what a moderator, or the moderation agent, decided about it.
+    .w-say-what-was-decided = Say what was decided
+
+d-qfzfo5jh-decision = Decision
+
 d-6uysx57s = Start thread
     .doc = Starts a thread from a message of a channel or a direct conversation, named after what the message says.
 
@@ -247,9 +335,15 @@ d-v6wnfixl = Report problem~present
 
 d-dgrvpxre = Send view~present
 
+d-psjj65el = Relay~present
+
+d-gwrwo3w5 = Delete category~present
+
 d-comllwls = Edit~present
 
 d-c2x2a6dh = Pin~present
+
+d-5ips5yl3 = Decide~present
 
 d-dzzuovny = Unread
     .w-unread = Unread

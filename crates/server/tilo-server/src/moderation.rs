@@ -1,203 +1,169 @@
-//! The workspace's moderation agent, run on the host as an installed bot over a
-//! confined replica of the record that holds the workspace's reports.
+//! The workspace's moderation agent's reach into the workspace's Chat, where members report
+//! messages.
 //!
-//! Nothing here reads or writes around the record: the agent's API
-//! ([`ReplicaApi`]) reads the person's recent changes from the replica's own
-//! history and the histories of the parts its app keeps beside it (a chat's
-//! messages), takes them back with the published `undo` action — the
-//! record's own, or for a part the chain's, naming the part — and records
-//! its decision with the record's `decide-reports`, each invoked
-//! through the replica's API as the bot, so the workspace's policy and history
-//! see the bot's steps like anyone's. Restricting and banning are governance,
-//! which a bot never holds: the host enforces those as the workspace's root
-//! through `govern`, held to the workspace's policy.
+//! Nothing here reads or writes around Chat: the agent's API ([`ChatApi`]) reads the reports
+//! and the reported person's messages through Chat's own types, takes their messages back with
+//! Chat's `delete` and settles each report with Chat's `decide`, each invoked as the moderation
+//! bot, so the record's history names the bot for every step like anyone's. Restricting and
+//! banning are governance, which a bot never holds: the host enforces those as the workspace's
+//! root through `govern`, held to the workspace's policy.
 
-use collab_types::document::DocumentId;
 use tilo_action_policy::Change;
-use tilo_actions::api::ActionAddress;
-use tilo_actions::entry::Did;
-use tilo_agent_session::Replica;
-use tilo_moderation::{Activity, Moderation, Source, WorkspaceApi, activity_of, destructive_verbs};
-use tilo_resource::Resource;
+use tilo_action_policy::bot::MODERATION;
+use tilo_actions::MemberId;
+use tilo_moderation::model::moderation::Decide;
+use tilo_moderation::{Activity, Moderation, Outcome, Report, WorkspaceApi};
+use tilo_workspace_service::tl_records::Opened;
+use tilo_workspace_service::tl_records::runtime::{Actor, ResourceRef};
 
-/// The history group kind a run's steps are recorded under, which the
-/// record's `undo { run }` takes back as one.
-const AGENT_SESSION: &str = "agent-session";
+use crate::tl_chat;
 
-/// The record verbs that file a report, on which the agent looks.
-pub const REPORT_VERBS: [&str; 2] = ["report-message", "report-person"];
+/// The longest excerpt of a message the model is shown; a spam post is recognisable from its
+/// start.
+const EXCERPT_CHARS: usize = 600;
 
-/// Whether a committed change filed a report.
+/// The moderation bot, as Chat's actions name who acted.
 #[must_use]
-pub fn files_a_report(did: &Did) -> bool {
-    match did {
-        Did::Verb(call) => REPORT_VERBS.contains(&call.action.action.as_str()),
-        Did::Group(group) => group
-            .members
-            .iter()
-            .chain(&group.distinct)
-            .any(files_a_report),
-        _ => false,
+pub fn bot() -> Actor {
+    tl_chat::member(MemberId::bot(MODERATION))
+}
+
+/// Unix milliseconds of an ISO-8601 time history gives; 0 for one it does not.
+fn millis(when: &str) -> i64 {
+    when.parse::<jiff::Timestamp>()
+        .map_or(0, |at| at.as_millisecond())
+}
+
+/// The workspace's reports as the moderation agent decides them: every report filed in Chat,
+/// about the member who wrote the reported message, decided ones included, so a person's
+/// earlier reports and what was decided on them stay readable after their messages are gone. A
+/// report on something no member wrote here (a message relayed from another service) names
+/// nobody the workspace governs, so it waits for a person.
+///
+/// # Errors
+/// Chat's package is not loaded.
+pub fn moderation(opened: &Opened) -> Result<Moderation, String> {
+    let mut moderation = Moderation::default();
+    for report in tl_chat::reports(opened)? {
+        let (Some(Actor::Member(person)), Some(Actor::Member(reporter))) =
+            (&report.person, &report.by)
+        else {
+            continue;
+        };
+        moderation.reports.push(Report {
+            id: report.at.id_string(),
+            reporter: reporter.clone(),
+            person: person.clone(),
+            app: Some(tl_chat::app().to_owned()),
+            record: Some(report.conversation.id_string()),
+            item: report.message.as_ref().map(ResourceRef::id_string),
+            reason: if report.reason.is_empty() {
+                format!("Reported: {}", report.said)
+            } else {
+                format!("{} (it said: {})", report.reason, report.said)
+            },
+            at_ms: millis(&report.when),
+            decision: (!report.decision.is_empty()).then(|| report.decision.clone()),
+        });
+    }
+    Ok(moderation)
+}
+
+/// How a decision reads on the reports it settles.
+fn decision_text(decide: &Decide) -> String {
+    let ruling = &decide.ruling;
+    let outcome = match ruling.outcome {
+        Outcome::NoAction => "No action".to_owned(),
+        Outcome::Restrict => match ruling
+            .until_ms
+            .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
+        {
+            Some(until) => format!("Restricted until {}", until.strftime("%Y-%m-%d %H:%M UTC")),
+            None => "Restricted".to_owned(),
+        },
+        Outcome::Ban => "Banned".to_owned(),
+    };
+    let reasoning = ruling.reasoning.trim();
+    if reasoning.is_empty() {
+        format!("{outcome}.")
+    } else {
+        format!("{outcome}: {reasoning}")
     }
 }
 
-/// The workspace as the moderation agent reaches it: one record's replica, held
-/// as the installed bot, with the records its app keeps beside it (the
-/// parts of a chat's messages), and the host's governance.
-pub struct ReplicaApi<'a, R: Resource> {
-    replica: &'a mut Replica,
-    moderation: fn(&R::State) -> &Moderation,
+/// The workspace as the moderation agent reaches it: its Chat, opened on the host, changed as
+/// the moderation bot, and the host's governance.
+pub struct ChatApi<'a> {
+    opened: &'a mut Opened,
     govern: &'a mut dyn FnMut(Change) -> Result<(), String>,
     now_ms: i64,
+    /// Every report filed when it opened, by id.
+    reports: std::collections::BTreeMap<String, ResourceRef>,
 }
 
-impl<'a, R: Resource> ReplicaApi<'a, R> {
-    /// The API over `replica`, whose state holds the workspace's moderation
-    /// record at `moderation`, enforcing governance through `govern`.
+impl<'a> ChatApi<'a> {
+    /// The API over the workspace's Chat `opened`, enforcing governance through `govern`.
     pub fn new(
-        replica: &'a mut Replica,
-        moderation: fn(&R::State) -> &Moderation,
+        opened: &'a mut Opened,
         govern: &'a mut dyn FnMut(Change) -> Result<(), String>,
         now_ms: i64,
     ) -> Self {
+        let reports = tl_chat::reports(opened)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|report| (report.at.id_string(), report.at))
+            .collect();
         Self {
-            replica,
-            moderation,
+            opened,
             govern,
             now_ms,
+            reports,
         }
     }
 
-    /// The workspace's moderation record as the replica holds it now.
-    #[must_use]
-    pub fn moderation(&self) -> Option<Moderation> {
-        let pick = self.moderation;
-        self.replica
-            .read(|doc| R::read(doc).ok().map(|state| pick(&state).clone()))
-            .flatten()
-    }
-
-    fn record(&self) -> String {
-        self.replica.document_id().to_string()
-    }
-
-    /// The address of `action` the replica offers: on the record itself,
-    /// or with `chain`, on the chain of parts the record's app publishes
-    /// beside it.
-    fn address(&self, action: &str, chain: Option<&DocumentId>) -> Result<ActionAddress, String> {
-        self.replica
-            .survey()
-            .into_iter()
-            .find(|offered| {
-                offered.address.action == action
-                    && collab_types::document::chain_of_resource_id(&offered.address.resource)
-                        .as_ref()
-                        == chain
-            })
-            .map(|offered| offered.address)
-            .ok_or_else(|| format!("the record offers the moderation agent no {action}"))
-    }
-
-    fn run_action(
-        &mut self,
-        address: &ActionAddress,
-        args: serde_json::Value,
-        context: Option<tilo_actions::ActionContext>,
-    ) -> Result<(), String> {
-        let serde_json::Value::Object(arguments) = args else {
-            return Err(format!("{} takes an object", address.action));
-        };
-        self.replica
-            .invoke_with(None, context, address, &arguments, true)
-            .map(drop)
-            .map_err(|error| error.to_string())
-    }
-
-    /// The verbs the chain `chain` publishes as destructive, on itself and
-    /// on its items.
-    fn destructive_in_chain(&self, chain: &DocumentId) -> Vec<String> {
-        let id = collab_types::document::chain_resource_id(chain);
-        let resources = self.replica.resources();
-        // Published beside the app's resource, among its children; its
-        // items carry the verbs on one message.
-        let Some(published) = resources
-            .iter()
-            .flat_map(|resource| std::iter::once(resource).chain(&resource.children))
-            .find(|resource| resource.id.as_str() == id)
-        else {
-            return Vec::new();
-        };
-        let mut verbs = destructive_verbs(published);
-        for item in &published.children {
-            for verb in destructive_verbs(item) {
-                if !verbs.contains(&verb) {
-                    verbs.push(verb);
-                }
-            }
-        }
-        verbs
+    /// The workspace's reports as Chat holds them now ([`moderation`]).
+    ///
+    /// # Errors
+    /// Chat's package is not loaded.
+    pub fn moderation(&self) -> Result<Moderation, String> {
+        moderation(self.opened)
     }
 }
 
-impl<R: Resource> WorkspaceApi for ReplicaApi<'_, R> {
+impl WorkspaceApi for ChatApi<'_> {
     fn now_ms(&self) -> i64 {
         self.now_ms
     }
 
-    fn activity(&mut self, person: &tilo_actions::MemberId, since_ms: i64) -> Vec<Activity> {
-        let app = self.replica.app_id();
-        let record = self.record();
-        let mut activity = self
-            .replica
-            .read(|doc| {
-                let versions = tilo_resource::history::committed_versions(doc);
-                let destructive = R::read(doc)
-                    .map(|state| {
-                        destructive_verbs(&tilo_resource::resource::publish::<R>(
-                            R::KIND,
-                            R::LABEL,
-                            &state,
-                        ))
-                    })
-                    .unwrap_or_default();
-                activity_of(
-                    &Source {
-                        app,
-                        record: &record,
-                        versions: &versions,
-                        destructive: &destructive,
-                    },
-                    person,
-                    since_ms,
-                )
+    /// What `person` wrote in Chat since `since_ms`, each message one change of the
+    /// conversation it is in.
+    fn activity(&mut self, person: &MemberId, since_ms: i64) -> Vec<Activity> {
+        let Ok(all) = tl_chat::all_messages(self.opened) else {
+            return Vec::new();
+        };
+        let mut activity: Vec<Activity> = all
+            .into_iter()
+            .filter(
+                |(_, message)| matches!(&message.who, Some(Actor::Member(who)) if who == person),
+            )
+            .filter_map(|(conversation, message)| {
+                let time_ms = millis(&message.when);
+                (time_ms >= since_ms).then(|| Activity {
+                    app: tl_chat::app().to_owned(),
+                    record: conversation.id_string(),
+                    change: message.at.id_string(),
+                    before: None,
+                    time_ms,
+                    actor: tilo_actions::Actor::Member(person.clone()),
+                    what: format!(
+                        "send {}",
+                        message.text.chars().take(EXCERPT_CHARS).collect::<String>()
+                    ),
+                    destructive: false,
+                    content: true,
+                })
             })
-            .unwrap_or_default();
-        // What they wrote is kept in the parts of the chain the record's
-        // app keeps beside it (a chat's messages): each part's history.
-        for part in self.replica.resources_beside() {
-            let Some((chain, _)) = part.chain_part() else {
-                continue;
-            };
-            let destructive = self.destructive_in_chain(&chain);
-            let record = part.as_str().to_owned();
-            activity.extend(
-                self.replica
-                    .read_resource(&part, |doc| {
-                        let versions = tilo_resource::history::committed_versions(doc);
-                        activity_of(
-                            &Source {
-                                app,
-                                record: &record,
-                                versions: &versions,
-                                destructive: &destructive,
-                            },
-                            person,
-                            since_ms,
-                        )
-                    })
-                    .unwrap_or_default(),
-            );
-        }
+            .collect();
         activity.sort_by_key(|item| item.time_ms);
         activity
     }
@@ -206,46 +172,62 @@ impl<R: Resource> WorkspaceApi for ReplicaApi<'_, R> {
         (self.govern)(change)
     }
 
+    /// Takes back what a person wrote: `undo { by, steps }` on a conversation deletes the
+    /// `steps` newest messages `by` wrote there, with Chat's `delete`.
     fn invoke(
         &mut self,
         app: &str,
         record: &str,
         action: &str,
         args: serde_json::Value,
-        run: &str,
+        _run: &str,
     ) -> Result<(), String> {
-        if app != self.replica.app_id() {
-            return Err(format!("{app}/{record} is not held here"));
+        if app != tl_chat::app() || action != "undo" {
+            return Err(format!(
+                "the moderation agent does not {action} {app}/{record}"
+            ));
         }
-        let context =
-            tilo_actions::ActionContext::default().with_group(run, "Moderation", AGENT_SESSION);
-        if record == self.record() {
-            let address = self.address(action, None)?;
-            return self.run_action(&address, args, Some(context));
+        let by: tilo_actions::Actor = args
+            .get("by")
+            .cloned()
+            .and_then(|by| serde_json::from_value(by).ok())
+            .ok_or("an undo names whose changes it takes back")?;
+        let steps = args
+            .get("steps")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|steps| usize::try_from(steps).ok())
+            .ok_or("an undo of messages counts them")?;
+        let mut theirs: Vec<(ResourceRef, ResourceRef, i64)> = tl_chat::all_messages(self.opened)?
+            .into_iter()
+            .filter(|(conversation, message)| {
+                conversation.id_string() == record && message.who.as_ref() == Some(&by)
+            })
+            .map(|(conversation, message)| {
+                let when = millis(&message.when);
+                (conversation, message.at, when)
+            })
+            .collect();
+        theirs.sort_by_key(|(_, _, when)| std::cmp::Reverse(*when));
+        let bot = bot();
+        for (conversation, message, _) in theirs.into_iter().take(steps) {
+            tl_chat::delete(self.opened, &bot, &conversation, &message)?;
         }
-        // A part held beside the record is changed through the chain its
-        // app publishes, naming the part.
-        let part = DocumentId::parse(record)
-            .filter(|part| self.replica.keeps_beside(part))
-            .ok_or_else(|| format!("{app}/{record} is not held here"))?;
-        let (chain, index) = part
-            .chain_part()
-            .ok_or_else(|| format!("{app}/{record} is not held here"))?;
-        let address = self.address(action, Some(&chain))?;
-        let mut args = args;
-        if let serde_json::Value::Object(arguments) = &mut args {
-            arguments.insert("part".into(), serde_json::Value::from(index));
-        }
-        self.run_action(&address, args, Some(context))
+        Ok(())
     }
 
-    fn decide(
-        &mut self,
-        decision: tilo_moderation::model::moderation::Decide,
-    ) -> Result<(), String> {
-        let args = serde_json::to_value(decision).map_err(|error| error.to_string())?;
-        let address = self.address("decide-reports", None)?;
-        self.run_action(&address, args, None)
+    /// Settles each report the decision answers with Chat's `decide`, saying what was decided
+    /// and why.
+    fn decide(&mut self, decision: Decide) -> Result<(), String> {
+        let text = decision_text(&decision);
+        let bot = bot();
+        for id in &decision.reports {
+            let report = self
+                .reports
+                .get(id)
+                .ok_or_else(|| format!("no report {id} is filed"))?;
+            tl_chat::decide(self.opened, &bot, report, &text)?;
+        }
+        Ok(())
     }
 }
 

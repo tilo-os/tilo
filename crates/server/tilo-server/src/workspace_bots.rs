@@ -2,33 +2,25 @@
 //!
 //! The host follows the workspace's records through its own copy: each member
 //! write it takes in ([`Workspaces::document_writes`]) wakes the bots that watch
-//! that record, which read the changes after their cursor as record events
-//! ([`tilo_agent_session::bot::events_since`]). A bot acts through its
-//! own confined replica of the record, as the installation for its
-//! installer, and what it changed reaches the workspace as an ordinary change
-//! the governor publishes, so members merge it like anyone's and history
-//! names the bot.
+//! that record. What a bot changed reaches the workspace as an ordinary change, so
+//! members merge it like anyone's and history names the bot.
 //!
-//! The workspace's moderation agent is the first bot run this way: a filed
-//! report wakes it, and it looks at every person with open reports, so a
-//! report filed while the host was down is still answered at the next
+//! The workspace's moderation agent is the first bot run this way: a report filed in
+//! the workspace's Chat wakes it, and it looks at every person with a report it has not
+//! looked at, so a report filed while the host was down is still answered at the next
 //! start.
 
-use automerge::AutoCommit;
-use collab_types::DocumentMutation;
-use tilo_action_policy::bot::{MODERATION, MODERATION_GRANT, moderation_grant};
-use tilo_action_policy::{Actor, Change, Grant, MemberAccess, MemberId, WorkspacePolicy};
-use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
+use std::collections::BTreeSet;
+
+use tilo_action_policy::bot::{MODERATION_GRANT, moderation_grant};
+use tilo_action_policy::{Change, Grant};
 use tilo_moderation::{Judge, ModerationAgent};
-use tilo_resource::Resource as _;
 use tilo_server_session::workspaces::RemoveMemberRequest;
 use tilo_user_identity::DeviceCert;
 
-use crate::moderation::{ReplicaApi, files_a_report};
+use crate::moderation::ChatApi;
+use crate::tl_chat;
 use crate::workspaces::{ResourceWrite, Workspaces};
-
-/// The app whose record holds the workspace's reports and decisions.
-use tilo_app_id::apps::CHAT;
 
 /// Enforces one of the moderation agent's governance changes on `workspace` as
 /// the workspace's root, held to the workspace's policy like a Moderator's own.
@@ -70,15 +62,15 @@ pub async fn govern(
 }
 
 /// The workspace's moderation agent, installed by the workspace's root and woken by
-/// filed reports.
+/// reports filed in the workspace's Chat.
 pub struct ModerationBot<J> {
     workspaces: Workspaces,
     workspace: String,
     host: DeviceCert,
     agent: std::sync::Arc<ModerationAgent<J>>,
-    /// The chat record's heads the agent has read up to, hex; `None` until
-    /// its first look, which answers whatever reports are open.
-    cursor: Option<Vec<String>>,
+    /// The reports it has looked at, by id: one the model gave no verdict on waits for a
+    /// human Moderator instead of being put to the model again on every write.
+    looked: BTreeSet<String>,
 }
 
 impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
@@ -95,12 +87,12 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
             workspace,
             host,
             agent: std::sync::Arc::new(agent),
-            cursor: None,
+            looked: BTreeSet::new(),
         }
     }
 
-    /// Answer the workspace's reports at start, then each time a member's write
-    /// to the chat files one, until the workspace is no longer governed here.
+    /// Answer the workspace's reports at start, then each time a write to its Chat
+    /// arrives, until the workspace is no longer governed here.
     pub async fn run(mut self) {
         let mut writes = self.workspaces.document_writes();
         loop {
@@ -120,33 +112,45 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
     }
 
     fn watches(&self, write: &ResourceWrite) -> bool {
-        write.workspace == self.workspace && write.app == CHAT && write.record.is_empty()
+        write.workspace == self.workspace && write.app == tl_chat::app()
     }
 
-    /// Read the chat's changes after the cursor and, when one of them filed
-    /// a report (or on the first look), decide every open report: while a
+    /// Decide the open reports of every person with one it has not looked at yet: while a
     /// person who governs the workspace has it turned on.
     ///
     /// # Errors
-    /// The workspace's grants or the chat record could not be read, opened or
-    /// written.
+    /// The workspace's grants or its Chat could not be read, opened or written.
     pub async fn wake(&mut self) -> Result<(), String> {
-        // Turned off, it looks at nothing: the reports wait from where it
-        // left off until a person turns it on again.
-        let Some(grant) = installed_moderation_grant(&self.workspaces, &self.workspace).await?
-        else {
-            return Ok(());
-        };
-        let Some(bytes) = self.record().await? else {
-            return Ok(());
-        };
-        let (reported, heads) = reports_since(&self.workspace, &bytes, self.cursor.as_deref())?;
-        if !reported {
-            self.cursor = Some(heads);
+        // Turned off, it looks at nothing: the reports wait until a person turns it on
+        // again.
+        if installed_moderation_grant(&self.workspaces, &self.workspace)
+            .await?
+            .is_none()
+        {
             return Ok(());
         }
-        let root = hex::encode(self.host.user_public_key);
-        let parts = self.parts().await?;
+        let packages = tl_chat::packages()?;
+        let moderation = self
+            .workspaces
+            .with_tl_record(&self.workspace, &packages, tl_chat::viewer(), |opened| {
+                crate::moderation::moderation(opened)
+            })
+            .await?;
+        let fresh: Vec<String> = moderation
+            .open_reports()
+            .filter(|report| !self.looked.contains(&report.id))
+            .map(|report| report.id.clone())
+            .collect();
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        let mut people: Vec<_> = moderation
+            .open_reports()
+            .filter(|report| fresh.contains(&report.id))
+            .map(|report| report.person.clone())
+            .collect();
+        people.sort();
+        people.dedup();
         let (workspaces, governed, host) = (
             self.workspaces.clone(),
             self.workspace.clone(),
@@ -154,154 +158,79 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
         );
         let agent = std::sync::Arc::clone(&self.agent);
         let handle = tokio::runtime::Handle::current();
-        // The replica runs app code in a confined worker and is driven
-        // synchronously from one thread, so the whole look is held on a
-        // blocking thread; the workspace's locks are only taken per call.
-        let (mutation, beside) = tokio::task::spawn_blocking(move || {
-            let mut replica = bot_replica(&governed, &root, grant, bytes, parts)?;
-            let mut govern =
-                |change: Change| handle.block_on(govern(&workspaces, &governed, &host, &change));
-            let mut api = chat_api(&mut replica, &mut govern);
-            let moderation = api
-                .moderation()
-                .ok_or("the chat's moderation record did not read")?;
-            for person in ModerationAgent::<J>::reported(&moderation) {
-                let look = ModerationAgent::<J>::look(&mut api, &moderation, &person);
-                // A model that gives no verdict leaves the report open for
-                // a human Moderator.
-                let (verdict, model) = match handle.block_on(agent.verdict(&look)) {
-                    Ok(answer) => answer,
-                    Err(error) => {
-                        tracing::warn!(%person, %error, "moderation model gave no verdict");
-                        continue;
-                    }
-                };
-                let enforced = ModerationAgent::<J>::enforce(&mut api, look, verdict, model);
-                for failure in enforced.failures {
-                    tracing::warn!(%person, %failure, "moderation step failed");
-                }
-            }
-            let taken = |error: tilo_agent_session::AppError| error.to_string();
-            Ok::<_, String>((
-                replica.take_mutation().map_err(taken)?,
-                replica.take_document_mutations().map_err(taken)?,
-            ))
-        })
-        .await
-        .map_err(|error| error.to_string())??;
-        if let Some(mutation) = mutation {
-            self.publish("", mutation).await?;
-        }
-        // What it took back of the messages is in the chat's parts.
-        for (record, mutation) in beside {
-            self.publish(record.as_str(), mutation).await?;
-        }
-        // Remember only the heads the bot looked at. Members may have filed
-        // more reports while it waited for a verdict or published its changes.
-        self.cursor = Some(heads);
-        Ok(())
-    }
-
-    /// The parts of the chat's messages the workspace holds, each whole.
-    async fn parts(&self) -> Result<Vec<(collab_types::document::DocumentId, Vec<u8>)>, String> {
-        let mut parts = Vec::new();
-        for (app, record) in self
-            .workspaces
-            .document_routes(&self.workspace)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            let Some(part) = collab_types::document::DocumentId::parse(&record)
-                .filter(|record| app == CHAT && chat::parts::part_index(record).is_some())
-            else {
-                continue;
-            };
-            if let Some(bytes) = self
-                .workspaces
-                .resource_document(&self.workspace, CHAT, &record)
-                .await
-                .map_err(|error| error.to_string())?
-            {
-                parts.push((part, bytes));
-            }
-        }
-        Ok(parts)
-    }
-
-    async fn record(&self) -> Result<Option<Vec<u8>>, String> {
+        // The record is changed on a blocking thread, so the model's answer and the
+        // workspace's governance are waited for there.
         self.workspaces
-            .resource_document(&self.workspace, CHAT, "")
-            .await
-            .map_err(|error| error.to_string())
-    }
-
-    /// Put the bot's changes into the workspace's chat record (`""`) or one of
-    /// its parts, as the governor publishes any change: they keep their own
-    /// entries, so history names the bot for its installer.
-    async fn publish(&self, record: &str, mutation: DocumentMutation) -> Result<(), String> {
-        let bytes = match mutation {
-            DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
-        };
-        self.workspaces
-            .author_application(
+            .with_tl_record(
                 &self.workspace,
-                &self.host,
-                &AppCatalogue::native(),
-                CHAT,
-                record,
-                |doc| {
-                    tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                        .map(drop)
-                        .map_err(|error| error.to_string())
+                &packages,
+                tl_chat::viewer(),
+                move |opened| {
+                    let mut govern = |change: Change| {
+                        handle.block_on(govern(&workspaces, &governed, &host, &change))
+                    };
+                    let mut api = ChatApi::new(opened, &mut govern, tilo_clock::unix_now_ms_i64());
+                    let moderation = api.moderation()?;
+                    for person in people {
+                        let look = ModerationAgent::<J>::look(&mut api, &moderation, &person);
+                        // A model that gives no verdict leaves the report open for a human
+                        // Moderator.
+                        let (verdict, model) = match handle.block_on(agent.verdict(&look)) {
+                            Ok(answer) => answer,
+                            Err(error) => {
+                                tracing::warn!(%person, %error, "moderation model gave no verdict");
+                                continue;
+                            }
+                        };
+                        let enforced =
+                            ModerationAgent::<J>::enforce(&mut api, look, verdict, model);
+                        for failure in enforced.failures {
+                            tracing::warn!(%person, %failure, "moderation step failed");
+                        }
+                    }
+                    Ok(())
                 },
             )
-            .await
-            .map_err(|error| error.to_string())
+            .await?;
+        self.looked.extend(fresh);
+        Ok(())
     }
 }
 
-/// Whether a change after `since` filed a report (always, with no cursor
-/// yet), and the record's heads, hex.
-fn reports_since(
-    workspace: &str,
-    bytes: &[u8],
-    since: Option<&[String]>,
-) -> Result<(bool, Vec<String>), String> {
-    let mut doc = AutoCommit::load(bytes).map_err(|error| error.to_string())?;
-    let heads: Vec<String> = doc.get_heads().iter().map(ToString::to_string).collect();
-    let Some(since) = since else {
-        return Ok((true, heads));
-    };
-    let events = tilo_agent_session::bot::events_since(
-        workspace,
-        "",
-        chat::Chat::KIND,
-        doc.document(),
-        since,
-    );
-    Ok((
-        events.iter().any(|(event, _)| files_a_report(&event.did)),
-        heads,
-    ))
+/// Whether `recorded` is the moderation grant `expected` as this build writes it, on
+/// `expected`'s node or, without `node`, on any.
+fn is_moderation_grant(recorded: &Grant, expected: &Grant, node: bool) -> bool {
+    recorded.id == expected.id
+        && recorded.grantee == expected.grantee
+        && (!node || recorded.node == expected.node)
+        && recorded.kinds == expected.kinds
+        && recorded.answer == expected.answer
+        && recorded.lifetime == expected.lifetime
 }
 
-/// Give `workspace` its initial moderation grant as the workspace's own person.
-/// A grant already recorded under that id is a workspace policy decision.
+/// Give `workspace` its moderation grant as the workspace's own person. A grant already
+/// recorded under that id is a workspace policy decision and stays, unless it is this
+/// build's grant on another node: the grant from when reports were filed in another app,
+/// which moves to the Chat they are filed in now.
 ///
 /// # Errors
 /// The workspace is not governed here, or the grant could not be written.
 pub async fn enable(workspaces: &Workspaces, workspace: &str) -> Result<(), String> {
-    if workspaces
+    let cert = workspaces.governor();
+    let grant = moderation_grant(workspace, &hex::encode(cert.user_public_key));
+    let recorded = workspaces
         .workspace_grants(workspace)
         .await
         .map_err(|error| error.to_string())?
-        .iter()
-        .any(|grant| grant.id.as_str() == MODERATION_GRANT)
-    {
-        return Ok(());
+        .into_iter()
+        .find(|recorded| recorded.id.as_str() == MODERATION_GRANT);
+    if let Some(recorded) = recorded {
+        let moved = is_moderation_grant(&recorded, &grant, false)
+            && !is_moderation_grant(&recorded, &grant, true);
+        if !moved {
+            return Ok(());
+        }
     }
-    let cert = workspaces.governor();
-    let grant = moderation_grant(workspace, &hex::encode(cert.user_public_key));
     // The request is the grant as this build writes it: settling the same
     // enable again changes nothing.
     let written = serde_json::to_vec(&grant)
@@ -342,60 +271,9 @@ async fn installed_moderation_grant(
         .workspace_grants(workspace)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(grants.into_iter().find(|grant| {
-        grant.id == expected.id
-            && grant.grantee == expected.grantee
-            && grant.node == expected.node
-            && grant.kinds == expected.kinds
-            && grant.answer == expected.answer
-            && grant.lifetime == expected.lifetime
-    }))
-}
-
-/// The moderation agent's replica of the workspace's chat, holding the parts of
-/// its messages beside it: the root's installation, granted reading and
-/// undoable changes in the workspace.
-fn bot_replica(
-    workspace: &str,
-    installer: &str,
-    grant: Grant,
-    bytes: Vec<u8>,
-    parts: Vec<(collab_types::document::DocumentId, Vec<u8>)>,
-) -> Result<Replica, String> {
-    let access = MemberAccess::person(WorkspacePolicy::new(workspace, installer), installer)
-        .acting_as(Actor::Member(MemberId::bot(MODERATION)), [grant]);
-    let mut replica = Replica::open(
-        &AppCatalogue::native(),
-        CHAT,
-        workspace,
-        &tilo_actions::MemberId::bot(MODERATION),
-        ReplicaActor::Bot {
-            installation: MODERATION.into(),
-            installer: installer.into(),
-            access,
-        },
-        Seed::Existing {
-            record: collab_types::document::DocumentId::package_primary(),
-            changes: vec![bytes],
-        },
-    )
-    .map_err(|error| error.to_string())?;
-    for (part, bytes) in parts {
-        // A part it cannot hold leaves only that part's posts out of its
-        // look, not every report.
-        if let Err(error) = replica.apply_document(&part, &DocumentMutation::Snapshot(bytes)) {
-            tracing::warn!(record = %part.as_str(), %error, "moderation agent leaves out a part of the chat");
-        }
-    }
-    Ok(replica)
-}
-
-fn chat_api<'a>(
-    replica: &'a mut Replica,
-    govern: &'a mut dyn FnMut(Change) -> Result<(), String>,
-) -> ReplicaApi<'a, chat::Chat> {
-    let now = tilo_clock::unix_now_ms_i64();
-    ReplicaApi::new(replica, |chat: &chat::Chat| &chat.moderation, govern, now)
+    Ok(grants
+        .into_iter()
+        .find(|grant| is_moderation_grant(grant, &expected, true)))
 }
 
 /// The record `doc` holds, read as this build's `R` once it is brought up to
@@ -432,7 +310,6 @@ pub fn workspace_resource(catalogue: &tilo_agent_session::AppCatalogue, app: &st
 }
 
 pub mod assistant;
-pub mod attachments;
 pub mod discord;
 pub mod events;
 pub mod initiative;

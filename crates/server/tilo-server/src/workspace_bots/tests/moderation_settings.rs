@@ -1,16 +1,14 @@
 //! Turning the workspace's moderation bot on and off: a person's decision, and
 //! the grant it reaches.
 
-use super::messages::{chat_of, posts, texts_by};
-use super::{
-    ADA, AppCatalogue, CHAT, FakeJudge, MALLORY, MemberId, ModerationAgent, ModerationBot, Outcome,
-    bot_server, flood, flood_posts,
-};
+use super::{ADA, FakeJudge, MALLORY, MemberId, ModerationAgent, ModerationBot, bot_server};
+use crate::tl_chat;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::{governor, restricted_until};
-use tilo_action_policy::bot::MODERATION;
+use tilo_action_policy::bot::{MODERATED_APP, MODERATION};
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, Party, TreePath};
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::tl_records::runtime::Actor;
 
 /// The bot's answer for an undoable change at `node` in `workspace`.
 async fn bot_answer(
@@ -27,12 +25,8 @@ async fn bot_answer(
 
 fn chat_node(workspace: &str) -> TreePath {
     TreePath::workspace(workspace)
-        .app(tilo_app_id::apps::CHAT)
-        .kind("chat.messages")
-        .resource(collab_types::document::chain_resource_id(
-            &chat::parts::chain(),
-        ))
-        .action("post")
+        .app(MODERATED_APP)
+        .action("delete")
 }
 
 fn outside_node(workspace: &str) -> TreePath {
@@ -112,25 +106,75 @@ async fn turn_moderation(workspaces: &Workspaces, workspace: &str, cert: &Device
     }
 }
 
+fn person(key: [u8; 32]) -> Actor {
+    tl_chat::member(MemberId::person(hex::encode(key)))
+}
+
+/// Ada says hello in `#general`, Mallory floods it with the same link three times, and Ada
+/// reports one of her posts: each through Chat's own actions, as they would from their Chat.
+async fn flood(workspaces: &Workspaces, workspace: &str, owner: &DeviceCert) {
+    let owner = person(owner.user_public_key);
+    workspaces
+        .with_tl_record(
+            workspace,
+            &tl_chat::packages().unwrap(),
+            tl_chat::viewer(),
+            move |chat| {
+                let general = tl_chat::new_channel(chat, &owner, ("general", ""), None)?;
+                tl_chat::send(chat, &person(ADA), &general, "hello everyone", None)?;
+                let mut spam = Vec::new();
+                for _ in 0..3 {
+                    let post = "buy at spam.example";
+                    spam.push(tl_chat::send(chat, &person(MALLORY), &general, post, None)?);
+                }
+                let reported = spam.get(1).ok_or_else(|| "Mallory posted".to_owned())?;
+                tl_chat::report(chat, &person(ADA), &general, reported, "spam").map(drop)
+            },
+        )
+        .await
+        .unwrap();
+}
+
+/// What `who` wrote in the workspace's Chat, as the workspace holds it now.
+async fn texts_by(workspaces: &Workspaces, workspace: &str, who: [u8; 32]) -> Vec<String> {
+    workspaces
+        .with_tl_record(
+            workspace,
+            &tl_chat::packages().unwrap(),
+            tl_chat::viewer(),
+            move |chat| {
+                Ok(tl_chat::all_messages(chat)?
+                    .into_iter()
+                    .filter(|(_, message)| message.who == Some(person(who)))
+                    .map(|(_, message)| message.text)
+                    .collect())
+            },
+        )
+        .await
+        .unwrap()
+}
+
+/// The workspace's open reports, as the moderation agent reads them.
+async fn open_reports(workspaces: &Workspaces, workspace: &str) -> usize {
+    workspaces
+        .with_tl_record(
+            workspace,
+            &tl_chat::packages().unwrap(),
+            tl_chat::viewer(),
+            |chat| Ok(crate::moderation::moderation(chat)?.open_reports().count()),
+        )
+        .await
+        .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_bot() {
+async fn a_report_filed_in_the_workspace_restricts_and_takes_the_flood_back_as_the_bot() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-    let catalogue = AppCatalogue::native();
-    workspaces
-        .prepare_application(&workspace, &cert, &catalogue, CHAT, "")
-        .await
-        .unwrap();
-    let general = workspaces
-        .author_application(&workspace, &cert, &catalogue, CHAT, "", |doc| {
-            flood(doc).map_err(|error| error.to_string())
-        })
-        .await
-        .unwrap();
-    flood_posts(&workspaces, &workspace, &cert, &general).await;
+    flood(&workspaces, &workspace, &cert).await;
 
     let mut bot = ModerationBot::new(
         workspaces.clone(),
@@ -158,35 +202,28 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
     // Nobody turned it on: it looks at nothing and the report stays open.
     bot.wake().await.unwrap();
     assert_eq!(
-        texts_by(&posts(&workspaces, &workspace).await, MALLORY).len(),
+        texts_by(&workspaces, &workspace, MALLORY).await.len(),
         3,
         "the flood stands while the bot is off"
     );
-    assert_eq!(bot.cursor, None, "the bot read nothing");
+    assert!(bot.looked.is_empty(), "the bot looked at nothing");
+    assert_eq!(open_reports(&workspaces, &workspace).await, 1);
 
     // A person who governs the workspace turns it on, and it answers the
     // report left open.
     turn_moderation(&workspaces, &workspace, &cert, true).await;
     bot.wake().await.unwrap();
 
-    let posted = posts(&workspaces, &workspace).await;
     assert!(
-        texts_by(&posted, MALLORY).is_empty(),
+        texts_by(&workspaces, &workspace, MALLORY).await.is_empty(),
         "the flood is taken back"
     );
-    assert_eq!(texts_by(&posted, ADA), ["hello everyone"]);
-    let after = chat_of(
-        &workspaces
-            .resource_document(&workspace, CHAT, "")
-            .await
-            .unwrap()
-            .unwrap(),
-    );
-    let decision = after.moderation.decisions.iter().next().unwrap();
-    assert_eq!(decision.person, MemberId::person(hex::encode(MALLORY)));
-    assert_eq!(decision.outcome, Outcome::Restrict);
     assert_eq!(
-        after.moderation.open_reports().count(),
+        texts_by(&workspaces, &workspace, ADA).await,
+        ["hello everyone"]
+    );
+    assert_eq!(
+        open_reports(&workspaces, &workspace).await,
         0,
         "the report is settled"
     );
@@ -196,14 +233,8 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
             .is_some(),
         "Mallory is restricted through the workspace's governance"
     );
-    // The bot's own changes file no report, so they do not wake it again.
+    assert_eq!(bot.looked.len(), 1);
+    // Its own changes leave nothing new to look at.
     bot.wake().await.unwrap();
-    let after_second_wake = chat_of(
-        &workspaces
-            .resource_document(&workspace, CHAT, "")
-            .await
-            .unwrap()
-            .unwrap(),
-    );
-    assert_eq!(after_second_wake.moderation, after.moderation);
+    assert_eq!(bot.looked.len(), 1);
 }
