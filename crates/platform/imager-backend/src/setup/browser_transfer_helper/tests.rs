@@ -95,8 +95,12 @@ fn provision_device(
     );
     let id = hex::encode(identity.public_key());
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
-    let cert_path =
-        tilo_identity::provisioning::ensure_device_certificate_for_record(&record, &paths).unwrap();
+    let cert_path = tilo_identity::provisioning::ensure_device_certificate_for_record(
+        &record,
+        &paths,
+        "This device",
+    )
+    .unwrap();
     let cert = tilo_device_identity::persist::read_device_cert(&cert_path).unwrap();
     tilo_identity::device_fleet::DeviceFleetStore::from_env()
         .unwrap()

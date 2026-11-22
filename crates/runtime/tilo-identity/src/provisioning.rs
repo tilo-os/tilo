@@ -277,7 +277,14 @@ fn create_named_primary_identity(
     let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let pubkey_hex = hex::encode(identity.group_public_key().as_bytes());
-    import_whole_identity(identity_dir, &identity, display_name, avatar_color, storage)?;
+    import_whole_identity(
+        identity_dir,
+        PRIMARY_IDENTITY_ID,
+        &identity,
+        display_name,
+        avatar_color,
+        storage,
+    )?;
     Ok(ProvisionOutcome::Created { pubkey_hex })
 }
 
@@ -296,21 +303,46 @@ pub fn import_single_device_root(
     display_name: &str,
     storage: IdentityStorage,
 ) -> io::Result<PathBuf> {
+    import_single_device_root_as(
+        identity_dir,
+        PRIMARY_IDENTITY_ID,
+        root,
+        display_name,
+        storage,
+    )
+}
+
+/// [`import_single_device_root`] as the record `id`, beside the identities
+/// already kept, which stay as they are: the one this account now acts as.
+///
+/// # Errors
+///
+/// As [`import_single_device_root`], and when `id` or this root is kept
+/// already.
+pub fn import_single_device_root_as(
+    identity_dir: &Path,
+    id: &str,
+    root: &ed25519_dalek::SigningKey,
+    display_name: &str,
+    storage: IdentityStorage,
+) -> io::Result<PathBuf> {
     prepare_identity_directory(identity_dir)?;
     let identity = ThresholdIdentity::from_single_device_seed(&Zeroizing::new(root.to_bytes()));
     let path = import_whole_identity(
         identity_dir,
+        id,
         &identity,
         display_name,
         crate::store::DEFAULT_AVATAR_COLOR,
         storage,
     )?;
-    crate::store::set_active_identity(identity_dir, PRIMARY_IDENTITY_ID)?;
+    crate::store::set_active_identity(identity_dir, id)?;
     Ok(path)
 }
 
 fn import_whole_identity(
     identity_dir: &Path,
+    id: &str,
     identity: &ThresholdIdentity,
     display_name: &str,
     avatar_color: [u8; 3],
@@ -325,7 +357,7 @@ fn import_whole_identity(
     let encoded = record.to_json_bytes();
     record.threshold_identity.secret_bytes.zeroize();
     let bytes = Zeroizing::new(encoded?);
-    import_primary_identity(identity_dir, &bytes, storage)
+    import_identity_record(identity_dir, id, &bytes, storage)
 }
 
 fn ensure_primary_identity_in_context(
@@ -361,7 +393,7 @@ fn ensure_primary_identity_in_context(
     )?;
     let bytes = record.to_json_bytes()?;
 
-    import_primary_identity(identity_dir, &bytes, storage)?;
+    import_identity_record(identity_dir, PRIMARY_IDENTITY_ID, &bytes, storage)?;
     Ok(ProvisionOutcome::Created { pubkey_hex })
 }
 
@@ -962,10 +994,11 @@ pub fn active_identity_owns_device(identity_dir: &Path, paths: &IdentityPaths) -
 pub fn ensure_device_certificate_for_record(
     record_path: &Path,
     paths: &IdentityPaths,
+    label: &str,
 ) -> Result<PathBuf, io::Error> {
     let identity = crate::store::load_from_path(record_path.to_path_buf())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    ensure_device_certificate_for_identity(&identity, paths, "This device", DeviceClass::Native)
+    ensure_device_certificate_for_identity(&identity, paths, label, DeviceClass::Native)
 }
 
 /// Ensure this device holds its certificate for `identity`, labelled
@@ -1241,24 +1274,18 @@ pub fn create_person(
     Ok(root.verifying_key().to_bytes())
 }
 
-fn import_primary_identity(
+fn import_identity_record(
     identity_dir: &Path,
+    id: &str,
     bytes: &[u8],
     storage: IdentityStorage,
 ) -> io::Result<PathBuf> {
     match storage {
         IdentityStorage::Files => {
             let provider = crate::store::BrokerFileProvider::new(identity_dir);
-            crate::store::import_identity_with_provider(
-                identity_dir,
-                PRIMARY_IDENTITY_ID,
-                bytes,
-                &provider,
-            )
+            crate::store::import_identity_with_provider(identity_dir, id, bytes, &provider)
         }
-        IdentityStorage::Platform => {
-            crate::store::import_identity(identity_dir, PRIMARY_IDENTITY_ID, bytes)
-        }
+        IdentityStorage::Platform => crate::store::import_identity(identity_dir, id, bytes),
     }
 }
 
