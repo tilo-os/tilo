@@ -392,11 +392,6 @@ impl<R: FloatingRow> FloatingList<R> {
         self
     }
 
-    /// Rows beyond `rows` scroll instead of growing the panel.
-    pub fn set_max_visible(&mut self, rows: usize) {
-        self.max_visible = rows.max(1);
-    }
-
     /// Rows taller than `height` together scroll instead of growing the
     /// panel; `None` leaves only [`Self::with_max_visible`].
     pub fn set_max_height(&mut self, height: Option<f64>) {
@@ -831,12 +826,6 @@ impl<R: FloatingRow> FloatingList<R> {
         self.place_scroll();
     }
 
-    /// Take the panel's height as it is now, without growing into it.
-    pub fn snap_height(&mut self) {
-        self.height
-            .snap(self.placed.map_or(0.0, |rect| rect.height()));
-    }
-
     /// The panel's rect: under the anchor, or above it when there is more height there,
     /// inside the viewport.
     #[must_use]
@@ -914,11 +903,6 @@ impl<R: FloatingRow> FloatingList<R> {
         let shown = self.rows_box();
         let clipped = self.row_bounds(index)?.intersect(shown);
         (!shown.is_zero_area() && clipped.height() > 0.0).then_some(clipped)
-    }
-
-    /// The rows' box on screen: where the rows show.
-    pub fn rows_rect(&self) -> Rect {
-        self.rows_box()
     }
 
     /// The row under `point`, pickable or not.

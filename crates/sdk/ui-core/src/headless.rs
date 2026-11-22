@@ -844,17 +844,6 @@ impl FrameHarness {
         Self::from_component_with_root(component, viewport, inputs, notify, |root| root)
     }
 
-    /// Observe the ordinary mounted component through a transparent root decorator.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn from_component_with_decorator(
-        component: crate::application::AppComponent,
-        viewport: (u32, u32),
-        inputs: crate::application::ComponentRunnerInputs,
-        decorate: impl FnOnce(Box<dyn Widget>) -> Box<dyn Widget>,
-    ) -> Result<Self, crate::launch::LaunchError> {
-        Self::from_component_with_root(component, viewport, inputs, || {}, decorate)
-    }
-
     fn from_component_with_root(
         component: crate::application::AppComponent,
         viewport: (u32, u32),
@@ -942,16 +931,6 @@ impl FrameHarness {
                 .setup_error(crate::launch::LaunchError::Operation(error.to_string())));
         }
         Ok((root, wake, history))
-    }
-
-    /// The content link the mounted component's record content travels on: the content link its window keeps, read as
-    /// the window reads it, so a test asking what the window asked for looks here.
-    pub fn component_document_content_link(
-        &self,
-    ) -> Option<std::sync::Arc<crate::collaboration::document_content::ContentLink>> {
-        let binding = &self.component_wake.as_ref()?.binding;
-        let _entry = binding.lifetime.enter_if_open().ok()?;
-        Some(crate::collaboration::document_content::ContentLink::of_window())
     }
 
     /// The record the mounted component shows.
@@ -6679,21 +6658,6 @@ impl FrameHarness {
         self.call_on_instance_as(instance, resource, action, arguments, false)
     }
 
-    /// [`Self::call_on_instance`] after the caller confirmed this invocation.
-    ///
-    /// # Errors
-    /// As [`Self::call_on`], except that no confirmation is required.
-    pub fn call_on_instance_confirmed(
-        &mut self,
-        instance: crate::application::InstanceId,
-        resource: &str,
-        action: &str,
-        arguments: serde_json::Value,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        self.invalidate_local();
-        self.call_on_instance_as(instance, resource, action, arguments, true)
-    }
-
     fn call_on_instance_as(
         &mut self,
         instance_id: crate::application::InstanceId,
@@ -8170,27 +8134,6 @@ impl FrameHarness {
         self.root
             .callback_binding()
             .map(|binding| binding.instance_id)
-    }
-
-    /// What a whole-window capture draws of the root, as the shell's "full app" capture does: the
-    /// size the root shows beyond its window and its scene at that size.
-    pub fn complete_content(&mut self) -> Option<(vello::kurbo::Size, Scene)> {
-        self.invalidate_local();
-        use crate::widget::CompleteContentWidgetExt as _;
-        let size = self.root.complete_content_size()?;
-        let origin = self.root.get_rect().origin();
-        let bounds = vello::kurbo::Rect::from_origin_size(origin, size);
-        let mut scene = Scene::new();
-        let drawn = self.root.draw_complete_content(
-            &mut scene,
-            bounds,
-            Affine::IDENTITY,
-            &mut self.text,
-            &self.theme,
-            &self.presence,
-        );
-        self.discard_layout_tree();
-        drawn.then_some((size, scene))
     }
 
     /// The scene the last laid-out frame encoded: what [`Self::render_rgba`] rasterises.

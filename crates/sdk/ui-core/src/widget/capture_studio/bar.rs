@@ -228,19 +228,6 @@ impl CaptureStudio {
         }
     }
 
-    /// Whether the tool's floating parts are at `p`: a screenshot's or a
-    /// recording's receipt, or the bar while recording. They hang over the
-    /// windows, so a press there, from the pointer or a finger, is the
-    /// tool's and never the window's beneath.
-    pub fn takes_pointer_at(&self, p: Point) -> bool {
-        self.open
-            && ((self.screenshot_receipt.is_some()
-                && self.screenshot_receipt_layout().pill.contains(p))
-                || (self.recording_finished_at.is_some()
-                    && self.recording_receipt_layout().pill.contains(p))
-                || (self.shows_status() && self.status_bar().contains(p)))
-    }
-
     /// How far each half of the setup bar reaches from the shutter: the
     /// wider of the outputs, or the targets and the options, with the gap
     /// before the shutter. Both halves are this wide, so the shutter is the

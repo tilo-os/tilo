@@ -339,12 +339,6 @@ impl<M: PlotMarks> Plot<M> {
     pub fn take_activated(&mut self) -> Option<M::Activated> {
         self.activated.take()
     }
-    pub(crate) fn activation(&self) -> Option<&M::Activated> {
-        self.activated.as_ref()
-    }
-    pub(crate) fn clear_activation(&mut self) {
-        self.activated = None;
-    }
     /// Repaints once on the next frame: for a mark that changed its data,
     /// whose places the layout works out again.
     pub(crate) fn mark_dirty(&mut self) {

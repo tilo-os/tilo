@@ -152,13 +152,6 @@ impl<'a> NotificationListView<'a> {
     }
 
     #[must_use]
-    pub fn pager_labels(mut self, newer: &'a str, older: &'a str) -> Self {
-        self.newer_label = newer;
-        self.older_label = older;
-        self
-    }
-
-    #[must_use]
     pub fn undo_label(mut self, label: &'a str) -> Self {
         self.undo_label = label;
         self

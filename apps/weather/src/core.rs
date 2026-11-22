@@ -91,7 +91,7 @@ pub struct Core {
     menu: ContextMenu,
     menu_actions: Vec<Option<EntryAction>>,
     menu_target: Option<usize>,
-    reorder: DragController<LocationId>,
+    reorder: DragController,
     over_rect: Rect,
     list_rect: Rect,
     row_h: f64,
@@ -1342,11 +1342,9 @@ impl Core {
         if let Some(press) = self.press {
             if press.is_reorder() {
                 let metrics = self.list_metrics();
-                if !self.reorder.is_pending()
-                    && let Some(loc) = self.model.locations.get(press.index)
-                {
+                if !self.reorder.is_pending() && press.index < self.model.locations.len() {
                     let grab = press.origin.y - metrics.slot_lead(press.index);
-                    self.reorder.begin(loc.id, press.index, grab, press.origin);
+                    self.reorder.begin(press.index, grab, press.origin);
                 }
                 self.reorder.pointer_moved(self.last_mouse, &metrics);
             } else if press.is_swipe() {
@@ -1487,9 +1485,6 @@ impl Core {
             return;
         }
         let from = 1.min(self.model.locations.len() - 1);
-        let Some(id) = self.model.locations.get(from).map(|loc| loc.id) else {
-            return;
-        };
         let row_h = if self.row_h > 0.0 {
             self.row_h
         } else {
@@ -1503,7 +1498,7 @@ impl Core {
         let x = self.list_rect.center().x.max(row_h);
         let start = Point::new(x, top + (from as f64 + 0.5) * row_h);
         let target = Point::new(x, start.y + 2.2 * row_h);
-        self.reorder.begin(id, from, row_h / 2.0, start);
+        self.reorder.begin(from, row_h / 2.0, start);
         self.last_mouse = target;
         let m = ListMetrics::uniform(top, row_h, 0.0, self.model.locations.len());
         self.reorder.pointer_moved(target, &m);

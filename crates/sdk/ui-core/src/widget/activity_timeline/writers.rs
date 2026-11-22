@@ -72,14 +72,6 @@ impl ActivityTimeline {
         writers
     }
 
-    /// Where the strip's chip for the agent (or app, or program) named `writer` is.
-    pub fn writer_chip_rect(&self, writer: &str) -> Option<Rect> {
-        self.strip_chips.iter().find_map(|chip| match &chip.target {
-            StripTarget::Writer(placed) if placed == writer => Some(chip.hit),
-            _ => None,
-        })
-    }
-
     /// The chip naming what wrote an attributed change: an agent tool, an app
     /// or a program, beside the face of the author it wrote for. An agent's
     /// chip wears the agent mark in its own hue, the mark it shows wherever it

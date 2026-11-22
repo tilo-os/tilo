@@ -76,11 +76,6 @@ impl ZoomableImage {
     pub fn viewer(&self) -> Option<&ImageViewer> {
         self.viewer.as_ref()
     }
-
-    /// The viewer, once the picture is here.
-    pub fn viewer_mut(&mut self) -> Option<&mut ImageViewer> {
-        self.viewer.as_mut()
-    }
 }
 
 impl Widget for ZoomableImage {

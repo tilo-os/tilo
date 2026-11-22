@@ -185,10 +185,6 @@ impl DescribedTable {
     pub fn table(&self) -> &DataTable<DataTableRowProps> {
         &self.table
     }
-
-    pub fn table_mut(&mut self) -> &mut DataTable<DataTableRowProps> {
-        &mut self.table
-    }
 }
 
 fn width_of(column: &DataTableColumnProps) -> ColumnWidth {

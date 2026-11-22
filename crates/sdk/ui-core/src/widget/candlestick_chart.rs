@@ -51,12 +51,6 @@ impl Candle {
     }
 
     #[must_use]
-    pub fn with_volume(mut self, volume: f64) -> Self {
-        self.volume = volume.max(0.0);
-        self
-    }
-
-    #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
         self

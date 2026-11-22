@@ -2056,34 +2056,6 @@ impl AppWindow {
         focus_field(built, &declared)
     }
 
-    /// Run the action the app declared the shortcut `key` for, as pressing it does: the event it
-    /// runs reaches the app at once, or the keyboard goes to the field the key leads to. Whether
-    /// the window offers it. A test's way in.
-    pub fn run_shortcut(&mut self, key: &str) -> bool {
-        let Some(press) = self.press_where(&ui::platform::Shortcut::from(key)) else {
-            return false;
-        };
-        match press {
-            // The window's own request, taken once its tree is laid out again: what the field
-            // commits, it commits as the person leaves it.
-            Press::Lead(field) => {
-                self.focus_request = Some(field);
-                self.take_events();
-                self.flush();
-                true
-            }
-            // The keyboard is already in the field that declares the key, and the field carries it
-            // out through its own press: only the event path does that.
-            Press::Commit => true,
-            Press::Run(node_key, event) => {
-                self.act(UiEvent::Fire(node_key, event, None, None));
-                self.take_events();
-                self.flush();
-                true
-            }
-        }
-    }
-
     /// Send what the person typed after each press the app ran since, into the view a press opened
     /// for them when `opened` (its first field takes the keyboard).
     fn send_typed_into(&mut self, opened: bool) {

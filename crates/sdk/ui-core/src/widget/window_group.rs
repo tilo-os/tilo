@@ -701,10 +701,6 @@ impl WindowGroup {
         }
     }
 
-    pub fn set_fills_display(&mut self, fills: bool) {
-        self.fills_display = fills;
-    }
-
     pub fn set_top_overlay_inset(&mut self, inset: f64) {
         let inset = inset.max(0.0);
         if (self.top_overlay_inset - inset).abs() > f64::EPSILON {

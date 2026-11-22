@@ -24,11 +24,6 @@ impl VirtualRows {
         self
     }
 
-    #[must_use]
-    pub fn unread_item(&self) -> Option<&str> {
-        self.unread.as_deref()
-    }
-
     pub(super) fn unread_row(&self) -> Option<ListKey> {
         let item = self.unread.as_deref()?;
         self.model

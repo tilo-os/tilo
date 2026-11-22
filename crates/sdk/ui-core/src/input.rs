@@ -8,7 +8,7 @@ use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 
-use crate::interaction::{ControllerFamily, InteractionEnvironment, KeyboardFamily};
+use crate::interaction::{ControllerFamily, KeyboardFamily};
 use crate::platform::{Platform, PlatformConventions};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -360,17 +360,7 @@ pub enum InputBinding {
     Touch(TouchGesture),
 }
 
-impl InputBinding {
-    pub fn available_in(&self, environment: InteractionEnvironment) -> bool {
-        use crate::interaction::InputDevice;
-
-        match self {
-            Self::Keyboard(_) => environment.available.contains(InputDevice::Keyboard),
-            Self::Controller(_) => environment.available.contains(InputDevice::Controller),
-            Self::Touch(_) => environment.available.contains(InputDevice::Touch),
-        }
-    }
-}
+impl InputBinding {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionBindings {

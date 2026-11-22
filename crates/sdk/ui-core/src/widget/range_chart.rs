@@ -123,11 +123,6 @@ impl RangeChart {
         self.marks.style = style;
         self
     }
-    #[must_use]
-    pub fn axis_titled(mut self, title: impl Into<String>) -> Self {
-        self.marks.axis_title = title.into();
-        self
-    }
     /// Label axis ticks and intervals with `format` instead of plain numbers.
     #[must_use]
     pub fn formatted(mut self, format: impl Fn(f64) -> String + 'static) -> Self {

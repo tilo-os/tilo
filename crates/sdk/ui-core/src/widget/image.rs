@@ -369,11 +369,6 @@ impl Image {
         self
     }
 
-    /// [`Self::with_corner_radius`] after construction.
-    pub fn set_corner_radius(&mut self, radius: Option<f32>) {
-        self.corner_radius = radius.map(|radius| radius.max(0.0));
-    }
-
     /// Set the alternative text describing the image; `None` leaves it decorative.
     pub fn set_alt(&mut self, alt: Option<String>) {
         self.alt = alt;

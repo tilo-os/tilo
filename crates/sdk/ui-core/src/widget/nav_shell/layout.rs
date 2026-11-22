@@ -93,11 +93,6 @@ impl NavGeometry {
         self.header(Column::Content)
     }
 
-    #[must_use]
-    pub fn content_body(&self) -> Rect {
-        self.body(Column::Content)
-    }
-
     pub(super) fn translated(&self, by: Vec2) -> Self {
         let t = |r: Rect| if r == Rect::ZERO { r } else { r + by };
         Self {

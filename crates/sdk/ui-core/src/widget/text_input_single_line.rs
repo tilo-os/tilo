@@ -15,17 +15,6 @@ use crate::text_selection::TextPosition;
 use crate::theme::Theme;
 
 impl TextInput {
-    /// Say what the field asks a browser or password manager to fill in
-    /// (`None`: nothing), instead of what its [kind](Self::with_kind)
-    /// implies: a password being chosen rather than entered, a one-time
-    /// code.
-    #[must_use]
-    pub fn with_autofill(mut self, purpose: Option<crate::a11y::Autofill>) -> Self {
-        self.autofill = purpose;
-        self.autofill_said = true;
-        self
-    }
-
     #[must_use]
     pub fn autofill(&self) -> Option<crate::a11y::Autofill> {
         use crate::a11y::Autofill;

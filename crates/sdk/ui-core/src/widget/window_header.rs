@@ -670,14 +670,6 @@ impl HistoryOpener {
         self.button.as_mut()
     }
 
-    pub fn take_rebuilt(&mut self) -> bool {
-        std::mem::take(&mut self.rebuilt)
-    }
-
-    pub fn tree_rebuilt(&mut self) {
-        self.retired.clear();
-    }
-
     #[must_use]
     pub fn control(&self) -> Option<HistoryControl> {
         self.control

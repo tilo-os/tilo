@@ -369,12 +369,6 @@ impl VideoPlayer {
         }
     }
 
-    #[must_use]
-    pub fn with_poster(mut self, poster: crate::widget::MediaSource) -> Self {
-        self.set_poster(Some(poster));
-        self
-    }
-
     pub fn set_poster(&mut self, poster: Option<crate::widget::MediaSource>) {
         self.poster_image = match &poster {
             Some(crate::widget::MediaSource::Image(image)) => Some(image.clone()),
@@ -902,10 +896,6 @@ impl VideoPlayer {
             now,
             crate::tokens::EffectiveMotion::default(),
         )
-    }
-
-    pub fn controls_visible(&self) -> bool {
-        self.controls_visible_now() || self.open_menu.is_some()
     }
 
     fn show_controls(&mut self) {

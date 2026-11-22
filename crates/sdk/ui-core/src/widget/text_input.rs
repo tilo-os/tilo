@@ -3810,12 +3810,6 @@ impl TextInput {
         self.read_only
     }
 
-    #[must_use]
-    pub fn with_runs(mut self, runs: Vec<RichSpan>) -> Self {
-        self.set_runs(runs);
-        self
-    }
-
     pub fn set_runs(&mut self, runs: Vec<RichSpan>) {
         self.repaint = true;
         let text: String = runs.iter().map(|run| run.text.as_str()).collect();
@@ -3826,19 +3820,6 @@ impl TextInput {
             self.core.set_caret(0);
         }
         self.set_rich_spans(Some(runs));
-    }
-
-    pub fn place_wrapped(&mut self, rect: Rect, tr: &mut TextRenderer, theme: &Theme) -> f64 {
-        self.repaint = true;
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a widget width bounded by the screen fits f32"
-        )]
-        let height = self.measure_wrapped_content(rect.width() as f32, tr, theme);
-        let height = f64::from(height);
-        self.apply_layout_external(Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + height));
-        self.prepare_wrapped_layout(tr, theme);
-        height
     }
 
     /// Targets for byte ranges of a read-only text whose words are not their
