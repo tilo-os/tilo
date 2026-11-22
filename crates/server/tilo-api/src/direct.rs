@@ -78,6 +78,14 @@ impl KeyFile {
         }
     }
 
+    /// This file, reaching its host as `info` says (`web-host.json`): where a login
+    /// this computer kept names it, and what a call dials instead of asking its web origin.
+    #[must_use]
+    pub fn reaching_at(mut self, info: crate::server::ServerInfo) -> Self {
+        self.reached_at = Some(info);
+        self
+    }
+
     /// The key `token` carries (`tilo_sk_…`, as an approved key is answered),
     /// reaching where this file's key reaches.
     ///
@@ -256,14 +264,13 @@ impl Direct {
             &Config {
                 issuer: host.to_owned(),
                 web_entry: site.to_owned(),
-                hosts: vec![host.to_owned()],
+                // A login this computer kept names where its host is dialled; one it did not
+                // dials nothing, and a call that needs a host says so.
+                hosts: file.reached_at.iter().cloned().collect(),
             },
             Store::in_memory(),
         )
         .map_err(|error| error.to_string())?;
-        if let (Some(info), Some(first)) = (&file.reached_at, server.hosts.first()) {
-            first.reached_at(info.clone());
-        }
         Ok((server, key))
     }
 

@@ -135,6 +135,7 @@ fn said(session: &Session) -> Vec<String> {
 
 fn page_of(entries: Vec<DirectoryEntry>) -> String {
     serde_json::to_string(&DirectoryPage {
+        host: None,
         workspaces: entries,
     })
     .expect("a directory page")

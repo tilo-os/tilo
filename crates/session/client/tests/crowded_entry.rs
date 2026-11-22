@@ -696,11 +696,8 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     }
 
     // What the site hands its page about the host, which its deployment asked
-    // once, as `tilo-server page-host` does: no guest asks it again.
-    let site = tilo_server_client::https::server_info(&*https)
-        .await
-        .unwrap()
-        .for_site();
+    // once, as the host writes it in `web-host.json`: no guest asks it again.
+    let site = host.web.host_info().for_site();
     assert_eq!(site.server_cert, host_device.cert);
     let place = Place {
         https: &*https,
@@ -975,7 +972,7 @@ async fn through_the_entry(
 struct Place<'a> {
     https: &'a dyn tilo_server_client::https::HttpClient,
     /// Who the host is and where it is dialled, as the page's site hands it
-    /// over with the page (`tilo-server page-host`).
+    /// over with the page (`web-host.json`).
     site: &'a tilo_server_protocol::web::PageHost,
     workspace: &'a str,
     workspace_id: WorkspaceId,

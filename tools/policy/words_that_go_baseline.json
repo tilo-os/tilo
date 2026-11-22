@@ -1784,7 +1784,6 @@
    "HostedWorkspaces",
    "PageHost",
    "PageHostAddress",
-   "PageHostArgs",
    "a_hosted_workspace_is_said_first_and_its_stream_follows_on_the_connection",
    "a_hosted_workspace_never_opens_the_device_shell_in_place_of_its_hosts",
    "a_hosted_workspace_streams_changes_finds_and_undoes_runs",
@@ -1802,7 +1801,6 @@
    "hosted_workspaces",
    "new_hosted_workspace",
    "only_a_person_who_governs_the_hosted_workspace_administers_its_devices",
-   "page-host",
    "page_host"
   ],
   "lines": 0

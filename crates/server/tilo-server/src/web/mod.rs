@@ -153,6 +153,8 @@ pub struct WebHandle {
     pub link: WebLink,
     /// `http://localhost:port` of the plain loopback listener, if any.
     pub plain_origin: Option<String>,
+    /// Who this host is and where its endpoint is dialled, as `/host` answers it.
+    server_info: ServerInfo,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     locator_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     published_origin: Option<Arc<String>>,
@@ -161,6 +163,12 @@ pub struct WebHandle {
 }
 
 impl WebHandle {
+    /// Who this host is and where its endpoint is dialled, as `/host` answers it.
+    #[must_use]
+    pub fn host_info(&self) -> &ServerInfo {
+        &self.server_info
+    }
+
     /// Open browser sessions per person (user root) now, for a public
     /// host's presence count and idle-guest pruning. One person on two
     /// devices is one entry; the workspace's visitor person is one entry whose
@@ -519,16 +527,26 @@ impl Server {
         let relay_url = endpoint_addr.relay_urls().next().map(ToString::to_string);
         let (link_listener, web_link) =
             bind_link(&config, udp, addr, public_origin.as_ref(), &identity).map_err(failed)?;
+        let server_info = ServerInfo {
+            server_cert,
+            address: Some(ServerAddress {
+                endpoint_addr,
+                relay_url,
+                web: Some(web_link.clone()),
+            }),
+        };
+        // What a site hands its page about this host, kept in its state (`web-host.json`).
+        let published = serde_json::to_vec(&server_info.for_site())
+            .map_err(|error| failed(format!("name this host: {error}")))?;
+        tilo_files::native::atomic::write_with_mode(
+            &self.state_root().join("web-host.json"),
+            &published,
+            0o644,
+        )
+        .map_err(|error| failed(format!("keep this host's name: {error}")))?;
         let web = Arc::new(Web {
             context: context.clone(),
-            server_info: ServerInfo {
-                server_cert,
-                address: Some(ServerAddress {
-                    endpoint_addr,
-                    relay_url,
-                    web: Some(web_link.clone()),
-                }),
-            },
+            server_info: server_info.clone(),
             endpoint: Some(self.endpoint()),
             allowed_origins: config.allowed_origins,
             workspaces: self.workspaces().cloned(),
@@ -604,6 +622,7 @@ impl Server {
             certificate_sha256: identity.fingerprint,
             link: web_link,
             plain_origin,
+            server_info,
             tasks,
             locator_origin: Arc::clone(&self.browser_origin),
             published_origin,
@@ -1327,6 +1346,7 @@ async fn route(
             })?;
             let online = web.presence.devices().into_keys().collect();
             Ok(json(&tilo_server_protocol::directory::DirectoryPage {
+                host: Some(web.current_host_info().for_site()),
                 workspaces: workspaces.directory(&online).await,
             }))
         }

@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_server_client::CertifyError;
-use tilo_server_client::https::{self, Origin};
 /// Where a server is dialed over iroh, and that with its certificate.
 pub use tilo_server_protocol::web::{ServerAddress, ServerInfo};
 use tilo_server_session::workspaces::{Refusal as WorkspaceRefusal, WorkspaceLabels};
@@ -165,14 +164,13 @@ impl From<DeviceRefusal> for ServerError {
 
 /// The server the person's workspaces live on.
 pub struct Server {
-    host: Origin,
     /// The server's name, as hosts are named (`eu1.tilo.sh`).
     name: String,
-    /// Where it is reached, as it was configured (`https://eu1.tilo.sh`).
+    /// The web origin its links name (`https://eu1.tilo.sh`).
     origin: String,
-    /// Its certificate and iroh address, when they are known already: a server reached over
-    /// iroh only (behind a NAT, through a packet relay) has no origin to ask them of.
-    known: std::sync::OnceLock<ServerInfo>,
+    /// Its certificate and iroh address, as its deployment named it: what a session is dialled
+    /// with, never asked of its web origin.
+    info: ServerInfo,
     /// What each grant's device keeps between its sessions, by its device key: its place in
     /// the key group of each workspace it reads. A grant's session ends with its last run and
     /// the next run opens another; that one takes the place up again, where a session with a
@@ -182,26 +180,32 @@ pub struct Server {
 }
 
 impl Server {
-    /// The server at `origin`.
+    /// The server `info` names: its certificate, where its endpoint is dialled, and the web
+    /// origin its links name (its endpoint's key where it serves no browsers: a key file's links
+    /// use its own site, and this is only what the API calls the host).
     #[must_use]
-    pub fn new(client: &tilo_net::Client, origin: &str) -> Self {
+    pub fn new(info: ServerInfo) -> Self {
+        let origin = info
+            .address
+            .as_ref()
+            .and_then(|address| address.web.as_ref())
+            .map(|web| web.origin.trim_end_matches('/').to_owned())
+            .or_else(|| {
+                info.address
+                    .as_ref()
+                    .map(|address| address.endpoint_addr.id.to_string())
+            })
+            .unwrap_or_default();
         let name = origin
             .split_once("://")
-            .map_or(origin, |(_, rest)| rest)
-            .trim_end_matches('/')
+            .map_or(origin.as_str(), |(_, rest)| rest)
             .to_owned();
         Self {
-            host: Origin::new(client, origin),
             name,
-            origin: origin.trim_end_matches('/').to_owned(),
-            known: std::sync::OnceLock::new(),
+            origin,
+            info,
             kept: Mutex::default(),
         }
-    }
-
-    /// Dial the server at `info` rather than asking its origin where it is.
-    pub fn reached_at(&self, info: ServerInfo) {
-        let _ = self.known.set(info);
     }
 
     /// The server's name, as the account lists hosts.
@@ -245,12 +249,7 @@ impl Server {
     /// # Errors
     /// The server was not reached or takes no device sessions.
     pub async fn connect(self: &Arc<Self>, key: &GrantKey) -> Result<Connection, ServerError> {
-        let info = match self.known.get() {
-            Some(known) => known.clone(),
-            None => https::server_info(&self.host)
-                .await
-                .map_err(|error| ServerError::Unavailable(error.to_string()))?,
-        };
+        let info = self.info.clone();
         let host = info
             .address
             .as_ref()

@@ -151,13 +151,21 @@ pub(crate) fn answer_form(asked: &Asked, proof: &SignInProof, cert: &DeviceCert)
         .finish()
 }
 
+/// A host's info as the host writes it (`web-host.json`): the fixture the image check hands the
+/// server, with `origin` where it names its web origin.
+fn host_info(origin: &str) -> tilo_server_protocol::web::ServerInfo {
+    let json = include_str!("../../../../os/containers/tilo-api/host-info.json")
+        .replace("https://server.example.test", origin);
+    serde_json::from_str(&json).unwrap()
+}
+
 fn server() -> Arc<Server> {
     Server::new(
         &Config {
             issuer: ISSUER.into(),
             web_entry: WEB_ENTRY.into(),
             // Nothing here reaches a workspace, so nothing dials it.
-            hosts: vec!["https://server.tilo.test".into()],
+            hosts: vec![host_info("https://server.tilo.test")],
         },
         Store::in_memory(),
     )
@@ -1149,7 +1157,7 @@ fn server_in_front_of(site: &str) -> Arc<Server> {
         &Config {
             issuer: ISSUER.into(),
             web_entry: site.into(),
-            hosts: vec!["https://server.tilo.test".into()],
+            hosts: vec![host_info("https://server.tilo.test")],
         },
         Store::in_memory(),
     )

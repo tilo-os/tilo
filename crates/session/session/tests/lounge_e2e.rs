@@ -193,11 +193,12 @@ impl WorkspaceService {
         let OperatorEvent::Started {
             workspace: Some(workspace),
             plain_origin: Some(plain),
+            host_info: Some(info),
             ..
         } = started
         else {
             panic!(
-                "a persistent service announces its workspace and its plain listener: {started:?}"
+                "a persistent service announces its workspace, its plain listener and who its host is: {started:?}"
             );
         };
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -205,7 +206,6 @@ impl WorkspaceService {
             .enable_all()
             .build()
             .expect("a runtime for the service's page");
-        let info = server_info(&runtime, &plain).expect("the host's certificate");
         Self {
             child,
             stdin,
@@ -281,53 +281,6 @@ fn random_key() -> [u8; 32] {
     let mut key = [0; 32];
     getrandom::fill(&mut key).expect("a key");
     key
-}
-
-/// Plain HTTP/1.1 to the service's plain listener: a page's `fetch` .
-struct Plain(String);
-
-impl tilo_server_client::HttpClient for Plain {
-    fn post(&self, path: &str, body: Vec<u8>) -> tilo_server_client::HttpFuture<'_> {
-        let url = format!("{}{path}", self.0);
-        Box::pin(async move {
-            let client = client()?;
-            let response = client
-                .post(&url)
-                .header("content-type", "application/octet-stream")
-                .body(body)
-                .send()
-                .await
-                .map_err(|error| error.to_string())?;
-            let status = response.status().as_u16();
-            let body = response
-                .bytes()
-                .await
-                .map_err(|error| error.to_string())?
-                .to_vec();
-            Ok((status, body))
-        })
-    }
-}
-
-/// The client the site and the service's own routes are read over: the desktop's connection pool.
-fn client() -> Result<tilo_net::Client, String> {
-    tilo_net::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|error| error.to_string())
-}
-
-/// What the host publishes for a page: its certificate, and the iroh endpoint its session and
-/// live sessions are reached at.
-fn server_info(
-    runtime: &tokio::runtime::Runtime,
-    plain: &str,
-) -> Result<tilo_server_protocol::web::ServerInfo, String> {
-    runtime
-        .block_on(tilo_server_client::https::server_info(&Plain(
-            plain.to_owned(),
-        )))
-        .map_err(|error| error.to_string())
 }
 
 /// A page of `member` 's device on the service's iroh endpoint, in the workspace it serves: the same

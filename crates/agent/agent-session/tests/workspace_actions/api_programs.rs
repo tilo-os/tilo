@@ -141,13 +141,16 @@ async fn the_repl_works_in_a_workspace_as_its_person() {
     let key_file = keys.path().join("laptop.json");
     std::fs::write(
         &key_file,
-        serde_json::to_vec(&tilo_api::direct::KeyFile::new(
-            &on_server.server,
-            Some(&on_server.web_entry),
-            "Ada's laptop",
-            &laptop.key,
-            &laptop.cert,
-        ))
+        serde_json::to_vec(
+            &tilo_api::direct::KeyFile::new(
+                &on_server.server,
+                Some(&on_server.web_entry),
+                "Ada's laptop",
+                &laptop.key,
+                &laptop.cert,
+            )
+            .reaching_at(on_server.hosted.web.host_info().clone()),
+        )
         .unwrap(),
     )
     .unwrap();

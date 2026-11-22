@@ -162,6 +162,7 @@ mod tests {
             entry_url: None,
             site: None,
             host: "eu1.tilo.sh".into(),
+            entry_host: None,
         }
     }
 

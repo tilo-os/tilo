@@ -27,6 +27,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tilo_server_protocol::web::ServerInfo;
 
 /// How long one host may take to answer with a session.
 const ANSWERING: Duration = Duration::from_secs(12);
@@ -37,14 +38,14 @@ pub struct Hosts {
 }
 
 impl Hosts {
-    /// The hosts at `origins`, reached over `client`.
+    /// The hosts each `info` names.
     #[must_use]
-    pub fn new(client: &tilo_net::Client, origins: &[String]) -> Self {
+    pub fn new(infos: &[ServerInfo]) -> Self {
         Self {
-            relays: origins
+            relays: infos
                 .iter()
-                .filter(|origin| !origin.trim().is_empty())
-                .map(|origin| Arc::new(Server::new(client, origin)))
+                .cloned()
+                .map(|info| Arc::new(Server::new(info)))
                 .collect(),
         }
     }

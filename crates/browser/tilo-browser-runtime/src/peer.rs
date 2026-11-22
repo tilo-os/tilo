@@ -960,19 +960,21 @@ pub fn device_cert_canonical(cert_json: &str) -> Result<Vec<u8>, JsError> {
 }
 
 /// Certify this page's device key (`device key`) with the user root the page
-/// holds, for the host at `post`, whose certificate must be a host of that
-/// root. Resolves to `{cert, hostCert}` JSON, as [`certify_device`] does.
+/// holds, for the host whose certificate the page's own `hostInfo` named
+/// (`host_cert`, JSON), which must be a host of that root. Resolves to
+/// `{cert, hostCert}` JSON, as [`certify_device`] does.
 #[wasm_bindgen(js_name = certifyWithRoot)]
 pub async fn certify_with_root(
-    post: Function,
     root: JsValue,
     device_key: JsValue,
     label: String,
+    host_cert: String,
 ) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
     let signer = PageSigner::from_js(&device_key)?;
+    let server_cert: DeviceCert = serde_json::from_str(&host_cert).map_err(js_error)?;
     let (cert, server_cert) =
-        tilo_enrollment::certification::certify_with_root(&PageHttp(post), &root, &signer, &label)
+        tilo_enrollment::certification::certify_with_root(&root, &signer, &label, &server_cert)
             .await
             .map_err(js_error)?;
     serde_json::to_string(&Certified {

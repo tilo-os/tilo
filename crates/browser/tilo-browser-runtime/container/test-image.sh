@@ -118,7 +118,7 @@ head_of() { curl -sS --max-time 20 -A "$browser" -o /dev/null -D - "${@:2}" "htt
 # Portable (BSD sed has no \L): lowercase each header's name, not the status line.
 lower_names() { awk '{ i = index($0, ":"); if (i) $0 = tolower(substr($0, 1, i)) substr($0, i + 1); print }'; }
 
-# Who a home host is and where its page dials it, as `tilo-server page-host` prints it, and
+# Who a home host is and where its page dials it, as the host writes it in `web-host.json`, and
 # as entry.json carries it: a JSON string.
 info='{"hostCert":{"device_label":"Commons workspace host","issued_at_ns":1},"address":{"endpointAddr":{"id":"ab12","addrs":[]},"relayUrl":"https://live.workspaces.example/"}}'
 info_text=${info//\"/\\\"}
@@ -127,7 +127,7 @@ entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H \
   && fail "a home host without who it is (TILO_WEB_HOME_HOST_INFO) must refuse to start"
 for bad in 'ab12' '{"a":"b\c"}' "{\"a\":\"b'c\"}" '{"a":"$b"}'; do
   entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$bad" \
-    && fail "a home host's info that is not the plain JSON page-host prints must refuse to start: $bad"
+    && fail "a home host's info that is not the plain JSON web-host.json holds must refuse to start: $bad"
 done
 entry TILO_WEB_HOME_ENTRY=https://workspaces.example/peer/v1/directory/ws/ \
   && fail "a home entry without a host must refuse to start"

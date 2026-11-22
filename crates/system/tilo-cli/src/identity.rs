@@ -23,7 +23,7 @@ use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::{load_device_key, read_device_cert};
 use tilo_enrollment::root::PersonSigner;
 use tilo_identity::provisioning::IdentityStorage;
-use tilo_server_client::https::{self, Origin};
+use tilo_server_client::https::Origin;
 use tilo_session_client::device::{self, Entering, Held};
 use tilo_user_identity::StatementSigner as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, SignInProof};
@@ -518,11 +518,18 @@ async fn through_entry(person: &Person, site: &str) -> Result<()> {
     else {
         return Ok(());
     };
-    let info = https::server_info(&Origin::new(&http, host)).await?;
-    let address = info
+    // The site publishes who its host is and where it is dialled (`home.host.info`).
+    let info: tilo_server_protocol::web::PageHost = serde_json::from_value(
+        entry
+            .pointer("/home/host/info")
+            .cloned()
+            .with_context(|| format!("{site} names no host certificate and address"))?,
+    )?;
+    let address: tilo_server_protocol::web::ServerAddress = info
         .address
-        .as_ref()
-        .context("the host takes no device connections")?;
+        .clone()
+        .context("the host takes no device connections")?
+        .into();
     let held = Held {
         cert: person.cert.clone(),
         server_cert: Some(info.server_cert.clone()),
@@ -545,7 +552,7 @@ async fn through_entry(person: &Person, site: &str) -> Result<()> {
         .map_err(|refused| anyhow!(refused.message))?;
         let session = tilo_session_client::start_session(
             tilo_session_client::PeerConfig {
-                host: tilo_server_client::ServerAddress::published(address),
+                host: tilo_server_client::ServerAddress::published(&address),
                 cert,
                 server_cert: info.server_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),

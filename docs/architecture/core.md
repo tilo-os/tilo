@@ -654,8 +654,8 @@ daemon, the person's servers).
 ### Hosting
 
 A server is a device that stores more. Today the server side is
-`tilo-server` (122,096: the daemon with `init`, `run`, `workspace` and
-`page-host`, its own iroh relay, the web entry, and agents and
+`tilo-server` (122,096: the daemon with `init`, `run`, `workspace`, its own
+iroh relay, the web entry, and agents and
 bots in `workspace_agents` (13,311) and `workspace_bots` (15,464)), with the
 `tilo-server-admin`, `tilo-enroll`, `tilo-approve` and
 `tilo-home-peer-control` binaries beside it. `tilo-api` (21,745) is the MCP

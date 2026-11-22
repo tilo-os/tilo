@@ -650,7 +650,7 @@ async function connect({
    * by one of their devices that holds it (pairing). */
   async function certifyNow() {
     return identity
-      ? await runtime.certifyWithRoot(post, identity, deviceKeyForWasm, label)
+      ? await runtime.certifyWithRoot(identity, deviceKeyForWasm, label, JSON.stringify(host.hostCert))
       : await runtime.certifyDevice(userPublicKey, label, null, deviceKeyForWasm, code => onPairingCode?.(code),
         JSON.stringify(host.address));
   }

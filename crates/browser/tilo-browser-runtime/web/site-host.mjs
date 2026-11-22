@@ -42,7 +42,7 @@ export function nameSiteServer(home) {
   }
   if (!origin || typeof text !== 'string' || !info?.hostCert || !info.address?.endpointAddr) {
     throw new Error('This site names its workspace’s host in a form this page cannot read (entry.json home.host.info, '
-      + 'the web entry’s TILO_WEB_HOME_HOST_INFO: what `tilo-server page-host <host>` prints).');
+      + 'the web entry’s TILO_WEB_HOME_HOST_INFO: the host’s `web-host.json`).');
   }
   named.set(origin, {text, info});
 }
@@ -157,5 +157,5 @@ export function staleSiteServer(info, answering) {
  * entry) when the site names `origin`'s host as it was before it was set up again. */
 export function staleSiteServerReport(origin) {
   return `entry.json names the host at ${origin} as it was before it was set up again, and the host answers as `
-    + `another now. Set the web entry's TILO_WEB_HOME_HOST_INFO to what \`tilo-server page-host ${origin}\` prints.`;
+    + `another now. Set the web entry's TILO_WEB_HOME_HOST_INFO to the host's web-host.json.`;
 }

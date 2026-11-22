@@ -1,7 +1,7 @@
 //! Issue a certificate where the person already holds the root and has the
 //! device key from local sign-in or an explicit enrollment handoff.
 
-use tilo_server_client::{CertifyError, DeviceSigner, HttpClient, https};
+use tilo_server_client::{CertifyError, DeviceSigner};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert,
     certification::{CERTIFICATION_CLOCK_ALLOWANCE_NS, MAX_CERTIFICATION_LABEL_BYTES},
@@ -197,8 +197,9 @@ pub async fn issue_agent_grant(
     Ok(cert)
 }
 
-/// Certify the device behind `signer` with the root the page holds, for the
-/// server at `client`, and answer that server's own certificate beside it.
+/// Certify the device behind `signer` with the root the page holds, and
+/// answer `server_cert`, the certificate the server it goes to presented,
+/// beside it.
 ///
 /// The root certifies a device of its own person, and whose server it goes to
 /// does not enter into it: the person's own node, a server that keeps a
@@ -210,21 +211,19 @@ pub async fn issue_agent_grant(
 ///
 /// # Errors
 ///
-/// [`CertifyError::Transport`] when the server is not reached,
 /// [`CertifyError::Denied`] when the server's own certificate does not verify,
 /// or the errors of [`issue_device_cert`].
 pub async fn certify_with_root(
-    client: &dyn HttpClient,
     root: &dyn DeviceSigner,
     signer: &dyn DeviceSigner,
     label: &str,
+    server_cert: &DeviceCert,
 ) -> Result<(DeviceCert, DeviceCert), CertifyError> {
-    let server_cert = https::server_info(client).await?.server_cert;
-    verify_device_cert_at(&server_cert, tilo_clock::unix_now_ns())
+    verify_device_cert_at(server_cert, tilo_clock::unix_now_ns())
         .map_err(|error| CertifyError::Denied(format!("server certificate refused: {error}")))?;
     let cert =
         issue_device_cert(root, signer.device_public_key(), label, IssuedRole::Browser).await?;
-    Ok((cert, server_cert))
+    Ok((cert, server_cert.clone()))
 }
 
 #[cfg(test)]

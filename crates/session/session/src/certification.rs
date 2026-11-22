@@ -235,7 +235,13 @@ fn answer_at_host(
 /// is put to the person as any device asking to be them ([`asking`]), and answered there
 /// ([`answer`]). Asking again while it waits only moves when it stops; a wait that failed is not
 /// started again until a new link is shown.
-pub(crate) fn watch_host(fabric: &dyn FabricLink, origin: &str, person: [u8; 32], until_ms: u64) {
+pub(crate) fn watch_host(
+    fabric: &dyn FabricLink,
+    origin: &str,
+    host: tilo_server_client::ServerAddress,
+    person: [u8; 32],
+    until_ms: u64,
+) {
     let Ok(local) = local(fabric) else {
         return;
     };
@@ -263,7 +269,7 @@ pub(crate) fn watch_host(fabric: &dyn FabricLink, origin: &str, person: [u8; 32]
     let spawned = std::thread::Builder::new()
         .name("tilo-pairing-link".into())
         .spawn(move || {
-            if let Err(error) = wait_at_host(&local, &origin, person) {
+            if let Err(error) = wait_at_host(&local, &origin, &host, person) {
                 tracing::warn!(%error, %origin, "this device stopped waiting for a new device");
             }
             with_state(&local, |state| {
@@ -279,22 +285,18 @@ pub(crate) fn watch_host(fabric: &dyn FabricLink, origin: &str, person: [u8; 32]
 
 /// [`watch_host`]'s wait, until the link runs out: each time the devices waiting at the host
 /// change, the list here follows them.
-fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), String> {
+fn wait_at_host(
+    local: &DeviceId,
+    origin: &str,
+    host: &tilo_server_client::ServerAddress,
+    person: [u8; 32],
+) -> Result<(), String> {
     let signer = keys(local).key(person)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
-        let client = tilo_workspace_directory::client()
-            .map_err(|error| tilo_sheets::directory::said(&error))?;
-        let info = tilo_server_client::https::server_info(&tilo_server_client::https::Origin::new(
-            &client, origin,
-        ))
-        .await
-        .map_err(|error| error.to_string())?;
-        let address = info.address.ok_or("the host takes no device connections")?;
-        let host = tilo_server_client::ServerAddress::published(&address);
         let approver = tilo_server_client::MemberApprover::new(host.clone());
         let mut known = Vec::new();
         let waited = loop {
@@ -312,7 +314,7 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
                     Err(error) => break Err(error.to_string()),
                 };
             known = pending.iter().map(|entry| entry.request_digest).collect();
-            follow_host(local, origin, &host, person, pending);
+            follow_host(local, origin, host, person, pending);
             wake();
         };
         approver.close().await;
@@ -631,6 +633,7 @@ mod tests {
                 site: format!("{origin}/"),
                 origin: origin.clone(),
                 workspace: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
+                host: tilo_server_client::ServerAddress::at(server.node_addr()),
                 person,
             }),
             tilo_clock::unix_now_ms(),
@@ -640,6 +643,7 @@ mod tests {
         watch_host(
             laptop.as_ref(),
             &waiting.origin,
+            waiting.host,
             waiting.person,
             waiting.until_ms,
         );

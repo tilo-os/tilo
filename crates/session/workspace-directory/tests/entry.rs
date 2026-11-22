@@ -45,11 +45,14 @@ fn an_entry_join_enters_the_workspace_its_path_names_and_asks_nothing() {
         format!("https://tilo.test/directory/{WORKSPACE}/"),
     ] {
         let entry = url::Url::parse(&entry).expect("the entry's address");
-        let granted = through_entry(&entry).expect("an entry names its workspace");
+        let granted = through_entry(&entry, None).expect("an entry names its workspace");
         assert_eq!(granted.workspace, WORKSPACE);
         assert_eq!(
             granted.way,
-            Way::Entry(entry.clone()),
+            Way::Entry {
+                entry: entry.clone(),
+                host: None,
+            },
             "the device enters through the entry itself, holding no invitation"
         );
         assert_eq!(granted.invitation(), None);
@@ -60,7 +63,7 @@ fn an_entry_join_enters_the_workspace_its_path_names_and_asks_nothing() {
     ] {
         let entry = url::Url::parse(&nameless).expect("the entry's address");
         assert!(
-            through_entry(&entry).is_err(),
+            through_entry(&entry, None).is_err(),
             "{nameless} names no workspace to enter"
         );
     }
@@ -81,6 +84,7 @@ fn a_site_says_its_home_workspace_and_its_directory() {
             .to_string()
         } else {
             serde_json::to_string(&DirectoryPage {
+                host: None,
                 workspaces: vec![entry("Coffee")],
             })
             .expect("a directory page")

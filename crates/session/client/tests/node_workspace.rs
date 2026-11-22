@@ -288,7 +288,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
 
     // The page's own device, certified by the root against the node.
     let page_key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let (page_cert, server_cert) = certify_with_root(&*https, &root, &page_key, "Ada's browser")
+    let (page_cert, server_cert) = certify_with_root(&root, &page_key, "Ada's browser", &node_cert)
         .await
         .unwrap();
     assert_eq!(server_cert, node_cert);

@@ -143,8 +143,8 @@ start_lounge() {
   # Who the host is, as the operator hands it to the web entry
   # (TILO_WEB_HOME_HOST_INFO), so the page dials it without asking it first.
   local info
-  info=$("$server_bin" page-host "http://127.0.0.1:$lounge_plain_port") \
-    || lounge_fail 'the server did not say who it is (tilo-server page-host)'
+  info=$(cat "$lounge_volume/lounge/server/web-host.json") \
+    || lounge_fail 'the server said nothing of itself (web-host.json)'
   node "$lounge_here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
     "$server_origin" "http://127.0.0.1:$lounge_plain_port" Lounge \
     "$server_origin/peer/v1/directory/$workspace/" "$site_port" "$info" c_feedback >> "$site_log" 2>&1 &

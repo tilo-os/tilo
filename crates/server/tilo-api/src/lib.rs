@@ -86,11 +86,11 @@ pub struct Config {
     pub issuer: String,
     /// The person's Tilo on the web, which signs them in to the server.
     pub web_entry: String,
-    /// The public origins of the hosts this API server may forward a call
-    /// to (`https://eu1.tilo.sh`), best-known first. Every one that answers
-    /// is a candidate, and the call goes to the one that serves it best
+    /// The hosts this API server may forward a call to, best-known first, as each named
+    /// itself (`web-host.json`): its certificate and where it is dialled. Every one that
+    /// answers is a candidate, and the call goes to the one that serves it best
     /// ([`hosts::Hosts`]); an API server keeps no workspace of its own.
-    pub hosts: Vec<String>,
+    pub hosts: Vec<tilo_server_protocol::web::ServerInfo>,
 }
 
 /// What a sign-in in progress is for.
@@ -263,16 +263,12 @@ impl Server {
         let sign_in_entry = url::Url::parse(&format!("{web_entry}/sign-in"))
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         Ok(Arc::new(Self {
-            hosts: Arc::new(Hosts::new(&http, &config.hosts)),
+            hosts: Arc::new(Hosts::new(&config.hosts)),
             http,
             posting,
             config: Config {
                 issuer: config.issuer.trim_end_matches('/').to_owned(),
-                hosts: config
-                    .hosts
-                    .iter()
-                    .map(|host| host.trim_end_matches('/').to_owned())
-                    .collect(),
+                hosts: config.hosts.clone(),
                 web_entry,
             },
             sign_in_entry,

@@ -78,6 +78,9 @@ pub struct Listed {
     pub site: Option<url::Url>,
     /// The host name it is listed by ("tilo.sh").
     pub host: String,
+    /// Who the entry's host is and where it is dialled, as the site or the directory
+    /// publishes them; `None` where neither names one.
+    pub entry_host: Option<tilo_server_protocol::web::PageHost>,
 }
 
 impl Listed {
@@ -108,6 +111,7 @@ pub fn listings_of(
     site: Option<&url::Url>,
 ) -> Vec<Listed> {
     let host = directory.host_str().unwrap_or_default().to_owned();
+    let entry_host = page.host;
     page.workspaces
         .into_iter()
         .filter(|entry| !entry.name.trim().is_empty())
@@ -118,6 +122,7 @@ pub fn listings_of(
                 .and_then(|entry| web_origin(entry.as_str()).ok()),
             site: site.filter(|_| listed.community).cloned(),
             host: host.clone(),
+            entry_host: entry_host.clone(),
             entry: listed,
         })
         .collect()
@@ -148,6 +153,7 @@ pub fn home_listing(site: &url::Url, home: &SiteWorkspace) -> Listed {
         entry_url: home.admission.clone(),
         site: Some(site.clone()),
         host: site.host_str().unwrap_or_default().to_owned(),
+        entry_host: home.host.clone(),
     }
 }
 
@@ -219,6 +225,7 @@ mod tests {
     #[test]
     fn a_listings_entry_is_read_against_its_directory() {
         let page = DirectoryPage {
+            host: None,
             workspaces: vec![entry("Coffee")],
         };
         let listed = listings_of(page, &directory(), None);
@@ -241,6 +248,7 @@ mod tests {
         odd.entry = "ftp://example.org/".into();
         let listed = listings_of(
             DirectoryPage {
+                host: None,
                 workspaces: vec![odd],
             },
             &directory(),
@@ -278,6 +286,7 @@ mod tests {
         workspace(&mut community, 5);
         community.community = true;
         let page = DirectoryPage {
+            host: None,
             workspaces: vec![quiet, busy, busier, recent, community],
         };
         let shown: Vec<String> = ordered(listings_of(page, &directory(), None), now)
@@ -291,6 +300,7 @@ mod tests {
     fn a_workspace_two_directories_list_is_shown_once() {
         let mut first = listings_of(
             DirectoryPage {
+                host: None,
                 workspaces: vec![entry("Coffee")],
             },
             &directory(),
@@ -298,6 +308,7 @@ mod tests {
         );
         first.extend(listings_of(
             DirectoryPage {
+                host: None,
                 workspaces: vec![entry("Coffee again")],
             },
             &url::Url::parse("https://other.example/peer/v1/directory").unwrap(),
@@ -318,6 +329,7 @@ mod tests {
             entry: site.clone(),
             name: "tilo.sh".into(),
             admission: Some(url::Url::parse("https://workspaces.tilo.sh/").unwrap()),
+            host: None,
         };
         let listed = home_listing(&site, &home);
         assert!(listed.entry.community);

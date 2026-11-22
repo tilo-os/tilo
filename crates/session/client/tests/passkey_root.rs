@@ -112,7 +112,7 @@ async fn a_passkey_root_in_chrome_certifies_a_node_and_its_own_page() {
     .await;
 
     let page_device = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let (cert, server_cert) = certify_with_root(&*host.https(), &root, &page_device, "Browser")
+    let (cert, server_cert) = certify_with_root(&root, &page_device, "Browser", &node_cert)
         .await
         .unwrap();
     assert_eq!(server_cert, node_cert);

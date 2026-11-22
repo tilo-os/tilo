@@ -1628,6 +1628,7 @@ pub(crate) async fn run(
                 certificate_sha256: web.certificate_sha256.clone(),
                 allowed_origins: args.web.allowed_origins.clone(),
                 workspace: Some(workspace.clone()),
+                host_info: Some(Box::new(web.host_info().clone())),
             }
             .to_line()
         );

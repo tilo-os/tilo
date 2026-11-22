@@ -127,7 +127,11 @@ pub enum Way {
     /// the device enters through it on the session it opens with the entry's
     /// host, whose origin is the entry's own, and the workspace's own rules
     /// decide there whether the person is let in.
-    Entry(url::Url),
+    Entry {
+        entry: url::Url,
+        /// The host's certificate and where it is dialled, as its site or directory publishes.
+        host: Option<Box<tilo_server_protocol::web::PageHost>>,
+    },
 }
 
 impl Granted {
@@ -136,7 +140,7 @@ impl Granted {
     pub fn invitation(&self) -> Option<&str> {
         match &self.way {
             Way::Invitation(text) => Some(text),
-            Way::Native(_) | Way::Entry(_) => None,
+            Way::Native(_) | Way::Entry { .. } => None,
         }
     }
 
@@ -144,7 +148,7 @@ impl Granted {
     #[must_use]
     pub fn entry_url(&self) -> Option<&url::Url> {
         match &self.way {
-            Way::Entry(entry) => Some(entry),
+            Way::Entry { entry, .. } => Some(entry),
             Way::Native(_) | Way::Invitation(_) => None,
         }
     }
@@ -168,6 +172,9 @@ struct HomeJson {
 #[derive(Deserialize)]
 struct HostJson {
     origin: String,
+    /// Who the host is and where it is dialled (the web entry's `TILO_WEB_HOME_HOST_INFO`).
+    #[serde(default)]
+    info: Option<tilo_server_protocol::web::PageHost>,
 }
 
 /// A site's home workspace, as its `entry.json` names it.
@@ -180,6 +187,8 @@ pub struct SiteWorkspace {
     /// The host's admission entry, when it admits people without an
     /// invitation.
     pub admission: Option<url::Url>,
+    /// The host's certificate and where it is dialled, as the site publishes them.
+    pub host: Option<tilo_server_protocol::web::PageHost>,
 }
 
 /// What a site's `entry.json` says: its home workspace and its directory.
@@ -233,6 +242,7 @@ fn home_workspace(entry: &url::Url, home: &HomeJson) -> Result<SiteWorkspace, Si
         entry: entry.clone(),
         name,
         admission,
+        host: home.host.info.clone(),
     })
 }
 
@@ -298,7 +308,10 @@ pub fn entry_workspace(entry: &url::Url) -> Option<String> {
 ///
 /// # Errors
 /// The entry names no workspace.
-pub fn through_entry(entry: &url::Url) -> Result<Granted, SiteError> {
+pub fn through_entry(
+    entry: &url::Url,
+    host: Option<tilo_server_protocol::web::PageHost>,
+) -> Result<Granted, SiteError> {
     let workspace = entry_workspace(entry).ok_or_else(|| {
         said(
             "an entry names no workspace",
@@ -314,7 +327,10 @@ pub fn through_entry(entry: &url::Url) -> Result<Granted, SiteError> {
     );
     Ok(Granted {
         workspace,
-        way: Way::Entry(entry.clone()),
+        way: Way::Entry {
+            entry: entry.clone(),
+            host: host.map(Box::new),
+        },
     })
 }
 
@@ -334,7 +350,7 @@ pub async fn join_home(
     let Some(entry) = home.admission else {
         return Ok(None);
     };
-    let granted = through_entry(&entry)?;
+    let granted = through_entry(&entry, home.host)?;
     Ok(Some((home.name, granted)))
 }
 
@@ -675,9 +691,12 @@ pub async fn take(client: &Result<Client, SiteError>, text: &str, person: &Perso
                         .home
                         .as_ref()
                         .map_or_else(|| host_of(&entry), |home| home.name.clone());
-                    let granted = match read.home.and_then(|home| home.admission) {
-                        Some(entry) => {
-                            through_entry(&entry).and_then(|granted| match workspace {
+                    let granted = match read
+                        .home
+                        .and_then(|home| home.admission.map(|entry| (entry, home.host)))
+                    {
+                        Some((entry, host)) => {
+                            through_entry(&entry, host).and_then(|granted| match workspace {
                                 Some(workspace) if workspace.to_string() != granted.workspace => {
                                     Err(SiteError::Plain(
                                         "that link is for another workspace on this site: ask whoever shared it for an invitation"

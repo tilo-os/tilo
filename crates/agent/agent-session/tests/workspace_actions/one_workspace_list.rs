@@ -128,7 +128,8 @@ async fn a_computer_and_a_key_share_the_persons_workspace_list() {
         "Ada's laptop",
         &laptop.key,
         &laptop.cert,
-    );
+    )
+    .reaching_at(on_server.hosted.web.host_info().clone());
     let keys = tempfile::tempdir().unwrap();
     let key_file = keys.path().join("laptop.json");
     std::fs::write(&key_file, serde_json::to_vec(&file).unwrap()).unwrap();
@@ -148,21 +149,22 @@ async fn a_computer_and_a_key_share_the_persons_workspace_list() {
         "Ada's tower",
         &tower.key,
         &tower.cert,
-    );
-    let held = Arc::new(tilo_api::server::Server::new(
-        &tilo_net::Client::builder().build().unwrap(),
-        &on_server.server,
-    ))
-    .connect(
-        &tilo_api::grant_key::GrantKey::held(
-            tower.key.clone(),
-            tower.cert.clone(),
-            tilo_clock::unix_now_ms().saturating_mul(1_000_000),
-        )
-        .unwrap(),
     )
-    .await
-    .expect("the tower reaches its server");
+    .reaching_at(on_server.hosted.web.host_info().clone());
+    let holder = Arc::new(tilo_api::server::Server::new(
+        on_server.hosted.web.host_info().clone(),
+    ));
+    let held = holder
+        .connect(
+            &tilo_api::grant_key::GrantKey::held(
+                tower.key.clone(),
+                tower.cert.clone(),
+                tilo_clock::unix_now_ms().saturating_mul(1_000_000),
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("the tower reaches its server");
     let direct = Arc::new(tilo_api::direct::Direct::over(&file, held.device.clone()).unwrap());
     let socket = keys.path().join("api.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();

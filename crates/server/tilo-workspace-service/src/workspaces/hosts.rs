@@ -32,10 +32,7 @@ use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_net::proxy::host::{Destinations, check_destination, guarded_client, system_lookup};
 use tilo_peer_state::CopyRole;
 use tilo_peer_state::join::{Role, TransportHint};
-use tilo_server_client::{
-    LinkError,
-    https::{HttpClient, HttpFuture},
-};
+use tilo_server_protocol::web::PageHost;
 use tilo_server_protocol::workspaces::WorkspaceHolder;
 use tilo_server_session::client::ServerClient;
 use tilo_server_session::workspaces::{
@@ -1203,26 +1200,15 @@ const SITE_ANSWERS: Duration = Duration::from_secs(20);
 /// The most read of what a site says of its holder.
 const MAX_SITE_ANSWER: usize = 64 * 1024;
 
-/// A site, asked through the function it holds.
-struct Site<F>(F);
-
-impl<F> HttpClient for Site<F>
-where
-    F: Fn(&str, Vec<u8>) -> HttpFuture<'static> + Send + Sync,
-{
-    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
-        (self.0)(path, body)
-    }
-}
-
-/// The holder whose site is at `origin`, as it says there: its device and
-/// where it is dialed.
+/// The holder whose site is at `origin`, as the site says there: its device
+/// and where it is dialed.
 ///
 /// An owner names the site, and this device asks it from inside its own
 /// network. So it asks as it asks a provider a person named: an https
 /// address, on the public internet at the lookup the connection dials, and
 /// no redirect is followed. With [`Destinations::Any`], its operator's
 /// leave, an address on its own network is asked too, also over plain http.
+/// The site publishes who its host is and where it is dialled (`home.host.info`).
 /// What a site answers a refusal with is not handed on.
 async fn host_at(
     origin: &str,
@@ -1246,41 +1232,43 @@ async fn host_at(
     }
     let client =
         guarded_client(destinations, system_lookup()).map_err(|error| error.to_string())?;
-    let site = origin.to_owned();
-    let asked = Site(move |path: &str, body: Vec<u8>| -> HttpFuture<'static> {
-        let request = client
-            .post(format!("{site}{path}"))
-            .header("content-type", "application/octet-stream")
-            .timeout(SITE_ANSWERS)
-            .body(body);
-        Box::pin(async move {
-            let mut response = request
-                .send()
-                .await
-                .map_err(|error| error.without_url().to_string())?;
-            let status = response.status().as_u16();
-            let mut answer = Vec::new();
-            while let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|error| error.without_url().to_string())?
-            {
-                if answer.len().saturating_add(chunk.len()) > MAX_SITE_ANSWER {
-                    return Err("it answered more than a holder says of itself".to_owned());
-                }
-                answer.extend_from_slice(&chunk);
-            }
-            Ok((status, answer))
-        })
-    });
-    let info = tilo_server_client::https::server_info(&asked)
+    let mut response = client
+        .get(format!("{origin}/entry.json"))
+        .timeout(SITE_ANSWERS)
+        .send()
         .await
-        .map_err(|error| match error {
+        .map_err(|error| {
             // What a site answers a refusal with stays with it: an owner
             // names any site, and its words are not this device's to hand on.
-            LinkError::Refused(_) => format!("{origin} refused to say which holder it is"),
-            other => format!("{origin} did not say which holder it is: {other}"),
+            format!(
+                "{origin} did not say which holder it is: {}",
+                error.without_url()
+            )
         })?;
+    if !response.status().is_success() {
+        return Err(format!("{origin} refused to say which holder it is"));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        format!(
+            "{origin} did not say which holder it is: {}",
+            error.without_url()
+        )
+    })? {
+        if body.len().saturating_add(chunk.len()) > MAX_SITE_ANSWER {
+            return Err("it served more than a site says of its holder".to_owned());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let entry: Value = serde_json::from_slice(&body)
+        .map_err(|error| format!("{origin} did not say which holder it is: {error}"))?;
+    let info: PageHost = serde_json::from_value(
+        entry
+            .pointer("/home/host/info")
+            .cloned()
+            .ok_or_else(|| format!("{origin} names no host certificate and address"))?,
+    )
+    .map_err(|error| format!("{origin} did not say which holder it is: {error}"))?;
     let address = info
         .address
         .ok_or_else(|| format!("{origin} names no address to reach its host at"))?;

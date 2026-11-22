@@ -382,14 +382,14 @@ def env_of(docs: dict[str, list[dict]], deployment: str, container: str, name: s
 
 
 def host_info(pod: Pod) -> dict:
-    """What the running Lounge's own server prints for the web entry's TILO_WEB_HOME_HOST_INFO."""
+    """What the running Lounge's server wrote for the web entry's TILO_WEB_HOME_HOST_INFO."""
     container = f"{pod.pod}-room-service"
-    for program in ("tilo-server", "tilo-relay"):
-        result = run(*PODMAN, "exec", container, f"/usr/local/bin/{program}", "page-host", "http://127.0.0.1:9780",
-                     capture_output=True, check=False)
-        if result.returncode == 0:
-            return json.loads(result.stdout.strip().splitlines()[-1])
-    die(f"the Lounge's server printed no page-host line: {result.stderr.strip()[-2000:]}")
+    result = run(*PODMAN, "exec", container, "sh", "-c",
+                 'cat "${TILO_WORKSPACES_STATE:-/run/tilo-workspaces}/$TILO_WORKSPACES_PERSISTENT/server/web-host.json"',
+                 capture_output=True, check=False)
+    if result.returncode != 0:
+        die(f"the Lounge's server wrote no web-host.json: {result.stderr.strip()[-2000:]}")
+    return json.loads(result.stdout.strip().splitlines()[-1])
 
 
 def step(name: str, docs: dict[str, list[dict]], secrets_: Secrets, work: Path, real_state: bool) -> None:

@@ -356,7 +356,7 @@ fn a_volume_a_workspace_service_left_keeps_its_workspace_and_people() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     join_through_entry(
         &runtime,
-        started.plain,
+        &started.host_info,
         &started.workspace,
         own_device(0x41, "Ana"),
         "Ana",
@@ -442,12 +442,7 @@ fn a_page_is_told_the_packet_relay_its_host_runs_from_the_first_answer() {
 
     let workspace = start_with(&state, &root_file, &state.join("secrets"), &flags).unwrap();
     let started = announced(&workspace);
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let info = runtime
-        .block_on(tilo_server_client::https::server_info(&Plain(
-            started.plain,
-        )))
-        .expect("the host answers where its pages dial it");
+    let info = started.host_info;
     let address = info.address.expect("the host names an endpoint");
     let relay = address
         .relay_url
@@ -560,17 +555,12 @@ fn page(
 /// device and certificate, a member now.
 fn join_through_entry(
     runtime: &tokio::runtime::Runtime,
-    plain: std::net::SocketAddr,
+    info: &tilo_server_protocol::web::ServerInfo,
     workspace: &str,
     (device, cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
     name: &str,
 ) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
-    match runtime.block_on(enter_through_entry(
-        plain,
-        workspace,
-        (&device, &cert),
-        name,
-    )) {
+    match runtime.block_on(enter_through_entry(info, workspace, (&device, &cert), name)) {
         Ok(_) => (device, cert),
         Err(refused) => panic!("{name} was not admitted: {refused:?}"),
     }
@@ -579,26 +569,24 @@ fn join_through_entry(
 /// A session of `cert`'s device whose first message enters `workspace` through its entry, as a
 /// person's page or computer opens one: what the workspace answered it.
 async fn enter_through_entry(
-    plain: std::net::SocketAddr,
+    info: &tilo_server_protocol::web::ServerInfo,
     workspace: &str,
     device: (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
     name: &str,
 ) -> Result<tilo_server_client::login::Admission, tilo_session_client::device::DeviceRefusal> {
-    enter_through_entry_as(plain, workspace, device, name, device.1.device_public_key).await
+    enter_through_entry_as(info, workspace, device, name, device.1.device_public_key).await
 }
 
 /// [`enter_through_entry`] as the entry `request_id` names it: `tilo mcp` asks
 /// with a fresh one on every run.
 async fn enter_through_entry_as(
-    plain: std::net::SocketAddr,
+    info: &tilo_server_protocol::web::ServerInfo,
     workspace: &str,
     (device, cert): (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
     name: &str,
     request_id: [u8; 32],
 ) -> Result<tilo_server_client::login::Admission, tilo_session_client::device::DeviceRefusal> {
-    let info = tilo_server_client::https::server_info(&Plain(plain))
-        .await
-        .unwrap();
+    let info = info.clone();
     let server_cert = info.server_cert.clone();
     let session = tilo_session_client::start_session(
         tilo_session_client::PeerConfig {
@@ -794,6 +782,8 @@ struct Started {
     workspace: String,
     /// The plain loopback listener the workspace bound.
     plain: std::net::SocketAddr,
+    /// Who the host is and where its endpoint is dialled, as it announced them.
+    host_info: tilo_server_protocol::web::ServerInfo,
 }
 
 /// The workspace's first answer, with the addresses it bound.
@@ -801,6 +791,7 @@ fn announced(workspace: &Workspace) -> Started {
     let OperatorEvent::Started {
         workspace: Some(workspace),
         plain_origin: Some(plain_origin),
+        host_info: Some(host_info),
         ..
     } = workspace.next(|e| matches!(e, OperatorEvent::Started { .. }))
     else {
@@ -809,6 +800,7 @@ fn announced(workspace: &Workspace) -> Started {
     Started {
         plain: bound_address(&plain_origin),
         workspace,
+        host_info: *host_info,
     }
 }
 
@@ -823,8 +815,8 @@ fn bound_address(origin: &str) -> std::net::SocketAddr {
 
 /// The workspace's chat as a page on `plain` reaches it: the workspace host's
 /// certificate and the chat's route for the workspace `cluster`.
-async fn chat_route(
-    plain: std::net::SocketAddr,
+fn chat_route(
+    info: &tilo_server_protocol::web::ServerInfo,
     cluster: &str,
 ) -> (
     tilo_server_client::ServerAddress,
@@ -832,9 +824,7 @@ async fn chat_route(
     tilo_peer_state::document_frame::DocumentRoute,
 ) {
     const CHAT: &str = "so.tilo.chat";
-    let info = tilo_server_client::https::server_info(&Plain(plain))
-        .await
-        .unwrap();
+    let info = info.clone();
     let server_cert = info.server_cert.clone();
     let host = host_of(info);
     let catalogue = tilo_agent_session::AppCatalogue::native();
@@ -923,7 +913,7 @@ fn the_server_entry_admits_two_people_as_distinct_members_at_its_default_role() 
         let (device, cert) = own_device(seed, name);
         let admitted = runtime
             .block_on(enter_through_entry(
-                started.plain,
+                &started.host_info,
                 &started.workspace,
                 (&device, &cert),
                 name,
@@ -974,12 +964,24 @@ fn a_persistent_workspaces_pages_read_the_workspace_and_write_what_their_role_le
     .unwrap();
     let started = announced(&workspace);
     let workspace_id = tilo_server::WorkspaceId::parse(&started.workspace).unwrap();
-    let (id, plain) = (started.workspace, started.plain);
-    let visiting = join_through_entry(&runtime, plain, &id, own_device(0x71, "Ana"), "Ana");
-    let writer = join_through_entry(&runtime, plain, &id, own_device(0x72, "Ben"), "Ben");
+    let id = started.workspace;
+    let visiting = join_through_entry(
+        &runtime,
+        &started.host_info,
+        &id,
+        own_device(0x71, "Ana"),
+        "Ana",
+    );
+    let writer = join_through_entry(
+        &runtime,
+        &started.host_info,
+        &id,
+        own_device(0x72, "Ben"),
+        "Ben",
+    );
     let sibling = unenrolled_stranger_device();
     runtime.block_on(persons_read_the_workspace_and_are_refused(
-        plain,
+        &started.host_info,
         &id,
         workspace_id,
         visiting,
@@ -1010,14 +1012,14 @@ fn a_persistent_workspaces_pages_read_the_workspace_and_write_what_their_role_le
     assert_eq!(started.workspace, id, "the same workspace opens");
     let editor = join_through_entry(
         &runtime,
-        started.plain,
+        &started.host_info,
         &started.workspace,
         own_device(0x73, "Cy"),
         "Cy",
     );
     let workspace_id = tilo_server::WorkspaceId::parse(&started.workspace).unwrap();
     runtime.block_on(an_editor_page_writes_and_is_committed(
-        started.plain,
+        &started.host_info,
         &started.workspace,
         workspace_id,
         editor,
@@ -1031,7 +1033,7 @@ fn a_persistent_workspaces_pages_read_the_workspace_and_write_what_their_role_le
 /// claiming the owner's root with a signature not the root's, and one whose
 /// certificate expired are not admitted.
 async fn persons_read_the_workspace_and_are_refused(
-    plain: std::net::SocketAddr,
+    info: &tilo_server_protocol::web::ServerInfo,
     cluster: &str,
     workspace_id: WorkspaceId,
     (visiting_key, visiting_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
@@ -1040,7 +1042,7 @@ async fn persons_read_the_workspace_and_are_refused(
 ) {
     use tilo_session_client::Event;
 
-    let (host, server_cert, route) = chat_route(plain, cluster).await;
+    let (host, server_cert, route) = chat_route(info, cluster);
 
     let visiting = page(host.clone(), visiting_key, visiting_cert, &server_cert);
 
@@ -1213,12 +1215,12 @@ async fn owner_devices_join_and_forgeries_are_refused(
 /// The restart's page: a person who joined through the entry writes, and the
 /// workspace commits it, as the listing's role now lets them.
 async fn an_editor_page_writes_and_is_committed(
-    plain: std::net::SocketAddr,
+    info: &tilo_server_protocol::web::ServerInfo,
     cluster: &str,
     workspace_id: WorkspaceId,
     (editor_key, editor_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
 ) {
-    let (host, server_cert, route) = chat_route(plain, cluster).await;
+    let (host, server_cert, route) = chat_route(info, cluster);
     let editor = page(host, editor_key, editor_cert, &server_cert);
     let editor_heard = editor.events();
     editor.send(Cmd::Join(workspace_id)).unwrap();
@@ -1280,7 +1282,13 @@ fn a_persistent_workspace_reopens_after_hard_stops() {
     let workspace = start_with(&state, &root_file, &secrets, &extra).unwrap();
     let first = announced(&workspace);
     let id = first.workspace.clone();
-    join_through_entry(&runtime, first.plain, &id, own_device(0x74, "Ana"), "Ana");
+    join_through_entry(
+        &runtime,
+        &first.host_info,
+        &id,
+        own_device(0x74, "Ana"),
+        "Ana",
+    );
     workspace.kill();
 
     // Killed again before it says it started.
@@ -1292,12 +1300,15 @@ fn a_persistent_workspace_reopens_after_hard_stops() {
     let again = announced(&workspace);
     assert_eq!(again.workspace, id, "the same workspace opens");
     let workspace_id = tilo_server::WorkspaceId::parse(&again.workspace).unwrap();
-    let (key, cert) =
-        join_through_entry(&runtime, again.plain, &id, own_device(0x75, "Ben"), "Ben");
+    let (key, cert) = join_through_entry(
+        &runtime,
+        &again.host_info,
+        &id,
+        own_device(0x75, "Ben"),
+        "Ben",
+    );
     runtime.block_on(async {
-        let info = tilo_server_client::https::server_info(&Plain(again.plain))
-            .await
-            .unwrap();
+        let info = again.host_info.clone();
         let server_cert = info.server_cert.clone();
         let host = host_of(info);
         let catalogue = tilo_agent_session::AppCatalogue::native();
@@ -1625,12 +1636,12 @@ fn a_device_that_came_in_before_enters_again_without_the_entry() {
     )
     .unwrap();
     let started = announced(&workspace);
-    let (id, plain) = (started.workspace, started.plain);
+    let id = started.workspace;
     // A computer `tilo login` made a device of the person's, in through the
     // listed workspace's entry.
     let (key, cert) = join_through_entry(
         &runtime,
-        plain,
+        &started.host_info,
         &id,
         own_device(0xc1, "Claude Code on build-box"),
         "Claude Code",
@@ -1640,7 +1651,7 @@ fn a_device_that_came_in_before_enters_again_without_the_entry() {
     // The same computer's next `tilo mcp`: its session enters the workspace
     // again, under an entry of its own as every run makes one.
     let answered = runtime.block_on(enter_through_entry_as(
-        plain,
+        &started.host_info,
         &id,
         (&key, &cert),
         "Claude Code",

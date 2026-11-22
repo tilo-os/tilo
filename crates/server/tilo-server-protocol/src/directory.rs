@@ -185,6 +185,10 @@ pub struct DirectoryEntry {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryPage {
+    /// Who this host is and where it is dialled, as it publishes itself: a device entering one
+    /// of these workspaces through its entry reaches the host from this, not by asking it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<crate::web::PageHost>,
     /// The public workspaces, in no particular order.
     pub workspaces: Vec<DirectoryEntry>,
 }

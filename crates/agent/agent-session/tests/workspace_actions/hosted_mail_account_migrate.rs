@@ -176,13 +176,16 @@ async fn a_migrated_account_is_connected_and_its_mail_is_read_from_its_server() 
     let key_file = keys.path().join("laptop.json");
     std::fs::write(
         &key_file,
-        serde_json::to_vec(&tilo_api::direct::KeyFile::new(
-            &on_server.server,
-            Some(&on_server.web_entry),
-            "Ada's laptop",
-            &laptop.key,
-            &laptop.cert,
-        ))
+        serde_json::to_vec(
+            &tilo_api::direct::KeyFile::new(
+                &on_server.server,
+                Some(&on_server.web_entry),
+                "Ada's laptop",
+                &laptop.key,
+                &laptop.cert,
+            )
+            .reaching_at(on_server.hosted.web.host_info().clone()),
+        )
         .unwrap(),
     )
     .unwrap();
@@ -255,10 +258,8 @@ async fn a_migrated_account_is_connected_and_its_mail_is_read_from_its_server() 
 
     // Mail reads the inbox from the mail server through her server, as a page of hers does:
     // signed in with the password the vault keeps, no copy of a cache in between.
-    let client_net = tilo_net::Client::builder().build().unwrap();
     let holder = Arc::new(tilo_api::server::Server::new(
-        &client_net,
-        &on_server.server,
+        on_server.hosted.web.host_info().clone(),
     ));
     let paired = tilo_api::grant_key::GrantKey::held(
         laptop.key.clone(),

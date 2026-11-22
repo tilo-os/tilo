@@ -796,6 +796,7 @@ pair-device-in-tilo = Auf einem Computer mit Tilo fügst du den Link in „Arbei
 pair-device-local-link = Wähle auf dem neuen Tilo-Gerät „Meine vorhandene Tilo-Identität verwenden“ und füge den Link ein. Vergleiche vor der Bestätigung die Codes.
 pair-device-nearby = Dein neues Gerät erreicht diesen Computer nicht von unterwegs, deshalb gibt es keinen Link. Füge es stattdessen in der Nähe hinzu: Wähle auf dem neuen Gerät „Meine vorhandene Tilo-Identität verwenden“. Wähle dann in den Einstellungen unter „Deine Geräte“ „Gerät hinzufügen“ und prüfe, dass beide denselben Code zeigen.
 pair-device-no-workspace = Öffne zuerst einen Arbeitsbereich: Der Link öffnet ihn auf deinem neuen Gerät.
+pair-device-no-host = Dieser Computer weiß noch nicht, wo der Host des Arbeitsbereichs erreichbar ist. Öffne den Arbeitsbereich erneut und füge das Gerät dann hinzu.
 pair-device-not-yours = Dieser Computer ist nicht als du angemeldet und kann daher kein neues Gerät aufnehmen.
 pair-device-no-link = Der Link ließ sich nicht erstellen. Schließe dies und versuche es noch einmal.
 pair-device-waiting-title = Geräteanfragen

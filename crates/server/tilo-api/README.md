@@ -66,16 +66,14 @@ The binary reads its configuration from the environment:
 | `TILO_API_LISTEN` | `HOST:PORT` to listen on, plain HTTP behind a TLS-terminating proxy |
 | `TILO_API_ORIGIN` | The API server's public origin as agents reach it (`https://mcp.tilo.sh`) |
 | `TILO_API_WEB_ENTRY` | The origin of the person's Tilo on the web, which signs them in and certifies grants (`https://tilo.sh`); its `entry.json` names the entry to the site's home workspace on the server (`home.admission`) |
-| `TILO_API_HOST` | The public origin of the server the person's workspaces live on (`https://eu1.tilo.sh`) |
+| `TILO_API_HOST` | The host the person's workspaces live on, as the host writes it in `web-host.json`: its certificate and where it is dialled, its web origin among them (one object, or a JSON array of them) |
 | `TILO_API_STATE` | A private file for registered clients, grants (with each live grant's key) and token digests; on persistent storage, one writer |
 
 What it reaches:
 
 - **The site** over HTTPS: `GET <TILO_API_WEB_ENTRY>/entry.json`.
-- **The relay** over HTTPS at `TILO_API_HOST`: `/peer/v1/host` (the relay's
-  certificate and iroh address).
-- **The relay's iroh endpoint** over UDP (QUIC), directly or through the
-  packet relay `/peer/v1/host` names: one session per MCP session, as the
+- **The server's iroh endpoint** over UDP (QUIC), directly or through the
+  packet relay it names: one session per MCP session, as the
   grant's key. The session enters the site's home workspace through its entry
   (the workspace `entry.json`'s `home.admission` names) in its first message,
   and each invitation it redeems is an entry on another stream of the same

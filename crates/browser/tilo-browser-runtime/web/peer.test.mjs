@@ -53,8 +53,8 @@ function fakeRuntime({phase = 'ready'} = {}) {
       onPairingCode('123456');
       return JSON.stringify({cert: {device: calls.certify.length}, hostCert: {host: true}});
     },
-    async certifyWithRoot(post, root, deviceKey, label) {
-      calls.certify.push({post, root, deviceKey, label});
+    async certifyWithRoot(root, deviceKey, label, hostCert) {
+      calls.certify.push({hostCert, root, deviceKey, label});
       return JSON.stringify({cert: {device: calls.certify.length, expires_at_ns: calls.expiresAtNs ?? (Date.now() + 30 * 86_400_000) * 1e6}, hostCert: {host: true}});
     },
     async inspectInvitation(post, invitation) {
@@ -410,7 +410,7 @@ test('a site that names its host as it was before it was set up again stops the 
   await assert.rejects(entering, failed => failed.name === 'AdmissionError' && failed.code === 'stale-entry'
     && failed.message === STALE_SITE_SERVER);
   assert.equal(asked, 1, 'the host is asked who it is once, only once the session could not reach it');
-  assert.ok(said.some(line => line.includes('TILO_WEB_HOME_HOST_INFO') && line.includes('tilo-server page-host https://host.example:8443')), said.join('\n'));
+  assert.ok(said.some(line => line.includes('TILO_WEB_HOME_HOST_INFO') && line.includes('web-host.json')), said.join('\n'));
   assert.ok(runtime.peer.disposed, 'the session is let go');
   assert.ok(reported.some(failure => failure.message.includes('TILO_WEB_HOME_HOST_INFO')),
     'the entry hears what to set');
