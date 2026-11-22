@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use iroh::endpoint::{Endpoint, presets};
-use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler, Router};
+use iroh::protocol::{DynProtocolHandler, Router};
 use iroh_base::EndpointAddr;
 use tokio::task::JoinHandle;
 
@@ -20,12 +20,11 @@ use tilo_user_identity::RevocationList;
 
 use crate::config::ServerConfig;
 
-use crate::handshake::{EndpointTrust, LiveIdentity};
+use crate::handshake::LiveIdentity;
 use crate::metrics::Metrics;
-use crate::peer::WorkspaceRegistry;
 use crate::policy::TrustPolicy;
 use crate::service::ServerProtocol;
-use crate::transport::{ALPN, ContentEndpointRequest, DISCOVERY_ALPN, MAX_FRAME_BYTES};
+use crate::transport::ALPN;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_service::Reaching;
@@ -609,14 +608,6 @@ impl Server {
         // land in one origin whether or not browsers are served.
         #[cfg(feature = "web")]
         let mut live_origin = Some(crate::web::live::LiveOrigin::start(handler.clone()));
-        let live_trust_policy = handler.trust_policy.clone();
-        let discovery = DiscoveryProtocol {
-            workspaces: workspaces.clone(),
-            identity: live.clone(),
-            trust_policy: live_trust_policy.clone(),
-            agents: handler.agents.clone(),
-            environments: handler.environments.clone(),
-        };
         // A server enrolled into its person's identity: a host of theirs alone.
         let enrolled_server = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
         let certification = crate::certification::CertificationProtocol::new(
@@ -643,8 +634,7 @@ impl Server {
         });
         let mut router = Router::builder(endpoint.clone())
             .accept(ALPN, handler)
-            .accept(crate::certify::CERTIFY_ALPN, certification)
-            .accept(DISCOVERY_ALPN, discovery);
+            .accept(crate::certify::CERTIFY_ALPN, certification);
         if let Some(governed) = &governed {
             for (alpn, handler) in crate::service::workspaces_protocols(&sessions, governed) {
                 router = router.accept(alpn, handler);
@@ -1127,7 +1117,7 @@ async fn bind_endpoint(
 }
 
 fn validate_additional_alpn(alpn: &[u8]) -> Result<(), ServerError> {
-    let reserved: &[&[u8]] = &[ALPN, DISCOVERY_ALPN];
+    let reserved: &[&[u8]] = &[ALPN];
     if alpn.is_empty() {
         return Err(ServerError::ProtocolRegistration(
             "additional ALPN must not be empty".into(),
@@ -1315,90 +1305,6 @@ fn validate_server_identity(identity: &ServerIdentity) -> Result<(), ServerError
         ));
     }
     Ok(())
-}
-
-#[derive(Clone)]
-struct DiscoveryProtocol {
-    workspaces: WorkspaceRegistry,
-    identity: LiveIdentity,
-    trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
-    agents: crate::peer::AgentRegistry,
-    environments: crate::environment::EnvironmentRegistry,
-}
-
-impl DiscoveryProtocol {
-    fn trust(&self) -> crate::workspace_access::ServerTrust<'_> {
-        crate::workspace_access::ServerTrust {
-            revocations: &self.identity.revocations,
-            policy: &self.trust_policy,
-            own_user: &self.identity.user_public_key,
-            agents: &self.agents,
-            environments: &self.environments,
-        }
-    }
-}
-
-impl std::fmt::Debug for DiscoveryProtocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("DiscoveryProtocol")
-    }
-}
-
-impl ProtocolHandler for DiscoveryProtocol {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one authenticated discovery exchange keeps authorization, workspace lookup, content proof, and response framing in one security-reviewed sequence"
-    )]
-    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        // Any device the live policy admits may ask; the request is then
-        // scoped to a workspace it belongs to.
-        let peer = self
-            .identity
-            .authenticate(
-                EndpointTrust::Live(&self.trust_policy),
-                &mut recv,
-                &mut send,
-                MAX_FRAME_BYTES,
-            )
-            .await
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let request: ContentEndpointRequest =
-            postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        // A discovery request is scoped to a server workspace. Do not turn the
-        // host into a global filesystem endpoint directory for arbitrary
-        // authenticated peers.
-        let workspace = self
-            .workspaces
-            .lock()
-            .await
-            .get(&request.workspace_id)
-            .cloned();
-        let permitted = match workspace {
-            Some(workspace) => {
-                let workspace = workspace.lock().await;
-                crate::workspace_access::decide(
-                    &workspace,
-                    &self.trust(),
-                    &peer,
-                    crate::workspace_access::WorkspaceOperation::ContentDiscovery,
-                )
-                .admitted()
-            }
-            None => false,
-        };
-        if !permitted {
-            return Err(AcceptError::from_err(std::io::Error::other(
-                "workspace is not bound or not authorised on this server",
-            )));
-        }
-        // No workspace's files are bound to this server: they sync through the workspace's
-        // own tree, so there is no endpoint or binding to hand over.
-        Err(AcceptError::from_err(std::io::Error::other(
-            "this server keeps no Files binding: a workspace's files sync through the workspace",
-        )))
-    }
 }
 
 /// The server frame codec, re-exported under the daemon path older callers use.
@@ -1785,12 +1691,10 @@ mod tests {
 
     #[test]
     fn additional_protocol_rejects_server_owned_alpns() {
-        for alpn in [ALPN, DISCOVERY_ALPN] {
-            assert!(matches!(
-                validate_additional_alpn(alpn),
-                Err(ServerError::ProtocolRegistration(_))
-            ));
-        }
+        assert!(matches!(
+            validate_additional_alpn(ALPN),
+            Err(ServerError::ProtocolRegistration(_))
+        ));
         validate_additional_alpn(b"tilo-workspace-join/1").unwrap();
         assert!(matches!(
             validate_additional_alpns([

@@ -31,8 +31,6 @@ pub const ALPN: &[u8] = b"tilo-server/1";
 /// the lower endpoint id dials it, the other only when it is not dialled;
 /// of two dialled at once, both keep the lower id's.
 pub const SIBLING_ALPN: &[u8] = b"tilo-server-sibling/1";
-/// Authenticated one-shot discovery of direct filesystem endpoints.
-pub const DISCOVERY_ALPN: &[u8] = b"tilo-server-discovery/2";
 
 /// One thing the person who owns a server asks it to do from another of their
 /// devices. Each is an action on their Servers workspace, which the server the
@@ -277,14 +275,6 @@ pub struct OperationEntry {
     pub summary: String,
     /// Whether it was carried out.
     pub done: bool,
-}
-
-/// A client must name the server workspace it is resolving. The host never exposes
-/// its filesystem endpoints as a global, unauthorised discovery answer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContentEndpointRequest {
-    /// Server workspace whose filesystem endpoint the caller wants to resolve.
-    pub workspace_id: WorkspaceId,
 }
 
 /// Hard cap for a single framed envelope on the wire. Guards
@@ -1160,7 +1150,6 @@ mod tests {
         phase alpn_is_stable;
         {
             assert_eq!(ALPN, b"tilo-server/1");
-            assert_eq!(DISCOVERY_ALPN, b"tilo-server-discovery/2");
         }
     }
 }
