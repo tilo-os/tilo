@@ -206,8 +206,9 @@ async fn a_server_offers_what_its_entry_says() {
     assert!(offers_compute(workspaces).await, "its entry offers compute");
 }
 
-/// A retired server lets go of everything it holds and offers nothing, and
-/// keeps its entry so it is never taken in again as a new server.
+/// A retired server lets go of everything it holds, offers nothing and refuses
+/// its own revoked key, and keeps its entry so it is never taken in again as a
+/// new server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_retired_server_lets_go_of_everything() {
     let alice = TestUser::fresh("Alice");
@@ -243,13 +244,24 @@ async fn a_retired_server_lets_go_of_everything() {
         .unwrap();
     assert!(offers_compute(workspaces).await);
 
-    servers::apply(workspaces, Servers::RETIRE_SERVER.with(entry(&nas)))
-        .await
-        .unwrap();
+    let mut revocation = tilo_user_identity::RevocationEntry {
+        user_public_key: alice.user_pk,
+        revoked_device_public_key: nas.device_pubkey(),
+        revoked_at_ns: 1,
+        reason: tilo_user_identity::RevocationReason::Retired,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revocation, &alice.user_sk).unwrap();
+    servers::apply(
+        workspaces,
+        Servers::ASK_RETIREMENT.with((entry(&nas), serde_json::to_string(&revocation).unwrap())),
+    )
+    .await
+    .unwrap();
     let applied = applied::reconcile_into(workspaces, &applied::Requests::at(&policy_request))
         .await
         .unwrap();
-    assert!(applied.retired, "its own entry says it was retired");
+    assert!(applied.retired, "asked to retire, it retired its own entry");
     assert!(
         !offers_compute(workspaces).await,
         "a retired server takes no work"
@@ -264,6 +276,10 @@ async fn a_retired_server_lets_go_of_everything() {
             .iter()
             .any(|summary| summary.workspace == workspace.workspace),
         "it holds nothing: {still_there:?}"
+    );
+    assert!(
+        workspaces.revocations().refuses(&nas.cert),
+        "and refuses its own key, which its person's root revoked"
     );
 }
 

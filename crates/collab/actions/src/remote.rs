@@ -361,29 +361,15 @@ pub mod identity_admin {
     /// The devices trusted under the workspace's identity, as [`FleetDevice`]s.
     pub const DEVICES: &str = "devices";
     /// Root-sign a device's permanent revocation (`device`, `reason`,
-    /// `confirm`).
+    /// `confirm`), answering the signed entry (`revocation`).
     pub const REVOKE: &str = "revoke";
     /// Name one of the person's devices (`device`, `name`): what their device
     /// lists read it by from now on. A page's API forwards it to the provider
     /// that keeps their record; it is no step of the device's own store.
     pub const RENAME: &str = "rename-device";
-    /// Root-revoke and stop a paired home server (`device`, `service`,
-    /// `confirm`).
-    pub const HOME_PEER_REMOVE: &str = "home-peer-remove";
-    /// Deliver the home-server removals that could not reach their server.
-    pub const HOME_PEER_RETRY: &str = "home-peer-retry-removals";
 
     /// Every step, in the order a catalogue lists them.
-    pub const STEPS: [&str; 8] = [
-        LIST,
-        ACTIVATE,
-        REMOVE,
-        PROTECT,
-        DEVICES,
-        REVOKE,
-        HOME_PEER_REMOVE,
-        HOME_PEER_RETRY,
-    ];
+    pub const STEPS: [&str; 6] = [LIST, ACTIVATE, REMOVE, PROTECT, DEVICES, REVOKE];
 
     #[must_use]
     pub fn target(step: &str) -> RemoteActionTarget {

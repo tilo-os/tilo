@@ -27,7 +27,7 @@ and, if a peer is offline, its deltas are store-and-forwarded.
   checkpoints every ten minutes.
 - Bounds every in-memory peer queue. A peer that cannot keep up is disconnected;
   durable traffic is then queued on disk and replayed after it reconnects.
-- Ships a `tilo-server-admin` CLI for home peers, revocations and status.
+- Ships a `tilo-server-admin` CLI for revocations, update rollout and status.
 
 ## Composite home-peer deployment
 
@@ -49,7 +49,7 @@ for the persistent-volume and identity requirements.
 
 - `tilo-server` — daemon. Systemd `Type=notify`; subcommands `init`,
   `run`, `status`.
-- `tilo-server-admin` — helper: home peers, status, and root-signed
+- `tilo-server-admin` — helper: status, update rollout and root-signed
   `revoke-device`. A running daemon picks revocations up as they are
   written.
 

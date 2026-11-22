@@ -34,24 +34,13 @@ pub const SIBLING_ALPN: &[u8] = b"tilo-server-sibling/1";
 /// Authenticated one-shot discovery of direct filesystem endpoints.
 pub const DISCOVERY_ALPN: &[u8] = b"tilo-server-discovery/2";
 
-/// Authenticated owner-only health and lifecycle management protocol.
+/// The protocol a person's device asks one of their servers to take it in
+/// on: into their Servers workspace, or among their servers.
 pub const MANAGEMENT_ALPN: &[u8] = b"tilo-home-peer-management/1";
 
-/// Bounded owner operation for an enrolled home peer.
+/// What a person's device asks one of their servers on [`MANAGEMENT_ALPN`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HomePeerManagementRequest {
-    /// Read current service health.
-    Status,
-    /// Change the operator-facing server name.
-    Rename {
-        /// New operator-facing label, bounded to 80 bytes.
-        label: String,
-    },
-    /// Revoke this host and stop all hosted services.
-    Decommission {
-        /// Root-signed permanent revocation targeting this host certificate.
-        revocation: tilo_user_identity::RevocationEntry,
-    },
     /// Take the asking server, a later server of the same person, in among
     /// their servers: it is entered in their admin workspace and handed it.
     AdmitServer {
@@ -312,20 +301,11 @@ pub struct OperationEntry {
     pub done: bool,
 }
 
-/// Authenticated result returned by a home peer.
+/// A server's answer on [`MANAGEMENT_ALPN`]: it did what was asked.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HomePeerManagementResponse {
-    /// Certified host device key.
+    /// The server's device key.
     pub device_public_key: [u8; 32],
-    /// Current network-addressable server service endpoint. The client has
-    /// authenticated the certified host before accepting this advertisement.
-    pub server_endpoint: iroh_base::EndpointAddr,
-    /// Current operator-facing label.
-    pub label: String,
-    /// Active service advertisement after capability clamping.
-    pub services: crate::mesh::ServiceCapabilities,
-    /// Whether this response completed permanent decommissioning.
-    pub decommissioned: bool,
 }
 
 /// A client must name the server workspace it is resolving. The host never exposes

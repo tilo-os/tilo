@@ -7,35 +7,26 @@
 //! binding it into the app's sandbox, root secret included. Every step now
 //! runs here and answers in JSON without a secret: listing, activating,
 //! removing and protecting an identity; listing the devices trusted under the
-//! workspace's identity and root-signing a revocation; and removing a home
-//! server, whose server administration signs with the root key too.
+//! workspace's identity and root-signing a revocation, which it answers so a
+//! server of the person's is retired with it (`server.retire` on their Servers
+//! workspace).
 //!
 //! Who may take a step is decided at the API, before it reaches this engine:
 //! only a person who administers the workspace's identity, and every change
-//! but delivering pending home-server removals needs explicit confirmation.
+//! needs explicit confirmation.
 
-use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, LazyLock};
-use std::time::Duration;
+use std::sync::Arc;
 
-use tilo_actions::remote::{Pending, pending};
+use tilo_actions::remote::Pending;
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
-use tilo_identity::device_admin::{command_error, node_id};
 use tilo_identity::store::IdentityProfile;
 
-use crate::pairing::{Answer, Finished, HostCommand, Runner, Started, run_bounded};
+use crate::pairing::Answer;
 
 pub(crate) use tilo_actions::remote::identity_admin::{
-    ACTIVATE, DEVICES, HOME_PEER_REMOVE, HOME_PEER_RETRY, LIST, PROTECT, REMOVE, RENAME, RESOURCE,
-    REVOKE, STEPS,
+    ACTIVATE, DEVICES, LIST, PROTECT, REMOVE, RENAME, RESOURCE, REVOKE, STEPS,
 };
-
-const SERVER_ADMIN: &str = "/usr/libexec/tilo/tilo-server-admin";
-/// Removing a home server dials it to deliver its decommission; this bounds a server that never
-/// answers.
-const HOME_PEER_TIMEOUT: Duration = Duration::from_secs(60);
 
 const IDENTITY: ActionParam = ActionParam::required(
     "id",
@@ -86,25 +77,6 @@ pub(crate) const REVOKE_PARAMS: &[ActionParam] = &[
         "Explicit confirmation that this permanent administrative revocation should run.",
     ),
 ];
-pub(crate) const HOME_PEER_REMOVE_PARAMS: &[ActionParam] = &[
-    ActionParam::required(
-        "device",
-        ParamType::Text,
-        "The home server's node id, 64 hex characters.",
-    ),
-    ActionParam::required(
-        "service",
-        ParamType::Text,
-        "The home server's server service node id, 64 hex characters.",
-    ),
-    ActionParam::required(
-        "confirm",
-        ParamType::Boolean,
-        "Explicit confirmation that this home server stops serving your workspaces for good.",
-    ),
-];
-pub(crate) const HOME_PEER_RETRY_PARAMS: &[ActionParam] = &[];
-
 /// What `step` takes.
 pub(crate) fn params(step: &str) -> &'static [ActionParam] {
     match step {
@@ -113,20 +85,15 @@ pub(crate) fn params(step: &str) -> &'static [ActionParam] {
         PROTECT => PROTECT_PARAMS,
         DEVICES => DEVICES_PARAMS,
         REVOKE => REVOKE_PARAMS,
-        HOME_PEER_REMOVE => HOME_PEER_REMOVE_PARAMS,
-        HOME_PEER_RETRY => HOME_PEER_RETRY_PARAMS,
         _ => LIST_PARAMS,
     }
 }
 
 /// What `step` may do and answers, the same through every caller. Every step is this device's own
-/// identity store. Changing the store is privileged and asked first. Delivering the home-server
-/// removals still pending signs nothing new — each was signed when it was confirmed — so it asks
-/// nothing.
+/// identity store. Changing the store is privileged and asked first.
 pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
-        ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, ResultSpec, RetryPolicy,
-        RiskLevel,
+        ActionContract, ActionKind, ConfirmationPolicy, ResultSpec, RetryPolicy, RiskLevel,
     };
     let json = |schema: serde_json::Value| ResultSpec::Json { schema };
     match step {
@@ -152,23 +119,6 @@ pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
             result: json(serde_json::json!({ "type": "object" })),
             ..ActionContract::default()
         },
-        HOME_PEER_REMOVE => ActionContract {
-            kind: ActionKind::Outside,
-            risk: RiskLevel::Privileged,
-            confirmation: ConfirmationPolicy::Confirm,
-            retry: RetryPolicy::AtMostOnce,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: json(serde_json::json!({ "type": "object" })),
-            ..ActionContract::default()
-        },
-        HOME_PEER_RETRY => ActionContract {
-            kind: ActionKind::Outside,
-            risk: RiskLevel::Low,
-            retry: RetryPolicy::Idempotent,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: json(serde_json::json!({ "type": "object" })),
-            ..ActionContract::default()
-        },
         _ => ActionContract {
             kind: ActionKind::Outside,
             risk: RiskLevel::Privileged,
@@ -188,8 +138,6 @@ pub(crate) struct Store {
     pub(crate) dir: PathBuf,
     /// This device's collaboration identity: its key and certificates.
     pub(crate) device: tilo_device_identity::IdentityPaths,
-    /// The device root the privileged helpers run against.
-    pub(crate) root: PathBuf,
 }
 
 impl Store {
@@ -199,11 +147,9 @@ impl Store {
     ///
     /// Why the person's identity directory cannot be found.
     pub(crate) fn from_env() -> Result<Self, String> {
-        let paths = tilo_identity::device_admin::PersonPaths::from_env()?;
         Ok(Self {
-            dir: paths.dir,
+            dir: tilo_identity::device_admin::PersonPaths::from_env()?.dir,
             device: tilo_identity::provisioning::collaboration_identity_paths(),
-            root: paths.root,
         })
     }
 
@@ -231,146 +177,52 @@ pub(crate) fn fleet_stamps(person: &[u8; 32]) -> Option<tilo_identity::device_fl
     fleet_store().ok()?.stamps(&hex::encode(person))
 }
 
-/// The session's identity steps.
-pub(crate) struct IdentityAdmin {
-    runner: Runner,
-}
-
-static SESSION: LazyLock<IdentityAdmin> =
-    LazyLock::new(|| IdentityAdmin::with_runner(Arc::new(run_bounded)));
-
-impl IdentityAdmin {
-    /// This session's identity administration, which every API shares.
-    pub(crate) fn session() -> &'static Self {
-        &SESSION
-    }
-
-    /// Identity administration whose server commands `runner` runs.
-    pub(crate) fn with_runner(runner: Runner) -> Self {
-        Self { runner }
-    }
-
-    /// Start `step` with `args`, which the API bound to [`params`] after
-    /// it decided the caller administers `identity`, the identity the
-    /// caller's workspace selected, in `store`. `announce` tells the people's
-    /// hosts of a revocation this device's root signs, which is how the key
-    /// is refused beyond this device.
-    ///
-    /// # Errors
-    ///
-    /// Why the step did not happen.
-    pub(crate) fn start(
-        &self,
-        step: &str,
-        args: &ActionArgs,
-        identity: &IdentityProfile,
-        store: &Store,
-        announce: &dyn Fn(&tilo_user_identity::RevocationEntry),
-    ) -> Result<Started, String> {
-        match step {
-            LIST => list(store).map(Started::Answered),
-            ACTIVATE => {
-                confirmed(args, "use this identity")?;
-                activate(store, identity_id(args)?).map(Started::Answered)
-            }
-            REMOVE => {
-                confirmed(args, "remove this identity")?;
-                remove(store, identity_id(args)?).map(Started::Answered)
-            }
-            PROTECT => {
-                confirmed(args, "protect this identity's key")?;
-                protect(store, identity_id(args)?).map(Started::Answered)
-            }
-            DEVICES => devices(store, identity).map(Started::Answered),
-            // A device's name is kept where the person's record is, on the host
-            // their page reads it from; this device's own store keeps none.
-            RENAME => Err(
-                "a device's name is kept on the host that holds your record: name it from your Tilo page"
-                    .into(),
-            ),
-            REVOKE => {
-                confirmed(args, "revoke this device")?;
-                let (device, entry) = revoke(store, identity, args)?;
-                announce(&entry);
-                Ok(Started::Answered(
-                    serde_json::json!({ "device": device, "revoked": true }),
-                ))
-            }
-            HOME_PEER_REMOVE => {
-                confirmed(args, "remove this home server")?;
-                let device = node_id(args.text("device").unwrap_or_default(), "device")?;
-                let service = node_id(args.text("service").unwrap_or_default(), "service")?;
-                self.server_admin(home_peer_remove_command(store, &device, &service))
-                    .map(Started::Later)
-            }
-            HOME_PEER_RETRY => self
-                .server_admin(home_peer_retry_command(store))
-                .map(Started::Later),
-            _ => Err(format!("`{step}` is not an identity step")),
+/// Take `step` with `args`, which the API bound to [`params`] after it
+/// decided the caller administers `identity`, the identity the caller's
+/// workspace selected, in `store`. `announce` tells the people's hosts of a
+/// revocation this device's root signs, which is how the key is refused
+/// beyond this device.
+///
+/// # Errors
+///
+/// Why the step did not happen.
+pub(crate) fn start(
+    step: &str,
+    args: &ActionArgs,
+    identity: &IdentityProfile,
+    store: &Store,
+    announce: &dyn Fn(&tilo_user_identity::RevocationEntry),
+) -> Answer {
+    match step {
+        LIST => list(store),
+        ACTIVATE => {
+            confirmed(args, "use this identity")?;
+            activate(store, identity_id(args)?)
         }
+        REMOVE => {
+            confirmed(args, "remove this identity")?;
+            remove(store, identity_id(args)?)
+        }
+        PROTECT => {
+            confirmed(args, "protect this identity's key")?;
+            protect(store, identity_id(args)?)
+        }
+        DEVICES => devices(store, identity),
+        // A device's name is kept where the person's record is, on the host
+        // their page reads it from; this device's own store keeps none.
+        RENAME => Err(
+            "a device's name is kept on the host that holds your record: name it from your Tilo page"
+                .into(),
+        ),
+        REVOKE => {
+            confirmed(args, "revoke this device")?;
+            let (device, entry) = revoke(store, identity, args)?;
+            announce(&entry);
+            let revocation = serde_json::to_string(&entry).map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "device": device, "revoked": true, "revocation": revocation }))
+        }
+        _ => Err(format!("`{step}` is not an identity step")),
     }
-
-    /// Run the server administration `command` on a worker thread; the answer is what it reported.
-    fn server_admin(&self, command: HostCommand) -> Result<Pending<Answer>, String> {
-        let (completer, answer) = pending();
-        let runner = Arc::clone(&self.runner);
-        std::thread::Builder::new()
-            .name("tilo-identity-admin".into())
-            .spawn(move || {
-                let ran = runner(&command, &AtomicBool::new(false));
-                completer.complete(ran.and_then(|finished| relay_answer(&finished)));
-            })
-            .map(drop)
-            .map_err(|error| format!("could not start the home server change: {error}"))?;
-        Ok(answer)
-    }
-}
-
-/// The server command that root-revokes and stops home server `device` serving through `service` .
-/// The identity directory is the session's own.
-pub(crate) fn home_peer_remove_command(store: &Store, device: &str, service: &str) -> HostCommand {
-    let mut args = server_args("home-peer-remove", store);
-    args.extend(["--device", device, "--service", service].map(OsString::from));
-    HostCommand {
-        program: PathBuf::from(SERVER_ADMIN),
-        args,
-        timeout: HOME_PEER_TIMEOUT,
-    }
-}
-
-/// The server command that delivers the home-server removals still pending.
-pub(crate) fn home_peer_retry_command(store: &Store) -> HostCommand {
-    HostCommand {
-        program: PathBuf::from(SERVER_ADMIN),
-        args: server_args("home-peer-retry-removals", store),
-        timeout: HOME_PEER_TIMEOUT,
-    }
-}
-
-fn server_args(command: &str, store: &Store) -> Vec<OsString> {
-    vec![
-        command.into(),
-        "--identity-root".into(),
-        store.root.clone().into_os_string(),
-        "--identity-dir".into(),
-        store.dir.clone().into_os_string(),
-    ]
-}
-
-/// What a finished server command reported: its JSON, or an empty object for one that reports
-/// nothing.
-fn relay_answer(finished: &Finished) -> Answer {
-    if !finished.success {
-        return Err(command_error(
-            &finished.stderr,
-            "the home server was not reachable",
-        ));
-    }
-    if finished.stdout.iter().all(u8::is_ascii_whitespace) {
-        return Ok(serde_json::json!({}));
-    }
-    serde_json::from_slice(&finished.stdout)
-        .map_err(|_| "the home server change returned an invalid answer".to_string())
 }
 
 fn confirmed(args: &ActionArgs, what: &str) -> Result<(), String> {
@@ -538,17 +390,9 @@ pub(crate) fn copy_keys(step: &str) -> (&'static str, &'static str) {
             "search-action-identity-devices-list",
             "search-action-identity-devices-list-subtitle",
         ),
-        REVOKE => (
+        _ => (
             "search-action-identity-device-revoke",
             "search-action-identity-device-revoke-subtitle",
-        ),
-        HOME_PEER_REMOVE => (
-            "search-action-identity-home-peer-remove",
-            "search-action-identity-home-peer-remove-subtitle",
-        ),
-        _ => (
-            "search-action-identity-home-peer-retry",
-            "search-action-identity-home-peer-retry-subtitle",
         ),
     }
 }
@@ -625,7 +469,6 @@ pub(crate) fn outcome(answer: Answer) -> tilo_broker_core::steps::HostStepOutcom
 /// workspaces whose hosts answer it.
 pub(crate) struct BrokerApi {
     pub(crate) layout: Arc<crate::app_wire::LayoutAuthority>,
-    pub(crate) admin: &'static IdentityAdmin,
     pub(crate) hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
     pub(crate) engine: Option<Arc<crate::engine::Engine>>,
 }
@@ -675,23 +518,15 @@ impl tilo_broker_core::steps::HostStepServices for BrokerApi {
                 hosting.announce_revocation(engine, entry);
             }
         };
-        Ok(
-            match self
-                .admin
-                .start(step, &args, &identity, &store, &announce)?
-            {
-                Started::Answered(value) => Pending::ready(outcome(Ok(value))),
-                Started::Later(answer) => answer.map(outcome),
-            },
-        )
+        Ok(Pending::ready(outcome(Ok(start(
+            step, &args, &identity, &store, &announce,
+        )?))))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-    use std::sync::mpsc;
     use tilo_actions::remote::identity_admin::FleetDevice;
 
     /// A device holding no workspace on a host: nothing hears of a revocation
@@ -722,11 +557,7 @@ mod tests {
         let id = registry.default_identity.clone().expect("default identity");
         let identity = registry.identities.get(&id).expect("profile").clone();
         Provisioned {
-            store: Store {
-                dir,
-                device,
-                root: root.path().join("system"),
-            },
+            store: Store { dir, device },
             _root: root,
             identity,
         }
@@ -740,27 +571,9 @@ mod tests {
         ActionArgs::bind_json(params(step), &supplied).expect("arguments bind")
     }
 
-    /// What a step answered at once.
-    fn answered(started: Result<Started, String>) -> serde_json::Value {
-        match started.expect("the step runs") {
-            Started::Answered(value) => value,
-            Started::Later(_) => panic!("the step answers at once"),
-        }
-    }
-
-    /// The admin whose relay commands are recorded and answered with `stdout` .
-    fn recording(stdout: &'static str) -> (IdentityAdmin, Arc<Mutex<Vec<HostCommand>>>) {
-        let commands = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&commands);
-        let admin = IdentityAdmin::with_runner(Arc::new(move |command, _| {
-            recorded.lock().expect("commands").push(command.clone());
-            Ok(Finished {
-                success: true,
-                stdout: stdout.as_bytes().to_vec(),
-                stderr: Vec::new(),
-            })
-        }));
-        (admin, commands)
+    /// What a step answered.
+    fn answered(started: Answer) -> serde_json::Value {
+        started.expect("the step runs")
     }
 
     #[test]
@@ -771,9 +584,8 @@ mod tests {
             store,
             identity,
         } = provisioned();
-        let (admin, commands) = recording("");
 
-        let listed = answered(admin.start(LIST, &ActionArgs::none(), &identity, &store, &quiet));
+        let listed = answered(start(LIST, &ActionArgs::none(), &identity, &store, &quiet));
         let entries = listed.as_array().expect("a list");
         assert_eq!(entries.len(), 1, "{listed}");
         let entry = &entries[0];
@@ -790,25 +602,24 @@ mod tests {
         let id = serde_json::Value::String(summary.id.clone());
         let yes = serde_json::Value::Bool(true);
         assert!(
-            admin
-                .start(
+            start(
+                ACTIVATE,
+                &args(
                     ACTIVATE,
-                    &args(
-                        ACTIVATE,
-                        &[
-                            ("id", id.clone()),
-                            ("confirm", serde_json::Value::Bool(false))
-                        ]
-                    ),
-                    &identity,
-                    &store,
-                    &quiet,
-                )
-                .is_err(),
+                    &[
+                        ("id", id.clone()),
+                        ("confirm", serde_json::Value::Bool(false))
+                    ]
+                ),
+                &identity,
+                &store,
+                &quiet,
+            )
+            .is_err(),
             "using an identity needs the person's confirmation"
         );
         assert_eq!(
-            answered(admin.start(
+            answered(start(
                 ACTIVATE,
                 &args(ACTIVATE, &[("id", id.clone()), ("confirm", yes.clone())]),
                 &identity,
@@ -817,7 +628,7 @@ mod tests {
             )),
             serde_json::json!({ "id": summary.id, "active": true })
         );
-        let protected = answered(admin.start(
+        let protected = answered(start(
             PROTECT,
             &args(PROTECT, &[("id", id.clone()), ("confirm", yes)]),
             &identity,
@@ -828,7 +639,7 @@ mod tests {
 
         // Removing needs the person's confirmation, and the store keeps its last identity whatever
         // the caller confirmed.
-        let unconfirmed = admin.start(
+        let unconfirmed = start(
             REMOVE,
             &args(
                 REMOVE,
@@ -847,18 +658,17 @@ mod tests {
             unconfirmed.err()
         );
         assert!(
-            admin
-                .start(
+            start(
+                REMOVE,
+                &args(
                     REMOVE,
-                    &args(
-                        REMOVE,
-                        &[("id", id), ("confirm", serde_json::Value::Bool(true))]
-                    ),
-                    &identity,
-                    &store,
-                    &quiet,
-                )
-                .is_err(),
+                    &[("id", id), ("confirm", serde_json::Value::Bool(true))]
+                ),
+                &identity,
+                &store,
+                &quiet,
+            )
+            .is_err(),
             "the active, final identity stays"
         );
         assert_eq!(
@@ -866,10 +676,6 @@ mod tests {
                 .expect("listed")
                 .len(),
             1
-        );
-        assert!(
-            commands.lock().expect("commands").is_empty(),
-            "no step that stays on this device starts a process"
         );
     }
 
@@ -907,9 +713,8 @@ mod tests {
             store,
             identity,
         } = provisioned();
-        let admin = IdentityAdmin::with_runner(Arc::new(|_, _| Err("no process runs".into())));
 
-        let devices: Vec<FleetDevice> = serde_json::from_value(answered(admin.start(
+        let devices: Vec<FleetDevice> = serde_json::from_value(answered(start(
             DEVICES,
             &ActionArgs::none(),
             &identity,
@@ -925,60 +730,65 @@ mod tests {
 
         let device = serde_json::Value::String(phone_hex.clone());
         assert!(
-            admin
-                .start(
-                    REVOKE,
-                    &args(
-                        REVOKE,
-                        &[
-                            ("device", device.clone()),
-                            ("confirm", serde_json::Value::Bool(false))
-                        ]
-                    ),
-                    &identity,
-                    &store,
-                    &quiet,
-                )
-                .is_err(),
-            "revocation needs the person's confirmation"
-        );
-        assert!(
-            admin
-                .start(
-                    REVOKE,
-                    &args(
-                        REVOKE,
-                        &[
-                            ("device", device.clone()),
-                            ("reason", serde_json::Value::String("misplaced".into())),
-                            ("confirm", serde_json::Value::Bool(true)),
-                        ],
-                    ),
-                    &identity,
-                    &store,
-                    &quiet,
-                )
-                .is_err(),
-            "an unknown reason is refused"
-        );
-        assert_eq!(
-            answered(admin.start(
+            start(
                 REVOKE,
                 &args(
                     REVOKE,
                     &[
-                        ("device", device),
-                        ("reason", serde_json::Value::String("lost".into())),
+                        ("device", device.clone()),
+                        ("confirm", serde_json::Value::Bool(false))
+                    ]
+                ),
+                &identity,
+                &store,
+                &quiet,
+            )
+            .is_err(),
+            "revocation needs the person's confirmation"
+        );
+        assert!(
+            start(
+                REVOKE,
+                &args(
+                    REVOKE,
+                    &[
+                        ("device", device.clone()),
+                        ("reason", serde_json::Value::String("misplaced".into())),
                         ("confirm", serde_json::Value::Bool(true)),
                     ],
                 ),
                 &identity,
                 &store,
                 &quiet,
-            )),
-            serde_json::json!({ "device": phone_hex, "revoked": true })
+            )
+            .is_err(),
+            "an unknown reason is refused"
         );
-        let devices: Vec<FleetDevice> = serde_json::from_value(answered(admin.start(
+        let revoked = answered(start(
+            REVOKE,
+            &args(
+                REVOKE,
+                &[
+                    ("device", device),
+                    ("reason", serde_json::Value::String("lost".into())),
+                    ("confirm", serde_json::Value::Bool(true)),
+                ],
+            ),
+            &identity,
+            &store,
+            &quiet,
+        ));
+        assert_eq!(revoked["device"], phone_hex.as_str());
+        assert_eq!(revoked["revoked"], true);
+        // The answer carries the entry the root signed, which retires a server
+        // of the person's with it.
+        let entry: tilo_user_identity::RevocationEntry =
+            serde_json::from_str(revoked["revocation"].as_str().expect("the revocation"))
+                .expect("a revocation entry");
+        tilo_user_identity::verify_revocation_entry(&entry).expect("signed by the root");
+        assert_eq!(hex::encode(entry.revoked_device_public_key), phone_hex);
+        assert_eq!(entry.user_public_key, identity.user_public_key);
+        let devices: Vec<FleetDevice> = serde_json::from_value(answered(start(
             DEVICES,
             &ActionArgs::none(),
             &identity,
@@ -992,112 +802,6 @@ mod tests {
             .expect("the phone is listed");
         assert!(phone.revoked && !phone.current, "{devices:?}");
         assert_eq!(phone.label, "Phone");
-    }
-
-    #[test]
-    fn home_server_removal_runs_on_the_host_with_its_own_identity_directory() {
-        let store = Store {
-            dir: PathBuf::from("/home/person/.config/tilo/identity"),
-            device: tilo_device_identity::IdentityPaths::under("/var/lib/tilo"),
-            root: PathBuf::from("/var/lib/tilo"),
-        };
-        let identity = IdentityProfile {
-            id: "00".repeat(32),
-            display_name: String::new(),
-            record_path: PathBuf::from("/nonexistent"),
-            user_public_key: [0; 32],
-        };
-        let (admin, commands) = recording("{\"decommissioned\":true}\n");
-        let device = "AA".repeat(32);
-        let service = "bb".repeat(32);
-
-        let unconfirmed = admin.start(
-            HOME_PEER_REMOVE,
-            &args(
-                HOME_PEER_REMOVE,
-                &[
-                    ("device", serde_json::Value::String(device.clone())),
-                    ("service", serde_json::Value::String(service.clone())),
-                    ("confirm", serde_json::Value::Bool(false)),
-                ],
-            ),
-            &identity,
-            &store,
-            &quiet,
-        );
-        assert!(unconfirmed.is_err());
-        assert!(commands.lock().expect("commands").is_empty(), "nothing ran");
-
-        let Started::Later(answer) = admin
-            .start(
-                HOME_PEER_REMOVE,
-                &args(
-                    HOME_PEER_REMOVE,
-                    &[
-                        ("device", serde_json::Value::String(device)),
-                        ("service", serde_json::Value::String(service.clone())),
-                        ("confirm", serde_json::Value::Bool(true)),
-                    ],
-                ),
-                &identity,
-                &store,
-                &quiet,
-            )
-            .expect("starts")
-        else {
-            panic!("removal reaches the home server later");
-        };
-        let answer = answer
-            .wait_timeout(tilo_test_env::hang_bound())
-            .ok()
-            .flatten()
-            .expect("answered")
-            .expect("removed");
-        assert_eq!(answer["decommissioned"], true);
-
-        let Started::Later(retried) = admin
-            .start(
-                HOME_PEER_RETRY,
-                &ActionArgs::none(),
-                &identity,
-                &store,
-                &quiet,
-            )
-            .expect("starts")
-        else {
-            panic!("retrying reaches the home servers later");
-        };
-        let (done, wait) = mpsc::channel();
-        retried.then(move |answer| done.send(answer).expect("sent"));
-        let retried: Option<Answer> = tilo_test_env::recv("the retry's answer", &wait);
-        assert!(retried.expect("answered").is_ok());
-
-        let recorded = commands.lock().expect("commands").clone();
-        let expected = |command: &str, tail: &[&str]| HostCommand {
-            program: PathBuf::from(SERVER_ADMIN),
-            args: [
-                command,
-                "--identity-root",
-                "/var/lib/tilo",
-                "--identity-dir",
-                "/home/person/.config/tilo/identity",
-            ]
-            .iter()
-            .chain(tail)
-            .map(OsString::from)
-            .collect(),
-            timeout: HOME_PEER_TIMEOUT,
-        };
-        assert_eq!(
-            recorded,
-            [
-                expected(
-                    "home-peer-remove",
-                    &["--device", &"aa".repeat(32), "--service", &service]
-                ),
-                expected("home-peer-retry-removals", &[]),
-            ]
-        );
     }
 
     /// A session hosting `workspace` , with nothing else on it.

@@ -1385,7 +1385,6 @@ fn broker_services(
                     crate::machine_steps::MachineSteps::session(engine.clone()),
                     std::sync::Arc::new(crate::identity_admin::BrokerApi {
                         layout: layout_authority,
-                        admin: crate::identity_admin::IdentityAdmin::session(),
                         hosting,
                         engine: engine.clone(),
                     }),

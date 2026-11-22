@@ -414,9 +414,40 @@ fn a_machine_keeps_what_it_boots_from_and_a_drive_is_erased_only_when_named() {
     );
 }
 
+/// The revocation of the device key `device` a root signs, as JSON.
+fn revocation_of(device: [u8; 32]) -> String {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    let mut entry = RevocationEntry {
+        user_public_key: root.verifying_key().to_bytes(),
+        revoked_device_public_key: device,
+        revoked_at_ns: 1,
+        reason: tilo_user_identity::RevocationReason::Retired,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+    serde_json::to_string(&entry).unwrap()
+}
+
 #[test]
 fn a_retired_server_holds_nothing_and_is_not_taken_in_again() {
     let mut replica = enrolled();
+    assert!(
+        replica
+            .apply(Servers::RETIRE_SERVER.with(device()))
+            .is_err(),
+        "a server is retired only once it was asked with its revocation"
+    );
+    for wrong in [String::new(), revocation_of([8; 32])] {
+        assert!(
+            replica
+                .apply(Servers::ASK_RETIREMENT.with((device(), wrong)))
+                .is_err(),
+            "a server is asked to retire only with its own key's revocation"
+        );
+    }
+    replica
+        .apply(Servers::ASK_RETIREMENT.with((device(), revocation_of([7; 32]))))
+        .unwrap();
     replica
         .apply(Servers::RETIRE_SERVER.with(device()))
         .unwrap();

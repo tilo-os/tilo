@@ -23,6 +23,7 @@ tilo-servers-set-interface = Set up a network interface
 tilo-servers-release-interface = Stop configuring a network interface
 tilo-servers-report-device-config = Say what its machine applied
 tilo-servers-retire-server = Retire server
+tilo-servers-ask-retirement = Ask a server to retire
 # The name a person's own workspace gets when they do not name it, read in
 # their language when they found it.
 workspace-default-name = My workspace

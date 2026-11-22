@@ -255,7 +255,6 @@ async fn management_alpn_rejects_member_admitted_by_live_policy() {
     let bob = TestUser::fresh("Bob");
     let server_dev = alice.enrol("home-server", DeviceCapabilities::member());
     let server_key = server_dev.device_pubkey();
-    let alice_laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let bob_laptop = bob.enrol("member-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let server = crate::common::start_server(
@@ -285,7 +284,9 @@ async fn management_alpn_rejects_member_admitted_by_live_policy() {
             cert,
             sk,
             RevocationList::new(),
-            tilo_server::transport::HomePeerManagementRequest::Status,
+            tilo_server::transport::HomePeerManagementRequest::HoldAdmin {
+                endpoint: endpoint.addr(),
+            },
         )
     };
 
@@ -299,10 +300,8 @@ async fn management_alpn_rejects_member_admitted_by_live_policy() {
     )
     .await
     .expect("the live policy admits the member on the server ALPN");
-    // Management answers the owner's device and refuses Bob's.
-    manage(alice_laptop.cert, alice_laptop.sk)
-        .await
-        .expect("the owner's device manages its home peer");
+    // Management refuses Bob's device at its handshake, which admits the
+    // owner's devices alone (`HandshakeTrust::OwnerDevicesOnly`).
     assert!(
         manage(bob_laptop.cert, bob_laptop.sk).await.is_err(),
         "a member must not pass the management handshake"

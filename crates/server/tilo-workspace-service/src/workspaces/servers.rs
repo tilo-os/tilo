@@ -60,7 +60,7 @@ use serde::Deserialize;
 use tilo_resource::{Collection, Id, Invoke, Model, Refusal, resource};
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::transport::{OperationEntry, ServerOperation};
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCert, RevocationEntry, verify_revocation_entry};
 
 use super::Workspaces;
 
@@ -83,7 +83,6 @@ pub const UPDATES: [&str; 2] = ["stable", "dev"];
 /// How many answers to operations one server keeps.
 pub const HISTORY_KEPT: usize = 20;
 pub const MINUTES_PER_DAY: u32 = 24 * 60;
-const MAX_LABEL: usize = 80;
 const MAX_REQUEST: usize = 64;
 
 /// The person's servers, by device key (lowercase hex).
@@ -119,6 +118,10 @@ pub struct Server {
     pub unlock: String,
     /// Retired: the person took it out of service, and it serves nothing.
     pub retired: bool,
+    /// The revocation of its device key the person's root signed when they
+    /// asked it to retire (a [`RevocationEntry`] as JSON): once it is retired,
+    /// every holder of the workspace, the server among them, refuses that key.
+    pub revocation: String,
     /// The public half (PEM) of the key its TPM's rollback floor takes
     /// approvals from, as the server says; empty until it said.
     pub floor_key: String,
@@ -918,11 +921,35 @@ impl Servers {
         Ok(())
     }
 
-    /// Retire a server: it serves nothing from then on. Its entry stays, so
-    /// its device is never taken in again as a new server.
+    /// Ask a server to retire with `revocation`, the revocation of its device
+    /// key its person's root signed (JSON): the server takes it, retires its
+    /// own entry and lets go of everything it holds.
+    #[action(external)]
+    pub fn ask_retirement(&mut self, device: Id, revocation: String) -> Result<(), Refusal> {
+        let entry = serde_json::from_str::<RevocationEntry>(&revocation)
+            .ok()
+            .filter(|entry| {
+                verify_revocation_entry(entry).is_ok()
+                    && device_id(&entry.revoked_device_public_key) == device
+            })
+            .ok_or_else(|| Refusal::new("a server is retired with its root-signed revocation"))?;
+        self.server(&device)?.revocation =
+            serde_json::to_string(&entry).map_err(|error| Refusal::new(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Retire a server asked to retire: it serves nothing from then on, and
+    /// every holder refuses its key. The server does this itself once it took
+    /// its revocation, or the device that asked does when it is away. Its entry
+    /// stays, so its device is never taken in again as a new server.
     #[action(external)]
     pub fn retire_server(&mut self, device: Id) -> Result<(), Refusal> {
         let server = self.server(&device)?;
+        if server.revocation.is_empty() {
+            return Err(Refusal::new(
+                "a server is retired with its root-signed revocation",
+            ));
+        }
         server.retired = true;
         Ok(())
     }
@@ -1095,11 +1122,10 @@ fn validate_endpoint(endpoint: &str) -> Result<String, Refusal> {
 }
 
 fn validate_label(label: &str) -> Result<String, Refusal> {
-    let label = label.trim();
-    if label.is_empty() || label.len() > MAX_LABEL {
-        return Err(Refusal::new("a server's name is 1 to 80 bytes"));
+    if !tilo_server_protocol::valid_home_peer_label(label) {
+        return Err(Refusal::new("a server's name is one line of 1 to 80 bytes"));
     }
-    Ok(label.to_owned())
+    Ok(label.trim().to_owned())
 }
 
 /// Whether this device holds its person's Servers workspace: the workspace
@@ -1213,6 +1239,39 @@ pub async fn name(workspaces: &Workspaces, device: &[u8; 32]) -> Option<String> 
         .active(device)
         .map(|server| server.label.clone())
         .filter(|label| !label.is_empty())
+}
+
+/// Refuse, on this device, the key of every server `servers` says was retired:
+/// the revocation its person's root signed when it was retired. Every holder of
+/// the Servers workspace does this as it applies the document, so the server
+/// itself, and every device of its person, refuses it.
+///
+/// # Errors
+/// A revocation could not be kept.
+pub async fn refuse_retired(workspaces: &Workspaces, servers: &Servers) -> Result<(), String> {
+    let live = workspaces.revocations();
+    let entries = servers
+        .servers
+        .iter()
+        .filter(|(_, server)| server.retired)
+        .filter_map(|(_, server)| {
+            tilo_failure::ignored!(
+                "a server retired before its entry carried its revocation has none to refuse",
+                serde_json::from_str::<RevocationEntry>(&server.revocation).ok()
+            )
+        })
+        .filter(|entry| {
+            !live.is_revoked_at(
+                &entry.user_public_key,
+                &entry.revoked_device_public_key,
+                entry.revoked_at_ns,
+            )
+        })
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        return Ok(());
+    }
+    workspaces.take_revocations(entries).await
 }
 
 /// Keep this device's own entry among its person's servers current: its name

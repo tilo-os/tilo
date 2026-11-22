@@ -9,6 +9,12 @@
 //! that, read live for the operations that read (its health and a service's
 //! journal).
 //!
+//! Naming a server (`server.rename`) and taking it out of service
+//! (`server.retire`) are actions on the same entry. Retiring carries the
+//! revocation of the server's device key the person's root signed: the server
+//! takes it and lets go of everything it holds, and once its entry is retired
+//! every holder of the workspace refuses that key.
+//!
 //! Every device of the person holds that workspace and asks these, and so does
 //! the agent at that device: what a person may ask of their own servers is
 //! theirs, not a grant's. Another person reaches none of it.
@@ -26,9 +32,15 @@ use tilo_user_identity::DeviceCert;
 pub(super) struct ServerVerb {
     /// The action, as the workspace's governance verbs are declared.
     pub(super) verb: Verb,
-    /// The operation it asks of the server.
+    /// The operation it asks of the server, or [`RENAME`] or [`RETIRE`], which
+    /// change its entry.
     pub(super) operation: &'static str,
 }
+
+/// Naming a server: a change to its entry, which the server takes the name of.
+const RENAME: &str = "rename";
+/// Taking a server out of service with its root-signed revocation.
+const RETIRE: &str = "retire";
 
 /// How long an action that asks a server waits for its answer: longer than a
 /// server waits for its own root helper to carry a restart out, so a slow
@@ -42,7 +54,7 @@ const ANSWER_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// What a person asks of a server, in catalogue order: each is one operation
 /// on that server's entry in the workspace.
-pub(super) const SERVER_VERBS: [ServerVerb; 10] = [
+pub(super) const SERVER_VERBS: [ServerVerb; 12] = [
     asking(
         "server.status",
         "status",
@@ -113,6 +125,20 @@ pub(super) const SERVER_VERBS: [ServerVerb; 10] = [
         roles::GOVERNANCE_KIND,
         status_params,
     ),
+    asking(
+        "server.rename",
+        RENAME,
+        "Rename a server",
+        roles::GOVERNANCE_KIND,
+        rename_params,
+    ),
+    asking(
+        "server.retire",
+        RETIRE,
+        "Take a server out of service",
+        roles::GOVERNANCE_KIND,
+        retire_params,
+    ),
 ];
 
 const fn asking(
@@ -173,6 +199,28 @@ fn service_params() -> Vec<ActionParam> {
     ]
 }
 
+fn rename_params() -> Vec<ActionParam> {
+    vec![
+        server_param(),
+        ActionParam::required(
+            "name",
+            ParamType::Text,
+            "The server's new name, one line of 1 to 80 bytes.",
+        ),
+    ]
+}
+
+fn retire_params() -> Vec<ActionParam> {
+    vec![
+        server_param(),
+        ActionParam::required(
+            "revocation",
+            ParamType::Text,
+            "The revocation of the server's device key your root signed, as JSON.",
+        ),
+    ]
+}
+
 fn logs_params() -> Vec<ActionParam> {
     vec![
         server_param(),
@@ -228,13 +276,37 @@ impl Workspaces {
         verb: &'static ServerVerb,
         request: &InvokeRequest,
     ) -> Result<serde_json::Value, ActionCallError> {
-        let (governed, _device) = self
+        let (governed, device) = self
             .server_operator(workspace_id, caller, certificate)
             .await
             .ok_or(ActionCallError::UnknownAction)?;
         let workspace = governed.lock().await.workspace().to_owned();
         let args = Args::of(&request.argument)?;
         let server = args.required_text("server")?.trim().to_owned();
+        match verb.operation {
+            RENAME => {
+                let name = args.required_text("name")?.to_owned();
+                servers::apply_on(
+                    self,
+                    &workspace,
+                    servers::Servers::RENAME_SERVER.with((Id::from_raw(server), name.clone())),
+                )
+                .await
+                .map_err(|error| refused(&error))?;
+                return Ok(serde_json::json!({ "name": name.trim() }));
+            }
+            RETIRE => {
+                return self
+                    .retire(
+                        &workspace,
+                        &device,
+                        server,
+                        args.required_text("revocation")?,
+                    )
+                    .await;
+            }
+            _ => {}
+        }
         let service = args.text("service")?.unwrap_or_default().to_owned();
         let lines = u32::try_from(args.integer("lines")?.unwrap_or(200)).unwrap_or(200);
         let request_id = uuid::Uuid::new_v4().simple().to_string();
@@ -261,6 +333,68 @@ impl Workspaces {
             .result()
             .ok_or_else(|| refused(&"the server's answer does not read"))?;
         serde_json::to_value(result).map_err(|error| refused(&error))
+    }
+
+    /// Retire the server `server` of the person `device` belongs to in their
+    /// Servers workspace `workspace`, with `revocation`, the revocation of its
+    /// device key their root signed (JSON). The server is asked first, while
+    /// every holder still reaches it: it takes the revocation, retires its own
+    /// entry and lets go of everything. One that does not within the wait is
+    /// away, and is retired here. This device refuses the key from then on;
+    /// every other holder does as it applies the retired entry.
+    async fn retire(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        server: String,
+        revocation: &str,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        let entry = serde_json::from_str::<tilo_user_identity::RevocationEntry>(revocation)
+            .ok()
+            .filter(|entry| entry.user_public_key == device.user_public_key)
+            .ok_or_else(|| refused(&"a server is retired with its person's revocation of it"))?;
+        let id = Id::from_raw(server.clone());
+        let mut writes = self.document_writes();
+        servers::apply_on(
+            self,
+            workspace,
+            servers::Servers::ASK_RETIREMENT.with((id.clone(), revocation.to_owned())),
+        )
+        .await
+        .map_err(|error| refused(&error))?;
+        let retired = |servers: &servers::Servers| {
+            servers
+                .servers
+                .get(&id)
+                .is_some_and(|server| server.retired)
+        };
+        let itself = tokio::time::timeout(SERVER_ANSWER_WAIT, async {
+            while !servers::read_on(self, workspace)
+                .await
+                .is_ok_and(|servers| retired(&servers))
+            {
+                tokio::select! {
+                    heard = writes.recv() => if matches!(heard, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                        return;
+                    },
+                    () = tokio::time::sleep(ANSWER_TICK) => {}
+                }
+            }
+        })
+        .await
+        .is_ok()
+            && servers::read_on(self, workspace)
+                .await
+                .is_ok_and(|servers| retired(&servers));
+        if !itself {
+            servers::apply_on(self, workspace, servers::Servers::RETIRE_SERVER.with(id))
+                .await
+                .map_err(|error| refused(&error))?;
+        }
+        self.take_revocations(vec![entry])
+            .await
+            .map_err(|error| refused(&error))?;
+        Ok(serde_json::json!({ "server": server, "retired": true, "answered": itself }))
     }
 
     /// The answer the server `server` recorded to the request `request` in

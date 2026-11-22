@@ -12,8 +12,10 @@
 //! - Each server writes the update policy it follows
 //!   ([`super::policy`]) and the device configuration it applies
 //!   ([`super::device`]), reports what the root helper said it applied in
-//!   the entry's own status, and, once retired, lets go of every workspace it
-//!   holds.
+//!   the entry's own status, goes by the name its entry gives it, and, once
+//!   retired, lets go of every workspace it holds.
+//! - Every holder refuses the key of each retired server: the revocation its
+//!   person's root signed is in its entry ([`super::refuse_retired`]).
 //! - Each server carries out what the person asked of it: every operation its
 //!   own entry carries out without an answer ([`super::Asked`]) goes through
 //!   [`crate::operations`], and its result is written back to that entry, where
@@ -31,6 +33,10 @@ use tilo_workspace_service::workspaces::{ResourceWrite, Workspaces};
 
 use super::{SERVERS, device, device_id, person_workspace_id, policy, read};
 use tilo_lock::MutexRecover as _;
+
+/// The file in a server's state root that says it was retired, which its
+/// machine reads to start its daemon no more.
+const RETIRED: &str = "decommissioned";
 
 /// Where a server writes what its entry asks of the machine, for the root
 /// helpers to apply.
@@ -107,9 +113,20 @@ pub async fn reconcile_into(
     workspaces: &Workspaces,
     requests: &Requests,
 ) -> Result<Applied, String> {
-    let servers = read(workspaces).await?;
+    let mut servers = read(workspaces).await?;
     let cert = workspaces.serving_certificate().clone();
-    let own_entry = servers.servers.get(&device_id(&cert.device_public_key));
+    let own = device_id(&cert.device_public_key);
+    // Asked to retire, it retires its own entry while every holder still
+    // reaches it, before it lets go of everything below.
+    if servers
+        .servers
+        .get(&own)
+        .is_some_and(|server| !server.retired && !server.revocation.is_empty())
+    {
+        super::apply(workspaces, super::Servers::RETIRE_SERVER.with(own.clone())).await?;
+        servers = read(workspaces).await?;
+    }
+    let own_entry = servers.servers.get(&own);
     let mut applied = Applied {
         offered: own_entry.is_some(),
         retired: own_entry.is_some_and(|server| server.retired),
@@ -137,6 +154,7 @@ pub async fn reconcile_into(
             applied.device_status = settings.device_status;
         }
     }
+    super::refuse_retired(workspaces, &servers).await?;
     applied.held = attached.held;
     applied.released.extend(attached.released);
     Ok(applied)
@@ -157,6 +175,10 @@ async fn apply_settings(
         device_config: device::write(entry, &requests.device)?,
         ..Applied::default()
     };
+    // The workspaces it holds show it by the name its entry gives it.
+    if !entry.label.is_empty() {
+        workspaces.name_holder(&entry.label).await;
+    }
     if let Some(status) = device::report(&requests.device)
         && entry.device.status != status
     {
@@ -202,7 +224,7 @@ pub fn follow(
     // applies the document again, and must not run the same one twice.
     let running = Arc::new(Mutex::new(HashSet::new()));
     tokio::spawn(async move {
-        apply_now(&workspaces, &requests, endpoint.as_ref()).await;
+        apply_now(&workspaces, &requests, endpoint.as_ref(), &state_root).await;
         answer_now(&workspaces, &state_root, &running).await;
         loop {
             let ours = tokio::select! {
@@ -216,12 +238,12 @@ pub fn follow(
                 change = governance.recv() => change.map(|workspace| workspace == admin),
             };
             match ours {
-                Ok(true) => apply_now(&workspaces, &requests, endpoint.as_ref()).await,
+                Ok(true) => apply_now(&workspaces, &requests, endpoint.as_ref(), &state_root).await,
                 Ok(false) => {}
                 // A device that fell behind applies the document as it
                 // stands, which is what every change asked for anyway.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    apply_now(&workspaces, &requests, endpoint.as_ref()).await;
+                    apply_now(&workspaces, &requests, endpoint.as_ref(), &state_root).await;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -311,10 +333,20 @@ async fn apply_now(
     workspaces: &Workspaces,
     requests: &Requests,
     endpoint: Option<&iroh::Endpoint>,
+    state_root: &Path,
 ) {
     match reconcile_into(workspaces, requests).await {
         Ok(applied) if applied != Applied::default() => {
             tracing::info!(?applied, "the servers' document applied");
+            // A retired server stays out of service: the machine does not
+            // start its daemon again once it reads this.
+            let retired = state_root.join(RETIRED);
+            if applied.retired
+                && !retired.exists()
+                && let Err(error) = std::fs::write(&retired, b"retired\n")
+            {
+                tracing::warn!(%error, "a retired server did not note it is out of service");
+            }
             if let (Some(revision), Some(endpoint)) = (applied.device_config, endpoint)
                 && device::awaits_confirmation(&requests.device)
             {

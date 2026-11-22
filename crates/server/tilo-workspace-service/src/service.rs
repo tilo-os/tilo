@@ -243,16 +243,11 @@ impl ServiceSessions {
             }) as Arc<dyn AppActionServer>),
             None => cfg.apps.clone(),
         };
-        // A person's own device serves its person alone: a server image
-        // retired in its state root serves nothing from then on.
-        let decommissioned = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser)
-            .then(|| cfg.state_root.join("decommissioned"));
         let handler = ServerProtocol {
             workspaces: workspaces.clone(),
             trust_policy: handshake_trust.live_policy.clone(),
             identity: live.clone(),
             metrics: metrics.clone(),
-            decommissioned,
             app_serving: wrap(&workspaces, own_server.clone()),
             carried_calls: Arc::default(),
             admin: Arc::default(),
@@ -1321,9 +1316,6 @@ pub struct ServerProtocol {
     pub trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     pub identity: LiveIdentity,
     pub metrics: Arc<Metrics>,
-    /// The marker of a home peer retired in its state root, when this host is
-    /// one: it serves nothing from then on.
-    pub decommissioned: Option<PathBuf>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
     /// Set once when the service starts serving browsers: the workspaces whose
     /// calls it carries.
@@ -1413,15 +1405,6 @@ impl ServerProtocol {
     /// Take `connection`'s first stream and serve its sessions on a task of
     /// their own, so the iroh router can accept the next connection.
     async fn accept_streams(&self, connection: Connection) -> Result<(), AcceptError> {
-        if self
-            .decommissioned
-            .as_ref()
-            .is_some_and(|marker| marker.exists())
-        {
-            return Err(AcceptError::from_err(std::io::Error::other(
-                "home peer is decommissioned",
-            )));
-        }
         let connection = tilo_server_client::link::Link::iroh(connection);
         let binding = connection.offer_binding().await;
         let first = connection
