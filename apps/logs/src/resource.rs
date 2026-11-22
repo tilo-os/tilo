@@ -57,9 +57,11 @@ impl ResourceApp for LogsShell {
     fn fixture(fixture: &mut Fixture<Logs>) {
         fixture.provide(match fixture.scenario() {
             Some("error") => JournalFixture::Failed(JournalLoadError::AccessDenied),
-            Some("empty") => JournalFixture::Entries(Vec::new()),
+            // A plain capture shows the app as it opens: no journal read has answered yet.
+            // The sample rows stand in only for a capture that names the scene showing them.
+            None | Some("empty") => JournalFixture::Entries(Vec::new()),
             Some("loading") => JournalFixture::Loading,
-            _ => JournalFixture::Entries(sample_entries()),
+            Some(_) => JournalFixture::Entries(sample_entries()),
         });
     }
 
