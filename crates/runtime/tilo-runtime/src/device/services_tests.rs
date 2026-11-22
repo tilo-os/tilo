@@ -585,16 +585,14 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     );
 }
 
-const OFFLOAD_TEST: &str =
-    "device::services::tests::the_session_hands_its_broker_the_round_its_workspaces_devices_answer";
+const OFFLOAD_TEST: &str = "device::services::tests::the_session_hands_its_broker_a_route_that_asks_its_workspaces_devices";
 
 #[test]
-fn the_session_hands_its_broker_the_round_its_workspaces_devices_answer() {
+fn the_session_hands_its_broker_a_route_that_asks_its_workspaces_devices() {
     let Some(root) = isolated_root(OFFLOAD_TEST) else {
         return;
     };
-    // The job nothing here holds the inputs of: the round weighs no transfer,
-    // and no other device of the workspace is there to answer it.
+    // A job no other device of the workspace is there to take.
     let request = |workspace: &str| tilo_actions::offload::OffloadRequest {
         workspace: workspace.to_owned(),
         app_id: "so.tilo.photos".into(),
@@ -634,7 +632,7 @@ fn the_session_hands_its_broker_the_round_its_workspaces_devices_answer() {
         reason
     };
 
-    // The broker holds the round: it asks the workspace's other devices and,
+    // The broker holds the route: it asks the workspace's other devices and,
     // with none of them answering, runs the job here and says so.
     let session = Daemon::start_reporting(&root, &mut |_| {}).unwrap();
     let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
@@ -643,25 +641,11 @@ fn the_session_hands_its_broker_the_round_its_workspaces_devices_answer() {
         .expect("the session asks its workspaces' devices")
         .clone();
     let session_workspace = session.workspace().to_owned();
-    // A job never run here has no run to beat, so the broker asks nobody and
-    // runs it here.
+    // The broker asks the workspace's other devices to take the turn, and with
+    // none of them there runs it here.
     assert_eq!(
         run_here(&route, &session_workspace),
-        "nothing is quicker than a run it knows nothing of"
-    );
-    // Having run it here, there is a run to beat: the broker asks the
-    // workspace's other devices, and with none of them answering runs it here.
-    let ran = request(&session_workspace);
-    let tilo_actions::offload::Offloaded::RunHere { .. } = tilo_rt::app()
-        .handle()
-        .block_on(route.offload_invocation(ran.clone(), invocation()))
-    else {
-        panic!("the first run is here");
-    };
-    route.ran_here(&ran, Duration::from_secs(10));
-    assert_eq!(
-        run_here(&route, &session_workspace),
-        "no device offered to run it"
+        "no other device of the workspace is reachable"
     );
     drop(route);
     drop(state);

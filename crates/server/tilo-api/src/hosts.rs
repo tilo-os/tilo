@@ -148,7 +148,6 @@ fn choose(answers: &[([u8; 32], Answer)]) -> Option<[u8; 32]> {
         // Moving no input beats any run here, so every host that answered is
         // a candidate and rank alone chooses.
         local_wall_ms: Some(u64::MAX),
-        offload: None,
     };
     let choice = placement::pick(answers.iter().cloned(), &work);
     tracing::debug!(%choice, "an API server chose the host serving a key");

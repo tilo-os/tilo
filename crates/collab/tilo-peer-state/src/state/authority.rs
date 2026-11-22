@@ -901,16 +901,50 @@ impl StatePeer {
             .resource(resource)
             .rest()
             .action(action);
-        // A server of another person takes a member's work only within the
-        // delegation the member signed for it.
+        Ok(self.allows(source, &member, &node, ActionKind::Undoable, now))
+    }
+
+    /// Whether the device `source` may open `resource` of `app` here now: read
+    /// the record the work it would take is about.
+    ///
+    /// # Errors
+    ///
+    /// Why the device is no member of this workspace at all, as
+    /// [`Self::permissions`].
+    pub fn opens_app_record(
+        &self,
+        source: [u8; 32],
+        app: &str,
+        resource: &str,
+        now: SystemTime,
+    ) -> Result<bool, MembershipError> {
+        let member = self.permissions(source, now)?;
+        let node = TreePath::workspace(&member.policy.workspace)
+            .app(app)
+            .rest()
+            .resource(resource);
+        Ok(self.allows(source, &member, &node, ActionKind::Read, now))
+    }
+
+    /// Whether `member`, the device `source`, may do `kind` at `node`. A server
+    /// of another person acts for a member only within the delegation the
+    /// member signed for it.
+    fn allows(
+        &self,
+        source: [u8; 32],
+        member: &MemberAccess,
+        node: &TreePath,
+        kind: ActionKind,
+        now: SystemTime,
+    ) -> bool {
         if backend::member::role(&self.core, &source, now).is_err()
             && self
                 .delegated_work(&source, now)
-                .is_none_or(|delegation| !delegation.allows(&node, ActionKind::Undoable))
+                .is_none_or(|delegation| !delegation.allows(node, kind))
         {
-            return Ok(false);
+            return false;
         }
-        Ok(member.allows(&node, ActionKind::Undoable, now))
+        member.allows(node, kind, now)
     }
     /// The app surface this peer names in the changes it signs for `app`'s
     /// records, if it names one.

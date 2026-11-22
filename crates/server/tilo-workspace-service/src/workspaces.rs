@@ -52,12 +52,11 @@ mod surfaces;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
 mod desktop_writes;
 mod device_actions;
-#[cfg(test)]
-mod device_actions_tests;
 mod follow;
 mod founding;
 mod removals;
-pub use device_actions::{HostJobs, Offer};
+#[cfg(test)]
+mod work_tests;
 pub use follow::ResourceWrite;
 #[cfg(test)]
 mod device_rejoin_tests;
@@ -1299,20 +1298,6 @@ impl Workspaces {
             .map(|channels| Arc::clone(&channels.keys))
     }
 
-    /// Set what this host offers its workspaces, as the entry its person keeps
-    /// of it in their admin workspace says: whether it runs their actions and jobs,
-    /// how much storage it offers and how many machines it runs. What devices
-    /// offering it work are answered with follows it.
-    pub fn set_offer(&self, offer: Offer) {
-        self.inner.jobs.set_offer(offer);
-    }
-
-    /// What this host offers its workspaces ([`Self::set_offer`]).
-    #[must_use]
-    pub fn offer(&self) -> Offer {
-        self.inner.jobs.offer()
-    }
-
     /// Every record this host holds of `workspace`, by the app whose document
     /// it is and its id: what its members' pages and agents may name there,
     /// whether or not a device's session has been sent it. A public workspace
@@ -1340,11 +1325,8 @@ impl Workspaces {
         // renamed since serves with the record's own, verified.
         let host = record_authority::host_serving(host, &dir);
         let workspaces = Arc::new(device_actions::WorkspacesMap::default());
-        let (action_service, jobs) = device_actions::action_service(
-            Arc::clone(&workspaces),
-            host.key.clone(),
-            host.work.clone(),
-        );
+        let (action_service, jobs) =
+            device_actions::action_service(Arc::clone(&workspaces), host.key.clone());
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -1416,6 +1398,7 @@ impl Workspaces {
         if let Some(device) = this.inner.host.member.clone() {
             this.inner.member.set_device(device);
         }
+        this.inner.jobs.claim_in(this.downgrade());
         let workspaces = Box::pin(this.open_kept(&dir)).await?;
         *this.inner.workspaces.lock().await = workspaces;
         let kept = this.served_kept().await;
@@ -1715,11 +1698,10 @@ impl Workspaces {
         self.inner.action_service.clone()
     }
 
-    /// Run the transform an offloadable action declares for the workspaces
-    /// governed here as a compute job on `jobs`: the host then answers the
-    /// offers of its workspaces' devices with what `jobs` knows of itself, and
-    /// runs the invocations it won through it ([`HostJobs`]).
-    pub fn run_jobs(&self, jobs: Arc<dyn HostJobs>) {
+    /// Run the turns of work this device takes for its workspaces' devices on
+    /// `jobs` ([`crate::work`]): whether a turn is this device's is
+    /// [`takes_turn`](crate::work::takes_turn)'s to say, live, each time.
+    pub fn run_jobs(&self, jobs: Arc<dyn crate::work::HostJobs>) {
         self.inner.jobs.serve(jobs);
     }
 
@@ -1729,8 +1711,8 @@ impl Workspaces {
         self.inner.jobs.govern_with(governance);
     }
 
-    /// What this host answers a device of its workspaces on the device action service: the work
-    /// it was offered, and the workspaces' governance. A device whose session answers that
+    /// What this device answers a device of its workspaces on the device action service: the
+    /// turns of work it takes, and the workspaces' governance. A device whose session answers that
     /// service in the host's place hands these requests here.
     #[must_use]
     pub fn device_actions(&self) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {

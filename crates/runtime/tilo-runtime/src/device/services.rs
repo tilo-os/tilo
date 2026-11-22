@@ -537,21 +537,42 @@ fn broker_services(
     let document_content =
         super::content::document_content(parts.workspaces, &parts.root.join(BLOB_SOCKET));
     // Where this workspace's offloadable actions may run instead of here: the
-    // other devices of the invoking workspace answer an offer round over the
-    // endpoint this profile syncs on, and the content an offloaded run reads
-    // and answers with is the content this broker routes.
+    // other devices of the invoking workspace are asked to take the turn over
+    // the endpoint this profile syncs on, and the content an offloaded run
+    // answers with is the content this broker routes.
     let action_offload =
         parts
             .workspaces
-            .offer_action_service()
+            .turn_action_service()
             .and_then(|(action_service, endpoint, runtime)| {
-                crate::offload::offer_route(
+                crate::offload::turn_route(
                     action_service,
                     endpoint,
                     runtime,
                     Arc::clone(&document_content),
                 )
             });
+    // The turns this device takes for its workspaces' devices run here, over
+    // the same content: whether a turn is this device's is decided live, each
+    // time it is asked.
+    #[cfg(target_os = "linux")]
+    {
+        use super::compute::{ComputeJobs, InstalledComputeCatalogue, LauncherComputeSandbox};
+        let _entered = tilo_rt::app().handle().enter();
+        parts
+            .workspaces
+            .copies()
+            .run_jobs(Arc::new(ComputeJobs::new(
+                Arc::new(Arc::clone(&document_content)),
+                Arc::new(InstalledComputeCatalogue),
+                Arc::new(LauncherComputeSandbox::new(None)),
+                parts.workspaces.signer().device_public_key(),
+                (
+                    parts.root.join("compute/apps"),
+                    parts.root.join("compute/jobs"),
+                ),
+            )));
+    }
     ProcessServices {
         native_certificates: Some(Arc::new(Certificates {
             policy_time,
@@ -1214,12 +1235,20 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         let mut router = iroh::protocol::Router::builder(workspaces.endpoint())
             .accept(tilo_peer_state::PERSONAL_ALPN, sync.clone());
         // The workspace host answers the person's keys as every host does.
-        // A member that takes its server's work answers the device action service with
-        // that work's action service instead, registered after it.
-        for (alpn, handler) in host
-            .map(tilo_workspace_service::service::WorkspaceService::protocols)
-            .unwrap_or_default()
-        {
+        // Without one this device still answers its workspaces' devices on the
+        // device action service. A member that takes its server's work answers
+        // that service with that work's action service instead, registered
+        // after it.
+        let protocols = host.map_or_else(
+            || {
+                vec![(
+                    tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
+                    workspaces.copies().action_service().into(),
+                )]
+            },
+            tilo_workspace_service::service::WorkspaceService::protocols,
+        );
+        for (alpn, handler) in protocols {
             router = router.accept(alpn, handler);
         }
         for (alpn, handler) in take_work
@@ -1259,7 +1288,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
 fn other_devices(
     workspaces: &Arc<ServiceWorkspaces>,
 ) -> Option<crate::other_devices::OtherDevices> {
-    let (actions, endpoint, runtime) = workspaces.offer_action_service()?;
+    let (actions, endpoint, runtime) = workspaces.turn_action_service()?;
     let cert = workspaces.device_cert();
     Some(crate::other_devices::OtherDevices::new(
         actions,

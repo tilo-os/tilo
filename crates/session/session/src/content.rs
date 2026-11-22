@@ -27,7 +27,7 @@ use tilo_content::{ContentStore, hash_bytes};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId};
-use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, WorkspaceMedia};
+use tilo_runtime::offload::{BlobScope, MediaFuture, WorkspaceMedia};
 use tilo_workspace_service::content::{
     ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, ContentSources,
     ContentState, RouteContent,
@@ -223,18 +223,6 @@ impl ContentService {
             app: app.to_owned(),
         };
         ContentShelf::read(self.shelf.as_ref(), &scope, hash)
-    }
-
-    /// Whether this device keeps `digest` of `app` 's content in `workspace` : what this session
-    /// says of itself when another of the person's devices offers it work reading that content.
-    pub(crate) fn holds(&self, workspace: &str, app: &str, digest: [u8; 32]) -> bool {
-        let scope = ContentScope {
-            workspace: workspace.to_owned(),
-            app: app.to_owned(),
-        };
-        self.shelf
-            .store(&scope)
-            .is_some_and(|store| store.has(&hex::encode(digest)))
     }
 
     /// `digest` of `app` 's content in `workspace` , once it is here: what this device keeps
@@ -574,40 +562,6 @@ fn scoped(scope: &BlobScope) -> ContentScope {
 }
 
 impl WorkspaceMedia for Media {
-    fn len<'a>(
-        &'a self,
-        scope: &'a BlobScope,
-        digest: [u8; 32],
-    ) -> MediaFuture<'a, Result<u64, BindError>> {
-        let scope = scoped(scope);
-        Box::pin(async move {
-            let bytes = self
-                .0
-                .read(&scope, &hex::encode(digest))
-                .ok_or(BindError::NotLocal)?;
-            Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
-        })
-    }
-
-    fn read<'a>(
-        &'a self,
-        scope: &'a BlobScope,
-        digest: [u8; 32],
-    ) -> MediaFuture<'a, Result<Vec<u8>, BindError>> {
-        let scope = scoped(scope);
-        Box::pin(async move {
-            let bytes = self
-                .0
-                .read(&scope, &hex::encode(digest))
-                .ok_or(BindError::NotLocal)?;
-            if hash_bytes(&bytes) == hex::encode(digest) {
-                Ok(bytes)
-            } else {
-                Err(BindError::Integrity)
-            }
-        })
-    }
-
     fn keep<'a>(
         &'a self,
         scope: &'a BlobScope,

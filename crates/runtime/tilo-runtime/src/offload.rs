@@ -2,105 +2,92 @@
 //! ([`tilo_actions::offload::ActionOffload`]) a host hands its broker as
 //! `ProcessServices::action_offload`.
 //!
-//! Every host installs the offer round ([`offer_offload`], [`offer_route`]):
-//! it asks the other devices of the invoking workspace whether they would run
-//! the job sooner, weighing each answer against running it here, and sends the
-//! invocation to the device that wins. A workspace whose other devices cannot
-//! take the job — none connected, none running the app, none powered for it —
-//! runs it here, through the app's own handler, and the route is told why.
+//! The route asks the other devices of the invoking workspace it reaches to
+//! take the invocation's turn (`tilo.work#take`,
+//! [`tilo_workspace_service::work`]). Each decides for itself whether it may
+//! take it and claims it with a change to the workspace; the earliest claim
+//! wins. The device that took the turn runs the transform the action declares
+//! and answers with its output, which the route follows; every other device
+//! answers why not. The invocation runs here, through the app's own handler,
+//! when no device takes it within [`CLAIM_DEADLINE`], none is reachable, the
+//! one that took it stops answering. Whether a device may take a turn is
+//! for it alone to decide, never for the route that asks.
 //! [`OFFLOAD_ENV`] set to `off` installs no route at all.
 //!
-//! The round reads and keeps only the workspaces' own document media, through
-//! the invoking app's scope in its workspace, so the inputs a job may receive
-//! are exactly what the invoking workspace's apps could read, and the outputs
-//! are read back by the same `tilo.content` addresses a local run returns
+//! The outputs are read back by the same `tilo.content` addresses a local run
+//! returns and kept through the invoking app's scope in its workspace
 //! ([`RouteMedia`], [`RouteOutputs`]). A session that owns that store holds it
 //! in process ([`crate::profile::MediaHost::store`]); the desktop session's
-//! apps keep theirs in the filesystem daemon, which the route reaches over
-//! the daemon's document-media socket as the session
-//! ([`WorkspaceMedia`]).
+//! apps keep theirs in the filesystem daemon, which the route reaches over the
+//! daemon's document-media socket as the session ([`WorkspaceMedia`]).
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use futures_util::StreamExt as _;
+use futures_util::stream::FuturesUnordered;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use neighbour_wire::offer::{Answer, MAX_WORK_INPUTS, Power, Route, Work};
-use neighbour_wire::placement::Choice;
 use tilo_actions::offload::{ActionOffload, OffloadFuture, OffloadRequest, Offloaded};
-use tilo_actions::remote::{InvokeRequest, Pending, pending};
-use tilo_actions::{InvocationId, InvocationUpdate, Offload};
-use tilo_lock::MutexRecover as _;
-use tilo_peer_state::actions::{ActionService, FOLLOW_DEADLINE, OFFER_DEADLINE, RemoteDevice};
-use tilo_peer_state::offload::{OffloadPeers, RanAway};
-use tilo_server_protocol::{Machine, Whose, WorkSetting};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider as _, Caller, InvocationReceipt, InvokeRequest, Pending,
+    pending,
+};
+use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
+use tilo_peer_state::actions::{ActionService, FOLLOW_DEADLINE, RemoteDevice};
 use tilo_workspace_service::apps::route::CrdtRoute;
 use tilo_workspace_service::content::{ContentState, RouteContent};
+use tilo_workspace_service::work::Job;
 
 // A host that keeps the workspaces' content itself implements the media a
-// route binds its inputs from in the same scope the apps' own content is
-// addressed in, and hands it to [`offer_offload`] beside the peers it asks.
-pub use media::{BindError, MediaFuture, WorkspaceMedia};
+// route keeps outputs in, in the same scope the apps' own content is
+// addressed in, and hands it to [`turn_offload`] beside the devices it asks.
+pub use media::{MediaFuture, WorkspaceMedia};
 pub use runtime_fs::blobs::BlobScope;
 
 mod media;
 
 /// Set to `off` (or `0`, `false`, `no`) to keep every offloadable action on
-/// this device even when a home relay could place it elsewhere.
+/// this device even when another device could take it.
 pub const OFFLOAD_ENV: &str = "TILO_ACTION_OFFLOAD";
-/// The route for offloadable invocations on this device over the offer round:
-/// it asks the workspace's other devices whether they would run the job
-/// sooner, through `peers` — a host's device action service, which asks as this device
-/// and runs the invocation on the device that wins — and keeps the answer's
-/// content where the invoking app reads its output.
-///
-/// The round is weighed with what this device can measure: the inputs' bytes
-/// in `media`, through the invoking app's scope in its workspace, exactly as
-/// the app would read them, and how long the same transform last took here.
-/// Every input must be here, or the job runs here: content this device does
-/// not hold is nothing it can weigh moving. `None` — every offloadable action
-/// runs here, exactly as without offload — when offload is turned off.
+
+/// How long the devices asked have to claim a turn before it runs here.
+pub const CLAIM_DEADLINE: Duration = Duration::from_secs(2);
+
+/// The route for offloadable invocations on this device: it asks `takers` to
+/// take each one's turn, and keeps the content the device that took it
+/// produced in `media`, where the invoking app reads its output. `None` when
+/// offload is turned off: every offloadable action runs here.
 #[must_use]
-pub fn offer_offload(
+pub fn turn_offload(
     media: Arc<dyn WorkspaceMedia>,
-    peers: Arc<dyn OffloadPeers>,
+    takers: Arc<dyn Takers>,
 ) -> Option<Arc<dyn ActionOffload>> {
     if disabled(std::env::var(OFFLOAD_ENV).ok().as_deref()) {
         tracing::info!("offloadable actions run on this device: offload is turned off");
         return None;
     }
-    Some(Arc::new(OfferOffload {
-        media,
-        peers,
-        ran: Mutex::default(),
-        running: Mutex::default(),
-        away: Mutex::default(),
-    }))
+    Some(Arc::new(TurnOffload { media, takers }))
 }
 
-/// The offer round as a host installs it: it asks `action_service`'s workspaces' other
-/// devices whether they would run the job sooner, reaching each at the
-/// address its device key resolves to on this device's network, and reads and
-/// keeps their content through `content` ([`RouteMedia`], [`RouteOutputs`]).
-/// `runtime` carries the asks and the runs. `None` — every offloadable action
-/// runs here — when offload is turned off.
+/// [`turn_offload`] as a host installs it: it asks `action_service`'s
+/// workspaces' other devices, reached at the address their device key
+/// resolves to on this device's network, and reads and keeps their content
+/// through `content`. `runtime` carries the asks.
 #[must_use]
-pub fn offer_route(
+pub fn turn_route(
     action_service: ActionService,
     endpoint: Endpoint,
     runtime: tokio::runtime::Handle,
     content: Arc<RouteContent>,
 ) -> Option<Arc<dyn ActionOffload>> {
-    let peers = ActionServicePeers::new(
+    let takers = ActionServicePeers::new(
         action_service,
         endpoint,
-        |id: EndpointId| EndpointAddr::new(id),
+        EndpointAddr::new,
         Arc::new(RouteOutputs::new(Arc::clone(&content))),
         runtime,
     );
-    offer_offload(Arc::new(RouteMedia::new(content)), Arc::new(peers))
+    turn_offload(Arc::new(RouteMedia::new(content)), Arc::new(takers))
 }
 
 /// How long the content a device that ran an invocation produced has to reach
@@ -195,37 +182,6 @@ fn scope_route(scope: &BlobScope) -> CrdtRoute {
 }
 
 impl WorkspaceMedia for RouteMedia {
-    fn len<'a>(
-        &'a self,
-        scope: &'a BlobScope,
-        digest: [u8; 32],
-    ) -> MediaFuture<'a, Result<u64, BindError>> {
-        Box::pin(async move {
-            match self.0.kept(&scope_route(scope), &hex::encode(digest)) {
-                Some(bytes) => Ok(bytes.len() as u64),
-                None => Err(BindError::NotLocal),
-            }
-        })
-    }
-
-    fn read<'a>(
-        &'a self,
-        scope: &'a BlobScope,
-        digest: [u8; 32],
-    ) -> MediaFuture<'a, Result<Vec<u8>, BindError>> {
-        Box::pin(async move {
-            let bytes = self
-                .0
-                .kept(&scope_route(scope), &hex::encode(digest))
-                .ok_or(BindError::NotLocal)?;
-            if blake3::hash(&bytes).as_bytes() == &digest {
-                Ok(bytes)
-            } else {
-                Err(BindError::Integrity)
-            }
-        })
-    }
-
     fn keep<'a>(
         &'a self,
         scope: &'a BlobScope,
@@ -240,66 +196,53 @@ impl WorkspaceMedia for RouteMedia {
     }
 }
 
-/// What this device says of itself when another device of one of its
-/// workspaces offers it `whose` work: what its person's work setting `work`
-/// takes in the state this machine is in, and which of the job's inputs it holds
-/// already — a device that has them is not weighed as receiving them.
-///
-/// The setting is the whole of the decision ([`WorkSetting::answer`]): no
-/// other path here asks the battery or the load what to take.
-#[must_use]
-pub fn own_offering(work: &WorkSetting, whose: &Whose, app: &str, holds: Vec<[u8; 32]>) -> Answer {
-    let installed = app_catalogue::apps::read_one_from_env(app).is_ok_and(|row| row.is_some());
-    work.answer(whose, Machine::here(power()), installed, None, holds)
+/// A turn another device took and ran: its output, and the bytes of the
+/// content the output names, in order.
+pub struct Taken {
+    /// The device that ran it.
+    pub device: [u8; 32],
+    /// What it answered.
+    pub output: ActionOutput,
+    /// The bytes of each content address `output` names.
+    pub outputs: Vec<Vec<u8>>,
 }
 
-/// How this device is powered, for the round to weigh it by.
-fn power() -> Power {
-    let snapshot = tilo_power_mgmt::sysfs::battery_snapshot();
-    if !snapshot.present {
-        return Power::External;
-    }
-    match snapshot.state {
-        tilo_power_mgmt::BatteryState::Charging | tilo_power_mgmt::BatteryState::PendingCharge => {
-            Power::Charging
-        }
-        tilo_power_mgmt::BatteryState::Full => Power::External,
-        tilo_power_mgmt::BatteryState::Discharging
-        | tilo_power_mgmt::BatteryState::PendingDischarge => Power::Battery,
-        tilo_power_mgmt::BatteryState::Empty | tilo_power_mgmt::BatteryState::Unknown => {
-            Power::Unknown
-        }
-    }
+/// The devices an offloaded invocation's turn is asked of.
+pub trait Takers: Send + Sync {
+    /// Ask the devices of `workspace` to take `job` as the turn `invocation`,
+    /// and follow the one that takes it to its output; or say why none did.
+    fn take(
+        &self,
+        workspace: &str,
+        job: Job,
+        invocation: InvocationId,
+    ) -> Pending<Result<Taken, String>>;
 }
 
-/// Whether a device of a workspace is connected here now, as the round asks
-/// it.
+/// Whether a device of a workspace is connected here now.
 type Reachable = Arc<dyn Fn(&str, [u8; 32]) -> bool + Send + Sync>;
 
-/// [`OffloadPeers`] over a device action service: the round asks the workspace's other
-/// devices through `action_service` — who may be asked is what the action service's own roster
-/// says — and the invocation runs on the device that wins it through the same
-/// connection, with the content it produced waited for through `outputs`.
-///
-/// The action service asks as this device and at `endpoint`; `addresses` says where
-/// each device the action service resolves is reached. Nothing here carries authority:
-/// the device that wins decides the invocation through its own dispatcher.
+/// [`Takers`] over a device action service: the workspace's other devices
+/// its roster names are asked through it, as this device, and the one that
+/// takes the turn is followed through the same connection, with the content it
+/// produced waited for through `outputs`.
+#[derive(Clone)]
 pub struct ActionServicePeers {
     action_service: ActionService,
     endpoint: Endpoint,
     addresses: Arc<dyn Fn(EndpointId) -> EndpointAddr + Send + Sync>,
-    /// Which devices of a workspace are connected here now: the round asks
-    /// those, and one that is away is not waited for.
+    /// Which devices of a workspace are connected here now: only those are
+    /// asked.
     reachable: Reachable,
     outputs: Arc<dyn OutputContent>,
     runtime: tokio::runtime::Handle,
 }
 
 impl ActionServicePeers {
-    /// [`OffloadPeers`] over `action_service`, asked at `endpoint`, with every device
-    /// reached at the address `addresses` gives for it, and what an answer
-    /// produced waited for through `outputs`. `runtime` carries the asks and
-    /// the runs, never the thread that invokes.
+    /// [`Takers`] over `action_service`, asked at `endpoint`, with every
+    /// device reached at the address `addresses` gives for it, and the content
+    /// a turn produced waited for through `outputs`. `runtime` carries the
+    /// asks, never the thread that invokes.
     #[must_use]
     pub fn new(
         action_service: ActionService,
@@ -319,8 +262,7 @@ impl ActionServicePeers {
     }
 
     /// Ask only the devices of a workspace that `reachable` says are
-    /// connected here now, in the workspace named: a device that is away is
-    /// not asked, and the round does not wait for it.
+    /// connected here now.
     #[must_use]
     pub fn reachable(
         self,
@@ -332,355 +274,195 @@ impl ActionServicePeers {
         }
     }
 
-    /// Where `id` is reached.
-    fn addr(&self, id: EndpointId) -> EndpointAddr {
-        (self.addresses)(id)
-    }
-}
-
-impl OffloadPeers for ActionServicePeers {
-    fn ask(
+    async fn take_turn(
         &self,
         workspace: &str,
-        route: &Route,
-        work: &Work,
+        job: Job,
         invocation: InvocationId,
-        within: Duration,
-    ) -> Pending<Choice> {
-        let (complete, answer) = pending();
-        let (action_service, endpoint, runtime) = (
-            self.action_service.clone(),
-            self.endpoint.clone(),
-            self.runtime.clone(),
-        );
-        let addresses = Arc::clone(&self.addresses);
-        let reachable = Arc::clone(&self.reachable);
-        let (workspace, route, work) = (workspace.to_owned(), route.clone(), work.clone());
-        runtime.spawn(async move {
-            // Only the devices that are connected here now: one that is away
-            // has nothing to answer with, and waiting for it costs the run
-            // here more than it could ever save.
-            let targets: Vec<EndpointAddr> = action_service
-                .key_holders(&workspace)
+    ) -> Result<Taken, String> {
+        let request = job.take_request(invocation);
+        // The device's own signature is what the asked device reads, not this.
+        let caller = Caller::local_person("device");
+        let asked: Vec<_> = self
+            .action_service
+            .key_holders(workspace)
+            .await
+            .into_iter()
+            .filter(|key| (self.reachable)(workspace, *key))
+            .filter_map(|key| EndpointId::from_bytes(&key).ok())
+            .map(|id| {
+                let remote = Arc::new(self.action_service.remote(
+                    &self.endpoint,
+                    &(self.addresses)(id),
+                    workspace,
+                ));
+                let asking = remote.invoke(&caller, request.clone());
+                (remote, asking)
+            })
+            .collect();
+        if asked.is_empty() {
+            return Err("no other device of the workspace is reachable".into());
+        }
+        let remote = first_to_take(asked, CLAIM_DEADLINE).await?;
+        let device = remote.device();
+        let output = follow(remote, request).await.map_err(|reason| {
+            let mut short = hex::encode(device);
+            short.truncate(8);
+            format!("{short} took it and did not finish: {reason}")
+        })?;
+        let mut outputs = Vec::new();
+        for address in &output.resources {
+            let Some(named) = tilo_actions::content_hash(address) else {
+                continue;
+            };
+            let mut digest = [0; 32];
+            hex::decode_to_slice(named, &mut digest)
+                .map_err(|_| "the output names a malformed content address".to_owned())?;
+            let bytes = self
+                .outputs
+                .content(workspace, &job.app, digest, CONTENT_WAIT)
                 .await
-                .into_iter()
-                .filter(|key| reachable(&workspace, *key))
-                .filter_map(|key| EndpointId::from_bytes(&key).ok())
-                .map(|id| addresses(id))
-                .collect();
-            let chosen = action_service
-                .offers(
-                    &endpoint, targets, &workspace, &route, &work, invocation, within,
-                )
-                .await;
-            // A round the device that asked stopped waiting for is not chosen
-            // on: nothing would run there.
-            if let Some(chosen) = chosen {
-                complete.complete(chosen);
-            }
-        });
-        answer
+                .ok_or("the content it produced did not reach this device")?;
+            outputs.push(bytes);
+        }
+        Ok(Taken {
+            device,
+            output,
+            outputs,
+        })
     }
+}
 
-    fn run(
+impl Takers for ActionServicePeers {
+    fn take(
         &self,
         workspace: &str,
-        device: [u8; 32],
-        invocation: InvokeRequest,
-    ) -> Pending<Result<RanAway, String>> {
+        job: Job,
+        invocation: InvocationId,
+    ) -> Pending<Result<Taken, String>> {
         let (complete, answer) = pending();
-        let Ok(id) = EndpointId::from_bytes(&device) else {
-            complete.complete(Err("that is not a device key".into()));
-            return answer;
-        };
-        let remote = Arc::new(self.action_service.remote(
-            &self.endpoint,
-            &self.addr(id),
-            workspace,
-        ));
-        let outputs = Arc::clone(&self.outputs);
-        let workspace = workspace.to_owned();
+        let (peers, workspace) = (self.clone(), workspace.to_owned());
         self.runtime.spawn(async move {
-            let ran = run_away(outputs.as_ref(), &workspace, device, remote, invocation).await;
-            complete.complete(ran);
+            complete.complete(peers.take_turn(&workspace, job, invocation).await);
         });
         answer
     }
 }
 
-/// Run the person's `invocation` on `remote` and follow it until it settles,
-/// with the bytes of the content it produced in `workspace`.
-async fn run_away(
-    outputs: &dyn OutputContent,
-    workspace: &str,
-    device: [u8; 32],
-    remote: Arc<RemoteDevice>,
-    invocation: InvokeRequest,
-) -> Result<RanAway, String> {
-    // The app whose content the output is: the one whose action was invoked,
-    // as the device that ran it kept what it produced.
-    let Some((_, app)) = tilo_actions::remote::application_provider(&invocation.target.provider)
-    else {
-        return Err("the invocation names no app, so its output content cannot be read".into());
-    };
-    let app = app.to_owned();
-    let output = match remote
-        .invoke_until_settled(invocation, FOLLOW_DEADLINE)
-        .await
-    {
-        Some(Ok(InvocationUpdate::Succeeded { output, .. })) => output,
-        Some(Ok(InvocationUpdate::Failed { error, .. })) => return Err(error.message),
+/// The first of `asked` to take the turn, as each answers: the one whose
+/// claim held. Every other answers why not, and one that does not answer
+/// within `within` is not waited for.
+async fn first_to_take<T>(
+    asked: Vec<(T, Pending<Result<InvocationReceipt, ActionCallError>>)>,
+    within: Duration,
+) -> Result<T, String> {
+    let mut answers: FuturesUnordered<_> = asked
+        .into_iter()
+        .map(|(device, asking)| async move { (device, asking.await) })
+        .collect();
+    let mut why = Vec::new();
+    let deadline = tokio::time::sleep(within);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            () = &mut deadline => {
+                return Err(format!("no device took it within {} ms", within.as_millis()));
+            }
+            answer = answers.next() => match answer {
+                Some((device, Some(Ok(_)))) => return Ok(device),
+                Some((_, Some(Err(ActionCallError::Refused { reason })))) => why.push(reason),
+                Some((_, Some(Err(error)))) => why.push(error.to_string()),
+                Some((_, None)) => why.push("a device did not answer".into()),
+                None => return Err(why.join("; ")),
+            },
+        }
+    }
+}
+
+/// Follow the turn `request` asked `remote` to take until it settles there.
+async fn follow(remote: Arc<RemoteDevice>, request: InvokeRequest) -> Result<ActionOutput, String> {
+    match remote.invoke_until_settled(request, FOLLOW_DEADLINE).await {
+        Some(Ok(InvocationUpdate::Succeeded { output, .. })) => Ok(output),
+        Some(Ok(InvocationUpdate::Failed { error, .. })) => Err(error.message),
         Some(Ok(InvocationUpdate::Cancelled { message, .. })) => {
-            return Err(message.unwrap_or_else(|| "the action was cancelled there".into()));
+            Err(message.unwrap_or_else(|| "it was cancelled there".into()))
         }
-        Some(Ok(update)) => {
-            return Err(format!("the action there did not settle: {update:?}"));
-        }
-        Some(Err(error)) => return Err(error.to_string()),
-        None => return Err("the device stopped following the invocation".into()),
-    };
-    let mut produced = Vec::new();
-    for address in &output.resources {
-        let Some(named) = tilo_actions::content_hash(address) else {
-            continue;
-        };
-        let mut digest = [0; 32];
-        hex::decode_to_slice(named, &mut digest)
-            .map_err(|_| "the output names a malformed content address".to_owned())?;
-        let Some(bytes) = outputs.content(workspace, &app, digest, CONTENT_WAIT).await else {
-            return Err("the content it produced did not reach this device".into());
-        };
-        produced.push(bytes);
-    }
-    Ok(RanAway {
-        device,
-        output,
-        outputs: produced,
-    })
-}
-
-/// Local runs awaited at once before the oldest are forgotten: an invocation
-/// that expires never reports its run.
-const MAX_LOCAL_RUNS: usize = 64;
-
-/// How long one transform last took where it was asked, over how many input
-/// bytes: what moving a job's inputs has to beat.
-#[derive(Clone, Copy)]
-struct Run {
-    elapsed: Duration,
-    input_bytes: u64,
-}
-
-impl Run {
-    /// This run's wall time scaled to `input_bytes` of input, in whole
-    /// milliseconds: the transforms offloaded are batch work whose cost grows
-    /// with what they read.
-    fn ms(self, input_bytes: u64) -> u64 {
-        let millis = self.elapsed.as_millis();
-        let scaled = if self.input_bytes == 0 {
-            millis
-        } else {
-            millis
-                .saturating_mul(u128::from(input_bytes))
-                .div_ceil(u128::from(self.input_bytes))
-        };
-        u64::try_from(scaled).unwrap_or(u64::MAX)
+        Some(Ok(update)) => Err(format!("it did not settle: {update:?}")),
+        Some(Err(error)) => Err(error.to_string()),
+        None => Err("the device stopped answering".into()),
     }
 }
 
-/// Offloadable invocations of this device's workspaces, run where the offer
-/// round picks.
-struct OfferOffload {
+/// Offloadable invocations of this device's workspaces, run on the device
+/// that takes their turn, or here.
+struct TurnOffload {
     media: Arc<dyn WorkspaceMedia>,
-    peers: Arc<dyn OffloadPeers>,
-    /// How long each transform last took where it was asked, by
-    /// `package:entrypoint`.
-    ran: Mutex<HashMap<String, Run>>,
-    /// Input bytes of the invocations handed to the app to run here, by
-    /// workspace and inputs, until the app reports that run.
-    running: Mutex<HashMap<(String, Vec<String>), u64>>,
-    /// The invocations this device sent to another device, and where: one that
-    /// comes back is not sent away again.
-    away: Mutex<HashMap<InvocationId, [u8; 32]>>,
+    takers: Arc<dyn Takers>,
 }
 
-impl OfferOffload {
-    /// Where `request` runs: on the device the round picks, or here, with why.
-    async fn place(&self, request: OffloadRequest, invocation: Option<InvokeRequest>) -> Offloaded {
+impl TurnOffload {
+    /// Where `request`, the invocation `invocation`, runs: on the device that
+    /// takes its turn, or here, with why.
+    async fn place(&self, request: OffloadRequest, invocation: InvocationId) -> Offloaded {
         let started = Instant::now();
-        // Only a route handed the invocation can send it to another device:
-        // without it there is no request to send, so the app runs this one.
-        let Some(invocation) = invocation else {
-            return Offloaded::RunHere {
-                reason: "the invocation was not handed to the route".into(),
-            };
-        };
-        let scope = match BlobScope::new(request.workspace.clone(), request.app_id.clone()) {
-            Ok(scope) => scope,
-            Err(error) => {
-                return Offloaded::RunHere {
-                    reason: format!("the workspace's content is not addressable: {error}"),
-                };
-            }
-        };
-        let (work, input_bytes) = match self.work(&request, &scope).await {
-            Ok(work) => work,
+        match self.away(&request, invocation, started).await {
+            Ok(ran) => ran,
             Err(reason) => {
-                tracing::info!(app = %request.offload.app, %reason, "offloadable action runs here");
-                return Offloaded::RunHere { reason };
+                tracing::info!(
+                    app = %request.offload.app,
+                    entrypoint = %request.offload.entrypoint,
+                    %reason,
+                    "offloadable action runs here"
+                );
+                Offloaded::RunHere { reason }
             }
-        };
-        let reason = match self
-            .away(&request, &scope, &work, invocation, started)
-            .await
-        {
-            Ok(ran) => return ran,
-            Err(reason) => reason,
-        };
-        {
-            let mut running = self.running.lock_recover();
-            // A local run the app never reports (it failed) is forgotten
-            // rather than kept forever.
-            if running.len() >= MAX_LOCAL_RUNS {
-                running.clear();
-            }
-            running.insert(
-                (request.workspace.clone(), request.inputs.clone()),
-                input_bytes,
-            );
         }
-        tracing::info!(
-            app = %request.offload.app,
-            entrypoint = %request.offload.entrypoint,
-            %reason,
-            "offloadable action runs here"
-        );
-        Offloaded::RunHere { reason }
     }
 
-    /// What the round is asked: `request`'s inputs as this device's store
-    /// measures them, each distinct digest once, and how long the same
-    /// transform last took here, scaled to their bytes.
-    async fn work(
+    async fn away(
         &self,
         request: &OffloadRequest,
-        scope: &BlobScope,
-    ) -> Result<(Work, u64), String> {
-        let mut inputs = Vec::with_capacity(request.inputs.len().min(MAX_WORK_INPUTS));
-        let mut input_bytes = 0_u64;
+        invocation: InvocationId,
+        started: Instant,
+    ) -> Result<Offloaded, String> {
+        let scope = BlobScope::new(request.workspace.clone(), request.app_id.clone())
+            .map_err(|error| format!("the workspace's content is not addressable: {error}"))?;
+        let mut inputs = Vec::with_capacity(request.inputs.len());
         for (index, hex) in request.inputs.iter().enumerate() {
             let mut digest = [0; 32];
             hex::decode_to_slice(hex, &mut digest)
                 .map_err(|_| format!("input {index} is not a content hash"))?;
-            if inputs.iter().any(|(named, _)| *named == digest) {
-                continue;
-            }
-            let bytes = self
-                .media
-                .len(scope, digest)
-                .await
-                .map_err(|error| format!("input {index}: {error}"))?;
-            input_bytes = input_bytes.saturating_add(bytes);
-            if inputs.len() < MAX_WORK_INPUTS {
-                inputs.push((digest, bytes));
+            if !inputs.contains(&digest) {
+                inputs.push(digest);
             }
         }
-        let local_wall_ms = self
-            .ran
-            .lock_recover()
-            .get(&transform(&request.offload))
-            .map(|ran| ran.ms(input_bytes));
-        Ok((
-            Work {
-                inputs,
-                input_bytes,
-                local_wall_ms,
-                offload: Some(request.offload.clone()),
-            },
-            input_bytes,
-        ))
-    }
-
-    /// Ask the round and run the invocation on the device that wins it, or say
-    /// why this device runs it instead.
-    async fn away(
-        &self,
-        request: &OffloadRequest,
-        scope: &BlobScope,
-        work: &Work,
-        invocation: InvokeRequest,
-        started: Instant,
-    ) -> Result<Offloaded, String> {
-        let sent_to = self
-            .away
-            .lock_recover()
-            .get(&invocation.invocation)
-            .copied();
-        if let Some(device) = sent_to {
-            let mut short = hex::encode(device);
-            short.truncate(8);
-            return Err(format!(
-                "the invocation is already running on the device {short} sent it to"
-            ));
-        }
-        let route = Route::new(
-            request.app_id.clone(),
-            request.address.resource.clone(),
-            request.address.action.clone(),
-        );
-        // The round only pays for itself when there is a run here to beat:
-        // one that was never measured could never lose to a device that is
-        // quicker, so asking is the cost of the round and nothing else. And
-        // it is never waited on longer than the run here takes.
-        let Some(local_ms) = work.local_wall_ms else {
-            return Err("nothing is quicker than a run it knows nothing of".into());
+        let job = Job {
+            app: request.app_id.clone(),
+            resource: request.address.resource.clone(),
+            action: request.address.action.clone(),
+            offload: request.offload.clone(),
+            inputs,
         };
-        let within = OFFER_DEADLINE.min(Duration::from_millis(local_ms));
-        let choice = self
-            .peers
-            .ask(
-                &request.workspace,
-                &route,
-                work,
-                invocation.invocation,
-                within,
-            )
+        let taken = self
+            .takers
+            .take(&request.workspace, job, invocation)
             .await
-            .ok_or("the offer round was abandoned before it finished")?;
-        let Some(worker) = choice.worker else {
-            return Err(choice.to_string());
-        };
-        self.away
-            .lock_recover()
-            .insert(invocation.invocation, worker);
-        let ran = self
-            .peers
-            .run(&request.workspace, worker, invocation.clone())
-            .await;
-        self.away.lock_recover().remove(&invocation.invocation);
-        let ran: RanAway = match ran {
-            Some(ran) => ran.map_err(|reason| {
-                let mut short = hex::encode(worker);
-                short.truncate(8);
-                format!("{short} did not run it: {reason}")
-            })?,
-            None => return Err("the device that won the round did not answer".into()),
-        };
-        self.keep(scope, &ran).await?;
+            .ok_or("the devices asked were given up on")??;
+        self.keep(&scope, &taken).await?;
         Ok(Offloaded::Ran {
-            output: ran.output,
-            device: hex::encode(worker),
+            output: taken.output,
+            device: hex::encode(taken.device),
             elapsed: started.elapsed(),
         })
     }
 
-    /// Keep what the device that ran the invocation produced as this
-    /// workspace's app content, in the order it named: the app that invoked the
-    /// action here reads its output by the addresses a local run returns, and
-    /// bytes that are not what the device named never become that output.
-    async fn keep(&self, scope: &BlobScope, ran: &RanAway) -> Result<(), String> {
-        let mut produced = ran.outputs.iter();
-        for address in &ran.output.resources {
+    /// Keep what the device that took the turn produced as this workspace's
+    /// app content, in the order it named: the app that invoked the action
+    /// here reads its output by the addresses a local run returns, and bytes
+    /// that are not what the device named never become that output.
+    async fn keep(&self, scope: &BlobScope, taken: &Taken) -> Result<(), String> {
+        let mut produced = taken.outputs.iter();
+        for address in &taken.output.resources {
             let Some(named) = tilo_actions::content_hash(address) else {
                 continue;
             };
@@ -703,9 +485,9 @@ impl OfferOffload {
     }
 }
 
-impl ActionOffload for OfferOffload {
+impl ActionOffload for TurnOffload {
     fn offload(&self, request: OffloadRequest) -> OffloadFuture<'_> {
-        Box::pin(self.place(request, None))
+        Box::pin(self.place(request, InvocationId::new()))
     }
 
     fn offload_invocation(
@@ -713,31 +495,8 @@ impl ActionOffload for OfferOffload {
         request: OffloadRequest,
         invocation: InvokeRequest,
     ) -> OffloadFuture<'_> {
-        Box::pin(self.place(request, Some(invocation)))
+        Box::pin(self.place(request, invocation.invocation))
     }
-
-    fn ran_here(&self, request: &OffloadRequest, elapsed: Duration) {
-        let Some(input_bytes) = self
-            .running
-            .lock_recover()
-            .remove(&(request.workspace.clone(), request.inputs.clone()))
-        else {
-            return;
-        };
-        self.ran.lock_recover().insert(
-            transform(&request.offload),
-            Run {
-                elapsed,
-                input_bytes,
-            },
-        );
-    }
-}
-
-/// The transform `offload` declares, as placement knows it:
-/// `package:entrypoint`, which is what an action's cost belongs to.
-fn transform(offload: &Offload) -> String {
-    format!("{}:{}", offload.app, offload.entrypoint)
 }
 
 /// Whether `value` of [`OFFLOAD_ENV`] turns offload off.
@@ -751,5 +510,5 @@ fn disabled(value: Option<&str>) -> bool {
 }
 
 #[cfg(test)]
-#[path = "offload_offer_tests.rs"]
-mod offer_tests;
+#[path = "offload_turn_tests.rs"]
+mod turn_tests;

@@ -1,17 +1,19 @@
-//! Capability-bounded personal-mesh compute jobs.
+//! The transforms this device runs for its workspaces' devices: an
+//! offloadable action's declared entrypoint, run as a compute job over the
+//! content this device keeps, when it took the turn
+//! ([`tilo_workspace_service::work::takes_turn`]).
 //!
-//! These types are carried only inside an authenticated certified-device
-//! route. A job names an installed signed package and catalogue entrypoint;
-//! it never contains a shell command, host path, environment variable, or
-//! bearer credential. Execution belongs to a worker that reuses the normal
-//! package launcher sandbox.
+//! A job is bound to the device that asked and the workspace it asked in. It
+//! names an installed signed package and catalogue entrypoint; it never
+//! contains a shell command, host path, environment variable, or bearer
+//! credential. It runs under the normal package launcher sandbox.
 
 #![allow(
     missing_docs,
     reason = "the bounded wire fields and state variants are described by their stable names and module contract"
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -19,8 +21,8 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use launcher::capture::{
@@ -33,8 +35,17 @@ use package_store::InstalledPackage;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::mesh::{DeviceKey, ServerAdvertisement};
-use tilo_server_protocol::WorkspaceId;
+use tilo_actions::remote::{ActionCallError, Pending, pending};
+use tilo_actions::{ActionOutput, InvocationId, Offload};
+use tilo_clock::unix_now_ms;
+use tilo_lock::MutexRecover as _;
+pub use tilo_server_protocol::WorkspaceId;
+use tilo_workspace_service::apps::route::CrdtRoute;
+use tilo_workspace_service::content::RouteContent;
+use tilo_workspace_service::work::{HostJobs, Job};
+
+/// A device, by its public key.
+type DeviceKey = [u8; 32];
 
 pub const COMPUTE_JOB_SCHEMA_VERSION: u16 = 1;
 pub const MAX_COMPUTE_JOB_LIFETIME_MS: u64 = 5 * 60 * 1_000;
@@ -214,8 +225,6 @@ pub enum ComputeError {
     RequesterArgumentsForbidden,
     #[error("compute resource limits are invalid")]
     InvalidLimits,
-    #[error("target worker is unavailable or ineligible")]
-    WorkerUnavailable,
     #[error("compute lifecycle update is out of order")]
     OutOfOrder,
     #[error("compute lifecycle transition is invalid")]
@@ -269,66 +278,6 @@ pub trait ComputeContentStore: Send + Sync {
     ///
     /// Returns an error when the local content store cannot persist the bytes.
     fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String>;
-    /// Where this store keeps the bytes of `digest`, as a 32-byte locator
-    /// another device's [`HeldContent`] may understand (workspace content
-    /// names the file version's manifest hash), or `None`. A hint offered
-    /// with a possession proof, never authority.
-    fn locator(&self, _digest: [u8; 32]) -> Option<[u8; 32]> {
-        None
-    }
-}
-
-/// Content a worker device already holds, which a job may run on in place
-/// of an input fetched from its requester — but only once the requester
-/// proved it holds the same bytes
-/// ([`prove_job_input`](crate::compute_content::prove_job_input)). Holding
-/// bytes is never authority to bind them to a job; the proof is.
-pub trait HeldContent: Send + Sync {
-    /// The bytes this device holds as `digest`, looked up by the digest or,
-    /// when given, by the requester's `locator`
-    /// ([`ComputeContentStore::locator`]); `Ok(None)` when it holds none or
-    /// they would exceed `max_bytes`. Called off the async runtime. The
-    /// caller checks the bytes against `digest` and the proof.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when local content cannot be read.
-    fn held(
-        &self,
-        digest: [u8; 32],
-        locator: Option<[u8; 32]>,
-        max_bytes: u64,
-    ) -> Result<Option<Vec<u8>>, String>;
-
-    /// Whether [`Self::held`] can find content by a locator it would not
-    /// find by digest alone. When `false`, a worker asks for a proof only
-    /// for digests it already found, so a miss costs nothing.
-    fn locates(&self) -> bool {
-        false
-    }
-}
-
-/// The outputs a worker retains for the requesters of the jobs it ran.
-///
-/// A completed job's outputs stay retrievable by digest, but only by that
-/// job's requester and only the digests that job reported: knowing a digest
-/// is never authority to read it.
-pub trait ComputeOutputSource: Send + Sync {
-    /// The bytes of output `digest` of job `job_id` in `workspace_id`, when
-    /// `asker` submitted that job and it reported the digest; `Ok(None)`
-    /// otherwise.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the retained output cannot be read or no
-    /// longer matches its digest.
-    fn retained_output(
-        &self,
-        asker: DeviceKey,
-        workspace_id: WorkspaceId,
-        job_id: [u8; 16],
-        digest: [u8; 32],
-    ) -> Result<Option<Vec<u8>>, String>;
 }
 
 /// Information passed only to the trusted, local sandbox adapter.
@@ -366,10 +315,6 @@ impl<T: ComputeContentStore + ?Sized> ComputeContentStore for Arc<T> {
 
     fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String> {
         (**self).put(digest, bytes)
-    }
-
-    fn locator(&self, digest: [u8; 32]) -> Option<[u8; 32]> {
-        (**self).locator(digest)
     }
 }
 
@@ -534,11 +479,11 @@ impl ComputeExecutionError {
     }
 }
 
-/// A local executor bound to one certified worker advertisement. Jobs are
+/// A local executor bound to this device. Jobs are
 /// synchronously supervised, while cancellation is safe to signal from any
 /// thread through [`CaptureCancellation`].
 pub struct ComputeWorker<C, P, S> {
-    worker: ServerAdvertisement,
+    device: DeviceKey,
     data_home: PathBuf,
     state_root: PathBuf,
     content: C,
@@ -555,7 +500,7 @@ where
 {
     #[must_use]
     pub fn new(
-        worker: ServerAdvertisement,
+        device: DeviceKey,
         data_home: PathBuf,
         state_root: PathBuf,
         content: C,
@@ -563,7 +508,7 @@ where
         sandbox: S,
     ) -> Self {
         Self {
-            worker,
+            device,
             data_home,
             state_root,
             content,
@@ -573,11 +518,15 @@ where
         }
     }
 
-    /// Resolve, stage, execute and persist one authenticated mesh job.
+    /// Resolve, stage, execute and persist one job this device took.
     ///
-    /// The two authenticated values are derived from the certified transport
-    /// route rather than from the serialized job. A mismatch is rejected
-    /// before package lookup, staging, or durable job-id claim.
+    /// The requester and workspace are the ones the turn was asked by and in,
+    /// never the serialized job's. A mismatch is rejected before package
+    /// lookup, staging, or durable job-id claim.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeps the security-critical execution sequence auditable"
+    )]
     pub fn execute(
         &self,
         authenticated_requester: DeviceKey,
@@ -586,53 +535,11 @@ where
         now_ms: u64,
         cancellation: CaptureCancellation,
     ) -> Result<ComputeJobResult, ComputeExecutionError> {
-        self.execute_with_inputs(
-            &self.content,
-            (authenticated_requester, authenticated_workspace),
-            spec,
-            now_ms,
-            cancellation,
-        )
-    }
-
-    /// [`Self::execute`], staging the job's inputs from `inputs` (the bytes
-    /// hydrated for this one job) rather than from the worker's own store.
-    /// Outputs are still persisted to the worker's store, from which
-    /// [`ComputeOutputSource`] serves them to the job's requester.
-    ///
-    /// `route` is the authenticated `(requester, workspace)` of the
-    /// transport route, as for [`Self::execute`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::execute`].
-    #[allow(
-        clippy::too_many_lines,
-        reason = "keeps the security-critical execution sequence auditable"
-    )]
-    pub fn execute_with_inputs(
-        &self,
-        inputs: &dyn ComputeContentStore,
-        route: (DeviceKey, WorkspaceId),
-        spec: &ComputeJobSpec,
-        now_ms: u64,
-        cancellation: CaptureCancellation,
-    ) -> Result<ComputeJobResult, ComputeExecutionError> {
-        let (authenticated_requester, authenticated_workspace) = route;
         if authenticated_requester != spec.requester || authenticated_workspace != spec.workspace_id
         {
             return Err(ComputeExecutionError::RouteMismatch);
         }
-        spec.validate_for(self.worker.device, now_ms)?;
-        // This worker runs only what it advertises: the app the job names,
-        // while its power lets it, and only for a requester that is another
-        // device.
-        if !self.worker.apps.iter().any(|app| app == &spec.app_id)
-            || self.worker.energy_saver
-            || self.worker.power.is_critically_constrained()
-        {
-            return Err(ComputeError::WorkerUnavailable.into());
-        }
+        spec.validate_for(self.device, now_ms)?;
         if spec.limits.gpu && !self.sandbox.gpu_available() {
             return Err(ComputeExecutionError::GpuUnavailable);
         }
@@ -710,7 +617,7 @@ where
             .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
         let output_dir_handle = File::open(&output_dir)
             .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
-        Self::stage_inputs(inputs, spec, &input_dir)
+        Self::stage_inputs(&self.content, spec, &input_dir)
             .map_err(|error| self.fail_existing(spec.job_id, "input", error))?;
         write_request(spec, &io_root)
             .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
@@ -822,7 +729,7 @@ where
     }
 
     fn stage_inputs(
-        inputs: &dyn ComputeContentStore,
+        inputs: &C,
         spec: &ComputeJobSpec,
         input_dir: &Path,
     ) -> Result<(), ComputeExecutionError> {
@@ -896,12 +803,6 @@ where
                         return Err(self.fail_existing(spec.job_id, "output", error));
                     }
                 };
-                // Record which digests this job's requester may retrieve
-                // before reporting any of them: a digest the requester
-                // cannot fetch is never reported.
-                if let Err(error) = self.retain_outputs(spec.job_id, &outputs) {
-                    return Err(self.fail_existing(spec.job_id, "output_store", error));
-                }
                 ComputeJobPhase::Completed { outputs }
             }
         };
@@ -975,25 +876,6 @@ where
             .join(format!("{}.claim", hex::encode(job_id)))
     }
 
-    fn outputs_path(&self, job_id: [u8; 16]) -> PathBuf {
-        self.state_root
-            .join(format!("{}{OUTPUT_INDEX_SUFFIX}", hex::encode(job_id)))
-    }
-
-    fn retain_outputs(
-        &self,
-        job_id: [u8; 16],
-        outputs: &[[u8; 32]],
-    ) -> Result<(), ComputeExecutionError> {
-        let mut index = String::with_capacity(outputs.len().saturating_mul(65));
-        for digest in outputs {
-            index.push_str(&hex::encode(digest));
-            index.push('\n');
-        }
-        tilo_files::native::atomic::write(&self.outputs_path(job_id), index.as_bytes())
-            .map_err(|error| ComputeExecutionError::OutputStore(error.to_string()))
-    }
-
     fn fail(&self, job_id: [u8; 16], code: &str, detail: String) -> ComputeExecutionError {
         let _ = self.advance(
             job_id,
@@ -1020,71 +902,6 @@ where
         );
         error
     }
-}
-
-impl<C, P, S> ComputeOutputSource for ComputeWorker<C, P, S>
-where
-    C: ComputeContentStore,
-    P: ComputePackageCatalogue,
-    S: ComputeSandbox,
-{
-    fn retained_output(
-        &self,
-        asker: DeviceKey,
-        workspace_id: WorkspaceId,
-        job_id: [u8; 16],
-        digest: [u8; 32],
-    ) -> Result<Option<Vec<u8>>, String> {
-        // The claim names the job's authenticated requester and workspace;
-        // the index names exactly the outputs that job reported.
-        let Some(claim) = read_small(&self.claim_path(job_id))? else {
-            return Ok(None);
-        };
-        let mut fields = claim.trim_end().split(':');
-        let requester = fields.next().unwrap_or_default();
-        let _worker = fields.next();
-        let workspace = fields.next().unwrap_or_default();
-        if requester != hex::encode(asker) || workspace != workspace_id.to_string() {
-            return Ok(None);
-        }
-        let Some(index) = read_small(&self.outputs_path(job_id))? else {
-            return Ok(None);
-        };
-        let wanted = hex::encode(digest);
-        if !index.lines().any(|line| line == wanted) {
-            return Ok(None);
-        }
-        let Some(bytes) = self.content.get(digest)? else {
-            return Ok(None);
-        };
-        if blake3::hash(&bytes).as_bytes() != &digest {
-            return Err("retained output does not match its digest".into());
-        }
-        Ok(Some(bytes))
-    }
-}
-
-/// Suffix of the file beside a job's claim that lists the outputs it
-/// reported, which its requester may retrieve.
-pub const OUTPUT_INDEX_SUFFIX: &str = ".outputs";
-
-/// A small private metadata file, or `None` when it does not exist.
-fn read_small(path: &Path) -> Result<Option<String>, String> {
-    const MAX_INDEX_BYTES: u64 = 64 * 1024;
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
-    };
-    let mut text = String::new();
-    file.take(MAX_INDEX_BYTES)
-        .read_to_string(&mut text)
-        .map_err(|error| error.to_string())?;
-    Ok(Some(text))
 }
 
 fn verify_registry_binding(
@@ -1307,16 +1124,295 @@ impl Drop for JobDirectoryCleanup {
     }
 }
 
+/// The content of one app in one workspace, as a job reads its inputs from
+/// and keeps its outputs in: the same content the app reads and writes there
+/// itself.
+pub trait WorkspaceContent: Send + Sync {
+    /// The content of `app` in `workspace`.
+    fn of(&self, workspace: &str, app: &str) -> Arc<dyn ComputeContentStore>;
+}
+
+/// The record content a device routes, scoped to one app's records in one
+/// workspace: where that app's `offerBlob` and `wantBlob` keep and read.
+struct AppContent {
+    content: Arc<RouteContent>,
+    route: CrdtRoute,
+}
+
+impl ComputeContentStore for AppContent {
+    fn get(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.content.kept(&self.route, &hex::encode(digest)))
+    }
+
+    fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String> {
+        self.content.offer(&self.route, &hex::encode(digest), bytes)
+    }
+}
+
+impl WorkspaceContent for Arc<RouteContent> {
+    fn of(&self, workspace: &str, app: &str) -> Arc<dyn ComputeContentStore> {
+        Arc::new(AppContent {
+            content: Arc::clone(self),
+            route: CrdtRoute::app(app, workspace),
+        })
+    }
+}
+
+/// The transforms this device runs: the packages it can run, the sandbox it
+/// runs them under, and the content it reads and keeps.
+#[derive(Clone)]
+pub struct ComputeJobs {
+    shared: Arc<Shared>,
+}
+
+struct Shared {
+    content: Arc<dyn WorkspaceContent>,
+    catalogue: Arc<dyn ComputePackageCatalogue>,
+    sandbox: Arc<dyn ComputeSandbox>,
+    /// This device: the worker of every job it runs.
+    device: DeviceKey,
+    data_home: PathBuf,
+    state_root: PathBuf,
+    /// How many jobs run here at once.
+    capacity: AtomicU32,
+    /// The jobs running here, so the device that asked stops them.
+    running: Mutex<HashMap<InvocationId, CaptureCancellation>>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl ComputeJobs {
+    /// Run transforms as `device`, over `content`, with packages resolved by
+    /// `catalogue` and launched by `sandbox`. Jobs stage their work under
+    /// `state_root` and their app directories under `data_home`.
+    ///
+    /// # Panics
+    ///
+    /// Outside a runtime context, where there is nothing to run on.
+    #[must_use]
+    pub fn new(
+        content: Arc<dyn WorkspaceContent>,
+        catalogue: Arc<dyn ComputePackageCatalogue>,
+        sandbox: Arc<dyn ComputeSandbox>,
+        device: DeviceKey,
+        (data_home, state_root): (PathBuf, PathBuf),
+    ) -> Self {
+        let processors =
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        Self {
+            shared: Arc::new(Shared {
+                content,
+                catalogue,
+                sandbox,
+                device,
+                data_home,
+                state_root,
+                capacity: AtomicU32::new(u32::try_from(processors).unwrap_or(1)),
+                running: Mutex::default(),
+                runtime: tokio::runtime::Handle::current(),
+            }),
+        }
+    }
+
+    /// Take on at most `capacity` jobs at once, rather than one per processor.
+    #[must_use]
+    pub fn with_capacity(self, capacity: u32) -> Self {
+        self.shared
+            .capacity
+            .store(capacity, AtomicOrdering::Relaxed);
+        self
+    }
+
+    fn running(&self) -> std::sync::MutexGuard<'_, HashMap<InvocationId, CaptureCancellation>> {
+        self.shared.running.lock_recover()
+    }
+
+    /// The package that performs `offload` here, by its signed root.
+    fn package(&self, offload: &Offload) -> Option<[u8; 32]> {
+        if !offload.validate().is_empty() {
+            return None;
+        }
+        let installed = self.shared.catalogue.resolve(&offload.app).ok()??;
+        let mut digest = [0; 32];
+        hex::decode_to_slice(&installed.package_id_hex, &mut digest).ok()?;
+        Some(digest)
+    }
+
+    /// Run `spec` here, reading and keeping `content`, and answer the action
+    /// output that names each output.
+    async fn execute(
+        &self,
+        content: Arc<dyn ComputeContentStore>,
+        spec: ComputeJobSpec,
+        cancellation: CaptureCancellation,
+    ) -> Result<ActionOutput, ActionCallError> {
+        let failed = |reason: String| ActionCallError::Refused { reason };
+        let shared = Arc::clone(&self.shared);
+        let executed = tokio::task::spawn_blocking(move || {
+            let worker = ComputeWorker::new(
+                shared.device,
+                shared.data_home.clone(),
+                shared.state_root.clone(),
+                content,
+                Arc::clone(&shared.catalogue),
+                Arc::clone(&shared.sandbox),
+            );
+            worker.execute(
+                spec.requester,
+                spec.workspace_id,
+                &spec,
+                unix_now_ms(),
+                cancellation,
+            )
+        })
+        .await
+        .map_err(|error| failed(format!("the job did not finish: {error}")))?
+        .map_err(|error| failed(format!("the job did not run: {error}")))?;
+        match executed.lifecycle.phase {
+            ComputeJobPhase::Completed { outputs } => Ok(ActionOutput {
+                value: None,
+                resources: outputs
+                    .iter()
+                    .filter_map(|digest| tilo_actions::content_resource(&hex::encode(digest)))
+                    .collect(),
+            }),
+            ComputeJobPhase::Cancelled => Err(failed("the job was stopped here".into())),
+            ComputeJobPhase::Failed { code } => {
+                Err(failed(format!("the transform failed here: {code}")))
+            }
+            phase => Err(failed(format!("the job did not complete: {phase:?}"))),
+        }
+    }
+}
+
+impl HostJobs for ComputeJobs {
+    fn runs(&self, _workspace: &str, job: &Job) -> bool {
+        self.package(&job.offload).is_some()
+    }
+
+    fn holds(&self, workspace: &str, job: &Job) -> bool {
+        let content = self.shared.content.of(workspace, &job.app);
+        job.inputs
+            .iter()
+            .all(|digest| content.get(*digest).is_ok_and(|bytes| bytes.is_some()))
+    }
+
+    fn free_slots(&self) -> Option<u32> {
+        let running = u32::try_from(self.running().len()).unwrap_or(u32::MAX);
+        Some(
+            self.shared
+                .capacity
+                .load(AtomicOrdering::Relaxed)
+                .saturating_sub(running),
+        )
+    }
+
+    fn run(
+        &self,
+        workspace: &str,
+        job: &Job,
+        requester: [u8; 32],
+        invocation: InvocationId,
+    ) -> Pending<Result<ActionOutput, ActionCallError>> {
+        let Some(package_digest) = self.package(&job.offload) else {
+            return Pending::ready(Err(ActionCallError::Unavailable {
+                reason: "the transform's package is not installed here".into(),
+            }));
+        };
+        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
+            return Pending::ready(Err(ActionCallError::UnknownAction));
+        };
+        let spec = match job_spec(
+            requester,
+            self.shared.device,
+            (workspace_id, package_digest),
+            &job.offload,
+            &job.inputs,
+        ) {
+            Ok(spec) => spec,
+            Err(reason) => return Pending::ready(Err(ActionCallError::Refused { reason })),
+        };
+        let content = self.shared.content.of(workspace, &job.app);
+        let cancellation = CaptureCancellation::default();
+        // Taken only while there is a slot for it: the count and the
+        // admission are one decision.
+        {
+            let mut running = self.running();
+            let in_flight = u32::try_from(running.len()).unwrap_or(u32::MAX);
+            if in_flight >= self.shared.capacity.load(AtomicOrdering::Relaxed) {
+                return Pending::ready(Err(ActionCallError::Unavailable {
+                    reason: "this device is running as many jobs as it takes on".into(),
+                }));
+            }
+            running.insert(invocation, cancellation.clone());
+        }
+        let jobs = self.clone();
+        let (complete, answer) = pending();
+        self.shared.runtime.spawn(async move {
+            let ran = jobs.execute(content, spec, cancellation).await;
+            jobs.running().remove(&invocation);
+            complete.complete(ran);
+        });
+        answer
+    }
+
+    fn cancel(&self, invocation: InvocationId) {
+        if let Some(cancellation) = self.running().get(&invocation) {
+            cancellation.cancel();
+        }
+    }
+}
+
+/// A job binding `offload` over `inputs` from `requester` to `worker`.
+fn job_spec(
+    requester: [u8; 32],
+    worker: [u8; 32],
+    (workspace_id, package_digest): (WorkspaceId, [u8; 32]),
+    offload: &Offload,
+    inputs: &[[u8; 32]],
+) -> Result<ComputeJobSpec, String> {
+    let mut job_id = [0; 16];
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut job_id);
+    let issued_at_ms = unix_now_ms();
+    // Time to read the inputs and run the declared CPU time, never past a
+    // job's ceiling.
+    let lifetime = offload
+        .cpu_time_ms
+        .saturating_mul(2)
+        .saturating_add(30_000)
+        .min(MAX_COMPUTE_JOB_LIFETIME_MS);
+    let spec = ComputeJobSpec {
+        version: COMPUTE_JOB_SCHEMA_VERSION,
+        job_id,
+        requester,
+        worker,
+        workspace_id,
+        app_id: offload.app.clone(),
+        package_digest,
+        entrypoint: offload.entrypoint.clone(),
+        arguments: Vec::new(),
+        inputs: inputs.to_vec(),
+        limits: ComputeResourceLimits {
+            cpu_time_ms: offload.cpu_time_ms,
+            memory_bytes: offload.memory_bytes,
+            output_bytes: offload.output_bytes,
+            gpu: offload.gpu,
+        },
+        issued_at_ms,
+        expires_at_ms: issued_at_ms.saturating_add(lifetime),
+    };
+    spec.validate_for(worker, issued_at_ms)
+        .map_err(|error| format!("the job cannot be bound: {error}"))?;
+    Ok(spec)
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
     use std::os::unix::process::ExitStatusExt;
     use std::process::ExitStatus;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::{ComputeAccelerator, PowerAvailability, ServiceCapabilities};
     use ed25519_dalek::{Signer, SigningKey};
     use tilo_app_package::blobs::{BlobHash, Collection};
     use tilo_app_package::signed::SignedRoot;
@@ -1341,23 +1437,6 @@ mod tests {
             },
             issued_at_ms: 100,
             expires_at_ms: 1_000,
-        }
-    }
-
-    fn worker() -> ServerAdvertisement {
-        ServerAdvertisement {
-            device: [3; 32],
-            services: ServiceCapabilities::personal_server(),
-            workspaces: BTreeSet::from([WorkspaceId::from_u128(7)]),
-            apps: BTreeSet::from(["so.tilo.video-editor".into()]),
-            accelerators: BTreeSet::from([ComputeAccelerator::Gpu]),
-            priority: 0,
-            latency_ms: 4,
-            power: PowerAvailability::External,
-            energy_saver: false,
-            active_assignments: 0,
-            assignment_capacity: 2,
-            online: true,
         }
     }
 
@@ -1528,7 +1607,7 @@ mod tests {
     ) -> ComputeWorker<MemoryContent, FakeCatalogue, FakeSandbox> {
         let package = installed_fixture(root, spec);
         ComputeWorker::new(
-            worker(),
+            [3; 32],
             root.join("data"),
             root.join("worker-state"),
             content,
@@ -1543,7 +1622,7 @@ mod tests {
         phase compute_jobs_are_admitted_exactly_and_move_monotonically;
         {
             {
-                assert_eq!(spec().validate_for(worker().device, 200), Ok(()));
+                assert_eq!(spec().validate_for([3; 32], 200), Ok(()));
             }
             {
                 assert_eq!(
@@ -1792,7 +1871,7 @@ mod tests {
                 let sandbox = FakeSandbox::success(false);
                 let launches = Arc::clone(&sandbox.launches);
                 let executor = ComputeWorker::new(
-                    worker(),
+                    [3; 32],
                     root.path().join("data"),
                     root.path().join("state"),
                     MemoryContent::default(),

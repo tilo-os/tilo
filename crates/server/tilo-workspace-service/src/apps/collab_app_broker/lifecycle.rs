@@ -829,7 +829,6 @@ impl AppBrokerState {
                 worker_admitted: tokio::sync::Notify::new(),
                 local_turn: std::sync::Arc::clone(&local_turn),
                 offloads: Mutex::default(),
-                offloaded_here: Mutex::default(),
                 host_workers: Mutex::default(),
                 route_holders: Mutex::default(),
                 service_peers: Mutex::new(Vec::new()),

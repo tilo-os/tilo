@@ -218,9 +218,6 @@ impl AppBrokerState {
         actor: InvocationOwner,
         update: tilo_actions::InvocationUpdate,
     ) {
-        if update.is_terminal() {
-            self.offload_answered(id, &update);
-        }
         if let Ok(mut completed) = self.completed_invocations.lock() {
             completed.insert(id, (actor, update));
             self.invocation_changed();

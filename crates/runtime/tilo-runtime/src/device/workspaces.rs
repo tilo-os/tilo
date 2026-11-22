@@ -387,9 +387,10 @@ impl ServiceWorkspaces {
         self.copies().recheck_executions(workspace)
     }
 
-    /// Ask the workspaces' other devices, through this device's own workspace
-    /// host, whether they would run an offloadable action sooner.
-    pub(crate) fn offer_action_service(
+    /// What asks the workspaces' other devices, through this device's own
+    /// workspace host, to take an offloadable action's turn: the action
+    /// service, its endpoint and runtime.
+    pub(crate) fn turn_action_service(
         &self,
     ) -> Option<(
         tilo_peer_state::actions::ActionService,

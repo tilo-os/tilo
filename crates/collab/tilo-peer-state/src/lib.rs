@@ -51,9 +51,6 @@ pub mod installation;
 /// to have it certified.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod new_device;
-/// Running an offloadable invocation on another device, through the offer
-/// round.
-pub mod offload;
 pub mod opening;
 mod ordered;
 mod postcard_sink;

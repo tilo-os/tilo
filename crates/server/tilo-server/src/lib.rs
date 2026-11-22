@@ -46,9 +46,7 @@
 //!
 //! # Current boundaries
 //!
-//! - App backends are not executed here. Compute packages run only through
-//!   [`compute::ComputeWorker`], which binds certified routes and content
-//!   digests to the normal signed-package launcher sandbox.
+//! - App backends are not executed here.
 //! - No content byte transfer — content hydration continues to
 //!   travel over `iroh-blobs` inside the `crates/system/fs/` crate; the relay
 //!   handles only the CRDT-directory tier.
@@ -74,8 +72,6 @@ pub mod certification;
 #[cfg(feature = "agents")]
 pub mod coding_agents;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod compute;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod content;
 #[cfg(feature = "web")]
 pub mod content_links;
@@ -83,8 +79,6 @@ pub mod content_links;
 pub mod daemon;
 #[cfg(feature = "web")]
 pub mod entry;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod host_jobs;
 #[cfg(feature = "agents")]
 pub mod hosted_browser;
 #[cfg(not(target_arch = "wasm32"))]
@@ -162,13 +156,6 @@ pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, sen
 pub use app_serving::{ActionProviderServer, AppActionServer};
 pub use client::{ClientError, ServerClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, ServerCoeditSession};
-#[cfg(not(target_arch = "wasm32"))]
-pub use compute::{
-    ComputeContentStore, ComputeError, ComputeExecutionError, ComputeJobLifecycle, ComputeJobPhase,
-    ComputeJobResult, ComputeJobSpec, ComputeOutputSource, ComputePackageCatalogue,
-    ComputeResourceLimits, ComputeSandbox, ComputeSandboxInvocation, ComputeWorker, HeldContent,
-    InstalledComputeCatalogue, LauncherComputeSandbox,
-};
 pub use config::ServerConfig;
 #[cfg(not(target_arch = "wasm32"))]
 pub use daemon::{Server, ServerError, ServerHandle};

@@ -297,17 +297,12 @@ fn signing_message(issued_at_ns: u64, encoded: &[u8]) -> Vec<u8> {
 }
 
 /// One frame a device's action connection carries: an action to run on the
-/// answering device, or a route the asking device wonders about.
-///
-/// Each is answered in its own shape on the same stream: the action with
-/// the [`RemoteActionFrame`] bytes its dispatcher produced, the offer with
-/// the answering device's [`Answer`](crate::offer::Answer).
+/// answering device, answered on the same stream with the
+/// [`RemoteActionFrame`] bytes its dispatcher produced.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ActionServiceFrame {
     /// An action this device asks the addressed one to run.
     Action(Box<SignedDeviceAction>),
-    /// A route this device asks the addressed one whether it would run.
-    Offer(Box<crate::offer::Query>),
 }
 
 /// Signed actions a target admitted while they are still fresh, so a device

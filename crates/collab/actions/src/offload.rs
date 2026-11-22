@@ -78,12 +78,6 @@ pub trait ActionOffload: Send + Sync {
         let _ = invocation;
         self.offload(request)
     }
-
-    /// The app's handler ran `request` here in `elapsed`: what placement
-    /// weighs moving its inputs against next time.
-    fn ran_here(&self, request: &OffloadRequest, elapsed: Duration) {
-        let _ = (request, elapsed);
-    }
 }
 
 /// The content an invocation's `arguments` name through the content

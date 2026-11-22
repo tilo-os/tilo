@@ -24,6 +24,8 @@
 //! while it is here.
 
 mod commits;
+#[cfg(target_os = "linux")]
+pub mod compute;
 #[cfg(target_os = "macos")]
 mod confirm;
 mod content;

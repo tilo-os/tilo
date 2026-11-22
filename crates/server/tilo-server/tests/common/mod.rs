@@ -7,6 +7,7 @@
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 
+#[cfg(target_os = "linux")]
 pub mod compute;
 
 use std::path::PathBuf;

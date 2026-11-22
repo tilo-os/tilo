@@ -10,9 +10,9 @@
 
 use tilo_resource::Id;
 use tilo_server::servers::{self, Servers, applied, person_workspace_id};
-use tilo_server::workspaces::Offer;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
+use tilo_workspace_service::work::offers_compute;
 
 use crate::common::{TestUser, serve_on};
 
@@ -191,7 +191,7 @@ async fn a_server_offers_what_its_entry_says() {
     applied::reconcile_into(workspaces, &applied::Requests::at(&policy_request))
         .await
         .unwrap();
-    assert!(!workspaces.offer().compute, "it runs no work yet");
+    assert!(!offers_compute(workspaces).await, "it runs no work yet");
 
     servers::apply(
         workspaces,
@@ -203,7 +203,7 @@ async fn a_server_offers_what_its_entry_says() {
         .await
         .unwrap();
     assert!(applied.offered);
-    assert_eq!(workspaces.offer(), Offer::of(500, true, 2));
+    assert!(offers_compute(workspaces).await, "its entry offers compute");
 }
 
 /// A retired server lets go of everything it holds and offers nothing, and
@@ -241,7 +241,7 @@ async fn a_retired_server_lets_go_of_everything() {
     applied::reconcile_into(workspaces, &applied::Requests::at(&policy_request))
         .await
         .unwrap();
-    assert!(workspaces.offer().compute);
+    assert!(offers_compute(workspaces).await);
 
     servers::apply(workspaces, Servers::RETIRE_SERVER.with(entry(&nas)))
         .await
@@ -251,7 +251,7 @@ async fn a_retired_server_lets_go_of_everything() {
         .unwrap();
     assert!(applied.retired, "its own entry says it was retired");
     assert!(
-        !workspaces.offer().compute,
+        !offers_compute(workspaces).await,
         "a retired server takes no work"
     );
     assert!(
@@ -510,7 +510,7 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
     .await
     .unwrap();
     tilo_test_env::within("the first server to offer what the third set", async {
-        while first.host.workspaces().offer() != Offer::of(500, true, 2) {
+        while !offers_compute(first.host.workspaces()).await {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })

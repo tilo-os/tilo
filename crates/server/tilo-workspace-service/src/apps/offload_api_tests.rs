@@ -1,13 +1,12 @@
 // An admitted offloadable invocation runs where the device's route places
 // it: answered by the API with another device's output, or handed to the
-// app, whose own answer stands and whose run time the route hears.
+// app, whose own answer stands.
 
 /// A route that answers what it is told to, recording what it was asked.
 #[derive(Default)]
 struct ScriptedRoute {
     answers: Mutex<std::collections::VecDeque<tilo_actions::offload::Offloaded>>,
     asked: Mutex<Vec<tilo_actions::offload::OffloadRequest>>,
-    ran_here: Mutex<Vec<tilo_actions::offload::OffloadRequest>>,
 }
 
 impl tilo_actions::offload::ActionOffload for ScriptedRoute {
@@ -23,10 +22,6 @@ impl tilo_actions::offload::ActionOffload for ScriptedRoute {
             .pop_front()
             .expect("a scripted answer");
         Box::pin(async move { answer })
-    }
-
-    fn ran_here(&self, request: &tilo_actions::offload::OffloadRequest, _: std::time::Duration) {
-        self.ran_here.lock().unwrap().push(request.clone());
     }
 }
 
@@ -200,7 +195,7 @@ async fn an_admitted_offloadable_invocation_runs_where_the_route_places_it() {
             );
 
             // No device is better placed: the app is handed the invocation,
-            // its own answer stands, and the route hears it ran here.
+            // and its own answer stands.
             route.answers.lock().unwrap().push_back(Offloaded::RunHere {
                 reason: "no other device is better placed".into(),
             });
@@ -216,7 +211,6 @@ async fn an_admitted_offloadable_invocation_runs_where_the_route_places_it() {
             }
             let (job, invocation) = delivered.expect("the app runs it here");
             assert_eq!(invocation, second);
-            assert!(route.ran_here.lock().unwrap().is_empty());
             fixture
                 .complete_invocation(
                     job,
@@ -231,7 +225,6 @@ async fn an_admitted_offloadable_invocation_runs_where_the_route_places_it() {
                 fixture.state.invocation_status(job),
                 Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) if output == remote
             ));
-            assert_eq!(route.ran_here.lock().unwrap().len(), 1);
             // The completing channel closed as an app's does; the app is
             // connected again.
             fixture.invocation_rx = fixture

@@ -10,9 +10,11 @@
 //! at the same time both keep their row after a merge and nothing is lost.
 //! The holder is then decided the same way on every device: the claims are
 //! ranked the way [`placement`](neighbour_wire::placement) ranks devices (power, load,
-//! measured round trip, then the device key), and the best of them holds. Two
-//! takers after a partition therefore converge on one winner; the loser
-//! withdraws its claim and stops the work instead of repeating it.
+//! measured round trip), then the claim whose holder started earliest, then the
+//! device key, and the first of them holds. Claims that rank alike, as unranked
+//! ones do, go to the device that claimed first. Two takers after a partition
+//! therefore converge on one winner; the loser withdraws its claim and stops the
+//! work instead of repeating it.
 //!
 //! A claim is over only when its deadline is [`CLOCK_SKEW_NS`] in the past. A
 //! device takes a lease over only then, so devices whose clocks differ by
@@ -26,6 +28,7 @@ use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use super::{Duration, device_rows, now_ns};
 use neighbour_wire::placement::{self, Answer, Power, Rank};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 
 /// Key of the workspace's leases in its own document: a map, there from the
 /// workspace's founding, from `<lease id>/<claiming device key hex>` to its
@@ -61,7 +64,6 @@ pub fn vm_rank(rank: Rank, disk_bytes: u64, holds: bool) -> Rank {
         inputs: vec![(DISK, disk_bytes)],
         input_bytes: disk_bytes,
         local_wall_ms: None,
-        offload: None,
     };
     let moving = placement::transfer(&Answer::taking(rank, Vec::new()), &work, rank.latency_ms);
     Rank {
@@ -96,6 +98,28 @@ pub struct LeaseClaim {
     pub expires_at_ns: u64,
     /// What the device ranks itself by.
     pub rank: Rank,
+    /// When this device's hold of the term began, ns since the epoch on its
+    /// clock: kept across its renewals, so of two claims that rank alike the
+    /// one made first holds.
+    pub since_ns: u64,
+}
+
+impl LeaseClaim {
+    /// How this claim orders against `other` for holding the lease: better
+    /// rank first, then the earlier start, then the lower device key.
+    fn order(&self, other: &Self) -> Ordering {
+        let rank = |claim: &Self| {
+            (
+                claim.rank.power,
+                claim.rank.load_permille,
+                claim.rank.latency_ms,
+            )
+        };
+        rank(self)
+            .cmp(&rank(other))
+            .then(self.since_ns.cmp(&other.since_ns))
+            .then(self.device.cmp(&other.device))
+    }
 }
 
 /// A lease as the workspace holds it.
@@ -126,6 +150,20 @@ struct StoredClaim {
     term: u64,
     expires_at_ns: u64,
     rank: Rank,
+    /// A peer one version back writes no start (the one-version window,
+    /// `docs/architecture/compatibility.md`): its claim reads as one made at
+    /// the epoch, and the frozen claim it wrote round-trips unchanged.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    since_ns: u64,
+}
+
+/// Whether a stored start is the epoch, which a claim of this build never is.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde hands the field by reference"
+)]
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// A claim as every device reads it from its stored text.
@@ -136,6 +174,7 @@ fn claim_of(device: [u8; 32], json: &str) -> Option<LeaseClaim> {
         term: claimed.term,
         expires_at_ns: claimed.expires_at_ns,
         rank: claimed.rank,
+        since_ns: claimed.since_ns,
     })
 }
 
@@ -147,25 +186,17 @@ fn claims_of(doc: Option<&automerge::AutoCommit>, id: &str) -> Vec<LeaseClaim> {
         .collect()
 }
 
-/// The lease `id` made of `claims` at `now_ns`: the best-ranked live claim of
-/// the latest term is the holder.
+/// The lease `id` made of `claims` at `now_ns`: the first live claim of the
+/// latest term ([`LeaseClaim::order`]) is the holder.
 fn lease_of(id: &str, claims: Vec<LeaseClaim>, now_ns: u64) -> Lease {
     let term = claims.iter().map(|claim| claim.term).max().unwrap_or(0);
-    let live = |claim: &&LeaseClaim| {
-        claim.term == term && claim.expires_at_ns.saturating_add(CLOCK_SKEW_NS) >= now_ns
-    };
-    let holder = placement::best(
-        claims
-            .iter()
-            .filter(live)
-            .map(|claim| (claim.device, Answer::taking(claim.rank, Vec::new()))),
-    )
-    .and_then(|(best, _)| {
-        claims
-            .iter()
-            .find(|claim| claim.device == best && claim.term == term)
-            .copied()
-    });
+    let holder = claims
+        .iter()
+        .filter(|claim| {
+            claim.term == term && claim.expires_at_ns.saturating_add(CLOCK_SKEW_NS) >= now_ns
+        })
+        .min_by(|left, right| left.order(right))
+        .copied();
     Lease {
         id: id.to_owned(),
         term,
@@ -251,16 +282,19 @@ impl PeerWorkspaceMut<'_> {
         let live = mine.is_some_and(|claim| {
             claim.term == held.term && claim.expires_at_ns.saturating_add(CLOCK_SKEW_NS) >= now_ns
         });
-        let term = if live {
-            held.term
-        } else {
-            held.term.checked_add(1).ok_or("lease term exhausted")?
+        let (term, since_ns) = match mine {
+            Some(claim) if live => (held.term, claim.since_ns),
+            _ => (
+                held.term.checked_add(1).ok_or("lease term exhausted")?,
+                now_ns,
+            ),
         };
         let claim = LeaseClaim {
             device: device.device_public_key,
             term,
             expires_at_ns: now_ns.saturating_add(ttl_ns),
             rank,
+            since_ns,
         };
         self.write_claim(id, claim, now)?;
         let after = self.peer.workspace().lease(id, now);
@@ -326,6 +360,7 @@ impl PeerWorkspaceMut<'_> {
             term: claim.term,
             expires_at_ns: claim.expires_at_ns,
             rank: claim.rank,
+            since_ns: claim.since_ns,
         })
         .map_err(|error| error.to_string())?;
         let key = device_rows::row_key(id, &claim.device);
@@ -385,6 +420,7 @@ mod tests {
             term: 3,
             expires_at_ns: 4_000_000_000,
             rank: rank(250),
+            since_ns: 0,
         })
         .unwrap();
         assert_eq!(today, kept, "this build writes a lease claim differently");
@@ -565,6 +601,70 @@ mod tests {
             better.workspace().lease("tick", now).claims,
             vec![better_claim],
             "one claim is left"
+        );
+    }
+
+    /// Two devices that claim a lease neither saw claimed, ranking alike,
+    /// converge on the one that claimed first once their claims merge, whatever
+    /// their keys; the later one's renewal then answers that it lost, and a
+    /// renewal of the winner's keeps the start it began with.
+    #[test]
+    fn of_two_alike_claims_the_earlier_holds_and_keeps_its_start() {
+        let (mut left, _left_key, mut right, _right_key) = desktops();
+        let now = now();
+        let (left_cert, right_cert) = (cert_of(&left), cert_of(&right));
+        // The higher key claims first, so the key alone would pick the other.
+        let ((first, first_cert), (second, second_cert)) =
+            if left_cert.device_public_key > right_cert.device_public_key {
+                ((&mut left, &left_cert), (&mut right, &right_cert))
+            } else {
+                ((&mut right, &right_cert), (&mut left, &left_cert))
+            };
+        let earlier = first
+            .workspace_mut()
+            .take_lease(first_cert, "turn", Duration::ZERO, unranked(), now)
+            .unwrap()
+            .expect("alone, the first device holds it");
+        second
+            .workspace_mut()
+            .take_lease(second_cert, "turn", Duration::ZERO, unranked(), at(now, 1))
+            .unwrap()
+            .expect("alone, the second device holds it too");
+
+        sync(first, second);
+        sync(second, first);
+        let merged = second.workspace().lease("turn", at(now, 2));
+        assert_eq!(merged.holder, Some(earlier), "the earlier claim holds");
+        assert_eq!(merged, first.workspace().lease("turn", at(now, 2)));
+        assert!(
+            second
+                .workspace_mut()
+                .take_lease(second_cert, "turn", Duration::ZERO, unranked(), at(now, 2))
+                .unwrap()
+                .is_none(),
+            "the later claim's renewal answers that it lost"
+        );
+        let renewed = first
+            .workspace_mut()
+            .take_lease(first_cert, "turn", Duration::ZERO, unranked(), at(now, 30))
+            .unwrap()
+            .expect("the winner renews");
+        assert_eq!(
+            renewed.since_ns, earlier.since_ns,
+            "a renewal keeps its start"
+        );
+
+        // Silent for longer than the clocks may differ, the claim is over and
+        // the other device takes the lease.
+        let taken = second
+            .workspace_mut()
+            .take_lease(second_cert, "turn", Duration::ZERO, unranked(), at(now, 91))
+            .unwrap()
+            .expect("a claim silent past the skew is taken over");
+        assert_eq!(
+            taken.term,
+            renewed.term + 1,
+            "a takeover starts the next term"
         );
     }
 

@@ -764,11 +764,6 @@ impl Session {
         let document_content = crate::content::ContentService::open(options.state.as_deref());
         if let Some(sync) = &sync {
             sync.attach_content(std::sync::Arc::clone(&document_content));
-            // What this session says when another of the person's devices
-            // offers it work: the inputs its own content already keeps.
-            if let Some(actions) = sync.device_actions() {
-                actions.attach_content(std::sync::Arc::clone(&document_content));
-            }
         }
         // What other members send here is the workspaces' to admit: their
         // policies are read from the shell this session shows.

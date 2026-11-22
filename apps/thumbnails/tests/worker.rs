@@ -14,7 +14,7 @@
 
 #[cfg(target_os = "linux")]
 mod cases {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     use std::path::Path;
     use std::process::{Command, ExitCode};
     use std::sync::{Arc, Mutex};
@@ -23,12 +23,10 @@ mod cases {
     use launcher::capture::CaptureCancellation;
     use thumbnail::batch::{ENTRYPOINT, PACKAGE, output_name, thumbnail_batch};
     use tilo_app_package::{Manifest, SigningIdentity, Verification, pack, tapp, verify};
-    use tilo_server::compute::COMPUTE_JOB_SCHEMA_VERSION;
-    use tilo_server::{
-        ComputeContentStore, ComputeJobLifecycle, ComputeJobPhase, ComputeJobResult,
-        ComputeJobSpec, ComputeOutputSource, ComputeResourceLimits, ComputeWorker,
-        InstalledComputeCatalogue, LauncherComputeSandbox, PowerAvailability, ServerAdvertisement,
-        ServiceCapabilities,
+    use tilo_runtime::device::compute::{
+        COMPUTE_JOB_SCHEMA_VERSION, ComputeContentStore, ComputeJobLifecycle, ComputeJobPhase,
+        ComputeJobResult, ComputeJobSpec, ComputeResourceLimits, ComputeWorker,
+        InstalledComputeCatalogue, LauncherComputeSandbox, WorkspaceId,
     };
     use tilo_test_env::TestHome;
 
@@ -39,7 +37,7 @@ mod cases {
 
     const REQUESTER: [u8; 32] = [1; 32];
     const WORKER: [u8; 32] = [2; 32];
-    const WORKSPACE: tilo_server::WorkspaceId = tilo_server::WorkspaceId::from_u128(7);
+    const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(7);
 
     const CASES: &[(&str, fn())] = &[
         (
@@ -52,24 +50,10 @@ mod cases {
         ),
     ];
 
-    /// Content held in memory, by digest: the requester's inputs on one side, the worker's
-    /// store of outputs on the other.
+    /// The worker's content, held in memory by digest: the inputs it keeps, and the outputs
+    /// it keeps beside them.
     #[derive(Clone, Default)]
     struct MemoryContent(Arc<Mutex<BTreeMap<[u8; 32], Vec<u8>>>>);
-
-    impl MemoryContent {
-        fn holding(blobs: &[Vec<u8>]) -> Self {
-            let content = Self::default();
-            for bytes in blobs {
-                content.put(*blake3::hash(bytes).as_bytes(), bytes).unwrap();
-            }
-            content
-        }
-
-        fn is_empty(&self) -> bool {
-            self.0.lock().unwrap().is_empty()
-        }
-    }
 
     impl ComputeContentStore for MemoryContent {
         fn get(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
@@ -90,7 +74,7 @@ mod cases {
     /// them.
     struct Device {
         worker: ThumbnailWorker,
-        outputs: MemoryContent,
+        content: MemoryContent,
         package_digest: [u8; 32],
         _home: TestHome,
     }
@@ -106,26 +90,31 @@ mod cases {
             let runtime = install_runtime(&mut home);
             let package_digest = install_package(&runtime, home.root());
 
-            let outputs = MemoryContent::default();
+            let content = MemoryContent::default();
             let worker = ComputeWorker::new(
-                advertisement(),
+                WORKER,
                 home.data().to_path_buf(),
                 home.root().join("compute-state"),
-                outputs.clone(),
+                content.clone(),
                 InstalledComputeCatalogue,
                 LauncherComputeSandbox::new(None),
             );
             Self {
                 worker,
-                outputs,
+                content,
                 package_digest,
                 _home: home,
             }
         }
 
-        /// Run job `job` over `inputs`, staged from the requester's bytes, as the worker
-        /// runs an offloaded job it was handed.
+        /// Run job `job` over `inputs`, which the worker keeps, as it runs an offloaded job
+        /// whose turn it took.
         fn run(&self, job: u8, inputs: &[Vec<u8>]) -> (ComputeJobSpec, ComputeJobResult) {
+            for bytes in inputs {
+                self.content
+                    .put(*blake3::hash(bytes).as_bytes(), bytes)
+                    .unwrap();
+            }
             let now_ms = u64::try_from(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -158,9 +147,9 @@ mod cases {
             };
             let result = self
                 .worker
-                .execute_with_inputs(
-                    &MemoryContent::holding(inputs),
-                    (REQUESTER, WORKSPACE),
+                .execute(
+                    REQUESTER,
+                    WORKSPACE,
                     &spec,
                     now_ms,
                     CaptureCancellation::default(),
@@ -179,27 +168,6 @@ mod cases {
             "bwrap is not runnable ({probe:?}). It is how every Tilo package runs, so a \
              machine without it cannot run these cases."
         );
-    }
-
-    /// What the worker offers for the thumbnails package, to its executor.
-    fn advertisement() -> ServerAdvertisement {
-        ServerAdvertisement {
-            device: WORKER,
-            services: ServiceCapabilities {
-                compute: true,
-                ..ServiceCapabilities::default()
-            },
-            workspaces: BTreeSet::from([WORKSPACE]),
-            apps: BTreeSet::from([PACKAGE.to_string()]),
-            accelerators: BTreeSet::new(),
-            priority: 0,
-            latency_ms: 0,
-            power: PowerAvailability::External,
-            energy_saver: false,
-            active_assignments: 0,
-            assignment_capacity: 1,
-            online: true,
-        }
     }
 
     /// The runtime release the authored manifest names: `2026.07` of
@@ -363,14 +331,10 @@ mod cases {
             String::from_utf8_lossy(&result.stderr)
         );
         for (digest, thumbnail) in expected_digests.iter().zip(&expected) {
-            let returned = device
-                .worker
-                .retained_output(REQUESTER, WORKSPACE, spec.job_id, *digest)
-                .expect("the worker reads its retained output");
             assert_eq!(
-                returned.as_ref(),
+                device.content.get(*digest).unwrap().as_ref(),
                 Some(thumbnail),
-                "the requester receives the thumbnail the local batch makes"
+                "the worker keeps the thumbnail the local batch makes"
             );
         }
     }
@@ -405,14 +369,10 @@ mod cases {
             !stderr.contains("input 1"),
             "the failure is never a position: {stderr}"
         );
-        let returned = device
-            .worker
-            .retained_output(REQUESTER, WORKSPACE, spec.job_id, digest)
-            .expect("the worker reads its retained output");
-        assert_eq!(returned.as_ref(), Some(&expected));
-        assert!(
-            !device.outputs.is_empty(),
-            "the good picture's thumbnail is persisted"
+        assert_eq!(
+            device.content.get(digest).unwrap().as_ref(),
+            Some(&expected),
+            "the good picture's thumbnail is kept"
         );
     }
 

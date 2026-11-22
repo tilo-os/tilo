@@ -98,6 +98,8 @@ pub mod surfaces;
 #[doc(hidden)]
 pub mod timing;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod work;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod workspace;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]

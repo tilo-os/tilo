@@ -1,0 +1,344 @@
+//! Which device takes a turn of work: the one way a device of a workspace
+//! takes work another device asked for.
+//!
+//! A device that wants work done somewhere else asks the workspace's devices it
+//! reaches to take it (`tilo.work#take` on the device action service,
+//! [`WORK_PROVIDER`]). Each one asked calls [`takes_turn`]. A device that may
+//! take the turn claims it with an ordinary change, a lease of the workspace
+//! named after the turn; the earliest claim wins, and a claim that is not
+//! renewed for a minute ([`tilo_peer_state::CLOCK_SKEW_NS`]) may be taken over.
+//! The device that won runs the turn and renews its claim while it does;
+//! every other device answers whose turn it is, or why it may not take it.
+//!
+//! Whether a device may take a turn is decided in one place
+//! ([`eligibility`]). For an offloaded action's work: the person's entry for
+//! this device among their servers offers compute and is not retired, this
+//! device's job runner ([`HostJobs`]) runs the transform and keeps every input
+//! already, it has room for one more job, the workspace lets this device open
+//! the record the work is about, and it lets the device that asked run the
+//! action. No caller checks any of this itself.
+
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+use tilo_actions::remote::{
+    ActionCallError, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
+};
+use tilo_actions::{ActionAddress, ActionOutput, InvocationId, Offload};
+
+use crate::workspaces::Workspaces;
+
+/// The provider a turn of work is asked under on the device action service.
+pub const WORK_PROVIDER: &str = "tilo.work";
+/// The resource a turn of work is asked on.
+pub const WORK_RESOURCE: &str = "work";
+/// The action that asks a device to take a turn.
+pub const TAKE: &str = "take";
+
+/// How long a turn's claim lasts past its last write, before the minute every
+/// claim is given for clocks that differ: none, so a claim is live for exactly
+/// that minute after its holder last renewed it.
+const CLAIM_TTL_MS: u64 = 1;
+
+/// An app's offloadable action, as a device is asked to take it: the transform
+/// its contract declares, over the app's content it names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Job {
+    /// The app whose action it is, and whose content the inputs and outputs are.
+    pub app: String,
+    /// The resource the action was invoked on.
+    pub resource: String,
+    /// The action.
+    pub action: String,
+    /// The transform the action declares: a signed package's entrypoint and its
+    /// bounds.
+    pub offload: Offload,
+    /// The content it reads, by digest, each once.
+    pub inputs: Vec<[u8; 32]>,
+}
+
+impl Job {
+    /// The ask that a device take this job as the turn `invocation`: what the
+    /// device that wants it done sends each device it reaches.
+    #[must_use]
+    pub fn take_request(&self, invocation: InvocationId) -> InvokeRequest {
+        let argument = match serde_json::json!(self) {
+            serde_json::Value::Object(job) => InvokeArgument::Json(job),
+            _ => InvokeArgument::None,
+        };
+        InvokeRequest {
+            invocation,
+            target: RemoteActionTarget {
+                provider: WORK_PROVIDER.to_owned(),
+                address: ActionAddress::new(WORK_RESOURCE, TAKE),
+            },
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+}
+
+/// One turn of work a device may take.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Turn {
+    /// An offloaded invocation of an app's action, asked by the device
+    /// `requester`.
+    Invocation {
+        /// The invocation, which names the turn.
+        id: InvocationId,
+        /// The device that asked.
+        requester: [u8; 32],
+        /// What runs.
+        job: Job,
+    },
+}
+
+impl Turn {
+    /// The lease the turn is claimed under.
+    fn lease(&self) -> String {
+        match self {
+            Self::Invocation { id, .. } => format!("invocation/{}", id.0),
+        }
+    }
+}
+
+/// Why a device may not take a turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ineligible {
+    /// The person's entry for this device among their servers offers no
+    /// compute, or it was retired, or there is no entry.
+    OffersNoCompute,
+    /// This device has no job runner.
+    RunsNoJobs,
+    /// Its job runner does not run the transform the job declares.
+    CannotRun,
+    /// It does not keep every input of the job.
+    InputsElsewhere,
+    /// It is running as many jobs as it takes on.
+    AtCapacity,
+    /// The workspace does not let this device open the record the work is
+    /// about.
+    CannotOpen,
+    /// The workspace does not let the device that asked run the action.
+    NotPermitted,
+}
+
+impl fmt::Display for Ineligible {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::OffersNoCompute => "this device offers no compute",
+            Self::RunsNoJobs => "this device runs no jobs",
+            Self::CannotRun => "this device cannot run the transform",
+            Self::InputsElsewhere => "this device does not keep every input",
+            Self::AtCapacity => "this device is running as many jobs as it takes on",
+            Self::CannotOpen => "this device cannot open the record the work is about",
+            Self::NotPermitted => "the workspace does not let the device that asked run this",
+        })
+    }
+}
+
+/// Why a device does not take a turn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotTaken {
+    /// Another device claimed it first.
+    TakenBy([u8; 32]),
+    /// This device may not take it.
+    Ineligible(Ineligible),
+    /// The claim could not be written.
+    Unwritten(String),
+}
+
+impl fmt::Display for NotTaken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TakenBy(device) => {
+                let mut short = hex::encode(device);
+                short.truncate(8);
+                write!(f, "the turn is taken by {short}")
+            }
+            Self::Ineligible(why) => write!(f, "{why}"),
+            Self::Unwritten(why) => write!(f, "the claim was not written: {why}"),
+        }
+    }
+}
+
+/// This device's claim on a turn: renewed while the turn runs, released when
+/// it is done.
+pub struct Claim {
+    workspaces: Workspaces,
+    workspace: String,
+    lease: String,
+    device: [u8; 32],
+}
+
+impl Claim {
+    /// Push the claim out again. `false` once another device holds the turn,
+    /// as it does after two devices claimed it at once and their claims met:
+    /// the device that renews then stops the work.
+    pub async fn renew(&self) -> bool {
+        if self
+            .workspaces
+            .lease_holder(&self.workspace, &self.lease)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|holder| holder != self.device)
+        {
+            return false;
+        }
+        if let Err(error) = self
+            .workspaces
+            .write_lease(&self.workspace, &self.lease, CLAIM_TTL_MS)
+            .await
+        {
+            tracing::warn!(lease = %self.lease, %error, "a turn's claim was not renewed");
+        }
+        self.workspaces
+            .lease_holder(&self.workspace, &self.lease)
+            .await
+            .ok()
+            .flatten()
+            == Some(self.device)
+    }
+
+    /// Let go of the turn, which is done.
+    pub async fn release(self) {
+        if let Err(error) = self
+            .workspaces
+            .write_lease(&self.workspace, &self.lease, 0)
+            .await
+        {
+            tracing::warn!(lease = %self.lease, %error, "a finished turn's claim was not released");
+        }
+    }
+}
+
+/// Whether this device takes `turn` of `workspace`: its claim when it does, or
+/// whose turn it is and why not.
+///
+/// # Errors
+///
+/// [`NotTaken`]: another device holds the turn, this device may not take it, or
+/// its claim could not be written.
+pub async fn takes_turn(
+    workspaces: &Workspaces,
+    workspace: &str,
+    turn: &Turn,
+) -> Result<Claim, NotTaken> {
+    eligibility(workspaces, workspace, turn)
+        .await
+        .map_err(NotTaken::Ineligible)?;
+    let device = workspaces.serving_certificate().device_public_key;
+    let lease = turn.lease();
+    let holder = workspaces
+        .lease_holder(workspace, &lease)
+        .await
+        .ok()
+        .flatten();
+    if let Some(holder) = holder.filter(|holder| *holder != device) {
+        return Err(NotTaken::TakenBy(holder));
+    }
+    let written = workspaces
+        .write_lease(workspace, &lease, CLAIM_TTL_MS)
+        .await;
+    match workspaces
+        .lease_holder(workspace, &lease)
+        .await
+        .ok()
+        .flatten()
+    {
+        Some(holder) if holder == device => Ok(Claim {
+            workspaces: workspaces.clone(),
+            workspace: workspace.to_owned(),
+            lease,
+            device,
+        }),
+        Some(holder) => Err(NotTaken::TakenBy(holder)),
+        None => Err(NotTaken::Unwritten(
+            written.err().unwrap_or_else(|| "it was not kept".into()),
+        )),
+    }
+}
+
+/// Whether this device offers compute to its person's workspaces: the person's
+/// entry for it among their servers says so and it was not retired.
+pub async fn offers_compute(workspaces: &Workspaces) -> bool {
+    let device = workspaces.serving_certificate().device_public_key;
+    crate::workspaces::servers::read(workspaces)
+        .await
+        .is_ok_and(|servers| servers.active(&device).is_some_and(|entry| entry.compute))
+}
+
+/// Whether this device may take `turn` in `workspace`, or why not.
+async fn eligibility(
+    workspaces: &Workspaces,
+    workspace: &str,
+    turn: &Turn,
+) -> Result<(), Ineligible> {
+    match turn {
+        Turn::Invocation { requester, job, .. } => {
+            if !offers_compute(workspaces).await {
+                return Err(Ineligible::OffersNoCompute);
+            }
+            let jobs = workspaces.host_jobs().ok_or(Ineligible::RunsNoJobs)?;
+            if !jobs.runs(workspace, job) {
+                return Err(Ineligible::CannotRun);
+            }
+            if !jobs.holds(workspace, job) {
+                return Err(Ineligible::InputsElsewhere);
+            }
+            if jobs.free_slots() == Some(0) {
+                return Err(Ineligible::AtCapacity);
+            }
+            let device = workspaces.serving_certificate().device_public_key;
+            if !workspaces.opens_job_record(device, workspace, job).await {
+                return Err(Ineligible::CannotOpen);
+            }
+            if !workspaces.permits_job(*requester, workspace, job).await {
+                return Err(Ineligible::NotPermitted);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// The jobs a device runs for the devices of its workspaces: an offloadable
+/// action's declared transform, run over content the device keeps.
+pub trait HostJobs: Send + Sync {
+    /// Whether this device runs `job`'s transform in `workspace`: it has the
+    /// package that performs it.
+    fn runs(&self, workspace: &str, job: &Job) -> bool;
+
+    /// Whether this device keeps every one of `job`'s inputs already.
+    fn holds(&self, workspace: &str, job: &Job) -> bool;
+
+    /// How many more jobs this device can start right now, when it keeps
+    /// count: zero says it is at its limit. `None` for a runner that takes
+    /// what it is handed.
+    fn free_slots(&self) -> Option<u32> {
+        None
+    }
+
+    /// Run `job` of `workspace`, the turn `invocation` the device `requester`
+    /// asked for, and answer with what it produced: each output kept where
+    /// the workspace's devices fetch the app's content, addressed as
+    /// `tilo.content:<hex>`.
+    fn run(
+        &self,
+        workspace: &str,
+        job: &Job,
+        requester: [u8; 32],
+        invocation: InvocationId,
+    ) -> Pending<Result<ActionOutput, ActionCallError>>;
+
+    /// Stop the job running here for `invocation`, when it still runs.
+    fn cancel(&self, invocation: InvocationId) {
+        let _ = invocation;
+    }
+}

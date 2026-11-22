@@ -479,10 +479,6 @@ pub struct AppBrokerState {
     /// Admitted offloadable invocations waiting for the turn to ask
     /// [`ProcessServices::action_offload`] where they run.
     offloads: Mutex<Vec<offload_api::QueuedOffload>>,
-    /// Offloadable invocations the route sent back here, by wire id: what
-    /// was asked and when the app was handed it.
-    offloaded_here:
-        Mutex<HashMap<u64, (tilo_actions::offload::OffloadRequest, std::time::Instant)>>,
     /// The worker connections' admitted joins, by connection and route
     /// ([`host_workers`]); never reconstructed from surfaces.
     host_workers: Mutex<host_workers::HostWorkers>,

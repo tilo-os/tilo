@@ -25,17 +25,15 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{
-    ActionService, FOLLOW_DEADLINE, Offering, ReadFuture, RemoteDevice, Workspaces,
+    ActionService, FOLLOW_DEADLINE, ReadFuture, RemoteDevice, Workspaces,
 };
 use tilo_power_mgmt::InhibitToken;
 use tilo_power_mgmt::inhibit::INHIBIT_SUSPEND;
-use tilo_runtime::offload::{ActionServicePeers, offer_offload, own_offering};
+use tilo_runtime::offload::{ActionServicePeers, turn_offload};
 use tilo_runtime::other_devices::{OtherDevices, Whereabouts};
-use tilo_server_protocol::{Whose, WorkSetting};
 
 use crate::device_agents::{HandedAgents, Host};
 use crate::engine::Engine;
-use neighbour_wire::offer::{Answer, Query};
 
 /// This device's action service, as the session serves it and reaches the person's other devices
 /// through it.
@@ -72,12 +70,10 @@ struct Inner {
     /// reaches now.
     addresses: Mutex<BTreeMap<EndpointId, EndpointAddr>>,
     /// The devices of each workspace this session reaches now, as its topic and its hosts say
-    /// ([`Self::here`]): the ones an offer round asks.
+    /// ([`Self::here`]): the ones asked to take a turn of work.
     here: Mutex<BTreeMap<String, BTreeSet<[u8; 32]>>>,
     /// What answers a request that arrived here.
     dispatch: DeviceDispatch,
-    /// What this session says of itself when another of the person's devices offers it work.
-    offering: SessionOffering,
     /// The runtime the action service answers on, where its asks and runs are carried out.
     runtime: tokio::runtime::Handle,
     /// The person this device is, and its own key.
@@ -87,7 +83,7 @@ struct Inner {
 impl DeviceActions {
     /// This device's action service on the session's `endpoint` , authorizing against the workspaces
     /// `engine` holds, answering through the dispatcher the session installs once its broker
-    /// serves, and offering work with what it keeps.
+    /// serves.
     pub(crate) fn start(
         identity: &tilo_network_actor::DeviceIdentity,
         endpoint: Endpoint,
@@ -99,17 +95,12 @@ impl DeviceActions {
             Arc::new(dispatch.clone()),
             Arc::new(HeldWorkspaces(engine)),
         );
-        // Another of the person's devices may ask which of them would run a piece of work: this one
-        // answers with what it knows of itself.
-        let offering = SessionOffering::default();
-        action_service.offering(offering.clone());
         Self(Arc::new(Inner {
             action_service,
             endpoint,
             addresses: Mutex::default(),
             here: Mutex::default(),
             dispatch,
-            offering,
             runtime: tokio::runtime::Handle::current(),
             whose: (
                 identity.device_cert.user_public_key,
@@ -195,16 +186,10 @@ impl DeviceActions {
             .is_some_and(|devices| devices.contains(&device))
     }
 
-    /// The content this session keeps, as its offer says: another device weighs a job whose inputs
-    /// are already here as moving nothing.
-    pub(crate) fn attach_content(&self, content: Arc<crate::content::ContentService>) {
-        self.0.offering.holding(content);
-    }
-
-    /// The route an offloadable invocation takes where a device of its workspace would run it
-    /// sooner: the round asks them through this action service, the invocation runs on the device that wins,
-    /// and the content it produced is kept in `content` — the store the app that invoked it reads
-    /// its output from. `None` when offload is turned off on this device.
+    /// The route an offloadable invocation takes: the workspace's devices connected here are asked
+    /// through this action service to take its turn, the one that does runs it, and the content it
+    /// produced is kept in `content`, the store the app that invoked it reads its output from.
+    /// `None` when offload is turned off on this device.
     pub(crate) fn offload_route(
         &self,
         content: Arc<crate::content::ContentService>,
@@ -221,7 +206,7 @@ impl DeviceActions {
             self.0.runtime.clone(),
         )
         .reachable(move |workspace, device| asking.reachable(workspace, device));
-        offer_offload(media, Arc::new(peers))
+        turn_offload(media, Arc::new(peers))
     }
 
     /// Where `id` of the person's devices is reached.
@@ -448,7 +433,10 @@ impl ActionProvider for DeviceDispatch {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.note_remote_use(caller);
-        if request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+        // The workspaces' governance, and the turns of work this device takes, are its workspace
+        // service's to answer, unless an agent this device handed its requests to asks.
+        if (request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+            || request.target.provider == tilo_workspace_service::work::WORK_PROVIDER)
             && !crate::device_agents::handed(caller)
         {
             let governance = self.0.governance.lock_recover().clone();
@@ -515,55 +503,12 @@ impl Workspaces for HeldWorkspaces {
     }
 }
 
-/// What this session says of itself when another of the person's devices offers it work: what the
-/// device's work setting takes, and which of the job's inputs it keeps — a device that has them is
-/// not weighed as receiving them, and one that keeps no content weighs every input as moving here.
-#[derive(Clone)]
-struct SessionOffering {
-    /// The work this device takes. A session runs on a machine someone is at, so it takes its own
-    /// person's work where the setting says the machine has room for it.
-    work: WorkSetting,
-    content: Arc<Mutex<Option<Arc<crate::content::ContentService>>>>,
-}
-
-impl Default for SessionOffering {
-    fn default() -> Self {
-        Self {
-            work: WorkSetting::own_person(),
-            content: Arc::default(),
-        }
-    }
-}
-
-impl SessionOffering {
-    /// The content this session keeps, from now on: what its answer reports holding.
-    fn holding(&self, content: Arc<crate::content::ContentService>) {
-        *self.content.lock_recover() = Some(content);
-    }
-}
-
-impl Offering for SessionOffering {
-    fn report(&self, _from: [u8; 32], whose: &Whose, offer: &Query) -> Answer {
-        let content = self.content.lock_recover().clone();
-        let holds = content.map_or_else(Vec::new, |content| {
-            offer
-                .work
-                .inputs
-                .iter()
-                .map(|(digest, _)| *digest)
-                .filter(|digest| content.holds(&offer.workspace, &offer.route.app, *digest))
-                .collect()
-        });
-        own_offering(&self.work, whose, &offer.route.app, holds)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     //! Two of the person's devices on this machine's loopback: an action an app invokes for the
     //! other device runs there through the session's own action service and answers here, a device the
-    //! workspace does not hold is refused, a piece of work runs on the device that offers and holds
-    //! its inputs, and one nobody offers for runs here.
+    //! workspace does not hold is refused, and a piece of work no device connected here takes runs
+    //! here.
 
     tilo_automerge_isolate::test_worker!();
 
@@ -576,21 +521,18 @@ mod tests {
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
     use iroh::{Endpoint, RelayMode, SecretKey};
-    use neighbour_wire::offer::{Decline, Power, Rank, Route, Work};
     use tilo_actions::offload::{OffloadRequest, Offloaded};
     use tilo_actions::remote::{
-        InvokeArgument, TestProvider, application_action_target, application_provider, own_device,
+        InvokeArgument, TestProvider, application_action_target, own_device,
     };
-    use tilo_actions::{ActionAddress, ActionOutput, CONTENT_RESOURCE_KIND, Offload};
+    use tilo_actions::{ActionAddress, ActionOutput, Offload};
     use tilo_broker_core::route::CrdtRoute;
     use tilo_content::hash_bytes;
-    use tilo_network_actor::{DeviceIdentity, RecordContentDelivery};
+    use tilo_network_actor::DeviceIdentity;
     use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
     use tilo_user_identity::DeviceCert;
-    use tilo_workspace_service::content::ContentState;
 
     use super::*;
-    use crate::sync::Cmd;
 
     const WORKSPACE: &str = testing::WORKSPACE;
     /// How long the device asked has to answer before the test fails.
@@ -599,10 +541,6 @@ mod tests {
     /// The package whose transform a test's action declares.
     const PACKAGE: &str = "so.tilo.images";
     const ENTRYPOINT: &str = "thumbnail";
-    /// How long the transform last took on the device that asked: far longer than moving its
-    /// photograph to another device takes, so that a device holding the photograph is one that
-    /// would run it sooner however slow the day's round trip is.
-    const LOCAL_RUN: Duration = Duration::from_secs(60);
 
     /// A device key certified by `root` as one of its person's devices.
     fn device(root: &SigningKey, seed: u8, label: &str) -> (SigningKey, DeviceCert) {
@@ -809,51 +747,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_session_says_which_of_the_persons_devices_would_take_work() {
-        let root = SigningKey::from_bytes(&[0x51; 32]);
-        let here = device(&root, 0x52, "This device");
-        let there = device(&root, 0x53, "The other device");
-        let provider = Arc::new(TestProvider::new());
-        let (there_endpoint, router, _) =
-            answering(&there.0, &there.1, Some(&here), provider).await;
-        let (here_endpoint, actions) = asking(&here.0, &here.1, addr(&there_endpoint)).await;
-        let route = Route::new("so.tilo.nowhere", "notes.root", "insert");
-        let work = Work {
-            local_wall_ms: Some(10_000),
-            ..Work::none()
-        };
-
-        let choice = tokio::time::timeout(
-            PATIENCE,
-            actions.action_service().offers(
-                &here_endpoint,
-                [addr(&there_endpoint)],
-                WORKSPACE,
-                &route,
-                &work,
-                tilo_actions::InvocationId::new(),
-                PATIENCE,
-            ),
-        )
-        .await
-        .expect("the round finishes")
-        .expect("the round completes");
-
-        assert_eq!(choice.considered.len(), 1, "the one device asked: {choice}");
-        // It answered with what it knows of itself: only a device that never answered is declined
-        // for being away.
-        assert_eq!(
-            choice.considered[0].verdict,
-            Err(Decline::AppNotInstalled),
-            "the other session answered: {choice}"
-        );
-        assert_eq!(choice.worker, None, "no device here can run that app");
-
-        router.shutdown().await.expect("the router stops");
-        here_endpoint.close().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_device_the_workspace_does_not_hold_is_refused() {
         let root = SigningKey::from_bytes(&[0x41; 32]);
         let there = device(&root, 0x42, "The other device");
@@ -889,72 +782,10 @@ mod tests {
         stranger_endpoint.close().await;
     }
 
-    /// A device's content, and what it said about it, waiting to be carried to the other device as
-    /// the workspace's hosts carry it.
-    struct Content {
-        action_service: Arc<crate::content::ContentService>,
-        address: EndpointId,
-        said: tokio::sync::mpsc::UnboundedReceiver<crate::sync::HostCmd>,
-    }
-
-    impl Content {
-        /// The content store of the session whose endpoint is `key` 's, as the workspace's topic
-        /// names it.
-        fn open(key: &SigningKey) -> Self {
-            let address = SecretKey::from_bytes(&key.to_bytes()).public();
-            let action_service = crate::content::ContentService::open(None);
-            let (say, said) = tokio::sync::mpsc::unbounded_channel::<crate::sync::HostCmd>();
-            action_service.bind(crate::sync::HostOutbox::of(say), address);
-            Self {
-                action_service,
-                address,
-                said,
-            }
-        }
-
-        /// The bytes an app keeps as `app` 's content in `WORKSPACE` .
-        fn keep(&self, app: &str, bytes: &[u8]) -> String {
-            let hash = hash_bytes(bytes);
-            self.action_service
-                .route()
-                .offer(&CrdtRoute::app(app, WORKSPACE), &hash, bytes)
-                .expect("the app's content is kept");
-            hash
-        }
-    }
-
-    /// Hand what `said` about content to `to` , stamped with the device it came from: a want on the
-    /// workspace's topic, and an answer to the one device that asked.
-    fn carry(
-        from: EndpointId,
-        said: &mut tokio::sync::mpsc::UnboundedReceiver<crate::sync::HostCmd>,
-        to: &crate::content::ContentService,
-    ) {
-        while let Ok(outgoing) = said.try_recv() {
-            match outgoing {
-                crate::sync::HostCmd::Network(Cmd::Publish { ws, msg }) => {
-                    to.heard(ws, WORKSPACE, from, &msg, &|_| true);
-                }
-                crate::sync::HostCmd::Content(RecordContentDelivery { ws, msg, .. }) => {
-                    to.heard(ws, WORKSPACE, from, &msg, &|_| true);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// The photograph the transform reads: large enough that moving it to another device takes
-    /// longer than the run here did.
+    /// The photograph the transform reads.
     fn photograph() -> Vec<u8> {
         (0..8 * 1024 * 1024_u32)
             .map(|index| u8::try_from(index % 251).expect("a byte"))
-            .collect()
-    }
-
-    /// What the transform makes of it.
-    fn thumbnail() -> Vec<u8> {
-        (0..240_000_u32)
-            .map(|index| u8::try_from(index % 241).expect("a byte"))
             .collect()
     }
 
@@ -990,180 +821,9 @@ mod tests {
         (request, sent)
     }
 
-    /// The session's own answer, for a device that has the app installed and is on mains power:
-    /// what one of the person's devices that would take the work says, without a test depending on
-    /// what this machine has installed or how it is powered.
-    struct Willing(SessionOffering);
-
-    impl Offering for Willing {
-        fn report(&self, from: [u8; 32], whose: &Whose, offer: &Query) -> Answer {
-            let answer = self.0.report(from, whose, offer);
-            Answer::taking(
-                Rank {
-                    power: Power::External,
-                    load_permille: 0,
-                    latency_ms: 0,
-                },
-                answer.holds,
-            )
-        }
-    }
-
-    /// What each of two devices' content says, carried to the other as the workspace's hosts carry
-    /// it, until the returned task is aborted: the two action services back, for the test to read.
-    fn carrying(
-        here: Content,
-        there: Content,
-    ) -> (
-        Arc<crate::content::ContentService>,
-        Arc<crate::content::ContentService>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let addresses = [here.address, there.address];
-        let mut said = [here.said, there.said];
-        let action_services = [
-            Arc::clone(&here.action_service),
-            Arc::clone(&there.action_service),
-        ];
-        let pump = tokio::spawn(async move {
-            loop {
-                carry(addresses[0], &mut said[0], &action_services[1]);
-                carry(addresses[1], &mut said[1], &action_services[0]);
-                tokio::time::sleep(Duration::from_millis(2)).await;
-            }
-        });
-        (here.action_service, there.action_service, pump)
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn an_offloadable_action_runs_where_it_was_offered_and_its_inputs_are_kept() {
-        let root = SigningKey::from_bytes(&[0x71; 32]);
-        let here = device(&root, 0x72, "This device");
-        let there = device(&root, 0x73, "The other device");
-        // What the transform makes of the photograph, and where the device that ran it keeps it: on
-        // that device's own content, in the app's scope in the workspace, as a run there leaves it.
-        let produced = thumbnail();
-        let made = hash_bytes(&produced);
-        let there_content = Content::open(&there.0);
-        let written = {
-            let kept = Arc::clone(&there_content.action_service);
-            let (bytes, hash) = (produced.clone(), made.clone());
-            move |_: &InvokeRequest| {
-                kept.route()
-                    .offer(&CrdtRoute::app(APP, WORKSPACE), &hash, &bytes)
-                    .expect("the device that ran it keeps its output");
-                ActionOutput {
-                    value: None,
-                    resources: vec![format!("{CONTENT_RESOURCE_KIND}:{hash}")],
-                }
-            }
-        };
-        let provider = Arc::new(TestProvider::new().completing(written));
-        let (there_endpoint, there_router, there_actions) =
-            answering(&there.0, &there.1, Some(&here), Arc::clone(&provider)).await;
-        // What that device says when offered the work: it has the app, and the photograph is
-        // content it already keeps.
-        let offering = SessionOffering::default();
-        offering.holding(Arc::clone(&there_content.action_service));
-        there_actions.action_service().offering(Willing(offering));
-
-        let answer_with = Arc::new(TestProvider::new());
-        let (here_endpoint, here_router, actions) =
-            answering(&here.0, &here.1, Some(&there), answer_with).await;
-        actions.learn(addr(&there_endpoint));
-        // The workspace's topic reports the other device connected here: it is one of the devices
-        // the round asks.
-        actions.here(
-            WORKSPACE,
-            std::collections::BTreeSet::from([there.1.device_public_key]),
-        );
-        let here_content = Content::open(&here.0);
-        // The app's photograph is here, and on the other device too: what the round weighs as
-        // moving nothing.
-        let photograph = photograph();
-        let input = here_content.keep(APP, &photograph);
-        there_content.keep(APP, &photograph);
-
-        // The two devices' content hears what the other says, as the workspace's hosts carry it.
-        let (here_action_service, _, pump) = carrying(here_content, there_content);
-
-        let route = actions
-            .offload_route(Arc::clone(&here_action_service))
-            .expect("offload is on");
-
-        // Nothing has measured how long the transform takes here, so nothing is quicker than
-        // running it here: the app's own handler runs it.
-        let (request, sent) = offloadable(vec![input.clone()]);
-        let placed = route.offload_invocation(request.clone(), sent).await;
-        assert!(
-            matches!(placed, Offloaded::RunHere { .. }),
-            "the first run is here: {placed:?}"
-        );
-        route.ran_here(&request, LOCAL_RUN);
-
-        // The other device has the app and already keeps the photograph, and the run here took
-        // longer than moving it: it offers, and the round picks it.
-        let (request, sent) = offloadable(vec![input]);
-        let placed =
-            tokio::time::timeout(PATIENCE, route.offload_invocation(request, sent.clone()))
-                .await
-                .expect("the round finishes");
-        let Offloaded::Ran { device, output, .. } = placed else {
-            panic!("the other device runs it: {placed:?}");
-        };
-        assert_eq!(
-            device,
-            hex::encode(there.1.device_public_key),
-            "the device that offered and holds the photograph"
-        );
-
-        // It ran there, as the invocation the app made, in the workspace both devices are in.
-        let asked = provider.asked();
-        assert_eq!(asked.len(), 1, "one invocation reached the other device");
-        assert_eq!(
-            asked[0].invocation, sent.invocation,
-            "under the id the app invoked it with"
-        );
-        assert_eq!(
-            application_provider(&asked[0].target.provider),
-            Some((WORKSPACE, APP)),
-            "the app's action, in the workspace the two devices share"
-        );
-        let seen = provider.callers();
-        assert_eq!(
-            seen[0].device_public_key(),
-            Some(&here.1.device_public_key),
-            "the device that invoked it, not the one that ran it"
-        );
-
-        // What the other device produced is content here, read back by the address the run
-        // returned, exactly as a run here would leave it.
-        assert_eq!(
-            output.resources,
-            vec![format!("{CONTENT_RESOURCE_KIND}:{made}")]
-        );
-        let route = CrdtRoute::app(APP, WORKSPACE);
-        let mut news = here_action_service.route().subscribe(&route);
-        here_action_service.route().want(&route, &made);
-        let arrived = news
-            .try_recv()
-            .expect("this device keeps what the run produced");
-        assert_eq!(arrived.state, ContentState::Resolved);
-        assert_eq!(
-            arrived.bytes, produced,
-            "the output the app reads, in its own scope in the workspace"
-        );
-
-        pump.abort();
-        here_router.shutdown().await.expect("the router stops");
-        there_router.shutdown().await.expect("the router stops");
-        here_endpoint.close().await;
-        there_endpoint.close().await;
-    }
-
     /// A device of the workspace that is not connected here now is not asked,
-    /// though this session knows where it lives: the round has nobody to ask,
-    /// so the action runs here without waiting.
+    /// though this session knows where it lives: nobody is asked, so the action
+    /// runs here without waiting.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_device_of_the_workspace_that_is_away_is_not_asked() {
         let root = SigningKey::from_bytes(&[0x91; 32]);
@@ -1187,11 +847,6 @@ mod tests {
             .offload_route(Arc::clone(&content))
             .expect("offload is on");
 
-        let (request, sent) = offloadable(vec![input.clone()]);
-        let placed = route.offload_invocation(request.clone(), sent).await;
-        assert!(matches!(placed, Offloaded::RunHere { .. }), "{placed:?}");
-        route.ran_here(&request, LOCAL_RUN);
-
         let (request, sent) = offloadable(vec![input]);
         let placed = tokio::time::timeout(PATIENCE, route.offload_invocation(request, sent))
             .await
@@ -1199,7 +854,7 @@ mod tests {
         let Offloaded::RunHere { reason } = placed else {
             panic!("nobody connected was asked: {placed:?}");
         };
-        assert!(reason.contains("no device offered to run it"), "{reason}");
+        assert_eq!(reason, "no other device of the workspace is reachable");
 
         here_router.shutdown().await.expect("the router stops");
         away_router.shutdown().await.expect("the router stops");
@@ -1212,7 +867,7 @@ mod tests {
         let root = SigningKey::from_bytes(&[0x81; 32]);
         let here = device(&root, 0x82, "This device");
         let endpoint = endpoint(&here.0).await;
-        // This session holds no workspace, so its round asks nobody.
+        // This session holds no workspace, so it asks nobody.
         let actions =
             DeviceActions::start(&identity(here.1.clone(), &here.0), endpoint.clone(), None);
         let content = crate::content::ContentService::open(None);
@@ -1224,23 +879,13 @@ mod tests {
             .expect("the app's photograph is kept here");
         let route = actions.offload_route(content).expect("offload is on");
 
-        // The app's own handler runs it here, and how long that took is what another device would
-        // have to beat.
-        let (request, sent) = offloadable(vec![input.clone()]);
-        let placed = route.offload_invocation(request.clone(), sent).await;
-        assert!(
-            matches!(placed, Offloaded::RunHere { .. }),
-            "the first run is here: {placed:?}"
-        );
-        route.ran_here(&request, LOCAL_RUN);
-
-        // Nobody is in the workspace to offer, so it runs here again, and says why.
+        // Nobody is in the workspace to take it, so it runs here, and says why.
         let (request, sent) = offloadable(vec![input]);
         let placed = route.offload_invocation(request, sent).await;
         let Offloaded::RunHere { reason } = placed else {
-            panic!("nobody offered, so it runs here: {placed:?}");
+            panic!("nobody took it, so it runs here: {placed:?}");
         };
-        assert_eq!(reason, "no device offered to run it");
+        assert_eq!(reason, "no other device of the workspace is reachable");
         endpoint.close().await;
     }
 

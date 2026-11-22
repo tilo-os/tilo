@@ -96,9 +96,6 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false
 tilo-os-search = { path = "../os-search" }
 # The native request an app hands a host search result back with.
 tilo-host-search = { path = "../../platform/tilo-host-search" }
-# What a device says of itself when another device of its workspace offers it
-# work: whether it runs the app, and how it is powered.
-tilo-power-mgmt = { path = "../../system/power" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The neighbour wire messages joined workspaces exchange.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
@@ -125,6 +122,8 @@ tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-rt.workspace = true
+# The errors a compute job fails with.
+thiserror.workspace = true
 # `tilo mcp`'s agent says its word on the person's session as a client of the workspace's board.
 tilo-session-client = { path = "../../session/client" }
 tilo-mcp = { path = "../tilo-mcp" }

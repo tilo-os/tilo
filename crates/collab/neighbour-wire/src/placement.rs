@@ -19,8 +19,130 @@
 //! server. Measured rank order decides between the devices that pass, so the
 //! cheapest transfer is not a preference of its own.
 
-pub use crate::offer::{Answer, Decline, Power, Rank, Work};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// How a device is powered, best first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Power {
+    /// Stable external power.
+    External,
+    Charging,
+    /// No reliable observation.
+    Unknown,
+    /// Running from a battery.
+    Battery,
+}
+
+/// Why a device does not take a piece of work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Decline {
+    /// Not connected, so it never answered.
+    Offline,
+    /// It cannot run the app the work's action belongs to.
+    AppNotInstalled,
+    /// Its person's work setting does not take this work.
+    NotTakingWork,
+    /// Its setting takes work only while charging, and it runs on battery.
+    OnBattery,
+    /// Its setting takes work only with more of the machine free than it has.
+    LowResources,
+    /// It is running as many jobs as it takes on at once.
+    AtCapacity,
+}
+
+impl Decline {
+    /// Stable token for logs and action output.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Offline => "offline",
+            Self::AppNotInstalled => "app_not_installed",
+            Self::NotTakingWork => "not_taking_work",
+            Self::OnBattery => "on_battery",
+            Self::LowResources => "low_resources",
+            Self::AtCapacity => "at_capacity",
+        }
+    }
+}
+
+/// What a willing device is ranked by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rank {
+    /// Power level; better wins.
+    pub power: Power,
+    /// Work already in hand per thousand slots; lower wins.
+    pub load_permille: u32,
+    /// Measured round trip to the requester; lower wins. The requester sets
+    /// it: it is the round trip it saw, not the device's own figure.
+    pub latency_ms: u32,
+}
+
+/// One device's answer: what it is ranked by, or why it does not take the
+/// work.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Answer {
+    /// What it said of the work.
+    pub verdict: Result<Rank, Decline>,
+    /// The digest of each of the job's inputs it already holds, so moving
+    /// them is no part of the choice ([`Work::inputs`]).
+    pub holds: Vec<[u8; 32]>,
+}
+
+impl Answer {
+    /// A device that takes the work, ranked by what it reported.
+    #[must_use]
+    pub fn taking(rank: Rank, holds: Vec<[u8; 32]>) -> Self {
+        Self {
+            verdict: Ok(rank),
+            holds,
+        }
+    }
+
+    /// A device that does not take the work, `decline` being why.
+    #[must_use]
+    pub fn declining(decline: Decline) -> Self {
+        Self {
+            verdict: Err(decline),
+            holds: Vec::new(),
+        }
+    }
+
+    /// What a device that never answered is taken to have said: it is not
+    /// there, and it holds none of the job's inputs.
+    #[must_use]
+    pub fn away() -> Self {
+        Self::declining(Decline::Offline)
+    }
+}
+
+/// What a piece of work would read, and how long the device that asked last took
+/// for it: the cost of moving the work weighed against the cost of running
+/// it where it was asked.
+///
+/// An answering device says which of these it already holds, so an input it
+/// has is not weighed as moving; the device that asked names them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Work {
+    /// The distinct inputs, by digest, each with its bytes; their bytes are
+    /// part of `input_bytes`.
+    pub inputs: Vec<([u8; 32], u64)>,
+    /// Every input's bytes, whether or not it was named above.
+    pub input_bytes: u64,
+    /// How long the device that asked last took for this action over
+    /// inputs like these, which moving it has to beat; `None` before it
+    /// has run it.
+    pub local_wall_ms: Option<u64>,
+}
+
+impl Work {
+    /// What runs where it was asked: reading nothing, never offloaded.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+}
 
 /// How fast a byte moves between two devices while nothing has measured
 /// their link: what a pair with no transfer history is taken to manage.
@@ -217,22 +339,6 @@ pub fn pick(answers: impl IntoIterator<Item = ([u8; 32], Answer)>, work: &Work) 
     }
 }
 
-/// The willing device that ranks best among `answers`, by the same order
-/// [`pick`] uses, and what it was ranked by.
-///
-/// This is the ranking alone: a lease asks which of the devices that claim it
-/// is the better one for the work, not whether moving the work's inputs there
-/// beats running it where the lease was seen, so no transfer is weighed.
-#[must_use]
-pub fn best(answers: impl IntoIterator<Item = ([u8; 32], Answer)>) -> Option<([u8; 32], Rank)> {
-    answers
-        .into_iter()
-        .filter_map(|(device, answer)| answer.verdict.ok().map(|rank| (device, rank)))
-        .min_by(|(left, left_rank), (right, right_rank)| {
-            key(left_rank, *left).cmp(&key(right_rank, *right))
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,7 +373,6 @@ mod tests {
             inputs: vec![([3; 32], 1_000)],
             input_bytes: 1_000,
             local_wall_ms: Some(10_000),
-            offload: None,
         }
     }
 

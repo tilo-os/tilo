@@ -37,8 +37,8 @@ commands that need Linux, and only for as long as they need it.
 - **Sandboxed WebAssembly.** wasmi is already a workspace dependency, and runs
   on devices and hosts alike.
 - **Compute jobs that run where it's best.** Offloadable actions and compute
-  jobs (`tilo_server::offload`, `tilo_server::compute`) place a job on the person's best
-  device, or run it locally. A job names a signed package and an entrypoint,
+  jobs (`tilo_runtime::offload`, `tilo_runtime::device::compute`) run a job on the device
+  that takes its turn (`tilo_workspace_service::work::takes_turn`), or locally. A job names a signed package and an entrypoint,
   takes its inputs by digest, and its outputs come back as workspace content.
   It never carries a shell string or a host path.
 
@@ -88,8 +88,8 @@ Compilers, native binaries, anything that needs syscalls WASI doesn't have,
 and interactive Linux programs such as `bash`. Each command becomes a compute
 job on the existing placement system:
 
-- **Where it runs.** The offer round places it where it can run: the
-  person's own device, or a workspace member that offers compute.
+- **Where it runs.** On the device that takes its turn: the person's own
+  device, or a workspace member that offers compute.
   The sandbox is whatever that place runs: a bwrap guest on a Linux device, a
   microVM or a container on a host.
 - **Inputs and outputs.** The inputs are the files the command can see, by

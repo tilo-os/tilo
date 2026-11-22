@@ -9,8 +9,7 @@
 //!   names once, and takes a retired server out; every enrolled server takes
 //!   part in the Servers workspace. Every holder of the Servers workspace does
 //!   that, server or desktop alike ([`super::attach::attach_named`]).
-//! - Each server sets what it answers devices offering it work from its own
-//!   entry ([`Workspaces::set_offer`]), writes the update policy it follows
+//! - Each server writes the update policy it follows
 //!   ([`super::policy`]) and the device configuration it applies
 //!   ([`super::device`]), reports what the root helper said it applied in
 //!   the entry's own status, and, once retired, lets go of every workspace it
@@ -28,7 +27,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use tilo_workspace_service::workspaces::{Offer, ResourceWrite, Workspaces};
+use tilo_workspace_service::workspaces::{ResourceWrite, Workspaces};
 
 use super::{SERVERS, device, device_id, person_workspace_id, policy, read};
 use tilo_lock::MutexRecover as _;
@@ -116,15 +115,6 @@ pub async fn reconcile_into(
         retired: own_entry.is_some_and(|server| server.retired),
         ..Applied::default()
     };
-    // What this device answers devices offering it work: the entry says what
-    // it offers, and a retired server takes nothing.
-    workspaces.set_offer(
-        own_entry
-            .filter(|server| !server.retired)
-            .map_or_else(Offer::none, |server| {
-                Offer::of(server.storage_gb, server.compute, server.machines)
-            }),
-    );
     // Every holder of the Servers workspace applies this part of the
     // document first: each enrolled server takes part in the workspace, a
     // planned machine gets the workspaces its plan names once, and a retired

@@ -649,3 +649,8 @@ reason = "a settled change in the files record; the removed variants were writte
 file = "crates/platform/tilolang-tilo/src/personal.rs"
 enum = "Keep"
 reason = "a person's state in a tilolang app, written as a write to the workspace's resource store from this change on; the documents that held `Reminded` entries are deleted with the store they lived in, and no copy of a workspace holds a tilolang document"
+
+[[break]]
+file = "crates/collab/neighbour-wire/src/actions.rs"
+enum = "ActionServiceFrame"
+reason = "a frame on a live action stream, never kept; the removed `Offer` was its last variant, so `Action` keeps its position and every frame either build sends the other reads the same. An offer from the previous build no longer decodes and its stream closes unanswered, which that build reads as the device not taking the work, and runs it where it was asked"

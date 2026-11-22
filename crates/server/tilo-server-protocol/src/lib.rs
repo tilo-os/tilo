@@ -89,7 +89,7 @@ pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
 pub use transport::{ALPN, DocumentAnswer, Envelope, OwnedGroup};
-pub use work::{Machine, Whose, WorkFrom, WorkKinds, WorkSetting, WorkWhen};
+pub use work::{Whose, WorkFrom, WorkKinds, WorkSetting, WorkWhen};
 
 /// Domain-separated secret the server binds, derived from the device secret.
 ///
