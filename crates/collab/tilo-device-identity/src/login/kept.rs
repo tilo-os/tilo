@@ -159,13 +159,35 @@ pub fn store(place: &Place, device: &Device) -> Result<()> {
 /// This computer's device key and the login kept in `place`; `None` when this computer did not
 /// log in.
 ///
+/// Reading the device key makes this process undumpable ([`load_device_key`]), so a program that
+/// only needs to know which device this computer is takes [`load_public`] instead.
+///
 /// # Errors
 /// The login is damaged, or its certificate is for a device key this computer no longer has.
 pub fn load(place: &Place) -> Result<Option<(SigningKey, Device)>> {
-    let damaged = |what: &str, why: &dyn std::fmt::Display| {
-        tracing::debug!(%why, "reading this computer's Tilo {what}");
-        anyhow!(LOGIN_DAMAGED)
+    let Some(device) = load_public(place)? else {
+        return Ok(None);
     };
+    let key = load_device_key(&place.keys).map_err(|error| damaged("device key", &error))?;
+    if device.cert.device_public_key != key.verifying_key().to_bytes() {
+        bail!(LOGIN_STALE);
+    }
+    Ok(Some((key, device)))
+}
+
+/// What a login this computer cannot read says, with why kept to this process's log.
+fn damaged(what: &str, why: &dyn std::fmt::Display) -> anyhow::Error {
+    tracing::debug!(%why, "reading this computer's Tilo {what}");
+    anyhow!(LOGIN_DAMAGED)
+}
+
+/// The login kept in `place`, as its certificate and what the login names: read without this
+/// computer's device key, so the process stays dumpable. The certificate names the device, which
+/// is all a program that finds this device's daemon ([`held_api`]) needs.
+///
+/// # Errors
+/// The login is damaged, or its certificate is for another person than the one it names.
+pub fn load_public(place: &Place) -> Result<Option<Device>> {
     let bytes = match std::fs::read(place.dir.join(LOGIN_FILE)) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -176,29 +198,25 @@ pub fn load(place: &Place) -> Result<Option<(SigningKey, Device)>> {
         .ok()
         .and_then(|user| user.try_into().ok())
         .ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
-    let key = load_device_key(&place.keys).map_err(|error| damaged("device key", &error))?;
     let cert = read_device_cert(&place.keys.device_cert_for_user(&user))
         .map_err(|error| damaged("device certificate", &error))?;
-    if cert.device_public_key != key.verifying_key().to_bytes() || cert.user_public_key != user {
+    if cert.user_public_key != user {
         bail!(LOGIN_STALE);
     }
     let server_cert = hex::decode(&kept.server_cert)
         .ok()
         .and_then(|bytes| tilo_user_identity::canonical::from_canonical_bytes(&bytes).ok())
         .ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
-    Ok(Some((
-        key,
-        Device {
-            site: kept.site,
-            host_origin: kept.host_origin,
-            workspace: kept.workspace,
-            workspace_name: kept.workspace_name,
-            agent: kept.agent,
-            cert,
-            server_cert,
-            server_address: kept.server_address,
-        },
-    )))
+    Ok(Some(Device {
+        site: kept.site,
+        host_origin: kept.host_origin,
+        workspace: kept.workspace,
+        workspace_name: kept.workspace_name,
+        agent: kept.agent,
+        cert,
+        server_cert,
+        server_address: kept.server_address,
+    }))
 }
 
 /// The workspace this computer's login entered: its id, and the name the
@@ -209,7 +227,7 @@ pub fn load(place: &Place) -> Result<Option<(SigningKey, Device)>> {
 /// # Errors
 /// The login is damaged.
 pub fn entered_workspace(keys: IdentityPaths) -> Result<Option<(String, String)>> {
-    let Some((_, device)) = load(&Place::here(keys)?)? else {
+    let Some(device) = load_public(&Place::here(keys)?)? else {
         return Ok(None);
     };
     let name = device
@@ -276,13 +294,22 @@ pub fn holder_api_socket(dir: &Path, name: &str) -> PathBuf {
 /// made for itself, with the workspace it founded, so its programs reach the daemon here too.
 /// `keys` are this computer's device key and certificates.
 ///
+/// The daemon's socket is named by a certificate, never by the device key: a program that reads
+/// the key makes itself undumpable, and the daemon admits a caller by reading its namespaces,
+/// which a non-dumpable process hides from it.
+///
 /// # Errors
 /// The login is damaged, or the holders' directory is not this account's.
 #[cfg(unix)]
 pub fn held_api(keys: IdentityPaths) -> Result<Option<PathBuf>> {
-    let place = Place::here(keys)?;
-    let key = match load(&place)? {
-        Some((key, _)) => key.verifying_key().to_bytes(),
+    held_api_in(&Place::here(keys)?)
+}
+
+/// [`held_api`] for the login `place` keeps.
+#[cfg(unix)]
+fn held_api_in(place: &Place) -> Result<Option<PathBuf>> {
+    let key = match load_public(place)? {
+        Some(device) => device.cert.device_public_key,
         // No login: the device key the daemon serves as, named by its certificate so the secret
         // is not read here.
         None => match read_device_cert(&place.keys().device_cert) {
@@ -292,4 +319,89 @@ pub fn held_api(keys: IdentityPaths) -> Result<Option<PathBuf>> {
     };
     let holders = holder_dir(place.dir()).map_err(|why| anyhow!(why))?;
     Ok(Some(holder_api_socket(&holders, &holder_name(&key))))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    /// The daemon's socket is found from the certificate, and finding it never makes the process
+    /// undumpable: the daemon refuses a connection from a process it cannot read the namespaces
+    /// of, and a program acting as this computer's device only needs to know where its daemon is.
+    #[test]
+    fn the_daemons_socket_is_named_by_the_certificate_and_the_calling_process_stays_dumpable() {
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "the_daemons_socket_is_named_by_the_certificate_and_the_calling_process_stays_dumpable",
+            || {
+                // SAFETY: PR_GET_DUMPABLE takes no pointers and only reads a flag.
+                let dumpable = || unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+                assert_eq!(dumpable(), 1, "a test process starts dumpable");
+
+                let root =
+                    tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+                let login_dir = root.path().join("login");
+                std::fs::create_dir(&login_dir).unwrap();
+                let keys = IdentityPaths::under(root.path().join("identity"));
+                keys.ensure_directories().unwrap();
+
+                let device_key = SigningKey::from_bytes(&[7; 32]);
+                let root_key = SigningKey::from_bytes(&[9; 32]);
+                let user = root_key.verifying_key().to_bytes();
+                let mut cert = DeviceCert {
+                    user_public_key: user,
+                    device_public_key: device_key.verifying_key().to_bytes(),
+                    device_label: "laptop".into(),
+                    capabilities: tilo_user_identity::DeviceCapabilities::member(),
+                    issued_at_ns: 1_000,
+                    expires_at_ns: None,
+                    signature: [0; 64],
+                    issuer: None,
+                };
+                tilo_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
+                write_device_cert(&keys.device_cert_for_user(&user), &cert).unwrap();
+                let mut server = cert.clone();
+                server.device_public_key =
+                    SigningKey::from_bytes(&[11; 32]).verifying_key().to_bytes();
+                tilo_user_identity::sign_device_cert(&mut server, &root_key).unwrap();
+                let server_cert =
+                    hex::encode(tilo_user_identity::canonical::canonical_bytes(&server).unwrap());
+                let kept = serde_json::json!({
+                    "site": "https://tilo.sh",
+                    "host_origin": "https://eu1.tilo.sh",
+                    "workspace": "6f1e1c3a-0000-4000-8000-000000000001",
+                    "user": hex::encode(user),
+                    "agent": "tilo-test",
+                    "server_cert": server_cert,
+                });
+                std::fs::write(
+                    login_dir.join(LOGIN_FILE),
+                    serde_json::to_vec(&kept).unwrap(),
+                )
+                .unwrap();
+                assert!(
+                    !keys.device_privkey.exists(),
+                    "this login keeps no device key, so naming its daemon must not need one"
+                );
+
+                let place = Place::at(login_dir.clone(), keys);
+                let socket = held_api_in(&place)
+                    .unwrap()
+                    .expect("a login names its daemon");
+                assert_eq!(
+                    socket,
+                    holder_api_socket(
+                        &holder_dir(&login_dir).unwrap(),
+                        &holder_name(&cert.device_public_key),
+                    ),
+                    "the daemon is the one the device's certificate names"
+                );
+                assert_eq!(
+                    dumpable(),
+                    1,
+                    "finding this computer's daemon reads no device key"
+                );
+            },
+        );
+    }
 }

@@ -190,10 +190,10 @@ impl Held {
     /// This computer is not logged in, or its peer could not be reached.
     pub fn connect() -> Result<Self> {
         let login = crate::login::Place::here(crate::identity::paths())?;
-        let (key, _) =
-            crate::login::load(&login)?.ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
+        let device = crate::login::load_public(&login)?
+            .ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
         crate::login::trust_test_certificates()?;
-        let place = tilo_api::daemon::DaemonPlace::of(login.dir(), &key.verifying_key().to_bytes())
+        let place = tilo_api::daemon::DaemonPlace::of(login.dir(), &device.cert.device_public_key)
             .map_err(|why| anyhow!(why))?;
         let stream = if let Some(stream) = place.connect() {
             stream
@@ -508,8 +508,8 @@ impl Workspace for Held {
         // calls are answered as the person there, never as the agent a migration acts as.
         if self.own.is_none() {
             let workspace =
-                crate::login::load(&crate::login::Place::here(crate::identity::paths())?)?
-                    .map(|(_, device)| device.workspace)
+                crate::login::load_public(&crate::login::Place::here(crate::identity::paths())?)?
+                    .map(|device| device.workspace)
                     .ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
             self.own = Some(Hosted::connect(
                 crate::api::Reach {

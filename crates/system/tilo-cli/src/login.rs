@@ -34,7 +34,7 @@ pub(crate) use tilo_api::daemon::enter::{
     IROH_ONLY, LOGIN_ENDED, NOT_LOGGED_IN, TOO_OLD, UNREACHED, connect, debug_why, enter_said,
     host_of, server_of, signed_over_iroh,
 };
-pub use tilo_device_identity::login::{Device, LOGIN_DAMAGED, Place, load, store};
+pub use tilo_device_identity::login::{Device, LOGIN_DAMAGED, Place, load, load_public, store};
 
 /// The site a login names when the device that added this computer names none.
 pub const DEFAULT_SITE: &str = "https://tilo.sh";
