@@ -533,7 +533,7 @@ tilo_test_env::scenario! {
         assert_eq!(preview.target.architecture(), other);
         let catalog = tempfile::tempdir().unwrap();
         let path = catalog.path().join("catalog.json");
-        std::fs::write(&path, r#"{"schema":1,"tag":"unreleased","releases":[]}"#).unwrap();
+        std::fs::write(&path, r#"{"schema":2,"tag":"unreleased","releases":[]}"#).unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("TILO_STAGING_TEST_CATALOG", &path);
         assert!(
