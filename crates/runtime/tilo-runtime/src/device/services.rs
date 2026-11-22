@@ -329,6 +329,12 @@ impl Daemon {
                 identity.cert.clone(),
                 workspaces.endpoint(),
                 identity.login.clone(),
+                Arc::new(super::person::root),
+                founded.map(|workspace| super::ticket::Founded {
+                    workspace: workspace.to_string(),
+                    name: FOUNDED_NAME.to_owned(),
+                }),
+                Some(Arc::clone(workspaces.service())),
                 identity.place.clone(),
             )
         });

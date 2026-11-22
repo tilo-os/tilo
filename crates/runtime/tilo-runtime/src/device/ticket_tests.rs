@@ -16,7 +16,7 @@ use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
 use tilo_peer_state::new_device::ServedTicket;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-use super::ticket::{RootApprover, Tickets};
+use super::ticket::{Founded, RootApprover, RootSource, Tickets};
 
 #[tokio::test]
 async fn a_member_device_cannot_issue_an_admin_ticket() {
@@ -38,7 +38,16 @@ async fn a_member_device_cannot_issue_an_admin_ticket() {
         state.path().to_path_buf(),
         tilo_device_identity::IdentityPaths::under(state.path().join("keys")),
     );
-    let tickets = Tickets::new(key.clone(), cert, endpoint, Some((key, login)), place);
+    let tickets = Tickets::new(
+        key.clone(),
+        cert,
+        endpoint,
+        Some((key, login)),
+        no_root(),
+        None,
+        None,
+        place,
+    );
     let refused = ask_device(&tickets, ISSUE, json!({"capability": "admin"}))
         .await
         .unwrap_err();
@@ -259,6 +268,7 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
             root: root.clone(),
             device: laptop_key.clone(),
             cert: laptop_cert.clone(),
+            admission: None,
         }),
         RevocationList::new(),
     );
@@ -298,6 +308,9 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
         desk_key.clone(),
         desk_cert,
         desk_endpoint,
+        None,
+        no_root(),
+        None,
         None,
         place.clone(),
     );
@@ -362,5 +375,251 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
 
     desk_session.close();
     let _ = router.shutdown().await;
+    server.shutdown().await;
+}
+
+/// No root on this computer: a test whose daemon holds none.
+fn no_root() -> RootSource {
+    Arc::new(|| Ok(None))
+}
+
+/// The root kept in `dir`, as a daemon reads it when a ticket is asked for.
+fn root_in(dir: std::path::PathBuf) -> RootSource {
+    Arc::new(move || {
+        let active = tilo_identity::store::resolve_active_identity(&dir)
+            .ok_or_else(|| anyhow::anyhow!("the test's identity is gone"))?;
+        Ok(Some(tilo_enrollment::root::PersonSigner::new(
+            tilo_identity::store::load_from_path(active)?,
+        )))
+    })
+}
+
+/// The device actions `Tickets` answers on `workspaces`' endpoint, with the workspace service's
+/// own protocols: what a daemon serves a computer that enters with a ticket.
+async fn serve(
+    workspaces: &super::workspaces::ServiceWorkspaces,
+    tickets: &Tickets,
+) -> iroh::protocol::Router {
+    let mut router = iroh::protocol::Router::builder(workspaces.endpoint());
+    for (alpn, handler) in workspaces.service().protocols() {
+        router = router.accept(alpn, handler);
+    }
+    router.accept(ACTIONS_ALPN, tickets.service()).spawn()
+}
+
+/// A daemon of the person's device with no login, governing the workspace it founded, issues a
+/// ticket; a second computer logs in with it and enters that workspace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_workspace_it_founded()
+{
+    let workspace = tilo_desktop_model::WorkspaceId::new();
+    let (issuer, state, issuer_key, issuer_cert, _paths) =
+        super::workspaces::ServiceWorkspaces::test_hosting_person(workspace).await;
+    let place = tilo_device_identity::login::Place::at(
+        state.path().join("issuer"),
+        tilo_device_identity::IdentityPaths::under(state.path().join("issuer-keys")),
+    );
+    let tickets = Tickets::new(
+        issuer_key.clone(),
+        issuer_cert.clone(),
+        issuer.endpoint(),
+        None,
+        root_in(state.path().to_path_buf()),
+        Some(Founded {
+            workspace: workspace.to_string(),
+            name: "Home".into(),
+        }),
+        Some(Arc::clone(issuer.service())),
+        place,
+    );
+    let router = serve(&issuer, &tickets).await;
+
+    let issued = ask_device(&tickets, ISSUE, json!({"capability": "member"}))
+        .await
+        .expect("a device with the person's root issues a ticket without a login");
+    let text = issued["ticket"].as_str().unwrap();
+
+    // A second computer, holding no identity of the person's, logs in with it.
+    let (desk_key, desk_cert) = enrol(
+        &SigningKey::from_bytes(&[0x73; 32]),
+        "the desk",
+        DeviceCapabilities::member(),
+    );
+    let desk_endpoint = endpoint(&desk_key).await;
+    let desk_place = tilo_device_identity::login::Place::at(
+        state.path().join("desk"),
+        tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys")),
+    );
+    tilo_device_identity::persist::adopt_device_key(desk_place.keys(), &desk_key.to_bytes())
+        .unwrap();
+    let desk = Tickets::new(
+        desk_key.clone(),
+        desk_cert,
+        desk_endpoint.clone(),
+        None,
+        no_root(),
+        None,
+        None,
+        desk_place.clone(),
+    );
+    let answer = ask_device(
+        &desk,
+        LOG_IN,
+        json!({"ticket": text, "agent": "Codex", "label": "Codex on desk"}),
+    )
+    .await
+    .unwrap_or_else(|why| panic!("the issuer certifies the desk: {why}"));
+    assert_eq!(answer["workspace"], workspace.to_string());
+
+    let login = tilo_device_identity::login::load(&desk_place)
+        .unwrap()
+        .expect("the desk's login is kept")
+        .1;
+    assert_eq!(
+        login.server_cert.device_public_key,
+        issuer
+            .service()
+            .workspaces()
+            .serving_certificate()
+            .device_public_key,
+        "the ticket names the certificate the issuer's session proves as the one it enters"
+    );
+
+    // The desk enters the workspace the issuer founded: a device its person's root certified is
+    // that person's device, and needs no invitation.
+    desk_endpoint.close().await;
+    let entered = tilo_test_env::within(
+        "the desk enters the founded workspace",
+        tilo_api::daemon::enter::connect(&desk_key, &login, None),
+    )
+    .await
+    .expect("the desk enters the founded workspace");
+    let id = tilo_server_protocol::WorkspaceId::parse(&workspace.to_string()).unwrap();
+    assert!(
+        entered.session().engine().workspaces().contains(&id),
+        "the desk holds the workspace it entered: {:?}",
+        entered.session().engine().workspaces()
+    );
+    entered.close();
+    let _ = router.shutdown().await;
+}
+
+/// The person's own server, holding their Servers workspace: where a role's entry is written.
+async fn servers_host(
+    root: &SigningKey,
+) -> (
+    tilo_server::daemon::Server,
+    tilo_workspace_service::workspaces::Workspaces,
+    tempfile::TempDir,
+) {
+    let (server_key, server_cert) = enrol(root, "home-server", DeviceCapabilities::member());
+    let (issuer_key, issuer_cert) = enrol(root, "laptop", DeviceCapabilities::primary());
+    let _ = issuer_key;
+    let state = tempfile::tempdir().unwrap();
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig {
+            state_root: state.path().join("server"),
+            ..Default::default()
+        },
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: server_key,
+            device_cert: server_cert,
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let hosted = server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .clone();
+    let admin = tilo_workspace_service::workspaces::servers::founded(&hosted)
+        .await
+        .expect("the person's Servers workspace is founded");
+    hosted
+        .enter(&admin, &issuer_cert)
+        .await
+        .expect("a device of the person enters the Servers workspace");
+    (server, hosted, state)
+}
+
+/// A ticket that names a plan fills that plan's entry with the certified machine's key, as the
+/// approval that took a token-enrolled machine in did: the entry becomes the machine's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_ticket_that_names_a_plan_fills_its_plan() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (server, hosted, _state) = servers_host(&root).await;
+    let plan_id = "0123456789abcdef0123456789abcdef";
+    let plan = json!({
+        "schema": 1,
+        "plan": plan_id,
+        "revision": 1,
+        "destination": "tilo-server",
+        "name": "cupboard",
+        "network": { "addressing": "dhcp", "addresses": "", "gateway": "", "dns": "" },
+        "disk": { "kind": "empty", "identity": "" },
+        "unlock": "tpm",
+        "updates": "stable",
+        "hosting": [],
+        "open": [],
+        "token": { "nonce": "00112233445566778899aabbccddeeff", "expires_at_ns": u64::MAX / 2 },
+    })
+    .to_string();
+    tilo_workspace_service::workspaces::servers::apply(
+        &hosted,
+        tilo_workspace_service::workspaces::servers::Servers::PLAN_MACHINE
+            .with((plan, "cupboard".into())),
+    )
+    .await
+    .expect("the person plans a machine in their Servers workspace");
+
+    let (desk_key, desk_cert) = enrol(&root, "the cupboard", DeviceCapabilities::member());
+    super::ticket::plan_entry(&hosted, plan_id, &desk_cert)
+        .await
+        .expect("the certified machine's key is taken into its plan");
+    let device = tilo_workspace_service::workspaces::servers::device_id(
+        &desk_key.verifying_key().to_bytes(),
+    );
+    let entry = tilo_workspace_service::workspaces::servers::read(&hosted)
+        .await
+        .expect("the person's servers read")
+        .servers
+        .get(&device)
+        .cloned();
+    let entry = entry.expect("the plan's entry is the certified machine's");
+    assert_eq!(
+        entry.plan.plan, plan_id,
+        "the entry keeps the plan it fills"
+    );
+    server.shutdown().await;
+}
+
+/// A ticket that names a server leaves that server's entry in the person's Servers document, as
+/// the server's own start would have made it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_ticket_that_names_a_server_leaves_its_entry() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (server, hosted, _state) = servers_host(&root).await;
+
+    let (desk_key, desk_cert) = enrol(&root, "home", DeviceCapabilities::primary());
+    super::ticket::server_entry(&hosted, &desk_cert, false)
+        .await
+        .expect("the certified server is taken in among the person's servers");
+    let device = tilo_workspace_service::workspaces::servers::device_id(
+        &desk_key.verifying_key().to_bytes(),
+    );
+    let entry = tilo_workspace_service::workspaces::servers::read(&hosted)
+        .await
+        .expect("the person's servers read")
+        .servers
+        .get(&device)
+        .cloned();
+    assert_eq!(
+        entry.expect("the server's entry is written").label,
+        "home",
+        "the entry is named as its certificate names it"
+    );
     server.shutdown().await;
 }

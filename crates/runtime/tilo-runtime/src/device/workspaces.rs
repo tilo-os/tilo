@@ -770,6 +770,56 @@ impl ServiceWorkspaces {
         (workspaces, directory)
     }
 
+    /// A service governing `workspace` alone, on a profile of its own, as a machine whose person
+    /// this account holds: a real identity store, its own key service, and no login. What the
+    /// stack's own person is, and what a test that founds the person's Servers workspace needs.
+    /// Answers the device's key and certificate, and where its identity is kept.
+    pub(crate) async fn test_hosting_person(
+        workspace: WorkspaceId,
+    ) -> (
+        Arc<Self>,
+        tempfile::TempDir,
+        ed25519_dalek::SigningKey,
+        tilo_user_identity::DeviceCert,
+        tilo_device_identity::IdentityPaths,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = tilo_device_identity::IdentityPaths::under(directory.path().join("keys"));
+        tilo_identity::provisioning::create_person(
+            directory.path(),
+            &paths,
+            "",
+            "Synthetic runtime",
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+        let key = tilo_device_identity::persist::read_device_key(&paths.device_privkey).unwrap();
+        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        let identity = DeviceIdentity::held(
+            cert.clone(),
+            key.clone(),
+            Arc::new(tilo_identity::identity_store::files::Files::new(
+                paths.clone(),
+            )),
+        );
+        let endpoint = test_endpoint(&key).await;
+        let sessions = crate::key_sessions::KeySessions::new();
+        let workspaces = Self::open(Opening {
+            dir: &directory.path().join("profile"),
+            key: &key,
+            identity,
+            endpoint,
+            governs: true,
+            seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
+            apps: Some(Arc::clone(&sessions)
+                as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
+        })
+        .await
+        .unwrap();
+        workspaces.found(workspace, "Home").await.unwrap();
+        (workspaces, directory, key, cert, paths)
+    }
+
     /// The service a logged-in computer keeps below `dir` as the device `key` certified by
     /// `cert`, on an endpoint bound the way its session reaches `server`.
     pub(crate) async fn open_for_test(
