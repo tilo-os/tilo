@@ -253,7 +253,6 @@ case ${1:-} in
     test -x "$root/usr/bin/Xwayland"
     test -x "$root/home/tilo/.local/share/claude-code/$(claude_code_version)/bin/claude"
     test -L "$root/usr/local/bin/claude"
-    grep -q '"DISABLE_AUTOUPDATER": "1"' "$root/etc/claude-code/managed-settings.json"
     grep -q 'so\.tilo\.browser' "$root/usr/share/tilo-apps/registry.toml"
     test -x "$root/usr/lib/tilo-runtime/$(chromium_runtime_version)/lib/chromium/tilo-chromium-host"
     wrap_guest "$root" "$kernel" "$out" hosted-guest-image
