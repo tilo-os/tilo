@@ -2352,18 +2352,23 @@ impl Compositor {
 
     /// Wait for the surfaces' frames still drawing on other threads and draw what they drew: a
     /// look at what the displays show (a screenshot, a check) sees what was last asked of them,
-    /// where the loop's own frames never wait for a surface to draw.
+    /// where the loop's own frames never wait for a surface to draw. A draw that finished is
+    /// taken by the next frame the loop builds, which a display not yet due for one leaves owed:
+    /// that frame is drawn too.
     ///
     /// # Errors
     /// The frame they drew could not be drawn.
     pub fn settle_surface_draws(&mut self) -> Result<(), Error> {
-        let drawing = self
-            .data
-            .state
+        let state = &self.data.state;
+        let drawing = state
             .surfaces
             .iter()
             .any(|surface| surface.layers().iter().any(|layer| layer.frame.unshown()));
-        if !drawing {
+        let owed = state
+            .space
+            .outputs()
+            .any(|output| state.redraw_owed(output));
+        if !drawing && !owed {
             return Ok(());
         }
         for surface in &self.data.state.surfaces {

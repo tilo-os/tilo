@@ -339,6 +339,34 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_look_at_the_display_shows_a_draw_that_finished_between_its_frames;
+    // A draw that finishes is taken by the next frame the loop builds; a display that is not due
+    // for one yet leaves it owed. A screenshot taken then shows the finished draw all the same.
+    {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let surface = DrawnElsewhere::new((640, 480), released);
+        let frame = surface.frame.clone();
+        let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+        // Once a second: the frame after the first is not due while the test runs on.
+        let mut output = OutputConfig::new("HEADLESS-1", 640, 480);
+        output.refresh_mhz = 1_000;
+        compositor.add_output(&output).expect("output");
+        compositor.add_surface(Rc::new(RefCell::new(surface)));
+        compositor.render().expect("a frame");
+        release.send(()).expect("the drawing thread waits");
+        while frame.in_flight() {
+            compositor.dispatch(None).expect("dispatch");
+        }
+        // The loop takes the finished draw; the display is not due, so the frame stays owed.
+        compositor.render().expect("a frame");
+        let shot = compositor.screenshot("HEADLESS-1").unwrap();
+        let middle = shot.pixel(320, 240).unwrap();
+        assert!(
+            middle[1] > 128 && middle[0] < 128 && middle[2] < 128,
+            "the screenshot shows the draw that finished: {middle:?}"
+        );
+    }
+
     phase a_press_while_a_panel_draws_its_first_frame_reaches_the_panel;
     // The pointer goes where a surface's frame shows something. A panel that just opened shows
     // nothing until its first frame is drawn on another thread: a press made meanwhile waits for
