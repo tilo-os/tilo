@@ -616,11 +616,13 @@ impl Workspaces {
             self.inner.host.key.clone(),
         )
         .with_store(Arc::clone(&self.inner.store))
-        .with_record_sink(move |_author, message| {
-            // A session that opened the record the frame writes reads it too,
-            // from the one point the frame is kept and carried.
+        .with_record_sink(move |author, message| {
+            // The sessions that read this workspace through a session get what a
+            // link to their device would, from the one point a frame is kept and
+            // carried: the record's write where one is opened, a channel's
+            // governance for every session.
             if let Some(workspaces) = workspaces.upgrade() {
-                workspaces.deliver_record_write(workspace_id, message);
+                workspaces.deliver_record_write(workspace_id, author, message);
             }
         });
         #[cfg(test)]

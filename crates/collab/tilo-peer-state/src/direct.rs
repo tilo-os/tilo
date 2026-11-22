@@ -944,7 +944,11 @@ impl DirectSync {
             message: message.clone(),
             published: false,
         });
-        if let Some(sink) = &self.0.record_sink {
+        // Governance goes out through [`Self::outgoing`] alone, which tells the
+        // sessions too: a frame carried here is told once.
+        if !carried_governance(message)
+            && let Some(sink) = &self.0.record_sink
+        {
             sink(from, message);
         }
         Ok(true)
@@ -957,6 +961,14 @@ impl DirectSync {
             self.note_genesis(&authored);
         }
         self.keep_channel(&authored);
+        // The host's sessions get the channel governance a link would, from the one
+        // point it goes out on the links: a page that reaches its workspace only over
+        // a session joins a record's group the same way.
+        if carried_governance(&authored.message)
+            && let Some(sink) = &self.0.record_sink
+        {
+            sink(authored.from, &authored.message);
+        }
         let author = authored.from;
         let links = self.0.outgoing.send(authored).unwrap_or(0);
         tracing::debug!(
@@ -1014,6 +1026,9 @@ impl DirectSync {
             .get(&request.workspace)
             .cloned();
         for answer in known.unwrap_or_default() {
+            if let Some(sink) = &self.0.record_sink {
+                sink(answer.from, &answer.message);
+            }
             let _ = self.0.outgoing.send(answer);
         }
     }

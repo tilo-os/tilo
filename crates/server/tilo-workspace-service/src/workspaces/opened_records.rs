@@ -69,6 +69,73 @@ impl OpenedRecords {
             .is_some_and(|opened| !opened.is_empty())
     }
 
+    /// Watch `device`'s connection `outbound`, which opened no record yet: what
+    /// reaches every session of `workspace` reaches it too.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the map is locked for the one entry it writes, and the lock is released with it"
+    )]
+    pub(super) fn watch_session(
+        &self,
+        workspace: WorkspaceId,
+        device: [u8; 32],
+        outbound: &mpsc::Sender<Envelope>,
+        disconnect: &mpsc::Sender<()>,
+    ) {
+        let mut sessions = self.0.lock_recover();
+        let opened = sessions.entry(workspace).or_default();
+        if opened
+            .iter()
+            .any(|opened| opened.device == device && opened.outbound.same_channel(outbound))
+        {
+            return;
+        }
+        opened.push(Opened {
+            device,
+            outbound: outbound.clone(),
+            disconnect: disconnect.clone(),
+            channels: BTreeSet::new(),
+        });
+    }
+
+    /// Send `envelope` to each connection of `workspace` that `may_read` admits,
+    /// whether or not it opened a record, and forget the connections that took
+    /// no more: a connection whose queue is full is disconnected, and reads what
+    /// it needs again on the session it comes back with. How many it reached.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "each connection is sent to under the one lock, and the lock is released with it"
+    )]
+    pub(super) fn deliver_to_all(
+        &self,
+        workspace: WorkspaceId,
+        may_read: impl Fn([u8; 32]) -> bool,
+        envelope: &Envelope,
+    ) -> usize {
+        let mut sessions = self.0.lock_recover();
+        let Some(opened) = sessions.get_mut(&workspace) else {
+            return 0;
+        };
+        let mut reached = 0_usize;
+        opened.retain(|opened| {
+            if !may_read(opened.device) {
+                return true;
+            }
+            match opened.outbound.try_send(envelope.clone()) {
+                Ok(()) => {
+                    reached = reached.saturating_add(1);
+                    true
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    let _ = opened.disconnect.try_send(());
+                    false
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+            }
+        });
+        reached
+    }
+
     /// Send `envelope` to each connection of `workspace` that opened one of
     /// `channels` and `may_read` admits, and forget the connections that took
     /// no more: a connection whose queue is full is disconnected, and reads
@@ -114,6 +181,44 @@ impl OpenedRecords {
 }
 
 impl Workspaces {
+    /// Watch `device`'s connection `outbound` from its subscription: what
+    /// reaches every session of `workspace` reaches it too.
+    pub(crate) fn watch_session(
+        &self,
+        workspace: WorkspaceId,
+        device: [u8; 32],
+        outbound: &mpsc::Sender<Envelope>,
+        disconnect: &mpsc::Sender<()>,
+    ) {
+        self.inner
+            .opened_records
+            .watch_session(workspace, device, outbound, disconnect);
+    }
+
+    /// Each channel's governance the workspace keeps, as a link is sent them
+    /// when it starts, for `device`: a page that reaches its workspace only over
+    /// a session joins a record's group with them, and writes its first sealed
+    /// record. Only what the link's other end would be sent.
+    pub(crate) fn channel_governance(
+        &self,
+        workspace: WorkspaceId,
+        device: [u8; 32],
+    ) -> Vec<Envelope> {
+        let Some(link) = self.inner.direct.link(workspace) else {
+            return Vec::new();
+        };
+        let reads = link.reads_of(device);
+        self.inner
+            .store
+            .channels(workspace)
+            .into_iter()
+            .filter(|(_, message)| reads(message))
+            .filter_map(|(author, message)| {
+                crate::peer::records::delta_of(workspace, author, &message)
+            })
+            .collect()
+    }
+
     /// Send `device`'s connection `outbound` the writes of `channel`, a record
     /// the connection opened, from now on.
     pub(crate) fn watch_record(
@@ -129,16 +234,32 @@ impl Workspaces {
             .watch(workspace, device, outbound, disconnect, channel);
     }
 
-    /// Send `message`, a write of a record `workspace` took in, to the sessions
-    /// that opened it: what a client reading through a session hears after the
-    /// frames it opened the record with. A part of a chained record also reaches
-    /// the sessions that opened its chain's head, and a channel's record alone
-    /// its own.
+    /// Send `message`, `author`'s frame `workspace` took in or carried, to the
+    /// sessions a link to their device would get it: a write of a record reaches
+    /// the sessions that opened it, a part also the sessions that opened its
+    /// chain's head, and a channel's governance every session of the workspace,
+    /// which is how a page that reaches its workspace only over a session joins
+    /// a record's group.
     pub(crate) fn deliver_record_write(
         &self,
         workspace: WorkspaceId,
+        author: [u8; 32],
         message: &neighbour_wire::NeighbourMsg,
     ) {
+        let Some(link) = self.inner.direct.link(workspace) else {
+            return;
+        };
+        if message.governance_workspace().is_some() {
+            let Some(envelope) = crate::peer::records::delta_of(workspace, author, message) else {
+                return;
+            };
+            self.inner.opened_records.deliver_to_all(
+                workspace,
+                |device| device != author && link.reads_of(device)(message),
+                &envelope,
+            );
+            return;
+        }
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             document_id,
@@ -150,10 +271,7 @@ impl Workspaces {
         if !self.inner.opened_records.any(workspace) {
             return;
         }
-        let Some(link) = self.inner.direct.link(workspace) else {
-            return;
-        };
-        let Some(envelope) = crate::peer::records::delta_of(workspace, message) else {
+        let Some(envelope) = crate::peer::records::delta_of(workspace, author, message) else {
             return;
         };
         let mut channels =

@@ -185,7 +185,11 @@ pub(super) async fn handle_open_document(
     }
     let mut sent = 0_u32;
     for message in &frames {
-        let Some(delta) = delta_of(workspace_id, message) else {
+        let Some(delta) = delta_of(
+            workspace_id,
+            tilo_peer_state::store::author_of(message).unwrap_or_default(),
+            message,
+        ) else {
             continue;
         };
         session
@@ -226,43 +230,26 @@ fn chain_head_part(link: &DirectSync, requested: [u8; 32]) -> Option<[u8; 32]> {
     newest.map(|(_, channel)| channel)
 }
 
-/// `message`, a record's frame of `workspace_id`, as a session carries it: the
-/// co-edit payload a client that opened the record applies, which holds the
-/// frame's signed body as it is. A checkpoint is carried as one. `None` for a
-/// frame that is no record's, or one that does not encode.
+/// `message`, `author`'s frame of `workspace_id`, as a session carries it: the
+/// co-edit payload a client applies, which holds the frame's signed body as it
+/// is. A frame the workspace keeps as a checkpoint is carried as one. `None` for
+/// a frame that is no workspace's, or one that does not encode.
 pub(crate) fn delta_of(
     workspace_id: WorkspaceId,
+    author: [u8; 32],
     message: &neighbour_wire::NeighbourMsg,
 ) -> Option<Envelope> {
-    let neighbour_wire::NeighbourMsg::AppDocument {
-        app_id,
-        document_id,
-        envelope,
-        ..
-    } = message
-    else {
-        return None;
-    };
-    let channel = neighbour_wire::app_document_group(app_id, document_id);
+    let (channel, retention) = neighbour_wire::retention(message, false)?;
     let body = postcard::to_allocvec(message).ok()?;
-    let checkpoint = envelope
-        .encryption
-        .and_then(|metadata| metadata.retention())
-        == Some(collab_types::ContentRetention::Checkpoint);
-    let payload = if checkpoint {
+    let payload = if retention == neighbour_wire::Retention::Checkpoint {
         crate::coedit::CoeditPayload::Checkpoint { channel, body }
     } else {
         crate::coedit::CoeditPayload::RetainedDelta { channel, body }
     };
     Some(Envelope::Delta {
         workspace_id,
-        author_device_public_key: *envelope.author.as_bytes(),
-        authored_at_ns: envelope
-            .timestamp
-            .duration_since(web_time::UNIX_EPOCH)
-            .map_or(0, |since| {
-                u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
-            }),
+        author_device_public_key: author,
+        authored_at_ns: tilo_clock::unix_now_ns(),
         delta: payload.encode().ok()?,
         signature: [0; 64],
     })

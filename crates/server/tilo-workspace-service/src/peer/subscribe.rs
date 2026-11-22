@@ -37,6 +37,25 @@ pub(super) async fn handle_subscribe(
         );
     }
     drop(wr);
+    // A channel's governance reaches this session from its start, whether or not
+    // it opened a record, as a link hands it to the devices linked to it: sent
+    // before `Ready`, so a page that writes its first sealed record now has the
+    // group it writes under.
+    if let Some(admin) = session.admin {
+        admin.watch_session(
+            workspace_id,
+            peer.device_public_key,
+            session.outbound,
+            session.disconnect,
+        );
+        for envelope in admin.channel_governance(workspace_id, peer.device_public_key) {
+            session
+                .outbound
+                .send(envelope)
+                .await
+                .map_err(|_| PeerError::Protocol("the session's writer ended".into()))?;
+        }
+    }
     session.metrics.inc_subscribes();
     if !subscribed.contains(&workspace_id) {
         subscribed.push(workspace_id);
