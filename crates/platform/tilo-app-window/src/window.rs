@@ -1453,6 +1453,7 @@ impl AppWindow {
                 start: u32::try_from(asked.range.start).unwrap_or(u32::MAX),
                 end: u32::try_from(asked.range.end).unwrap_or(u32::MAX),
                 open: asked.open,
+                menu: asked.menu,
             });
         }
         if self.out.is_empty() {

@@ -276,12 +276,17 @@ impl Window {
             })
             .unwrap_or_else(|| panic!("the window shows no {name:?} with a menu"))
             .0;
+        self.a11y_action(node, &ui::a11y::Action::ShowContextMenu);
+    }
+
+    /// The accessibility action `action` on `node`, as a tool or a screen reader asks for it.
+    fn a11y_action(&mut self, node: ui::accesskit::NodeId, action: &ui::a11y::Action) {
         match self {
             Self::Harness(window) => window
-                .perform_a11y_action(node, &ui::a11y::Action::ShowContextMenu)
-                .expect("the window opens the menu where the node stands"),
+                .perform_a11y_action(node, action)
+                .expect("the window acts where the node stands"),
             Self::Live(app) => {
-                app.dispatch_a11y_action(node, &ui::a11y::Action::ShowContextMenu);
+                app.dispatch_a11y_action(node, action);
             }
         }
     }

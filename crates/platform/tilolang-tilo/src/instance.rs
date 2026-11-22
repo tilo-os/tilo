@@ -1542,9 +1542,11 @@ impl Instance {
                 start,
                 end,
                 open,
+                menu,
             } => {
                 self.rows_asked = self.rows_asked.saturating_add(1);
-                self.request_rows(level, &list, start as usize..end as usize, open.as_deref());
+                let range = start as usize..end as usize;
+                self.request_rows(level, &list, range, (open.as_deref(), menu.as_deref()));
                 Ok(())
             }
             ToApp::Answer(answer) => {
@@ -1642,7 +1644,7 @@ impl Instance {
         level: Level,
         list: &str,
         range: std::ops::Range<usize>,
-        open: Option<&str>,
+        held: (Option<&str>, Option<&str>),
     ) {
         let Some(host) = self.host() else {
             return;
@@ -1657,7 +1659,7 @@ impl Instance {
         };
         let requested = {
             let _phase = tilo_resource::profiling::Phase::start("instance.rows.request");
-            rows.request(range, open)
+            rows.request(range, held)
         };
         let message = {
             let _phase = tilo_resource::profiling::Phase::start("instance.rows.message");

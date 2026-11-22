@@ -1127,6 +1127,10 @@ pub trait RowSource {
     /// Render the rows of `range` not rendered yet, and forget those rendered outside it.
     fn request_range(&mut self, range: std::ops::Range<usize>, open: Option<String>);
 
+    /// The person opened the menu of the row `key`, whose item offers one it did not carry
+    /// (`offers_menu`): ask for the row again with it. Rows that carry their menus ask nothing.
+    fn ask_menu(&mut self, _key: &str) {}
+
     /// Whether the row `key` is rendered now, its content there to read: a row named but not
     /// rendered yet is on its way, and the list shows a placeholder in its part until it
     /// arrives ([`crate::widget::virtual_list::ListModel::row_state`]).

@@ -107,17 +107,23 @@ impl ListRows {
         view.row_key(&self.list, index)
     }
 
-    /// Render the rows of `range` not rendered yet, and the document of the row at `open` — the
-    /// row held open into its item where it stands — forgetting those rendered outside the
-    /// range and the document of the row that closed: how many rows the list has, the keys from
-    /// `range.start` on, and the rows rendered now.
-    pub fn request(&mut self, range: Range<usize>, open: Option<&str>) -> Requested {
+    /// Render the rows of `range` not rendered yet, the document of the row `open` — the row
+    /// held open into its item where it stands — and the menu of the row `menu`, forgetting those
+    /// rendered outside the range and the document and menu of the rows that had them: how many
+    /// rows the list has, the keys from `range.start` on, and the rows rendered now.
+    pub fn request(
+        &mut self,
+        range: Range<usize>,
+        (open, menu): (Option<&str>, Option<&str>),
+    ) -> Requested {
         let mut keys = Vec::new();
         let mut rows = Vec::new();
         if let Ok(mut view) = self.view.try_borrow_mut() {
-            // The row that opens builds its document and the row that closed drops it: the two of
-            // them stand as they did in the list's rows, sent again with what now changes them.
+            // The row that opens builds its document and the row that closed drops it, and so
+            // with a menu: they stand as they did in the list's rows, sent again with what now
+            // changes them.
             view.open_row(&self.list, open);
+            view.menu_row(&self.list, menu);
             for patch in view.hide_rows(&self.list, range.clone()) {
                 if let Patch::Remove { parent, .. } = patch
                     && let Some(row) = parent.last()

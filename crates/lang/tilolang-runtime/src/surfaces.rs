@@ -20,7 +20,7 @@ use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::exec::MANY_ACTION;
 use crate::handles::ViewState;
-use crate::host_ui::{KEEP_ACTION, SET_ACTION, THEN_ACTION, VIEW_STATE};
+use crate::host_ui::{KEEP_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION, VIEW_STATE};
 use crate::ids::Actor;
 use crate::value::{ActionRef, RefValue, Value};
 use crate::view::{BindTarget, NodeBuild};
@@ -66,6 +66,11 @@ const MORE_RUN_WORDS: &str = "More";
 
 const MENU: &str = "menu";
 const SWIPE: &str = "swipe";
+/// What a row whose menu the host has not asked for says of it: its item offers one.
+const OFFERS_MENU: &str = "offers_menu";
+/// The keys the actions of a row's item answer to, and the event a press of one reports.
+const KEYS: &str = "keys";
+const SHORTCUT: &str = "shortcut";
 const OVERVIEW: &str = "overview";
 const OVERVIEW_ACTIONS: &str = "overview_actions";
 const SIDEBAR_ACTIONS: &str = "sidebar_actions";
@@ -467,6 +472,9 @@ impl Core {
         above: &Value,
         placed: Option<&Placed>,
     ) -> Result<(), RuntimeError> {
+        if kind == LIST_ITEM && !self.with_view(|view| Ok(view.menu)).map_err(trapped)? {
+            return self.menu_on_ask(at, item, above, placed);
+        }
         let taken: Vec<Value> = self
             .actions_on(item, above)
             .map_err(trapped)?
@@ -509,6 +517,105 @@ impl Core {
             }
         }
         Ok(())
+    }
+
+    /// The row `at` of a list whose host has not asked for its menu: that its item offers one, the
+    /// keys its actions answer to with what each runs, and its swipe. Only the swipe's action is
+    /// decided: a list of thousands decides its items' actions when a person opens a menu, and
+    /// for that one row.
+    fn menu_on_ask(
+        &self,
+        at: usize,
+        item: &RefValue,
+        above: &Value,
+        placed: Option<&Placed>,
+    ) -> Result<(), RuntimeError> {
+        let author = self.module_of_frame().map_err(trapped)?;
+        let swipes = self.part(at, SWIPE)?.is_none();
+        let offered = self
+            .offers_on(item, above, |offers| {
+                if offers.is_empty() {
+                    return Ok(None);
+                }
+                let keys: Vec<Value> = offers
+                    .iter()
+                    .filter_map(|shown| {
+                        let key = shown.action.key.as_ref()?;
+                        let run = ActionRef {
+                            action: shown.action.id.clone(),
+                            args: shown.args.clone(),
+                            author: Some(author.clone()),
+                            from: shown.from.clone(),
+                        };
+                        Some(Value::Tuple(vec![Value::text(key), Value::Action(run)]))
+                    })
+                    .collect();
+                let swipe = if swipes {
+                    self.swipe_of(item, offers, placed)?
+                } else {
+                    None
+                };
+                Ok(Some((keys, swipe)))
+            })
+            .map_err(trapped)?;
+        let Some((keys, swipe)) = offered else {
+            return Ok(());
+        };
+        self.put_prop(at, OFFERS_MENU, on_off(true))?;
+        if !keys.is_empty() {
+            let pressed: Vec<Value> = keys
+                .iter()
+                .filter_map(|key| action_field(key, 0).cloned())
+                .collect();
+            self.put_prop(at, KEYS, Value::List(pressed))?;
+            let run = ActionRef::new(SHORTCUT_ACTION, vec![Value::List(keys), Value::Event]);
+            self.put_event(at, SHORTCUT, Value::Action(run))?;
+        }
+        if let Some(action) = swipe {
+            let key = self.key(at)?;
+            self.put_in_part(
+                at,
+                SWIPE,
+                Self::swipe_action(&action, &format!("{key}~swipe")),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The swipe of a row of `offers` on `item`, as its menu would have it ([`Self::item_actions`]):
+    /// the first destructive action it can run of those the view placed (of all, without a
+    /// placement), else the first it can run in the menu's order. Each is decided only when
+    /// reached.
+    fn swipe_of(
+        &self,
+        item: &RefValue,
+        offers: &[crate::platform::Offered<'_>],
+        placed: Option<&Placed>,
+    ) -> crate::core::HResult<Option<Value>> {
+        let place = |id: &str| placed.and_then(|placed| placed.iter().position(|p| p.0 == id));
+        let mut order: Vec<&crate::platform::Offered<'_>> = offers.iter().collect();
+        // The menu's order: what the view placed first, in its order, then the rest as offered.
+        order.sort_by_key(|shown| place(&shown.action.id).unwrap_or(usize::MAX));
+        let runs = |action: &Value| flag(action, APPLIES) && flag(action, AVAILABLE);
+        let swipeable = order
+            .iter()
+            .filter(|shown| placed.is_none() || place(&shown.action.id).is_some())
+            .filter(|shown| shown.action.role.as_deref() == Some("destructive"));
+        for shown in swipeable {
+            if let Some(action) = self.action_value(shown, Some(item))?
+                && runs(&action)
+            {
+                return Ok(Some(action));
+            }
+        }
+        for shown in order {
+            if let Some(action) = self.action_value(shown, Some(item))?
+                && runs(&action)
+            {
+                return Ok(Some(action));
+            }
+        }
+        Ok(None)
     }
 
     /// `offered` as the view placed it: the actions it named, in its order, each with the group

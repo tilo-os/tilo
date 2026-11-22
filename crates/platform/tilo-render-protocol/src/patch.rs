@@ -753,14 +753,16 @@ pub enum ToApp {
     },
     /// Back from the detail level.
     Back,
-    /// The virtual list `list` shows the rows `start..end` now, and the row `open` — its key —
-    /// stands open into its item where it stands ([`ToUi::Rows`] answers with its document).
+    /// The virtual list `list` shows the rows `start..end` now, the row `open` — its key —
+    /// stands open into its item where it stands ([`ToUi::Rows`] answers with its document), and
+    /// the person opened the menu of the row `menu`, which the app sends again with it.
     Rows {
         level: Level,
         list: String,
         start: u32,
         end: u32,
         open: Option<String>,
+        menu: Option<String>,
     },
     Answer(Answer),
     /// The field `field` (a key of [`Form::fields`]) of the form `form` now holds `text`: what

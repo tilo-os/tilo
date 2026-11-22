@@ -2108,6 +2108,23 @@ impl Core {
     /// declare them, the primary one first, each a `host.Action`. An app declares its actions in
     /// the order a person reads them, so a menu of one item lists them as it wrote them.
     pub(crate) fn actions_on(&self, target: &RefValue, above: &Value) -> HResult<Vec<Value>> {
+        self.offers_on(target, above, |offers| {
+            let mut out = Vec::with_capacity(offers.len());
+            for shown in offers {
+                out.extend(self.action_value(shown, Some(target))?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// What `f` makes of the actions offered on `target` ([`Self::actions_on`]), none of them
+    /// presented or decided yet: a caller that needs only some of them decides only those.
+    pub(crate) fn offers_on<R>(
+        &self,
+        target: &RefValue,
+        above: &Value,
+        f: impl FnOnce(&[Offered<'_>]) -> HResult<R>,
+    ) -> HResult<R> {
         let held = &target.target;
         let packages = self.registry.borrow().packages();
         let rank = |pkg: &Rc<Package>| {
@@ -2191,23 +2208,19 @@ impl Core {
         found.sort_by_key(|(primary, pkg, index, _)| (!primary, *pkg, *index));
         // What it already offers as itself is not offered again as something to make: an
         // action written for the target is where a person finds it.
-        let direct: Vec<&str> = found
-            .iter()
-            .map(|(_, _, _, shown)| shown.action.id.as_str())
-            .collect();
-        let mut out = Vec::new();
-        for (_, _, _, shown) in found {
-            out.extend(self.action_value(&shown, Some(target))?);
-        }
+        let mut offers: Vec<Offered<'_>> =
+            found.into_iter().map(|(_, _, _, shown)| shown).collect();
         // Last, under the menu's one group, what can be made from it: a submenu of its own at
         // the end, so what the app offers the item stays what a person reads first.
         for shown in self.make_offers(target, own.as_ref(), &packages)? {
-            if direct.contains(&shown.action.id.as_str()) {
-                continue;
+            if !offers
+                .iter()
+                .any(|direct| direct.action.id == shown.action.id)
+            {
+                offers.push(shown);
             }
-            out.extend(self.action_value(&shown, None)?);
         }
-        Ok(out)
+        f(&offers)
     }
 
     /// The actions that can make something of `target`: for every type of the packages this
@@ -2535,6 +2548,13 @@ impl Core {
             viewer,
             Decides::Requirement,
         )
+    }
+
+    /// Why the invocation `run` does not apply where it was offered, as its action's `applies`
+    /// says it in `viewer`'s words: what leaves it out of a menu.
+    pub(crate) fn inapplicable(&self, run: &ActionRef, viewer: &Actor) -> HResult<Option<String>> {
+        self.decided(&run.action, &run.args, viewer, Decides::Applies)
+            .map(|(reason, _)| reason)
     }
 
     /// Why the invocation `run` would be refused now, as its action's `require` says it in

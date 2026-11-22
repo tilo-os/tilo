@@ -712,9 +712,16 @@ impl<'a> Validator<'a> {
             ToApp::Open { resource } => self.resource(resource)?,
             ToApp::OpenReference { reference } => self.string(reference)?,
             ToApp::Rows {
-                list, start, end, ..
+                list,
+                start,
+                end,
+                open,
+                menu,
+                ..
             } => {
-                self.key(list)?;
+                for key in std::iter::once(list).chain(open).chain(menu) {
+                    self.key(key)?;
+                }
                 if end < start || end.saturating_sub(*start) > self.limits.rows {
                     return Err(Refused::invalid(concat!(
                         "over the limit of ",

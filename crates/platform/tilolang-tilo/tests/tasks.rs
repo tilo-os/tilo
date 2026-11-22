@@ -2341,8 +2341,8 @@ fn labels(commands: &[Command]) -> Vec<&str> {
         .collect()
 }
 
-/// The home list's drawn row for a task.
-fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
+/// The home list's drawn row for a task, with its menu when `menu`.
+fn home_row<'a>(view: &'a mut ViewInstance, want: &Value, menu: bool) -> &'a UiNode {
     view.poll_patches().unwrap();
     let list = view
         .tree()
@@ -2370,6 +2370,12 @@ fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
         }
     }
     let index = found.unwrap_or_else(|| panic!("no drawn row for the task"));
+    if menu {
+        // As the window asks when the person opens the row's menu.
+        let key = view.row_key(&list, index);
+        view.menu_row(&list, key.as_deref());
+        view.poll_patches().unwrap();
+    }
     view.row(&list, index)
         .expect("the row it listed")
         .expect("the row it listed")
@@ -2378,7 +2384,7 @@ fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
 /// The menu a task's row offers: the part of the item the row presents, not one of a row drawn
 /// inside it — a task opened in the row holds rows of its own.
 fn row_menu<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
-    let row = home_row(view, want);
+    let row = home_row(view, want, true);
     let item = row
         .of_kind("ui.ListItem")
         .into_iter()
@@ -2404,7 +2410,7 @@ fn row_commands(view: &mut ViewInstance, want: &Value) -> Vec<Command> {
 
 /// The command a task's row runs when it is swiped, as its label reads.
 fn row_swipe(view: &mut ViewInstance, want: &Value) -> Option<String> {
-    let row = home_row(view, want);
+    let row = home_row(view, want, false);
     let swipe = row
         .of_kind("part")
         .into_iter()

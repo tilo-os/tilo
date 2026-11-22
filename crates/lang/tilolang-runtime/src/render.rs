@@ -128,6 +128,10 @@ pub(crate) struct Build<'a> {
 
 /// Where the walk over a view's nodes is.
 #[derive(Clone, Copy)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent fact of where the walk is: in a list, under its divider, in an open row, building its item's menu"
+)]
 pub(crate) struct Walk<'a> {
     pub level: usize,
     /// The key the nodes here go under, `None` at the root of a view.
@@ -141,6 +145,8 @@ pub(crate) struct Walk<'a> {
     /// row calls runs as the open row's, so the slot holding the item's document is built in it
     /// (`row_open`), and in no closed row.
     pub open: bool,
+    /// Whether the nodes here build the menu of the item a row shows ([`ViewState::menu`]).
+    pub menu: bool,
     /// How many rows that list shows, when it is a card's preview (its `preview` property):
     /// the rows after those are never shown, so they are not built.
     pub preview: Option<usize>,
@@ -160,6 +166,7 @@ impl<'a> Walk<'a> {
             // A row's own tree — the nodes a template's block was lowered into as well as the
             // row view's — says whether it stands open; a call's tree is the callee's to walk.
             open: walk.open,
+            menu: walk.menu,
             preview: match n.props.get(PREVIEW) {
                 Some(Value::Int(rows)) if n.kind == "list" => usize::try_from(*rows).ok(),
                 _ => None,
@@ -192,6 +199,8 @@ pub(crate) struct Stub<'a> {
     /// Whether the call stands in a row the host shows open into its item: what its tree gives
     /// as the row's document is built here, and in no closed row.
     pub open: bool,
+    /// Whether the call builds the menu of the item its row shows ([`ViewState::menu`]).
+    pub menu: bool,
     pub depth: usize,
 }
 
@@ -239,6 +248,9 @@ pub(crate) struct Scoped<'p, 'b> {
     /// Whether the tree rendered is a row of a `list` held open into its item where it
     /// stands (see [`Walk::open`]).
     pub open: bool,
+    /// Whether the tree rendered builds the menu of the item its row shows
+    /// ([`ViewState::menu`]).
+    pub menu: bool,
     pub boundaries: Option<&'b mut dyn Boundaries>,
 }
 
@@ -373,11 +385,13 @@ impl Core {
             .or_else(|| self.written_author(&pkg.hash))
             .unwrap_or_else(|| pkg.hash.clone());
         let open = scoped.as_ref().is_some_and(|scoped| scoped.open);
+        let menu = scoped.as_ref().is_none_or(|scoped| scoped.menu);
         self.frames.borrow_mut().push(
             author,
             FrameKind::View(ViewState {
                 space,
                 open,
+                menu,
                 window: offer.window.to_owned(),
                 ..ViewState::of(offer.viewer.clone())
             }),
@@ -415,14 +429,14 @@ impl Core {
             nodes: &state.nodes,
             offer,
         };
-        let (prefix, says_new, open, hook) = match scoped {
+        let (prefix, says_new, hook) = match scoped {
             Some(Scoped {
                 prefix,
                 says_new,
-                open,
                 boundaries,
-            }) => (prefix, says_new, open, boundaries),
-            None => (None, false, false, None),
+                ..
+            }) => (prefix, says_new, boundaries),
+            None => (None, false, None),
         };
         let walk = Walk {
             level: 0,
@@ -430,6 +444,7 @@ impl Core {
             in_list: false,
             says_new,
             open,
+            menu,
             preview: None,
         };
         let tree = self.build_node(&cx, root, walk, &mut acc, hook)?;
@@ -752,6 +767,7 @@ impl Core {
             args,
             lazy: walk.in_list,
             open: walk.open,
+            menu: walk.menu,
             depth: cx.offer.depth.saturating_add(1),
         })?;
         Ok(UiNode {
@@ -1566,6 +1582,8 @@ impl RowsOf {
             // The row's own: the call stands in the list's rows, and what the list shows open
             // is the row's to say.
             open: false,
+            // What the list asks a menu of is the row's to say too.
+            menu: true,
             depth: self.depth,
         }
     }

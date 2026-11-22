@@ -15,7 +15,7 @@ use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
     CHOOSE_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, SAVE_ACTION,
-    SET_ACTION, THEN_ACTION, UNDO_ACTION,
+    SET_ACTION, SHORTCUT_ACTION, THEN_ACTION, UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
@@ -329,6 +329,12 @@ impl ViewInstance {
     /// built with it, the row that stood open before drops its own, and both render again.
     pub fn open_row(&mut self, list: &str, open: Option<&str>) {
         self.live.open_row(list, open);
+    }
+
+    /// The host asks for the menu of the item the row `menu` of the virtual list `list` shows:
+    /// that row builds it, and the row that had it lets it go.
+    pub fn menu_row(&mut self, list: &str, menu: Option<&str>) {
+        self.live.menu_row(list, menu);
     }
 
     /// Forget the rows of `list` outside `keep`, which scrolled out of view: they no longer
@@ -690,6 +696,31 @@ impl ViewInstance {
                     }
                     InvokeOutcome::Done(_) => self.run_in(next, gesture),
                     other => Ok(other),
+                }
+            }
+            SHORTCUT_ACTION => {
+                let [Value::List(keys), Value::Text(pressed)] = aref.args.as_slice() else {
+                    return Err(RuntimeError::BadArgs("a malformed shortcut".into()));
+                };
+                let run = keys.iter().find_map(|key| match key {
+                    Value::Tuple(fields) => match fields.as_slice() {
+                        [Value::Text(key), Value::Action(run)] if key == pressed => Some(run),
+                        _ => None,
+                    },
+                    _ => None,
+                });
+                match run {
+                    // A key of an action that does not apply to the item does what its menu
+                    // does, which leaves the action out: nothing.
+                    Some(run)
+                        if !matches!(
+                            self.core.inapplicable(run, &self.live.viewer),
+                            Ok(Some(_))
+                        ) =>
+                    {
+                        self.run_in(run, gesture)
+                    }
+                    _ => Ok(InvokeOutcome::Done(Value::Unit)),
                 }
             }
             CHOOSE_ACTION => self.platform_choose(aref),

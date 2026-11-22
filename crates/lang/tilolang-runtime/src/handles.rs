@@ -127,12 +127,19 @@ impl RunState {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent fact of the run: its row's document, its row's menu, what it read"
+)]
 pub struct ViewState {
     /// The space this run of the view was offered.
     pub space: Space,
     /// Whether the row this run of the view is for stands open into its document: a slot that
     /// holds the document is built only then.
     pub open: bool,
+    /// Whether the menu of an item a row shows is built in this run: it is, but in a row of a list
+    /// whose host has not asked for it, which says only that the item offers one.
+    pub menu: bool,
     /// The window the view runs in: what its `state` is kept under.
     pub window: String,
     /// The person looking: whose `state` the view reads.
@@ -176,6 +183,7 @@ impl ViewState {
         Self {
             space: Space::default(),
             open: false,
+            menu: true,
             window: String::new(),
             viewer,
             state_reads: Vec::new(),

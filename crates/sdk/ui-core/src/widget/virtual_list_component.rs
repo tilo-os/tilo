@@ -71,6 +71,15 @@ pub struct ListItemProps {
     /// that menu placed already, so every action stays reachable.
     #[component(part)]
     pub menu: Vec<MenuPart>,
+    /// The item offers a menu the row does not carry: opening the row's menu asks for the row
+    /// again with it ([`RowSource::ask_menu`]), and the menu opens when it comes.
+    pub offers_menu: bool,
+    /// The keys the item's actions answer to ("Ctrl+Enter"): a press of one while the row holds
+    /// the keyboard reports `shortcut` with it, whether or not the row carries its menu.
+    pub keys: Vec<String>,
+    /// A key of `keys` was pressed on the row: carries it.
+    #[component(event(value = String))]
+    pub shortcut: Event,
     /// What swiping the row from its trailing edge does, unless its view says
     /// (`attached`).
     #[component(part)]
@@ -444,6 +453,15 @@ impl DescribedRows {
 
     /// Read the item `key` with `read`: `None` when there is no such item, or it is not
     /// rendered.
+    /// Ask for the row `key` again with its item's menu.
+    fn ask_menu(&self, key: &str) {
+        if let Held::Rendered(rows) = &self.held
+            && let Ok(mut rows) = rows.try_borrow_mut()
+        {
+            rows.ask_menu(key);
+        }
+    }
+
     fn with_item<R>(&self, key: &str, read: impl FnOnce(ListItemProps) -> R) -> Option<R> {
         if let Some(item) = self.removed.iter().find(|item| item.key == key) {
             return Some(read(reusable(item)?));
@@ -511,6 +529,9 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         time: item.time,
         read_by: item.read_by.clone(),
         menu: item.menu.iter().map(MenuPart::again).collect(),
+        offers_menu: item.offers_menu,
+        keys: item.keys.clone(),
+        shortcut: item.shortcut.clone(),
         swipe: item.swipe.as_ref().map(SwipeActionProps::again),
         attached: Attachments {
             menu: item.attached.menu.iter().map(MenuPart::again).collect(),
@@ -883,6 +904,7 @@ fn picked_rows(
 fn declared_shortcuts(
     menu: &[MenuPart],
     attached: &[MenuPart],
+    (keys, shortcut): (&[String], &Event),
 ) -> Vec<(crate::platform::Shortcut, std::rc::Rc<dyn Fn()>)> {
     let mut out: Vec<(crate::platform::Shortcut, std::rc::Rc<dyn Fn()>)> = Vec::new();
     for part in menu.iter().chain(attached) {
@@ -906,6 +928,25 @@ fn declared_shortcuts(
         if press.address().is_none() && !press.is_none() {
             out.push((shortcut, press.runner()));
         }
+    }
+    // The keys of a row whose menu is not here: the press goes to the item's app, which runs the
+    // action the key names.
+    for key in keys {
+        if tilo_ui_graph::keys::Chord::parse(key).is_err() {
+            continue;
+        }
+        let pressed = crate::platform::Shortcut::from(key.as_str());
+        if out
+            .iter()
+            .any(|(declared, _)| declared.same_press(&pressed))
+        {
+            continue;
+        }
+        let (fires, key) = (shortcut.clone(), key.clone());
+        out.push((
+            pressed,
+            Rc::new(move || fires.fire(Some(crate::component::Value::Text(key.clone())))),
+        ));
     }
     out
 }
@@ -987,13 +1028,15 @@ fn bare_row(
             removed,
             done,
             menu,
+            keys,
+            shortcut,
             parent_title,
             progress,
             ..
         } = item;
         let breadcrumb =
             parent_title.filter(|_| !tree.is_some_and(|marks| marks.is_nested(&key.to_owned())));
-        let shortcuts = declared_shortcuts(&menu, &attached.menu);
+        let shortcuts = declared_shortcuts(&menu, &attached.menu, (&keys, &shortcut));
         // // The mark the item's page takes where the row stands open into it: the row the page // takes
         // the place of is not drawn, and the change the person has not seen goes with the // item, never
         // away with it.
@@ -1349,31 +1392,57 @@ fn page_row(content: Element, gap: Rhythm, measure: Option<Length>) -> Element {
 /// Whether the row of `key` offers a menu: what its item offers on one, or the view put on it.
 fn offers_menu(rows: &DescribedRows, key: &str) -> bool {
     rows.with_item(key, |item| {
-        !item.menu.is_empty() || !item.attached.menu.is_empty()
+        item.offers_menu || !item.menu.is_empty() || !item.attached.menu.is_empty()
     })
     .unwrap_or(false)
 }
 
-/// The menu of the row under `at` (its focused row when the keyboard opened it): what its
-/// item offers. Opening it selects the row, unless the row opens where it stands: that row
-/// shows its item under itself, and a menu over it is not the window opening it elsewhere.
-fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEntry> {
-    let Some(list) = list
+/// The list of rows a menu over `list` opens on, and the key of the row under `at` (its
+/// focused row when the keyboard opened it).
+fn menu_row_key(
+    list: &dyn Widget,
+    at: Option<Point>,
+) -> Option<(&VirtualList<DescribedRows>, String)> {
+    let list = list
         .as_any()
-        .and_then(|list| list.downcast_ref::<VirtualList<DescribedRows>>())
-    else {
-        return Vec::new();
-    };
+        .and_then(|list| list.downcast_ref::<VirtualList<DescribedRows>>())?;
     let key = match at {
         Some(point) => list.key_at_point(point),
         None => list
             .focused_row_key()
             .and_then(|key| key.get::<String>().cloned()),
-    };
-    let Some(key) = key else {
+    }?;
+    Some((list, key))
+}
+
+/// Whether the menu of the row under `at` is on its way: its item offers one the row does not
+/// carry, which it was asked for ([`row_menu`]).
+fn row_menu_waits(list: &dyn Widget, at: Option<Point>) -> bool {
+    menu_row_key(list, at).is_some_and(|(list, key)| {
+        list.model()
+            .with_item(&key, |item| item.offers_menu)
+            .unwrap_or(false)
+    })
+}
+
+/// The menu of the row under `at` (its focused row when the keyboard opened it): what its
+/// item offers. Opening it selects the row, unless the row opens where it stands: that row
+/// shows its item under itself, and a menu over it is not the window opening it elsewhere.
+///
+/// A row whose item offers a menu it does not carry is asked for again with it, and the menu
+/// waits for it ([`row_menu_waits`]).
+fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEntry> {
+    let Some((list, key)) = menu_row_key(list, at) else {
         return Vec::new();
     };
     let rows = list.model();
+    if rows
+        .with_item(&key, |item| item.offers_menu)
+        .unwrap_or(false)
+    {
+        rows.ask_menu(&key);
+        return Vec::new();
+    }
     let entries = rows
         .with_item(&key, |item| {
             let shown = item.item.clone();
@@ -1455,7 +1524,8 @@ impl Described for DescribedList {
                 .with_menu_around(|rows, key| offers_menu(rows, key));
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
                 row_menu(list, at, &Event::None)
-            });
+            })
+            .waiting_on(row_menu_waits);
             return Self {
                 body: ListBody::Menus(Box::new(area)),
                 face,
@@ -1563,7 +1633,8 @@ impl Described for DescribedList {
         let list = list.with_menu_around(|rows, key| offers_menu(rows, key));
         let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
             row_menu(list, at, &select)
-        });
+        })
+        .waiting_on(row_menu_waits);
         Self {
             body: ListBody::Menus(Box::new(area)),
             face,
@@ -2527,7 +2598,7 @@ mod tests {
             command("Double click", "Double click", &queue),
             MenuPart::Separator,
         ];
-        let shortcuts = declared_shortcuts(&menu, &attached);
+        let shortcuts = declared_shortcuts(&menu, &attached, (&[], &Event::None));
         assert_eq!(shortcuts.len(), 1, "text that is no chord names no key");
         assert!(
             shortcuts[0]
@@ -2552,7 +2623,10 @@ mod tests {
         let queue = crate::Intents::<Fired>::default();
         let menu = vec![command("Complete", "Ctrl+Enter", &queue)];
         let attached = vec![command("Reopen", "control+enter", &queue)];
-        assert_eq!(declared_shortcuts(&menu, &attached).len(), 1);
+        assert_eq!(
+            declared_shortcuts(&menu, &attached, (&[], &Event::None)).len(),
+            1
+        );
     }
 
     /// One item of a list a test renders row by row: its key, and the item it stands under.

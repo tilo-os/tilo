@@ -26,6 +26,11 @@ pub const OPEN_ACTION: &str = "$open";
 /// The action of `a.then(b)`: its arguments are `a` and `b`, run in turn.
 pub const THEN_ACTION: &str = "$then";
 
+/// The action of a row's keys (`shortcut` on a `ui.ListItem`): run the action of the row's item
+/// the key pressed names, where it applies. Its arguments are the keys, each with what it runs,
+/// and the key pressed.
+pub const SHORTCUT_ACTION: &str = "$shortcut";
+
 /// The action of `file.choose(a)`: ask the person for a file, and run `a` with it as the
 /// argument it still needs. Its arguments are `a` and the media types it may be.
 pub const CHOOSE_ACTION: &str = "$choose";
