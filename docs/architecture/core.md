@@ -171,6 +171,12 @@ grants and asks its person through the Confirm frame. A member may remove
 someone ranked below them, and an agent may do what its person may once
 its person says yes.
 
+A server runs an app's code for the person at the page, under that
+person's grants, never as a person of its own. Carrying an app's old data
+into its resources is an invocation by a member: it waits until a device
+of a member who may write those resources connects, which signs that one
+declared action as its person, and it runs once.
+
 An agent sandbox on tilo.sh is one workspace. Whether that workspace also
 has a machine for terminal commands, Browser tabs, or Linux and Windows apps
 is what the customer pays for.
