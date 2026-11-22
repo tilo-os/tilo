@@ -119,7 +119,7 @@ fn members(state: &Path, workspace_id: WorkspaceId) -> Vec<[u8; 32]> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cross_user_device_is_not_admitted_into_a_workspace_it_does_not_hold() {
-    let host = home_host().await;
+    let host = Box::pin(home_host()).await;
     let bob_laptop = host.bob.enrol("bob-laptop", DeviceCapabilities::primary());
     let bob_key = bob_laptop.device_pubkey();
     let workspaces = host.server.workspaces().unwrap();
@@ -176,7 +176,7 @@ async fn cross_user_device_is_not_admitted_into_a_workspace_it_does_not_hold() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn owner_device_still_enters_on_a_home_host() {
-    let host = home_host().await;
+    let host = Box::pin(home_host()).await;
     let phone = host.owner.enrol("phone", DeviceCapabilities::primary());
     let phone_key = phone.device_pubkey();
     let phone = connect(&host.server, phone).await;
