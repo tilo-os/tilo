@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mail_provider import (  # noqa: E402
-    NO_ACCOUNT, OLDER_SUBJECT, OLDER_WORDS, SEARCH_CHORD, TILOLANG, StandIn, account_kept,
+    OLDER_SUBJECT, OLDER_WORDS, SEARCH_CHORD, TILOLANG, StandIn, account_kept,
     adds_account, describe, has_read, launches_mail, mail_actions, opens_accounts, opens_newest,
     pressed, shows_inbox,
 )
@@ -50,8 +50,8 @@ def steps(story: Story) -> None:
         story.timing("The session, to its first frame", took["tookMs"])
         story.timing("The session, to its first frame, with the development launcher's installing",
                      took["launcherMs"])
+        # Mail's window is up, saying to add an account in Settings: a page with no control.
         story.note("mail-asked-for-the-internet", launches_mail(ada))
-        until("Mail's first window", lambda: ada.shows(NO_ACCOUNT), 30, 0.25)
         settings = opens_accounts(ada)
         story.timing("The shell, to Settings' Accounts page", (time.monotonic() - answered) * 1000)
         adds_account(ada, settings, stand_in.password)

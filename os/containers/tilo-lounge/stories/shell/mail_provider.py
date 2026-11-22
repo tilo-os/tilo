@@ -53,11 +53,9 @@ SEARCH_CHORD = ("Super", "Space")
 # row that adds a mail account by its address.
 ACCOUNTS_PAGE = "Accounts"
 ADD_EMAIL = "Add Email"
-# Mail, the tilolang app (apps/tl/mail), installed as its signed package, and what its window
-# says before the workspace has a mail account.
+# Mail, the tilolang app (apps/tl/mail), installed as its signed package.
 MAIL = "so.tilo.mail"
 TILOLANG = ("mail",)
-NO_ACCOUNT = "Add a mail account in Settings"
 # What a conversation's read action is called once it is read (apps/tl/mail `mark_read`).
 READ = "Mark as unread"
 # How the stand-in says an IMAP sign-in on its log (`stand_in::said_sign_in`).
