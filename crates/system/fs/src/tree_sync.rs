@@ -469,6 +469,7 @@ impl TreeSync {
             waiting: BTreeSet::new(),
             held_until: None,
             dirty_since: None,
+            unsent: 0,
             kept: Arc::clone(&kept),
             ordered: BTreeSet::new(),
             ordered_for: BTreeSet::new(),
@@ -816,6 +817,9 @@ struct Sync {
     /// When the oldest change not yet handed to the peer was made: what the next write waits
     /// [`BATCH`] after.
     dirty_since: Option<Instant>,
+    /// The records the last pass wrote out without their changes reaching what this namespace
+    /// holds: changes that did not go out, which [`Self::stuck`] names once they waited long.
+    unsent: usize,
     /// Where each document is kept on disk, with its changes since.
     kept: Arc<KeptDocuments>,
     /// A record stood somewhere new at the workspace since its place was last kept on disk.
@@ -1003,11 +1007,13 @@ impl Sync {
         } else {
             Vec::new()
         };
+        let unsent = if long(since) { self.unsent } else { 0 };
         let unopened = !opened;
         if unanswered == 0
             && waiting == 0
             && lacking == 0
             && ordered == 0
+            && unsent == 0
             && refused.is_empty()
             && !unopened
         {
@@ -1052,6 +1058,12 @@ impl Sync {
                  again after a wait",
                 refused.len(),
                 parts(refused.len()),
+            ));
+        }
+        if unsent > 0 {
+            why.push(format!(
+                "changes to {unsent} {} of the file list did not go out and are sent again",
+                parts(unsent),
             ));
         }
         if lacking > 0 {
@@ -1315,6 +1327,7 @@ impl Sync {
             .collect();
         if dirty.is_empty() {
             self.dirty_since = None;
+            self.unsent = 0;
             return;
         }
         let since = *self.dirty_since.get_or_insert_with(Instant::now);
@@ -1331,6 +1344,7 @@ impl Sync {
         let (due, mut waiting) = self.due(dirty, held_now, &held_here).await;
         if due.is_empty() {
             self.dirty_since = waiting.then_some(since);
+            self.unsent = 0;
             return;
         }
         // Reading the changes a chunk holds beyond what the peer has walks that chunk's
@@ -1351,6 +1365,7 @@ impl Sync {
                 return;
             }
         };
+        let (mut more, mut unsent) = (false, 0_usize);
         for write in writes {
             // What the write carries, not what the namespace holds now: the mount keeps
             // changing it while the write goes out, and a change made meanwhile counted as
@@ -1366,12 +1381,22 @@ impl Sync {
                 waiting = true;
                 continue;
             }
-            let sent = write.heads;
+            // A record that changed more than one write carries goes on with the next pass; one
+            // whose write carried nothing and still stands apart from the namespace did not go
+            // out, and the folder says so rather than counting it sent.
+            let left = heads.get(&write.chunk) != Some(&write.heads);
+            if left {
+                more = true;
+                if write.changes.is_empty() {
+                    unsent = unsent.saturating_add(1);
+                }
+            }
             if let Some(held) = self.documents.get_mut(&write.chunk) {
-                held.sent = sent;
+                held.sent = write.heads;
             }
         }
-        self.dirty_since = waiting.then_some(since);
+        self.unsent = unsent;
+        self.dirty_since = (waiting || more).then_some(since);
     }
 
     /// The chunks of `dirty` that can go out now, with the heads each was last handed to the
@@ -1918,6 +1943,53 @@ mod tests {
             }
         }
         went
+    }
+
+    /// A record this device sent all of, then merged as the workspace held it before (a holder
+    /// restarted after a kill reads the records it kept), counts the workspace's older heads as
+    /// sent beside its own: the next pass finds nothing more to send and counts the record sent,
+    /// rather than holding it as unsent for good with every change in place.
+    #[test]
+    fn a_record_merged_as_the_workspace_held_it_before_counts_as_sent() {
+        let mut laptop = Namespace::new("laptop").unwrap();
+        laptop
+            .create_file(crate::namespace::ROOT_INO, "a.txt", None, 1, 1)
+            .unwrap();
+        // What a write reads out is what the namespace stands at.
+        laptop.document_writes(&BTreeMap::new());
+        let older = laptop.document_heads();
+        laptop
+            .create_file(crate::namespace::ROOT_INO, "b.txt", None, 1, 1)
+            .unwrap();
+        laptop.document_writes(&BTreeMap::new());
+        let now = laptop.document_heads();
+        assert!(
+            now.iter()
+                .any(|(chunk, heads)| older.get(chunk) != Some(heads)),
+            "a record moved on"
+        );
+        let mut documents: BTreeMap<TreeChunk, Held> = BTreeMap::new();
+        for (chunk, heads) in &now {
+            let held = documents.entry(*chunk).or_default();
+            held.sent.clone_from(heads);
+            held.founded = true;
+            held.durable = true;
+            // The merge adds the heads the record stood at to what counts as sent.
+            for merged in older.get(chunk).into_iter().flatten() {
+                if !held.sent.contains(merged) {
+                    held.sent.push(*merged);
+                }
+            }
+        }
+        let (mut server, mut confirmed) = (Server::new(), Vec::new());
+        pass(&mut laptop, &mut documents, &mut server, &mut confirmed);
+        for (chunk, heads) in &now {
+            assert_eq!(
+                documents.get(chunk).map(|held| &held.sent),
+                Some(heads),
+                "record {chunk} still counts as not sent"
+            );
+        }
     }
 
     /// A repository's worth of files written into the folder in bursts, each burst going out as

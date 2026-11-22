@@ -364,6 +364,10 @@ impl Namespace {
     /// more, or this namespace holds nothing of the record. A record that changed more than
     /// one write carries goes out over several, each building on the last. Reading changes
     /// walks the record's document, so a caller asks only for a record it can send now.
+    ///
+    /// `held` may name changes this record builds on (heads the holder had before others came
+    /// after them): once every change after `held` goes out, the heads are this record's own,
+    /// so the holder counts as having all of it rather than heads it can never match.
     pub fn document_write(
         &mut self,
         chunk: TreeChunk,
@@ -383,9 +387,11 @@ impl Namespace {
         let mut changes = Vec::new();
         let mut reached: std::collections::BTreeSet<automerge::ChangeHash> =
             known.iter().copied().collect();
+        let mut whole = true;
         for change in doc.get_changes(&known) {
             let raw = change.raw_bytes();
             if !changes.is_empty() && changes.len().saturating_add(raw.len()) > budget {
+                whole = false;
                 break;
             }
             changes.extend_from_slice(raw);
@@ -394,10 +400,15 @@ impl Namespace {
             }
             reached.insert(change.hash());
         }
+        let heads = if whole {
+            doc.get_heads()
+        } else {
+            reached.into_iter().collect()
+        };
         Some(ResourceWrite {
             chunk,
             changes,
-            heads: reached.into_iter().collect(),
+            heads,
         })
     }
 
