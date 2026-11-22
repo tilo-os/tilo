@@ -31601,6 +31601,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.mail.Account.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.mail.Account.set_signature.Arguments": {
         "type": "object",
         "properties": {
@@ -31676,6 +31682,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.mail.Mailbox.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.mail.Thread.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -31726,6 +31738,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.mail.Thread.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.mail.Thread.reply.Arguments": {
         "type": "object",
@@ -31935,6 +31953,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.mail.Label.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.mail.Message.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -31994,6 +32018,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.mail.Message.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.mail.Message.reply_to.Arguments": {
         "type": "object",
@@ -32066,6 +32096,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.mail.Draft.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.mail.Draft.cancel_later.Arguments": {
         "type": "object",
@@ -32185,6 +32221,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.mail.Mail.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.mail.Mail.set_hold.Arguments": {
         "type": "object",
@@ -33161,6 +33203,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.Shell.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.Shell.asked_on_canvas.Arguments": {
         "type": "object",
         "properties": {},
@@ -33937,6 +33985,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.BarPart.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.DockItem.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -33986,6 +34040,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.DockItem.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.Layout.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -34028,6 +34088,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.Layout.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.Layout.a_workspace.Arguments": {
         "type": "object",
@@ -34358,6 +34424,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.LayoutQuery.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.LayoutRef.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -34405,6 +34477,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.LayoutRef.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.LayoutWorkspace.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -34451,6 +34529,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.LayoutWorkspace.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.LayoutPerson.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -34494,6 +34578,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.LayoutPerson.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.LayoutRow.$create.Arguments": {
         "type": "object",
@@ -34542,6 +34632,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.LayoutRow.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.LayoutStrip.$create.Arguments": {
         "type": "object",
@@ -34593,6 +34689,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.LayoutStrip.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.LayoutPlace.$create.Arguments": {
         "type": "object",
@@ -34646,6 +34748,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.LayoutPlace.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.Viewing.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -34689,6 +34797,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.Viewing.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.Viewing.show_style.Arguments": {
         "type": "object",
@@ -36109,6 +36223,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.tube.Channel.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.tube.Channel.subscribe.Arguments": {
         "type": "object",
         "properties": {
@@ -36186,6 +36306,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.Video.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.Video.like.Arguments": {
         "type": "object",
@@ -36285,6 +36411,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.tube.Playlist.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.tube.Subscription.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -36328,6 +36460,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.Subscription.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.WatchEntry.$create.Arguments": {
         "type": "object",
@@ -36373,6 +36511,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.WatchEntry.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.YouTube.$create.Arguments": {
         "type": "object",
@@ -36423,6 +36567,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.YouTube.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.YouTube.delete_history.Arguments": {
         "type": "object",
@@ -42972,6 +43122,12 @@
     {
       "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Account",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Account.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Account",
       "action": "set_signature",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Account.set_signature.Arguments"
     },
@@ -43013,6 +43169,12 @@
     },
     {
       "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mailbox",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mailbox.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Thread",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.$create.Arguments"
@@ -43028,6 +43190,12 @@
       "resource": "tl.so.tilo.mail.Thread",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.$origin.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -43145,6 +43313,12 @@
     },
     {
       "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Label",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Label.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Message",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Message.$create.Arguments"
@@ -43160,6 +43334,12 @@
       "resource": "tl.so.tilo.mail.Message",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Message.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.$origin.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -43196,6 +43376,12 @@
       "resource": "tl.so.tilo.mail.Draft",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.$origin.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -43250,6 +43436,12 @@
       "resource": "tl.so.tilo.mail.Mail",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.$origin.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -43548,6 +43740,12 @@
     {
       "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.Shell",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.Shell.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.Shell",
       "action": "asked_on_canvas",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Shell.asked_on_canvas.Arguments"
     },
@@ -43763,6 +43961,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.BarPart",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.BarPart.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.DockItem",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.DockItem.$create.Arguments"
@@ -43781,6 +43985,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.DockItem",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.DockItem.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.Layout",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Layout.$create.Arguments"
@@ -43796,6 +44006,12 @@
       "resource": "tl.so.tilo.shell.Layout",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Layout.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.Layout",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.Layout.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -43865,6 +44081,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutQuery",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutQuery.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.LayoutRef",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutRef.$create.Arguments"
@@ -43880,6 +44102,12 @@
       "resource": "tl.so.tilo.shell.LayoutRef",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutRef.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutRef",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutRef.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -43901,6 +44129,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutWorkspace",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutWorkspace.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.LayoutPerson",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutPerson.$create.Arguments"
@@ -43916,6 +44150,12 @@
       "resource": "tl.so.tilo.shell.LayoutPerson",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutPerson.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutPerson",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutPerson.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -43937,6 +44177,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutRow",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutRow.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.LayoutStrip",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutStrip.$create.Arguments"
@@ -43952,6 +44198,12 @@
       "resource": "tl.so.tilo.shell.LayoutStrip",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutStrip.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutStrip",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutStrip.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -43973,6 +44225,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutPlace",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutPlace.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.Viewing",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Viewing.$create.Arguments"
@@ -43988,6 +44246,12 @@
       "resource": "tl.so.tilo.shell.Viewing",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Viewing.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.Viewing",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.Viewing.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -44430,6 +44694,12 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.Channel",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Channel.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Channel",
       "action": "subscribe",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Channel.subscribe.Arguments"
     },
@@ -44462,6 +44732,12 @@
       "resource": "tl.so.tilo.tube.Video",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Video.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -44519,6 +44795,12 @@
     },
     {
       "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Playlist",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Playlist.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.Subscription",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.$create.Arguments"
@@ -44534,6 +44816,12 @@
       "resource": "tl.so.tilo.tube.Subscription",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Subscription",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -44555,6 +44843,12 @@
     },
     {
       "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.WatchEntry",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.WatchEntry.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.YouTube",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.$create.Arguments"
@@ -44570,6 +44864,12 @@
       "resource": "tl.so.tilo.tube.YouTube",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",

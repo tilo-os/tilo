@@ -816,6 +816,58 @@ action attach(b: Board, list: todo.TodoList) {
             "a task typed with no day has none to clear"
         );
     }
+
+    phase the_workspace_admits_what_an_outside_origin_writes;
+    // What a service said is written by its origin as one change of its own, into the resources
+    // that hold the origin's types: the workspace's store judges every write by the verb it names,
+    // so the surface declares the origin's, or a mailbox keeps none of its mail.
+    {
+        const INBOX: &str = r#"app so.tilo.lang.inbox "Inbox"
+
+type Mailbox (origin: imap.mailbox) {
+  key: Text merge register
+  name: Text
+  role: Text merge register
+  unread: Int
+  total: Int
+}
+
+type Inbox {
+  mailboxes: Collection<Mailbox>
+}
+
+root Inbox
+
+default view inbox for Inbox
+
+view inbox(i: Inbox) {
+  text("{i.mailboxes.len()}")
+}
+"#;
+        let (_, packages) = Replica::new("ada", Workspace::new(), &[(INBOX, "")]);
+        let meta = &packages[0].meta;
+        let declared: Vec<String> = package_surfaces(meta, &SourceWords)
+            .into_iter()
+            .filter(|surface| {
+                tilo_resource_store::Schema::from_surface(surface)
+                    .verb(tilolang_tilo::action::ORIGIN_ACTION)
+                    .is_some()
+            })
+            .map(|surface| surface.kind)
+            .collect();
+        assert_eq!(
+            declared,
+            [meta.kind_of("Mailbox"), meta.kind_of("Inbox")],
+            "every resource the origin writes into names its verb"
+        );
+        let (_, plain) = Replica::new("ada", Workspace::new(), &[(TODO, "")]);
+        assert!(
+            package_surfaces(&plain[0].meta, &SourceWords)
+                .iter()
+                .all(|surface| surface.verb(tilolang_tilo::action::ORIGIN_ACTION).is_none()),
+            "a package with no origin declares no origin's writes"
+        );
+    }
 }
 
 /// Plan the action `name` of `meta` on `at` (a resource id, when the action has a target).

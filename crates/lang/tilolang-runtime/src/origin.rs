@@ -194,7 +194,7 @@ impl Runtime {
         step: impl FnOnce(&mut OriginChange<'_>) -> Result<T, RuntimeError>,
     ) -> Result<T, RuntimeError> {
         let note = ChangeNote {
-            action: "$origin".into(),
+            action: crate::store::ORIGIN_ACTION.into(),
             args: serde_json::Value::String(origin.to_owned()),
             invoker,
             chain: Vec::new(),

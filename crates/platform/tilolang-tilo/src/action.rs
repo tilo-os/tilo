@@ -62,6 +62,10 @@ pub const DIRECT_EDITS: [DirectEdit; 2] = [
 /// History reads it as the platform's creation of the resource.
 pub const CREATE_ACTION: &str = tilo_actions::CREATE_ACTION;
 
+/// The action id of what an outside origin writes: its service's answer, taken into the
+/// resources it keeps in step ([`crate::origin`]).
+pub const ORIGIN_ACTION: &str = tilolang_runtime::store::ORIGIN_ACTION;
+
 /// Who is behind the code that planned an action.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Authorship {

@@ -17,7 +17,7 @@ use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilolang_runtime::Words;
 use tilolang_runtime::meta::Ty;
 
-use crate::action::{CREATE_ACTION, DIRECT_EDITS};
+use crate::action::{CREATE_ACTION, DIRECT_EDITS, ORIGIN_ACTION};
 use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 
 use crate::meta::{MetaExt as _, action_kind};
@@ -423,6 +423,25 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
     verbs
 }
 
+/// The verb of what an outside origin writes: its service's answer, taken into the resources the
+/// package keeps in step with it, as one change of the host's own. Receivers decide that change
+/// against this verb.
+fn origin_verb() -> VerbSurface {
+    VerbSurface {
+        id: ORIGIN_ACTION.to_owned(),
+        name: String::new(),
+        label: "Keep in step with its service".to_owned(),
+        description: Some("What the outside service said is taken in.".to_owned()),
+        kind: ActionKind::Undoable,
+        destructive: false,
+        incoming_message: false,
+        params: Vec::new(),
+        returns: None,
+        writes: vec![RESOURCE_UNIT.to_owned()],
+        field: None,
+    }
+}
+
 fn field_surfaces(
     meta: &Meta,
     ty: &TypeMeta,
@@ -475,9 +494,15 @@ fn field_surfaces(
 #[must_use]
 pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     let mut surfaces = Vec::new();
+    // A package with an outside origin writes what its service says into the resources holding
+    // those of the origin's types, the package's root among them: each resource takes that change.
+    let kept_in_step = meta.types.iter().any(|ty| ty.origin.is_some());
     for ty in &meta.types {
         let mut types = TypeSet::new();
         let mut verbs = edit_verbs(ty);
+        if kept_in_step {
+            verbs.push(origin_verb());
+        }
         // An action on a union of the package's types is one on each of them: the change a call
         // makes is claimed on the kind of the resource it was called on.
         verbs.extend(

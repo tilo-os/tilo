@@ -413,6 +413,10 @@ fn is_one(count: &u32) -> bool {
 /// The action id of the change that made a resource, when the host made it.
 pub const CREATE_ACTION: &str = "$create";
 
+/// The action id of the change an outside origin writes: what its service said, taken into the
+/// resources of the types it keeps ([`crate::Runtime::write_origin`]).
+pub const ORIGIN_ACTION: &str = "$origin";
+
 /// The action id of a change a bound control makes to the text field it shows.
 pub const EDIT_TEXT_ACTION: &str = "edit-text";
 
