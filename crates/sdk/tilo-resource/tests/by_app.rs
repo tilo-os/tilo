@@ -1,4 +1,3 @@
-
 //! A verb marked `#[action(by_app)]` is the app's own bookkeeping of its
 //! record: its code applies it, and no caller is offered it. It has no
 //! declaration, so it is not published, nothing builds it by its id, and a

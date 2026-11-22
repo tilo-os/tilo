@@ -9864,10 +9864,7 @@ fn app_readme(spec: &AppSpec) -> String {
         ),
         (
             "Ship: build, sign and verify a package for each platform (`--platform tilo|linux|windows|macos`, `--arch x86_64|aarch64`; `build`, `run`, `dev` and `check` take the same flags)",
-            &[
-                "tilo-app package",
-                "tilo-app check --platform all",
-            ],
+            &["tilo-app package", "tilo-app check --platform all"],
         ),
         (
             "Publish: create a publisher key, prove a namespace, and upload what `dist/` holds",

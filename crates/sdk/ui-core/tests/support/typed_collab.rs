@@ -6,7 +6,6 @@
 //! the real UI SDK shovel without a shell process or process-global
 //! service-fd variables.
 
-
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::os::fd::{IntoRawFd, RawFd};

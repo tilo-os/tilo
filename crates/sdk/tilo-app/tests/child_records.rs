@@ -1,4 +1,3 @@
-
 //! Child records a window's own record lists: creating, trashing and moving
 //! one writes the record the window holds, so each step goes through the
 //! window's own action path rather than the store beside it.

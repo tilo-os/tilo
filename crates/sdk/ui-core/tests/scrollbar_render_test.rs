@@ -7,7 +7,6 @@
 //! Skips without a wgpu adapter, unless `TILO_REQUIRE_GPU=1` promises one, matching the other
 //! offscreen tests. Set `TILO_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
-
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::offscreen::OffscreenRenderer;

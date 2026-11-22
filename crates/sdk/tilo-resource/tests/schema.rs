@@ -1,4 +1,3 @@
-
 //! `#[derive(JsonSchema)]` describes exactly what serde reads and writes,
 //! for each of the shapes serde attributes give a type.
 

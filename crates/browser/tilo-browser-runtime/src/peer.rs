@@ -1351,7 +1351,11 @@ fn peer_store(
         let channel_vault: [u8; 32] = channel_vault
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| js_error("a profile peer needs its 32-byte channel vault"))?;
-        return Ok(Arc::new(DurablePeerStore::open(&namespace, user, channel_vault)?));
+        return Ok(Arc::new(DurablePeerStore::open(
+            &namespace,
+            user,
+            channel_vault,
+        )?));
     }
     let record = record
         .map(|bytes| postcard::from_bytes::<PeerEntry>(&bytes))
@@ -2101,11 +2105,7 @@ impl WasmPeer {
                     hear(self.id, workspace_id, from, &body);
                     None
                 }
-                Event::Live {
-                    ws: _,
-                    from,
-                    frame,
-                } if from != self.device_key => {
+                Event::Live { ws: _, from, frame } if from != self.device_key => {
                     let publisher = hex::encode(from);
                     let event = match LiveFrame::decode(&frame).ok()? {
                         LiveFrame::Ops(OpsFrame::Preview { seq, record, ops }) => {

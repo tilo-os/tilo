@@ -437,7 +437,11 @@ fn an_editor_manages_an_agent_another_member_made_and_a_viewer_does_not() {
     assert_eq!(scout.model.as_deref(), Some("anthropic/sonnet"));
     assert_eq!(scout.spend_limit_micros, Some(5_000_000));
     editor
-        .call_on(AGENTS, "retire-agent", serde_json::json!({ "agent": "scout" }))
+        .call_on(
+            AGENTS,
+            "retire-agent",
+            serde_json::json!({ "agent": "scout" }),
+        )
         .unwrap();
     assert!(!agents.get().agents[0].is_active(), "the editor retired it");
 

@@ -1,4 +1,3 @@
-
 //! A private window: an app that offers them opens one with `--private`, on
 //! a profile of its own thrown away with the process, attached to no
 //! runtime and holding none of the person's own records.

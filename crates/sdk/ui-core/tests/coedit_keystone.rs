@@ -14,7 +14,6 @@
 //! through the real `collab_types::validate_admitted_inbound_op` pipeline by
 //! role (`signed_edit_is_permission_guarded`).
 
-
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use collab_types::CommitNamed as _;

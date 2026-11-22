@@ -438,7 +438,8 @@ impl AuthorDirectory {
         let Some(invoker) = entry.and_then(|entry| entry.invoker.as_ref()) else {
             let author = self.resolve(actor_hex);
             let reads = reader.as_ref().is_some_and(|reader| {
-                actor_handle(actor_hex).is_some_and(|handle| reader.actor_bytes() == handle.as_bytes())
+                actor_handle(actor_hex)
+                    .is_some_and(|handle| reader.actor_bytes() == handle.as_bytes())
                     || self.writers.get(&actor_hex.to_lowercase()) == Some(reader)
             });
             return if reads {

@@ -1,4 +1,3 @@
-
 //! A record an app keeps for its whole workspace publishes its verbs beside
 //! the app's own resource, so a member changes it through the published
 //! action — whether the workspace held it before the window opened or
@@ -151,8 +150,7 @@ fn assert_holds_the_secret(app: &TestApp<Terminal>) {
     let id = tilo_app::resource::DocumentId::parse(SECRETS).unwrap();
     let held = app
         .read_document_of(&id, |doc| {
-            <Secrets as tilo_app::tilo_resource::Resource>::read(doc)
-                .map(|state| state.secrets)
+            <Secrets as tilo_app::tilo_resource::Resource>::read(doc).map(|state| state.secrets)
         })
         .expect("the document is held here")
         .unwrap();

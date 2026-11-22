@@ -3,7 +3,6 @@
 //! (vendor/automerge/TILO-PATCH.md). A history reader relies on both to
 //! read only the changes it has not seen.
 
-
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ChangeHash, ROOT};
 use tilo_automerge::ApplyIncoming;

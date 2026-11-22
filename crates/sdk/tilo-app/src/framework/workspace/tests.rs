@@ -26,25 +26,33 @@ fn a_known_reader_can_read_their_record_at_any_role() {
     let owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
     let open = |person: &str, id| {
         let author = MemberId::person(person);
-        let records = WorkspaceResources::in_workspace(
-            owners.clone(),
-            WORKSPACE.to_owned(),
-            author.clone(),
-        );
+        let records =
+            WorkspaceResources::in_workspace(owners.clone(), WORKSPACE.to_owned(), author.clone());
         let actor = Acting::from(Actor::Member(author));
         let permissions = LivePermissions::fixed(PermissionContext::new(
             actor.clone(),
             Vec::new(),
             MemberAccess::new(policy.clone(), actor),
         ));
-        WorkspaceResource::<History>::open_at(&records, APP, id, (APP, "Tube"), Some(permissions), None)
-            .expect("the workspace record")
+        WorkspaceResource::<History>::open_at(
+            &records,
+            APP,
+            id,
+            (APP, "Tube"),
+            Some(permissions),
+            None,
+        )
+        .expect("the workspace record")
     };
     assert!(open(&ada, &route).may_read(), "Ada is a Viewer");
     assert!(!open(&bob, &route).may_read(), "Bob owns the workspace");
     for person in [&ada, &bob] {
         assert!(
-            !open(person, tilo_actions::policy::roles::WORKSPACE_TUBE_HISTORY_DOCUMENT).may_read(),
+            !open(
+                person,
+                tilo_actions::policy::roles::WORKSPACE_TUBE_HISTORY_DOCUMENT
+            )
+            .may_read(),
             "the earlier watch history has no verifiable owner"
         );
     }

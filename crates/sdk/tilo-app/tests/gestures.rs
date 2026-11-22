@@ -1,4 +1,3 @@
-
 //! Consecutive edits of one field by one person within one gesture are one
 //! undo step: typing a word, dragging a slider.
 

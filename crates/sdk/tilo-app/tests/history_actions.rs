@@ -1,4 +1,3 @@
-
 //! The history every framework app answers through the action API: undo
 //! and redo of the caller's own steps (an agent's run), history with what
 //! each step was given, checkpoints, restore whole or by item, diff, and

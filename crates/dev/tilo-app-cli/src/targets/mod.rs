@@ -330,7 +330,9 @@ pub fn check_targets(start: &Path, targets: &[Target], allow_planned: bool) -> R
             eprintln!("{note}");
         }
         if check_host(target).is_err() {
-            println!("[check] {target}: manifest and capabilities OK; compiling needs a {target} host");
+            println!(
+                "[check] {target}: manifest and capabilities OK; compiling needs a {target} host"
+            );
             continue;
         }
         let mut command = ProcessCommand::new(cargo_program());

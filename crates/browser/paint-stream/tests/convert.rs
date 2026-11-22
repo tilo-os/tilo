@@ -16,7 +16,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use tilo_paint_stream::fonts::FontClass;
 use tilo_paint_stream::snapshot::{
     CHOICE_BOX, CHOICE_MARK, FIELD_MARK, FIELD_VALUE, OUTLINE, Told, convert, convert_with,

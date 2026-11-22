@@ -16,7 +16,6 @@
 //!    came back during scroll (which inflated dirty bounds) and
 //!    disappeared again on scroll stop.
 
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 

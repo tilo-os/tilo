@@ -1,4 +1,3 @@
-
 //! An agent adding one item to a long list, every row of which is mounted,
 //! costs the window work for the item, not for the list: the frame that
 //! shows it asks every widget a question or two, but enters the component's

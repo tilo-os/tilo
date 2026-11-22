@@ -1,4 +1,3 @@
-
 //! A custom surface's typed edits are recorded in history as what they did:
 //! the action the edit is, never the generic `apply` they travel as.
 

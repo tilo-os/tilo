@@ -18,7 +18,6 @@
 //! baselines' dimensions without a GPU, so a layout change that needs new
 //! baselines fails in every run rather than only where llvmpipe renders.
 
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tilo_test_env::SpawnUnderEnvLock as _;

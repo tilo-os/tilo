@@ -1,4 +1,3 @@
-
 //! Where a presence's action leaves them is the framework's: the surface
 //! is told, and reads it back, instead of keeping its own copy. An effect
 //! told where to act (`#[param(place)]`) acts there and leaves them there.

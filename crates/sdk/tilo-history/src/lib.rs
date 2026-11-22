@@ -119,13 +119,7 @@ impl ActionLabels {
                 } else {
                     &action.declared
                 };
-                self.know(
-                    "",
-                    &resource.kind,
-                    by,
-                    &action.label,
-                    action.did.as_deref(),
-                );
+                self.know("", &resource.kind, by, &action.label, action.did.as_deref());
             }
             self.learn(&resource.children);
         }
@@ -698,7 +692,11 @@ impl<'a> Reader<'a> {
         let mut args = self.base_args(scope);
         // A verb that names no app is the entry's app's.
         let key = if verb.action.app.is_empty() {
-            ActionKey::new(scope.app, verb.action.kind.as_str(), verb.action.action.as_str())
+            ActionKey::new(
+                scope.app,
+                verb.action.kind.as_str(),
+                verb.action.action.as_str(),
+            )
         } else {
             verb.action.clone()
         };

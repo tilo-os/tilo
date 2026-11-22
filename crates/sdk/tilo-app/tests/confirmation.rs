@@ -1,4 +1,3 @@
-
 //! A destructive verb of a document is undoable: from whatever path it
 //! comes it applies at once, nobody is asked, and Undo takes it back. Only
 //! what Undo cannot take back is confirmed, from a gesture and through the

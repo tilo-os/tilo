@@ -9,7 +9,6 @@
     clippy::indexing_slicing,
     reason = "a failed unwrap or index in a test is its assertion"
 )]
-
 #![allow(
     clippy::unwrap_used,
     clippy::arithmetic_side_effects,

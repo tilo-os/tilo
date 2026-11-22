@@ -1,4 +1,3 @@
-
 //! A reference shows as a chip that opens it where it lives: one action,
 //! the resource's `open` in the app that keeps it, sent through the session's
 //! action API and admitted there like any other.

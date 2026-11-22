@@ -61,10 +61,7 @@ impl Described for Docked {
                 Some(measure) => page.measure(measure),
                 None => page,
             };
-            stack = stack.push_part(part(
-                Box::new(page.push_part(Part::new(foot))),
-                Fit::hug(),
-            ));
+            stack = stack.push_part(part(Box::new(page.push_part(Part::new(foot))), Fit::hug()));
         }
         Self { stack, editing: 0 }
     }

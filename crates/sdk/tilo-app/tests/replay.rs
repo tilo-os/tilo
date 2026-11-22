@@ -1,4 +1,3 @@
-
 //! A recording replays in the app it recorded: a private window that reads
 //! and is never written, opening History at the recording's first step,
 //! each step drawn by the app's own view as the state it was

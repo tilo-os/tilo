@@ -1,4 +1,3 @@
-
 //! Typed settings reach views and surfaces from their context, follow writes
 //! made elsewhere, persist with the profile and never enter the document.
 

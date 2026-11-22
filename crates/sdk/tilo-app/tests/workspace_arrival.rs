@@ -1,4 +1,3 @@
-
 //! The workspace's record an app keeps one of, not on this device when its
 //! window opens: the workspace may hold it, so the window shows what is on
 //! its way until the workspace's first sync, then the app's view. A window

@@ -631,7 +631,11 @@ fn a_change_names_the_item_it_made_as_it_is_called_now() {
 }
 
 /// What an app publishes an action as, with the words it says the action did.
-fn published(action: &str, label: &str, did: Option<&str>) -> tilo_actions::published::PublishedAction {
+fn published(
+    action: &str,
+    label: &str,
+    did: Option<&str>,
+) -> tilo_actions::published::PublishedAction {
     let mut published = tilo_actions::published::PublishedAction::offered(
         &tilo_actions::published::Offer {
             resource: "notes.pages",
@@ -674,7 +678,11 @@ fn a_verb_reads_in_the_words_its_app_says_it_did() {
     labels.learn_published(
         "so.tilo.notes",
         &[
-            published("append-to-note", "Append to note", Some("added to the note")),
+            published(
+                "append-to-note",
+                "Append to note",
+                Some("added to the note"),
+            ),
             published("pin", "Pin", None),
         ],
     );
@@ -724,7 +732,11 @@ fn an_app_message_wins_and_another_apps_words_are_not_borrowed() {
     );
     labels.learn_published(
         "so.tilo.notes",
-        &[published("append-to-note", "Append to note", Some("added to the note"))],
+        &[published(
+            "append-to-note",
+            "Append to note",
+            Some("added to the note"),
+        )],
     );
     let notes = Catalogue::new(
         "en-US",
@@ -748,14 +760,19 @@ fn a_record_the_reader_holds_itself_reads_in_its_declared_words() {
     );
     let reader = Reader::new("en-US").with_labels(&labels);
     for app in ["org.tilo.Tilo", "so.tilo.assistant"] {
-        let made = ActionContext::for_resource("tilo.workspace.agent", "tilo.workspace.agent", "Agents")
-            .with_described(
-                Described::new(Did::verb(
-                    ActionKey::new(app, "tilo.workspace.agent", "create-agent"),
-                    [],
-                ))
-                .on("agent-1", "Claude Code"),
-            );
-        assert_eq!(reader.sentence(&made), "Added the agent “Claude Code”", "{app}");
+        let made =
+            ActionContext::for_resource("tilo.workspace.agent", "tilo.workspace.agent", "Agents")
+                .with_described(
+                    Described::new(Did::verb(
+                        ActionKey::new(app, "tilo.workspace.agent", "create-agent"),
+                        [],
+                    ))
+                    .on("agent-1", "Claude Code"),
+                );
+        assert_eq!(
+            reader.sentence(&made),
+            "Added the agent “Claude Code”",
+            "{app}"
+        );
     }
 }

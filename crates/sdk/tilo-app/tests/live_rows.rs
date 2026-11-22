@@ -1,4 +1,3 @@
-
 //! One published tree: the edits views and surfaces bind to where the user
 //! is, and the live external rows a surface shows, join the resource's own
 //! publication, and nothing but the resource's actions changes the

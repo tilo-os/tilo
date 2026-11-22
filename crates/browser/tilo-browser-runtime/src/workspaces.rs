@@ -15,8 +15,8 @@ use tilo_server_protocol::workspaces::{
 use tilo_workspace_join::encode_invitation_text;
 use wasm_bindgen::prelude::*;
 
-use tilo_action_policy::Role;
 use crate::peer::{WasmPeer, device_key, js_error};
+use tilo_action_policy::Role;
 
 /// How long an invitation stays redeemable unless the page says.
 const INVITATION_SECONDS: u64 = 7 * 24 * 60 * 60;

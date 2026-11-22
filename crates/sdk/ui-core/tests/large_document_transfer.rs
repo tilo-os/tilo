@@ -3,7 +3,6 @@
 //! individually signed segments and arrive at the peer byte-for-byte, with
 //! both bridges still connected afterwards.
 
-
 use crate::support::typed_collab::TypedBroker;
 use collab_types::CommitNamed as _;
 use tilo_ui::collaboration::{CollabRequest, CollaborationManager};

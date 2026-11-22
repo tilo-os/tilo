@@ -1,4 +1,3 @@
-
 //! Field edits on another record than the app's own: a settings section and
 //! the person's own record, bound by path in a view of their own, published
 //! beside the app's resource with their field edits and verbs, changed only

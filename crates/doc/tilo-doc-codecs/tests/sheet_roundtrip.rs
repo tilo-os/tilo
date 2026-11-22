@@ -4,7 +4,6 @@
 //! model, serialized back, and reopened — proving the model is the source of truth
 //! and that **formulas are preserved, not flattened to their cached value**.
 
-
 use std::fmt::Write as _;
 use std::io::{Cursor, Read, Write};
 use tilo_doc::sheet::snapshot::CellType;

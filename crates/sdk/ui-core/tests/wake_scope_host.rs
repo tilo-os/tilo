@@ -1,4 +1,3 @@
-
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use tilo_ui::{LatestRequest, LatestTask, LocalState, WakeEvent, WakeScope};

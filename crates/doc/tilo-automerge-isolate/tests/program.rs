@@ -2,7 +2,6 @@
 //! argument alone: libtest's arguments belong to a test binary's workers, and
 //! a person reading a program's process list should not see them.
 
-
 use std::process::Command;
 
 use tilo_test_env::SpawnUnderEnvLock as _;

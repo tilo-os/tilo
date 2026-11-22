@@ -110,12 +110,7 @@ fn numbers(html: &str) -> Vec<u32> {
 fn numbered(page: &Page, html: &str) -> Vec<(u32, String)> {
     numbers(html)
         .into_iter()
-        .map(|id| {
-            (
-                id,
-                page.path(id).unwrap_or_default().to_owned(),
-            )
-        })
+        .map(|id| (id, page.path(id).unwrap_or_default().to_owned()))
         .collect()
 }
 
