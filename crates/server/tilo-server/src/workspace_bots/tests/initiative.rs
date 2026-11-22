@@ -781,9 +781,8 @@ async fn what_the_assistant_and_its_server_did_themselves_is_not_news_to_a_look(
     );
 
     // The server counts what a turn of the assistant cost, on the workspace's
-    // list of its agents, and the person writes to their assistant in the
-    // thread of the two. Both are the assistant's own business: a look that
-    // took them for news would start the turn that makes the next ones.
+    // list of its agents. That is the assistant's own business: a look that
+    // took it for news would start the turn that makes the next ones.
     let kept = crate::workspace_bots::assistant::assistant_of(
         &workspaces,
         &workspace,
@@ -801,21 +800,6 @@ async fn what_the_assistant_and_its_server_did_themselves_is_not_news_to_a_look(
     )
     .await
     .expect("the server counts what the assistant spent");
-    let thread = chat::Chat::direct_id([
-        MemberId::person(person.clone()),
-        MemberId::agent("assistant"),
-    ]);
-    post_in(
-        &workspaces,
-        &workspace,
-        &cert,
-        (
-            &person,
-            thread.as_str(),
-            "Thank you, that was what I meant.",
-        ),
-    )
-    .await;
     assert_eq!(
         fires(&steps, &cert, &workspace, &event).await,
         Ok(String::new())
@@ -906,16 +890,12 @@ async fn what_a_look_found_and_nothing_took_is_said_and_still_new_at_the_next_lo
     assert_eq!(told.ended, LookEnded::Told);
 
     // The turn that look started counts on the look-round's own day: the
-    // message that asks for it is the one its handing over names by the
-    // look's id, and no other message is.
+    // ask its handing over makes is keyed by the look's id, and no other ask
+    // is.
     let person = hex::encode(cert.user_public_key);
     let place = WorkspaceId::parse(&workspace).unwrap().to_string();
     let day = crate::workspace_agents::today();
-    let asks = chat::cause::message_id(
-        &tilo_actions::policy::MemberId::person(person.clone()),
-        &told.id,
-    )
-    .to_string();
+    let asks = told.id;
     assert_eq!(
         initiative.day_of_turn(&place, &person, &asks, &day),
         Some(look_round_spender(
@@ -927,7 +907,7 @@ async fn what_a_look_found_and_nothing_took_is_said_and_still_new_at_the_next_lo
         ))
     );
     assert_eq!(
-        initiative.day_of_turn(&place, &person, "another-message", &day),
+        initiative.day_of_turn(&place, &person, "another-ask", &day),
         None
     );
     assert_eq!(

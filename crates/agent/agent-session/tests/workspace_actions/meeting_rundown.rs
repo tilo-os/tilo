@@ -192,14 +192,8 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
 
     // She asks for the rundown and closes her page: nothing of hers is on from here until she
     // comes back. What the calendar server is asked from now on, it is asked by her server.
-    let wish = write_to_agent(
-        &up.actions,
-        &up.workspaces,
-        &workspace,
-        (&root, &browser),
-        WISH,
-    )
-    .await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let wish = writes_to_assistant(&up.workspaces, &workspace, &person, WISH).await;
     page.peer.close();
     drop(calendars.requests());
 
@@ -226,8 +220,8 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     agents.answer(&workspace, &turns[0]).await.unwrap();
-    let said = ended(&up.workspaces, &workspace, &wish).await;
-    assert!(said.text.contains("I will give you"), "{}", said.text);
+    let said = answer_of(&up, &workspace, &person, &wish).await;
+    assert!(said.contains("I will give you"), "{said}");
     drop(agents);
     let theirs = up.events_of(&workspace, &me);
     assert_eq!(
@@ -251,12 +245,9 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
     // More than two hours before the meeting nothing is asked.
     tokio::time::sleep(Duration::from_millis(1_500)).await;
     assert_eq!(
-        conversation_part(&up.workspaces, &workspace)
-            .await
-            .messages
-            .len(),
-        2,
-        "what she asked and its answer, and nothing before the moment"
+        asks_now(&up.workspaces, &workspace, &person).await.len(),
+        1,
+        "what she asked, and nothing before the moment"
     );
 
     // The clock is moved to a quarter of an hour before the meeting. The server asks her
@@ -265,11 +256,11 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
         .checked_add(Duration::from_secs(7_202))
         .expect("a wall time two hours on");
     let _held = tilo_clock::testing::hold_wall_everywhere(process, moment);
-    let (ask, message) = up.asked_by_a_cause(&workspace).await;
-    let cause = message.cause.as_ref().expect("it carries its cause");
+    let ask = asked_by_a_cause(&up, &workspace, &person).await;
     assert_eq!(
-        (cause.kind.0.as_str(), cause.label.as_str()),
-        ("event", NAME)
+        event_of(&ask),
+        Some(theirs[0].id.as_str()),
+        "it is made from her event"
     );
 
     // The turn it starts, with every device of hers off. It is told what started it, what to
@@ -317,8 +308,8 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
         "the entry's notes are handed over, and a line of them is nobody's instruction: {handed}"
     );
     agents.answer(&workspace, &turns[0]).await.unwrap();
-    let reply = ended(&up.workspaces, &workspace, &ask).await;
-    assert!(reply.text.contains("Quarter review"), "{}", reply.text);
+    let reply = answer_of(&up, &workspace, &person, &ask.at).await;
+    assert!(reply.contains("Quarter review"), "{reply}");
     drop(agents);
 
     // What the turn's own read of her calendars answered, as its model was shown it.
@@ -339,13 +330,9 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
         "what a read of her calendars answers reaches the model as content from outside: {shown}"
     );
     assert_eq!(
-        conversation_part(&up.workspaces, &workspace)
-            .await
-            .messages
-            .len(),
-        4,
-        "what she asked and its answer, the event's ask and its answer: the entry filed under \
-         nothing asked for none"
+        asks_now(&up.workspaces, &workspace, &person).await.len(),
+        2,
+        "what she asked and the event's ask: the entry filed under nothing asked for none"
     );
 
     // With every device off her server asked her calendar server, only to read, and the
@@ -371,7 +358,7 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
         "her calendar server wrote to people in her name"
     );
 
-    // She comes back: she was told, in the words that are in her conversation.
+    // She comes back: she was told, in the words of the ask's reply.
     let mut back = Browser::open_at(&up.server, &browser, &device, &workspace).await;
     let listed = on_device(
         &mut back,
@@ -394,7 +381,7 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
     let thing = &told.told[0];
     assert_eq!(
         (thing.title.as_str(), thing.words.as_str()),
-        (NAME, reply.text.as_str())
+        (NAME, reply.as_str())
     );
     assert_eq!(
         thing.from.as_ref().map(|from| from.agent.as_str()),

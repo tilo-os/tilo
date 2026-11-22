@@ -623,7 +623,7 @@ async fn a_task_goes_on_when_the_automation_it_waits_for_comes() {
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = given.started(looks_then_answers(1_000, Arc::clone(&asked)));
     given.answered(&agents, now_ms()).await;
-    let automations = WorkspaceEvents::start(given.workspaces.clone(), None);
+    let automations = WorkspaceEvents::start(given.workspaces.clone(), false);
     let set_up = |name: &str, at_ms: i64, instruction: &str| {
         on_automations(
             &automations,

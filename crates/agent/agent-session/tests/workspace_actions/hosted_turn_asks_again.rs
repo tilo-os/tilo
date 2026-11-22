@@ -108,7 +108,7 @@ const ASK: &str = "Remind me every morning to call home.";
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice() {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let events = WorkspaceEvents::start(workspaces.clone(), None);
+    let events = WorkspaceEvents::start(workspaces.clone(), false);
     let first = write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), ASK).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
@@ -176,7 +176,7 @@ async fn a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done() {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let events = WorkspaceEvents::start(workspaces.clone(), None);
+    let events = WorkspaceEvents::start(workspaces.clone(), false);
     let first = write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), ASK).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(

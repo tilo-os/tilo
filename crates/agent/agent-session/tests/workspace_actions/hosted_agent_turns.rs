@@ -1082,7 +1082,7 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
         .await
         .unwrap();
-    let events = WorkspaceEvents::start(workspaces.clone(), None);
+    let events = WorkspaceEvents::start(workspaces.clone(), false);
 
     write_to_agent(
         &actions,

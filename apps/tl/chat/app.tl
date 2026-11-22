@@ -590,13 +590,58 @@ view direct(d: Direct) {
     state replying: Option<Message> = .none
     state editing: Option<Message> = .none
     state revised: RichText = RichText("")
+    // What was asked of the agent with no message to stand under, read once for the view and
+    // oldest first; each row draws only those asked between the message before it and itself.
+    let asked = if d.person.kind() == .agent { asked_outright(d, workspace.me) } else { [] }
     std.transcript(d, d.messages, unread: first_unseen(d)) { m ->
+        let before = d.messages.previous(m)
+        for a in asked.filter(a -> made_before(a, m) and after(before, a)) {
+            agent.replies(a)
+        }
         direct_message(d, m, d.messages, replying, editing, revised)
+        if let last = d.messages.last() {
+            if last == m {
+                for a in asked.filter(a -> made_before(m, a)) {
+                    agent.replies(a)
+                }
+            }
+        }
         composer: {
+            // A Direct nothing was written in yet still shows what was asked in it.
+            if d.messages.is_empty() {
+                for a in asked {
+                    agent.replies(a)
+                }
+            }
             direct_typing_here(d)
             composer(d, d.messages, draft, replying, "Message {d.name}")
         }
     }
+}
+
+/// The asks of the agent `d` is with that `me`, the person looking, made from something with no
+/// message of Chat's to stand under (an event, a task), oldest first. An ask made from a message
+/// stands under that message instead.
+fn asked_outright(d: Direct, me: Actor) -> List<agent.Ask> {
+    agent.agents.asks
+        .filter(
+            a -> a.agent == d.person
+                and created(a)?.who == me
+                and if let from = created(a)?.from { [from].of(Message).is_empty() } else { false },
+        )
+        .sort_by(a -> created(a))
+}
+
+/// Whether `a` was made after `message`, or there is no message.
+fn after(message: Option<Message>, a: agent.Ask) -> Bool {
+    if let m = message { made_before(m, a) } else { true }
+}
+
+/// Whether `x` was made before `y`.
+fn made_before(x: host.Resource, y: host.Resource) -> Bool {
+    if let made = created(x)?.at {
+        if let later = created(y)?.at { made < later } else { true }
+    } else { false }
 }
 
 /// A channel as another app's page summarizes it: its name, and what it is about.

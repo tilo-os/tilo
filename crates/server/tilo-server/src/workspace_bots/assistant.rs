@@ -16,46 +16,34 @@
 //! they set their assistant bounds what its events spend as well.
 //!
 //! An instruction a program hands over starts a turn of its person's
-//! assistant, where the server keeps its workspaces' agents working: it is asked
-//! through Chat's own verb for that (`ask-agent`), in the conversation the
-//! person has with their assistant, as that person's event, under the
-//! step's own key, so a step taken again after a restart starts nothing
-//! twice. The turn is the assistant's own work under its own bounds: what
-//! it would send or change outside the workspace still asks its person.
-//! Where nothing takes the instruction (a server that keeps no agents working, a Chat
-//! from before the verb), the invocation is tried again, and kept as a dead letter
-//! once its attempts are spent, so what was not delivered can be read and
-//! invoked again.
+//! assistant, where the server keeps its workspaces' agents working: it is
+//! an ask of the agent package, made by that person from the program, an
+//! event of theirs, and keyed by the step's own invocation
+//! ([`crate::workspace_agents::ask_for_event`]), so a step taken again after
+//! a restart asks nothing twice. The turn is the assistant's own work under
+//! its own bounds: what it would send or change outside the workspace still
+//! asks its person. Where nothing takes the instruction (a server that
+//! keeps no agents working), the invocation is tried again, and kept as a
+//! dead letter once its attempts are spent, so what was not delivered can
+//! be read and invoked again.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use serde_json::{Map, Value, json};
-use tilo_actions::remote::Caller;
+use serde_json::Value;
 use tilo_agent_session::bot::host_steps::{
     HostStepError as StepError, HostSteps as Steps, Instruction, Judgement,
 };
 use tilo_agent_session::bot::judging;
 use tilo_agent_session::bot::kept::Note;
-use tilo_agent_session::workspace_actions::WorkspaceActions;
-use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
-
-use crate::workspace_agents::{WorkspaceActionProvider, invoke_named};
 
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::protocol::ErrorKind;
 use crate::workspaces::person_model::{Interaction, ModelRefusal, Spender};
 
-/// The app that keeps the workspace's record of its agents.
-use tilo_app_id::apps::CHAT;
-
-/// Chat's verb that starts a turn of the agents in a conversation.
-const ASK_AGENT: &str = "ask-agent";
-/// The verb's argument that names the conversation.
-const IN: &str = "channel";
 /// What a turn is said to be started by: a moment its person asked for.
 pub const REMINDER: &str = "reminder";
 /// What a turn is said to be started by: an event whose result its person
@@ -64,7 +52,7 @@ pub const BRIEF: &str = "brief";
 /// What a turn is said to be started by: something that happened, or a
 /// time that comes round.
 pub const EVENT: &str = "event";
-/// The longest a starter's name is said, as Chat keeps one.
+/// The longest a starter's name is said.
 const MAX_LABEL_BYTES: usize = 120;
 /// The most an instruction says of its program's note.
 const MAX_NOTE_BYTES: usize = 6 * 1024;
@@ -89,18 +77,14 @@ pub struct Starter {
     pub kind: &'static str,
 }
 
-/// [`host_steps`] for the program `starter`, on a server whose action service
-/// takes Chat's verbs: an instruction it hands over starts a turn of its
+/// [`host_steps`] for the program `starter`, on a server that keeps its
+/// workspaces' agents working: an instruction it hands over asks its
 /// person's assistant.
 #[must_use]
-pub fn steps_starting_turns(
-    workspaces: Workspaces,
-    actions: WorkspaceActions,
-    starter: Starter,
-) -> Arc<dyn Steps> {
+pub fn steps_starting_turns(workspaces: Workspaces, starter: Starter) -> Arc<dyn Steps> {
     Arc::new(Hosted {
         workspaces,
-        turns: Some((actions, starter)),
+        turns: Some(starter),
     })
 }
 
@@ -145,9 +129,8 @@ pub async fn assistant_of(
 /// their assistant for an instruction where the server starts turns.
 struct Hosted {
     workspaces: Workspaces,
-    /// The server's action service and the program these answers are for,
-    /// where an instruction starts a turn.
-    turns: Option<(WorkspaceActions, Starter)>,
+    /// The program these answers are for, where an instruction starts a turn.
+    turns: Option<Starter>,
 }
 
 impl Steps for Hosted {
@@ -162,13 +145,13 @@ impl Steps for Hosted {
         ) {
             return Ok(String::new());
         }
-        let Some((actions, starter)) = &self.turns else {
+        let Some(starter) = &self.turns else {
             return Err(StepError::Unavailable(
                 "this server starts no turn of a person's assistant".into(),
             ));
         };
         on_a_thread_of_its_own("instruction", |runtime| {
-            self.instructed(runtime, actions, starter, &instruction)
+            self.instructed(runtime, starter, &instruction)
         })
     }
 
@@ -216,44 +199,6 @@ fn workspace_of(workspace: &str) -> Result<WorkspaceId, StepError> {
     })
 }
 
-/// One turn to start: who Chat is asked as, and what it is asked.
-#[derive(Clone, Debug, PartialEq)]
-struct Asking {
-    /// The id the asking software goes by: the program's own, never the
-    /// assistant's, so the conversation's agent is not asking itself.
-    asked_as: String,
-    /// The verb's arguments: the conversation, the words and the cause.
-    arguments: Map<String, Value>,
-}
-
-impl Asking {
-    /// The turn `instruction` starts of `assistant`, the agent its person
-    /// keeps: asked in the conversation of the two, with the step's own
-    /// invocation as the cause's key, so one step is one turn however often
-    /// it is handed over.
-    fn of(instruction: &Instruction, starter: &Starter, assistant: &str) -> Self {
-        use tilo_actions::policy::MemberId;
-        let conversation = chat::Chat::direct_id([
-            MemberId::person(instruction.person.clone()),
-            MemberId::agent(assistant),
-        ]);
-        let label = within(starter.name.trim(), MAX_LABEL_BYTES);
-        let arguments = json!({
-            (IN): conversation.as_str(),
-            "text": told(instruction, starter),
-            "cause": {
-                "kind": starter.kind,
-                "label": label,
-                "key": instruction.cause.invocation.0.to_string(),
-            },
-        });
-        Self {
-            asked_as: instruction.cause.installation.clone(),
-            arguments: arguments.as_object().cloned().unwrap_or_default(),
-        }
-    }
-}
-
 /// `text`, cut to at most `most` bytes at a character's end.
 fn within(text: &str, most: usize) -> &str {
     let end = text
@@ -265,8 +210,9 @@ fn within(text: &str, most: usize) -> &str {
     text.get(..end).unwrap_or_default()
 }
 
-/// What the assistant is told: the instruction, then what the program's
-/// note says its person wants and what its last invocation kept, and which
+/// What the assistant is told: what started the turn, and that its person
+/// did not type it just now; the instruction; then what the program's note
+/// says its person wants and what its last invocation kept, and which
 /// program this is, so the turn can keep something for the next one or
 /// change the program by its id.
 fn told(instruction: &Instruction, starter: &Starter) -> String {
@@ -289,7 +235,17 @@ fn told(instruction: &Instruction, starter: &Starter) -> String {
             note.kept
         );
     }
-    let mut text = instruction.instruction.clone();
+    let name = within(starter.name.trim(), MAX_LABEL_BYTES);
+    let what = match starter.kind {
+        REMINDER => format!("A reminder your person set is due now: {name:?}."),
+        BRIEF => format!("A brief your person set up is due: {name:?}."),
+        _ => format!("An event your person set up fired: {name:?}."),
+    };
+    let mut text = format!(
+        "{what} Your person did not type what follows just now: it is what was set up to be \
+         asked of you for them.\n\n{}",
+        instruction.instruction
+    );
     let _ = write!(
         text,
         "\n\nThis is your person's {} \"{}\" (id {}).",
@@ -307,12 +263,11 @@ impl Hosted {
     fn instructed(
         &self,
         runtime: &tokio::runtime::Handle,
-        actions: &WorkspaceActions,
         starter: &Starter,
         instruction: &Instruction,
     ) -> Result<String, StepError> {
         let person = person_of(&instruction.person)?;
-        let workspace = workspace_of(&instruction.workspace)?;
+        workspace_of(&instruction.workspace)?;
         let assistant = runtime
             .block_on(assistant_of(
                 &self.workspaces,
@@ -326,36 +281,17 @@ impl Hosted {
                         .into(),
                 )
             })?;
-        let device = runtime
-            .block_on(self.workspaces.person_device(workspace, person))
-            .ok_or_else(|| {
-                StepError::Unavailable(
-                    "its person is admitted to this workspace on no device".into(),
-                )
-            })?;
-        let asking = Asking::of(instruction, starter, &assistant.id.0);
-        // Chat pins whom the turn is for from who asks: the person this
-        // software acts for. It acts for them as their event, by its own id.
-        let caller = Caller::authenticated(person, device)
-            .in_workspace(instruction.workspace.clone())
-            .delegated_to(asking.asked_as.clone())
-            .named(starter.name.trim());
-        let route = DocumentRoute {
-            app_id: CHAT.to_owned(),
-            cluster_id: instruction.workspace.clone(),
-            document: String::new(),
-        };
+        let step = instruction.cause.invocation.0.to_string();
         runtime
-            .block_on(invoke_named(
-                &WorkspaceActionProvider::new(actions.clone(), workspace),
-                &caller,
-                &route,
-                &collab_types::document::chain_resource_id(&chat::parts::chain()),
-                ASK_AGENT,
-                asking.arguments,
+            .block_on(crate::workspace_agents::ask_for_event(
+                &self.workspaces,
+                &instruction.workspace,
+                (&instruction.person, &assistant.id.0),
+                (&instruction.cause.installation, &step),
+                told(instruction, starter),
             ))
             // The turn is started, not waited for: its answer is the
-            // assistant's reply in the conversation.
+            // assistant's reply to the ask.
             .map(|_| String::new())
             .map_err(StepError::Unavailable)
     }
@@ -458,8 +394,7 @@ mod tests {
     use tilo_agent_session::bot::host_steps::StepCause;
 
     #[test]
-    fn an_instruction_is_one_turn_in_its_persons_conversation_with_their_assistant() {
-        use tilo_actions::policy::MemberId;
+    fn an_instruction_tells_what_started_it() {
         let invocation = tilo_actions::InvocationId::new();
         let instruction = Instruction {
             person: "ab".repeat(32),
@@ -467,7 +402,7 @@ mod tests {
             instruction: "Say that it is time to call home.".into(),
             allow: Vec::new(),
             permits: Vec::new(),
-            note: json!({"style": "One line.", "kept": {"seen": 3}}),
+            note: serde_json::json!({"style": "One line.", "kept": {"seen": 3}}),
             cause: StepCause {
                 installation: "7f0c1c0e-5a1b-4a52-9d0f-0d6f3a1b2c3d".into(),
                 invocation,
@@ -478,31 +413,19 @@ mod tests {
             name: "Call home".into(),
             kind: REMINDER,
         };
-        let asking = Asking::of(&instruction, &starter, "assistant");
-        assert_eq!(
-            asking.asked_as, "7f0c1c0e-5a1b-4a52-9d0f-0d6f3a1b2c3d",
-            "it asks as itself, never as the assistant"
-        );
-        let conversation = chat::Chat::direct_id([
-            MemberId::agent("assistant"),
-            MemberId::person("ab".repeat(32)),
-        ]);
-        assert_eq!(asking.arguments[IN], conversation.as_str());
-        assert_eq!(
-            asking.arguments["cause"],
-            json!({"kind": "reminder", "label": "Call home", "key": invocation.0.to_string()}),
-            "the step's own key: handed over again, it is the same turn"
-        );
-        let text = asking.arguments["text"].as_str().unwrap_or_default();
+        let text = told(&instruction, &starter);
         assert!(
-            text.starts_with("Say that it is time to call home."),
+            text.starts_with("A reminder your person set is due now: \"Call home\"."),
             "{text}"
         );
-        for said in ["Call home", "7f0c1c0e", "One line.", "\"seen\":3"] {
+        assert!(
+            text.contains("\n\nSay that it is time to call home."),
+            "{text}"
+        );
+        for said in ["7f0c1c0e", "One line.", "\"seen\":3"] {
             assert!(text.contains(said), "{said}: {text}");
         }
-        // Handed over again, as an invocation tried again hands it, it asks the same.
-        assert_eq!(Asking::of(&instruction, &starter, "assistant"), asking);
+        assert_eq!(told(&instruction, &starter), text);
     }
 
     #[test]

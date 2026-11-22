@@ -93,7 +93,22 @@ pub(super) async fn turns(
                 };
                 let private = !team
                     && keeper.as_ref().is_some_and(|keeper| {
-                        asks::private_to(opened, asked, keeper, &asked.agent)
+                        // What an event of the keeper's asked is shown in their Direct with the
+                        // agent, so it is as private as that conversation.
+                        let by_event = asked
+                            .from
+                            .as_ref()
+                            .and_then(crate::workspace_bots::events::event_named)
+                            .is_some();
+                        let by_keeper =
+                            matches!(&asked.who, Some(asks::Actor::Member(who)) if who == keeper);
+                        if by_event && by_keeper {
+                            asks::direct_with(opened, keeper, &asked.agent).is_some_and(|direct| {
+                                asks::alone_with(opened, &direct, keeper, &asked.agent)
+                            })
+                        } else {
+                            asks::private_to(opened, asked, keeper, &asked.agent)
+                        }
                     });
                 read.push((agent.id.0.clone(), index, around, private));
             }
@@ -209,12 +224,18 @@ fn turn_of(
         request,
         history: Vec::new(),
         asked: said,
-        typed: true,
+        // What an event of theirs asked, they did not write.
+        typed: asked
+            .from
+            .as_ref()
+            .and_then(crate::workspace_bots::events::event_named)
+            .is_none(),
         line: None,
         ask: Ask::Asked {
             app: app.to_owned(),
             ask: asked.at.id_string(),
             ty: asked.at.ty.clone(),
+            key: asked.mention.clone(),
             attempt,
             private,
         },
@@ -228,6 +249,61 @@ pub(super) fn conversation_of(asked: &Asked, around: Option<&asks::Around>) -> S
         .and_then(|around| around.holder.as_ref())
         .or(asked.from.as_ref())
         .map_or_else(|| asked.at.id_string(), asks::ResourceRef::id_string)
+}
+
+/// Ask `agent` as the person `person` (their root, hex) from their event `event`, keyed by `key`:
+/// what a reminder, an event or a look-round of theirs asks of their assistant when its
+/// instruction is handed over. The ask is made from the event's resource
+/// ([`crate::workspace_bots::events::resource_of`]), which is what tells what asked, and is the
+/// base's one keyed ask ([`asks::ask`]): a step that is handed over again asks nothing new. What
+/// it writes is a run of the event's
+/// ([`tilo_workspace_service::tl_records::Opened::in_run_of`]), so the event's own look never
+/// takes it for news. Answers the ask.
+///
+/// # Errors
+/// Chat's record could not be read, or the ask was refused.
+pub async fn ask_for_event(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (person, agent): (&str, &str),
+    (event, key): (&str, &str),
+    said: String,
+) -> Result<asks::ResourceRef, String> {
+    let packages = packages()?;
+    let asker = asks::Actor::Member(tilo_action_policy::MemberId::person(person.to_owned()));
+    let agent = tilo_action_policy::MemberId::agent(agent.to_owned());
+    let from = crate::workspace_bots::events::resource_of(event);
+    let (event, key) = (event.to_owned(), key.to_owned());
+    workspaces
+        .with_tl_record(workspace, &packages, viewer(), move |opened| {
+            opened.in_run_of(event);
+            asks::ask(opened, &asker, &agent, &said, &key, &from)
+        })
+        .await
+}
+
+/// What the ask `ask` (by its id, of type `ty`) in Chat's record of `workspace` is made from;
+/// `None` for an ask the record does not hold, or one made from nothing.
+///
+/// # Errors
+/// The record could not be read.
+pub(crate) async fn made_from(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (ask, ty): (&str, &str),
+) -> Result<Option<asks::ResourceRef>, String> {
+    let packages = packages()?;
+    let Some(ask) = asks::ResourceRef::parse_id(ask, ty) else {
+        return Ok(None);
+    };
+    workspaces
+        .with_tl_record(workspace, &packages, viewer(), move |opened| {
+            Ok(asks::asks(opened)?
+                .into_iter()
+                .find(|asked| asked.at.same(&ask))
+                .and_then(|asked| asked.from))
+        })
+        .await
 }
 
 /// Where a turn made from an ask writes its reply: the ask, and the reply once the turn took

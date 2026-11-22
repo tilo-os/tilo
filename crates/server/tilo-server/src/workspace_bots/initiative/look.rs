@@ -7,9 +7,8 @@
 //! already said were due. The first look only notes where everything
 //! stands, as a bot starts at a document's heads: the workspace's past is
 //! not news. What the assistant did itself is not news to it either: its
-//! own changes, the look-round's own asks, what is said in its own thread
-//! with its person, and what the server keeps about the workspace's agents
-//! (what each spent, how each stands).
+//! own changes, the look-round's own asks, and what the server
+//! keeps about the workspace's agents (what each spent, how each stands).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,9 +26,6 @@ const TASKS: &str = "so.tilo.tasks";
 const DUE_WITHIN_MS: i64 = 24 * 60 * 60 * 1000;
 /// The most documents and the most tasks a look names; the rest it counts.
 const MAX_NAMED: usize = 20;
-/// What Chat calls the conversation a message is in, as a verb's argument and on the
-/// message itself.
-const CONVERSATION: &str = "channel";
 
 /// Where a look left the workspace, for the next to compare with.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,36 +51,20 @@ pub(super) struct Own {
     /// The assistant's id among the workspace's agents, where the person
     /// keeps one.
     pub assistant: Option<String>,
-    /// The look-round's own event, which asks as itself.
+    /// The look-round's own event.
     pub event: String,
-    /// The conversation of the person and their assistant.
-    pub thread: Option<String>,
 }
 
 impl Own {
     /// Whether `event` is the assistant's own doing: a change it or its
-    /// look-round made, or something said in its own thread.
+    /// look-round made. What a look asks is written as its person, in a run
+    /// of the look-round, which the change carries.
     fn made(&self, event: &DocumentEvent) -> bool {
         let by_own = event
             .actor
             .agent_id()
             .is_some_and(|agent| self.assistant.as_deref() == Some(agent) || agent == self.event);
-        by_own || self.in_thread(event)
-    }
-
-    /// Whether `event` is something said in the assistant's own thread: the
-    /// conversation its verb names (what a post or an ask carries), or the
-    /// one the message it changed is in.
-    fn in_thread(&self, event: &DocumentEvent) -> bool {
-        let Some(thread) = &self.thread else {
-            return false;
-        };
-        let names = |value: Option<&Value>| value.and_then(Value::as_str) == Some(thread.as_str());
-        names(event.arguments.get(CONVERSATION))
-            || [&event.before, &event.after]
-                .into_iter()
-                .flatten()
-                .any(|item| names(item.get(CONVERSATION)))
+        by_own || event.shortcut.as_deref() == Some(self.event.as_str())
     }
 }
 
