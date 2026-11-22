@@ -941,6 +941,49 @@ fn mounts_of_one_workspace_that_found_its_tree_apart_hold_one_identity_and_every
 }
 
 #[test]
+fn mounts_that_name_a_tree_an_earlier_build_wrote_hold_one_identity() {
+    use collab_types::document::DocumentId;
+
+    let workspace = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
+    // A mount of a build before mounts named the tree's documents wrote them naming nothing.
+    let mut earlier = Namespace::new(MountAuthor::device("laptop")).unwrap();
+    earlier
+        .create_file(ROOT_INO, "contract.txt", Some(&h(1)), 6, 1)
+        .unwrap();
+    let written: Vec<(TreeChunk, Vec<u8>)> = earlier
+        .document_writes(&BTreeMap::new())
+        .into_iter()
+        .map(|w| (w.chunk, w.changes))
+        .collect();
+    assert_eq!(written.len(), 2, "the tree's own document and its chunk");
+    // Two computers on this build take that tree in and each names it as it next writes, before
+    // either hears of the other's name.
+    let mount = |device: &str| MountAuthor::device(device).in_workspace(workspace);
+    let mut laptop = Namespace::from_records(mount("laptop"), written.clone()).unwrap();
+    let mut desktop = Namespace::from_records(mount("desktop"), written).unwrap();
+    let from_laptop = laptop.document_writes(&BTreeMap::new());
+    let from_desktop = desktop.document_writes(&BTreeMap::new());
+    for (into, from) in [(&mut laptop, from_desktop), (&mut desktop, from_laptop)] {
+        into.take_documents(from.into_iter().map(|w| (w.chunk, w.changes)).collect())
+            .unwrap();
+    }
+    for ns in [&mut laptop, &mut desktop] {
+        for chunk in [0, 1] {
+            let doc = AutoCommit::load(&ns.save_document(chunk).unwrap()).unwrap();
+            assert_eq!(
+                collab_types::document::identity::identity(&doc).map(|found| found.id),
+                DocumentId::parse(&fs_protocol::tree::chunk_document_id(chunk)),
+                "document {chunk} names itself once, not as two computers' competing names"
+            );
+            assert_eq!(
+                collab_types::document::identity::workspace_scope(&doc).as_deref(),
+                Some(workspace)
+            );
+        }
+    }
+}
+
+#[test]
 fn the_folder_reads_as_changed_with_its_newest_entry() {
     let mut ns = Namespace::new("laptop").unwrap();
     let opened = ns.getattr(ROOT_INO).unwrap().mtime;

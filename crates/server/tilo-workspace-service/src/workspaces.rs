@@ -97,6 +97,7 @@ mod packaged_model_tests;
 mod pages;
 mod peer_parts;
 mod reads;
+mod tree_identity;
 mod writes;
 // The person's mail accounts and model providers, kept where their
 // workspace runs: a page has no mail connection and no vault of its own.
@@ -1420,6 +1421,8 @@ impl Workspaces {
         // Before any member's session reaches them: what a member reads of
         // the workspace's agents is already all of them.
         this.move_agent_rosters().await;
+        // And what a member's Files reads of the workspace's file tree is all of it.
+        this.name_kept_trees().await;
         this.serve_kept_members().await;
         this.adopt_listings_file().await?;
         this.start_following();
