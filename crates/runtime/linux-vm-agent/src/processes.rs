@@ -80,7 +80,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_process_knows_whose_it_is;
 
-        phase its_lineage_is_read_up_to_the_machines_first_process;
+        phase its_parents_are_read_up_to_the_machines_first_process;
         {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path();
