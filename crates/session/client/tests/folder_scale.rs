@@ -8,8 +8,8 @@
 //! a repository's worth of files the way a checkout does, folder after folder, each file
 //! named for the agent that wrote it, and compares its first windows of files with its last:
 //! the time each write takes until the host has it, the bytes it sends, what
-//! the host keeps on disk for it, what a reader following the folder reads for it, and how the
-//! process's memory grows.
+//! the host keeps on disk for it, the records a reader following the folder reads and the
+//! bytes it reads for it, and how the process's memory grows.
 
 #![allow(
     clippy::unwrap_used,
@@ -182,6 +182,8 @@ struct Reader {
     tree: TreeChunks,
     /// Bytes read from the session.
     bytes: usize,
+    /// Records read from the session.
+    reads: usize,
     /// The records changed since they were read last.
     unread: std::collections::BTreeSet<TreeChunk>,
     /// The files each chunk holds, as it read last.
@@ -228,6 +230,7 @@ impl Reader {
                 continue;
             };
             self.bytes += bytes.len();
+            self.reads = self.reads.saturating_add(1);
             let doc = self.docs.entry(chunk).or_default();
             tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes).unwrap();
             if chunk == 0 {
@@ -254,7 +257,7 @@ impl Reader {
     }
 }
 
-/// What one window of the comparison measured, per file.
+/// What one window of the comparison measured.
 #[derive(Debug, Default, Clone, Copy)]
 struct Window {
     /// Time from writing the file into the namespace until the host had it, the page's
@@ -266,6 +269,8 @@ struct Window {
     kept: f64,
     /// Time the page spent following the folder.
     read_us: f64,
+    /// Records the page read to follow the folder, for the window.
+    records: f64,
     /// Time from the host having the window's last file until the page showed it, in
     /// microseconds, for the window.
     show_us: f64,
@@ -359,16 +364,18 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
         heads: BTreeMap::new(),
         tree: TreeChunks::default(),
         bytes: 0,
+        reads: 0,
     };
     reader.open(0);
 
     let mut windows = Vec::new();
     let mut folder = ROOT_INO;
     for start in (0..FILES).step_by(WINDOW) {
-        let (sent, kept, read, busy, memory) = (
+        let (sent, kept, read, reads, busy, memory) = (
             writer.bytes,
             disk_bytes(state.path()),
             reader.bytes,
+            reader.reads,
             reader.busy,
             rss_kib(),
         );
@@ -405,17 +412,19 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
             sent: (writer.bytes - sent) as f64 / WINDOW as f64,
             kept: disk_bytes(state.path()).saturating_sub(kept) as f64 / WINDOW as f64,
             read_us: reader.busy.saturating_sub(busy).as_secs_f64() * 1e6 / WINDOW as f64,
+            records: (reader.reads - reads) as f64,
             show_us: shown_after.as_secs_f64() * 1e6,
             read: (reader.bytes - read) as f64 / WINDOW as f64,
             memory: rss_kib().saturating_sub(memory) as f64 * 1024.0 / WINDOW as f64,
         };
         eprintln!(
-            "files {shown:>6}: write {:>5.0} us  sent {:>4.0} B  kept {:>5.0} B  page {:>4.0} us {:>4.0} B  memory {:>6.0} B  per file; shown {:>5.1} ms after the host had it; rss {} MiB, {} records",
+            "files {shown:>6}: write {:>5.0} us  sent {:>4.0} B  kept {:>5.0} B  page {:>4.0} us {:>4.0} B {:>4.0} records  memory {:>6.0} B  per file; shown {:>5.1} ms after the host had it; rss {} MiB, {} records",
             window.write_us,
             window.sent,
             window.kept,
             window.read_us,
             window.read,
+            window.records,
             window.memory,
             window.show_us / 1000.0,
             rss_kib() / 1024,
@@ -445,9 +454,10 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
         "the file's chunk names the agent that wrote it: {named:?}"
     );
 
-    // The last files cost what the first did. A shared machine stalls now and
-    // then, so each cost is the median of five windows at each end: one slow window is the
-    // machine, every late window slower is the folder.
+    // The last files cost what the first did. What the page reads is counted, not timed: a
+    // shared machine stalls now and then, and the records a write makes it read do not change
+    // with the machine. The times are the median of five windows at each end, so one stalled
+    // window is the machine while every late window slower is the folder.
     let early = windows.get(..5).unwrap();
     let late = windows.get(windows.len() - 5..).unwrap();
     let median = |windows: &[Window], cost: fn(&Window) -> f64| {
@@ -455,21 +465,37 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
         costs.sort_by(f64::total_cmp);
         costs[costs.len() / 2]
     };
-    let flat = |what: &str, cost: fn(&Window) -> f64, slack: f64| {
+    let flat = |what: &str, unit: &str, cost: fn(&Window) -> f64, slack: f64| {
         let (first, last) = (median(early, cost).max(1.0), median(late, cost));
         assert!(
             last <= first * slack,
-            "{what} grew with the folder: {first:.0} per file early on, {last:.0} at the end"
+            "{what} grew with the folder: {first:.0} {unit} early on, {last:.0} {unit} at the end"
         );
     };
-    flat("the time a write takes", |w| w.write_us, 2.0);
-    flat("the bytes a write sends", |w| w.sent, 1.25);
-    flat("what the host keeps of a write", |w| w.kept, 2.0);
-    flat("what the page reads of a write", |w| w.read, 1.25);
+    flat("the time a write takes", "per file", |w| w.write_us, 2.0);
+    flat("the bytes a write sends", "per file", |w| w.sent, 1.25);
     flat(
-        "the time the page takes to follow a write",
-        |w| w.read_us,
-        2.5,
+        "what the host keeps of a write",
+        "per file",
+        |w| w.kept,
+        2.0,
+    );
+    flat(
+        "what the page reads of a write",
+        "per file",
+        |w| w.read,
+        1.25,
+    );
+    // The page's work to follow a write is the records it reads. The session batches a burst
+    // into few records, so a window's count is a whole 1 to 5 whatever the folder holds: the
+    // ends are compared as the five windows' sums, where a record more or less is the batching.
+    // A page that followed a write through the whole folder would read every chunk, tens of
+    // times more at five thousand files than at two.
+    let records = |windows: &[Window]| windows.iter().map(|window| window.records).sum::<f64>();
+    let (early_records, late_records) = (records(early), records(late));
+    assert!(
+        late_records <= early_records.max(1.0) * 3.0,
+        "the records the page reads to follow a write grew with the folder: {early_records:.0} early on, {late_records:.0} at the end"
     );
     // Memory grows with the files held (the writer's tree, the host's and the page's, all in
     // this process), and by no more per file at the end than early on. The allocator grows in
@@ -595,6 +621,7 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
         heads: BTreeMap::new(),
         tree: TreeChunks::default(),
         bytes: 0,
+        reads: 0,
     };
     reader.open(0);
     wait_for("a page to show every file of the checkout", || {
