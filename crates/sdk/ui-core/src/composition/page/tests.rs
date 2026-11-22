@@ -95,12 +95,77 @@ fn a_change_patches_only_what_changed() {
     assert!(page.patch(&window("Groceries list")).is_empty());
 }
 
+/// Every `data-p` in `html`, as the number it names.
+fn numbers(html: &str) -> Vec<u32> {
+    html.match_indices("data-p=\"")
+        .filter_map(|(at, _)| {
+            let rest = &html[at + "data-p=\"".len()..];
+            let end = rest.find('"')?;
+            rest.get(..end)?.parse().ok()
+        })
+        .collect()
+}
+
+/// The page's numbers, each with the path it names.
+fn numbered(page: &Page, html: &str) -> Vec<(u32, String)> {
+    numbers(html)
+        .into_iter()
+        .map(|id| {
+            (
+                id,
+                page.path(id).unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
+}
+
 #[test]
 fn an_element_keeps_its_number_across_renders() {
     let mut page = Page::new();
     let first = page.render(&window("A"));
     let second = page.render(&window("A"));
     assert_eq!(first, second);
+}
+
+#[test]
+fn a_patch_names_the_element_it_replaces_and_renumbers_nothing() {
+    // The page's client replaces the element numbered `id` with the patched
+    // HTML and keeps every other element where it is. So a number must name
+    // the same element after a patch as before it, and the patch must carry
+    // the number of the element it replaces; a patch that renumbered its
+    // neighbours would leave the client's page showing the old number's
+    // element.
+    let mut page = Page::new();
+    let before = page.render(&window("Groceries"));
+    let numbered_before = numbered(&page, &before);
+    assert!(
+        numbered_before.len() >= 4,
+        "the fixture draws several elements: {before}"
+    );
+    let patches = page.patch(&window("Groceries list"));
+    assert_eq!(patches.len(), 1, "{patches:?}");
+    let patched = &patches[0];
+    assert_eq!(
+        page.path(patched.id),
+        Some("Root[0]/Label[0]"),
+        "the patch replaces the element the label is"
+    );
+    assert_eq!(
+        numbers(&patched.html),
+        vec![patched.id],
+        "it carries the number of the element it replaces: {}",
+        patched.html
+    );
+    // Nothing else moved: every element the first render numbered still names
+    // the same path.
+    for (id, path) in &numbered_before {
+        assert_eq!(page.path(*id), Some(path.as_str()), "number {id} moved");
+    }
+    // And a whole render of what the patch showed numbers the same elements
+    // the same way: a patch and a render never disagree about an element.
+    let mut whole = Page::new();
+    let after = whole.render(&window("Groceries list"));
+    assert_eq!(numbered(&whole, &after), numbered_before, "{after}");
 }
 
 #[test]
