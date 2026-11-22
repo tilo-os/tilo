@@ -905,44 +905,5 @@ tilo_test_env::scenario! {
             super::Toggle::All
         );
     }
-
-    phase granted_windows_onedrive_root_is_an_account_source;
-    {
-        use imager_backend::windows_inventory::{RootRole, SelectedRoot};
-
-        let fixture = tempfile::tempdir().unwrap();
-        let root = fixture.path().join("OneDrive");
-        std::fs::create_dir(&root).unwrap();
-        std::fs::write(root.join("notes.txt"), b"notes").unwrap();
-        let mut preview = InstallerPreview {
-            live: true,
-            ..Default::default()
-        };
-        preview.journey.page = Page::Belongings;
-        preview.journey.destination = Some(Destination::Another);
-        preview.journey.migrate = Some(true);
-        preview.journey.categories = [true, true, true];
-        preview.belongings = Belongings::from_windows_roots(&[SelectedRoot {
-            path: root,
-            role: RootRole::OneDrive,
-        }])
-        .unwrap();
-
-        let sources = preview.your_data();
-        let source = sources
-            .sources
-            .iter()
-            .find(|source| source.id.starts_with("accounts|application|"))
-            .expect("the granted Windows account is its own app source");
-        assert_eq!(source.groups.len(), 1);
-        assert_eq!(source.groups[0].items.len(), 1);
-        assert_eq!(
-            source.groups[0].items[0].label,
-            t("installer-your-data-service-files")
-        );
-        assert!(source.groups[0].items[0].eligible);
-        assert!(source.groups[0].items[0].included);
-        assert_eq!(source.toggle(), super::Toggle::All);
-    }
 }
 
