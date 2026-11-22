@@ -42,7 +42,7 @@ use tilo_lock::MutexRecover as _;
 
 use crate::links::HeldLink;
 use crate::memory;
-use crate::plan::Planned;
+use crate::plan::{Kind, Planned};
 
 /// Why the system ended an app: what the launcher remembers of it.
 pub use launcher::memory_pressure::Cause;
@@ -502,7 +502,19 @@ impl Spawner {
     ) -> Result<(Started, Option<HeldLink>), SpawnError> {
         crate::name_surface(planned);
         let mut command = Command::new(&planned.program);
-        close_inherited(&mut command);
+        // A package's launch that hands nothing down marks the session's descriptors
+        // close-on-exec here, just before it starts, and adds no step to the child: a command
+        // without one starts with posix_spawn, which shares the session's memory until the exec,
+        // rather than a fork that copies the page tables of the whole session first (tens of
+        // milliseconds of every open, more on a busy machine). A descriptor some other thread
+        // opens between the two without close-on-exec reaches only the launcher, whose sandbox
+        // shim closes every descriptor it is not handed before the app runs
+        // (`launcher::landlock_shim`). An app the launcher does not confine, and a launch that
+        // hands descriptors down, mark them in the child, after the fork.
+        let marked_here = planned.kind == Kind::Package && handed.is_none();
+        if !marked_here {
+            close_inherited(&mut command);
+        }
         command
             .args(&planned.args)
             .env_clear()
@@ -539,6 +551,13 @@ impl Spawner {
             // What the launcher said on its stderr for a launch it did not keep: a kept launch's
             // streams carry its app's output alone, so the log is told here instead.
             tracing::info!(app = %planned.app, "a machine app is unconfined, kept across a desktop restart");
+        }
+        if marked_here && let Err(error) = mark_inherited_close_on_exec() {
+            self.abandon(kept.as_ref());
+            return Err(SpawnError {
+                app: planned.app.clone(),
+                reason: format!("the session's descriptors could not be kept from it: {error}"),
+            });
         }
         let spawned = command.spawn();
         drop((command, handed_down));
@@ -1233,37 +1252,53 @@ impl Spawner {
 /// before the launcher's own `pre_exec` steps, which hand the app what it is given after this.
 #[cfg(target_os = "linux")]
 fn close_inherited(command: &mut Command) {
-    // SAFETY: only async-signal-safe calls happen between fork and exec: close_range, fcntl and
-    // sysconf; nothing is allocated.
+    // SAFETY: `mark_inherited_close_on_exec` makes only async-signal-safe calls (close_range,
+    // fcntl and sysconf) and allocates nothing.
     unsafe {
-        command.pre_exec(|| {
-            let closed = libc::syscall(
-                libc::SYS_close_range,
-                3,
-                libc::c_uint::MAX,
-                libc::CLOSE_RANGE_CLOEXEC,
-            );
-            if closed == 0 {
-                return Ok(());
-            }
-            // A kernel without close_range: the same flag, one descriptor at a time.
-            let limit = libc::sysconf(libc::_SC_OPEN_MAX);
-            let limit = i32::try_from(limit).unwrap_or(1024).max(3);
-            for fd in 3..limit {
-                if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == -1 {
-                    let error = std::io::Error::last_os_error();
-                    if error.raw_os_error() != Some(libc::EBADF) {
-                        return Err(error);
-                    }
-                }
-            }
-            Ok(())
-        });
+        command.pre_exec(mark_inherited_close_on_exec);
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 fn close_inherited(_: &mut Command) {}
+
+/// Mark every descriptor of this process beyond its standard streams close-on-exec: in a child
+/// between fork and exec ([`close_inherited`]), or in the session itself just before a launch
+/// that is started without a fork. Async-signal-safe: `close_range`, or `fcntl` and `sysconf` on a
+/// kernel without it; nothing is allocated.
+#[cfg(target_os = "linux")]
+fn mark_inherited_close_on_exec() -> std::io::Result<()> {
+    // SAFETY: plain syscalls on this process's own descriptor table.
+    unsafe {
+        let closed = libc::syscall(
+            libc::SYS_close_range,
+            3,
+            libc::c_uint::MAX,
+            libc::CLOSE_RANGE_CLOEXEC,
+        );
+        if closed == 0 {
+            return Ok(());
+        }
+        // A kernel without close_range: the same flag, one descriptor at a time.
+        let limit = libc::sysconf(libc::_SC_OPEN_MAX);
+        let limit = i32::try_from(limit).unwrap_or(1024).max(3);
+        for fd in 3..limit {
+            if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == -1 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::EBADF) {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[expect(clippy::unnecessary_wraps, reason = "the Linux function's signature")]
+const fn mark_inherited_close_on_exec() -> std::io::Result<()> {
+    Ok(())
+}
 
 /// Tell the launcher `command` starts to start `keeper` in `dir`, keeping `launch`.
 #[cfg(target_os = "linux")]
