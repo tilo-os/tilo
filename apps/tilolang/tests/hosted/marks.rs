@@ -77,13 +77,17 @@ fn the_window_shows_what_the_run_did_in_its_colour_and_opens_the_run() {
     );
     shoot(&mut app, "notes-marks");
 
-    // A note the run made says so on its page: its history names the run, in the agent's
-    // colour, under the person's own entry. The second of the rows is one of the run's: the
-    // person's own note stands first.
+    // A note the run made says so under the window bar's History: its history names the run, in
+    // the agent's colour, under the person's own entry. The second of the rows is one of the
+    // run's: the person's own note stands first.
     let made = listed[1].1;
     app.harness()
         .click_at(made[0] + made[2] / 4.0, made[1] + made[3] / 2.0);
     settle(&mut app);
+    assert!(
+        crate::history_window::press_history(&mut app),
+        "the window's History opens"
+    );
     let face = named(&mut app, "Avatar", "Helper");
     assert!(
         chroma_in(&mut app, face) > ground.saturating_add(24),

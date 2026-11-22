@@ -21,6 +21,8 @@
 mod convert;
 mod facts;
 pub mod form;
+mod history;
+pub use history::WINDOW_HISTORY;
 mod patches;
 mod person_state;
 pub use patches::spliced;
@@ -329,6 +331,9 @@ pub struct Instance {
     detail: Option<Shown>,
     /// The facts page of a resource whose type declares no view, in the detail level ([`facts`]).
     facts: Option<Facts>,
+    /// The detail level shows the history of what the window shows ([`history`]), in place of
+    /// what it showed before, which it shows again when the history closes.
+    window_history: Option<history::Before>,
     /// What the facts page says changed since it was drawn.
     facts_stale: bool,
     /// The space the window last said each level's view has (`ToApp::Space`): a view opened in
@@ -457,6 +462,7 @@ impl Instance {
             root: None,
             detail: None,
             facts: None,
+            window_history: None,
             facts_stale: false,
             root_space: None,
             detail_space: None,
@@ -984,10 +990,19 @@ impl Instance {
     /// Open the root and the detail again on the package `host` now runs: the same resources,
     /// so the same windows and their view state.
     fn reopen(&mut self, host: &Host) {
-        let detail = self
-            .detail
-            .as_ref()
-            .map(|view| (view.target.clone(), view.with.clone()));
+        // A history the window showed closes: the level shows what it showed before it.
+        let detail = match self.leave_history() {
+            Some(before) => {
+                if before.is_none() {
+                    self.out.push(ToUi::Close);
+                }
+                before
+            }
+            None => self
+                .detail
+                .as_ref()
+                .map(|view| (view.target.clone(), view.with.clone())),
+        };
         let (Ok(target), Ok(view)) = (
             host.root_of_layer(&self.app, &self.root_view),
             host.open_layer(&self.app, &self.root_view),
@@ -1022,6 +1037,7 @@ impl Instance {
     fn start_over(&mut self) -> Option<Host> {
         self.publication = None;
         self.root = None;
+        self.leave_history();
         if self.detail.take().is_some() | self.facts.take().is_some() {
             self.out.push(ToUi::Close);
         }
@@ -1509,7 +1525,15 @@ impl Instance {
     fn carry_out(&mut self, message: ToApp, ran: &mut Option<Ran>) -> Result<(), Words> {
         match message {
             ToApp::Back => {
-                self.close_detail();
+                if self.window_history.is_some() {
+                    self.close_history();
+                } else {
+                    self.close_detail();
+                }
+                Ok(())
+            }
+            ToApp::History { open } => {
+                self.show_history(open);
                 Ok(())
             }
             ToApp::Fire {

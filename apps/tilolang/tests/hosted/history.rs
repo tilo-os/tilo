@@ -1,7 +1,8 @@
-//! A note's history in the Notes window as a person uses it (`std.history`): opened, the note
-//! shows who changed it and when, an agent's run as one entry that opens to each change; and
-//! each moment reads as how long ago it was, the window sleeping until that reads differently
-//! and showing it anew when it does.
+//! A note's history in the Notes window as a person uses it: the note's page draws none of its
+//! own, and the window bar's History shows the system's (`std.history`) of the note the window
+//! shows — who changed it and when, an agent's run as one entry that opens to each change; each
+//! moment reads as how long ago it was, the window sleeping until that reads differently and
+//! showing it anew when it does; and a second press shows the note again.
 //!
 //! With `TILO_HISTORY_SHOTS=<dir>` the test writes the note's window, light and dark, with the
 //! run's entry closed and open.
@@ -11,7 +12,7 @@ use serde_json::Map;
 use ui::time::testing::with_wall;
 
 use crate::change_marks::{Driven as _, action_id, named, published_with, run, settle};
-use crate::history_window::{after, shoot, sleeps_for, times};
+use crate::history_window::{after, press_history, shoot, shows_history, sleeps_for, times};
 
 const NOTES: &str = "so.tilo.notes";
 #[test]
@@ -49,13 +50,28 @@ fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes()
     let done = ui::time::SystemTime::now();
     settle(&mut app);
 
-    // Opened, a moment after: the note's history, newest first, each entry saying when.
+    // Opened, a moment after: the note's page holds no history; the window's bar offers it, and
+    // its History shows the note's, newest first, each entry saying when.
     let soon = after(done, 1);
     let shown = with_wall(soon, || {
         let row = named(&mut app, "ListRow", "Weekly shop");
         app.harness()
             .click_at(row[0] + row[2] / 4.0, row[1] + row[3] / 2.0);
         settle(&mut app);
+        assert!(
+            !shows_history(&mut app),
+            "the note's page draws no history of its own"
+        );
+        assert_eq!(
+            app.harness().window_history_control(),
+            Some(ui::widget::HistoryControl::Closed),
+            "the window offers its bar's History"
+        );
+        assert!(press_history(&mut app), "the window's History stands open");
+        assert!(
+            shows_history(&mut app),
+            "the window shows the note's history"
+        );
         times(&mut app)
     });
     assert_eq!(shown.len(), 2, "the run's entry and Ada's own: {shown:?}");
@@ -101,4 +117,12 @@ fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes()
         anew.iter().all(|now| !shown.contains(now)),
         "every moment reads anew: {shown:?} then {anew:?}"
     );
+
+    // Pressed again, the window shows the note again.
+    assert!(
+        !press_history(&mut app),
+        "the window's History stands closed"
+    );
+    assert!(!shows_history(&mut app), "the history went");
+    crate::change_marks::text_field(&mut app, "Weekly shop");
 }

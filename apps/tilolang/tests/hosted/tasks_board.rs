@@ -384,14 +384,15 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     let _ = RUN;
 }
 
-/// A task's history in its window: who set its due day and when, the day it was due before and
-/// the day it is due now, each shown as a day, and an agent's run as one entry. With
+/// A task's history in its window, under the window bar's History: who set its due day and when,
+/// the day it was due before and the day it is due now, each shown as a day, and an agent's run as
+/// one entry. With
 /// `TILO_HISTORY_SHOTS=<dir>` the window is written, light and dark, the run's entry closed and
 /// open.
 #[test]
 fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     use crate::change_marks::{action_id, choose, named, published_with, run, settle};
-    use crate::history_window::{after, shoot, times};
+    use crate::history_window::{after, press_history, shoot, shows_history, times};
     let _settled = ui::motion::testing::settled();
     let mut app = super::Session::new("so.tilo.lang.tasks", "ada");
     settle(&mut app);
@@ -435,21 +436,15 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     let done = ui::time::SystemTime::now();
     settle(&mut app);
     ui::time::testing::with_wall(after(done, 1), || {
+        // The open task's page holds no history: the window's bar shows it.
+        assert!(!shows_history(&mut app), "the task's page draws no history");
+        assert!(press_history(&mut app), "the window's History stands open");
         assert_eq!(
             times(&mut app).len(),
             2,
             "the run's entry and Ada's own, each saying when"
         );
         shoot(&mut app, "tasks-history", settle);
-        // The task's own fields stand above its history, so the pane scrolls to the history's
-        // rows before the run's entry is opened, as a person reaches them.
-        app.harness()
-            .send(&ui::synthetic_input::cursor_moved(700.0, 400.0));
-        settle(&mut app);
-        for _ in 0..6 {
-            app.harness().scroll(0.0, -1.0);
-            settle(&mut app);
-        }
         let show = named(&mut app, "Button", "Show changes");
         app.harness()
             .click_at(show[0] + show[2] / 2.0, show[1] + show[3] / 2.0);
@@ -670,7 +665,7 @@ fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
         settle(&mut app);
         // Choosing a place leaves the task the scenario showed open.
         click_item(&mut app, "Today");
-        // The task the day is about, opened where it stands: its history reads its age.
+        // The task the day is about, opened where it stands.
         click_item(&mut app, "Call the landlord");
         assert!(
             shows(&mut app, "Call the landlord"),
@@ -680,21 +675,33 @@ fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
             !shows(&mut app, "Reply to Mia"),
             "tomorrow's task is not listed today"
         );
-        // The window sleeps until what it shows next reads differently, and not before: the
-        // moment the staged task was made, in its history, stops reading as just now before
-        // the person's midnight, a minute away, comes.
-        let deadline = app
-            .harness()
-            .frame_schedule()
-            .next_wake_deadline
-            .expect("a window showing today waits for midnight");
-        let wait = deadline.saturating_duration_since(ui::time::now());
+        // Its history, under the window bar's History, reads its age: the window sleeps until
+        // what it shows next reads differently, and not before. The moment the staged task was
+        // made stops reading as just now before the person's midnight, a minute away, comes.
+        assert!(
+            crate::history_window::press_history(&mut app),
+            "the window's History opens"
+        );
+        let wait = crate::history_window::sleeps_for(&mut app)
+            .expect("a window showing a moment waits for it to read anew");
         let expected = wakes_after(before, before, local(7, 1, (0, 0, 0)));
         assert!(
             wait.abs_diff(expected) < ui::time::Duration::from_secs(1)
                 && wait <= ui::time::Duration::from_secs(60),
             "the window wakes when the history's moment reads anew, before midnight: \
              {wait:?}, not {expected:?}"
+        );
+        // Closed again, the window shows the day's list, and wakes at the person's midnight.
+        assert!(
+            !crate::history_window::press_history(&mut app),
+            "the window's History closes"
+        );
+        let wait = crate::history_window::sleeps_for(&mut app)
+            .expect("a window showing today waits for midnight");
+        let midnight = local(7, 1, (0, 0, 0)).duration_since(before).unwrap();
+        assert!(
+            wait.abs_diff(midnight) < ui::time::Duration::from_secs(1),
+            "the window wakes at midnight: {wait:?}, not {midnight:?}"
         );
         app
     });
@@ -721,14 +728,13 @@ fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
             shown && shows(&mut app, "Reply to Mia"),
             "the task due on the new day is listed once midnight passed"
         );
-        // And the window waits again, for the next midnight or the history's moment reading
-        // anew, whichever comes first.
+        // And the window waits again, for the next midnight.
         let wait = app
             .harness()
             .frame_schedule()
             .next_wake_deadline
             .map(|deadline| deadline.saturating_duration_since(ui::time::now()));
-        let expected = wakes_after(before, after, local(7, 2, (0, 0, 0)));
+        let expected = local(7, 2, (0, 0, 0)).duration_since(after).unwrap();
         assert!(
             wait.is_some_and(|wait| wait.abs_diff(expected) < ui::time::Duration::from_secs(1)),
             "the window waits for what it shows to read differently: {wait:?}, not {expected:?}"

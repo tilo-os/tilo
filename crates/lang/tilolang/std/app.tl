@@ -970,6 +970,9 @@ view suggestions<R>(of: R) {
 /// reading it on. A step of several changes is opened to each of them, each taken back on its
 /// own there. One change made over many items at once — a command run on a choice of them — is
 /// one step: it says how many items it changed, and its undo takes them all back together.
+///
+/// It is what a window shows when its bar's History is pressed, of the resource the window shows,
+/// so no app places it on its pages.
 view history<R>(of: R) {
     state open: Text = ""
     let steps = steps(of)

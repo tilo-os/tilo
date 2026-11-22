@@ -147,7 +147,6 @@ d-6wqou47w = Notizeditor
 d-nki6assy = Notizangaben
     .w-from = Von { $service }
     .w-from-by = Von { $service }, von { $by }
-    .w-created = Erstellt
     .w-edited = Bearbeitet
     .w-1-word = 1 Wort
     .w-words = { $count } Wörter

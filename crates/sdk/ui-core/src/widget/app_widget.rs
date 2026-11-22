@@ -934,6 +934,7 @@ mod component_adapter {
             dyn crate::component_lifecycle::WindowActivation,
             dyn crate::component_lifecycle::WindowTitle,
             dyn crate::component_lifecycle::HearsElsewhere,
+            dyn crate::widget::WindowHistory,
             dyn crate::undo::UndoPoints,
             dyn crate::widget::ResourceOperations
         );
@@ -1699,6 +1700,41 @@ mod component_adapter {
 
     /// What the component the window shows says it shows, for the window's own title: the app's root
     /// answers it, so a window whose content names the page it is at is named by that.
+    /// The History the component's root offers its window: what a window whose app runs elsewhere
+    /// (a tilolang host's instance) shows of the history of what it shows.
+    impl crate::widget::WindowHistory for BoundAppWidget {
+        fn set_window_presents_history(&mut self, tab_presents: bool) {
+            self.in_root_mut(|root| {
+                if let Some(history) = crate::widget::capability::capability_mut::<
+                    dyn crate::widget::WindowHistory,
+                >(root)
+                {
+                    history.set_window_presents_history(tab_presents);
+                }
+            });
+        }
+
+        fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
+            self.in_root(|root| {
+                crate::widget::capability::capability::<dyn crate::widget::WindowHistory>(root)?
+                    .window_history_control()
+            })
+            .flatten()
+        }
+
+        fn invoke_window_history_control(
+            &mut self,
+            control: crate::widget::HistoryControl,
+        ) -> Result<(), String> {
+            self.in_root_mut(|root| {
+                crate::widget::capability::capability_mut::<dyn crate::widget::WindowHistory>(root)
+                    .ok_or("History is unavailable")?
+                    .invoke_window_history_control(control)
+            })
+            .unwrap_or_else(|| Err("History is unavailable".to_owned()))
+        }
+    }
+
     impl crate::component_lifecycle::WindowTitle for BoundAppWidget {
         fn window_title(&self) -> Option<&str> {
             self.in_root(crate::component_lifecycle::window_title)

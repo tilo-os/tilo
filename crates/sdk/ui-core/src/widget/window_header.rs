@@ -105,6 +105,9 @@ impl HistoryControl {
     }
 }
 
+/// A window's History, which the window bar's History control opens and closes: an embedded
+/// app's, or the one an app's root widget offers of what its window shows (a tilolang window,
+/// whose instance shows the system's history of the resource the window shows).
 pub trait WindowHistory {
     fn set_window_presents_history(&mut self, tab_presents: bool);
 

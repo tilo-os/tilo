@@ -241,6 +241,38 @@ impl ui_core::component_lifecycle::WindowTitle for ResourceRoot {
     }
 }
 
+impl ui_core::widget::WindowHistory for ResourceRoot {
+    fn set_window_presents_history(&mut self, tab_presents: bool) {
+        with_app_view_mut(&mut self.content, |view| {
+            if let Some(history) = ui_core::widget::capability::capability_mut::<
+                dyn ui_core::widget::WindowHistory,
+            >(view)
+            {
+                history.set_window_presents_history(tab_presents);
+            }
+        });
+    }
+
+    /// The app's own view offers the window's History: a view whose app runs elsewhere (a
+    /// tilolang host's instance) shows the system's history of what the window shows.
+    fn window_history_control(&self) -> Option<ui_core::widget::HistoryControl> {
+        let view = app_view_in(self.content.as_ref())?;
+        ui_core::widget::capability::capability::<dyn ui_core::widget::WindowHistory>(view)?
+            .window_history_control()
+    }
+
+    fn invoke_window_history_control(
+        &mut self,
+        control: ui_core::widget::HistoryControl,
+    ) -> Result<(), String> {
+        with_app_view_mut(&mut self.content, |view| {
+            ui_core::widget::capability::capability_mut::<dyn ui_core::widget::WindowHistory>(view)
+                .ok_or("History is unavailable")?
+                .invoke_window_history_control(control)
+        })
+    }
+}
+
 /// The operation type of the framework's `open` view: show the item at an
 /// anchor, as picking a search hit does.
 pub(crate) const OPEN_TYPE: &str = tilo_actions::remote::APPLICATION_OPEN_TYPE;
@@ -1392,7 +1424,7 @@ impl SearchCache {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl RootModel for ResourceRoot {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, dyn ui_core::history_mode::capability::PresentsHistoryEntries, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle, dyn ui_core::component_lifecycle::HearsElsewhere, dyn ui_core::collaboration::presences::Presences; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, dyn ui_core::history_mode::capability::PresentsHistoryEntries, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle, dyn ui_core::component_lifecycle::HearsElsewhere, dyn ui_core::widget::WindowHistory, dyn ui_core::collaboration::presences::Presences; inner = content);
 
     fn view(&self) -> &(dyn Widget + 'static) {
         match &self.unreadable {

@@ -58,10 +58,14 @@ fn steps(session: &Session) -> Vec<usize> {
     steps
 }
 
-/// How many acts of the person the note's History counts: the page the window shows says so under
-/// the entry, so a burst of any number of letters counts as one of them.
+/// How many acts of the person the note's History counts: the window's History says so under the
+/// entry, so a burst of any number of letters counts as one of them. The keyboard goes back to the
+/// body after, where the person types on.
 fn history_acts(session: &mut Session) -> usize {
-    let page = session.shown();
+    let page = session.history_shown();
+    let body = session.body();
+    session.window.click_at(body.0, body.1);
+    session.settle();
     page.iter()
         .find_map(|text| {
             text.strip_suffix(" changes")

@@ -1766,6 +1766,26 @@ fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, Stri
     (ada, task, page, key)
 }
 
+/// The words of the history a window of Tasks shows of `task` under its bar's History.
+fn history_texts(ada: &Replica, task: &Value) -> Vec<String> {
+    let Value::Ref(at) = task else {
+        panic!("a task: {task:?}")
+    };
+    let viewer = ada.host.viewer().clone();
+    let mut history = ada
+        .host
+        .runtime()
+        .open_written_view(
+            &viewer,
+            tilolang_tilo::instance::WINDOW_HISTORY,
+            &viewer,
+            vec![Value::resource(&at.target)],
+        )
+        .unwrap();
+    history.poll_patches().unwrap();
+    texts(history.tree())
+}
+
 /// The text a person field hands back for the person `id`: their identity as the runtime sent it.
 fn pick(id: &str) -> Value {
     Value::text(tilolang_tilo::runtime::ids::actor_text(&Actor::from(
@@ -1836,7 +1856,7 @@ tilo_test_env::scenario! {
         // The picks fold into one step of the task's history with its making, the way one person's
         // changes made in a row do, and a step that made the task says so whatever followed it.
         // The page itself draws the assignee as a chip, with no label beside it.
-        let shown = texts(page.tree());
+        let shown = history_texts(&ada, &task);
         assert!(
             shown.join(" ").contains("You created it"),
             "the step that made the task leads with its making: {shown:?}"

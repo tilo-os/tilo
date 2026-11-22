@@ -678,6 +678,9 @@ pub enum ToUi {
     /// window with a connection of its own does: the member list, a step of an agent's action.
     /// Carried as the JSON the window's toolkit reads it as.
     Heard(#[serde(with = "serde_bytes")] Vec<u8>),
+    /// Whether the window shows the history of what it shows now ([`ToApp::History`]): its bar's
+    /// History control stands open while it does. Back, or opening something else, closes it.
+    History(bool),
 }
 
 /// What the person did, as the window tells its app.
@@ -809,6 +812,11 @@ pub enum ToApp {
     /// The person asked to save the changes the workspace has not taken yet again
     /// ([`ToUi::Kept`]).
     SaveAgain,
+    /// The window bar's History control was pressed: show the system's history of the resource
+    /// the window shows (`open`), or close it and show the resource again.
+    History {
+        open: bool,
+    },
 }
 
 /// Largest batch either side sends or accepts.

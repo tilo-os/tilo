@@ -957,10 +957,10 @@ view note_editor(n: Note) {
 }
 
 /// The open note: its title, where it stands and when it was written, its tags as chips, its
-/// body, what links to it, its discussion and its history. Its body's `[[` writes a link to
-/// another of the notebook's notes. Its editor reports the note's headings — their words and how
-/// deep each stands — which the window's map of them is drawn from, and shows the heading a
-/// person chose there.
+/// body, what links to it and its discussion (its history is the window's, under the window bar's
+/// History). Its body's `[[` writes a link to another of the notebook's notes. Its editor reports
+/// the note's headings — their words and how deep each stands — which the window's map of them is
+/// drawn from, and shows the heading a person chose there.
 template view note_page(
     n: Note,
     headings: State<List<Text>>,
@@ -971,7 +971,7 @@ template view note_page(
     state linking: Bool = false
     state link_text: Text = ""
     // The page's blocks are groups of their own, a group gutter apart: the head, the body, what
-    // links here, the discussion and the history. The title, where the note stands and what it
+    // links here and the discussion. The title, where the note stands and what it
     // holds are one head, closer together.
     stack(gap: .group) {
         stack(gap: .related) {
@@ -1006,14 +1006,12 @@ template view note_page(
         std.linked(n, compact: true)
         std.after_body {
             discussion.thread(n)
-            std.history(n)
         }
     }
 }
 
 /// What a note says of itself, as one quiet line under its title: the notes it stands under,
-/// each opening it, and beside them when it was made, when it was last written and how many
-/// words it holds.
+/// each opening it, and beside them when it was last written and how many words it holds.
 view note_details(n: Note) {
     // The notes over `n`, the outermost first, ending at `n` itself: a trail opens every place
     // before its last, so each note it stands under stays a press and nothing of the path is
@@ -1022,7 +1020,7 @@ view note_details(n: Note) {
     let made = created(n)?.at
     let edited = updated(n)?.at
     let count = n.body.text.words()
-    // Written since it was made: one moment says both when it was not.
+    // Written since it was made: a note written once says nothing of when.
     let shows_edited = edited != .none and edited != made
     row(gap: .related, align: .center) {
         // The trail takes the room the facts leave, a line under the title rather than the
@@ -1054,13 +1052,8 @@ view note_details(n: Note) {
                     text("From {n.service} by {n.by}", role: .caption, secondary: true)
                 }
             }
-            // When it was made, and when it was written since: one moment says both.
-            if let at = made {
-                row(gap: .tight) {
-                    text("Created", role: .caption, secondary: true)
-                    ui.Time(at, role: .caption, secondary: true)
-                }
-            }
+            // When it was written since it was made; who made it and when is the window's
+            // History's to say.
             if shows_edited {
                 if let at = edited {
                     row(gap: .tight) {

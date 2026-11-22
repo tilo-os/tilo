@@ -961,7 +961,6 @@ template view task_body(t: Task) {
             std.after_body {
                 std.linked(t, without: discussion.said_about(t))
                 discussion.thread(t)
-                std.history(t)
             }
         }
     }

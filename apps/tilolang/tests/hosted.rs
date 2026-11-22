@@ -821,6 +821,31 @@ impl Session {
             .expect("the window is the hosted window")
     }
 
+    /// Press the window bar's History, as the shell's bar hands the press to the window, and let
+    /// the window settle.
+    fn press_history(&mut self) {
+        let history = ui::widget::capability::capability_mut::<dyn ui::widget::WindowHistory>(
+            self.window.root(),
+        )
+        .expect("the window offers its bar's History");
+        let control = history
+            .window_history_control()
+            .expect("the window's History is offered once it shows something");
+        history
+            .invoke_window_history_control(control)
+            .expect("the window's History is pressed");
+        self.settle();
+    }
+
+    /// The texts the window shows of the history of what it shows, under its bar's History: it
+    /// opens it, reads it, and closes it again.
+    fn history_shown(&mut self) -> Vec<String> {
+        self.press_history();
+        let shown = self.shown();
+        self.press_history();
+        shown
+    }
+
     /// The texts the window's views show: its overview, and the page the content level opens.
     fn shown(&mut self) -> Vec<String> {
         let view = self.hosted().view().expect("the window is connected");

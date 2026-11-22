@@ -348,6 +348,9 @@ pub struct AppWindow {
     /// What the app's connection heard of the people at the app ([`ToUi::Heard`]), until the
     /// window's toolkit takes it ([`Self::take_heard`]).
     heard: Vec<ui::component_lifecycle::Heard>,
+    /// Whether the window shows the history of what it shows, as the app last said
+    /// ([`ToUi::History`]): the window bar's History control stands open while it does.
+    history: ui::widget::HistoryControl,
 }
 
 impl AppWindow {
@@ -457,6 +460,7 @@ impl AppWindow {
             search_total: None,
             save: ui::SaveStatusSurface::new(),
             heard: Vec::new(),
+            history: ui::widget::HistoryControl::Closed,
         }
     }
 
@@ -602,6 +606,8 @@ impl AppWindow {
                 ToUi::ShowRun { run } => self.shown_runs.push(run),
                 ToUi::Speak(language) => ui::i18n::I18nManager::set_locale(&language),
                 ToUi::Kept(kept) => self.kept(kept),
+                // Its page goes back to what the window shows ([`Self::compose`]).
+                ToUi::History(shown) => content |= self.shows_history(shown),
                 // What the window shows of people never stops it showing the app.
                 ToUi::Heard(heard) => match serde_json::from_slice(&heard) {
                     Ok(heard) => self.heard.push(heard),
@@ -975,6 +981,13 @@ impl AppWindow {
         self.refresh_bound();
     }
 
+    /// Whether the window shows the history of what it shows ([`ToUi::History`]). Its shell is
+    /// built again: the history's page goes back to what the window shows.
+    fn shows_history(&mut self, shown: bool) -> bool {
+        self.history = ui::widget::HistoryControl::of(shown);
+        true
+    }
+
     /// Say in the window's bar whether the person's changes are saved: changes the workspace has
     /// not taken yet are marked unsaved, with "Try again", until it has; then the mark goes.
     fn kept(&mut self, kept: bool) {
@@ -1156,17 +1169,19 @@ impl AppWindow {
         let composed = crate::shell::compose(&root_shell, detail_shell.as_ref());
         // A page while it shows something other than the window itself: a view that shows the
         // resource the window already is (`show(r)` of the app's own root, a scenario that stages
-        // it) is where the window opens, with nothing to go back to.
+        // it) is where the window opens, with nothing to go back to. The history of what the
+        // window shows goes back to it.
         let composed = match (&self.root, &self.detail) {
             (Some(root), Some(detail))
-                if root.target == detail.target
-                    // A page the window's own view already shows (a tree beside what it shows) is
-                    // no page after it: nothing behind it to go back to.
-                    || {
-                        let mut chosen = None;
-                        chosen_item(&root.tree, &mut chosen);
-                        chosen == Some(&detail.target)
-                    } =>
+                if !self.history.is_open()
+                    && (root.target == detail.target
+                        // A page the window's own view already shows (a tree beside what it
+                        // shows) is no page after it: nothing behind it to go back to.
+                        || {
+                            let mut chosen = None;
+                            chosen_item(&root.tree, &mut chosen);
+                            chosen == Some(&detail.target)
+                        }) =>
             {
                 let mut shell = composed;
                 shell.events.remove(crate::shell::BACK);
@@ -2698,6 +2713,27 @@ impl ui::widget::AwaitsContent for AppWindow {
     }
 }
 
+/// The window bar's History shows the system's history of what the window shows: the app's
+/// instance draws it in the window's page, and Back or a second press closes it. A window offers it
+/// once it shows something.
+impl ui::widget::WindowHistory for AppWindow {
+    fn set_window_presents_history(&mut self, _tab_presents: bool) {}
+
+    fn window_history_control(&self) -> Option<ui::widget::HistoryControl> {
+        self.root.is_some().then_some(self.history)
+    }
+
+    fn invoke_window_history_control(
+        &mut self,
+        control: ui::widget::HistoryControl,
+    ) -> Result<(), String> {
+        self.tell(ToApp::History {
+            open: !control.is_open(),
+        });
+        Ok(())
+    }
+}
+
 impl ui::widget::Decorator for AppWindow {
     type Inner = dyn Widget;
 
@@ -2721,6 +2757,10 @@ impl ui::widget::Decorator for AppWindow {
             request.provide::<dyn ui::widget::AwaitsContent>(self);
             return;
         }
+        if request.wants::<dyn ui::widget::WindowHistory>() && self.shape == Shape::Window {
+            request.provide::<dyn ui::widget::WindowHistory>(self);
+            return;
+        }
         self.body.provide(request);
     }
 
@@ -2735,6 +2775,10 @@ impl ui::widget::Decorator for AppWindow {
         }
         if request.wants::<dyn ui::host_operation::ResourceOperations>() {
             request.provide::<dyn ui::host_operation::ResourceOperations>(self);
+            return;
+        }
+        if request.wants::<dyn ui::widget::WindowHistory>() && self.shape == Shape::Window {
+            request.provide::<dyn ui::widget::WindowHistory>(self);
             return;
         }
         self.body.provide_mut(request);

@@ -203,6 +203,7 @@ impl<'a> Validator<'a> {
             | ToUi::Form(None)
             | ToUi::Activate
             | ToUi::Kept(_)
+            | ToUi::History(_)
             | ToUi::Took { .. } => Ok(()),
             ToUi::Actions(catalogue) => {
                 self.carried(catalogue.bytes(), "over the limit of bytes in a catalogue")
@@ -756,6 +757,7 @@ impl<'a> Validator<'a> {
             | ToApp::Redo
             | ToApp::Composing(_)
             | ToApp::SaveAgain
+            | ToApp::History { .. }
             | ToApp::FormSubmit { .. }
             | ToApp::FormCancel { .. } => {}
         }

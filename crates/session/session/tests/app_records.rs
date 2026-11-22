@@ -634,11 +634,21 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
             else {
                 return None;
             };
-            // The task's page: what its History says, then what it says opened.
-            let page = host.open_resource(&milk, None).ok()?;
+            // The task's History, as the window bar's History shows it: what it says, then what
+            // it says opened.
+            let viewer = host.viewer().clone();
+            let mut history = host
+                .runtime()
+                .open_written_view(
+                    &viewer,
+                    tilolang_tilo::instance::WINDOW_HISTORY,
+                    &viewer,
+                    vec![Value::resource(&milk)],
+                )
+                .unwrap_or_else(|error| panic!("the task's history opens: {error}"));
             let mut lead = Vec::new();
-            texts_of(page.tree(), &mut lead);
-            let show = node_where(page.tree(), &|node| {
+            texts_of(history.tree(), &mut lead);
+            let show = node_where(history.tree(), &|node| {
                 // The words where the window reads its catalogue, the phrase's key where not.
                 node.kind == "ui.Button"
                     && ["Show changes", "tilolang-history-show"]
@@ -647,10 +657,13 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
             })?
             .key
             .clone();
-            page.press(&show)
+            history
+                .press(&show)
                 .unwrap_or_else(|error| panic!("the step opens: {error}"));
-            let page = host.open_resource(&milk, None).ok()?;
-            let opened = page.tree();
+            history
+                .poll_patches()
+                .unwrap_or_else(|error| panic!("the history redraws: {error}"));
+            let opened = history.tree();
             // What the opened step draws: the title's placeholder, dimmed; an arrow; and its words.
             let placeholder = node_where(opened, &|node| {
                 node.kind == "ui.Text"
