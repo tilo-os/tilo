@@ -29,8 +29,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mail_provider import (  # noqa: E402
-    ADDRESS, SEARCH_CHORD, StandIn, account_kept, adds_account, opens_accounts, opens_newest,
-    press_in, pressed, shows_inbox, window_named,
+    ADDRESS, SEARCH_CHORD, TILOLANG, StandIn, account_kept, adds_account, opens_accounts,
+    launches_mail, opens_newest, press_in, pressed, shows_inbox, window_named,
 )
 from story import (  # noqa: E402
     CHROME, SHELL, Failed, Person, Story, front, in_front_named, invite_link, until, walk,
@@ -40,8 +40,9 @@ from story import stand_in as stands_in  # noqa: E402
 
 WORKSPACE = "The lab"
 JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
-# What both computers have: Mail, and Settings, where the workspace's accounts are kept.
-APPS = "settings mail"
+# What both computers have: Settings, where the workspace's accounts are kept, and Mail, a
+# tilolang app (TILOLANG).
+APPS = "settings"
 # Settings' page with the look, as the shell's search names it, and the light look on it.
 APPEARANCE_PAGE = "Appearance"
 LIGHT = "Light"
@@ -129,10 +130,10 @@ def steps(story: Story) -> None:
     def makes_and_invites():
         # The provider is the world around them, there before either opens Tilo.
         provider.prepare()
-        ada.prepare(APPS)
-        grace.prepare(APPS)
+        ada.prepare(APPS, TILOLANG)
+        grace.prepare(APPS, TILOLANG)
         began = time.monotonic()
-        took = ada.start(apps=APPS)
+        took = ada.start(apps=APPS, tilolang=TILOLANG)
         installing = without_installing(took)
         story.timing("Ada's session start, to its first frame", took["tookMs"])
         until("Ada's shell to hold a workspace", lambda: front(ada), 60)
@@ -153,7 +154,7 @@ def steps(story: Story) -> None:
         until("Ada's invite sheet to close", lambda: not ada.target("Copy link"), 10, 0.2)
         invitation = story.out / "invitation.txt"
         invitation.write_text(link)
-        took = grace.start(apps=APPS, env={JOIN_INVITATION: str(invitation)})
+        took = grace.start(apps=APPS, tilolang=TILOLANG, env={JOIN_INVITATION: str(invitation)})
         installing += without_installing(took)
         story.timing("Grace's session start with the invitation, to its first frame",
                      took["tookMs"])
@@ -196,8 +197,7 @@ def steps(story: Story) -> None:
         story.note(f"{one.key}-mail-controls", [n for n in one.names() if n])
 
     def ada_reads():
-        ada.session.launch("mail")
-        ada.session.answering("mail", deadline=180)
+        story.note("ada-mail-asked-for-the-internet", launches_mail(ada))
         try:
             shows_inbox(ada)
         except Failed:
@@ -210,8 +210,7 @@ def steps(story: Story) -> None:
 
     def grace_reads():
         before = shared["ada-sign-ins"]
-        grace.session.launch("mail")
-        grace.session.answering("mail", deadline=180)
+        story.note("grace-mail-asked-for-the-internet", launches_mail(grace))
         try:
             try:
                 shows_inbox(grace)

@@ -42,7 +42,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO / "scripts/headless-examples"))
 
-from real_apps import APPS, Failed, Session, prepare, until  # noqa: E402,F401
+from real_apps import APPS, BUILD, Failed, Session, prepare, run, until  # noqa: E402,F401
 
 BUDGETS = json.loads((HERE.parent / "budgets.json").read_text())
 # How often a running shell is filmed. A snapshot of a software-rendered shell takes a while of
@@ -83,25 +83,52 @@ class Person:
         # Each kept frame: its file and the wall-clock second it was taken at.
         self.kept: list[tuple[str, float]] = []
         self.prepared = False
+        self.packages: list[Path] = []
         self.starts = 0
 
-    def prepare(self, apps: str = APPS) -> None:
+    def prepare(self, apps: str = APPS, tilolang: tuple[str, ...] = ()) -> None:
         """Install the apps into this person's state, as their computer has them before they
-        first open Tilo."""
-        if not self.prepared:
-            prepare(self.state, apps=apps)
-            self.prepared = True
+        first open Tilo: those named in `apps` (directories under apps/) and the tilolang apps
+        named in `tilolang` (directories under apps/tl), each built as its signed package against
+        the runtime the state holds."""
+        if self.prepared:
+            return
+        prepare(self.state, apps=apps)
+        if tilolang:
+            self.packages = self.built(tilolang)
+        self.prepared = True
 
-    def start(self, *, apps: str = APPS, fresh: bool = True, env: dict | None = None) -> dict:
+    def built(self, tilolang: tuple[str, ...]) -> list[Path]:
+        """The signed package of each tilolang app in `tilolang`, built against the runtime this
+        person's state holds."""
+        runtime = (self.state / "runtimes/.version").read_text().strip()
+        tool = next((p for p in (self.state / "bin/tilolang", BUILD / "bin/tilolang")
+                     if p.exists()), None)
+        if tool is None:
+            raise Failed(f"no tilolang tool in {BUILD / 'bin'} to build {', '.join(tilolang)}")
+        built, packages = self.state.parent / "packages", []
+        for name in tilolang:
+            run([str(tool), "build", str(REPO / "apps/tl" / name), "--search",
+                 str(REPO / "apps/tl"), "--out", str(built), "--tilo-runtime",
+                 f"tilo-runtime/{runtime}"])
+            package = built / f"{name}.tapp"
+            if not package.is_file():
+                raise Failed(f"tilolang build made no {package}")
+            packages.append(package)
+        return packages
+
+    def start(self, *, apps: str = APPS, tilolang: tuple[str, ...] = (), fresh: bool = True,
+              env: dict | None = None) -> dict:
         """Open this person's Tilo: their session starts and answers with a frame. Answers
         `{"tookMs": …}`, the session's own time from its start until it answered, which is what a
         person waits for; `launcherMs` is the whole start, with what the development launcher
         installs and checks before the session runs, which no person's computer does."""
-        self.prepare(apps)
+        self.prepare(apps, tilolang)
         began = time.monotonic()
         self.starts += 1
         tag = self.key if self.starts == 1 else f"{self.key}-{self.starts}"
-        self.session.start(apps=apps, fresh=fresh, out=self.logs, tag=tag, env=env)
+        self.session.start(apps=apps, fresh=fresh, out=self.logs, tag=tag, env=env,
+                           tapps=self.packages)
         launcher = (time.monotonic() - began) * 1000
         said = self.state / "logs/ready.log"
 

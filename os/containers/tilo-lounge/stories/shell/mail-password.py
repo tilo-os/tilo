@@ -28,13 +28,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mail_provider import (  # noqa: E402
-    OLDER_SUBJECT, OLDER_WORDS, SEARCH_CHORD, StandIn, account_kept,
-    adds_account, describe, message_states, opens_accounts, opens_newest, pressed, shows_inbox,
+    NO_ACCOUNT, OLDER_SUBJECT, OLDER_WORDS, SEARCH_CHORD, TILOLANG, StandIn, account_kept,
+    adds_account, describe, has_read, launches_mail, mail_actions, opens_accounts, opens_newest,
+    pressed, shows_inbox,
 )
 from story import Failed, Story, until, walk  # noqa: E402
 
-# What both windows need: Mail, and Settings, where the person's accounts are kept.
-APPS = "settings mail"
+# What both windows need: Settings, where the person's accounts are kept, and Mail, a tilolang
+# app (TILOLANG).
+APPS = "settings"
 
 
 def steps(story: Story) -> None:
@@ -43,15 +45,13 @@ def steps(story: Story) -> None:
 
     def opens_mail() -> None:
         stand_in.prepare()
-        took = ada.start(apps=APPS)
+        took = ada.start(apps=APPS, tilolang=TILOLANG)
         answered = time.monotonic()
         story.timing("The session, to its first frame", took["tookMs"])
         story.timing("The session, to its first frame, with the development launcher's installing",
                      took["launcherMs"])
-        ada.session.launch("mail")
-        ada.session.answering("mail", deadline=180)
-        until("Mail's first window", lambda: ada.shows("No email account yet")
-              or ada.shows("Add an email account"), 30, 0.25)
+        story.note("mail-asked-for-the-internet", launches_mail(ada))
+        until("Mail's first window", lambda: ada.shows(NO_ACCOUNT), 30, 0.25)
         settings = opens_accounts(ada)
         story.timing("The shell, to Settings' Accounts page", (time.monotonic() - answered) * 1000)
         adds_account(ada, settings, stand_in.password)
@@ -71,7 +71,7 @@ def steps(story: Story) -> None:
             # Mail's own window takes the account it was given, with nothing reloaded.
             shows_inbox(ada)
             story.note("settings-after-account", describe(ada))
-            story.note("messages-record", message_states(ada))
+            story.note("mail-actions", mail_actions(ada))
 
         story.step("Mail finds the server by itself and connects", finds_servers, people=[ada])
         story.note("servers-found-by-mail", found)
@@ -98,9 +98,7 @@ def steps(story: Story) -> None:
                 raise Failed(f"the search's row for {OLDER_SUBJECT} carries not its words: "
                              f"{json.dumps(hit)[:800]}")
             pressed(ada, OLDER_SUBJECT, "the older message's row in the search")
-            until("the older message to open", lambda: any(
-                state.get("read") and OLDER_SUBJECT in (state.get("label") or "")
-                for state in message_states(ada).values()), 30, 0.2)
+            until("the older message to open", lambda: has_read(ada, OLDER_SUBJECT), 30, 0.2)
 
         story.step("Ada searches for an older one", searches_older, people=[ada])
 
@@ -121,9 +119,7 @@ def steps(story: Story) -> None:
             row = until("the reply in Mail's list", lambda: ada.target(f"Re: {OLDER_SUBJECT}",
                                                                         exact=False), 30, 0.3)
             pressed(ada, row["name"], "the reply's row")
-            until("the reply to open", lambda: any(
-                state.get("read") and f"Re: {OLDER_SUBJECT}" in (state.get("label") or "")
-                for state in message_states(ada).values()), 30, 0.2)
+            until("the reply to open", lambda: has_read(ada, f"Re: {OLDER_SUBJECT}"), 30, 0.2)
 
         story.step("Ada sends a reply, and it arrives", sends_reply, people=[ada])
     finally:

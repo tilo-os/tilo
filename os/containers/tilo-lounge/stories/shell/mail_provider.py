@@ -30,7 +30,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from story import Failed, Person, can_act_as_machine, machine, until
+from story import Failed, Person, actions_matching, can_act_as_machine, machine, until
 
 # The provider a mail story rehearses: the address's own domain and the server names Mail works
 # out from it, answered on this machine's loopback for the length of the story.
@@ -53,12 +53,13 @@ SEARCH_CHORD = ("Super", "Space")
 # row that adds a mail account by its address.
 ACCOUNTS_PAGE = "Accounts"
 ADD_EMAIL = "Add Email"
-# Where Mail keeps what its mailbox holds of each message (the read flags opening one changes):
-# its `mail.messages` records, bounded parts of the workspace's messages chain beside its one
-# mailbox (apps/mail/src/message_states.rs). The shell reads records by their document, so the
-# chain's first parts are asked for: a part nobody wrote yet reads as empty.
-MESSAGES_CHAIN = "derived:mail-messages@derived:default@tab:0000000000000000"
-MESSAGES_PARTS = [f"derived:part.{index}@{MESSAGES_CHAIN}" for index in range(8)]
+# Mail, the tilolang app (apps/tl/mail), installed as its signed package, and what its window
+# says before the workspace has a mail account.
+MAIL = "so.tilo.mail"
+TILOLANG = ("mail",)
+NO_ACCOUNT = "Add a mail account in Settings"
+# What a conversation's read action is called once it is read (apps/tl/mail `mark_read`).
+READ = "Mark as unread"
 # How the stand-in says an IMAP sign-in on its log (`stand_in::said_sign_in`).
 SIGN_IN = re.compile(r"mail stand-in: IMAP sign-in as (?P<login>.*?) from (?P<peer>\S+) "
                      r"by (?P<by>.+): (?P<verdict>taken|refused)$")
@@ -139,21 +140,36 @@ def type_into(one: Person, label: str, text: str, what: str, window: dict) -> No
         time.sleep(0.03)
 
 
-def message_states(one: Person) -> dict:
-    """What Mail's mailbox keeps of each message, read from the workspace's own records: its
-    subject, sender and read flag, which opening a message changes. Every part's messages."""
-    try:
-        answer = one.session.control({"op": "resource_read", "app": "so.tilo.mail",
-                                      "records": MESSAGES_PARTS, "wait_ms": 5000})
-    except Exception as error:  # noqa: BLE001 - the shell's refusal is what says why
-        raise Failed(f"the shell would not read Mail's messages ({MESSAGES_CHAIN}): "
-                     f"{error}") from error
-    messages: dict = {}
-    for record in (answer.get("answer") or {}).get("records") or []:
-        # A collection is read as its entries in order: each its place (`k`) and value (`v`).
-        for key, entry in (((record.get("value") or {}).get("messages")) or {}).items():
-            messages[key] = entry.get("v") or {}
-    return messages
+def mail_actions(one: Person) -> list[dict]:
+    """What Mail offers on its resources now, as the shell lists them to agents and people alike:
+    each conversation's actions name it and say whether it is read."""
+    return [row for row in actions_matching(one, "") if row.get("provider") == MAIL]
+
+
+def launches_mail(one: Person) -> bool:
+    """Open Mail from the launcher, and wait for its window. Mail reads mail from the account's
+    server, so the first time it opens in a workspace the shell asks whether it may use the
+    internet; the person allows it, as anyone who wants their mail does. Whether it asked."""
+    one.session.invoke("applications", MAIL)
+    asked = False
+
+    def up() -> dict | None:
+        nonlocal asked
+        if one.target("Allow") and one.target("Deny"):
+            asked = True
+            pressed(one, "Allow", "the press that lets Mail use the internet")
+        return window_named(one, MAIL)
+
+    until("Mail's window", up, 120, 0.25)
+    one.session.answering(MAIL, deadline=180)
+    return asked
+
+
+def has_read(one: Person, subject: str) -> bool:
+    """Whether Mail holds the conversation about `subject` as read: its read action, which only a
+    read conversation offers as Mark as unread, names it."""
+    return any(READ in (row.get("title") or row.get("name") or "")
+               and subject in json.dumps(row) for row in mail_actions(one))
 
 
 class StandIn:
@@ -416,6 +432,9 @@ def opens_newest(one: Person) -> None:
     row = until("the newest message in Mail's list",
                 lambda: one.target(NEWEST_SUBJECT, exact=False), 60, 0.2)
     pressed(one, row["name"], "the newest message's row")
-    until("the newest message to be marked read", lambda: any(
-        state.get("read") and NEWEST_SUBJECT in (state.get("label") or "")
-        for state in message_states(one).values()), 30, 0.2)
+    try:
+        until("the newest message to be marked read", lambda: has_read(one, NEWEST_SUBJECT),
+              30, 0.2)
+    except Failed:
+        one.story.note(f"mail-actions-{one.key}", mail_actions(one))
+        raise
