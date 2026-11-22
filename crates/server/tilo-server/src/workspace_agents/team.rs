@@ -12,8 +12,8 @@
 //!   `stop-sub-agent`. Each is applied on the list as the turn's agent acting for the person
 //!   who keeps it, the way this server writes how a sub-agent stands. So the list's rules
 //!   decide, and what it refuses is what the turn's tools are told. Nothing more is needed to
-//!   start one: this server carries the job of every sub-agent the list holds into its
-//!   conversation and works it ([`super::sub_agents`]).
+//!   start one: this server asks a sub-agent it started its job at once, made from the reply
+//!   of the turn that started it, and works it ([`super::sub_agents`]).
 //! - **One read**, the team: the sub-agents the turn's agent started and theirs, each with
 //!   how it stands, since when, its line and what it made ([`WorkspaceAgents::team_of`]).
 //!   Nothing of whoever started the turn's agent is in the answer, and nothing of a
@@ -65,16 +65,16 @@ const NOTE: &str = "note-sub-agent";
 const STOP: &str = "stop-sub-agent";
 /// The code of a call the list refused: its words say why.
 const REFUSED: &str = "refused";
-/// The most of a job the read shows, in characters: the whole of it is the first message of
-/// its sub-agent's conversation.
+/// The most of a job the read shows, in characters: the whole of it is what its sub-agent was
+/// asked first.
 const JOB_CHARS: usize = 160;
 
 /// What an agent is told about its team where its turn is offered one, after everything else
 /// it is told.
 const TOLD: &str = "You can hand parts of your work to sub-agents. Each works on the one job \
-     you give it, in a conversation of its own, and cannot read yours: its job says everything \
-     it needs. `sub-agents/team#start-sub-agent` starts one (a name, the job and, if you like, \
-     a role and the kind of work that picks its model), and you are told in your conversation \
+     you give it, on its own, and cannot read your conversation: its job says everything it \
+     needs. `sub-agents/team#start-sub-agent` starts one (a name, the job and, if you like, a \
+     role and the kind of work that picks its model), and you are asked again with its answer \
      when its work ends. Read `sub-agents/team` for how each one stands and what it made; \
      `sub-agents/team#note-sub-agent` tells one something more while it works, and \
      `sub-agents/team#stop-sub-agent` stops one. Do small things yourself.";
@@ -110,6 +110,9 @@ struct TurnTeam {
     workspace_id: WorkspaceId,
     /// The turn's agent, as the list held it when the turn began.
     agent: Agent,
+    /// Where the turn's reply is written, for a turn made from an ask: a sub-agent it starts is
+    /// asked its job from that reply.
+    replying: Option<super::asked::Replying>,
     /// What the turn is offered: nothing for a caller that is no turn of this agent.
     offered: Vec<CatalogueRow>,
 }
@@ -134,6 +137,7 @@ impl TurnTeam {
             workspace: scope.workspace.clone(),
             workspace_id: scope.workspace_id,
             agent: turn.agent.clone(),
+            replying: scope.replying.clone(),
             offered: Vec::new(),
         };
         let caller = scope.reply(turn).caller;
@@ -308,9 +312,6 @@ impl TurnTeam {
             "stands": of.stands,
             "since": of.since,
             "line": of.line,
-            "conversation": chat::summons::conversation_address(&Id::from_raw(
-                of.conversation.clone(),
-            )),
             "produced": made,
         }))
     }
@@ -348,10 +349,34 @@ impl TurnTeam {
                 asker,
             )
             .await;
-        Ok(match started {
-            Ok(()) => self.one(&id).await,
-            Err(why) => Err(why),
-        })
+        if let Err(why) = started {
+            return Ok(Err(why));
+        }
+        // It is a member acting for the same person, added by the agent that started it: the
+        // member list takes that only from a member acting for that person.
+        if let Some(keeper) = super::keeper_of(&self.agent)
+            && let Err(error) = self
+                .workspaces
+                .add_agent(
+                    &self.workspace,
+                    tilo_action_policy::MemberId::agent(self.agent.id.0.clone()),
+                    &id,
+                    &keeper,
+                )
+                .await
+        {
+            tracing::warn!(workspace = %self.workspace, agent = %id, %error, "a sub-agent is not a member yet");
+        }
+        // Its job is asked at once from the reply this turn writes; without one, a look asks it
+        // from the starter's newest reply.
+        if let Some(replying) = &self.replying
+            && let Ok(reply) = replying.reply().await
+            && let Err(error) =
+                super::sub_agents::ask_started(&self.workspaces, &self.workspace, &id, reply).await
+        {
+            tracing::warn!(workspace = %self.workspace, agent = %id, %error, "a sub-agent was not asked its job at once");
+        }
+        Ok(self.one(&id).await)
     }
 
     /// Take the call `request` asks for as `caller`: how it ended, or why this server did
@@ -499,10 +524,10 @@ fn rows() -> Vec<CatalogueRow> {
         row(
             (START, "Start sub-agent", ActionKind::Undoable),
             "Start a sub-agent for a part of your work. It works on the one job you give it, \
-             in a conversation of its own, for the person you work for. It cannot read your \
-             conversation, so the job says everything it needs. You are told in your \
-             conversation when its work ends. Refused past how deep sub-agents go and how \
-             many work at once, which your person sets.",
+             on its own, for the person you work for. It cannot read your conversation, so \
+             the job says everything it needs. You are asked again with its answer when its \
+             work ends. Refused past how deep sub-agents go and how many work at once, which \
+             your person sets.",
             vec![
                 ActionParam::required(
                     "name",
@@ -541,8 +566,8 @@ fn rows() -> Vec<CatalogueRow> {
         ),
         row(
             (NOTE, "Note sub-agent", ActionKind::Undoable),
-            "Tell a sub-agent of your team something more. It reaches it at its next step \
-             while it works, and makes it work again once it ended.",
+            "Tell a sub-agent of your team something more. It is asked it once what it works \
+             on now is done, and works again on it if it had ended.",
             vec![
                 named(),
                 ActionParam::required("text", ParamType::Text, "What it is told."),

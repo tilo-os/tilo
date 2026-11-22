@@ -16,7 +16,7 @@
 //!
 //! This is the one thing the host keeps of a turn besides the records, and only while it runs:
 //! a host that restarts holds none, and reads from the records what was left
-//! ([`chat::summons::left_begun`]).
+//! ([`super::asked::Replying::left_begun`]).
 //!
 //! A server that is stopping closes its turns ([`Turns::close`]): no turn begins any more, and
 //! it waits until the turns going ended ([`Turns::idle`]) before it stops, so a restart never

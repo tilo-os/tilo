@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.assistant@3278f28281833894";
+export const SURFACE = "so.tilo.assistant@6f5f2ad187397924";
 
 export interface Agent {
   id: string;
@@ -135,7 +135,6 @@ export interface Sub {
   runs: string;
   depth: number;
   task: string | null;
-  conversation: string;
   stands: Stands;
   since: number;
   line: string;

@@ -616,9 +616,9 @@ impl WorkspaceAgents {
     /// Start a sub-agent.
     ///
     /// An agent starts one for the person it works for: a job, a role in a few words and
-    /// the kind of work that picks its model. It gets a conversation of its own, in which
-    /// its job is its first message, and works there until the job is done. Whoever started
-    /// it reads that conversation and steers it; it reads nothing of whoever started it.
+    /// the kind of work that picks its model. Its job is the first thing it is asked, and its
+    /// answer is its reply to that ask. Whoever started it reads how it stands and steers it;
+    /// it reads nothing of whoever started it.
     /// Many at once is ordinary. Only an agent starts one: a person asks their own agent.
     #[action]
     pub fn start_sub_agent(
@@ -631,9 +631,8 @@ impl WorkspaceAgents {
 
     /// Give a sub-agent a note while it works.
     ///
-    /// The agent that started it, or one above that, tells it something more: the note is
-    /// written into its conversation as that agent's own words and reaches it at its next
-    /// step. Its person does not need this: they write into its conversation.
+    /// The agent that started it, or one above that, tells it something more: the note asks
+    /// it in that agent's name, and it answers once what it works on now is done.
     #[action(item = agents)]
     pub fn note_sub_agent(
         &mut self,

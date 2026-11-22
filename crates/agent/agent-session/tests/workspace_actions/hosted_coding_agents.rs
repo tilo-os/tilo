@@ -4,9 +4,9 @@
 //! The machine is this computer with the real launcher, and the coding program a scripted
 //! stand-in that behaves as Claude Code does at its edges (`coding_agents::testing`, beside the
 //! server's own keeper of coding agents). Everything else is what a person's server does: the
-//! workspace's list of its agents, Chat's conversations, the server's own look at them, the
-//! workspace's own model behind its settings and its vault, and Tilo's own MCP server for
-//! the turn that is going.
+//! workspace's list of its agents, the asks of the agent package and their replies, the
+//! server's own look at them, the workspace's own model behind its settings and its vault, and
+//! Tilo's own MCP server for the turn that is going.
 use super::*;
 use tilo_actions::remote::person_asking::{ActionName, Asked, Words};
 use tilo_server::{
@@ -107,9 +107,38 @@ fn coding_on(
     (agents, starts)
 }
 
-/// The conversation of `person` and `agent`.
-fn direct(person: &str, agent: &str) -> Id {
-    chat::Chat::direct_id([MemberId::person(person.to_owned()), MemberId::agent(agent)])
+/// `person` asks the coding agent `agent` `words` themselves, about the ask of its job: their
+/// own words to it, and their yes to its start. The ask.
+async fn asks_it(
+    workspaces: &Workspaces,
+    workspace: &str,
+    person: &str,
+    (agent, words): (&str, &str),
+) -> asks::ResourceRef {
+    let asked = asks_of(workspaces, workspace, person, agent).await;
+    let job = asked.first().expect("its job was asked of it").at.clone();
+    let key = format!("its-person:{}", asked.len());
+    let packages = asks::chat_packages().unwrap();
+    let them = asks::Actor::Member(MemberId::person(person.to_owned()));
+    let (agent, words) = (MemberId::agent(agent), words.to_owned());
+    workspaces
+        .with_tl_record(workspace, &packages, them.clone(), move |opened| {
+            asks::ask(opened, &them, &agent, &words, &key, &job)
+        })
+        .await
+        .unwrap()
+}
+
+/// The body of the newest reply to the ask `at`, once it ended, and how the ask stands then.
+async fn reply_to(
+    workspaces: &Workspaces,
+    workspace: &str,
+    person: &str,
+    at: &asks::ResourceRef,
+) -> (String, AskState) {
+    let asked = answered(workspaces, workspace, person, at).await;
+    let body = asked.latest().map(|reply| reply.body.trim().to_owned());
+    (body.unwrap_or_default(), asked.state)
 }
 
 /// The person's own agent starts a coding agent named `name` for `job`, to work in
@@ -169,70 +198,109 @@ async fn item_when(
     }
 }
 
-/// What the person's own agent was told in its thread once that is `count` pieces of news,
-/// each with the line it answered there.
+/// The news the person's own agent was asked with once there are `count` pieces of it, each
+/// with what its reply says.
 async fn starter_told(
     workspaces: &Workspaces,
     workspace: &str,
     person: &str,
     count: usize,
-) -> Vec<(Kept, Kept)> {
-    let thread = direct(person, SCOUT);
-    let news = caused(workspaces, workspace, (thread.as_str(), "news"), count).await;
+) -> Vec<(asks::Asked, String)> {
+    let deadline = tilo_test_env::hang_deadline();
+    let news = loop {
+        let news: Vec<asks::Asked> = asks_of(workspaces, workspace, person, SCOUT)
+            .await
+            .into_iter()
+            .filter(|asked| {
+                matches!(&asked.who, Some(asks::Actor::Member(member)) if member.agent_id().is_some())
+            })
+            .collect();
+        if news.len() >= count {
+            break news;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "its starter was never told {count} times: {news:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
     let mut told = Vec::new();
-    for (id, said) in news {
-        let line = reply_of(workspaces, workspace, &id, SCOUT).await;
-        told.push((said, line));
+    for asked in news {
+        let (line, _) = reply_to(workspaces, workspace, person, &asked.at).await;
+        told.push((asked, line));
     }
     told
 }
 
 /// Start the coding agent `name` (its id `id`) for [`JOB`] and see it through its job alone:
-/// the server writes the job into its conversation, its turn there answers that it has not
-/// started, and its starter, told so, says its line in the main thread, which is one call of
-/// the person's model. `told` is how many pieces of news the main thread then holds. The job's
-/// message.
+/// the server asks it its job in its starter's name, its turn answers that it has not started,
+/// and its starter, told so, says its line, which is one call of the person's model. `told` is
+/// how many pieces of news its starter was then asked with. The ask of its job.
 async fn started_and_waiting(
     agents: &Agents,
     workspaces: &Workspaces,
     (workspace, person): (&str, &str),
     (name, id): (&str, &str),
     told: usize,
-) -> Id {
+) -> asks::ResourceRef {
     starts_coder(workspaces, workspace, person, (name, JOB)).await;
-    let own = direct(person, id);
     agents.look(workspace).await.unwrap();
-    let jobs = caused(workspaces, workspace, (own.as_str(), "job"), 1).await;
-    let (job, written) = &jobs[0];
-    assert_eq!(written.text, JOB);
-    assert_eq!(
-        written.author,
-        MemberId::agent(SCOUT),
-        "the job is its starter's own words"
+    let job = asks_of(workspaces, workspace, person, id)
+        .await
+        .into_iter()
+        .next()
+        .expect("its job is asked of it");
+    assert_eq!(job.said.as_deref().map(str::trim), Some(JOB));
+    assert!(
+        matches!(&job.who, Some(asks::Actor::Member(member)) if member.agent_id() == Some(SCOUT)),
+        "the job is asked in its starter's name: {:?}",
+        job.who
     );
     agents.look(workspace).await.unwrap();
-    let waits = reply_of(workspaces, workspace, job, id).await;
+    let (waits, _) = reply_to(workspaces, workspace, person, &job.at).await;
     assert!(
-        waits.text.starts_with(NOT_STARTED),
-        "its job alone starts nothing, and it says so: {}",
-        waits.text
+        waits.starts_with(NOT_STARTED),
+        "its job alone starts nothing, and it says so: {waits}"
     );
     stands_as(workspaces, workspace, id, Stands::NeedsPerson).await;
     starter_told(workspaces, workspace, person, told).await;
-    job.clone()
+    job.at
 }
 
-/// What `agent` wrote into `conversation` in its own name, as messages of its own.
+/// What `agent` said on its replies, each thing it said on its own.
 async fn said_by(
     workspaces: &Workspaces,
     workspace: &str,
-    (conversation, agent): (&Id, &str),
+    (person, agent): (&str, &str),
 ) -> Vec<String> {
-    said_there(workspaces, workspace, conversation.as_str())
+    asks_of(workspaces, workspace, person, agent)
         .await
         .into_iter()
-        .filter(|(_, message)| message.author == MemberId::agent(agent))
-        .map(|(_, message)| message.text)
+        .flat_map(|asked| asked.replies)
+        .flat_map(|reply| {
+            reply
+                .body
+                .split("\n\n")
+                .map(str::trim)
+                .filter(|said| !said.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// What the sub-agent `agent` asked of its starter: its news, and nothing else.
+async fn asked_by(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (person, agent): (&str, &str),
+) -> Vec<asks::Asked> {
+    asked_now(workspaces, workspace, person)
+        .await
+        .into_iter()
+        .filter(|asked| {
+            matches!(&asked.who, Some(asks::Actor::Member(member)) if member.agent_id() == Some(agent))
+        })
         .collect()
 }
 
@@ -333,12 +401,12 @@ on_both_kinds! {
     );
     assert_eq!(machine.started(), 0, "nothing was started in the machine");
     let told = starter_told(&workspaces, &workspace, &person, 1).await;
+    let news = told[0].0.said.clone().unwrap_or_default();
     assert!(
-        told[0].0.text.contains("needs its person") && told[0].0.text.contains(NOT_STARTED),
-        "its starter is told that it waits: {}",
-        told[0].0.text
+        news.contains("needs its person"),
+        "its starter is told that it waits: {news}"
     );
-    assert_eq!(told[0].1.text, "Fix hello waits for your word.");
+    assert!(told[0].1.contains("Fix hello waits for your word."), "{}", told[0].1);
     assert_eq!(
         theirs.asked().len(),
         1,
@@ -357,12 +425,11 @@ on_both_kinds! {
         ("Say twice", "Say hello twice."),
     )
     .await;
-    let second = direct(&person, "say-twice");
     agents.look(&workspace).await.unwrap();
-    let jobs = caused(&workspaces, &workspace, (second.as_str(), "job"), 1).await;
+    let job = asks_of(&workspaces, &workspace, &person, "say-twice").await;
     agents.look(&workspace).await.unwrap();
-    let done = reply_of(&workspaces, &workspace, &jobs[0].0, "say-twice").await;
-    assert_eq!(done.text, "Hello, twice.", "its job started it");
+    let (done, _) = reply_to(&workspaces, &workspace, &person, &job[0].at).await;
+    assert!(done.ends_with("Hello, twice."), "its job started it: {done}");
     stands_as(&workspaces, &workspace, "say-twice", Stands::Done).await;
     assert_eq!(machine.started(), 1);
     let handed = machine.machines()[0].handed();
@@ -397,22 +464,20 @@ on_both_kinds! {
     .await;
     assert_eq!(machine.started(), 1, "and nothing more was started");
     assert_eq!(theirs.asked().len(), 4);
-    let _ = browser;
     page.peer.close();
     }
 }
 
 // Its person writes to it, and those words start it: the coding program is handed the job
 // first and then their words, in one process, in a working copy and a branch of its own.
-// Each thing it says is a message of its own in its conversation, its last words are the
-// reply, its item says which coding program works and how, what it cost is counted on the
-// day of the person's own agent, and that agent is told and says one line in the main thread.
+// Each thing it says is on its reply as it says it, ending in its last words, its item says
+// which coding program works and how, what it cost is counted on the day of the person's own
+// agent, and that agent is told and says one line.
 on_both_kinds! {
     its_persons_words_start_it_with_its_job_and_what_it_says_is_relayed,
     its_persons_words_start_it_with_its_job_and_what_it_says_is_relayed_where_its_machine_is_placed,
     |machine| {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
         &workspaces,
         &workspace,
@@ -424,8 +489,6 @@ on_both_kinds! {
         ],
     ).await;
     let (agents, starts) = coding_on(&workspaces, &actions, &machine);
-    let own = direct(&person, "fix-hello");
-    let thread = direct(&person, SCOUT);
     started_and_waiting(
         &agents,
         &workspaces,
@@ -435,25 +498,21 @@ on_both_kinds! {
     )
     .await;
 
-    // Their own words to it are their yes to this start.
-    let go = writes_in(
-        &actions,
+    // What they ask it themselves is their yes to this start.
+    let go = asks_it(
         &workspaces,
         &workspace,
-        &ada,
-        (own.as_str(), "Go. Is it one line?"),
+        &person,
+        ("fix-hello", "Go. Is it one line?"),
     )
     .await;
     agents.look(&workspace).await.unwrap();
-    let answered = reply_of(&workspaces, &workspace, &go, "fix-hello").await;
-    assert_eq!(
-        answered.text, "Yes, one line.",
-        "the reply holds its last words"
+    let (answered, state) = reply_to(&workspaces, &workspace, &person, &go).await;
+    assert!(
+        answered.ends_with("Yes, one line."),
+        "the reply ends in its last words: {answered}"
     );
-    assert_eq!(
-        end_of(&answered),
-        Some(chat::agent_stream::AgentFinish::Complete)
-    );
+    assert_eq!(state, AskState::Done);
 
     // One process, handed the job first and then their words.
     let machines = machine.machines();
@@ -477,18 +536,19 @@ on_both_kinds! {
         "it works in a working copy of its own"
     );
 
-    // What it said before its last words is a message of its own, in its own conversation.
-    let said = said_by(&workspaces, &workspace, (&own, "fix-hello")).await;
+    // What it said before its last words is on its reply.
+    let said = said_by(&workspaces, &workspace, (&person, "fix-hello")).await;
     assert!(
         said.iter().any(|text| text == "The README says hello now."),
-        "each thing it says is a message of its conversation: {said:?}"
+        "each thing it says is on its reply: {said:?}"
     );
+    let asked = asked_by(&workspaces, &workspace, (&person, "fix-hello")).await;
     assert!(
-        said_by(&workspaces, &workspace, (&thread, "fix-hello"))
-            .await
-            .iter()
-            .all(|text| text.contains("Your sub-agent")),
-        "and nothing of it stands in the main thread but its news"
+        !asked.is_empty()
+            && asked
+                .iter()
+                .all(|news| news.said.as_deref().is_some_and(|said| said.contains("Your sub-agent"))),
+        "and it asks its starter nothing but its news: {asked:?}"
     );
 
     // Its item says how it stands, which coding program works, and how.
@@ -515,14 +575,13 @@ on_both_kinds! {
         "its process lives, ready for its next words: {process:?}"
     );
 
-    // Its starter is told how the work ended, and says one line in the main thread.
+    // Its starter is told how the work ended, made from its reply, and says one line.
     let told = starter_told(&workspaces, &workspace, &person, 2).await;
     assert!(
         told.iter().any(|(news, line)| {
-            news.author == MemberId::agent("fix-hello")
-                && news.text.contains("stands: done")
-                && news.text.contains("Yes, one line.")
-                && line.text == "Fix hello is done: the README says hello."
+            matches!(&news.who, Some(asks::Actor::Member(member)) if member.agent_id() == Some("fix-hello"))
+                && news.said.as_deref().is_some_and(|said| said.contains("stands: done"))
+                && line.contains("Fix hello is done: the README says hello.")
         }),
         "{told:?}"
     );
@@ -553,331 +612,16 @@ on_both_kinds! {
     }
 }
 
-// What its person writes while it works reaches the process that is working, not a second
-// one, and the answer then stands under their newest words. A note of its starter reaches
-// the same process afterwards.
-on_both_kinds! {
-    words_written_while_it_works_and_a_note_after_reach_the_same_process,
-    words_written_while_it_works_and_a_note_after_reach_the_same_process_where_its_machine_is_placed,
-    |machine| {
-    team!(root, browser, actions, workspaces, workspace, page, person);
-    let ada = themselves(&root, &browser, &workspace);
-    let theirs = links_model(
-        &workspaces,
-        &workspace,
-        [
-            Reply::text("Fix hello waits for your word."),
-            Reply::text("The job is looked at."),
-            Reply::text("Goodbye."),
-            Reply::text("Fix hello is done."),
-            Reply::text("Greeted."),
-            Reply::text("Fix hello greeted the reader."),
-        ],
-    ).await;
-    let (agents, _) = coding_on(&workspaces, &actions, &machine);
-    let own = direct(&person, "fix-hello");
-    let copy = machine.files().join("code/hello.agents/fix-hello");
-    started_and_waiting(
-        &agents,
-        &workspaces,
-        (&workspace, &person),
-        ("Fix hello", "fix-hello"),
-        1,
-    )
-    .await;
-
-    // It is at work on what its person wrote, and stays so until the test lets it go on.
-    let first = writes_in(
-        &actions,
-        &workspaces,
-        &workspace,
-        &ada,
-        (own.as_str(), "wait for the word"),
-    )
-    .await;
-    agents.look(&workspace).await.unwrap();
-    until("the coding program is at work", || {
-        copy.join("waiting").exists()
-    })
-    .await;
-
-    // Its person writes again: the words are handed to the process that is working.
-    let second = writes_in(
-        &actions,
-        &workspaces,
-        &workspace,
-        &ada,
-        (own.as_str(), "And say goodbye."),
-    )
-    .await;
-    agents.look(&workspace).await.unwrap();
-    until("their next words are handed to the process", || {
-        machine.machines().first().is_some_and(|working| {
-            working
-                .handed()
-                .iter()
-                .any(|handed| handed.contains("And say goodbye."))
-        })
-    })
-    .await;
-    assert!(
-        copy.join("waiting").exists(),
-        "it was still at work when they reached it"
-    );
-    assert_eq!(machine.started(), 1, "no second process was started");
-    std::fs::write(copy.join("go"), "").unwrap();
-
-    // One turn: it went on with what they wrote, and its answer stands there.
-    let answered = reply_of(&workspaces, &workspace, &second, "fix-hello").await;
-    assert_eq!(answered.text, "Goodbye.");
-    let left = reply_of(&workspaces, &workspace, &first, "fix-hello").await;
-    assert!(
-        left.text.contains("going on"),
-        "the reply it left says the answer follows below: {}",
-        left.text
-    );
-    let said = said_by(&workspaces, &workspace, (&own, "fix-hello")).await;
-    assert!(
-        said.iter().any(|text| text == "the word came"),
-        "what it said to their first words is a message of its own: {said:?}"
-    );
-    let handed = machine.machines()[0].handed();
-    assert_eq!(handed.len(), 3, "its job, and both messages: {handed:?}");
-    starter_told(&workspaces, &workspace, &person, 2).await;
-
-    // A note of its starter is written into its conversation and reaches the same process.
-    on_roster(
-        &workspaces,
-        &workspace,
-        (Some(SCOUT), person.as_str()),
-        WorkspaceAgents::NOTE_SUB_AGENT.with(workspace_agents::NoteSubAgent {
-            agent: Id::from_raw("fix-hello".to_owned()),
-            text: NonBlank::parse("Also greet the reader.").unwrap(),
-        }),
-    )
-    .await
-    .expect("its starter gives it a note");
-    agents.look(&workspace).await.unwrap();
-    let notes = caused(&workspaces, &workspace, (own.as_str(), "note"), 1).await;
-    agents.look(&workspace).await.unwrap();
-    let greeted = reply_of(&workspaces, &workspace, &notes[0].0, "fix-hello").await;
-    assert_eq!(greeted.text, "Greeted.");
-    let handed = machine.machines()[0].handed();
-    assert!(
-        handed
-            .last()
-            .unwrap()
-            .contains("A note from Scout: Also greet the reader."),
-        "the note reaches it as its starter's: {handed:?}"
-    );
-    assert_eq!(
-        (machine.started(), machine.machines().len()),
-        (1, 1),
-        "one process took everything"
-    );
-    starter_told(&workspaces, &workspace, &person, 3).await;
-    assert_eq!(theirs.asked().len(), 6);
-    page.peer.close();
-    }
-}
-
-// A stop ends the coding program. Its person's stop on the message it works on, through
-// Chat: its process ends, its reply says it was stopped, and its item says stopped, and by
-// that person. Then new work, and the stop of the agent that started it, on its item: the
-// process ends and its item says by that agent.
-on_both_kinds! {
-    its_person_stops_it_on_its_message_and_its_starter_on_its_item,
-    its_person_stops_it_on_its_message_and_its_starter_on_its_item_where_its_machine_is_placed,
-    |machine| {
-    team!(root, browser, actions, workspaces, workspace, page, person);
-    let ada = themselves(&root, &browser, &workspace);
-    let theirs = links_model(
-        &workspaces,
-        &workspace,
-        [
-            Reply::text("Fix hello waits for your word."),
-            Reply::text("The job is looked at."),
-        ],
-    ).await;
-    let (agents, starts) = coding_on(&workspaces, &actions, &machine);
-    let own = direct(&person, "fix-hello");
-    let copy = machine.files().join("code/hello.agents/fix-hello");
-    let lives = |coding: &Coding| {
-        coding
-            .process
-            .as_ref()
-            .map(|process| process.started_ms)
-            .filter(|_| {
-                coding
-                    .process
-                    .as_ref()
-                    .is_some_and(|process| process.ended.is_empty())
-            })
-    };
-    started_and_waiting(
-        &agents,
-        &workspaces,
-        (&workspace, &person),
-        ("Fix hello", "fix-hello"),
-        1,
-    )
-    .await;
-
-    // It is at work, and its item says a process of it lives.
-    let first = writes_in(
-        &actions,
-        &workspaces,
-        &workspace,
-        &ada,
-        (own.as_str(), "wait for the word"),
-    )
-    .await;
-    agents.look(&workspace).await.unwrap();
-    until("the coding program is at work", || {
-        copy.join("waiting").exists()
-    })
-    .await;
-    let (_, working) = item_when(
-        &workspaces,
-        &workspace,
-        ("fix-hello", "that its process lives"),
-        |_, coding| lives(coding).is_some() && !coding.session.is_empty(),
-    )
-    .await;
-    let began = lives(&working).unwrap();
-
-    // Its person stops it on the message.
-    stop_agent(&actions, &workspace, &ada, &first)
-        .await
-        .expect("its person stops it");
-    agents.look(&workspace).await.unwrap();
-    let stopped = reply_of(&workspaces, &workspace, &first, "fix-hello").await;
-    assert_eq!(
-        end_of(&stopped),
-        Some(chat::agent_stream::AgentFinish::Cancelled),
-        "its reply says it was stopped: {:?}",
-        stopped.work
-    );
-    let (sub, coding) = item_when(
-        &workspaces,
-        &workspace,
-        ("fix-hello", "that its process ended"),
-        |sub, coding| {
-            sub.stands == Stands::Stopped
-                && coding
-                    .process
-                    .as_ref()
-                    .is_some_and(|process| !process.ended.is_empty())
-        },
-    )
-    .await;
-    let ended = coding.process.expect("its process");
-    assert_eq!(sub.stands, Stands::Stopped);
-    assert_eq!(
-        (
-            ended.started_ms,
-            ended.ended.as_str(),
-            ended.stopped_by.as_str(),
-            ended.exit
-        ),
-        (
-            began,
-            "stopped",
-            format!("person:{person}").as_str(),
-            Some(130)
-        ),
-        "the process ended, stopped by its person"
-    );
-    assert!(ended.ended_ms.is_some());
-
-    // New work starts it again, taking its conversation up where it stood. A message's time
-    // is kept in seconds, and a stop ends what stood when it was given: the new work is
-    // written a second later.
-    std::fs::remove_file(copy.join("waiting")).unwrap();
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    let second = writes_in(
-        &actions,
-        &workspaces,
-        &workspace,
-        &ada,
-        (own.as_str(), "wait for the word once more"),
-    )
-    .await;
-    agents.look(&workspace).await.unwrap();
-    until("the coding program is at work again", || {
-        copy.join("waiting").exists()
-    })
-    .await;
-    assert_eq!(machine.started(), 2);
-    assert_eq!(
-        starts.lock().unwrap().last().unwrap().session,
-        Some(working.session.clone()),
-        "it takes its conversation up by the coding program's own id for it"
-    );
-    item_when(
-        &workspaces,
-        &workspace,
-        ("fix-hello", "that a new process lives"),
-        |sub, coding| {
-            sub.stands == Stands::Working && lives(coding).is_some_and(|again| again != began)
-        },
-    )
-    .await;
-
-    // The agent that started it stops it, on its item.
-    on_roster(
-        &workspaces,
-        &workspace,
-        (Some(SCOUT), person.as_str()),
-        stop("fix-hello"),
-    )
-    .await
-    .expect("the agent that started it stops it");
-    agents.look(&workspace).await.unwrap();
-    let (_, coding) = item_when(
-        &workspaces,
-        &workspace,
-        ("fix-hello", "that its second process ended"),
-        |_, coding| {
-            coding
-                .process
-                .as_ref()
-                .is_some_and(|process| process.started_ms != began && !process.ended.is_empty())
-        },
-    )
-    .await;
-    let ended = coding.process.expect("its process");
-    assert_eq!(
-        (ended.ended.as_str(), ended.stopped_by.as_str()),
-        ("stopped", "agent:scout"),
-        "the process ended, stopped by the agent that started it"
-    );
-    let stopped = reply_of(&workspaces, &workspace, &second, "fix-hello").await;
-    assert_eq!(
-        end_of(&stopped),
-        Some(chat::agent_stream::AgentFinish::Cancelled)
-    );
-    stands_as(&workspaces, &workspace, "fix-hello", Stands::Stopped).await;
-    assert_eq!(
-        theirs.asked().len(),
-        2,
-        "nothing asked a model after the job"
-    );
-    page.peer.close();
-    }
-}
-
 // The person's key is nowhere a program in the machine could find it, and nowhere in what
 // the workspace keeps of the coding agent: not in what its processes were started with, not
 // in a file among the workspace's files or in its working copy, not in a frame into the
-// machine, not in what it printed, not in a message, not in its item. The key was used all
+// machine, not in what it printed, not in an ask or a reply, not in its item. The key was used all
 // the same: on the server, where the provider is called.
 on_both_kinds! {
     the_persons_key_is_nowhere_in_the_machine_or_in_what_the_workspace_keeps,
     the_persons_key_is_nowhere_in_the_machine_or_in_what_the_workspace_keeps_where_its_machine_is_placed,
     |machine| {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
         &workspaces,
         &workspace,
@@ -888,8 +632,6 @@ on_both_kinds! {
         ],
     ).await;
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
-    let own = direct(&person, "fix-hello");
-    let thread = direct(&person, SCOUT);
     started_and_waiting(
         &agents,
         &workspaces,
@@ -898,16 +640,15 @@ on_both_kinds! {
         1,
     )
     .await;
-    let asks = writes_in(
-        &actions,
+    let asks = asks_it(
         &workspaces,
         &workspace,
-        &ada,
-        (own.as_str(), "where is your model"),
+        &person,
+        ("fix-hello", "where is your model"),
     )
     .await;
     agents.look(&workspace).await.unwrap();
-    reply_of(&workspaces, &workspace, &asks, "fix-hello").await;
+    reply_to(&workspaces, &workspace, &person, &asks).await;
     starter_told(&workspaces, &workspace, &person, 2).await;
 
     // The key was used: the person's model was asked with it, on the server.
@@ -929,10 +670,8 @@ on_both_kinds! {
     let before_files = everywhere.len();
     read_under(machine.files(), &mut everywhere);
     let files = everywhere.len() - before_files;
-    for conversation in [&own, &thread] {
-        for (_, message) in said_there(&workspaces, &workspace, conversation.as_str()).await {
-            everywhere.push(format!("{message:?}"));
-        }
+    for asked in asked_now(&workspaces, &workspace, &person).await {
+        everywhere.push(format!("{asked:?}"));
     }
     everywhere.push(format!("{:?}", roster(&workspaces, &workspace).await));
     assert!(
@@ -956,154 +695,12 @@ on_both_kinds! {
             && started_with.contains("ANTHROPIC_AUTH_TOKEN=a-word-not-a-key"),
         "the coding program's own variables were read"
     );
-    let said = said_by(&workspaces, &workspace, (&own, "fix-hello")).await;
+    let said = said_by(&workspaces, &workspace, (&person, "fix-hello")).await;
     assert!(
         said.iter()
             .any(|text| text.starts_with("my model is at http://127.0.0.1:")),
         "{said:?}"
     );
-    page.peer.close();
-    }
-}
-
-// The one-way rule holds through Tilo's own MCP server, as the coding program reaches it.
-// It reads the chat's messages and is refused, so nothing of the main thread reaches the
-// machine. It writes into the main thread and is refused. The same write into its own
-// conversation is taken: the tools work, and the rule is where it writes.
-on_both_kinds! {
-    a_coding_program_reads_nothing_of_the_main_thread_and_writes_only_where_it_works,
-    a_coding_program_reads_nothing_of_the_main_thread_and_writes_only_where_it_works_where_its_machine_is_placed,
-    |machine| {
-    team!(root, browser, actions, workspaces, workspace, page, person);
-    let ada = themselves(&root, &browser, &workspace);
-    let theirs = links_model(
-        &workspaces,
-        &workspace,
-        [
-            Reply::text("Noted."),
-            Reply::text("Fix hello waits for your word."),
-            Reply::text("The job is looked at."),
-            Reply::text("Fix hello is done."),
-        ],
-    ).await;
-    let (agents, _) = coding_on(&workspaces, &actions, &machine);
-    let own = direct(&person, "fix-hello");
-    let thread = direct(&person, SCOUT);
-
-    // The main thread holds something only it holds.
-    let secret = writes_in(
-        &actions,
-        &workspaces,
-        &workspace,
-        &ada,
-        (thread.as_str(), "The launch's code word is heron."),
-    )
-    .await;
-    agents.look(&workspace).await.unwrap();
-    reply_of(&workspaces, &workspace, &secret, SCOUT).await;
-    started_and_waiting(
-        &agents,
-        &workspaces,
-        (&workspace, &person),
-        ("Fix hello", "fix-hello"),
-        1,
-    )
-    .await;
-    let answers = |said: &[String]| -> Vec<String> {
-        said.iter()
-            .filter(|text| text.starts_with("tilo answered"))
-            .cloned()
-            .collect()
-    };
-
-    // It reads the chat's messages through Tilo's MCP server, and is refused.
-    let reads = writes_in(
-        &actions,
-        &workspaces,
-        &workspace,
-        &ada,
-        (own.as_str(), "ask tilo to read chat/Messages"),
-    )
-    .await;
-    agents.look(&workspace).await.unwrap();
-    reply_of(&workspaces, &workspace, &reads, "fix-hello").await;
-    starter_told(&workspaces, &workspace, &person, 2).await;
-    let read = answers(&said_by(&workspaces, &workspace, (&own, "fix-hello")).await);
-    assert_eq!(read.len(), 1, "{read:?}");
-    assert!(
-        read[0].contains("not_permitted: "),
-        "its read of the chat is refused as not allowed: {}",
-        read[0]
-    );
-
-    // It writes into the main thread, and is refused.
-    let aimed = said(thread.as_str(), "written from the machine", None);
-    let writes = writes_in(
-        &actions,
-        &workspaces,
-        &workspace,
-        &ada,
-        (
-            own.as_str(),
-            &format!("ask tilo to do chat/Messages#post with {aimed} end"),
-        ),
-    )
-    .await;
-    agents.look(&workspace).await.unwrap();
-    reply_of(&workspaces, &workspace, &writes, "fix-hello").await;
-    let wrote = answers(&said_by(&workspaces, &workspace, (&own, "fix-hello")).await);
-    assert_eq!(wrote.len(), 2, "{wrote:?}");
-    assert!(
-        wrote.iter().all(|text| refused_in_words(text)),
-        "its read and its write into the main thread are both refused: {wrote:?}"
-    );
-    assert!(
-        said_there(&workspaces, &workspace, thread.as_str())
-            .await
-            .iter()
-            .all(|(_, message)| message.text != "written from the machine"),
-        "and nothing of it stands in the main thread"
-    );
-
-    // The same write into its own conversation is taken.
-    let aimed = said(own.as_str(), "written from the machine", None);
-    let writes = writes_in(
-        &actions,
-        &workspaces,
-        &workspace,
-        &ada,
-        (
-            own.as_str(),
-            &format!("ask tilo to do chat/Messages#post with {aimed} end"),
-        ),
-    )
-    .await;
-    agents.look(&workspace).await.unwrap();
-    reply_of(&workspaces, &workspace, &writes, "fix-hello").await;
-    let said_now = said_by(&workspaces, &workspace, (&own, "fix-hello")).await;
-    assert!(
-        said_now
-            .iter()
-            .any(|text| text == "written from the machine"),
-        "where it works its words are taken: {said_now:?}"
-    );
-
-    // Nothing that went into the machine holds a word of the main thread.
-    let machines = machine.machines();
-    assert_eq!(machines.len(), 1);
-    let went_in = machines[0].went_in();
-    assert!(
-        went_in.len() > 6,
-        "what went into the machine was looked at"
-    );
-    for text in &went_in {
-        assert!(
-            !text.contains("heron"),
-            "the main thread reached the machine: {}",
-            text.chars().take(400).collect::<String>()
-        );
-    }
-    assert_eq!(theirs.asked().len(), 4);
     page.peer.close();
     }
 }
@@ -1130,25 +727,19 @@ macro_rules! two_teams {
         let $other = $workspaces.create("Other").await.unwrap().workspace;
         let $page = Browser::open_at(&serving, &$browser, &server, &$workspace).await;
         let $other_page = Browser::open_at(&serving, &$second, &server, &$other).await;
-        let catalogue = crate::common::catalogue();
-        let governor = $workspaces.governor().clone();
         for (page, workspace) in [(&$page, &$workspace), (&$other_page, &$other)] {
             make_agent(page, &$workspaces, workspace, &$person, None).await;
-            $workspaces
-                .prepare_application(workspace, &governor, &catalogue, CHAT, "")
-                .await
-                .unwrap();
         }
     };
 }
 
-/// Where the coding agent `agent` said its model is, in its own conversation.
+/// Where the coding agent `agent` said its model is, on its replies.
 async fn model_of(
     workspaces: &Workspaces,
     workspace: &str,
     (person, agent): (&str, &str),
 ) -> String {
-    let said = said_by(workspaces, workspace, (&direct(person, agent), agent)).await;
+    let said = said_by(workspaces, workspace, (person, agent)).await;
     said.iter()
         .find_map(|text| text.strip_prefix("my model is at "))
         .unwrap_or_else(|| panic!("{agent} never said where its model is: {said:?}"))
@@ -1158,7 +749,7 @@ async fn model_of(
 // A coding program of another workspace gets nothing from this one's model. Each workspace's
 // coding agent is a process of its own with an endpoint of its own. The other workspace's
 // process asks this one's endpoint: it is turned away, nobody's model is asked, and nothing
-// reaches this one's conversation. Its own endpoint answers it as before.
+// reaches this one's replies. Its own endpoint answers it as before.
 on_both_kinds! {
     a_coding_program_of_another_workspace_gets_nothing_from_this_ones_model,
     a_coding_program_of_another_workspace_gets_nothing_from_this_ones_model_where_its_machine_is_placed,
@@ -1172,8 +763,6 @@ on_both_kinds! {
         (page, other_page),
         person
     );
-    let ada = themselves(&root, &browser, &workspace);
-    let ada_there = themselves(&root, &laptop, &other);
     let theirs = links_model(
         &workspaces,
         &workspace,
@@ -1193,21 +782,14 @@ on_both_kinds! {
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
 
     // A coding agent of each workspace says where its model is.
-    for (place, caller, (name, id)) in [
-        (&workspace, &ada, ("Fix hello", "fix-hello")),
-        (&other, &ada_there, ("Mend hello", "mend-hello")),
+    for (place, (name, id)) in [
+        (&workspace, ("Fix hello", "fix-hello")),
+        (&other, ("Mend hello", "mend-hello")),
     ] {
         started_and_waiting(&agents, &workspaces, (place, &person), (name, id), 1).await;
-        let asks = writes_in(
-            &actions,
-            &workspaces,
-            place,
-            caller,
-            (direct(&person, id).as_str(), "where is your model"),
-        )
-        .await;
+        let asks = asks_it(&workspaces, place, &person, (id, "where is your model")).await;
         agents.look(place).await.unwrap();
-        reply_of(&workspaces, place, &asks, id).await;
+        reply_to(&workspaces, place, &person, &asks).await;
         starter_told(&workspaces, place, &person, 2).await;
     }
     let ours = model_of(&workspaces, &workspace, (&person, "fix-hello")).await;
@@ -1220,26 +802,19 @@ on_both_kinds! {
         "each is a process of its own"
     );
     assert_eq!(theirs.asked().len(), 6);
-    let ours_said = said_by(
-        &workspaces,
-        &workspace,
-        (&direct(&person, "fix-hello"), "fix-hello"),
-    )
-    .await;
+    let ours_said = said_by(&workspaces, &workspace, (&person, "fix-hello")).await;
 
     // The other workspace's process asks this one's endpoint: nothing comes back.
-    let there = direct(&person, "mend-hello");
-    let asks = writes_in(
-        &actions,
+    let asks = asks_it(
         &workspaces,
         &other,
-        &ada_there,
-        (there.as_str(), &format!("ask the model at {ours}")),
+        &person,
+        ("mend-hello", &format!("ask the model at {ours}")),
     )
     .await;
     agents.look(&other).await.unwrap();
-    reply_of(&workspaces, &other, &asks, "mend-hello").await;
-    let said = said_by(&workspaces, &other, (&there, "mend-hello")).await;
+    reply_to(&workspaces, &other, &person, &asks).await;
+    let said = said_by(&workspaces, &other, (&person, "mend-hello")).await;
     assert!(
         said.iter().any(|text| text == "from there came []"),
         "it got no answer from the other workspace's endpoint: {said:?}"
@@ -1255,28 +830,22 @@ on_both_kinds! {
         "and nobody's model was asked for it"
     );
     assert_eq!(
-        said_by(
-            &workspaces,
-            &workspace,
-            (&direct(&person, "fix-hello"), "fix-hello"),
-        )
-        .await,
+        said_by(&workspaces, &workspace, (&person, "fix-hello")).await,
         ours_said,
-        "nothing of it reached this one's conversation"
+        "nothing of it reached this one's replies"
     );
 
     // Its own endpoint answers the very same request.
-    let asks = writes_in(
-        &actions,
+    let asks = asks_it(
         &workspaces,
         &other,
-        &ada_there,
-        (there.as_str(), &format!("ask the model at {theirs_is}")),
+        &person,
+        ("mend-hello", &format!("ask the model at {theirs_is}")),
     )
     .await;
     agents.look(&other).await.unwrap();
-    reply_of(&workspaces, &other, &asks, "mend-hello").await;
-    let said = said_by(&workspaces, &other, (&there, "mend-hello")).await;
+    reply_to(&workspaces, &other, &person, &asks).await;
+    let said = said_by(&workspaces, &other, (&person, "mend-hello")).await;
     assert!(
         said.iter()
             .any(|text| text.starts_with("from there came [HTTP/1.1 200")),
@@ -1297,7 +866,6 @@ on_both_kinds! {
     the_days_limit_answers_a_coding_program_before_the_provider_is_asked_where_its_machine_is_placed,
     |machine| {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let ada = themselves(&root, &browser, &workspace);
     on_roster(
         &workspaces,
         &workspace,
@@ -1319,7 +887,6 @@ on_both_kinds! {
         ],
     ).await;
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
-    let own = direct(&person, "fix-hello");
     started_and_waiting(
         &agents,
         &workspaces,
@@ -1330,25 +897,20 @@ on_both_kinds! {
     .await;
 
     // Its job uses the day up; the call for its person's own words is refused at the endpoint.
-    let more = writes_in(
-        &actions,
+    let more = asks_it(
         &workspaces,
         &workspace,
-        &ada,
-        (own.as_str(), "Look further."),
+        &person,
+        ("fix-hello", "Look further."),
     )
     .await;
     agents.look(&workspace).await.unwrap();
-    let refused = reply_of(&workspaces, &workspace, &more, "fix-hello").await;
+    let (refused, state) = reply_to(&workspaces, &workspace, &person, &more).await;
     assert!(
-        refused.text.contains("Scout") && refused.text.contains("has used today's"),
-        "the reply says the limit's words, naming the agent whose day it is: {}",
-        refused.text
+        refused.contains("Scout") && refused.contains("has used today's"),
+        "the reply says the limit's words, naming the agent whose day it is: {refused}"
     );
-    assert_eq!(
-        end_of(&refused),
-        Some(chat::agent_stream::AgentFinish::Failed)
-    );
+    assert_eq!(state, AskState::Failed);
     assert_eq!(
         theirs.asked().len(),
         2,
@@ -1359,7 +921,7 @@ on_both_kinds! {
         answered.contains(&402) && answered.contains(&200),
         "its endpoint answered the first call and refused the next: {answered:?}"
     );
-    let said = said_by(&workspaces, &workspace, (&own, "fix-hello")).await;
+    let said = said_by(&workspaces, &workspace, (&person, "fix-hello")).await;
     assert!(
         said.iter().any(|text| text == "A long first look."),
         "what it said before the limit stands: {said:?}"
@@ -1380,7 +942,8 @@ on_both_kinds! {
     let told = starter_told(&workspaces, &workspace, &person, 2).await;
     assert!(
         told.iter().any(|(news, line)| {
-            news.text.contains("stands: failed") && line.text.contains("today's limit")
+            news.said.as_deref().is_some_and(|said| said.contains("stands: failed"))
+                && line.contains("today's limit")
         }),
         "{told:?}"
     );

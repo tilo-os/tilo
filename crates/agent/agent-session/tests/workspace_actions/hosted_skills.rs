@@ -220,31 +220,29 @@ async fn a_hosted_agent_uses_the_same_workspace_skills_actions() {
         )
     });
     let agents = worked(&workspaces, &actions, model);
-    let message = write_to_agent(
-        &actions,
+    mentions(
         &workspaces,
         &workspace,
-        (&root, &browser),
-        "In Workspace Skills, correct how the weekly report is done.",
+        &person,
+        (
+            SCOUT,
+            "Scout",
+            " in Workspace Skills, correct how the weekly report is done.",
+        ),
     )
     .await;
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        agents.look(&workspace).await.unwrap();
-        let part = conversation_part(&workspaces, &workspace).await;
-        if let Some(reply) = part
-            .messages
-            .get(&reply_id(&message, &MemberId::agent(SCOUT)))
-            && reply.text == "I updated the workspace skill."
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the agent did not update the skill"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    agents.look(&workspace).await.unwrap();
+    let asks = asks_of(&workspaces, &workspace, &person, SCOUT).await;
+    let ask = asks.first().expect("the mention asks the agent");
+    let reply = answered(&workspaces, &workspace, &person, &ask.at).await;
+    let said = reply
+        .latest()
+        .map(|reply| reply.body.clone())
+        .unwrap_or_default();
+    assert!(
+        said.contains("I updated the workspace skill."),
+        "the agent did not update the skill: {said}"
+    );
     let read = chat_action(
         &actions,
         &workspace,

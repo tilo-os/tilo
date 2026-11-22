@@ -1,7 +1,7 @@
 //! Sub-agents: the agents an agent starts for the person it works for.
 //!
 //! A person's main agent starts sub-agents: each gets one job, a role in words, a kind of work
-//! that picks its model and a conversation of its own. Whoever started one reads it and steers
+//! that picks its model. Whoever started one reads how it stands and steers
 //! it while it works, and it cannot read whoever started it. A sub-agent may start sub-agents
 //! of its own, as deep as its person allows, and the same holds at every level: a lead with
 //! fifty workers is as ordinary as one helper.
@@ -12,13 +12,14 @@
 //! The record holds what is wanted of one, each a recorded change: that it was started
 //! ([`WorkspaceAgents::start_sub_agent`]), a note its starter gives it
 //! ([`WorkspaceAgents::note_sub_agent`]), that it is to stop
-//! ([`WorkspaceAgents::stop_sub_agent`]). Whoever works it carries that into its conversation and
-//! writes back how it stands ([`WorkspaceAgents::sub_agent_stands`]), so a runner that restarts
-//! finds everything it owes in the records.
+//! ([`WorkspaceAgents::stop_sub_agent`]). Whoever works it asks it each job and note as the agent
+//! that gave it, answers those asks as the sub-agent, and writes back how it stands
+//! ([`WorkspaceAgents::sub_agent_stands`]), so a runner that restarts finds everything it owes
+//! in the records.
 //!
 //! **The one-way rule is a permission.** Every turn of a sub-agent carries the rules
 //! [`Agent::turn_rules`] derives from its record: it reads nothing Chat keeps ([`one_way`]), so
-//! not the thread of the agent that started it, no other conversation, and not this record
+//! not the conversation of the agent that started it, no ask or reply, and not this record
 //! either. No verb lifts that: nothing clears [`Agent::sub`], a bound set on it adds to the rule
 //! and never replaces it, and a sub-agent changes nothing of this record but its own team
 //! ([`WorkspaceAgents::not_by_sub_agent`]), so it can neither unbind itself nor make an agent
@@ -26,15 +27,14 @@
 
 use std::fmt;
 
-use collab_types::MemberId;
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
 use tilo_resource::{ActionCx, Atom, Id, JsonSchema, Model, Refusal};
 
 use crate::{Agent, AgentState, OWNER, WorkspaceAgents};
 
-/// The longest job, in bytes: what a sub-agent is asked to do, which is also the first message
-/// of its conversation. Longer material belongs in a file or a note it is pointed at.
+/// The longest job, in bytes: what a sub-agent is asked to do, its first ask. Longer material
+/// belongs in a file or a note it is pointed at.
 pub const MAX_JOB: usize = 4 * 1024;
 
 /// The longest role, in bytes: a few words.
@@ -46,8 +46,8 @@ pub const MAX_LINE: usize = 240;
 /// The longest note, in bytes.
 pub const MAX_NOTE: usize = 2 * 1024;
 
-/// The notes a sub-agent's item keeps: the newest ones. Each is in its conversation for good
-/// once its runner carried it there.
+/// The notes a sub-agent's item keeps: the newest ones. Each is an ask of it for good once its
+/// runner asked it.
 pub const MAX_NOTES: usize = 8;
 
 /// The longest address of the issue a sub-agent works for, in bytes.
@@ -79,20 +79,6 @@ pub const DEFAULT_KIND: &str = "subtask";
 /// Where a sub-agent works that the workspace's host works itself, with its own loop.
 pub const RUNS_ON_HOST: &str = "host";
 
-/// The kind of Chat's messages, as its actions are decided under it.
-const MESSAGES: &str = "chat.messages";
-
-/// What a sub-agent's turn writes in Chat, and nothing else of Chat's: its answer to what it
-/// was asked, a question to its person, and its words while it works. Whoever serves its turn
-/// takes each only in its own conversation, since a rule's path cannot say which conversation
-/// a message is in.
-pub const OWN_WRITES: [&str; 3] = ["record-work", "ask", "post"];
-
-/// What a sub-agent's turn writes besides, into its answer: the words its model writes, as
-/// they come, so that its person reads along. Whoever serves its turn takes it only for the
-/// reply that turn answers, in its own conversation.
-pub const OWN_GROWTH: &str = "stream-output";
-
 /// The actions on the workspace's agents a sub-agent's turn keeps: those of its own team. The
 /// list itself guards them, and refuses a sub-agent every other
 /// ([`WorkspaceAgents::not_by_sub_agent`]).
@@ -107,47 +93,40 @@ const OWN_TEAM: [&str; 4] = [
 ];
 
 /// The rules that keep a sub-agent from reading upward in `workspace`, and from writing
-/// there: no read of anything Chat or the workspace's agent roster keeps, and no action of
-/// Chat's but its [`OWN_WRITES`] and [`OWN_GROWTH`], and no action on the agent roster but
-/// what steers its own team. The refusal is more specific than the workspace-wide allow every
-/// agent's turn starts from, so it holds whatever else the turn carries.
+/// there: nothing of Chat's, where its starter's conversations and every ask and reply are
+/// kept, and of the workspace's agent roster no read and no action but what steers its own
+/// team. Whoever works its turns writes its reply as it, outside its turn. The refusal is more
+/// specific than the workspace-wide allow every agent's turn starts from, so it holds whatever
+/// else the turn carries.
 #[must_use]
 pub fn one_way(workspace: &str) -> Vec<Rule> {
     let chat = TreePath::workspace(workspace).app(tilo_app_id::apps::CHAT);
     let agents = TreePath::workspace(workspace).app(OWNER);
-    let mut rules = Vec::new();
-    for app in [&chat, &agents] {
-        // It reads nothing Chat or the agent roster keeps, and nothing there reaches outside.
-        rules.push(Rule::new(
-            app.clone(),
-            KindSet::READ.union(KindSet::OUTSIDE),
-            Answer::Deny,
-        ));
-        // No action of theirs is its to call, one added later included: the kept ones are
-        // named below. What a kept action changes is saved field by field, under no action,
-        // so those writes stay with what every agent's turn starts from.
-        rules.push(Rule::new(
-            app.clone().rest().any(Level::Action),
-            KindSet::ALL,
-            Answer::Deny,
-        ));
-    }
-    for (app, kind, items, kept) in [
-        (&chat, MESSAGES, "messages", &OWN_WRITES[..]),
-        (&chat, MESSAGES, "messages", &[OWN_GROWTH][..]),
-        (&agents, crate::KIND, "agents", &OWN_TEAM[..]),
-    ] {
-        // An action on one item of a collection is decided under the collection's own kind,
-        // which is the kind and the collection's field: both are named.
-        for held in [kind.to_owned(), format!("{kind}.{items}")] {
-            rules.extend(kept.iter().map(|action| {
-                Rule::new(
-                    app.clone().kind(held.clone()).rest().action(*action),
-                    KindSet::UNDOABLE,
-                    Answer::Allow,
-                )
-            }));
-        }
+    let mut rules = vec![Rule::new(chat, KindSet::ALL, Answer::Deny)];
+    // It reads nothing the agent roster keeps, and nothing there reaches outside.
+    rules.push(Rule::new(
+        agents.clone(),
+        KindSet::READ.union(KindSet::OUTSIDE),
+        Answer::Deny,
+    ));
+    // No action of the roster's is its to call, one added later included: the kept ones are
+    // named below. What a kept action changes is saved field by field, under no action, so
+    // those writes stay with what every agent's turn starts from.
+    rules.push(Rule::new(
+        agents.clone().rest().any(Level::Action),
+        KindSet::ALL,
+        Answer::Deny,
+    ));
+    // An action on one item of a collection is decided under the collection's own kind,
+    // which is the kind and the collection's field: both are named.
+    for held in [crate::KIND.to_owned(), format!("{}.agents", crate::KIND)] {
+        rules.extend(OWN_TEAM.iter().map(|action| {
+            Rule::new(
+                agents.clone().kind(held.clone()).rest().action(*action),
+                KindSet::UNDOABLE,
+                Answer::Allow,
+            )
+        }));
     }
     rules
 }
@@ -223,7 +202,7 @@ pub struct Sub {
     /// The agent that started it and steers it, by its id: the person's own agent, or a
     /// sub-agent for its own team.
     pub started_by: String,
-    /// The job, in words: what it was started for, and the first message of its conversation.
+    /// The job, in words: what it was started for, and what it is asked first.
     pub job: String,
     /// Its role in a few words, as "Researcher"; empty when it was given none.
     pub role: String,
@@ -236,9 +215,6 @@ pub struct Sub {
     pub depth: u8,
     /// The issue in Tasks it works for, by its address; `None` when it works for none.
     pub task: Option<String>,
-    /// Its own conversation, by its id in Chat: the direct conversation of its person and
-    /// itself. Its job, its notes, what its person writes to it and its answers are there.
-    pub conversation: String,
     /// How it stands.
     pub stands: Stands,
     /// When it came to stand so, in milliseconds since the Unix epoch.
@@ -476,9 +452,7 @@ impl WorkspaceAgents {
         let mut team: Vec<&Agent> = self
             .agents
             .iter()
-            .filter(|agent| {
-                agent.is_active() && self.started_under(agent, &above.id.0)
-            })
+            .filter(|agent| agent.is_active() && self.started_under(agent, &above.id.0))
             .collect();
         team.sort_by(|one, other| {
             (one.created_at, &one.id.0).cmp(&(other.created_at, &other.id.0))
@@ -564,7 +538,7 @@ impl WorkspaceAgents {
     }
 
     /// Room for one more sub-agent: the oldest that ended and started nothing that is still
-    /// kept leaves the record once it is full. Its conversation stays in Chat.
+    /// kept leaves the record once it is full. Its asks and replies stay.
     pub(crate) fn make_room(&mut self) -> Result<(), Refusal> {
         let held = self
             .agents
@@ -672,10 +646,6 @@ impl WorkspaceAgents {
             .transpose()?;
         self.make_room()?;
         let now = cx.now_ms();
-        let conversation = MemberId::direct_conversation([
-            MemberId::person(person.as_str()),
-            MemberId::agent(id.as_str()),
-        ]);
         self.agents.push(Agent {
             id: Atom(id),
             name,
@@ -702,7 +672,6 @@ impl WorkspaceAgents {
                 .to_owned(),
                 depth,
                 task,
-                conversation,
                 stands: Stands::Working,
                 since: now,
                 line: String::new(),

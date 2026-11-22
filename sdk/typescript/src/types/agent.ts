@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.agent@720753c002644518";
+export const SURFACE = "so.tilo.lang.agent@a988cf8f1d062b84";
 
 /** Where an ask stands. The workspace's agent engine moves it on, except that its asker withdraws it and a person stops a turn that is working. One of "waiting", "working", "done", "failed", "stopped", "withdrawn", "cannot_read". */
 export type AskState = "waiting" | "working" | "done" | "failed" | "stopped" | "withdrawn" | "cannot_read";
@@ -47,6 +47,11 @@ export interface ClaimArgs {
 
 /** The arguments of `say`. */
 export interface SayArgs {
+  more: string;
+}
+
+/** The arguments of `think`. */
+export interface ThinkArgs {
   more: string;
 }
 
@@ -140,6 +145,7 @@ export function step(ws: tilo.Workspace, path: string): Step {
 export interface Reply extends tilo.Resource {
   gjd462ep: Ask;  // ask
   oka345cb: string;  // body
+  czzg7mhh: string;  // thinking
   hzlmnzzw: AskState;  // state
   tnkzsmes: number;  // attempt
   e36wbuu7: Array<tilo.Entry<Step>>;  // steps
@@ -150,6 +156,12 @@ export interface Reply extends tilo.Resource {
   }): Promise<void>;
   /** Runs `say` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   sayMany(items: SayArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The agent's model thought `more` on the way, as its provider shows it: at the end of the reply's thinking, beside its answer. */
+  think(args: {
+    more: string;
+  }): Promise<void>;
+  /** Runs `think` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  thinkMany(items: ThinkArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The agent called `called` on the way, and it answered `answered`. */
   step(args: {
     called: string;
@@ -172,7 +184,7 @@ export interface Reply extends tilo.Resource {
 
 /** The actions `Reply` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const REPLY_ACTIONS = ["say", "sayMany", "step", "stepMany", "finish", "finishMany", "supersede", "supersedeMany"] as const;
+export const REPLY_ACTIONS = ["say", "sayMany", "think", "thinkMany", "step", "stepMany", "finish", "finishMany", "supersede", "supersedeMany"] as const;
 
 /** The `tl.so.tilo.lang.agent.Reply` kind at `path`. */
 export function reply(ws: tilo.Workspace, path: string): Reply {

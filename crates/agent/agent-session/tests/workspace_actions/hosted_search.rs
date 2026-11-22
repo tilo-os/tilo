@@ -1037,7 +1037,6 @@ async fn a_sub_agent_finds_nothing_of_its_starters_conversation() {
             bound,
             sub: Some(Sub {
                 started_by: SCOUT.into(),
-                conversation: own.to_string(),
                 ..Sub::default()
             }),
             ..Agent::default()

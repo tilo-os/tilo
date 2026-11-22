@@ -28766,7 +28766,8 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "body"
+              "body",
+              "thinking"
             ],
             "type": "string"
           },
@@ -28820,6 +28821,18 @@
           "more"
         ],
         "description": "The agent writes `more` at the end of its answer."
+      },
+      "tl.so.tilo.lang.agent.Reply.think.Arguments": {
+        "type": "object",
+        "properties": {
+          "more": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "more"
+        ],
+        "description": "The agent's model thought `more` on the way, as its provider shows it: at the end of the\nreply's thinking, beside its answer."
       },
       "tl.so.tilo.lang.agent.Reply.step.Arguments": {
         "type": "object",
@@ -42198,6 +42211,12 @@
       "resource": "tl.so.tilo.lang.agent.Reply",
       "action": "say",
       "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.say.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.agent",
+      "resource": "tl.so.tilo.lang.agent.Reply",
+      "action": "think",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.think.Arguments"
     },
     {
       "app": "so.tilo.lang.agent",

@@ -32,6 +32,7 @@ __all__ = [
     "StopArgs",
     "ClaimArgs",
     "SayArgs",
+    "ThinkArgs",
     "StepArgs",
     "FinishArgs",
     "SupersedeArgs",
@@ -63,6 +64,11 @@ SayArgs = TypedDict("SayArgs", {
 })
 """The arguments of `say`."""
 
+ThinkArgs = TypedDict("ThinkArgs", {
+    "more": "str",
+})
+"""The arguments of `think`."""
+
 StepArgs = TypedDict("StepArgs", {
     "called": "str",
     "answered": "str",
@@ -81,7 +87,7 @@ SupersedeArgs = TypedDict("SupersedeArgs", {
 
 class Claim(Resource):
     """Claim — `tl.so.tilo.lang.agent.Claim`."""
-    __surface__ = "so.tilo.lang.agent@720753c002644518"
+    __surface__ = "so.tilo.lang.agent@a988cf8f1d062b84"
     @property
     def _6qikspks(self) -> str:
         """device (`6qikspks` on the wire)."""
@@ -102,7 +108,7 @@ class Claim(Resource):
 
 class Ask(Resource):
     """Ask — `tl.so.tilo.lang.agent.Ask`."""
-    __surface__ = "so.tilo.lang.agent@720753c002644518"
+    __surface__ = "so.tilo.lang.agent@a988cf8f1d062b84"
     mcsi6vp5: str  # agent
     @property
     def _7j5pok54(self) -> str | None:
@@ -163,7 +169,7 @@ class Ask(Resource):
 
 class Step(Resource):
     """Step — `tl.so.tilo.lang.agent.Step`."""
-    __surface__ = "so.tilo.lang.agent@720753c002644518"
+    __surface__ = "so.tilo.lang.agent@a988cf8f1d062b84"
     ippal7k2: str  # called
     cyu3le2j: str  # answered
     cma7vgpx: bool  # failed
@@ -171,9 +177,10 @@ class Step(Resource):
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.lang.agent.Reply`."""
-    __surface__ = "so.tilo.lang.agent@720753c002644518"
+    __surface__ = "so.tilo.lang.agent@a988cf8f1d062b84"
     gjd462ep: Ask  # ask
     oka345cb: str  # body
+    czzg7mhh: str  # thinking
     hzlmnzzw: AskState  # state
     tnkzsmes: int  # attempt
     e36wbuu7: list[Entry[Step]]  # steps
@@ -186,6 +193,14 @@ class Reply(Resource):
     def say_many(self, items: list[SayArgs]) -> list[dict[str, Any]]:
         """Runs `say` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("say", items)
+
+    def think(self, *, more: str) -> None:
+        """The agent's model thought `more` on the way, as its provider shows it: at the end of the reply's thinking, beside its answer."""
+        return self.action("think", more=more)
+
+    def think_many(self, items: list[ThinkArgs]) -> list[dict[str, Any]]:
+        """Runs `think` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("think", items)
 
     def step(self,
         *,
@@ -223,12 +238,12 @@ class Reply(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"say", "say_many", "step", "step_many", "finish", "finish_many", "supersede", "supersede_many"})
+    __actions__ = frozenset({"say", "say_many", "think", "think_many", "step", "step_many", "finish", "finish_many", "supersede", "supersede_many"})
 
 
 class Agents(Resource):
     """Agents — `tl.so.tilo.lang.agent.Agents`."""
-    __surface__ = "so.tilo.lang.agent@720753c002644518"
+    __surface__ = "so.tilo.lang.agent@a988cf8f1d062b84"
     mzzoxssv: list[Entry[Ask]]  # asks
     @property
     def _353i7jsi(self) -> list[Entry[Reply]]:
@@ -260,5 +275,5 @@ class Agents(Resource):
 
 class Agent(Resource):
     """Agents — `tl.so.tilo.lang.agent`."""
-    __surface__ = "so.tilo.lang.agent@720753c002644518"
+    __surface__ = "so.tilo.lang.agent@a988cf8f1d062b84"
 

@@ -1,62 +1,49 @@
-//! Sub-agents on the server: what the workspace's list of its agents asks for one is carried
-//! into its conversation, and how it stands is written back.
+//! Sub-agents on the server: what the workspace's list of its agents holds for one is asked of
+//! it through the agent package, its answers are its replies, and how it stands is written back.
 //!
 //! A sub-agent is an agent like the others this server works ([`tilo_workspace_agent::sub`]).
 //! What differs is here, and nowhere else in the runtime:
 //!
-//! - **Where it answers.** Only in its own conversation: a message that names it elsewhere is
-//!   no turn of its, since a turn is told the conversation it is in.
-//! - **What it is told.** Its job is the first message of its conversation, and each note its
-//!   starter gives it a later one, written there by this server as the starter's own words
-//!   (`carry`). The list holds both, so a server that restarts finds what it
-//!   still owes. A note reaches a turn that is going at its next step, as the person's own
-//!   words do.
+//! - **What it is asked.** Its job, then each note its starter gives it: each an ask of the agent
+//!   package in the name of the agent that gave it, keyed by its cause ([`key_of`]), so that a
+//!   cause asks once however often a look finds it ([`ServerAgents::ask_team`]). The job is made
+//!   from the reply of the turn that started it ([`super::team`]), a note from the job's ask. Its
+//!   person also asks it directly, as they ask any agent.
+//! - **What it is told.** What it was asked, and nothing that sits around it: its job, a note,
+//!   its person's words. It reads none of its starter's conversation ([`team_turn`]).
 //! - **Who pays.** Its model calls are counted on the day of the person's own agent its line
 //!   of starters ends at, within that agent's limit, and are asked of the model its person
 //!   chose for its kind of work ([`payer`], [`kind_of`]).
 //! - **How it stands.** Written when a turn of it begins and when it ends, as the sub-agent
-//!   itself. When work its starter gave it ends, its starter is told in the starter's own
-//!   conversation (`sub_ended`).
-//! - **Stopping.** A stop on its item ends the turn that is going, and every ask that stood
-//!   before the stop ([`Team::settle`]).
+//!   itself. When work its line gave it ends, its starter is asked with the news, made from the
+//!   sub-agent's reply, which the starter's turn reads ([`ServerAgents::sub_ended`]).
+//! - **Stopping.** A stop on its item ends the turn that is going, and takes back every ask its
+//!   line made of it before the stop.
 //!
 //! What a sub-agent may read is not decided here: every turn carries the rules its item
 //! derives ([`tilo_workspace_agent::Agent::turn_rules`]).
 
 use std::collections::BTreeMap;
 
-use chat::chat::{Chat, Message, reply_id_at};
-use collaboration::permissions::MemberId;
-use serde_json::{Map, Value, json};
-use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
-use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_resource::{Id, Resource as _};
+use tilo_resource::Id;
 use tilo_workspace_agent::{Agent, Stands, WorkspaceAgents, sub};
+use tilo_workspace_service::asks::{self, Actor, AskState, Asked, ResourceRef};
+use tilo_workspace_service::tl_records::{Opened, runtime::Value};
 
-use super::{
-    Ask, Asks, CHAT, Outcome, ServerAgents, Turn, WorkspaceActionProvider, WorkspaceId, going,
-    invoke_named,
-};
+use super::{Ask, Outcome, ServerAgents, Turn, TurnScope, asked};
+use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::Interaction;
 
-/// The kind of the cause a sub-agent's job is written into its conversation with.
-pub(super) const JOB: &str = "job";
-/// The kind of the cause a note of its starter's is written with.
-pub(super) const NOTE: &str = "note";
-/// The kind of the cause a person asks an agent they keep for a sub-agent with, through Chat's
-/// `ask-agent`: the words of the ask are the job, the cause's label is the sub-agent's name.
-const START: &str = "sub-agent";
-/// The kind of the cause that wakes an agent with its person's answer to a question the agent
-/// asked: the work it asked within goes on.
-const ANSWER: &str = "answer";
-/// Chat's name for the argument that says which conversation a message goes to.
-const TO: &str = "channel";
-/// The most of a sub-agent's answer its starter is told, in characters: the rest is in the
-/// sub-agent's conversation.
-const TOLD_CHARS: usize = 2_000;
-/// The longest label a cause carries, in bytes (Chat's own limit).
-const LABEL_BYTES: usize = 120;
-/// The longest key a cause carries, in bytes (Chat's own limit).
+/// The cause of the ask a sub-agent's job is.
+const JOB: &str = "job";
+/// The cause of the ask a note of its starter's is, with the note's id.
+const NOTE: &str = "note";
+/// The cause of the ask that tells a starter its sub-agent's work ended, with the reply.
+const ENDED: &str = "ended";
+/// The most of a sub-agent's reply its starter's turn is told, in characters: the rest stays
+/// on the reply.
+const TOLD_CHARS: usize = 4_000;
+/// The longest key a cause carries, in bytes.
 const KEY_BYTES: usize = 200;
 
 /// Where a sub-agent's turn stands in its team.
@@ -70,91 +57,12 @@ pub struct Line {
     /// Whether what the turn answers came from its line of starters (its job, a note) rather
     /// than from its person: when such work ends, its starter is told.
     pub from_starter: bool,
+    /// Whether what the turn answers is its job.
+    pub job: bool,
 }
 
-/// One message this server owes a sub-agent's conversation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Delivery {
-    /// The person the sub-agent works for.
-    person: String,
-    /// The agent whose words it is: the sub-agent's starter for its job, whoever gave a note.
-    by: String,
-    by_name: String,
-    /// The sub-agent's conversation.
-    conversation: String,
-    kind: &'static str,
-    key: String,
-    text: String,
-}
-
-/// What a look found this server owes a workspace's sub-agents beside their turns.
-#[derive(Default)]
-pub(super) struct Owed {
-    /// Jobs and notes the list holds that are in no conversation yet.
-    deliveries: Vec<Delivery>,
-    /// Notes that are in a conversation and unanswered: each reaches a turn of its sub-agent
-    /// that is going.
-    notes: Vec<Turn>,
-    /// Sub-agents a person asked for, each with the ask this server answers for it.
-    starts: Vec<(Turn, Start)>,
-}
-
-/// A sub-agent its person asked for, in the conversation of an agent they keep.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Start {
-    /// The agent whose conversation it was asked in: the sub-agent is started as that agent.
-    by: String,
-    /// The id the sub-agent gets, the same however often a server looks at the ask.
-    id: String,
-    name: String,
-    job: String,
-    /// Whether the list holds it already: only the ask is left to answer.
-    held: bool,
-}
-
-/// What is known of one message in a sub-agent's conversation.
-struct Seen {
-    /// When it was written, in seconds.
-    ts: i64,
-    from_starter: bool,
-}
-
-/// What one look at a workspace's chat finds about its sub-agents.
-pub(super) struct Team {
-    /// The workspace's list of its agents, when it holds a sub-agent.
-    roster: Option<WorkspaceAgents>,
-    /// The sub-agents this server works, by the id of their own conversation.
-    here: BTreeMap<String, Agent>,
-    /// What the list owes a conversation, by the id its message would have, until a part
-    /// holds that message.
-    expected: BTreeMap<String, Delivery>,
-    seen: BTreeMap<String, Seen>,
-    notes: Vec<Turn>,
-    /// The sub-agents asked for, by the id of the message that asks.
-    starts: BTreeMap<String, Start>,
-}
-
-/// The conversation `agent` is asked in by its person: a sub-agent's own, which its item
-/// names, and for an agent a person made the one that person talks to it in.
-fn conversation_of(agent: &Agent) -> String {
-    agent.sub.as_ref().map_or_else(
-        || {
-            MemberId::direct_conversation([
-                MemberId::person(agent.keeper.as_str()),
-                MemberId::agent(&agent.id.0),
-            ])
-        },
-        |sub| sub.conversation.clone(),
-    )
-}
-
-/// The conversation `message` is in, as Chat names it.
-pub(super) fn conversation_id(message: &Message) -> &Id {
-    &message.channel
-}
-
-/// The key of the cause `tail` of the sub-agent `agent` is written with: one key is one
-/// message however often it is asked, so a server that restarts writes nothing twice.
+/// The key of the cause `tail` of the sub-agent `agent` is asked with: one key is one ask
+/// however often it is asked, so a server that restarts asks nothing twice.
 fn key_of(agent: &str, tail: &str) -> String {
     let plain = format!("sub-agent:{agent}:{tail}");
     if plain.len() <= KEY_BYTES {
@@ -173,6 +81,22 @@ fn cut(text: &str, most: usize) -> &str {
     text.get(..end).unwrap_or_default()
 }
 
+/// When `asked` was asked, in milliseconds since 1970; 0 where its record says no time.
+fn asked_ms(asked: &Asked) -> i64 {
+    asked
+        .asked_at
+        .parse::<jiff::Timestamp>()
+        .map_or(0, jiff::Timestamp::as_millisecond)
+}
+
+/// The agent `actor` is, by its id.
+fn agent_of(actor: Option<&Actor>) -> Option<&str> {
+    match actor {
+        Some(Actor::Member(member)) => member.agent_id(),
+        _ => None,
+    }
+}
+
 /// Whether this server's own loop works `agent`: every agent a person made, and a sub-agent
 /// that works on it. One that works elsewhere is its own runner's.
 pub(super) fn worked_here(agent: &Agent) -> bool {
@@ -182,182 +106,213 @@ pub(super) fn worked_here(agent: &Agent) -> bool {
         .is_none_or(|sub| sub.runs == sub::RUNS_ON_HOST)
 }
 
-/// A turn this server works, and the bound its calls carry.
-type OnTurn = (
-    tilo_action_policy::turn::Turn,
-    Vec<tilo_action_policy::Rule>,
-);
+/// Whether `asked` is the team's to read as a turn of `agent`: anything asked of a sub-agent,
+/// and anything an agent asked, which is the news of a sub-agent of its own.
+pub(super) fn is_team(agent: &Agent, asked: &Asked) -> bool {
+    agent.sub.is_some() || agent_of(asked.who.as_ref()).is_some()
+}
 
-/// The turn of a lead's that `delivery` is written on, as `roster` holds the two agents now.
-///
-/// Only a job or a note a sub-agent gave a sub-agent of its own team has one: both are listed
-/// and work for the person the message is for, this server works the lead, and the other was
-/// started under it. Then this server worked the lead's turns itself, in the lead's own
-/// conversation, and the bound is the one the lead's keeper set on it. The list keeps who gave
-/// a job or a note and not which message the lead's turn answered then, so the turn named is
-/// the one the lead's own job began: every later turn of a sub-agent is work on that job.
-///
-/// None for everything else, which stays outside a turn: what a person's own agent gave, and
-/// whatever a sub-agent would give upward, beside itself or for another person.
-fn lead_turn(roster: &WorkspaceAgents, delivery: &Delivery) -> Option<OnTurn> {
-    let lead = roster.get(&Id::from_raw(delivery.by.clone()))?;
-    let above = lead.sub.as_ref()?;
-    let under = roster.agents.iter().find(|agent| {
-        agent
+/// The turn `asked`, a team's ask ([`is_team`]), gives `agent`, kept in `app`'s record beside
+/// `all`, every ask there, as `roster` holds the workspace's agents now; with whether a stop on
+/// the sub-agent's item ends it. None for an ask nobody of the team made: an agent that is no
+/// starter of it, or a member who is not its person.
+pub(super) fn team_turn(
+    roster: &WorkspaceAgents,
+    app: &str,
+    agent: &Agent,
+    asked: &Asked,
+    all: &[Asked],
+) -> Option<(Turn, bool)> {
+    let said = asked.said.clone().unwrap_or_default();
+    let named = |id: &str| {
+        roster
+            .get(&Id::from_raw(id.to_owned()))
+            .map_or_else(|| id.to_owned(), |by| by.name.clone())
+    };
+    // What it is about, whose place it takes: the sub-agent asked, or for news the one below.
+    let (request, from_starter, job, typed, sub_agent) = match asked.who.as_ref() {
+        Some(Actor::Member(member)) if member.agent_id().is_some() => {
+            let by = member.agent_id().unwrap_or_default();
+            if roster.started_under(agent, by) {
+                let job = asked.mention == key_of(&agent.id.0, JOB);
+                let request = if job {
+                    said.clone()
+                } else {
+                    format!("A note from {}: {said}", named(by))
+                };
+                (request, true, job, false, agent.id.0.clone())
+            } else if roster
+                .get(&Id::from_raw(by.to_owned()))
+                .is_some_and(|below| roster.started_under(below, &agent.id.0))
+            {
+                // Its sub-agent's news, made from that sub-agent's reply: read there.
+                let answered = asked
+                    .from
+                    .as_ref()
+                    .and_then(|from| {
+                        all.iter()
+                            .flat_map(|ask| ask.replies.iter())
+                            .find(|reply| reply.at.same(from))
+                    })
+                    .map(|reply| {
+                        reply
+                            .body
+                            .trim()
+                            .chars()
+                            .take(TOLD_CHARS)
+                            .collect::<String>()
+                    })
+                    .filter(|body| !body.is_empty())
+                    .unwrap_or_else(|| "(it said nothing)".to_owned());
+                let request = format!("{said}\n\nWhat it said:\n{answered}");
+                (request, false, false, false, by.to_owned())
+            } else {
+                return None;
+            }
+        }
+        Some(Actor::Member(member))
+            if agent.sub.is_some() && member.person_id() == Some(agent.keeper.as_str()) =>
+        {
+            (said.clone(), false, false, true, agent.id.0.clone())
+        }
+        _ => return None,
+    };
+    let line = agent.sub.as_ref().map(|sub| Line {
+        root: roster.root_of(agent).clone(),
+        starter: roster.get(&Id::from_raw(sub.started_by.clone())).cloned(),
+        from_starter,
+        job,
+    });
+    // A stop on its item ends what its line asked before it: what was asked since is new work.
+    let stopped = from_starter
+        && agent
             .sub
             .as_ref()
-            .is_some_and(|sub| sub.conversation == delivery.conversation)
-    })?;
-    let one_team = lead.is_active()
-        && under.is_active()
-        && worked_here(lead)
-        && lead.keeper == delivery.person
-        && under.keeper == delivery.person
-        && roster.started_under(under, &lead.id.0);
-    if !one_team {
-        return None;
-    }
-    let job = chat::cause::message_id(
-        &MemberId::person(lead.keeper.as_str()),
-        &key_of(&lead.id.0, JOB),
-    );
+            .is_some_and(|sub| sub.stands == Stands::Stopped && asked_ms(asked) <= sub.since);
+    let attempt = asked
+        .replies
+        .len()
+        .try_into()
+        .unwrap_or(u32::MAX)
+        .saturating_add(1);
     Some((
-        tilo_action_policy::turn::Turn::new(
-            chat::summons::conversation_address(&Id::from_raw(above.conversation.clone())),
-            job.to_string(),
-        ),
-        lead.bound_rules().unwrap_or_default(),
+        Turn {
+            agent: agent.clone(),
+            person: agent.keeper.clone(),
+            conversation: format!("sub-agents/{sub_agent}"),
+            cause: asked.at.id_string(),
+            request,
+            history: Vec::new(),
+            asked: said,
+            typed,
+            line,
+            ask: Ask::Asked {
+                app: app.to_owned(),
+                ask: asked.at.id_string(),
+                ty: asked.at.ty.clone(),
+                attempt,
+                // Nothing around a team's ask is read for its turn.
+                private: false,
+            },
+        },
+        stopped,
     ))
 }
 
-/// Where a sub-agent's turn writes in Chat, and whom its words may name there.
-#[derive(Clone)]
-pub(super) struct Own {
-    /// Its own conversation.
-    conversation: String,
-    /// The members Chat binds a name in a message to, as the workspace's member list names them.
-    /// None when the list could not be read: then its turn is taken no words, since nothing says
-    /// whom they would name.
-    members: Option<Vec<(tilo_actions::MemberId, String)>>,
-    /// The reply its turn answers with, by the id Chat derives for it: what its model writes
-    /// goes into that reply while it writes, and into no other. None for a turn that answers
-    /// no message.
-    reply: Option<String>,
-}
-
-impl Own {
-    /// Whether `text` names nobody Chat would bind a mention to.
-    fn names_nobody(&self, text: &str) -> bool {
-        self.members
-            .as_ref()
-            .is_some_and(|members| chat::mention::resolve(text, members).is_empty())
+/// Ask `agent` `said` as `asker`, under `key`, made from `from`, unless an ask under that key
+/// stands in `all` already, whatever it was made from.
+fn ask_once(
+    opened: &mut Opened,
+    all: &[Asked],
+    (asker, agent): (&str, &str),
+    (said, key): (&str, &str),
+    from: &ResourceRef,
+) -> Result<(), String> {
+    let agent = tilo_actions::MemberId::agent(agent.to_owned());
+    if all
+        .iter()
+        .any(|asked| asked.agent == agent && asked.mention == key)
+    {
+        return Ok(());
     }
+    let asker = Actor::Member(tilo_actions::MemberId::agent(asker.to_owned()));
+    asks::ask(opened, &asker, &agent, said, key, from).map(drop)
 }
 
-/// `members` as Chat binds a typed `@Name` to them (`tilo_resource::members::know`): each name
-/// without the blanks around it, and nobody whose name is empty. The rule reads a name the way
-/// Chat does, so a name Chat would bind is never one the rule did not see.
-fn named(
-    members: impl IntoIterator<Item = (tilo_actions::MemberId, String)>,
-) -> Vec<(tilo_actions::MemberId, String)> {
-    members
-        .into_iter()
-        .map(|(id, name)| (id, name.trim().to_owned()))
-        .filter(|(_, name)| !name.is_empty())
-        .collect()
-}
-
-/// Whether an argument says nothing: left out as null, or an empty list or object.
-fn says_nothing(value: &Value) -> bool {
-    match value {
-        Value::Null => true,
-        Value::Array(items) => items.is_empty(),
-        Value::Object(fields) => fields.is_empty(),
-        _ => false,
-    }
-}
-
-/// Whether the server's action service takes `request` from `caller` while it serves a turn
-/// of the sub-agent that writes in `own`.
-///
-/// What is no call of a turn (the server's own writes for a sub-agent) and what goes to another
-/// app than Chat is not decided here. Of Chat, a sub-agent's turn is let four actions by its
-/// rules ([`sub::OWN_WRITES`], [`sub::OWN_GROWTH`]), and a rule cannot say which conversation
-/// a message is in. So
-/// its answer is taken only for the message its turn answers, and what its model writes while
-/// it writes only into the reply to that message, in its own conversation and under no name;
-/// a question to its person and its words while it works only in its own conversation, as
-/// plain words: under no other message, with nothing attached, and naming nobody, so that
-/// nothing it writes asks another agent or reaches a member outside its conversation.
-/// Anything else of Chat's is refused here as well.
-pub(super) fn admits(own: &Own, caller: &Caller, request: &InvokeRequest) -> bool {
-    let Some(turn) = caller.turn() else {
-        return true;
+/// What the record holds for `sub_agent`, as `roster` holds it, that it was not asked yet: its
+/// job, made from `from` where the turn that started it says, else from its starter's newest
+/// reply; and each note, made from the job's ask. What its line asked before a stop on its
+/// item and nobody took yet is taken back.
+fn ask_of(
+    opened: &mut Opened,
+    roster: &WorkspaceAgents,
+    sub_agent: &Agent,
+    from: Option<&ResourceRef>,
+) -> Result<(), String> {
+    let Some(sub) = &sub_agent.sub else {
+        return Ok(());
     };
-    let chat = format!("{}:{CHAT}:", tilo_agent_session::RESOURCE_PROVIDER);
-    let target = &request.target;
-    if !target.provider.starts_with(&chat) {
-        return true;
-    }
-    let [answer, question, words] = sub::OWN_WRITES;
-    let action = target.address.action.as_str();
-    if action == answer {
-        let answered = format!(
-            "{}/messages/{}",
-            chat::parts::ChatMessages::KIND,
-            turn.message
-        );
-        return target.address.resource == answered;
-    }
-    let InvokeArgument::Json(given) = &request.argument else {
-        return false;
-    };
-    let said = |name: &str| given.get(name).and_then(Value::as_str);
-    // Nothing but what `kept` lists is said: so no message it would stand under, nothing
-    // attached, nobody named beside its words.
-    let only = |kept: &[&str]| {
-        given
+    let id = sub_agent.id.0.as_str();
+    let all = asks::asks(opened)?;
+    let job_key = key_of(id, JOB);
+    if sub.stands == Stands::Working {
+        let newest = all
             .iter()
-            .all(|(name, value)| kept.contains(&name.as_str()) || says_nothing(value))
-    };
-    let plain = said(TO) == Some(own.conversation.as_str())
-        && said("text").is_some_and(|text| own.names_nobody(text));
-    if action == question {
-        plain && only(&[TO, "text", "answers", "kind", "detail"])
-    } else if action == words {
-        plain && only(&[TO, "text"])
-    } else if action == sub::OWN_GROWTH {
-        // Chat makes a message of a reply it does not hold yet, in whatever conversation the
-        // call names and under whatever name it gives: so only the reply its turn answers
-        // and the messages its server derived for that answer to go on in, where it works,
-        // and nothing said beside.
-        own.reply.as_deref().is_some_and(|reply| {
-            said(TO) == Some(own.conversation.as_str())
-                && said("reply").is_some_and(|named| named == reply)
-                && only(&[TO, "reply", "event"])
-        })
-    } else {
-        false
+            .filter(|asked| asked.agent.agent_id() == Some(sub.started_by.as_str()))
+            .filter_map(|asked| {
+                asked
+                    .latest()
+                    .map(|reply| (asked_ms(asked), reply.at.clone()))
+            })
+            .max_by_key(|(at, _)| *at)
+            .map(|(_, reply)| reply);
+        let root = opened
+            .host()
+            .root_of(asks::AGENT_APP)
+            .map_err(|error| error.to_string())?;
+        let from = from.cloned().or(newest).unwrap_or(root);
+        ask_once(
+            opened,
+            &all,
+            (&sub.started_by, id),
+            (&sub.job, &job_key),
+            &from,
+        )?;
     }
-}
-
-/// The reply `turn` answers with, by the id Chat derives for it: none for any turn that answers
-/// no message.
-fn reply_of(turn: &Turn) -> Option<String> {
-    let Ask::Message {
-        message, attempt, ..
-    } = &turn.ask
-    else {
-        return None;
-    };
-    Some(
-        chat::chat::reply_id_at(
-            &tilo_resource::Id::from_raw(message),
-            &tilo_actions::MemberId::agent(&turn.agent.id.0),
-            *attempt,
-        )
-        .to_string(),
-    )
+    let all = asks::asks(opened)?;
+    let job = all
+        .iter()
+        .find(|asked| asked.mention == job_key && asked.agent.agent_id() == Some(id))
+        .map(|asked| asked.at.clone());
+    if let Some(job) = &job {
+        for note in &sub.notes {
+            if sub.stands == Stands::Stopped && note.at <= sub.since {
+                continue;
+            }
+            let key = key_of(id, &format!("{NOTE}:{}", note.id));
+            ask_once(opened, &all, (&note.by, id), (&note.text, &key), job)?;
+        }
+    }
+    if sub.stands == Stands::Stopped {
+        for asked in &all {
+            let by = agent_of(asked.who.as_ref());
+            let of_its_line = by.is_some_and(|by| roster.started_under(sub_agent, by));
+            if asked.agent.agent_id() == Some(id)
+                && asked.state == AskState::Waiting
+                && of_its_line
+                && asked_ms(asked) <= sub.since
+                && let Some(by) = by
+            {
+                opened.invoke(
+                    &Actor::Member(tilo_actions::MemberId::agent(by.to_owned())),
+                    (asks::AGENT_APP, "withdraw"),
+                    vec![Value::resource(&asked.at)],
+                    None,
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The agent whose day `turn`'s model calls are counted on.
@@ -378,8 +333,7 @@ pub(super) fn kind_of(agent: &Agent) -> Interaction {
 pub(super) fn told(turn: &Turn) -> String {
     // A person's own agent is told how it starts and steers a team where its turn is offered
     // one ([`super::team`]): the news it is asked with when work of a sub-agent of its ends
-    // says what to do then. Its person also asks for one with `ask-agent` under the cause kind
-    // `sub-agent`, which this server answers.
+    // says what to do then.
     let Some(sub) = &turn.agent.sub else {
         return super::team::told(turn);
     };
@@ -395,495 +349,109 @@ pub(super) fn told(turn: &Turn) -> String {
     };
     format!(
         "\n\nYou are a sub-agent. {starter} started you for one job, for the person you both \
-         work for.{role} Your job:\n{job}\n\nYou work in a conversation of your own. What \
-         reaches you there marked (job) is that job, what is marked (note) is a note \
-         {starter} gives you while you work, and anything else is your person writing to you. \
-         You cannot read {starter}'s conversation or any other, and nothing Chat keeps is \
-         yours to read: work from what you are told and from the workspace's other apps. When \
-         the job is done, say what came of it in a few plain sentences; {starter} is told it. \
-         When only your person can decide something, ask them in your answer.{team}",
+         work for.{role} Your job:\n{job}\n\nYou are asked that job first; a note {starter} \
+         gives you while you work is asked of you after, and your person may ask you \
+         themselves. You cannot read {starter}'s conversation or any other, and nothing Chat \
+         keeps is yours to read: work from what you are asked and from the workspace's other \
+         apps. When the job is done, say what came of it in a few plain sentences; {starter} \
+         reads it. When only your person can decide something, ask them in your answer.{team}",
         job = sub.job,
         team = super::team::told(turn),
     )
 }
 
-impl Team {
-    /// What `roster` asks for the workspace's sub-agents, of which this server works those
-    /// in `worked`.
-    fn of(roster: Option<WorkspaceAgents>, worked: &BTreeMap<String, Agent>) -> Self {
-        let mut team = Self {
-            roster: None,
-            here: BTreeMap::new(),
-            expected: BTreeMap::new(),
-            seen: BTreeMap::new(),
-            notes: Vec::new(),
-            starts: BTreeMap::new(),
-        };
-        let Some(roster) = roster else {
-            return team;
-        };
-        for agent in roster.agents.iter().filter(|agent| agent.is_active()) {
-            let Some(sub) = &agent.sub else {
-                continue;
-            };
-            if worked.contains_key(&agent.id.0) {
-                team.here.insert(sub.conversation.clone(), agent.clone());
-            }
-            let named = |id: &str| {
-                roster
-                    .get(&Id::from_raw(id.to_owned()))
-                    .map_or_else(|| id.to_owned(), |by| by.name.clone())
-            };
-            let person = MemberId::person(agent.keeper.as_str());
-            let mut owe = |by: &str, kind: &'static str, tail: &str, text: &str| {
-                let key = key_of(&agent.id.0, tail);
-                team.expected.insert(
-                    chat::cause::message_id(&person, &key).to_string(),
-                    Delivery {
-                        person: agent.keeper.clone(),
-                        by: by.to_owned(),
-                        by_name: named(by),
-                        conversation: sub.conversation.clone(),
-                        kind,
-                        key,
-                        text: text.to_owned(),
-                    },
-                );
-            };
-            // Its job, until it stood any other way than working: then the job was told.
-            if sub.stands == Stands::Working {
-                owe(&sub.started_by, JOB, JOB, &sub.job);
-            }
-            for note in &sub.notes {
-                owe(&note.by, NOTE, &format!("{NOTE}:{}", note.id), &note.text);
-            }
-        }
-        team.roster = Some(roster);
-        team
-    }
+/// The workspace's list of its agents, as `workspaces` holds it in `workspace` now.
+async fn roster_of(
+    workspaces: &Workspaces,
+    workspace: &str,
+) -> Result<Option<WorkspaceAgents>, String> {
+    let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let Some(bytes) = workspaces
+        .resource_document(workspace, tilo_workspace_agent::OWNER, &document)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+    crate::workspace_bots::opened::<WorkspaceAgents>(&mut doc).map(Some)
+}
 
-    /// Take in one part of the chat's messages, the document `document`: what it holds of what
-    /// the list owes, and what stands in the conversations of the sub-agents worked here.
-    pub(super) fn read(&mut self, document: &str, chat: &Chat, part: &chat::parts::ChatMessages) {
-        let Some(roster) = &self.roster else {
-            return;
-        };
-        for (id, message) in part.messages.iter() {
-            if let Some(start) = Self::start_of(roster, id.as_str(), message) {
-                self.starts.insert(id.to_string(), start);
-            }
-            let delivered = self.expected.remove(id.as_str());
-            let Some(agent) = self.here.get(conversation_id(message).as_str()) else {
-                continue;
-            };
-            let me = MemberId::agent(&agent.id.0);
-            // Work its line of starters gave it: its job, a note, and its person's answer to a
-            // question it asked on the way.
-            let from_starter = message.cause.as_ref().is_some_and(|cause| {
-                let kind = cause.kind.0.as_str();
-                kind == ANSWER
-                    || (matches!(kind, JOB | NOTE)
-                        && message
-                            .author
-                            .agent_id()
-                            .is_some_and(|by| roster.started_under(agent, by)))
-            });
-            self.seen.insert(
-                id.to_string(),
-                Seen {
-                    ts: message.ts,
-                    from_starter,
-                },
-            );
-            // A note that is in the conversation and unanswered reaches a turn that is going.
-            let unanswered = chat::summons::unanswered(part.messages.get(&reply_id_at(
-                id,
-                &me,
-                message.attempts,
-            )));
-            if delivered.is_some_and(|delivery| delivery.kind == NOTE) && unanswered {
-                let (request, _) = chat::summons::request(message);
-                let said_in = conversation_id(message);
-                let told = chat::recall::told(chat, part, None, said_in, id, &me, request);
-                self.notes.push(Turn {
-                    agent: agent.clone(),
-                    person: agent.keeper.clone(),
-                    conversation: chat::summons::conversation_address(said_in),
-                    cause: id.to_string(),
-                    request: told.request,
-                    history: told.history,
-                    asked: chat::summons::asked_words(message),
-                    typed: true,
-                    line: None,
-                    ask: Ask::Message {
-                        part: document.to_owned(),
-                        message: id.to_string(),
-                        attempt: message.attempts,
-                    },
-                });
-            }
-        }
-    }
-
-    /// The sub-agent `message` asks for: a person's own ask of cause kind [`START`], in the
-    /// conversation of an agent they keep. What an agent asks under that kind starts nothing:
-    /// only a person asks for one this way, and the list's own rules then decide.
-    fn start_of(roster: &WorkspaceAgents, id: &str, message: &Message) -> Option<Start> {
-        let cause = message.cause.as_ref()?;
-        if cause.kind.0 != START || message.author != cause.person {
-            return None;
-        }
-        let person = message.author.person_id()?;
-        let by = roster.agents.iter().find(|agent| {
-            agent.is_active()
-                && agent.keeper == person
-                && conversation_of(agent) == conversation_id(message).as_str()
-        })?;
-        let job = message.text.trim();
-        let label = cause.label.trim();
-        let name = if label.is_empty() {
-            job.lines().next().unwrap_or_default()
-        } else {
-            label
-        };
-        let sub_agent = format!("sub-{}", cut(id, 12));
-        Some(Start {
-            by: by.id.0.clone(),
-            held: roster.get(&Id::from_raw(sub_agent.clone())).is_some(),
-            id: sub_agent,
-            name: name.chars().take(tilo_workspace_agent::MAX_NAME).collect(),
-            job: job.to_owned(),
-        })
-    }
-
-    /// Where `turn`, a sub-agent's, stands in its team.
-    fn line_of(&self, turn: &Turn) -> Option<Line> {
-        let (roster, sub) = (self.roster.as_ref()?, turn.agent.sub.as_ref()?);
-        Some(Line {
-            root: roster.root_of(&turn.agent).clone(),
-            starter: roster.get(&Id::from_raw(sub.started_by.clone())).cloned(),
-            from_starter: self
-                .seen
-                .get(&turn.cause)
-                .is_some_and(|seen| seen.from_starter),
-        })
-    }
-
-    /// Settle what the look found into `asks`: a sub-agent's turns are those in its own
-    /// conversation, each knows its line; what stood before a stop on its item is stopped;
-    /// and what the list still owes a conversation is owed.
-    pub(super) fn settle(mut self, asks: &mut Asks) {
-        if self.roster.is_none() {
-            return;
-        }
-        let own = |turn: &Turn| {
-            turn.agent.sub.as_ref().is_none_or(|sub| {
-                turn.conversation
-                    == chat::summons::conversation_address(&Id::from_raw(sub.conversation.clone()))
-            })
-        };
-        let mut stopped: Vec<Turn> = std::mem::take(&mut asks.stopped)
-            .into_iter()
-            .filter(|turn| own(turn))
-            .collect();
-        let mut turns = Vec::new();
-        let mut starts = Vec::new();
-        for mut turn in std::mem::take(&mut asks.turns) {
-            // An ask for a sub-agent is this server's to answer, not a turn of the agent's model.
-            if let Some(start) = self
-                .starts
-                .get(&turn.cause)
-                .filter(|start| start.by == turn.agent.id.0)
-            {
-                starts.push((turn, start.clone()));
-                continue;
-            }
-            if !own(&turn) {
-                continue;
-            }
-            turn.line = self.line_of(&turn);
-            // A stop on its item ends what stood when it was given: what was written to it
-            // since is new work.
-            let before_stop = turn.agent.sub.as_ref().is_some_and(|sub| {
-                sub.stands == Stands::Stopped
-                    && self
-                        .seen
-                        .get(&turn.cause)
-                        .is_none_or(|seen| seen.ts <= sub.since)
-            });
-            if before_stop {
-                stopped.push(turn);
-            } else {
-                turns.push(turn);
-            }
-        }
-        for turn in &mut stopped {
-            turn.line = self.line_of(turn);
-        }
-        let mut notes = std::mem::take(&mut self.notes);
-        for turn in &mut notes {
-            turn.line = self.line_of(turn);
-        }
-        asks.turns = turns;
-        asks.stopped = stopped;
-        asks.sub = Owed {
-            deliveries: self.expected.into_values().collect(),
-            notes,
-            starts,
-        };
-    }
+/// Ask the sub-agent `sub_agent` of `workspace` its job, made from `from`, the reply of the
+/// turn that started it: at once, where a look would only find the starter's newest reply.
+///
+/// # Errors
+/// The list or the record could not be read, or the ask was refused.
+pub(super) async fn ask_started(
+    workspaces: &Workspaces,
+    workspace: &str,
+    sub_agent: &str,
+    from: ResourceRef,
+) -> Result<(), String> {
+    let Some(roster) = roster_of(workspaces, workspace).await? else {
+        return Ok(());
+    };
+    let Some(agent) = roster.get(&Id::from_raw(sub_agent.to_owned())).cloned() else {
+        return Ok(());
+    };
+    workspaces
+        .with_tl_record(
+            workspace,
+            &asked::packages()?,
+            asked::viewer(),
+            move |opened| ask_of(opened, &roster, &agent, Some(&from)),
+        )
+        .await
 }
 
 impl ServerAgents {
-    /// What `workspace`'s list of its agents asks for its sub-agents, of which this server
-    /// works those in `worked`.
+    /// The workspace's list of its agents, when it holds one.
     ///
     /// # Errors
     /// The list could not be read.
-    pub(super) async fn team(
+    pub(super) async fn team_roster(
         &self,
         workspace: &str,
-        worked: &BTreeMap<String, Agent>,
-    ) -> Result<Team, String> {
-        let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let roster = self
-            .read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &document)
-            .await?;
-        Ok(Team::of(roster, worked))
+    ) -> Result<Option<WorkspaceAgents>, String> {
+        roster_of(&self.workspaces, workspace).await
     }
 
-    /// Where `turn`'s agent writes in Chat when it is a sub-agent: none for an agent a person
-    /// made, whose turns are not kept to one conversation.
-    pub(super) async fn own_of(&self, workspace: &str, turn: &Turn) -> Option<Own> {
-        let sub = turn.agent.sub.as_ref()?;
-        let mut own = self.own_in(workspace, &sub.conversation).await;
-        own.reply = reply_of(turn);
-        Some(own)
-    }
-
-    /// The sub-agent's conversation `conversation`, with the members of `workspace` a name
-    /// written there is bound to.
-    async fn own_in(&self, workspace: &str, conversation: &str) -> Own {
-        let members = self
-            .workspaces
-            .summary(workspace)
-            .await
-            .ok()
-            .map(|summary| {
-                named(
-                    summary
-                        .members
-                        .into_iter()
-                        .map(|member| (member.id, member.name)),
-                )
-            });
-        Own {
-            conversation: conversation.to_owned(),
-            members,
-            reply: None,
-        }
-    }
-
-    /// The person `person` as their own device is admitted in `workspace`, and the server's
-    /// action service there.
-    async fn person_in(
-        &self,
-        workspace: &str,
-        person: &str,
-    ) -> Result<(WorkspaceActionProvider, Caller), String> {
-        let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
-        // The person as the workspace's list of its agents names a keeper.
-        let key: [u8; 32] = tilo_action_policy::PersonId::parse(person)
-            .ok()
-            .and_then(|person| person.root())
-            .ok_or("a sub-agent works for a person")?;
-        let device = self
-            .workspaces
-            .person_device(workspace_id, key)
-            .await
-            .ok_or("the person a sub-agent works for is admitted here on no device")?;
-        Ok((
-            WorkspaceActionProvider::new(self.actions.clone(), workspace_id),
-            Caller::authenticated(key, device).in_workspace(workspace),
-        ))
-    }
-
-    /// Carry what a look found owed to the sub-agents of `workspace`: each job and note the
-    /// list holds is written into its sub-agent's conversation, as the words of the agent
-    /// that gave it, and a note that is there reaches the turn of its sub-agent that is going.
+    /// Ask the sub-agents of `workspace` that this server works, those in `worked`, what
+    /// `roster` holds for them and they were not asked yet, and take back what a stop on an
+    /// item ended before anyone took it.
     ///
-    /// The look read at `reading`, and a turn that began or went on since takes no note of it
-    /// ([`going::Going::reach_read`]): the note may be one its agent answered before, and the
-    /// turn would leave its person's newer words for it. Whether every note was still current
-    /// for the turn it was handed to: where one was not, the look reads again.
-    pub(super) async fn carry(&self, workspace: &str, owed: Owed, reading: going::Reading) -> bool {
-        // A sub-agent its person asked for is started first: its job is owed at the next look.
-        for (turn, start) in owed.starts {
-            self.answer_start(workspace, &turn, &start).await;
+    /// # Errors
+    /// The record could not be read or written.
+    pub(super) async fn ask_team(
+        &self,
+        workspace: &str,
+        roster: &WorkspaceAgents,
+        worked: &BTreeMap<String, Agent>,
+    ) -> Result<(), String> {
+        let subs: Vec<Agent> = roster
+            .agents
+            .iter()
+            .filter(|agent| agent.is_active() && agent.sub.is_some())
+            .filter(|agent| worked.contains_key(&agent.id.0))
+            .cloned()
+            .collect();
+        if subs.is_empty() {
+            return Ok(());
         }
-        for delivery in owed.deliveries {
-            if let Err(error) = self.deliver(workspace, &delivery).await {
-                tracing::warn!(%workspace, kind = delivery.kind, %error, "a sub-agent was not told what the list holds for it");
-            }
-        }
-        let mut current = true;
-        for note in owed.notes {
-            // With no turn of it going the note is its next turn, as the next look gives it.
-            if let going::Entered::Goes(going) = self.going.enter(workspace, &note)
-                && going.reach_read(note, reading) == going::Handed::Stale
-            {
-                current = false;
-            }
-        }
-        current
-    }
-
-    /// Start the sub-agent its person asked `turn`'s agent for, and answer the ask in that
-    /// agent's name: no model is asked, the words of the ask are the job as they stand.
-    async fn answer_start(&self, workspace: &str, turn: &Turn, start: &Start) {
-        let started = if start.held {
-            Ok(())
-        } else {
-            self.start(workspace, turn, start).await
-        };
-        let outcome = match started {
-            Ok(()) => Outcome::Answered(format!(
-                "I started the sub-agent {:?}. It works in a conversation of its own, and I tell \
-                 you here when it ends.",
-                start.name
-            )),
-            Err(why) => Outcome::Failed(why),
-        };
-        let answered = match self.scope(workspace, turn).await {
-            Ok(acting) => acting.reply(turn).finished(&outcome).await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = answered {
-            tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "an ask for a sub-agent was not answered");
-        }
-    }
-
-    /// Apply `start-sub-agent` on the list as `turn`'s agent, for the person who asked: the
-    /// list's own rules decide (who keeps the agent, how deep, how many at once).
-    async fn start(&self, workspace: &str, turn: &Turn, start: &Start) -> Result<(), String> {
-        let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let (by, person) = (turn.agent.id.0.clone(), turn.person.clone());
-        let sub_agent = tilo_workspace_agent::NewSubAgent {
-            name: start.name.clone(),
-            job: start.job.clone(),
-            id: Some(start.id.clone()),
-            ..tilo_workspace_agent::NewSubAgent::default()
-        };
-        let applied = self
-            .workspaces
-            .author_application(
+        let roster = roster.clone();
+        self.workspaces
+            .with_tl_record(
                 workspace,
-                self.workspaces.governor(),
-                &tilo_agent_session::AppCatalogue::native(),
-                tilo_workspace_agent::OWNER,
-                &document,
-                |doc| {
-                    let mut starting =
-                        tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_agent_for(&by, &person)
-                            .in_app(tilo_workspace_agent::OWNER, "Assistant");
-                    // A replica stamps what it writes with a fixed day of its own unless told the time.
-                    starting.set_now_ms(tilo_clock::unix_now_ms_i64());
-                    let applied = starting
-                        .apply(WorkspaceAgents::START_SUB_AGENT.with(
-                            tilo_workspace_agent::workspace_agents::StartSubAgent { sub_agent },
-                        ))
-                        .map(drop)
-                        .map_err(|error| error.to_string());
-                    std::mem::swap(doc, starting.doc_mut());
-                    applied
+                &asked::packages()?,
+                asked::viewer(),
+                move |opened| {
+                    for agent in &subs {
+                        ask_of(opened, &roster, agent, None)?;
+                    }
+                    Ok(())
                 },
             )
             .await
-            .map_err(|error| error.to_string());
-        match applied {
-            // Another look started it meanwhile: the list holds it, which is what was asked.
-            Err(_) if self.holds(workspace, &start.id).await => Ok(()),
-            other => other,
-        }
-    }
-
-    /// Whether `workspace`'s list of its agents holds the agent `id`.
-    async fn holds(&self, workspace: &str, id: &str) -> bool {
-        let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        self.read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &document)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|roster| roster.get(&Id::from_raw(id.to_owned())).is_some())
-    }
-
-    /// The turn `delivery` is written on when a lead gave it to one of its own team, with the
-    /// bound of that turn ([`lead_turn`]); none for what any other agent gave.
-    ///
-    /// # Errors
-    /// The list could not be read, or the lead's words name a member of the workspace.
-    async fn of_lead(
-        &self,
-        workspace: &str,
-        delivery: &Delivery,
-    ) -> Result<Option<OnTurn>, String> {
-        let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let Some(roster) = self
-            .read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &document)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let Some(on) = lead_turn(&roster, delivery) else {
-            return Ok(None);
-        };
-        let there = self.own_in(workspace, &delivery.conversation).await;
-        if there.names_nobody(&delivery.text) {
-            Ok(Some(on))
-        } else {
-            Err("a sub-agent's words name no member of the workspace".to_owned())
-        }
-    }
-
-    /// Write `delivery`, a job or a note the list holds, into its sub-agent's conversation as
-    /// the words of the agent that gave it.
-    ///
-    /// What a person's own agent gave is written in that agent's name outside a turn, where the
-    /// service holds it to what the list keeps for the agent. What a sub-agent gave one of its
-    /// own team is this server's to carry as well, and outside a turn nothing is taken in a
-    /// sub-agent's name but the three writes its own rules let it, of which asking an agent is
-    /// none. So that one message is written for the lead's turn ([`lead_turn`]), with the bound
-    /// the lead's keeper set on it, as every call of a turn this server works is, and through
-    /// the service as it serves everyone. It is carried as plain words only: words that name a
-    /// member of the workspace are not written, as a sub-agent's own turn is taken none
-    /// ([`admits`]), so nothing a lead gives its team reaches a member or asks another agent.
-    async fn deliver(&self, workspace: &str, delivery: &Delivery) -> Result<(), String> {
-        let (service, person) = self.person_in(workspace, &delivery.person).await?;
-        let caller = person
-            .delegated_to(delivery.by.clone())
-            .named(&delivery.by_name);
-        let caller = match self.of_lead(workspace, delivery).await? {
-            Some((turn, bound)) => caller.on_turn(turn, bound),
-            None => caller,
-        };
-        let label = cut(delivery.by_name.trim(), LABEL_BYTES);
-        ask_agent(
-            &service,
-            &caller,
-            workspace,
-            (&delivery.conversation, &delivery.text),
-            (
-                delivery.kind,
-                if label.is_empty() {
-                    delivery.by.as_str()
-                } else {
-                    label
-                },
-                &delivery.key,
-            ),
-        )
-        .await
     }
 
     /// Say on its item how the sub-agent `agent` stands, as the sub-agent itself. The server
@@ -940,49 +508,11 @@ impl ServerAgents {
         }
     }
 
-    /// Whether a question of the sub-agent's own waits for its person in its conversation, in
-    /// the part `turn` was asked in or one begun since.
-    async fn asks_its_person(&self, workspace: &str, turn: &Turn) -> bool {
-        let (Some(sub), Ask::Message { part, .. }) = (&turn.agent.sub, &turn.ask) else {
-            return false;
-        };
-        let Some(asked_in) = collab_types::document::DocumentId::parse(part)
-            .and_then(|part| chat::parts::part_index(&part))
-        else {
-            return false;
-        };
-        let me = MemberId::agent(&turn.agent.id.0);
-        for index in asked_in..asked_in.saturating_add(4) {
-            let Ok(Some(held)) = self
-                .read::<chat::parts::ChatMessages>(
-                    workspace,
-                    CHAT,
-                    chat::parts::part(index).as_str(),
-                )
-                .await
-            else {
-                break;
-            };
-            let waits = held.messages.iter().any(|(_, message)| {
-                message.author == me
-                    && conversation_id(message).as_str() == sub.conversation
-                    && message
-                        .question
-                        .as_ref()
-                        .is_some_and(chat::question::Question::waiting)
-            });
-            if waits {
-                return true;
-            }
-        }
-        false
-    }
-
     /// A turn of a sub-agent ended as `outcome`: its item says how it stands now, and when
     /// the work came from its line of starters (`from_starter`), its starter is told.
     pub(super) async fn sub_ended(
         &self,
-        acting: &super::TurnScope,
+        acting: &TurnScope,
         turn: &Turn,
         outcome: &Outcome,
         from_starter: bool,
@@ -991,14 +521,7 @@ impl ServerAgents {
             return;
         }
         let (stands, said) = match outcome {
-            Outcome::Answered(words) => {
-                let stands = if self.asks_its_person(&acting.workspace, turn).await {
-                    Stands::NeedsPerson
-                } else {
-                    Stands::Done
-                };
-                (stands, words.as_str())
-            }
+            Outcome::Answered(words) => (Stands::Done, words.as_str()),
             // It stopped at a limit only its person can raise, or needs to be told how to go on.
             Outcome::Stopped(words) => (Stands::NeedsPerson, words.as_str()),
             Outcome::Failed(words) => (Stands::Failed, words.as_str()),
@@ -1010,47 +533,24 @@ impl ServerAgents {
         if !from_starter || stands == Stands::Stopped {
             return;
         }
-        // The server's own write, so through the service as it serves everyone: the one kept to
-        // the sub-agent's conversation takes of Chat only the three writes of its turn.
-        let service = WorkspaceActionProvider::new(self.actions.clone(), acting.workspace_id);
-        if let Err(error) = self
-            .tell_starter(
-                &acting.workspace,
-                (&acting.person, &service),
-                turn,
-                (stands, said),
-            )
-            .await
-        {
+        if let Err(error) = self.tell_starter(acting, turn, stands).await {
             tracing::warn!(workspace = %acting.workspace, agent = %turn.agent.id.0, %error, "a sub-agent's starter was not told how its work ended");
         }
     }
 
-    /// Tell the agent that started `turn`'s sub-agent how its work ended, in the starter's own
-    /// conversation, as the sub-agent's news: the starter answers it there like any ask.
-    ///
-    /// The server writes it for the turn that ended, so the caller carries that turn and the
-    /// bound the sub-agent's keeper set on it, as every call of a turn this server works does.
-    /// Outside a turn nothing is taken in a sub-agent's name but what its own rules let it, and
-    /// asking an agent is none of that: this one message upward is the server's, never a call
-    /// of the sub-agent's model, whose turn is served kept to its own conversation.
+    /// Ask the agent that started `turn`'s sub-agent with the news that its work ended as
+    /// `stands`: an ask in the sub-agent's name, made from its reply, which the starter's turn
+    /// reads ([`team_turn`]). Keyed by that reply, so its news is asked once.
     async fn tell_starter(
         &self,
-        workspace: &str,
-        (person, service): (&Caller, &WorkspaceActionProvider),
+        acting: &TurnScope,
         turn: &Turn,
-        (stands, said): (Stands, &str),
+        stands: Stands,
     ) -> Result<(), String> {
         let (Some(sub), Some(line)) = (&turn.agent.sub, &turn.line) else {
             return Ok(());
         };
-        let (
-            Some(starter),
-            Ask::Message {
-                message, attempt, ..
-            },
-        ) = (&line.starter, &turn.ask)
-        else {
+        let (Some(starter), Some(replying)) = (&line.starter, &acting.replying) else {
             return Ok(());
         };
         let how = match stands {
@@ -1059,87 +559,33 @@ impl ServerAgents {
             Stands::NeedsPerson => "needs its person",
             Stands::Working | Stands::Stopped => return Ok(()),
         };
-        // The starter's own conversation: a sub-agent's is on its item, and a person's own
-        // agent is asked where that person talks to it.
-        let theirs = conversation_of(starter);
-        let said: String = said.trim().chars().take(TOLD_CHARS).collect();
-        let said = if said.is_empty() {
-            "(it said nothing)".to_owned()
-        } else {
-            said
-        };
+        let reply = replying.reply().await?;
         let then = if starter.is_sub() {
             "Take it into your own job."
         } else {
             "Tell your person in one line what came of it."
         };
-        let text = format!(
+        let said = format!(
             "Your sub-agent {name:?} (`{id}`) ended the work you gave it and now stands: {how}.\n\
-             Its job: {job}\nWhat it said:\n{said}\n\n{then} The whole of it is in its \
-             conversation, `{conversation}`.",
+             Its job: {job}\n\n{then} The whole of what it said is its reply.",
             name = turn.agent.name,
             id = turn.agent.id.0,
             job = sub.job.lines().next().unwrap_or_default(),
-            conversation = turn.conversation,
         );
-        let caller = person
-            .clone()
-            .delegated_to(turn.agent.id.0.clone())
-            .named(&turn.agent.name)
-            .on_turn(
-                tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone()),
-                turn.agent.bound_rules().unwrap_or_default(),
-            );
-        let label = format!(
-            "{}: {how}",
-            cut(turn.agent.name.trim(), LABEL_BYTES.saturating_sub(24))
-        );
-        ask_agent(
-            service,
-            &caller,
-            workspace,
-            (&theirs, &text),
-            (
-                chat::cause::NEWS,
-                &label,
-                &key_of(&turn.agent.id.0, &format!("{message}:{attempt}")),
-            ),
-        )
-        .await
+        let key = key_of(&turn.agent.id.0, &format!("{ENDED}:{}", reply.id_string()));
+        let (by, to) = (turn.agent.id.0.clone(), starter.id.0.clone());
+        self.workspaces
+            .with_tl_record(
+                &acting.workspace,
+                &asked::packages()?,
+                asked::viewer(),
+                move |opened| {
+                    let all = asks::asks(opened)?;
+                    ask_once(opened, &all, (&by, &to), (&said, &key), &reply)
+                },
+            )
+            .await
     }
-}
-
-/// Ask the agents of the conversation `conversation` with `text` through Chat's `ask-agent`, as
-/// `caller`, under the cause (`kind`, `label`, `key`).
-async fn ask_agent(
-    service: &WorkspaceActionProvider,
-    caller: &Caller,
-    workspace: &str,
-    (conversation, text): (&str, &str),
-    (kind, label, key): (&str, &str, &str),
-) -> Result<(), String> {
-    let route = DocumentRoute {
-        app_id: CHAT.to_owned(),
-        cluster_id: workspace.to_owned(),
-        document: String::new(),
-    };
-    let mut arguments = Map::new();
-    arguments.insert("text".into(), json!(text));
-    arguments.insert(TO.into(), json!(conversation));
-    arguments.insert(
-        "cause".into(),
-        json!({"kind": kind, "label": label, "key": key}),
-    );
-    invoke_named(
-        service,
-        caller,
-        &route,
-        &collab_types::document::chain_resource_id(&chat::parts::chain()),
-        "ask-agent",
-        arguments,
-    )
-    .await
-    .map(drop)
 }
 
 #[cfg(test)]
@@ -1159,300 +605,5 @@ mod tests {
         assert_eq!(key, key_of(&long, JOB), "the same every time it is made");
         assert_ne!(key, key_of(&long, "note:n1"));
         assert_eq!(cut("äöü", 3), "ä", "cut at a character");
-    }
-
-    #[test]
-    fn a_sub_agents_words_name_a_member_as_chat_binds_the_name() {
-        let own = |members| Own {
-            conversation: "own".to_owned(),
-            members,
-            reply: None,
-        };
-        let kept = own(Some(named([
-            (
-                tilo_actions::MemberId::person("ad".repeat(32)),
-                " Ada ".to_owned(),
-            ),
-            (
-                tilo_actions::MemberId::person("b0".repeat(32)),
-                "  ".to_owned(),
-            ),
-        ])));
-        assert!(
-            !kept.names_nobody("@Ada look at this."),
-            "a member is named"
-        );
-        assert!(
-            !kept.names_nobody("ask @ada"),
-            "whatever the case of the letters"
-        );
-        assert!(kept.names_nobody("Half done: the notes are sorted."));
-        assert!(kept.names_nobody("@Adam is no member here"));
-        assert!(
-            !own(None).names_nobody("plain words"),
-            "with no list read, no words are taken"
-        );
-    }
-
-    /// A call of a sub-agent's turn to Chat's `action` on its messages, given `said`.
-    fn call(action: &str, said: Map<String, Value>) -> InvokeRequest {
-        InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            target: tilo_actions::remote::RemoteActionTarget {
-                provider: format!("{}:{CHAT}:", tilo_agent_session::RESOURCE_PROVIDER),
-                address: tilo_actions::api::ActionAddress {
-                    resource: "chain".to_owned(),
-                    action: action.to_owned(),
-                },
-            },
-            argument: InvokeArgument::Json(said),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        }
-    }
-
-    #[test]
-    fn what_a_sub_agents_model_writes_is_taken_only_for_the_reply_its_turn_answers() {
-        let own = Own {
-            conversation: "own".to_owned(),
-            members: Some(Vec::new()),
-            reply: Some("m_reply_own".to_owned()),
-        };
-        let caller = Caller::agent_turn(
-            "writer",
-            tilo_action_policy::PersonId::from_root([7; 32]),
-            tilo_action_policy::turn::Turn::new(
-                chat::summons::conversation_address(&Id::from_raw("own")),
-                "m1",
-            ),
-        );
-        // What Chat's `stream-output` is given: where, which reply, the words, and whatever
-        // `beside` adds.
-        let said = |to: &str, reply: &str, beside: Option<(&str, Value)>| {
-            let mut said = Map::new();
-            said.insert(TO.to_owned(), json!(to));
-            said.insert("reply".to_owned(), json!(reply));
-            said.insert(
-                "event".to_owned(),
-                json!({"sequence": 1, "event": {"type": "text_delta", "text": "The notes "}}),
-            );
-            if let Some((name, value)) = beside {
-                said.insert(name.to_owned(), value);
-            }
-            said
-        };
-        let taken = |own: &Own, said: Map<String, Value>| {
-            admits(own, &caller, &call(sub::OWN_GROWTH, said))
-        };
-        assert!(
-            taken(&own, said("own", "m_reply_own", None)),
-            "into the reply its turn answers, where it works"
-        );
-        for (what, said) in [
-            (
-                "in its starter's conversation",
-                said("thread", "m_reply_own", None),
-            ),
-            (
-                "into a reply that is not its turn's",
-                said("own", "m_reply_other", None),
-            ),
-            (
-                "under a name of its choosing",
-                said("own", "m_reply_own", Some(("name", json!("Ada")))),
-            ),
-            (
-                "with something said beside",
-                said("own", "m_reply_own", Some(("parent", json!("m1")))),
-            ),
-        ] {
-            assert!(!taken(&own, said), "{what} it is refused");
-        }
-        let answers_none = Own { reply: None, ..own };
-        assert!(
-            !taken(&answers_none, said("own", "m_reply_own", None)),
-            "a turn that answers no message is taken none"
-        );
-    }
-
-    /// A person's own agent, a lead it started, the lead's worker, a sub-agent beside the lead
-    /// and one a coding harness works, each made by the list's own actions.
-    fn team() -> WorkspaceAgents {
-        use tilo_workspace_agent::workspace_agents::{
-            CreateAgent, SetSubAgentLimits, StartSubAgent,
-        };
-        let start = |name: &str, job: &str| {
-            WorkspaceAgents::START_SUB_AGENT.with(StartSubAgent {
-                sub_agent: tilo_workspace_agent::NewSubAgent {
-                    name: name.to_owned(),
-                    job: job.to_owned(),
-                    ..tilo_workspace_agent::NewSubAgent::default()
-                },
-            })
-        };
-        let mut list = tilo_resource::Replica::<WorkspaceAgents>::new().as_author("ada");
-        list.set_now_ms(1_700_000_000_000);
-        list.apply(WorkspaceAgents::CREATE_AGENT.with(CreateAgent {
-            name: tilo_resource::NonBlank::parse("Assistant").expect("a name"),
-            id: Some("main".to_owned()),
-            model: None,
-            mcp_client: None,
-        }))
-        .expect("a person makes their own agent");
-        list.apply(
-            WorkspaceAgents::SET_SUB_AGENT_LIMITS.with(SetSubAgentLimits {
-                agent: Id::from_raw("main"),
-                depth: Some(2),
-                at_once: None,
-            }),
-        )
-        .expect("its keeper lets sub-agents go two deep");
-        let mut list = list.as_agent_for("main", "ada");
-        list.apply(start("Lead", "Build the feature"))
-            .expect("the person's own agent starts a lead");
-        list.apply(start("Other", "Find the deck"))
-            .expect("and one beside it");
-        list.apply(WorkspaceAgents::START_SUB_AGENT.with(StartSubAgent {
-            sub_agent: tilo_workspace_agent::NewSubAgent {
-                name: "Coder".to_owned(),
-                job: "Fix the sign-up".to_owned(),
-                coding: Some(tilo_workspace_agent::NewCoding {
-                    repository: "code/app/".to_owned(),
-                    ..tilo_workspace_agent::NewCoding::default()
-                }),
-                ..tilo_workspace_agent::NewSubAgent::default()
-            },
-        }))
-        .expect("and one a coding harness works in the workspace's machine");
-        let mut list = list.as_agent_for("lead", "ada");
-        list.apply(start("Worker", "Write the tests"))
-            .expect("the lead starts its worker");
-        list.state().expect("the list reads")
-    }
-
-    /// `list` with its lead changed by `change`.
-    fn with_lead(list: &WorkspaceAgents, change: impl Fn(&mut Agent)) -> WorkspaceAgents {
-        let mut agents: Vec<Agent> = list.agents.iter().cloned().collect();
-        for agent in &mut agents {
-            if agent.id.0 == "lead" {
-                change(agent);
-            }
-        }
-        WorkspaceAgents {
-            agents: agents.into(),
-        }
-    }
-
-    #[test]
-    fn a_job_is_written_on_its_leads_turn_only_for_the_leads_own_team() {
-        let list = team();
-        let own = |agent: &str| {
-            list.get(&Id::from_raw(agent))
-                .and_then(|agent| agent.sub.as_ref())
-                .map(|sub| sub.conversation.clone())
-                .expect("a sub-agent's own conversation")
-        };
-        let given = |by: &str, to: &str, person: &str| Delivery {
-            person: person.to_owned(),
-            by: by.to_owned(),
-            by_name: by.to_owned(),
-            conversation: to.to_owned(),
-            kind: JOB,
-            key: key_of("worker", JOB),
-            text: "Write the tests".to_owned(),
-        };
-        let to_worker = given("lead", &own("worker"), "ada");
-
-        // A lead's job to its worker: the lead's turn in the lead's own conversation, the one its
-        // own job began, with the bound its keeper set on the lead.
-        let (turn, bound) = lead_turn(&list, &to_worker)
-            .expect("a lead's job to its worker is written on the lead's turn");
-        assert_eq!(
-            turn.conversation,
-            chat::summons::conversation_address(&Id::from_raw(own("lead")))
-        );
-        assert_eq!(
-            turn.message,
-            chat::cause::message_id(&MemberId::person("ada"), &key_of("lead", JOB)).to_string()
-        );
-        assert!(bound.is_empty(), "nothing narrows this lead: {bound:?}");
-        let refusal = tilo_action_policy::Rule::new(
-            tilo_action_policy::TreePath::workspace("w").app("so.tilo.notes"),
-            tilo_action_policy::KindSet::READ,
-            tilo_action_policy::Answer::Deny,
-        );
-        let narrowed = with_lead(&list, |lead| {
-            lead.bound = vec![tilo_workspace_agent::Bound::of(&refusal)];
-        });
-        let (_, bound) = lead_turn(&narrowed, &to_worker).expect("a narrowed lead's job as well");
-        assert!(
-            bound.len() == 1 && bound[0].answer == tilo_action_policy::Answer::Deny,
-            "the turn carries what the lead's keeper bounded the lead to: {bound:?}"
-        );
-
-        // Everything else stays outside a turn, where the list's own rules for the agent decide.
-        for (what, by, to, person) in [
-            (
-                "a person's own agent gives a job outside a turn",
-                "main",
-                own("lead"),
-                "ada",
-            ),
-            (
-                "a worker gives nothing upward",
-                "worker",
-                own("lead"),
-                "ada",
-            ),
-            (
-                "a lead gives nothing to one beside it",
-                "lead",
-                own("other"),
-                "ada",
-            ),
-            ("nor to itself", "lead", own("lead"), "ada"),
-            (
-                "nor into a conversation that is no sub-agent's",
-                "lead",
-                "direct:main".to_owned(),
-                "ada",
-            ),
-            ("nor for another person", "lead", own("worker"), "grace"),
-        ] {
-            assert!(
-                lead_turn(&list, &given(by, &to, person)).is_none(),
-                "{what}"
-            );
-        }
-        let retired = with_lead(&list, |lead| {
-            lead.state = tilo_workspace_agent::AgentState::Retired;
-        });
-        assert!(
-            lead_turn(&retired, &to_worker).is_none(),
-            "a lead that was retired gives nothing on a turn"
-        );
-        // A lead a coding harness works in the workspace's machine: where it works is as the
-        // list's own item for such a sub-agent says it.
-        let coder = list
-            .get(&Id::from_raw("coder"))
-            .and_then(|agent| agent.sub.clone())
-            .expect("the sub-agent a coding harness works");
-        let elsewhere = with_lead(&list, |lead| {
-            lead.sub = lead.sub.take().map(|own| tilo_workspace_agent::Sub {
-                started_by: own.started_by,
-                conversation: own.conversation,
-                depth: own.depth,
-                ..coder.clone()
-            });
-        });
-        assert!(
-            lead_turn(&elsewhere, &to_worker).is_none(),
-            "a lead this server does not work has no turn of this server's"
-        );
     }
 }
