@@ -888,7 +888,9 @@ impl Core {
         let ctx = self.mut_ctx(rh, fh)?;
         let kept = match imp {
             Imp::CollInsertAs => Some(self.text(a.h(3)?)?),
-            Imp::CollInsertKeyed => Some(keyed_id(&ctx.target, &ctx.field.id, &self.text(a.h(3)?)?)),
+            Imp::CollInsertKeyed => {
+                Some(keyed_id(&ctx.target, &ctx.field.id, &self.text(a.h(3)?)?))
+            }
             _ => None,
         };
         let item_tys = self.coll_field(&ctx)?;
@@ -909,9 +911,8 @@ impl Core {
             let at = ctx.target.item(id, item_ty.id.clone());
             // Whether it stands is a read like any other: a run that is run again after it
             // waited finds what it found before.
-            let stands = self.journaled_read(|| {
-                Ok(Value::Bool(self.store.borrow().type_of(&at).is_ok()))
-            })?;
+            let stands =
+                self.journaled_read(|| Ok(Value::Bool(self.store.borrow().type_of(&at).is_ok())))?;
             if matches!(stands, Value::Bool(true)) {
                 let author = Some(self.module_of_frame()?);
                 return self.ret_h(Value::Ref(RefValue {

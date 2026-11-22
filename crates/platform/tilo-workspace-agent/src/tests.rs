@@ -556,7 +556,10 @@ fn a_member_in_person_counts_what_an_agent_spends_and_the_agent_does_not() {
     let agent = record.state().unwrap().agents[0].id.0.clone();
     let mut grace = record.fork().as_author(GRACE);
     grace.apply(charge(&agent, "2026-01-01", 1_000)).unwrap();
-    assert_eq!(grace.state().unwrap().agents[0].spent_on("2026-01-01"), 1_000);
+    assert_eq!(
+        grace.state().unwrap().agents[0].spent_on("2026-01-01"),
+        1_000
+    );
     let mut itself = record.fork().as_agent_for(&agent, ADA);
     let refused = itself
         .apply(charge(&agent, "2026-01-01", 1_000))
@@ -741,7 +744,9 @@ fn a_member_in_person_tells_the_workspaces_agent_how_to_work() {
 
     // A member other than the one who made it does, themselves.
     let mut grace = record.fork().as_author(GRACE);
-    grace.apply(tell(&agent, Some("Work for the team."))).unwrap();
+    grace
+        .apply(tell(&agent, Some("Work for the team.")))
+        .unwrap();
     assert_eq!(
         grace.state().unwrap().agents[0].told(),
         Some("Work for the team.")

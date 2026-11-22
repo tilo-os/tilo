@@ -3,7 +3,8 @@
 
 use crate::common::{codes, compile_body, validate};
 
-const BOARD: &str = "type Note {\n    title: Text\n}\ntype Board {\n    notes: Collection<Note>\n}\n";
+const BOARD: &str =
+    "type Note {\n    title: Text\n}\ntype Board {\n    notes: Collection<Note>\n}\n";
 
 tilo_test_env::scenario! {
     /// An action calls another made from what it made, and inserts the item a key names.

@@ -1,7 +1,6 @@
 //! End-to-end round trip: serve the `PackageServiceServer` on a Unix socket on its
 //! own thread, connect the Store's client, and drive install → list → pin.
 
-
 use crate::common;
 
 use package_service::install::{InstallExpectation, install_tapp};

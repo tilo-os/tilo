@@ -19,8 +19,8 @@ use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use wasm_bindgen::prelude::*;
 
-mod fonts;
 pub mod files;
+mod fonts;
 mod platform;
 pub mod playground;
 pub mod window;

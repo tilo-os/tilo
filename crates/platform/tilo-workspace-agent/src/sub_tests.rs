@@ -206,9 +206,7 @@ fn only_an_agent_of_the_workspace_starts_one_for_the_member_it_works_for() {
     // The workspace's agent works for any member: for Grace, whom it was not made by, it starts
     // one that works for her.
     let mut for_grace = record.fork().as_agent_for(MAIN, GRACE);
-    for_grace
-        .apply(start("Research", "Find the deck"))
-        .unwrap();
+    for_grace.apply(start("Research", "Find the deck")).unwrap();
     assert_eq!(
         for_grace.state().unwrap().sub_agents_of(GRACE).count(),
         1,
@@ -418,9 +416,7 @@ fn whoever_started_one_gives_it_notes_and_nobody_below_or_beside_it_does() {
     assert!(refused.to_string().contains("by an agent"), "{refused}");
     // The workspace's agent steers what it started whichever member it works for now.
     let mut for_grace = record.fork().as_agent_for(MAIN, GRACE);
-    for_grace
-        .apply(note("lead", "Do this instead."))
-        .unwrap();
+    for_grace.apply(note("lead", "Do this instead.")).unwrap();
 
     // The record keeps the newest; each is in the conversation once it was carried there.
     let mut main = record.fork().as_agent_for(MAIN, ADA);

@@ -1,4 +1,3 @@
-
 use std::process::Output;
 
 use ed25519_dalek::SigningKey;

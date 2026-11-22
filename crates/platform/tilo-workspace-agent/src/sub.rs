@@ -476,9 +476,7 @@ impl WorkspaceAgents {
         let mut team: Vec<&Agent> = self
             .agents
             .iter()
-            .filter(|agent| {
-                agent.is_active() && self.started_under(agent, &above.id.0)
-            })
+            .filter(|agent| agent.is_active() && self.started_under(agent, &above.id.0))
             .collect();
         team.sort_by(|one, other| {
             (one.created_at, &one.id.0).cmp(&(other.created_at, &other.id.0))

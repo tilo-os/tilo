@@ -47,11 +47,14 @@ pub fn add_font(file: &str, bytes: Vec<u8>, sha256: &str) {
 #[must_use]
 pub fn fonts_ready() -> String {
     let handed = HANDED.with(|handed| std::mem::take(&mut *handed.borrow_mut()));
-    let catalog = ui::font_catalog::FontCatalog::product("", ui::i18n::I18nManager::current_locale());
+    let catalog =
+        ui::font_catalog::FontCatalog::product("", ui::i18n::I18nManager::current_locale());
     let mut handed = handed;
     match catalog.load_browser_startup_bytes(|file| handed.remove(file)) {
         Ok(system) => {
-            drop(ui::text_render::TextRenderer::with_browser_font_system(system));
+            drop(ui::text_render::TextRenderer::with_browser_font_system(
+                system,
+            ));
             READY.with(|ready| *ready.borrow_mut() = true);
             json!({ "ok": true }).to_string()
         }
@@ -65,5 +68,8 @@ pub(crate) fn ready() -> Result<(), String> {
     if cfg!(not(target_arch = "wasm32")) || READY.with(|ready| *ready.borrow()) {
         return Ok(());
     }
-    Err("no fonts yet: hand over each of startup_fonts() with add_font, then call fonts_ready".to_owned())
+    Err(
+        "no fonts yet: hand over each of startup_fonts() with add_font, then call fonts_ready"
+            .to_owned(),
+    )
 }

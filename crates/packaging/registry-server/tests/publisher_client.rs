@@ -2,7 +2,6 @@
 //! registry: apply for a namespace, get approved, publish a build into it, and find the upload
 //! where review reads it.
 
-
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};

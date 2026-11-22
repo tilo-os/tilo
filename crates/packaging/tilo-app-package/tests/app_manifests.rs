@@ -3,7 +3,6 @@
 //! Every app needs a valid `tilo-app.toml` to be
 //! packable, installable, and launchable at all.
 
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

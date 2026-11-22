@@ -8,7 +8,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::path::Path;
 
 use tilo_paths::{AppPaths, Location, scope_profile};

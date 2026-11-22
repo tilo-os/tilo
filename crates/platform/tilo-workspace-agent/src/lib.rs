@@ -545,8 +545,9 @@ impl WorkspaceAgents {
         &mut self,
         cx: &mut ActionCx,
         #[param("The agent")] agent: Id,
-        #[param("How it works here; none to tell it nothing of its own")]
-        instruction: Option<String>,
+        #[param("How it works here; none to tell it nothing of its own")] instruction: Option<
+            String,
+        >,
     ) -> Result<(), Refusal> {
         in_person(cx)?;
         let found = self

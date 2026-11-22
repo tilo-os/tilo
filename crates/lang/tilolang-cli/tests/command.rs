@@ -1,7 +1,6 @@
 //! The `tilolang` command at its edge: what it prints when asked for help, and how each of its
 //! commands refuses arguments it cannot read, before it builds, runs or opens anything.
 
-
 use std::process::Command;
 
 use tilo_test_env::SpawnUnderEnvLock as _;

@@ -2,7 +2,6 @@
 //! (`use so.tilo.device`) found as `build` and `layout-check` find them; what `--write-ids`
 //! writes is what a check calls current.
 
-
 use std::path::Path;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;

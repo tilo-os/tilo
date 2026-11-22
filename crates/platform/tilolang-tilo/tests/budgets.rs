@@ -25,7 +25,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -4,7 +4,6 @@
 //! The image's store is built as the image build builds it (`TILO_APPS_DATA_DIR`) and read as the
 //! system store of a session (`TILO_APPS_SYSTEM_DIR`).
 
-
 use std::path::PathBuf;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;

@@ -1,7 +1,6 @@
 //! A key applies to publish under namespaces it proves, over HTTP, and only the owner's approval,
 //! which checks the proofs again, allowlists it.
 
-
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};

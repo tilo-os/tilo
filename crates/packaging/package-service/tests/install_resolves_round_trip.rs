@@ -1,4 +1,3 @@
-
 use crate::common;
 use package_service::install::{
     InstallError, InstallExpectation, install_tapp, install_verified_tapp,

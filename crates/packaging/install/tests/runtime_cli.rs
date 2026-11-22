@@ -3,7 +3,6 @@
 //! `--from` points the bundle producer at a fixture host root, so the tests do not depend on the
 //! runner's `/lib64` layout.
 
-
 use std::fs;
 use std::path::Path;
 use std::process::Command;

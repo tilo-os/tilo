@@ -1,7 +1,6 @@
 //! Bot entries end to end: program uploads, submission checks, review and serving the approved
 //! program as a content-addressed blob.
 
-
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use ed25519_dalek::SigningKey;

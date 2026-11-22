@@ -1,7 +1,6 @@
 //! `add-publisher` as the operator runs it: a namespace is required, and Tilo's own namespace is
 //! granted only with an explicit `--first-party`.
 
-
 use std::path::Path;
 use std::process::Output;
 

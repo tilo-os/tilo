@@ -82,12 +82,7 @@ pub(crate) fn run(host: &Host, asking: &Asking) -> usize {
 }
 
 /// [`run`] for the item `resource`, whose `fields` moved.
-fn item(
-    host: &Host,
-    agent: &Meta,
-    resource: &str,
-    fields: &BTreeSet<String>,
-) -> usize {
+fn item(host: &Host, agent: &Meta, resource: &str, fields: &BTreeSet<String>) -> usize {
     let Some(at) = ResourceRef::parse_id(resource, String::new()) else {
         return 0;
     };

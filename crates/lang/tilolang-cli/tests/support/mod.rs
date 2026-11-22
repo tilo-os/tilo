@@ -1,6 +1,5 @@
 //! What the command's tests share: the packages they build, copied into a scratch directory.
 
-
 use std::path::{Path, PathBuf};
 
 /// The packages `apps/tl`.

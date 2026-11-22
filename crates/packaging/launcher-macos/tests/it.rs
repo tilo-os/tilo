@@ -7,7 +7,6 @@
 )]
 // One test binary instead of one per file; #[path] keeps the files in place.
 
-
 #[cfg(target_os = "macos")]
 #[path = "seatbelt_launch.rs"]
 mod seatbelt_launch;
