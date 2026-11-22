@@ -17,9 +17,6 @@ use tilo_user_identity::{
     sign_device_cert,
 };
 
-/// The console origins Cloud's `npm run dev:tilo` serves by default.
-const CLOUD_DEV_ORIGINS: [&str; 2] = ["http://127.0.0.1:9998", "http://localhost:9998"];
-
 /// How the listener gets its certificate.
 #[derive(Clone, Debug)]
 pub enum TlsArg {
@@ -661,17 +658,6 @@ pub async fn serve(
     Ok(Some(web))
 }
 
-/// `tilo-server dev`.
-#[derive(clap::Args, Clone, Debug)]
-pub struct DevArgs {
-    #[command(flatten)]
-    pub web: WebArgs,
-    /// Keeps the throwaway user root, the host's device and every workspace, so
-    /// browsers stay certified across restarts. Delete it to start over.
-    #[arg(long, value_name = "DIR")]
-    pub state: Option<PathBuf>,
-}
-
 /// `page-host`: the host a site's page opens, as the site hands it over.
 #[derive(clap::Args)]
 pub struct PageHostArgs {
@@ -743,265 +729,6 @@ pub(crate) fn enrol(
     };
     sign_device_cert(&mut cert, root).context("sign a dev device certificate")?;
     Ok(cert)
-}
-
-/// The first wait before reopening a lost approver session; it doubles up
-/// to [`APPROVER_RETRY_MAX`].
-const APPROVER_RETRY_MIN: Duration = Duration::from_millis(250);
-const APPROVER_RETRY_MAX: Duration = Duration::from_secs(10);
-/// A session that lasted this long starts the next wait from the minimum.
-const APPROVER_SETTLED: Duration = Duration::from_secs(30);
-
-/// Keep a dev approver answering for as long as the host runs. A session
-/// that fails (the network changed under it, a path closed, the host was
-/// slow to answer) is logged and reopened with `connect` after a backoff;
-/// it never ends the host.
-async fn approve_forever<C, F>(mut connect: C, root: &SigningKey) -> std::convert::Infallible
-where
-    C: FnMut() -> F,
-    F: std::future::Future<Output = anyhow::Result<tilo_server_client::Approver>>,
-{
-    let mut wait = APPROVER_RETRY_MIN;
-    loop {
-        let opened = tokio::time::Instant::now();
-        let error = match connect().await {
-            Ok(approver) => match approve_every_browser(approver, root).await {
-                Err(error) => error,
-                Ok(never) => match never {},
-            },
-            Err(error) => error.context("connect the dev approver"),
-        };
-        if opened.elapsed() >= APPROVER_SETTLED {
-            wait = APPROVER_RETRY_MIN;
-        }
-        tracing::warn!(error = %format!("{error:#}"), retry_in = ?wait, "dev approver session lost; reopening it");
-        tokio::time::sleep(wait).await;
-        wait = wait.saturating_mul(2).min(APPROVER_RETRY_MAX);
-    }
-}
-
-/// The server's address with its bound sockets on loopback too, so an
-/// approver in the same process keeps a path when the machine's network
-/// addresses change.
-fn loopback_addr(server: &Server) -> iroh::EndpointAddr {
-    let mut addr = server.node_addr();
-    for socket in server.bound_sockets() {
-        let ip = match socket.ip() {
-            std::net::IpAddr::V4(ip) if ip.is_unspecified() => std::net::Ipv4Addr::LOCALHOST.into(),
-            std::net::IpAddr::V6(ip) if ip.is_unspecified() => std::net::Ipv6Addr::LOCALHOST.into(),
-            ip => ip,
-        };
-        addr = addr.with_ip_addr(SocketAddr::new(ip, socket.port()));
-    }
-    addr
-}
-
-/// Certify every browser device that asks, as the dev user root, and allow once each action an
-/// agent asks its person about, until the session fails.
-async fn approve_every_browser(
-    mut approver: tilo_server_client::Approver,
-    root: &SigningKey,
-) -> anyhow::Result<std::convert::Infallible> {
-    loop {
-        for asked in approver
-            .list_confirmations()
-            .await
-            .context("list agents' questions")?
-        {
-            tracing::info!(question = %asked.question(), workspace = %asked.workspace, "allowing an agent's action once");
-            approver
-                .answer(
-                    asked.id,
-                    tilo_server::certify::ConfirmationAnswer::AllowOnce,
-                )
-                .await
-                .context("answer an agent's question")?;
-        }
-        let pending = approver
-            .list_pending()
-            .await
-            .context("list certification requests")?;
-        let agents = approver
-            .list_agent_proposals()
-            .await
-            .context("list agent proposals")?;
-        for pending in pending {
-            // An agent's grant is its keeper's to approve, on their own device.
-            if agents
-                .iter()
-                .any(|agent| agent.request_digest == pending.request_digest)
-            {
-                continue;
-            }
-            let decision = issue_device_cert(
-                &pending.request,
-                root,
-                &CertificationPolicy::browser(),
-                &RevocationList::new(),
-                tilo_clock::unix_now_ns(),
-            )
-            .map_or(
-                tilo_server::certify::ApproverDecision::Deny,
-                tilo_server::certify::ApproverDecision::Issue,
-            );
-            tracing::info!(
-                device = %pending.request.device_label,
-                pairing_code = %pending.pairing_code,
-                "certifying a browser"
-            );
-            approver
-                .decide(pending.request_digest, decision)
-                .await
-                .context("answer a certification request")?;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
-/// What a page (or Cloud's `dev:tilo`) needs to connect, and the Iroh
-/// address a native runtime names in `TILO_COLLAB_HOST`: one JSON line on
-/// stdout, and instructions on stderr.
-fn announce(
-    web: &WebHandle,
-    iroh: &iroh::EndpointAddr,
-    user: &[u8; 32],
-    allowed: &[String],
-    state: &Path,
-) {
-    let localhost = format!("https://localhost:{}", web.addr.port());
-    let user = hex::encode(user);
-    let iroh = serde_json::to_string(iroh).unwrap_or_default();
-    println!(
-        "{}",
-        serde_json::json!({
-            "origin": web.origin,
-            "localhostOrigin": localhost,
-            "plainOrigin": web.plain_origin,
-            "irohAddr": iroh,
-            "userPublicKey": user,
-            "certificateSha256": web.certificate_sha256,
-            "allowedOrigins": allowed,
-            "state": state,
-        })
-    );
-    eprintln!(
-        "\nTilo dev host (development only: it certifies every browser that asks)\n  \
-         HTTPS:               {localhost}\n  user root:           {user}\n  \
-         allowed origins:     {}\n  state:               {}\n\n\
-         Cloud console:\n  npm run dev:tilo -- --port 9998 --host-origin {localhost} --user-public-key {user}\n\n\
-         Open {localhost} in that browser once and accept the development certificate.\n\n\
-         Native runtime (its identity must be this user root):\n  TILO_COLLAB_HOST='{iroh}'\n",
-        allowed.join(" "),
-        state.display(),
-    );
-}
-
-/// A local host for development: a throwaway user root kept under
-/// `--state`, the browser listener, and an approver that certifies every
-/// browser device that asks. Workspaces of that user are bound on first use.
-///
-/// # Errors
-/// The state directory, server or listener cannot be set up.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the guard only lives for the lookup; the value kept is a clone"
-)]
-pub async fn dev(
-    args: DevArgs,
-    shutdown: impl std::future::Future<Output = anyhow::Result<()>>,
-) -> anyhow::Result<()> {
-    let state = args
-        .state
-        .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join("tilo-server-dev"));
-    std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
-    let [root, host, approver_key] = dev_identity(&state)?;
-    let user = root.verifying_key().to_bytes();
-    let server_cert = enrol(&root, &host, "dev host", DeviceCapabilities::member())?;
-    let approver_cert = enrol(
-        &root,
-        &approver_key,
-        "dev approver",
-        DeviceCapabilities::primary(),
-    )?;
-    let config = tilo_server::ServerConfig {
-        state_root: state.join("server"),
-        identity_root: state.join("identity"),
-        ..Default::default()
-    };
-    let hosted = start_server(
-        config,
-        ServerIdentity {
-            user_public_key: user,
-            device_signing_key: host,
-            device_cert: server_cert,
-            revocations: RevocationList::new(),
-        },
-        &args.web,
-        &state,
-    )
-    .await?;
-    let server = &hosted.server;
-    let mut web_args = args.web.clone();
-    if web_args.allowed_origins.is_empty() {
-        web_args.allowed_origins = CLOUD_DEV_ORIGINS
-            .iter()
-            .map(|&origin| origin.into())
-            .collect();
-    }
-    // The session beside this host that launches apps for web members, as
-    // `run --web` takes it: without it a web page lists nothing to open.
-    if let Some(device) = session_device(&web_args)? {
-        server.set_node_session(device);
-    }
-    let listen = web_args
-        .web
-        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 9443)));
-    name_apple_push(server, &web_args);
-    let web = server
-        .serve_web_also_at(
-            web_config(&web_args, listen, &state),
-            web_args.public_origins_also.clone(),
-        )
-        .await
-        .context("start the browser listener")?;
-    announce(
-        &web,
-        &server.node_addr(),
-        &user,
-        &web_args.allowed_origins,
-        &state,
-    );
-    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .bind()
-        .await
-        .context("bind the approver's endpoint")?;
-    let connect = || {
-        let (endpoint, cert, key, host) = (
-            &endpoint,
-            approver_cert.clone(),
-            &approver_key,
-            loopback_addr(server),
-        );
-        async move {
-            Ok(tilo_server_client::Approver::connect(
-                endpoint,
-                host,
-                cert,
-                key,
-                &RevocationList::new(),
-            )
-            .await?)
-        }
-    };
-    tokio::select! {
-        never = approve_forever(connect, &root) => match never {},
-        result = shutdown => result?,
-    }
-    drop(web);
-    endpoint.close().await;
-    hosted.shutdown().await;
-    Ok(())
 }
 
 /// `tilo-server workspace`: the subcommand keeps the name deployed hosts and
@@ -1503,109 +1230,24 @@ mod tests {
         .unwrap()
     }
 
-    /// A browser named `label` asks the host for a certificate; the dev
-    /// approver answers.
-    async fn certify_a_browser(
-        server: &Server,
-        user: [u8; 32],
-        label: &str,
-    ) -> CertificationOutcome {
-        let request = browser_request(user, label);
-        let browser = endpoint().await;
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(20),
-            request_certification(&browser, server.node_addr(), request, |_| {}),
-        )
-        .await
-        .expect("the approver never answered")
-        .unwrap();
-        browser.close().await;
-        outcome
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the server serves the whole scenario and `shutdown` consumes it at the end"
-    )]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_lost_approver_connection_is_reopened_and_the_host_keeps_serving() {
-        let tmp = tempfile::tempdir().unwrap();
-        let [root, host, approver_key] = [key(), key(), key()];
-        let user = root.verifying_key().to_bytes();
-        let server_cert = enrol(&root, &host, "dev host", DeviceCapabilities::member()).unwrap();
-        let approver_cert = enrol(
-            &root,
-            &approver_key,
-            "dev approver",
-            DeviceCapabilities::primary(),
-        )
-        .unwrap();
-        let server = Server::start_with_relay_mode(
-            tilo_server::ServerConfig {
-                state_root: tmp.path().join("server"),
-                identity_root: tmp.path().join("identity"),
-                ..Default::default()
-            },
-            ServerIdentity {
-                user_public_key: user,
-                device_signing_key: host,
-                device_cert: server_cert,
-                revocations: RevocationList::new(),
-            },
-            test_server::relay_mode(),
-        )
-        .await
-        .unwrap();
-
-        // Every session gets an endpoint of its own, handed to the test so
-        // it can cut the connection from under the approver.
-        let (sessions_tx, mut sessions) = tokio::sync::mpsc::unbounded_channel();
-        let host_addr = loopback_addr(&server);
-        let approving = tokio::spawn(async move {
-            let connect = || {
-                let (sessions_tx, cert, key, host) = (
-                    sessions_tx.clone(),
-                    approver_cert.clone(),
-                    approver_key.clone(),
-                    host_addr.clone(),
-                );
-                async move {
-                    let endpoint = endpoint().await;
-                    let _ = sessions_tx.send(endpoint.clone());
-                    Ok(tilo_server_client::Approver::connect(
-                        &endpoint,
-                        host,
-                        cert,
-                        &key,
-                        &RevocationList::new(),
-                    )
-                    .await?)
+    /// The server's address with its bound sockets on loopback too, so an
+    /// approver in the same process keeps a path when the machine's network
+    /// addresses change.
+    fn loopback_addr(server: &Server) -> iroh::EndpointAddr {
+        let mut addr = server.node_addr();
+        for socket in server.bound_sockets() {
+            let ip = match socket.ip() {
+                std::net::IpAddr::V4(ip) if ip.is_unspecified() => {
+                    std::net::Ipv4Addr::LOCALHOST.into()
                 }
+                std::net::IpAddr::V6(ip) if ip.is_unspecified() => {
+                    std::net::Ipv6Addr::LOCALHOST.into()
+                }
+                ip => ip,
             };
-            approve_forever(connect, &root).await
-        });
-
-        let first = sessions.recv().await.unwrap();
-        assert!(matches!(
-            certify_a_browser(&server, user, "Browser").await,
-            CertificationOutcome::Issued { .. }
-        ));
-
-        first.close().await;
-
-        // Another browser of the person, named apart as a client numbers
-        // itself when the host refuses a name another device reads by.
-        assert!(matches!(
-            certify_a_browser(&server, user, "Browser 2").await,
-            CertificationOutcome::Issued { .. }
-        ));
-        assert!(
-            sessions.try_recv().is_ok(),
-            "the second answer came from a reopened session"
-        );
-        assert!(!approving.is_finished(), "the approver gave up");
-        approving.abort();
-        server.shutdown().await;
+            addr = addr.with_ip_addr(SocketAddr::new(ip, socket.port()));
+        }
+        addr
     }
 
     /// A pending browser request as the approver lists it, showing `code`.

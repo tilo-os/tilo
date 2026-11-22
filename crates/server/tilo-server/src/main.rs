@@ -83,12 +83,8 @@ enum Cmd {
     Run {
         #[cfg(feature = "web")]
         #[command(flatten)]
-        web: web_cli::WebArgs,
+        web: Box<web_cli::WebArgs>,
     },
-    /// A throwaway local host for browser development (never in production:
-    /// it certifies every browser device that asks).
-    #[cfg(feature = "web")]
-    Dev(web_cli::DevArgs),
     /// A short-lived shared workspace: its own user root and browser listener,
     /// certifying only the browsers its operator admits on stdin.
     #[cfg(feature = "web")]
@@ -147,13 +143,9 @@ fn run() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Init => cmd_init(&cli.config),
         #[cfg(feature = "web")]
-        Cmd::Run { web } => cmd_run(&cli.config, web),
+        Cmd::Run { web } => cmd_run(&cli.config, *web),
         #[cfg(not(feature = "web"))]
         Cmd::Run {} => cmd_run(&cli.config),
-        #[cfg(feature = "web")]
-        Cmd::Dev(args) => {
-            tilo_rt::daemon("tilo-server").run(watched(web_cli::dev(args, wait_for_shutdown())))?
-        }
         #[cfg(feature = "web")]
         Cmd::Workspace(args) => tilo_rt::daemon("tilo-server")
             .run(watched(web_cli::workspace(*args, wait_for_shutdown())))?,
