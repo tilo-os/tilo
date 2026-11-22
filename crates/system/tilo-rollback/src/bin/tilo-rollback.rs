@@ -854,7 +854,18 @@ fn verify_enrollment_if_running(
         .find(|(_, t)| t.generation == gen_num)
         .context("the token just written is not readable back")?;
     let running = generation::running().ok();
-    if running == Some(gen_num) {
+    // The signed prediction is of PCR 11 as the initrd starts (systemd-measure's enter-initrd
+    // phase), which is when the volume is opened. Once the boot has left the initrd, systemd has
+    // measured its later phases into PCR 11 and no live unseal can match that prediction, so on a
+    // booted system the round trip is proven by the next boot instead.
+    let in_initrd = Path::new("/etc/initrd-release").exists();
+    if running == Some(gen_num) && !in_initrd {
+        println!(
+            "generation {gen_num} is running, but this boot has left the initrd, the phase its \
+             prediction is signed for, so its seal is proven by the next boot. Its keyslot is \
+             verified, and the recovery key still opens the volume if that boot cannot unseal."
+        );
+    } else if running == Some(gen_num) {
         match keyslots::unseal(runner, ws, t, Path::new(&cfg.pcr_public_key), pin)? {
             Some(secret) => {
                 if !keyslots::verify_passphrase(runner, ws, device, &secret, Some(slot))? {
