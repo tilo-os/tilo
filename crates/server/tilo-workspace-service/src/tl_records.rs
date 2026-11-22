@@ -847,6 +847,25 @@ fn tree_item(host: &Host, item: &str, reader: &Actor, depth: usize) -> Result<Js
     Ok(answer)
 }
 
+/// One published action of a tilolang record of a workspace, as a host applies it: the app, who
+/// reads and invokes it, the action and its arguments, and whether it only reads.
+pub struct RecordCall<'a> {
+    /// The record's app, as its package and its resources name it.
+    pub app: &'a str,
+    /// The person the action's reads answer, and as whom it is written.
+    pub viewer: Actor,
+    /// Who invokes it, as the API admitted the caller.
+    pub invoker: &'a ActionInvoker,
+    /// The run the invocation is a step of, as the host stamps it on what it changes.
+    pub context: &'a ActionContext,
+    /// The action's address in the resource's vocabulary, its resource resolved.
+    pub address: &'a ActionAddress,
+    /// Its arguments, as the action API binds them.
+    pub arguments: &'a Map<String, Json>,
+    /// Whether it reads the record rather than changing it: nothing it wrote on the way is kept.
+    pub read: bool,
+}
+
 impl crate::workspaces::Workspaces {
     /// `app`'s record of `workspace`, as this device holds it: its document and every chunk
     /// above it this device reads.
@@ -895,6 +914,98 @@ impl crate::workspaces::Workspaces {
         let policy = self.policy_now(workspace).map(Arc::new);
         let opened = Opened::open(&record, &packages, viewer, policy).ok()?;
         Some(tilolang_tilo::search::entries(opened.host()).into())
+    }
+
+    /// What `route`'s record of `workspace` publishes, each action in the row of the resource
+    /// holding it, read through its app's built-in package: what a caller is offered of a
+    /// tilolang app no catalogue holds and no `.tapp` installs. `None` for an app this build
+    /// runs no package of, or a record it cannot read now. Nothing is written.
+    pub fn record_rows(
+        &self,
+        workspace: &str,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+        person: &str,
+    ) -> Option<Vec<CatalogueRow>> {
+        let packages = built_in(&route.app_id).ok().flatten()?;
+        let record = self.tl_record_now(workspace, &route.app_id)?;
+        let viewer = Actor::Member(tilo_actions::MemberId::person(person.to_owned()));
+        let policy = self.policy_now(workspace).map(Arc::new);
+        let opened = Opened::open(&record, &packages, viewer, policy).ok()?;
+        Some(opened.rows())
+    }
+
+    /// The documents that keep `route`'s record of `workspace`, each with the revision it stands
+    /// at and what it holds, as [`Self::tl_record`] reads them: the record the feed of changes
+    /// lists a tilolang record's history from, read where the record is kept. `None` for an app
+    /// this build runs no package of, or a record that does not read now.
+    pub async fn record_documents(
+        &self,
+        workspace: &str,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+    ) -> Option<Vec<(String, [u8; 32], Vec<u8>)>> {
+        built_in(&route.app_id).ok().flatten()?;
+        let record = self.tl_record(workspace, &route.app_id).await.ok()?;
+        let mut documents = Vec::with_capacity(record.documents.len());
+        for (document, bytes) in record.documents {
+            let doc = automerge::Automerge::load(&bytes).ok()?;
+            let revision = tilo_peer_state::committed_document_revision(&doc.get_heads());
+            documents.push((document, revision, bytes));
+        }
+        Some(documents)
+    }
+
+    /// Apply `call`, a published action of an app's record of `workspace`: a read answers the
+    /// core read as the person the caller acts for reads it; a write is applied by the record's
+    /// package and written as this device's own, which the workspace admits as that member's
+    /// write under their grants. Nothing is written for a read.
+    ///
+    /// # Errors
+    /// This build carries no package of the app, the record does not read or open, the action is
+    /// unknown, refused or fails, or the workspace refused what it wrote.
+    pub async fn apply_record_action(
+        &self,
+        workspace: &str,
+        call: RecordCall<'_>,
+    ) -> Result<ActionOutput, ApiError> {
+        let RecordCall {
+            app,
+            viewer,
+            invoker,
+            context,
+            address,
+            arguments,
+            read,
+        } = call;
+        let packages =
+            built_in(app)
+                .map_err(ApiError::Failed)?
+                .ok_or_else(|| ApiError::Unavailable {
+                    code: "runs_elsewhere".into(),
+                    reason: runs_elsewhere(app),
+                })?;
+        let record = self
+            .tl_record(workspace, app)
+            .await
+            .map_err(ApiError::Failed)?;
+        let policy = self.policy_of(workspace).await.map(Arc::new);
+        let (invoker, context) = (invoker.clone(), context.clone());
+        let (address, arguments) = (address.clone(), arguments.clone());
+        let (answer, written) = tokio::task::spawn_blocking(move || {
+            let mut opened = Opened::open(&record, &packages, viewer, policy)?;
+            let answer = opened
+                .invoke_published(&address, &arguments, &invoker, &context)
+                .map_err(|error| error.to_string())?;
+            Ok::<_, String>((answer, opened.written()))
+        })
+        .await
+        .map_err(|error| ApiError::Failed(error.to_string()))?
+        .map_err(ApiError::Failed)?;
+        if !read && !written.is_empty() {
+            self.write_tl(workspace, app, written)
+                .await
+                .map_err(ApiError::Failed)?;
+        }
+        Ok(answer)
     }
 
     /// [`Self::tl_record`] read here and now, on this thread, with nothing written: what search

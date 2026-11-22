@@ -268,6 +268,42 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn runs_package_record(&self, _workspace: WorkspaceId, _route: &DocumentRoute) -> bool {
         false
     }
+    /// The actions the record at `route`, whose app this host runs from its own package
+    /// ([`Self::runs_package_record`]), publishes: each in the row of the resource holding it,
+    /// as a catalogue lists them. What the caller may read and change is decided by the service
+    /// it lists for, as it is for a catalogue app's rows; `None` for a record this host runs no
+    /// package of, or one it cannot read now.
+    fn package_record_rows(
+        &self,
+        _workspace: WorkspaceId,
+        _route: &DocumentRoute,
+        _person: &str,
+    ) -> Option<Vec<tilo_actions::remote::CatalogueRow>> {
+        None
+    }
+    /// Apply `call`, a published action of the record at `route`, as its invoker: a read answers
+    /// the core read as the person the caller acts for reads it; a write is applied from the
+    /// record's package and written as this device's own, which the workspace admits as that
+    /// member's write under their grants. `None` for a record this host runs no package of.
+    fn apply_package_record(
+        &self,
+        _workspace: WorkspaceId,
+        _call: PackageRecordCall<'_>,
+    ) -> Option<Result<tilo_actions::ActionOutput, tilo_actions::ApiError>> {
+        None
+    }
+    /// The documents that keep the record at `route`, whose app this host runs from its own
+    /// package, as this host reads them now: each document's id, the revision it stands at and
+    /// what it holds. What the feed of changes lists a tilolang record's history from, read
+    /// where the record is kept. `None` for a record this host runs no package of, or one it
+    /// cannot read now.
+    fn package_record_documents(
+        &self,
+        _workspace: WorkspaceId,
+        _route: &DocumentRoute,
+    ) -> Option<Vec<(String, [u8; 32], Vec<u8>)>> {
+        None
+    }
     /// The actions of `workspace` this host runs itself, not a record's (its
     /// governance: giving yourself a name, inviting someone), whose words hold
     /// `needle`, as `caller` may run them: what a page's search lists beside
@@ -418,6 +454,31 @@ impl PackagedCall<'_> {
     pub const fn invocation(&self) -> tilo_actions::InvocationId {
         self.invocation
     }
+}
+
+/// One published action of a tilolang record this host runs from its own package, as the action
+/// API asks the host to apply it.
+#[derive(Debug)]
+pub struct PackageRecordCall<'a> {
+    /// The record's app, as its package and its resources name it.
+    pub app: &'a str,
+    /// The record's own document: `""` for the app's primary.
+    pub document: &'a str,
+    /// The person the caller acts for: whose read rules a read of the record answers, and as
+    /// whom what the action writes is written.
+    pub person: &'a str,
+    /// The action's address in the resource's vocabulary, its resource resolved.
+    pub address: &'a tilo_actions::ActionAddress,
+    /// Its arguments, as the action API binds them.
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// Who invokes, as the API admitted the caller: what the action plans as and what the
+    /// change names.
+    pub invoker: &'a tilo_actions::ActionInvoker,
+    /// The run the invocation is a step of, as the host stamps it on what it changes.
+    pub context: &'a tilo_actions::ActionContext,
+    /// Whether the action reads the record rather than changing it: a read is answered and
+    /// nothing it wrote on the way (an ask a mention makes) is kept.
+    pub read: bool,
 }
 
 /// What an agent working inside a turn wants to do, as its person is asked

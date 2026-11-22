@@ -64,12 +64,13 @@ impl Worker {
         &self,
         workspace_id: WorkspaceId,
         target: &tilo_actions::remote::RemoteActionTarget,
-        app_id: &str,
+        route: &DocumentRoute,
     ) -> tilo_actions::remote::RemoteActionTarget {
         let mut target = target.clone();
         if !target.address.resource.is_empty() {
             return target;
         }
+        let app_id = route.app_id.as_str();
         if let Some(definition) = self.catalogue.get(app_id) {
             definition
                 .resource_type
@@ -79,6 +80,11 @@ impl Worker {
             && let Some(resource) = packaged::resource_of(&surface, &target.address.action)
         {
             resource.kind.clone_into(&mut target.address.resource);
+        } else if let Some(action) = self.package_descriptor(workspace_id, route, &target.address) {
+            action
+                .address
+                .resource
+                .clone_into(&mut target.address.resource);
         }
         target
     }
@@ -149,15 +155,33 @@ impl Worker {
         // package carries, whichever device built the app, because that is the
         // same module every holder of the workspace replays it with.
         let packaged = self.installed_package(workspace_id, &route.app_id);
-        if self.catalogue.get(&route.app_id).is_none() && packaged.is_none() {
+        // A record whose app this host runs from its own package (a tilolang
+        // app built into the build) is read and changed through that package:
+        // its actions are the ones it publishes, not a surface an installed
+        // version carries.
+        let package_record = self.package_record(workspace_id, &route);
+        if self.catalogue.get(&route.app_id).is_none() && packaged.is_none() && !package_record {
             return Err(unknown_action());
         }
-        let target = &self.with_document_resource(workspace_id, target, &route.app_id);
+        let target = &self.with_document_resource(workspace_id, target, &route);
         let arguments = invoke_arguments(&request.argument);
         // What is said in a direct conversation the caller's person takes no part in is not
         // there for them: an action on it is answered as one on nothing, and no read answers
         // with a row of it ([`direct`]).
         let withheld = self.kept_from_caller(caller, &route, &state);
+        if package_record {
+            if state.stale(request.revision.as_deref()) {
+                return Err(Outcome::Rejected(ActionCallError::StaleRevision));
+            }
+            let performed = self.perform_package_record(
+                workspace_id,
+                caller,
+                request,
+                &route,
+                (target, arguments, &withheld),
+            )?;
+            return Ok((withheld.shown(performed.0), performed.1));
+        }
         if let Some(package) = packaged {
             if caller.roster_created_at().is_some()
                 && !collab_types::is_store_document(&route.document)

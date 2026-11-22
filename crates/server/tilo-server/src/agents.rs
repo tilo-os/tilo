@@ -912,6 +912,61 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                 .is_some()
     }
 
+    /// The actions the record at `route` publishes, through the package this build runs it
+    /// from: what a hosted agent's tools list of a tilolang app no catalogue holds.
+    fn package_record_rows(
+        &self,
+        workspace: WorkspaceId,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+        person: &str,
+    ) -> Option<Vec<tilo_actions::remote::CatalogueRow>> {
+        let workspaces = self.workspaces.as_ref()?;
+        workspaces.record_rows(&workspace.to_string(), route, person)
+    }
+
+    /// Apply `call`, an action of the record at `route`, through the package this build runs it
+    /// from: a read answers the core read as the person the caller acts for reads it, and a
+    /// write lands as that member's write, which the workspace admits under their grants.
+    fn apply_package_record(
+        &self,
+        workspace: WorkspaceId,
+        call: tilo_agent_session::workspace_actions::PackageRecordCall<'_>,
+    ) -> Option<Result<tilo_actions::ActionOutput, tilo_actions::ApiError>> {
+        let workspaces = self.workspaces.clone()?;
+        let viewer =
+            tilo_actions::Actor::Member(tilo_actions::MemberId::person(call.person.to_owned()));
+        let app = call.app.to_owned();
+        let (address, arguments) = (call.address.clone(), call.arguments);
+        let (invoker, context) = (call.invoker.clone(), call.context.clone());
+        let read = call.read;
+        Some(self.runtime.block_on(workspaces.apply_record_action(
+            &workspace.to_string(),
+            tilo_workspace_service::tl_records::RecordCall {
+                app: &app,
+                viewer,
+                invoker: &invoker,
+                context: &context,
+                address: &address,
+                arguments: &arguments,
+                read,
+            },
+        )))
+    }
+
+    /// The documents that keep the record at `route`, as this server reads them now: what the
+    /// feed of changes lists a tilolang record's history from, read where the record is kept.
+    fn package_record_documents(
+        &self,
+        workspace: WorkspaceId,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+    ) -> Option<Vec<(String, [u8; 32], Vec<u8>)>> {
+        let workspaces = self.workspaces.clone()?;
+        let workspace = workspace.to_string();
+        let route = route.clone();
+        self.runtime
+            .block_on(workspaces.record_documents(&workspace, &route))
+    }
+
     /// What stands for the person the turn acts for, read from their own
     /// store on this server now: for the turn's own agent and nobody else.
     fn stands(

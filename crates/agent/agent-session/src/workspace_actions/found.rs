@@ -1041,13 +1041,41 @@ impl Worker {
             Some(cluster_id) => self.documents(Some(workspace_id), &state, &cluster_id),
             None => Vec::new(),
         };
-        let records: Vec<DocumentKey> = routes
-            .iter()
-            .map(|route| (route.app_id.clone(), route.document.clone()))
-            .collect();
         let cluster_id = state.workspace.clone().unwrap_or_default();
         let reads = state.reads.clone();
+        // A record whose app this host runs from its own package keeps its history in its own
+        // documents, read where the record is kept: those list as any record's, a chunk's
+        // changes under the record they are of. A record this host runs no package of reads as
+        // this device's replica holds it.
+        let link = self.shared.link.get().cloned();
+        let mut hosted: Vec<(DocumentKey, Vec<(String, [u8; 32], Vec<u8>)>)> = Vec::new();
+        let mut records: Vec<DocumentKey> = Vec::new();
+        for route in &routes {
+            let key: DocumentKey = (route.app_id.clone(), route.document.clone());
+            let package_record = link
+                .as_ref()
+                .is_some_and(|link| link.runs_package_record(workspace_id, route));
+            if !package_record {
+                records.push(key);
+                continue;
+            }
+            // A package record this host cannot read now is listed once it can, whole, which is
+            // what a record that arrives after the first look is.
+            if let Some(documents) = link
+                .as_ref()
+                .and_then(|link| link.package_record_documents(workspace_id, route))
+            {
+                hosted.push((key, documents));
+            }
+        }
         let log = &mut self.membership(workspace_id)?.changes;
+        for (record, documents) in &hosted {
+            log.take_in_documents(
+                record,
+                documents,
+                &ui::history_source::sentence::ThreadWords,
+            );
+        }
         log.take_in(
             &records,
             |(app, record)| {

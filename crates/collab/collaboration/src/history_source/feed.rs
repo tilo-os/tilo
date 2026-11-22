@@ -32,8 +32,10 @@ const PAGE: usize = 256;
 pub struct ChangeLog {
     /// Names this log in its cursors: a cursor of another names nothing here.
     epoch: String,
-    /// Each record's revision and heads when last read.
-    seen: HashMap<DocumentKey, ([u8; 32], Vec<ChangeHash>)>,
+    /// Each record's document's revision and heads when last read: a tilolang record keeps its
+    /// changes in more than one document (its own and the chunks above it), so what was read is
+    /// kept per document.
+    seen: HashMap<(DocumentKey, String), ([u8; 32], Vec<ChangeHash>)>,
     /// The changes kept, each with its sequence number, oldest first.
     kept: VecDeque<(u64, ResourceChanged)>,
     /// The sequence number of the last change taken in.
@@ -74,32 +76,72 @@ impl ChangeLog {
             let Some(now) = revision(route) else {
                 continue;
             };
-            let before = self.seen.get(route);
-            if before.is_some_and(|(at, _)| *at == now) {
+            // Its revision alone says nothing landed: what it holds is read only once one did.
+            if self
+                .seen
+                .get(&(route.clone(), String::new()))
+                .is_some_and(|(at, _)| *at == now)
+            {
                 continue;
             }
-            let Some(doc) = document(route).and_then(|bytes| AutoCommit::load(&bytes).ok()) else {
+            let Some(bytes) = document(route) else {
                 continue;
             };
-            let heads = doc.committed_document().get_heads();
-            let news = match before {
-                Some((_, heads)) => Some(heads.clone()),
-                // A record that arrived after the first look: everything in it is news.
-                None if self.primed => Some(Vec::new()),
-                None => None,
-            };
-            if let Some(after) = news {
-                for entry in super::verbs::entries_after(&doc, &after, words) {
-                    self.keep(ResourceChanged {
-                        app: route.0.clone(),
-                        record: route.1.clone(),
-                        entry,
-                    });
-                }
-            }
-            self.seen.insert(route.clone(), (now, heads));
+            self.took(route, "", now, &bytes, words);
         }
         self.primed = true;
+    }
+
+    /// Take in `record` as the `documents` that keep it hold now: each document's id, the
+    /// revision it stands at and what it holds. A tilolang record's changes are kept under the
+    /// record, wherever among its documents they were made.
+    pub fn take_in_documents(
+        &mut self,
+        record: &DocumentKey,
+        documents: &[(String, [u8; 32], Vec<u8>)],
+        words: &dyn HistoryWords,
+    ) {
+        for (document, revision, bytes) in documents {
+            self.took(record, document, *revision, bytes, words);
+        }
+        self.primed = true;
+    }
+
+    /// Take in `document`, one of `record`'s documents, as it stands at `now` and reads as
+    /// `bytes`: each change it holds past the heads it was read at last is kept under `record`.
+    fn took(
+        &mut self,
+        record: &DocumentKey,
+        document: &str,
+        now: [u8; 32],
+        bytes: &[u8],
+        words: &dyn HistoryWords,
+    ) {
+        let key = (record.clone(), document.to_owned());
+        let before = self.seen.get(&key);
+        if before.is_some_and(|(at, _)| *at == now) {
+            return;
+        }
+        let Some(doc) = AutoCommit::load(bytes).ok() else {
+            return;
+        };
+        let heads = doc.committed_document().get_heads();
+        let news = match before {
+            Some((_, heads)) => Some(heads.clone()),
+            // A record that arrived after the first look: everything in it is news.
+            None if self.primed => Some(Vec::new()),
+            None => None,
+        };
+        if let Some(after) = news {
+            for entry in super::verbs::entries_after(&doc, &after, words) {
+                self.keep(ResourceChanged {
+                    app: record.0.clone(),
+                    record: record.1.clone(),
+                    entry,
+                });
+            }
+        }
+        self.seen.insert(key, (now, heads));
     }
 
     fn keep(&mut self, change: ResourceChanged) {
