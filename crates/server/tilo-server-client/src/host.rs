@@ -180,6 +180,13 @@ impl ServerAddress {
         if let Some(url) = relay {
             builder = builder.relay_mode(iroh::RelayMode::Custom(url.into()));
         }
+        // A device that dials a server it can already name opens no port of its
+        // own: the portmapper's UPnP probe and name lookups are packets it has
+        // no use for, and a sandboxed program is refused for sending them.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            builder = builder.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled);
+        }
         builder
             .bind()
             .await
