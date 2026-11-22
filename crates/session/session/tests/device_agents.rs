@@ -142,8 +142,8 @@ impl ThisComputer {
         (key, cert)
     }
 
-    /// The workspace's roster with the laptop on it, as the action service decides who may ask.
-    fn roster_with(&self, laptop: &DeviceCert) -> StatePeer {
+    /// The workspace's members with the laptop among them, as the action service decides who may ask.
+    fn members_with(&self, laptop: &DeviceCert) -> StatePeer {
         let now = tilo_clock::wall();
         let members = vec![self.cert.clone(), laptop.clone()];
         let mut peer = StatePeer::new(
@@ -280,7 +280,7 @@ impl ShellWithNotes {
         let actions = session
             .device_actions()
             .expect("this computer answers the person's other devices");
-        actions.hold(Replica::new(computer.roster_with(&laptop.1)));
+        actions.hold(Replica::new(computer.members_with(&laptop.1)));
         let (this_box, router) = runtime.block_on(async {
             let endpoint = endpoint(&computer.key).await;
             let router = Router::builder(endpoint.clone())
