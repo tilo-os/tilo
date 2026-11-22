@@ -2289,19 +2289,21 @@ impl Instance {
         let Some(host) = self.host() else {
             return;
         };
-        let Some(action) = host.find_in_packages(|package| {
+        // The action the control ran, when its app declares it: the platform's own (`file.choose`,
+        // which runs the action a file fills and answers what that made) is nobody's and reads as
+        // an action with no role.
+        let action = host.find_in_packages(|package| {
             package
                 .meta
                 .actions
                 .iter()
                 .find(|action| action.id == aref.action)
                 .cloned()
-        }) else {
-            return;
-        };
-        match action.role.as_deref() {
-            Some("destructive") => {
-                let label = crate::runtime::platform::label_of(&action);
+        });
+        let role = action.as_ref().and_then(|action| action.role.as_deref());
+        match (role, &action) {
+            (Some("destructive"), Some(action)) => {
+                let label = crate::runtime::platform::label_of(action);
                 let words = match target {
                     Some(title) => Words::Phrase {
                         id: "tilolang-did".to_owned(),
@@ -2313,7 +2315,7 @@ impl Instance {
                     self.pending.undo.insert(last, words);
                 }
             }
-            Some("primary") => {
+            (Some("primary"), _) => {
                 // What a primary action made opens beside the list, as the person asked for it.
                 if let Value::Ref(made) = &result {
                     self.pressed_opens
@@ -2321,6 +2323,16 @@ impl Instance {
                 }
             }
             _ => {}
+        }
+        // What any other action a person ran from a control made shows where the window shows
+        // what it made, as a search hit of it does: a page imported into the notebook stands
+        // beside its tree. The app's own view decides; one with no place for it leaves the
+        // window as it was.
+        if role != Some("primary")
+            && let Value::Ref(made) = &result
+        {
+            self.pressed_shows
+                .push((self.last_fire, made.target.id_string()));
         }
     }
 
