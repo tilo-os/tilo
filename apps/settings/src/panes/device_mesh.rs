@@ -2414,7 +2414,7 @@ mod tests {
         phase a_server_removal_signs_its_revocation_and_retires_it;
         {
             use ui::tilo_actions::remote::{
-                Confirmation, InvokeArgument, RemoteActionTarget, identity_admin,
+                Confirmation, InvokeArgument, RemoteActionTarget, identity_admin, machines,
             };
             let dir = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -2436,11 +2436,27 @@ mod tests {
             // person's Servers workspace is retired with it.
             pane.poll_background_tasks();
             pane.poll_background_tasks();
+            // A revocation, the retirement, and the person's servers read again to show it gone.
             let asked = host.asked();
-            let [revoke, retire] = asked.as_slice() else {
-                panic!("a revocation, then a retirement: {asked:?}");
-            };
-            assert_eq!(revoke.target, identity_admin::target(identity_admin::REVOKE));
+            assert_eq!(asked.len(), 3, "{asked:?}");
+            let retired = RemoteActionTarget::workspace_governance(
+                &tilo_server_protocol::servers::person_workspace_id(&[0x33; 32]),
+                "server.retire",
+            );
+            let revoke = asked
+                .iter()
+                .find(|call| call.target == identity_admin::target(identity_admin::REVOKE))
+                .expect("the root signs a revocation");
+            let retire = asked
+                .iter()
+                .find(|call| call.target == retired)
+                .expect("the server's entry is retired");
+            assert!(
+                asked
+                    .iter()
+                    .any(|call| call.target == machines::target(machines::SERVERS)),
+                "the servers are read again: {asked:?}"
+            );
             assert_eq!(revoke.confirmation, Some(Confirmation::Confirmed));
             assert_eq!(
                 revoke.argument,
@@ -2453,13 +2469,6 @@ mod tests {
                     .as_object()
                     .unwrap()
                     .clone()
-                )
-            );
-            assert_eq!(
-                retire.target,
-                RemoteActionTarget::workspace_governance(
-                    &tilo_server_protocol::servers::person_workspace_id(&[0x33; 32]),
-                    "server.retire",
                 )
             );
             assert_eq!(retire.confirmation, Some(Confirmation::Confirmed));

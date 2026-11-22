@@ -109,10 +109,6 @@ impl DeviceTickets {
 
     /// Where the certified computer enters: the workspace this computer was logged into, or the
     /// one it founded itself, through this endpoint.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace service is read for as long as its workspaces are"
-    )]
     async fn entry(&self, endpoint: &iroh::Endpoint) -> Result<Entry, String> {
         let place = login::Place::here(tilo_api::client::device_keys())
             .map_err(|error| error.to_string())?;
