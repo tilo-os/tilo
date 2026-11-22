@@ -16,7 +16,7 @@ path = "src/lib.rs"
 test-support = ["tilo-server-store/test-support", "tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-account-probe/test-support", "dep:rustls"]
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages.
-agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilo-model-gateway", "dep:tilo-environment"]
+agents = ["web", "dep:tilolang-tilo", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilo-model-gateway", "dep:tilo-environment"]
 # Pages reach the host: it follows the records its members write sealed and
 # opens them with the channels' keys it holds as a key holder.
 web = []
@@ -175,6 +175,9 @@ tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host",
 # What the agents on this server learned about a person: the type the list
 # is kept as, and the verbs that change it.
 tilo-resource = { path = "../../sdk/tilo-resource" }
+# A tilolang app's record read and changed through its own package on this device: what the
+# agent engine answers asks with (`tl_records`, `asks`).
+tilolang-tilo = { path = "../../platform/tilolang-tilo", optional = true }
 tilo-workspace-agent = { path = "../../platform/tilo-workspace-agent" }
 # A person's region and formats, kept as the `locale` settings section reads them.
 tilo-formats = { path = "../../sdk/tilo-formats" }
