@@ -357,6 +357,16 @@ action send(
     }
 }
 
+/// Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the
+/// one already open, else a new one in the sidebar. The message is sent as every message is.
+action write_to(all: Conversations, who: Actor, body: RichText) -> Message (
+    icon: .send,
+    label: "Write to",
+) {
+    let d = message_person(all, who)
+    send(d, body)
+}
+
 /// Sends a view as a message: its title as what the message says, its definition for anyone
 /// who reads it to add to their own views.
 action send_view(to: TextChannel | Thread | Direct, title: Text, definition: Text) -> Message (

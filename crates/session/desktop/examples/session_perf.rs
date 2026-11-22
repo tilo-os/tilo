@@ -228,11 +228,11 @@ fn fixture(
                         // not the first opens what one before it made.
                         if created.insert((definition.app_id().to_string(), checkout.id.clone())) {
                             store.create_resource(&checkout).unwrap();
-                            store.with(&checkout.id, |doc| match which {
-                                0 => word_processor::initialize_empty_document(doc).unwrap(),
-                                // Calendar and Sheets open empty ones of their own on a blank
-                                // record.
-                                _ => {}
+                            // Calendar and Sheets open empty ones of their own on a blank record.
+                            store.with(&checkout.id, |doc| {
+                                if which == 0 {
+                                    word_processor::initialize_empty_document(doc).unwrap();
+                                }
                             });
                         }
                         retained.push(store);

@@ -6,6 +6,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 pub mod apps;
+pub mod chat;
 
 pub const MAX_APP_ID_BYTES: usize = 255;
 

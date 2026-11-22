@@ -55,8 +55,8 @@ use ui::search::Scope;
 /// The action host as the session's search reaches it: what open apps publish and run, and running
 /// what is chosen by address.
 /// What hears an app action's answer ([`AppActions::invoke_answered`]): on whichever thread the
-/// answer lands, the value it answered, or why it did not run.
-pub type Answered = Box<dyn FnOnce(Result<Option<serde_json::Value>, String>) + Send>;
+/// answer lands, what it answered (its value and the resources it made), or why it did not run.
+pub type Answered = Box<dyn FnOnce(Result<tilo_actions::ActionOutput, String>) + Send>;
 
 pub trait AppActions {
     /// What the apps publish through the action host, by app and workspace: those open now and
@@ -102,7 +102,12 @@ pub trait AppActions {
         answered: Answered,
     ) -> Result<(), ApiError> {
         let invoked = self.invoke(target, arguments);
-        answered(invoked.as_ref().map(|()| None).map_err(ToString::to_string));
+        answered(
+            invoked
+                .as_ref()
+                .map(|()| tilo_actions::ActionOutput::default())
+                .map_err(ToString::to_string),
+        );
         invoked
     }
     /// Tell each [`Self::invoke_answered`] caller its action's answer once the action settled. A

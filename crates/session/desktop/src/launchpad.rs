@@ -41,20 +41,24 @@ pub struct LaunchpadAppAction {
     pub display_name: String,
     pub resource: String,
     pub action: String,
+    /// What the action is asked with, by parameter.
+    pub arguments: serde_json::Map<String, serde_json::Value>,
 }
 
 impl LaunchpadAppAction {
     /// The app action that opens (or starts) this person's conversation with `root` (hex): Chat's
-    /// own `open-direct-conversation` on the workspace's conversation with them, its composer
-    /// ready. Chat publishes the action on a row named for the person it is with, so the desktop
-    /// asks for that row's resource.
+    /// own `message_person` on the workspace's conversations, which keeps one conversation with
+    /// each person.
     #[must_use]
     pub fn message_person(root: &str) -> Self {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("who".to_owned(), serde_json::json!({ "person": root }));
         Self {
-            app_id: "so.tilo.chat".to_owned(),
+            app_id: tilo_app_id::apps::CHAT.to_owned(),
             display_name: "Chat".to_owned(),
-            resource: format!("chat.conversation:{root}"),
-            action: "open-direct-conversation".to_owned(),
+            resource: tilo_app_id::chat::CONVERSATIONS.to_owned(),
+            action: tilo_app_id::chat::MESSAGE_PERSON.to_owned(),
+            arguments,
         }
     }
 
@@ -67,6 +71,7 @@ impl LaunchpadAppAction {
             display_name: "Console".to_owned(),
             resource: format!("console.agent:{client}"),
             action: ask.action().to_owned(),
+            arguments: serde_json::Map::new(),
         }
     }
 
@@ -79,6 +84,7 @@ impl LaunchpadAppAction {
             display_name: "Console".to_owned(),
             resource: "console.effects".to_owned(),
             action: "view-connect".to_owned(),
+            arguments: serde_json::Map::new(),
         }
     }
 }
@@ -187,6 +193,7 @@ impl LaunchpadAction {
                 display_name: "Chat".to_owned(),
                 resource: "chat.workspace".to_owned(),
                 action: "start-call".to_owned(),
+                arguments: serde_json::Map::new(),
             }),
             // Console's own Connect place: the commands that add Tilo to an agent, and the agents
             // already let in.
@@ -1643,11 +1650,16 @@ mod tests {
             let ask = LaunchpadAppAction::message_person(root);
             assert_eq!(ask.app_id, "so.tilo.chat");
             assert_eq!(ask.display_name, "Chat");
-            assert_eq!(ask.action, "open-direct-conversation");
+            assert_eq!(ask.action, "message_person");
             assert_eq!(
                 ask.resource,
-                format!("chat.conversation:{root}"),
-                "Chat publishes the action on its conversation with them"
+                tilo_app_id::chat::CONVERSATIONS,
+                "Chat keeps one conversation with each person among the workspace's"
+            );
+            assert_eq!(
+                ask.arguments.get("who"),
+                Some(&serde_json::json!({ "person": root })),
+                "and is asked for the one with them"
             );
         }
 

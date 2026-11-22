@@ -163,6 +163,13 @@ d-peb7lz2j-body = Body
 
 d-peb7lz2j-reply_to = Reply to
 
+d-634q3q33 = Write to
+    .doc = Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the one already open, else a new one in the sidebar.
+
+d-634q3q33-who = Who
+
+d-634q3q33-body = Body
+
 d-qaa5kdra = Send a view
     .doc = Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views.
     .w-the-view-is-empty = The view is empty

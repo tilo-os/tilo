@@ -23,7 +23,6 @@ mod supervision;
 
 use std::rc::Rc;
 
-use ui::floating_surface::{Recipient, RecipientKind};
 use ui::framework::Call;
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -35,11 +34,6 @@ use ui::widget::ButtonRole;
 pub use assistant_model::Window;
 pub use effects::AssistantEffect;
 use sources::{Assistant, Read, Reads};
-
-/// The resource Chat publishes a workspace's conversations under, and its action that sends
-/// a message to whom it names.
-const CHAT_WORKSPACE: &str = "chat.workspace";
-const CHAT_SEND: &str = "send";
 
 /// The page of Settings where a person links their model providers and chooses the model each
 /// kind of work runs on, as Settings publishes it: the kind of a page, and that page.
@@ -195,8 +189,9 @@ impl Hands {
             .effect(&AssistantEffect::StartSubAgent { job });
     }
 
-    /// Handing the main agent `job` for a sub-agent: one message in the main chat, as the
-    /// person, through Chat's own `send`. The main agent picks the role and the model.
+    /// Handing the main agent `job` for a sub-agent: one message in the direct conversation with
+    /// it, as the person, through Chat's own `write_to`. The main agent picks the role and the
+    /// model.
     ///
     /// # Errors
     /// There is no job, or no assistant to hand it to.
@@ -208,22 +203,21 @@ impl Hands {
         let Read::Here(Some(assistant)) = self.reads.assistant() else {
             return Err(tr("assistant-none"));
         };
-        let to = [Recipient::found(
-            RecipientKind::Agent,
-            assistant.id,
-            assistant.name,
-        )];
-        let chat = ResourceRef::whole(ui::apps::CHAT, CHAT_WORKSPACE, "Chat");
+        let conversations = ResourceRef::whole(
+            ui::chat::CONVERSATIONS_KIND,
+            ui::chat::CONVERSATIONS,
+            "Chat",
+        );
         Ok(
-            Call::on(ui::apps::CHAT, None, &chat, CHAT_SEND).with(serde_json::json!({
-                "to": to,
-                "attached": [],
-                "text": trf(
-                    "assistant-start-sub-agent-message",
-                    &[("words", job.to_owned().into())],
-                ),
-                "opens": false,
-            })),
+            Call::on(ui::apps::CHAT, None, &conversations, ui::chat::WRITE_TO).with(
+                serde_json::json!({
+                    "who": {"agent": assistant.id},
+                    "body": trf(
+                        "assistant-start-sub-agent-message",
+                        &[("words", job.to_owned().into())],
+                    ),
+                }),
+            ),
         )
     }
 

@@ -249,9 +249,8 @@ impl Shared {
     }
 
     /// Open this person's conversation with the person `key` names, in Chat: the app's own
-    /// `open-direct-conversation` on its row for the conversation with them, so Chat starts when it
-    /// is closed and the conversation comes up with its composer ready, as the shell's Message did
-    /// in the browser.
+    /// `message_person`, which keeps one conversation with each person, so Chat starts when it
+    /// is closed.
     fn message_person(&self, key: &str) {
         self.invoke_app_action(LaunchpadAppAction::message_person(key));
     }
@@ -314,14 +313,16 @@ impl Shared {
             self.answer_failed(&action.display_name, &t("action-failed-no-workspace"));
             return;
         };
-        let target = tilo_desktop_search::Target::Invoke(Box::new(
-            tilo_desktop_search::InvokeTarget::action(
-                action.app_id,
-                workspace.clone(),
-                action.resource,
-                action.action,
-            ),
-        ));
+        let mut invoked = tilo_desktop_search::InvokeTarget::action(
+            action.app_id,
+            workspace.clone(),
+            action.resource,
+            action.action,
+        );
+        for (name, value) in action.arguments {
+            invoked = invoked.with_argument(&name, value);
+        }
+        let target = tilo_desktop_search::Target::Invoke(Box::new(invoked));
         let carried = self.search.perform(&workspace, target, &mut |own| {
             self.published
                 .invoke(

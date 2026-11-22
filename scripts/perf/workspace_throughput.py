@@ -42,15 +42,10 @@ def note(index: int) -> dict[str, Any]:
     return {"title": f"note-{index}", "markdown": f"# Note {index}\n\nA paragraph of what note {index} keeps.\n"}
 
 
-def message(index: int) -> dict[str, Any]:
-    return {"channel": "c_bench", "text": f"message {index}: a line of chat"}
-
-
 # name, app, kind of the resource that makes one, action, its arguments
 KINDS: list[tuple[str, str, str, str, Callable[[int], dict[str, Any]]]] = [
     ("tasks issue", "tasks", "tasks.issues", "create", issue),
     ("notes page", "notes", "notes", "create-page", note),
-    ("chat message", "chat", "chat.messages", "post", message),
 ]
 
 
@@ -90,8 +85,6 @@ async def run(args: argparse.Namespace) -> list[dict[str, Any]]:
             seen = other.workspace(made.id)
             for _, app, _, _, _ in KINDS:
                 await ws.do(f"{app}#open")
-            chat = await resource_of(ws, "chat", "chat.workspace", "create-channel-with-id")
-            await ws.do(f"{chat}#create-channel-with-id", id="c_bench", name="bench")
             for name, app, kind, action, make in KINDS:
                 path = await resource_of(ws, app, kind, action)
                 record = ws.resource(path)

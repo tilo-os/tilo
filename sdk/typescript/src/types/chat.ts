@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@4db3243ad98023af";
+export const SURFACE = "so.tilo.chat@578cacfaf7ce6125";
 
 /** The arguments of `delete`. */
 export interface DeleteArgs {
@@ -73,11 +73,16 @@ export interface Conversations extends tilo.Resource {
   message_person(args: {
     who: string;
   }): Promise<Direct>;
+  /** Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the one already open, else a new one in the sidebar. The message is sent as every message is. */
+  write_to(args: {
+    who: string;
+    body: string;
+  }): Promise<Message>;
 }
 
 /** The actions `Conversations` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CONVERSATIONS_ACTIONS = ["new_channel", "new_category", "message_person"] as const;
+export const CONVERSATIONS_ACTIONS = ["new_channel", "new_category", "message_person", "write_to"] as const;
 
 /** The `tl.so.tilo.chat.Conversations` kind at `path`. */
 export function conversations(ws: tilo.Workspace, path: string): Conversations {

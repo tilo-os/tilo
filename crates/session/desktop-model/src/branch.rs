@@ -24,11 +24,10 @@ pub fn stays(app: &str, record: &str) -> bool {
         // Every conversation, and each person's drafts and read marks. The workspace's own emoji
         // and agents are Chat's to keep but the workspace's, so they come along.
         CHAT => collab_types::workspace_document(app, record).is_none(),
-        // Chat's own conversations, every one of them.
-        CHAT_DOCUMENTS => true,
-        // The runtime branches the environments, with their own files; the branch's layout is
-        // written from its own windows, never the source's layout of everyone's.
-        TERMINAL | crate::ownership::DESKTOP_APP => true,
+        // Chat's own conversations, every one of them. The runtime branches the environments,
+        // with their own files; the branch's layout is written from its own windows, never the
+        // source's layout of everyone's.
+        CHAT_DOCUMENTS | TERMINAL | crate::ownership::DESKTOP_APP => true,
         _ => collab_types::workspace_document(app, record)
             .is_some_and(|known| (known.app, known.kind) == PERSONAL_PLACES),
     }

@@ -356,15 +356,18 @@ fn read_direct(
 }
 
 use ui::apps::CHAT;
-const CHAT_RESOURCE: &str = "chat.workspace";
 const CHAT_MESSAGES: &str = "derived:messages@derived:default@tab:0000000000000000";
-pub(crate) const SEND_DIRECT_MESSAGE: &str = "send-direct-message";
 
-/// Chat's operation `operation` on the conversation with `person`, ready to be called.
-pub(crate) fn tilo_call(operation: &str, person: &str) -> ui::framework::Call {
-    let record = ui::tilo_reference::ResourceRef::whole(CHAT, CHAT_RESOURCE, "Chat");
-    ui::framework::Call::on(CHAT, None, &record, operation)
-        .with(serde_json::json!({ "public_key": person }))
+/// Chat's `write_to`, writing `text` to `person` in the one direct conversation with them, ready
+/// to be called: the same message Chat's own window sends.
+pub(crate) fn write_to(person: &str, text: &str) -> ui::framework::Call {
+    let conversations = ui::tilo_reference::ResourceRef::whole(
+        ui::chat::CONVERSATIONS_KIND,
+        ui::chat::CONVERSATIONS,
+        "Chat",
+    );
+    ui::framework::Call::on(CHAT, None, &conversations, ui::chat::WRITE_TO)
+        .with(serde_json::json!({ "who": {"person": person}, "body": text }))
 }
 
 impl HistoryView {

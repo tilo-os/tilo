@@ -25881,7 +25881,7 @@
           "agent",
           "said"
         ],
-        "description": "Asks `agent` about the resource the ask is made from (`.made_from(r)`). Whoever makes it\ndecides first whether the agent may read that resource, and asks with nothing said when it\nmay not: the ask then says so, and holds nothing of the resource."
+        "description": "Asks `agent` about the resource the ask is made from (`.made_from(r)`). Whoever makes it\ndecides first whether the agent may read that resource, and asks with nothing said when it\nmay not: the ask then says so, and holds nothing of the resource.\n\nAn ask made from a resource is named by it and the mention: every device that asks it so\nmakes the same ask, and asking again is that ask."
       },
       "tl.so.tilo.lang.board.Card.$create.Arguments": {
         "type": "object",
@@ -26296,6 +26296,61 @@
           "who"
         ],
         "description": "Opens the direct message with `who`, in the sidebar, or the one already open with them: a\nperson has one conversation, not a new empty one each time."
+      },
+      "tl.so.tilo.chat.Conversations.write_to.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "body": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "who",
+          "body"
+        ],
+        "description": "Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the\none already open, else a new one in the sidebar. The message is sent as every message is."
       },
       "tl.so.tilo.chat.Category.$create.Arguments": {
         "type": "object",
@@ -38922,6 +38977,12 @@
       "resource": "tl.so.tilo.chat.Conversations",
       "action": "message_person",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.message_person.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
+      "action": "write_to",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.write_to.Arguments"
     },
     {
       "app": "so.tilo.chat",
