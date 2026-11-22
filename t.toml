@@ -6754,7 +6754,7 @@ default = false
 [[check]]
 name = "lounge-check-cli"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked --profile lounge-check -p tilo-cli --bin tilo\nrm -rf /target/publish/lounge-check/cli\nmkdir -p /target/publish/lounge-check/cli\ncp \"$CARGO_TARGET_DIR/lounge-check/tilo\" /target/publish/lounge-check/cli/\n"
+run = "# The tilo command and the daemon it starts, packed together (tools/ci/publish/cli-release.sh).\ncargo build --locked --profile lounge-check -p tilo-cli -p tilo-runtime --bin tilo --bin tilo-runtime\nrm -rf /target/publish/lounge-check/cli\nmkdir -p /target/publish/lounge-check/cli\ncp \"$CARGO_TARGET_DIR/lounge-check/tilo\" \"$CARGO_TARGET_DIR/lounge-check/tilo-runtime\" /target/publish/lounge-check/cli/\n"
 env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge-check/cli/**"]
