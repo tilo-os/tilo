@@ -2,7 +2,6 @@
 //! the layouts is one action on it, an agent acting for the person runs the same action, and
 //! undo takes any of it back — one setting changed, and a whole preset at once.
 
-
 use automerge::AutoCommit;
 use tilolang_runtime::origin::OriginWrite;
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
@@ -68,7 +67,7 @@ fn workspace() -> Replica {
         "so.tilo.lang.discussion",
         "so.tilo.lang.chat",
         "so.tilo.notes",
-        "so.tilo.lang.tasks",
+        "so.tilo.tasks",
     ]
     .iter()
     .map(|app| replica.host.package(app).unwrap().meta)

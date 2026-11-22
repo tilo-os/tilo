@@ -25,7 +25,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -551,7 +550,7 @@ fn exporting_a_notebook_costs_its_notes() {
 #[test]
 fn an_import_of_four_thousand_items_reads_as_what_it_made() {
     use tilolang_runtime::store::{Store as _, VersionKind};
-    const TASKS: &str = "so.tilo.lang.tasks";
+    const TASKS: &str = "so.tilo.tasks";
     let packages = compile(&apps().join("tasks")).unwrap_or_else(|e| panic!("tasks: {e}"));
     let open = |n: usize, doc: tilo_resource::Doc| {
         let start = std::time::Instant::now();

@@ -3,7 +3,6 @@
 //! when the origin writes them again. A change of one reaches the views and leaves no change
 //! behind to be committed, sent or replayed.
 
-
 use automerge::AutoCommit;
 use tilo_actions::ActionInvoker;
 use tilolang_runtime::Actor;

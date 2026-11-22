@@ -197,7 +197,10 @@ fn a_native_mailbox_is_carried_over_once() {
     ada.host.runtime().set_earlier(MAIL_APP, &documents);
     let mail = ada.host.root_of(MAIL_APP).expect("the mailbox");
     ada.commit();
-    assert!(drafts(&ada, &mail).is_empty(), "nothing before the migration");
+    assert!(
+        drafts(&ada, &mail).is_empty(),
+        "nothing before the migration"
+    );
 
     assert_eq!(ada.host.migrate(), 1, "the mailbox's migration runs");
     assert_eq!(ada.commit(), 1, "as one change");
@@ -229,7 +232,9 @@ fn a_mailbox_opened_before_the_native_documents_arrived_receives_them_once_they_
     assert_eq!(ada.host.migrate(), 0, "nothing to carry has arrived");
     assert_eq!(ada.commit(), 0, "and nothing is recorded");
 
-    ada.host.runtime().set_earlier(MAIL_APP, &native_documents());
+    ada.host
+        .runtime()
+        .set_earlier(MAIL_APP, &native_documents());
     assert_eq!(ada.host.migrate(), 1, "the carrying waited for them");
     assert_eq!(ada.commit(), 1);
     assert_carried(&ada, &mail);

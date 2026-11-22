@@ -1041,13 +1041,13 @@ mod tests {
     use super::*;
     use crate::meta::MetaExt as _;
 
-    /// Tasks's package, as the session reads it, its schemas registered as loading it registers
-    /// them.
+    /// The package the Rust build of Tasks published, kept as what a native app's chain-part
+    /// layout looks like, its schemas registered as loading it registers them.
     fn tasks() -> PackageMeta {
         let meta = crate::catalogue::NativeSurface {
             app: "so.tilo.tasks".to_owned(),
             title: "Tasks".to_owned(),
-            surface: include_str!("../../../../apps/tasks/surface.toml").to_owned(),
+            surface: include_str!("../tests/legacy/rust_tasks_surface.toml").to_owned(),
         }
         .package()
         .expect("the surface reads");

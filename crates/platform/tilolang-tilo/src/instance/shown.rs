@@ -24,7 +24,7 @@ impl Instance {
     }
 
     /// The published resources the window shows, as the app publishes them
-    /// (`tl:so.tilo.lang.tasks:root-fjqi4yze`): each level's own, every resource the view it
+    /// (`tl:so.tilo.tasks:root-fjqi4yze`): each level's own, every resource the view it
     /// shows refers to, and the items of the rows its lists hold — a row's actions are published
     /// on its resource, whether or not the list has rendered that row yet.
     #[must_use]
