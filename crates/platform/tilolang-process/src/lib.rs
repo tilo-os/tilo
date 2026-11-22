@@ -893,6 +893,7 @@ impl TilolangProcess {
                 language: request.language,
                 access: request.access,
                 shows: request.shows,
+                for_workspace_server: request.for_workspace_server,
                 ..Spec::new(
                     request.app,
                     request.workspace,

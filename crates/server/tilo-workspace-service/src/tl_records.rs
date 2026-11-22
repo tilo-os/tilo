@@ -86,6 +86,14 @@ pub struct RecordBytes {
     pub documents: BTreeMap<String, Vec<u8>>,
 }
 
+/// Whether the package whose module is `wasm` carries what a native app of its id kept in a
+/// workspace: one of its migrations reads it (`earlier(r)`).
+#[must_use]
+pub fn carries_earlier(wasm: &[u8]) -> bool {
+    tilolang_tilo::tilolang::PackageMeta::from_wasm(wasm)
+        .is_some_and(|meta| meta.migrations().any(|migration| migration.carries))
+}
+
 /// The chunk the document `document` of a record is, or `None` for no document of the record.
 #[must_use]
 pub fn chunk_of_document(document: &str) -> Option<ChunkNo> {

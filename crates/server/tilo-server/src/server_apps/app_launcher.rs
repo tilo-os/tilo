@@ -184,6 +184,35 @@ impl ServerLauncher {
         }
     }
 
+    /// Run `app` for this workspace's server, showing nothing, on this thread: the run carries
+    /// what a native app of its id kept here, which [`Processes::keep_earlier`] put where it
+    /// reads it. It runs as the server's own device, with the sandbox and grants of any other run
+    /// of the package.
+    ///
+    /// # Errors
+    /// No process can start here, the package does not verify, or its connections cannot be made.
+    pub fn run_for_server(&self, app: &str) -> Result<(), String> {
+        let processes = Arc::clone(self.processes()?);
+        let (identity, content) = self.services(app, None)?;
+        let tab = self.tabs.fetch_add(1, Ordering::Relaxed);
+        let collaboration = self
+            .connect(app, tab, Made::Call)
+            .map_err(|error| format!("{app} could not reach its workspace: {error}"))?;
+        let run = self.handed(
+            app,
+            &self.device_person,
+            tab,
+            None,
+            collaboration,
+            identity,
+            content,
+        );
+        processes
+            .run_for_workspace_server(run)
+            .map(drop)
+            .map_err(|error| format!("{app} did not run: {error}"))
+    }
+
     /// Take what this process made for the tab `tab` of `app`, once.
     fn take(&self, pid: u32, app: &str, workspace: &str, tab: Option<u64>) -> Option<Made> {
         if pid != std::process::id() || workspace != self.workspace {
@@ -245,7 +274,7 @@ impl LauncherServices for ServerLauncher {
             .spawn(move || {
                 let _ = started.send(
                     processes
-                        .start_with_no_view(call)
+                        .hand_over_now(call)
                         .map(drop)
                         .map_err(|error| format!("{app} did not run: {error}")),
                 );
