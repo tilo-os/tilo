@@ -9,8 +9,8 @@
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, ButtonRole, ChipStyle, Column, ControlSize, Element, EmptyState, ListRow, MenuItem,
-    Row, Section, TextInput,
+    Button, ButtonRole, ChipStyle, Column, ControlSize, Element, EmptyState, ListRow, Row, Section,
+    TextInput,
 };
 
 use super::general::caption;
@@ -307,24 +307,24 @@ fn row(people: &People, person: &Person, parts: &Parts) -> Element {
         .roles
         .iter()
         .map(|choice| {
-            let press = parts.clone();
             let effect = WorkspaceSettingsEffect::SetRole {
                 member: person.key.clone(),
                 role: choice.key.clone(),
             };
-            MenuItem::action(choice.label.clone(), move || press.ask(effect.clone()))
+            parts
+                .choice(choice.label.clone(), &effect)
                 .with_detail(choice.allows.clone())
                 .with_checked(person.role_key.as_deref() == Some(choice.key.as_str()))
         })
         .chain(people.custom_roles.iter().map(|choice| {
-            let press = parts.clone();
             let assigned = person.additional_roles.contains(&choice.key);
             let effect = WorkspaceSettingsEffect::SetCustomRole {
                 member: person.key.clone(),
                 role: choice.key.clone(),
                 assigned: !assigned,
             };
-            MenuItem::action(choice.label.clone(), move || press.ask(effect.clone()))
+            parts
+                .choice(choice.label.clone(), &effect)
                 .with_checked(assigned)
         }))
         .collect();
