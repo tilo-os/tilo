@@ -842,11 +842,12 @@ impl ServerAgents {
             .await
             .ok()?
             .in_agent_session(asked_in.session);
-        let turn = outside.clone().on_roster_turn(
-            tilo_action_policy::turn::Turn::new(asked_in.conversation, asked_in.cause),
-            agent.created_at,
-            person,
-        );
+        let turn = outside
+            .clone()
+            .on_roster_turn(tilo_action_policy::turn::Turn::new(
+                asked_in.conversation,
+                asked_in.cause,
+            ));
         Some((turn, outside))
     }
 

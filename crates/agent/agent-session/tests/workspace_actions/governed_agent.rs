@@ -526,11 +526,11 @@ async fn a_hosted_roster_turn() {
         .created_at;
     let as_agent = tilo_actions::remote::Caller::delegated_agent(agent, keeper, device)
         .in_workspace(&workspace.workspace)
-        .on_roster_turn(
-            tilo_action_policy::turn::Turn::new(String::new(), String::new()),
-            created_at,
-            keeper,
-        );
+        .on_roster(created_at, keeper)
+        .on_roster_turn(tilo_action_policy::turn::Turn::new(
+            String::new(),
+            String::new(),
+        ));
     let direct = Direct {
         actions: &roster.actions,
         sessions: &sessions,

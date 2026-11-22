@@ -360,7 +360,7 @@ fn addresses(reads: &[String]) -> [String; 3] {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_thread_gives_an_agent_nothing_of_a_direct_conversation_its_person_takes_no_part_in() {
     let mut served = Served::start(1).await;
-    let swept = swept(&mut served).await;
+    let swept = Box::pin(swept(&mut served)).await;
     let now = now_s();
     let under = [
         (&served.ada, "It is kept behind the egret.", "egret"),
@@ -416,7 +416,7 @@ async fn a_thread_gives_an_agent_nothing_of_a_direct_conversation_its_person_tak
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_view_shows_an_agent_nothing_of_a_direct_conversation_its_person_takes_no_part_in() {
     let mut served = Served::start(1).await;
-    let swept = swept(&mut served).await;
+    let swept = Box::pin(swept(&mut served)).await;
     let reads = swept.all_read(&served).await;
     let at = addresses(&reads);
     let words = [(0, WORDS[0]), (1, WORDS[1]), (2, WORDS[2])];
@@ -456,7 +456,7 @@ async fn a_view_shows_an_agent_nothing_of_a_direct_conversation_its_person_takes
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_a_message_carries_is_given_with_the_message_and_no_further() {
     let mut served = Served::start(1).await;
-    let swept = swept(&mut served).await;
+    let swept = Box::pin(swept(&mut served)).await;
     let ada = Served::person(&served.ada, &served.devices.1, &swept.workspace);
     let old = serde_json::json!({"text": "The old word was dunlin."});
     let old = in_place(swept.places[0].as_str(), old);
@@ -554,7 +554,7 @@ async fn chat_as_read(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_mark_tells_an_agent_nothing_of_a_direct_conversation_its_person_takes_no_part_in() {
     let mut served = Served::start(1).await;
-    let swept = swept(&mut served).await;
+    let swept = Box::pin(swept(&mut served)).await;
     let ada = Served::person(&served.ada, &served.devices.1, &swept.workspace);
     let cy = Served::person(&swept.cy.0, &swept.cy.1, &swept.workspace);
     for (person, place) in [(&ada, &swept.places[0]), (&cy, &swept.places[1])] {
@@ -596,7 +596,7 @@ async fn a_read_mark_tells_an_agent_nothing_of_a_direct_conversation_its_person_
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_kept_summary_is_given_with_its_conversation_and_no_further() {
     let mut served = Served::start(1).await;
-    let swept = swept(&mut served).await;
+    let swept = Box::pin(swept(&mut served)).await;
     let summary = serde_json::json!({
         "through": swept.said[0].as_str(),
         "through_ts": now_s() - 200,
@@ -639,7 +639,7 @@ async fn a_kept_summary_is_given_with_its_conversation_and_no_further() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mention_gives_the_named_persons_agent_nothing_of_a_direct_conversation() {
     let mut served = Served::start(1).await;
-    let swept = swept(&mut served).await;
+    let swept = Box::pin(swept(&mut served)).await;
     let ada = Served::person(&served.ada, &served.devices.1, &swept.workspace);
     let bo = serde_json::json!({"user": {"person": person_of(&swept.bo.0)}, "start": 0, "len": 3, "is_agent": false});
     let naming = serde_json::json!({"text": "@Bo must not hear that the avocet lands at nine.", "mentions": [bo]});
@@ -682,7 +682,7 @@ async fn a_mention_gives_the_named_persons_agent_nothing_of_a_direct_conversatio
 async fn the_list_of_conversations_names_an_agent_no_direct_conversation_its_person_takes_no_part_in()
  {
     let mut served = Served::start(1).await;
-    let swept = swept(&mut served).await;
+    let swept = Box::pin(swept(&mut served)).await;
     swept.all_read(&served).await;
     let places = [(0, swept.places[0].as_str()), (1, swept.places[1].as_str())];
     let rows = [
@@ -752,7 +752,7 @@ async fn changes(
 async fn the_feed_of_changes_tells_an_agent_nothing_of_a_direct_conversation_its_person_takes_no_part_in()
  {
     let mut served = Served::start(1).await;
-    let swept = swept(&mut served).await;
+    let swept = Box::pin(swept(&mut served)).await;
     let mut from = Vec::new();
     for (who, caller) in &swept.readers {
         let page = changes(&served, &swept.workspace, caller, None).await;
@@ -834,7 +834,7 @@ impl Judged {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_question_that_waits_is_neither_read_nor_answered_by_an_agent_of_someone_else() {
     let mut served = Served::start(1).await;
-    let swept = swept(&mut served).await;
+    let swept = Box::pin(swept(&mut served)).await;
     let asking = serde_json::json!({
         "text": "May I book the shrike table?",
         "answers": [{"id": "yes", "label": "Yes"}, {"id": "no", "label": "No"}],
@@ -994,7 +994,7 @@ fn by_conversation(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_action_that_takes_an_id_does_nothing_with_a_direct_conversation_of_others() {
     let mut served = Served::start(1).await;
-    let swept = swept(&mut served).await;
+    let swept = Box::pin(swept(&mut served)).await;
     swept.all_read(&served).await;
     let (hers, place) = (swept.said[0].as_str(), swept.places[0].as_str());
     let no_message = "0".repeat(hers.len());
@@ -1071,7 +1071,7 @@ async fn an_action_that_takes_an_id_does_nothing_with_a_direct_conversation_of_o
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_question_is_put_to_a_person_about_a_message_of_a_direct_conversation_of_others() {
     let mut served = Served::start(1).await;
-    let swept = swept(&mut served).await;
+    let swept = Box::pin(swept(&mut served)).await;
     swept.all_read(&served).await;
     let hers = swept.said[0].as_str();
     let nobody = "0".repeat(hers.len());

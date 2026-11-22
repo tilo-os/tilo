@@ -324,11 +324,8 @@ async fn a_members_agent_reads_and_searches_and_its_changes_ask_first() {
         setup.device.user_public_key,
         setup.device.device_public_key,
     )
-    .on_roster_turn(
-        Turn::new("chat/main", "message-1"),
-        0,
-        setup.device.user_public_key,
-    );
+    .on_roster(0, setup.device.user_public_key)
+    .on_roster_turn(Turn::new("chat/main", "message-1"));
     assert!(in_turn.turn().is_some(), "the turn is the caller's");
     let sent = json!({"account": ACCOUNT, "folder": "sent"});
     let turned = setup.ask(&in_turn, person_accounts::FETCH, sent).await;

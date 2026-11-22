@@ -31,11 +31,11 @@ fn on_turn(person: [u8; 32], device: [u8; 32], workspace: &str) -> Caller {
         .in_workspace(workspace)
         .named("Scout")
         .in_agent_session("agent-session:test")
-        .on_roster_turn(
-            tilo_action_policy::turn::Turn::new("conversation-1", "message-1"),
-            0,
-            person,
-        )
+        .on_roster(0, person)
+        .on_roster_turn(tilo_action_policy::turn::Turn::new(
+            "conversation-1",
+            "message-1",
+        ))
 }
 
 /// The use that adds the account `address` with the vault item `reference` names.

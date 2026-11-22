@@ -182,7 +182,7 @@ impl AgentSessions {
         if caller.roster_created_at() != Some(*created_at)
             || caller.workspace().and_then(WorkspaceId::parse) != Some(workspace)
             || delegation.scope.workspaces.as_slice() != [workspace]
-            || delegation.delegate.agent_id() != caller.acting().agent_id()
+            || delegation.delegate.agent_id() != caller.approved_agent()
             || caller.acting().app().is_some()
             || caller
                 .acting_for_person()

@@ -483,17 +483,37 @@ impl Acting {
     /// claim the person themselves, so the agent's preset, bounded by that
     /// person and by the signer, gives it no more. An agent's own device
     /// cannot claim a person, and keeps nothing it claims to have been
-    /// handed. A key's agent ([`key_agent_id`]) keeps nothing it claims
-    /// either: it is decided by the grant its person signed, the key's
-    /// certificate, which the workspace reads and its person revokes.
+    /// handed, but for the work it hands an agent of its own for the person
+    /// it acts for (a sub-agent it started): the signer is a node of that
+    /// tree too, so the sub-agent's preset is bounded by the signer's own
+    /// approval and gives it no more than its starter holds. A key's agent
+    /// ([`key_agent_id`]) keeps nothing it claims either: it is decided by
+    /// the grant its person signed, the key's certificate, which the
+    /// workspace reads and its person revokes.
     #[must_use]
     pub fn signed_by(mut self, signer: &Self) -> Self {
         let person = signer
             .direct_person()
             .filter(|_| !signer.foreign_device)
             .map(str::to_owned);
-        let hands =
-            |node: &Self| person.is_some() && node.agent_id().and_then(key_of_agent).is_none();
+        // The agent signing for its person, and that person: whom it may hand work to.
+        let handing_agent = signer
+            .agent_id()
+            .filter(|_| person.is_none() && !signer.foreign_device && signer.app.is_none())
+            .zip(signer.acted_for_person())
+            .map(|(agent, person)| (agent.to_owned(), person.to_owned()));
+        let hands = |node: &Self| {
+            let Some(agent) = node
+                .agent_id()
+                .filter(|agent| key_of_agent(agent).is_none())
+            else {
+                return false;
+            };
+            person.is_some()
+                || handing_agent.as_ref().is_some_and(|(signing, for_person)| {
+                    agent != signing && node.acted_for_person() == Some(for_person.as_str())
+                })
+        };
         self.unhand(&hands);
         match &person {
             // The tree names the signing person already: it is theirs as it is.

@@ -461,11 +461,10 @@ impl Carrier {
             .await
             .ok()?
             .in_agent_session(asked_in.session)
-            .on_roster_turn(
-                tilo_action_policy::turn::Turn::new(asked_in.conversation, asked_in.cause),
-                agent.created_at,
-                person,
-            );
+            .on_roster_turn(tilo_action_policy::turn::Turn::new(
+                asked_in.conversation,
+                asked_in.cause,
+            ));
         Some(Asker {
             workspace_id,
             agent,

@@ -833,7 +833,7 @@ impl ServerAgents {
             .ok_or("the agent that gave it no longer works here")?;
         let caller = self.agent_caller(workspace_id, by, person).await?;
         let caller = match self.of_lead(workspace, delivery).await? {
-            Some(turn) => caller.on_roster_turn(turn, by.created_at, person),
+            Some(turn) => caller.on_roster_turn(turn),
             None => caller,
         };
         let service = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
@@ -1054,11 +1054,12 @@ impl ServerAgents {
             job = sub.job.lines().next().unwrap_or_default(),
             conversation = turn.conversation,
         );
-        let caller = agent.clone().on_roster_turn(
-            tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone()),
-            turn.agent.created_at,
-            *agent.turn_person().ok_or("the turn works for nobody")?,
-        );
+        let caller = agent
+            .clone()
+            .on_roster_turn(tilo_action_policy::turn::Turn::new(
+                turn.conversation.clone(),
+                turn.cause.clone(),
+            ));
         let label = format!(
             "{}: {how}",
             cut(turn.agent.name.trim(), LABEL_BYTES.saturating_sub(24))

@@ -1421,6 +1421,78 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
     page.peer.close();
 }
 
+/// What a sub-agent writes is kept under its own name. Only the person's own agent is
+/// approved; the sub-agent it starts holds no approval of its own and works under its
+/// starter's. Its answer stands in its own conversation as its words, and History reads every
+/// change of it as the sub-agent's, working for its person.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sub_agents_write_is_kept_under_its_own_name() {
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(
+        &served,
+        &workspace,
+        plays(&asked, |request| {
+            if of_sub_agent(request) {
+                says("The notes are tidy.")
+            } else {
+                says("Told.")
+            }
+        }),
+    )
+    .await;
+    starts(
+        &workspaces,
+        &workspace,
+        &person,
+        ("Writer", "Tidy the notes."),
+    )
+    .await;
+    let own = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent("writer")]);
+    agents.look(&workspace).await.unwrap();
+    let job = caused(&workspaces, &workspace, (own.as_str(), "job"), 1).await[0]
+        .0
+        .clone();
+    agents.look(&workspace).await.unwrap();
+    let answered = reply_of(&workspaces, &workspace, &job, "writer").await;
+    assert_eq!(
+        (answered.text.as_str(), &answered.author),
+        ("The notes are tidy.", &MemberId::agent("writer")),
+        "its answer is its own words"
+    );
+
+    let saved = workspaces
+        .resource_document(&workspace, "so.tilo.chat", chat::parts::part(0).as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut doc = automerge::AutoCommit::load(&saved).unwrap();
+    let mut entries = tilo_actions::EntryReader::default();
+    let by_it: Vec<_> = doc
+        .get_changes(&[])
+        .iter()
+        .filter_map(|change| entries.read(change.actor_id(), change.message()))
+        .filter_map(|context| context.invoker.map(|invoker| invoker.acting))
+        .filter(|acting| {
+            acting
+                .nodes()
+                .iter()
+                .any(|node| node.agent_id() == Some("writer"))
+        })
+        .collect();
+    assert!(!by_it.is_empty(), "History holds the sub-agent's writes");
+    for acting in &by_it {
+        assert_eq!(
+            (acting.agent_id(), acting.acted_for_person()),
+            (Some("writer"), Some(person.as_str())),
+            "each is the sub-agent's own, working for its person: {acting:?}"
+        );
+    }
+    page.peer.close();
+}
+
 /// A team from inside a turn: the person's own agent starts and steers its sub-agents from
 /// its own turn, and a lead reads the team under it.
 #[path = "hosted_sub_agent_teams.rs"]
