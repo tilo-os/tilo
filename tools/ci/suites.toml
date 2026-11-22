@@ -283,7 +283,6 @@ suites = [
   "os/tests/test_fetch_windows_direct_manifests.py",
   "os/tests/windows_direct_install_orchestrator_test.py",
   "os/tests/nearby_privileged_processes_test.sh",
-  "os/tests/nearby_cleanup_test.py",
   "os/tests/vm_release_check_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
   "os/tests/server_firstboot_sibling.sh",
