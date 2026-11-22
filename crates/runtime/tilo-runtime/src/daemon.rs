@@ -13,11 +13,12 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc, OnceLock,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
+use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_mcp::lines::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_reader};
 use tilo_mcp::session_api::{Asking, bridge_stdio};
@@ -735,44 +736,62 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
 pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
     validate_profile(profile)?;
     let mut stages = StartupStages::open(profile)?;
+    stages.enter("locking the device");
+    let device = crate::device::unclaimed::ThisDevice::lock()?;
+    // The native endpoint answers from boot, before anyone's certificate names this device and
+    // while its person's services start: the device's own actions first, the person's once they
+    // run. This process has the device's lock, so only it removes a stale endpoint.
+    let path = profile.join("native.sock");
+    stages.enter("binding the native endpoint");
+    let listener = tilo_files::native::private::bind_socket(&path)?;
+    let native = Arc::new(Native::new(device.answers()));
+    {
+        let native = Arc::clone(&native);
+        std::thread::Builder::new()
+            .name("tilo-native".into())
+            .spawn(move || {
+                if let Err(error) = native.accept(&listener) {
+                    tracing::error!(%error, "the native endpoint stopped taking connections");
+                }
+            })?;
+    }
+    tracing::info!("answering this device's actions on its native endpoint");
+    // Before a person's certificate names this computer's key, a computer of one account's
+    // founds its person; Tilo OS's device, and one handed a ticket, are served with the key alone,
+    // the ticket spent on the way, and the person's services start once a certificate names it.
+    if !device.claimed() {
+        if crate::device::services::founds_a_person() {
+            stages.enter("founding this computer's person");
+            crate::device::services::found_a_person()?;
+        } else {
+            stages.enter("serving this device before anyone's certificate names it");
+            device.spend_handed_ticket();
+            device.until_claimed();
+        }
+    }
+    let locked = device.into_lock();
     let mut stage = |stage: &str| stages.enter(stage);
-    let session = Arc::new(if dev {
-        Daemon::start_in_dev_mode(profile, &mut stage)?
-    } else {
-        Daemon::start_reporting(profile, &mut stage)?
-    });
+    let session = Arc::new(Daemon::start_locked(profile, &mut stage, dev, locked)?);
     // A computer that just logged in takes its workspace in while the device is held (below):
     // nothing is admitted to the workspace before then. The endpoint admits each connection as
     // it comes, and host search starts once the workspace is here, rather than the daemon ending
     // before it could take the workspace in.
     let search = Arc::new(OnceLock::new());
     search_once_held(&session, &search)?;
-    let path = profile.join("native.sock");
-    // The daemon already holds the device's lock. Only that owner may remove a stale
-    // endpoint, and a second daemon cannot reach this point.
-    stages.enter("binding the native endpoint");
-    let listener = tilo_files::native::private::bind_socket(&path)?;
-    stages.enter("answering the status probe");
+    stages.enter("answering as the person");
     drop(stages);
-    let status = Status {
-        version: 1,
-        pid: std::process::id(),
-        workspace: session.workspace().to_owned(),
-    };
     let endpoint = Endpoint {
         session_factory: admitted_per_connection(&session),
-        status,
+        status: Status {
+            version: 1,
+            pid: std::process::id(),
+            workspace: session.workspace().to_owned(),
+        },
         search,
         media: session.media(),
         other_devices: session.other_devices(),
     };
-    std::thread::Builder::new()
-        .name("tilo-native".into())
-        .spawn(move || {
-            if let Err(error) = endpoint.accept(&listener) {
-                tracing::error!(%error, "the native endpoint stopped taking connections");
-            }
-        })?;
+    native.serve_the_person(endpoint);
     // The device is served until the daemon is told to stop, or another takes the device over:
     // the process ends then, its apps' connections with it.
     let held = crate::device::hold(&session);
@@ -781,6 +800,111 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
     let _ = std::fs::remove_file(&path);
     drop(session);
     held.map_err(|error| io::Error::other(format!("{error:#}")))?;
+    Ok(())
+}
+
+/// A connection the native endpoint takes, with the slot it counts against.
+type Take = Box<dyn Fn(UnixStream, ConnectionSlot) -> io::Result<()> + Send + Sync>;
+
+/// The native endpoint over the daemon's whole life: the device's own actions from boot, and the
+/// person's endpoint once their services run. A connection on a device no certificate names yet
+/// is answered with the device's own actions at once; one on a set-up device while its person's
+/// services start waits on its own thread until they run, so an app is never served the device
+/// alone for its life. The listener itself never waits.
+struct Native {
+    device: Endpoint<crate::device::unclaimed::DeviceOnly>,
+    answers: crate::device::unclaimed::DeviceOnly,
+    person: OnceLock<Take>,
+    /// Told when [`Self::person`] is set.
+    started: (Mutex<()>, Condvar),
+}
+
+impl Native {
+    fn new(device: crate::device::unclaimed::DeviceOnly) -> Self {
+        let answers = device.clone();
+        let factory: tilo_mcp::SessionFactory<_> =
+            Arc::new(move || Ok(McpServer::new(device.clone(), String::new(), String::new())));
+        Self {
+            answers,
+            started: (Mutex::new(()), Condvar::new()),
+            device: Endpoint {
+                session_factory: factory,
+                // No workspace is served yet.
+                status: Status {
+                    version: 1,
+                    pid: std::process::id(),
+                    workspace: String::new(),
+                },
+                search: Arc::new(OnceLock::new()),
+                media: None,
+                other_devices: None,
+            },
+            person: OnceLock::new(),
+        }
+    }
+
+    /// Serve every connection from now on with `endpoint`, the person's.
+    fn serve_the_person<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static>(
+        &self,
+        endpoint: Endpoint<H>,
+    ) {
+        let take: Take = Box::new(move |stream, slot| endpoint.take(stream, slot));
+        assert!(
+            self.person.set(take).is_ok(),
+            "one daemon starts its person's services once"
+        );
+        let _told = self.started.0.lock_recover();
+        self.started.1.notify_all();
+    }
+
+    /// Serve each connection to `listener` as whatever answers when it comes ([`accept`]).
+    fn accept(self: &Arc<Self>, listener: &UnixListener) -> io::Result<()> {
+        accept(listener, |stream, slot| match self.person.get() {
+            Some(person) => person(stream, slot),
+            None if !self.answers.claimed() => self.device.take(stream, slot),
+            None => {
+                let native = Arc::clone(self);
+                std::thread::Builder::new()
+                    .name("tilo-native-wait".into())
+                    .spawn(move || {
+                        let mut told = native.started.0.lock_recover();
+                        let person = loop {
+                            if let Some(person) = native.person.get() {
+                                break person;
+                            }
+                            told = native
+                                .started
+                                .1
+                                .wait(told)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        };
+                        drop(told);
+                        if let Err(error) = person(stream, slot) {
+                            tracing::debug!(%error, "a native connection that waited while the person's services started was not served");
+                        }
+                    })
+                    .map(drop)
+            }
+        })
+    }
+}
+
+/// Hand each connection to `listener` to `take`, at most [`MAX_CONNECTIONS`] at once. One more
+/// is told there is no room and closed ([`refuse_busy`]).
+fn accept(
+    listener: &UnixListener,
+    take: impl Fn(UnixStream, ConnectionSlot) -> io::Result<()>,
+) -> io::Result<()> {
+    let active = Arc::new(AtomicUsize::new(0));
+    for stream in listener.incoming() {
+        let stream = stream?;
+        if active.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+            refuse_busy(stream);
+            continue;
+        }
+        active.fetch_add(1, Ordering::Relaxed);
+        take(stream, ConnectionSlot(Arc::clone(&active)))?;
+    }
     Ok(())
 }
 
@@ -890,84 +1014,69 @@ fn refuse_busy(mut stream: UnixStream) {
 }
 
 impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> Endpoint<H> {
-    /// Serve each connection to `listener` on its own thread, at most
-    /// [`MAX_CONNECTIONS`] at once. One more is told there is no room and
-    /// closed ([`refuse_busy`]).
-    fn accept(self, listener: &UnixListener) -> io::Result<()> {
-        let active = Arc::new(AtomicUsize::new(0));
-        for stream in listener.incoming() {
-            let stream = stream?;
-            if active.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
-                refuse_busy(stream);
-                continue;
-            }
-            let factory = Arc::clone(&self.session_factory);
-            let status = self.status.clone();
-            let search = Arc::clone(&self.search);
-            let media = self.media.clone();
-            let other_devices = self.other_devices.clone();
-            let active = Arc::clone(&active);
-            active.fetch_add(1, Ordering::Relaxed);
-            let slot = ConnectionSlot(active);
-            std::thread::Builder::new()
-                .name("tilo-native-mcp".into())
-                .spawn(move || {
-                    let _slot = slot;
-                    // The first line says whether the client asks to be
-                    // carried to another device's MCP server; anything else
-                    // is served here, that line first.
-                    let mut reader = match stream.try_clone() {
-                        Ok(clone) => BufReader::new(clone),
-                        Err(error) => {
-                            tracing::debug!(%error, "native runtime client socket");
-                            return;
-                        }
-                    };
-                    let mut first = Vec::new();
-                    if let Err(error) = (&mut reader).take(FIRST_LINE).read_until(b'\n', &mut first)
-                    {
-                        tracing::debug!(%error, "native runtime client disconnected");
+    /// Serve `stream` on its own thread, counted in `slot` while it lasts.
+    fn take(&self, stream: UnixStream, slot: ConnectionSlot) -> io::Result<()> {
+        let factory = Arc::clone(&self.session_factory);
+        let status = self.status.clone();
+        let search = Arc::clone(&self.search);
+        let media = self.media.clone();
+        let other_devices = self.other_devices.clone();
+        std::thread::Builder::new()
+            .name("tilo-native-mcp".into())
+            .spawn(move || {
+                let _slot = slot;
+                // The first line says whether the client asks to be
+                // carried to another device's MCP server; anything else
+                // is served here, that line first.
+                let mut reader = match stream.try_clone() {
+                    Ok(clone) => BufReader::new(clone),
+                    Err(error) => {
+                        tracing::debug!(%error, "native runtime client socket");
                         return;
                     }
-                    if let Some(forward) = first
-                        .strip_suffix(b"\n")
-                        .and_then(tilo_mcp::devices::forward_request)
-                    {
-                        match &other_devices {
-                            // A client asks for nothing more before it is told
-                            // whether the connection opened.
-                            Some(other_devices) if reader.buffer().is_empty() => {
-                                other_devices.serve_forward(stream, &forward);
-                            }
-                            Some(_) => tilo_mcp::devices::refuse_forward(
-                                stream,
-                                "a forward is the only line before its answer".into(),
-                            ),
-                            None => tilo_mcp::devices::refuse_forward(
-                                stream,
-                                "this runtime reaches none of your other devices".into(),
-                            ),
+                };
+                let mut first = Vec::new();
+                if let Err(error) = (&mut reader).take(FIRST_LINE).read_until(b'\n', &mut first) {
+                    tracing::debug!(%error, "native runtime client disconnected");
+                    return;
+                }
+                if let Some(forward) = first
+                    .strip_suffix(b"\n")
+                    .and_then(tilo_mcp::devices::forward_request)
+                {
+                    match &other_devices {
+                        // A client asks for nothing more before it is told
+                        // whether the connection opened.
+                        Some(other_devices) if reader.buffer().is_empty() => {
+                            other_devices.serve_forward(stream, &forward);
                         }
+                        Some(_) => tilo_mcp::devices::refuse_forward(
+                            stream,
+                            "a forward is the only line before its answer".into(),
+                        ),
+                        None => tilo_mcp::devices::refuse_forward(
+                            stream,
+                            "this runtime reaches none of your other devices".into(),
+                        ),
+                    }
+                    return;
+                }
+                let input = io::Cursor::new(first).chain(reader);
+                let server = match factory() {
+                    Ok(server) => Arc::new(server.with_media(media).with_devices(
+                        other_devices.map(|other_devices| {
+                            Arc::new(other_devices) as Arc<dyn tilo_mcp::devices::DeviceDirectory>
+                        }),
+                    )),
+                    Err(error) => {
+                        tracing::debug!(%error, "native MCP session admission unavailable");
                         return;
                     }
-                    let input = io::Cursor::new(first).chain(reader);
-                    let server = match factory() {
-                        Ok(server) => Arc::new(server.with_media(media).with_devices(
-                            other_devices.map(|other_devices| {
-                                Arc::new(other_devices)
-                                    as Arc<dyn tilo_mcp::devices::DeviceDirectory>
-                            }),
-                        )),
-                        Err(error) => {
-                            tracing::debug!(%error, "native MCP session admission unavailable");
-                            return;
-                        }
-                    };
-                    if let Err(error) = serve_connection(stream, input, &server, &status, &search) {
-                        tracing::debug!(%error, "native runtime client disconnected");
-                    }
-                })?;
-        }
+                };
+                if let Err(error) = serve_connection(stream, input, &server, &status, &search) {
+                    tracing::debug!(%error, "native runtime client disconnected");
+                }
+            })?;
         Ok(())
     }
 }

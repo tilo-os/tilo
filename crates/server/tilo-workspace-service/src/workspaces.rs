@@ -1329,8 +1329,17 @@ impl Workspaces {
         // renamed since serves with the record's own, verified.
         let host = record_authority::host_serving(host, &dir);
         let workspaces = Arc::new(device_actions::WorkspacesMap::default());
+        // The device actions answer on the endpoint, so they sign as the key it is keyed by: a
+        // member device's own key where its service writes under a key of its own, else the host's.
+        let endpoint_key = *host.endpoint.id().as_bytes();
+        let signer: Arc<dyn collab_types::signer::DeviceSigner> = match &host.member {
+            Some(member) if member.cert.device_public_key == endpoint_key => {
+                Arc::clone(&member.signer)
+            }
+            _ => Arc::new(host.key.clone()),
+        };
         let (action_service, jobs) =
-            device_actions::action_service(Arc::clone(&workspaces), host.key.clone());
+            device_actions::action_service(Arc::clone(&workspaces), signer);
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
         // What a host from before the device store kept in its own store of
@@ -1730,6 +1739,18 @@ impl Workspaces {
     /// machine and Browser.
     pub fn run_linux(&self, linux: Arc<dyn crate::work::HostLinux>) {
         self.inner.jobs.serve_linux(linux);
+    }
+
+    /// Answer the requests on the device action service (`tilo-actions/1`) that name `provider`
+    /// with `answers`, the provider id a request's target names. The workspace a request asks in
+    /// admits the asking device to the action by its ordinary grants first, so `answers` sees
+    /// only admitted requests and decides no grant itself.
+    pub fn provide(
+        &self,
+        provider: &'static str,
+        answers: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+    ) {
+        self.inner.jobs.provide(provider, answers);
     }
 
     /// Answer the workspaces' governance actions their member devices ask on the device action

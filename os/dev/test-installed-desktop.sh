@@ -119,6 +119,19 @@ python3 "$dev_dir/probe-kvm.py" "$arch" >/dev/null 2>&1 && kvm=1
 # has started.
 "$vm" with-tests "TILO_BOOT_USERSPACE_BUDGET_SEC=20 TILO_BOOT_HOST_SAMPLES=$host_samples \"\$TILO_GUEST_TESTS/boot-performance-check.sh\""
 
+# The device's daemon is a system service: at the greeter, before anyone signs in, it runs as
+# `tilo` with the machine's device key and answers the device's actions, whether or not anyone's
+# certificate names the device yet.
+"$vm" ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' sh -c '
+  systemctl is-active --quiet tilo-runtime.service || { systemctl status --no-pager tilo-runtime.service; exit 1; }
+  [ \"\$(systemctl show -p User --value tilo-runtime.service)\" = tilo ] || exit 1
+  for _ in \$(seq 1 30); do
+    journalctl -b -u tilo-runtime.service -o cat | grep -Fq \"actions on its native endpoint\" && exit 0
+    sleep 1
+  done
+  journalctl -b -u tilo-runtime.service -o cat | tail -40; exit 1'" \
+  || die "tilo-runtime.service does not answer the device's actions before sign-in"
+
 # The sign-in screen as a person meets it, judged from the frames QEMU scans
 # out: whole before any input and while the pointer moves, each keystroke on
 # screen within the latency bound and repainting only the field, and a wrong

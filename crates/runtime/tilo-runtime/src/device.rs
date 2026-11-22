@@ -38,6 +38,9 @@ pub mod take_work;
 mod ticket;
 #[cfg(test)]
 mod ticket_tests;
+pub(crate) mod unclaimed;
+#[cfg(test)]
+mod unclaimed_tests;
 pub mod workspaces;
 
 use std::process::ExitCode;

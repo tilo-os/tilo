@@ -456,9 +456,9 @@ if [[ $hosted == 1 ]]; then
       echo '--- the key the host joined with:' >&2
       sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 \
         --init-groups --inh-caps=-all tilo-device-admin key \
-        --identity-root /var/lib/tilo-hosted/member/profile/identity >&2 2>/dev/null || true
+        --identity-root /var/lib/tilo-hosted/member/identity >&2 2>/dev/null || true
       sudo -n podman exec tilo-sh-vm-host-0 sh -c \
-        'ls -la --time-style=full-iso /var/lib/tilo-hosted/member/profile/identity/device-private /var/lib/tilo-hosted/member/profile/identity/device' >&2 2>/dev/null || true
+        'ls -la --time-style=full-iso /var/lib/tilo-hosted/member/identity/device-private /var/lib/tilo-hosted/member/identity/device' >&2 2>/dev/null || true
       echo '--- the member, from its start:' >&2
       sudo -n podman logs tilo-sh-vm-host-0 2>&1 | grep -v 'net_report' | head -60 >&2 || true
       # What the Browser session in the workspace's VM wrote, which the host

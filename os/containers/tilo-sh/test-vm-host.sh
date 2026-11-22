@@ -108,7 +108,7 @@ grep -q "guest kernel .*hosted-$(tr -d '[:space:]' < "$guest/digest" | sed 's/^s
 }
 member=$(podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups \
   --inh-caps=-all tilo-device-admin key \
-  --identity-root /var/lib/tilo-hosted/member/profile/identity 2>&1)
+  --identity-root /var/lib/tilo-hosted/member/identity 2>&1)
 printf '%s\n' "$member" >&2
 grep -q '"device"' <<<"$member" || die 'the host holds no member device key'
 

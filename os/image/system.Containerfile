@@ -230,6 +230,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-sandbox-view.path \
     os/usr/lib/systemd/system/tilo-sandbox-view-retire@.service \
     os/usr/lib/systemd/system/tilo-runtime-resident.service \
+    os/usr/lib/systemd/system/tilo-runtime.service \
     os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
     os/usr/lib/systemd/system/tilo-session-recovery.service \
     os/usr/lib/systemd/system/tilo-ntfs-mount.socket \
@@ -401,9 +402,11 @@ COPY \
     os/usr/lib/sysusers.d/tilo-local-model.conf \
     os/usr/lib/sysusers.d/tilo-identity.conf \
     os/usr/lib/sysusers.d/tilo-ntfs.conf \
+    os/usr/lib/sysusers.d/tilo-runtime.conf \
     /usr/lib/sysusers.d/
 RUN --mount=type=bind,source=os/usr/lib/sysusers.d/tilo-server.conf,target=/run/tilo-server-sysusers.conf,ro \
     systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
+ && systemd-sysusers /usr/lib/sysusers.d/tilo-runtime.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf \
  && systemd-sysusers /run/tilo-server-sysusers.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-ntfs.conf
@@ -763,6 +766,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     systemctl enable tilo-selinux-policy.service && \
     systemctl enable tilo-sandbox-view.service tilo-sandbox-view.path && \
     systemctl enable tilo-runtime-resident.service && \
+    systemctl enable tilo-runtime.service && \
     systemctl enable NetworkManager-dispatcher.service
 
 # Boot-time prune. These units sit on the critical chain but their work

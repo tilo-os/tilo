@@ -13,7 +13,11 @@ use std::{
 /// services start with. This does not mutate process-global state: the native
 /// executable applies the returned values at its single-threaded startup
 /// boundary.
-pub(crate) fn prepare_environment(profile: &Path) -> io::Result<[(&'static str, PathBuf); 5]> {
+///
+/// The device's key and certificates are not the profile's: they are in the one layout
+/// [`collaboration_identity_root`](tilo_identity::provisioning::collaboration_identity_root)
+/// names, Tilo's system tree on Tilo OS and the profile's data directory elsewhere.
+pub(crate) fn prepare_environment(profile: &Path) -> io::Result<[(&'static str, PathBuf); 4]> {
     if !profile.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -30,13 +34,12 @@ pub(crate) fn prepare_environment(profile: &Path) -> io::Result<[(&'static str, 
 
 /// The directories inside the profile the runtime's services keep their state
 /// in, as the environment names them.
-fn environment(profile: &Path) -> [(&'static str, PathBuf); 5] {
+fn environment(profile: &Path) -> [(&'static str, PathBuf); 4] {
     [
         ("XDG_CONFIG_HOME", profile.join("config")),
         ("XDG_DATA_HOME", profile.join("data")),
         ("XDG_CACHE_HOME", profile.join("cache")),
         ("XDG_STATE_HOME", profile.join("state")),
-        ("TILO_IDENTITY_ROOT", profile.join("identity")),
     ]
 }
 

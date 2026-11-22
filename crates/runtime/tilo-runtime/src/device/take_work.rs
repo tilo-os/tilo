@@ -53,7 +53,8 @@ use tilo_actions::remote::ActionProvider;
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService};
 use tilo_user_identity::DeviceCert;
 
-/// The UDP port a member's endpoint listens on.
+/// The UDP port a member's endpoint listens on where its device names none
+/// ([`configured_port`](super::services::configured_port)).
 pub const PORT: u16 = 7703;
 /// What a member keeps of its shells, under the profile, and where each
 /// workspace's files are below it.

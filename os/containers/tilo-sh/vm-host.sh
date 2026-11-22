@@ -192,7 +192,7 @@ member_device() {
   while ((SECONDS - started < 180)); do
     device=$(podman exec "$host_container" setpriv --reuid=10001 --regid=10001 --init-groups \
       --inh-caps=-all tilo-device-admin key \
-      --identity-root /var/lib/tilo-hosted/member/profile/identity 2>/dev/null |
+      --identity-root /var/lib/tilo-hosted/member/identity 2>/dev/null |
       json_field device)
     if [ -n "$device" ]; then printf '%s' "$device"; return 0; fi
     [ "$(podman inspect --format '{{.State.Running}}' "$host_container" 2>/dev/null)" = true ] \
@@ -283,6 +283,7 @@ up() {
     -e TILO_VM_MEMORY_MIB="$memory_mib" \
     -e TILO_VM_GUEST_REF="$guest_ref" \
     -e TILO_VM_SERVER_ENDPOINT="$server_iroh" \
+    -e TILO_DEVICE_PORT="$member_port" \
     "$image" >/dev/null
   # The member's device key is the ticket's login's, made on the host's own
   # disk: read back once it joined, as the server's person's server.

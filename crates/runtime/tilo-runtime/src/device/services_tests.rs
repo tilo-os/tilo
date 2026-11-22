@@ -279,6 +279,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
 /// returns the profile to serve.
 pub(crate) fn isolated_root(test: &str) -> Option<PathBuf> {
     if let Some(root) = std::env::var_os(PROCESS_ROOT) {
+        found_here();
         return Some(PathBuf::from(root));
     }
     let temp = tempfile::tempdir().unwrap();
@@ -335,10 +336,13 @@ pub(crate) fn isolated_home(root: &Path) -> PathBuf {
 /// Provision only the receipt signer's host ownership in an isolated process.
 /// The synthetic caller still uses its independently certified admission.
 pub(crate) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
-    let root = isolated_root(test)?;
-    // The identity the daemon makes for a computer with no login on its first start.
-    super::provision_identity().unwrap();
-    Some(root)
+    isolated_root(test)
+}
+
+/// Found a person on this computer, whose root it has, as a computer is set up explicitly
+/// before its daemon serves anyone, as a daemon of one account's does at its first start.
+pub(crate) fn found_here() {
+    super::found_a_person().unwrap();
 }
 
 /// An SDK app's collaboration manager once it has joined the broker.
@@ -964,4 +968,54 @@ fn a_logins_device_is_what_this_computers_apps_sign_as() {
     assert_eq!(signer.verifying_key(), key.verifying_key());
     // A second start finds it enrolled and changes nothing.
     assert_eq!(Identity::here().unwrap().cert, cert);
+}
+
+/// A device reached through a forward to a fixed UDP port (a local VM's host forward) binds the
+/// port its `tilo.port` credential names, or, without one, the one `TILO_DEVICE_PORT` names; with
+/// neither, iroh picks the port as on every other device.
+#[test]
+fn a_configured_port_is_the_one_the_endpoint_binds() {
+    let free = || {
+        std::net::UdpSocket::bind("0.0.0.0:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    };
+    let (handed, named) = (free(), free());
+    let credentials = tempfile::tempdir().unwrap();
+    assert_eq!(port_from(Some(credentials.path()), None).unwrap(), None);
+    assert_eq!(
+        port_from(Some(credentials.path()), Some(named.to_string())).unwrap(),
+        Some(named),
+        "the environment names the port where no credential is handed"
+    );
+    std::fs::write(
+        credentials.path().join(PORT_CREDENTIAL),
+        format!("{handed}\n"),
+    )
+    .unwrap();
+    let port = port_from(Some(credentials.path()), Some(named.to_string())).unwrap();
+    assert_eq!(port, Some(handed), "the handed credential names the port");
+    assert!(
+        port_from(None, Some("seventy".into())).is_err(),
+        "a port that is no number is refused, not ignored"
+    );
+
+    let key = SigningKey::from_bytes(&[0x37; 32]);
+    let endpoint = listen_endpoint(&key, port).unwrap();
+    let bound: Vec<_> = endpoint
+        .bound_sockets()
+        .into_iter()
+        .filter(std::net::SocketAddr::is_ipv4)
+        .collect();
+    tilo_rt::app().handle().block_on(endpoint.close());
+    assert_eq!(
+        bound
+            .iter()
+            .map(std::net::SocketAddr::port)
+            .collect::<Vec<_>>(),
+        vec![handed],
+        "the endpoint binds the configured port: {bound:?}"
+    );
 }

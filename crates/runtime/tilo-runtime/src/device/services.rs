@@ -3,8 +3,12 @@
 //!
 //! The daemon is the device: it acts as the device key and certificate this computer's login
 //! keeps ([`tilo_device_identity::login`]), for the person that certificate names, in the
-//! workspace the login names. A computer with no login acts as the identity it holds, in a
-//! workspace founded here whose member list names the person as its owner. Here the daemon
+//! workspace the login names. A computer with no login acts as the identity founded on it
+//! (`tilo login --new-identity`), in a workspace founded here whose member list names the person
+//! as its owner. A computer of one account's that has neither, and was handed no ticket, founds
+//! its person at its first start ([`found_a_person`]); Tilo OS's system tree, and a computer handed
+//! a ticket, are served with the device key alone until a person's certificate names it
+//! ([`super::unclaimed`]). Here the daemon
 //! launches the installed apps through the platform launcher (`crate::apps`), records the grants
 //! people give apps for other apps' actions as changes to the workspace's member list, serves
 //! route keys for its workspaces (`channels`) and routes offloadable actions through the
@@ -131,7 +135,10 @@ struct Identity {
 }
 
 impl Identity {
-    /// The login's device, or, with no login, the identity this computer holds.
+    /// The login's device, or, with no login, the identity founded on this computer.
+    ///
+    /// # Errors
+    /// Neither names this computer's device key ([`SET_UP_FIRST`]), or the login is damaged.
     fn here() -> io::Result<Self> {
         let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys())
             .map_err(io::Error::other)?;
@@ -151,7 +158,6 @@ impl Identity {
             adopt_login(&place, device);
             (key.clone(), device.cert.clone())
         } else {
-            provision_identity()?;
             tilo_identity::broker::trusted_current_device("").map_err(|error| {
                 io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
             })?
@@ -170,15 +176,28 @@ impl Identity {
     }
 }
 
-/// With no login, the identity this computer keeps for itself, made on its first start: a person
-/// whose root it holds, and this device certified by them, which its apps sign as.
+/// Whether this daemon founds its person at its start, while no person's certificate names its
+/// key: on a computer of one account's (not Tilo OS's system tree) that was handed no ticket, as a
+/// laptop's first `tilo` command is.
+#[must_use]
+pub(crate) fn founds_a_person() -> bool {
+    let handed = std::env::var_os("CREDENTIALS_DIRECTORY").is_some_and(|dir| {
+        Path::new(&dir)
+            .join(super::unclaimed::TICKET_CREDENTIAL)
+            .exists()
+    });
+    !handed
+        && tilo_identity::provisioning::collaboration_identity_root()
+            != Path::new(tilo_device_identity::persist::SYSTEM_IDENTITY_ROOT)
+}
+
+/// Found this computer's person: their root, kept here, certifies this device's key.
 ///
 /// # Errors
-/// The identity cannot be made or read.
-fn provision_identity() -> io::Result<()> {
-    let identity_dir = tilo_identity::store::identity_dir_from_env()?;
+/// The identity cannot be made or kept.
+pub(crate) fn found_a_person() -> io::Result<()> {
     tilo_identity::provisioning::ensure_foreign_collaboration_identity(
-        &identity_dir,
+        &tilo_identity::store::identity_dir_from_env()?,
         &tilo_identity::provisioning::collaboration_identity_paths(),
         tilo_identity::provisioning::IdentityStorage::for_session(),
     )?;
@@ -228,6 +247,18 @@ impl Daemon {
         &self.workspaces
     }
 
+    /// Answer the requests on this device's action service (`tilo-actions/1`) that name
+    /// `provider` with `answers`. The workspace a request asks in admits the asking device to the
+    /// action by its ordinary grants, read from this device's own copy of the workspace, before
+    /// `answers` sees it; a provider decides no grant itself.
+    pub fn provide(
+        &self,
+        provider: &'static str,
+        answers: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+    ) {
+        self.workspaces.copies().provide(provider, answers);
+    }
+
     /// The login this daemon serves, when this computer logged in.
     pub(crate) fn login(&self) -> Option<&(SigningKey, Device)> {
         self.login.as_ref()
@@ -269,7 +300,12 @@ impl Daemon {
         clippy::too_many_lines,
         reason = "one start, each service opened in the order the next ones need it"
     )]
-    fn start(root: &Path, stage: &mut dyn FnMut(&str), serving: Serving) -> io::Result<Self> {
+    fn start(
+        root: &Path,
+        stage: &mut dyn FnMut(&str),
+        serving: Serving,
+        locked: Option<([u8; 32], advisory_lock::FileLock)>,
+    ) -> io::Result<Self> {
         let identity = Identity::here()?;
         let take_work =
             take_work::Server::from_login(identity.login.as_ref().map(|(_, device)| device));
@@ -279,8 +315,19 @@ impl Daemon {
             &identity.key.verifying_key().to_bytes(),
         )
         .map_err(io::Error::other)?;
-        stage("locking the device");
-        let lock = super::serve::lock_device(&place)?;
+        let lock = match locked {
+            Some((device, lock)) if device == identity.key.verifying_key().to_bytes() => lock,
+            Some(_) => {
+                return Err(io::Error::other(
+                    "the device key this daemon locked at its start is not the one its person's \
+                     certificate names",
+                ));
+            }
+            None => {
+                stage("locking the device");
+                super::serve::lock_device(&place)?
+            }
+        };
         unix::private_directory(root)?;
         let dev = matches!(serving, Serving::Dev);
         let actor = identity.person();
@@ -306,7 +353,9 @@ impl Daemon {
         // workspaces the login takes part in, or the workspace founded here.
         stage("opening the device's workspace service");
         let key_sessions = founded.map(|_| crate::key_sessions::KeySessions::new());
-        let endpoint = endpoint(&identity, take_work.as_ref().map(|_| take_work::PORT))?;
+        let member = take_work.is_some();
+        let port = configured_port()?.or_else(|| member.then_some(take_work::PORT));
+        let endpoint = endpoint(&identity, port, member)?;
         let workspaces = open_workspaces(
             &identity,
             endpoint,
@@ -333,7 +382,7 @@ impl Daemon {
         // this member takes from its server when it takes any, else its workspaces'. A ticket's
         // certify call is admitted on it while a computer asks.
         let actions = take_work.as_ref().map_or_else(
-            || super::ticket::device_actions(&identity.key, &workspaces),
+            || workspaces.copies().action_service(),
             take_work::TakesWork::actions,
         );
         // The device actions the daemon answers itself.
@@ -480,16 +529,57 @@ fn founded_workspace(dir: &Path, person: &[u8; 32]) -> io::Result<WorkspaceId> {
     }
 }
 
-/// This device's endpoint, keyed by its device key: the one its login's server is reached from,
-/// or, with no login or for a member that takes work at `listen`, one bound as
-/// [`listen_endpoint`] binds it.
-fn endpoint(identity: &Identity, listen: Option<u16>) -> io::Result<iroh::Endpoint> {
-    let Some((key, device)) = identity.login.as_ref().filter(|_| listen.is_none()) else {
-        return listen_endpoint(&identity.key, listen);
+/// The systemd credential that fixes the UDP port this device's endpoint binds, for a device
+/// reached through a forward to that port (a local VM's host forward, a container's published
+/// port).
+pub const PORT_CREDENTIAL: &str = "tilo.port";
+/// [`PORT_CREDENTIAL`] where no credential is handed: a container's or a dev run's environment.
+pub const PORT_ENV: &str = "TILO_DEVICE_PORT";
+
+/// The UDP port this device's endpoint binds, when one is fixed ([`PORT_CREDENTIAL`], else
+/// [`PORT_ENV`]); `None` leaves the choice to iroh, as on every device that names none.
+///
+/// # Errors
+/// The setting names no port number.
+pub(crate) fn configured_port() -> io::Result<Option<u16>> {
+    port_from(
+        std::env::var_os("CREDENTIALS_DIRECTORY")
+            .map(PathBuf::from)
+            .as_deref(),
+        std::env::var(PORT_ENV).ok(),
+    )
+}
+
+/// [`configured_port`], from the credentials directory and the environment's [`PORT_ENV`].
+pub(crate) fn port_from(
+    credentials: Option<&Path>,
+    named: Option<String>,
+) -> io::Result<Option<u16>> {
+    let handed =
+        credentials.and_then(|dir| std::fs::read_to_string(dir.join(PORT_CREDENTIAL)).ok());
+    let Some(value) = handed.or(named).filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    value.trim().parse().map(Some).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "this device's port {value:?} ({PORT_CREDENTIAL} or {PORT_ENV}) is no UDP port number"
+            ),
+        )
+    })
+}
+
+/// This device's endpoint, keyed by its device key and bound on UDP `port` when one is fixed: the
+/// one its login's server is reached from, or, with no login or for a member that takes work, one
+/// bound as [`listen_endpoint`] binds it.
+fn endpoint(identity: &Identity, port: Option<u16>, member: bool) -> io::Result<iroh::Endpoint> {
+    let Some((key, device)) = identity.login.as_ref().filter(|_| !member) else {
+        return listen_endpoint(&identity.key, port);
     };
     let bound = tilo_rt::app().handle().block_on(async {
         let server = tilo_api::daemon::enter::server_of(device).await?;
-        tokio::time::timeout(BINDING, server.bind(Some(key.to_bytes())))
+        tokio::time::timeout(BINDING, server.bind_at(Some(key.to_bytes()), port))
             .await
             .map_err(|_| anyhow::anyhow!("the endpoint did not bind in time"))?
             .map_err(|error| anyhow::anyhow!("{error}"))
@@ -498,7 +588,7 @@ fn endpoint(identity: &Identity, listen: Option<u16>) -> io::Result<iroh::Endpoi
         Ok(endpoint) => Ok(endpoint),
         Err(error) => {
             tracing::warn!(%error, "the login's server is not reached now; this device relays as the person's other devices do");
-            listen_endpoint(&identity.key, None)
+            listen_endpoint(&identity.key, port)
         }
     }
 }
@@ -677,15 +767,33 @@ fn execution_policy_clock() -> io::Result<(
     Ok((origin, time))
 }
 
+impl Daemon {
+    /// Start the person's services under the device lock this daemon took at its start
+    /// ([`super::unclaimed::ThisDevice`]), in dev mode when `dev`.
+    ///
+    /// # Errors
+    /// As [`RuntimeServices::start_reporting`], and when the locked key is not the person's
+    /// device's.
+    pub(crate) fn start_locked(
+        root: &Path,
+        stage: &mut dyn FnMut(&str),
+        dev: bool,
+        locked: ([u8; 32], advisory_lock::FileLock),
+    ) -> io::Result<Self> {
+        let serving = if dev { Serving::Dev } else { Serving::Profile };
+        Self::start(root, stage, serving, Some(locked))
+    }
+}
+
 impl RuntimeServices for Daemon {
     type ActionProvider = RuntimeActionProvider;
 
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
-        Self::start(root, stage, Serving::Profile)
+        Self::start(root, stage, Serving::Profile, None)
     }
 
     fn start_in_dev_mode(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
-        Self::start(root, stage, Serving::Dev)
+        Self::start(root, stage, Serving::Dev, None)
     }
 
     fn workspace(&self) -> &str {
@@ -1695,20 +1803,8 @@ pub(super) fn listen_endpoint(key: &SigningKey, listen: Option<u16>) -> io::Resu
                 ),
             ));
         }
-        // Every interface, on the port a server reaches this member at: IPv4,
-        // and IPv6 where the machine has it.
-        builder = builder
-            .clear_ip_transports()
-            .bind_addr_with_opts(
-                std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, port)),
-                iroh::endpoint::BindOpts::default(),
-            )
-            .map_err(io::Error::other)?
-            .bind_addr_with_opts(
-                std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)),
-                iroh::endpoint::BindOpts::default().set_is_required(false),
-            )
-            .map_err(io::Error::other)?;
+        builder =
+            tilo_server_client::host::listening_on(builder, port).map_err(io::Error::other)?;
     }
     tilo_rt::app()
         .handle()
