@@ -1877,8 +1877,9 @@ impl<R: Resource> Dispatcher<R> {
     /// The dispatcher of another record than this resource's — the
     /// person's own record, a settings section — published at `id`: its
     /// queued invocations go through the same API as this resource's, and
-    /// what it applies now `apply` applies to that record. The workspace's roles
-    /// do not reach it; only its person changes it.
+    /// what it applies now `apply` applies to that record. What an action needs
+    /// is its own declared need, decided where the record is held: the window's
+    /// workspace's roles do not reach it.
     pub(crate) fn for_resource<C: Resource>(
         &self,
         id: &str,
@@ -1888,7 +1889,7 @@ impl<R: Resource> Dispatcher<R> {
         Dispatcher {
             core: self.core.for_resource(id, (C::KIND, C::LABEL), read_only),
             group: Rc::default(),
-            permission_of: Rc::new(|_: &C::Action| ActionNeed::of(tilo_actions::ActionKind::Read)),
+            permission_of: Rc::new(tilo_resource::need_of::<C>),
             submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
             group_now: None,
             last: Rc::default(),

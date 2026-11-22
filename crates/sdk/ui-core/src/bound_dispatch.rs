@@ -1830,7 +1830,12 @@ pub(crate) fn admit_local_action(
     confirmed: bool,
 ) -> Result<(), tilo_actions::ApiError> {
     let answer = permissions.invocation_answer(app_id, resource, action, typed, argument);
-    crate::permissions::admit_in_window(answer, action, permissions.asker(), confirmed)
+    crate::permissions::admit_in_window(answer, action, permissions.asker(), confirmed).map_err(
+        |refused| match permissions.held_refusal(resource, action) {
+            Some(held) if answer == crate::permissions::Answer::Deny => held,
+            _ => refused,
+        },
+    )
 }
 
 /// Why an invocation the person made did not run, in words for them: what
@@ -2923,8 +2928,9 @@ pub(crate) struct ResourceActionRequest<'a> {
     pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
     /// Asked with the action as the API resolved it, before any check after resolution and before
     /// anything runs: `true` hands the invocation back unexecuted as [`BoundActionError::Rerouted`],
-    /// for the host to route through the workspace broker.
-    pub(crate) route: Option<&'a dyn Fn(&tilo_actions::ActionSpec) -> bool>,
+    /// for the host to route through the workspace broker. Asked with the resource it is invoked
+    /// on, as one another workspace holds is admitted there.
+    pub(crate) route: Option<&'a dyn Fn(&ResourceSpec, &tilo_actions::ActionSpec) -> bool>,
 }
 
 /// Private checked front API.
@@ -3027,7 +3033,7 @@ fn perform_resource_action(
                     ) {
                         return Err(BoundActionError::Hosted(hosted));
                     }
-                    if reroute.is_some_and(|reroute| reroute(spec)) {
+                    if reroute.is_some_and(|reroute| reroute(resource, spec)) {
                         return Err(BoundActionError::Rerouted);
                     }
                     if let Some(scope) = scope {
@@ -3040,13 +3046,24 @@ fn perform_resource_action(
                         arguments.as_ref(),
                         argument,
                     );
-                    let asker = binding.permissions.borrow().asker();
-                    crate::permissions::admit_in_window(
-                        answer,
-                        spec,
-                        asker,
-                        confirmed || broker_admitted,
-                    )?;
+                    // A record another workspace holds was admitted there when the broker
+                    // delivers it; what this window was told of it only shows its controls.
+                    let held_admitted = broker_admitted && resource.workspace.is_some();
+                    if !held_admitted {
+                        let asker = binding.permissions.borrow().asker();
+                        crate::permissions::admit_in_window(
+                            answer,
+                            spec,
+                            asker,
+                            confirmed || broker_admitted,
+                        )
+                        .map_err(|refused| {
+                            match binding.permissions.borrow().held_refusal(resource, spec) {
+                                Some(held) if answer == crate::permissions::Answer::Deny => held,
+                                _ => refused,
+                            }
+                        })?;
+                    }
                     crate::invocation_scope::check_continuation(
                         spec,
                         spec.need_for(arguments.as_ref(), argument).kind,

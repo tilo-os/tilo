@@ -275,6 +275,35 @@ fn serve_kept<A: ResourceApp>(
     }
 }
 
+/// Decide in `harness`, as the workspace broker does, the actions of the records `author`'s window
+/// shows that another workspace holds: this host holds the person's own workspace, founded with them
+/// as its owner, which holds their profile records; any other is not held here.
+fn decide_held_as_broker(harness: &mut FrameHarness, author: &str) {
+    let actor = tilo_broker_core::BrokerActor::person(author);
+    let own = tilo_actions::policy::roles::workspace_of_person(author).and_then(|id| {
+        let mut workspace =
+            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::parse(&id)?, "");
+        workspace.policy = tilo_actions::policy::WorkspacePolicy::new(id.clone(), author);
+        Some((id, workspace))
+    });
+    harness.decide_held_elsewhere(Box::new(move |records| {
+        let now = ui_core::time::unix_now();
+        records
+            .iter()
+            .map(|record| ui_core::held_elsewhere::HeldDecision {
+                record: record.clone(),
+                verdict: actor.held_verdict(
+                    own.as_ref()
+                        .filter(|(id, _)| *id == record.workspace)
+                        .map(|(_, workspace)| workspace),
+                    record,
+                    now,
+                ),
+            })
+            .collect()
+    }));
+}
+
 pub(super) fn operation(error: impl std::fmt::Display) -> LaunchError {
     LaunchError::Operation(error.to_string())
 }
@@ -914,6 +943,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )?;
         let mut harness = opened.harness;
         serve_kept::<A>(&mut harness, &opened.profile.settings(), author);
+        decide_held_as_broker(&mut harness, author);
         Ok(Self {
             harness,
             owner: opened.owner,

@@ -471,10 +471,11 @@ tilo_test_env::scenario! {
         assert!(app.invoke(Board::RETITLE.with("not theirs")).is_err());
     }
 
-    phase a_verb_of_the_persons_record_is_undoable_and_needs_only_reading;
+    phase a_verb_of_the_persons_record_is_undoable_and_decided_in_their_own_workspace;
     // A verb of the person's own record keeps what it does: a destructive one
-    // Undo takes back is undoable, so it runs at once and asks nothing, while
-    // what a grant must allow is reading, so the workspace's roles do not check it.
+    // Undo takes back is undoable, so it runs at once and asks nothing, and it
+    // needs what it declares. The person's own workspace holds the record and
+    // grants it them as its owner; the board's roles do not check it.
     {
         let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
         let resources = app.harness().resources();
@@ -493,7 +494,7 @@ tilo_test_env::scenario! {
             tilo_actions::ConfirmationPolicy::None
         );
         assert_eq!(contract.validate_declaration(), Vec::<String>::new());
-        assert_eq!(contract.need().kind, tilo_actions::ActionKind::Read);
+        assert_eq!(contract.need().kind, tilo_actions::ActionKind::Undoable);
 
         let playback = app.profile_resource::<Playback>().unwrap();
         app.call_on(

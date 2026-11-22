@@ -9,17 +9,12 @@
 //! controls; an invocation is admitted on its own against the holding workspace.
 
 use runtime_collab::held_elsewhere::{HeldDecision, HeldRecord, HeldVerdict};
-use tilo_action_policy::Answer;
 use tokio::sync::mpsc;
 
 use super::wire::Feed;
 use super::{AppBrokerState, BrokerActor};
 
-/// What a person reads when the workspace holding a record is not held on this host.
-pub(super) const NOT_HELD: &str =
-    "This is kept in a workspace this device doesn't have, so it can't be changed here.";
-/// What a person reads when the holding workspace's grants refuse the action.
-pub(super) const REFUSED: &str = "You aren't allowed to change this.";
+pub(super) use tilo_broker_core::held::NOT_HELD;
 /// What a person reads when the holding workspace could not be read just now.
 const UNREADABLE: &str = "This can't be checked right now. Try again.";
 
@@ -61,27 +56,14 @@ impl AppBrokerState {
         let Some(membership) = self.membership.as_ref() else {
             return HeldVerdict::Refused(NOT_HELD.into());
         };
-        let answer = membership.decide_in_workspace(&record.workspace, |workspace| {
-            workspace.map(|workspace| {
-                actor.action_answer_in(
-                    workspace,
-                    &record.app,
-                    (&record.kind, &record.resource, &record.action),
-                    &record.need(),
-                    now,
-                )
+        membership
+            .decide_in_workspace(&record.workspace, |workspace| {
+                actor.held_verdict(workspace, record, now)
             })
-        });
-        match answer {
-            Ok(Some(Answer::Allow)) => HeldVerdict::Allowed,
-            Ok(Some(Answer::Ask)) => HeldVerdict::AsksFirst,
-            Ok(Some(Answer::Deny)) => HeldVerdict::Refused(REFUSED.into()),
-            Ok(None) => HeldVerdict::Refused(NOT_HELD.into()),
-            Err(error) => {
+            .unwrap_or_else(|error| {
                 tracing::warn!(%error, workspace = %record.workspace, "a held record's workspace could not be read");
                 HeldVerdict::Refused(UNREADABLE.into())
-            }
-        }
+            })
     }
 
     /// The workspace holding the resource `resource` the connection `peer` publishes, when its

@@ -986,7 +986,7 @@ async fn a_record_held_elsewhere_is_decided_by_its_workspace_and_again_when_its_
             assert_eq!(
                 endpoint.frame().await,
                 decided([
-                    HeldVerdict::Refused(super::held_elsewhere::REFUSED.into()),
+                    HeldVerdict::Refused(tilo_broker_core::held::REFUSED.into()),
                     not_held.clone(),
                 ]),
                 "a reader of the holding workspace may not change the record, and a workspace \
