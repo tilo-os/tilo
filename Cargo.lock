@@ -790,7 +790,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "134c52ddac6d63c576bef8168db10c83c49c26444ecbc68060fef078925a901c"
 dependencies = [
  "base64ct",
- "blake2 0.11.0",
+ "blake2",
  "cpufeatures 0.3.0",
  "password-hash",
 ]
@@ -1398,15 +1398,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96a7139abd3d9cebf8cd6f920a389cf3dc9576172e32f4563f188cae3c3eb019"
 dependencies = [
  "crunchy",
-]
-
-[[package]]
-name = "blake2"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
-dependencies = [
- "digest 0.10.7",
 ]
 
 [[package]]
@@ -7284,16 +7275,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "html5ever"
-version = "0.39.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46a1761807faccc9a19e86944bbf40610014066306f96edcdedc2fb714bcb7b8"
-dependencies = [
- "log",
- "markup5ever",
-]
-
-[[package]]
 name = "htmlescape"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9999,29 +9980,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "markup5ever"
-version = "0.39.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7122d987ec5f704ee56f6e5b41a7d93722e9aae27ae07cafa4036c4d3f9757de"
-dependencies = [
- "log",
- "tendril",
- "web_atoms",
-]
-
-[[package]]
-name = "markup5ever_rcdom"
-version = "0.39.0+unofficial"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ac010f19d6c4af81eeb4018a39d7a115de9d285af45c126a4ac02e6fc5716b7"
-dependencies = [
- "html5ever",
- "markup5ever",
- "tendril",
- "xml5ever",
-]
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10844,12 +10802,6 @@ dependencies = [
  "windows-result 0.4.1",
  "wmi",
 ]
-
-[[package]]
-name = "new_debug_unreachable"
-version = "1.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nix"
@@ -12546,16 +12498,6 @@ dependencies = [
  "phf_macros 0.14.0",
  "phf_shared 0.14.0",
  "serde",
-]
-
-[[package]]
-name = "phf_codegen"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49aa7f9d80421bca176ca8dbfebe668cc7a2684708594ec9f3c0db0805d5d6e1"
-dependencies = [
- "phf_generator 0.13.1",
- "phf_shared 0.13.1",
 ]
 
 [[package]]
@@ -16270,22 +16212,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "snow"
-version = "0.9.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "850948bee068e713b8ab860fe1adc4d109676ab4c3b621fd8147f06b261f2f85"
-dependencies = [
- "aes-gcm 0.10.3",
- "blake2 0.10.6",
- "chacha20poly1305 0.10.1",
- "curve25519-dalek 4.1.3",
- "rand_core 0.6.4",
- "rustc_version",
- "sha2 0.10.9",
- "subtle",
-]
-
-[[package]]
 name = "socket-pktinfo"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16598,31 +16524,6 @@ checksum = "23de088478b31c349c9ba67816fa55d9355232d63c3afea8bf513e31f0f1d2c0"
 dependencies = [
  "hashbrown 0.15.5",
  "serde",
-]
-
-[[package]]
-name = "string_cache"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a18596f8c785a729f2819c0f6a7eae6ebeebdfffbfe4214ae6b087f690e31901"
-dependencies = [
- "new_debug_unreachable",
- "parking_lot",
- "phf_shared 0.13.1",
- "precomputed-hash",
- "serde",
-]
-
-[[package]]
-name = "string_cache_codegen"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "585635e46db231059f76c5849798146164652513eb9e8ab2685939dd90f29b69"
-dependencies = [
- "phf_generator 0.13.1",
- "phf_shared 0.13.1",
- "proc-macro2",
- "quote",
 ]
 
 [[package]]
@@ -17235,15 +17136,6 @@ dependencies = [
  "once_cell",
  "rustix 1.1.6",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "tendril"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fed54709c5b3a53d09bb1c113ea4f5ceafd1e772ddcb0030a82e1d56c087b08"
-dependencies = [
- "new_debug_unreachable",
 ]
 
 [[package]]
@@ -26813,18 +26705,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "web_atoms"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba8b815c1b593dc0baf78dd0f4fc8fdb2de53198fb1163738093e9a311c33fb3"
-dependencies = [
- "phf 0.13.1",
- "phf_codegen",
- "string_cache",
- "string_cache_codegen",
-]
-
-[[package]]
 name = "webpki-root-certs"
 version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -28268,8 +28148,7 @@ dependencies = [
  "bitflags 1.3.2",
  "bitflags 2.11.0",
  "bitpacking",
- "blake2 0.10.6",
- "blake2 0.11.0",
+ "blake2",
  "blake3",
  "block-buffer 0.10.4",
  "block-buffer 0.12.1",
@@ -28716,7 +28595,6 @@ dependencies = [
  "hpke-rs",
  "hpke-rs-crypto",
  "hpke-rs-rust-crypto",
- "html5ever",
  "htmlescape",
  "http",
  "http-body",
@@ -28889,8 +28767,6 @@ dependencies = [
  "maps",
  "maps-model",
  "maps-model-wasm",
- "markup5ever",
- "markup5ever_rcdom",
  "matchers",
  "maybe-owned",
  "mcf",
@@ -28947,7 +28823,6 @@ dependencies = [
  "netlink-proto",
  "netlink-sys",
  "netwatch",
- "new_debug_unreachable",
  "nix 0.28.0",
  "nix 0.31.3",
  "nohash-hasher",
@@ -29039,7 +28914,6 @@ dependencies = [
  "phf 0.12.1",
  "phf 0.13.1",
  "phf 0.14.0",
- "phf_codegen",
  "phf_generator 0.13.1",
  "phf_generator 0.14.0",
  "phf_macros 0.13.1",
@@ -29335,7 +29209,6 @@ dependencies = [
  "smol_str 0.3.6",
  "smoothutf8",
  "snippets",
- "snow",
  "socket-pktinfo",
  "socket2",
  "sorted-index-buffer",
@@ -29363,8 +29236,6 @@ dependencies = [
  "store",
  "strength_reduce",
  "strict-num",
- "string_cache",
- "string_cache_codegen",
  "stringprep",
  "strsim",
  "strum 0.26.3",
@@ -29414,7 +29285,6 @@ dependencies = [
  "tasks-model",
  "tasks-model-wasm",
  "tempfile",
- "tendril",
  "termcolor",
  "terminal",
  "test-http",
@@ -29710,6 +29580,7 @@ dependencies = [
  "tilolang-process",
  "tilolang-runtime",
  "tilolang-tilo",
+ "tilolang-web",
  "tilolang-youtube",
  "time",
  "time-core",
@@ -29848,6 +29719,10 @@ dependencies = [
  "walkdir",
  "want",
  "waproto",
+ "wasm-bindgen",
+ "wasm-bindgen-macro",
+ "wasm-bindgen-macro-support",
+ "wasm-bindgen-shared",
  "wasm-encoder 0.252.0",
  "wasm-encoder 0.261.0",
  "wasmi",
@@ -29888,7 +29763,6 @@ dependencies = [
  "web-transport-proto",
  "web-transport-quinn",
  "web-transport-trait",
- "web_atoms",
  "webpki-roots",
  "weezl",
  "wgpu",
@@ -29927,7 +29801,6 @@ dependencies = [
  "xkbcommon-dl",
  "xkeysym",
  "xml-rs",
- "xml5ever",
  "xmltree",
  "xmlwriter",
  "xmp-writer",
@@ -30178,16 +30051,6 @@ name = "xml-rs"
 version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
-
-[[package]]
-name = "xml5ever"
-version = "0.39.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ab627f34ff61b80d756180d556f9c68801d836d271b3b8c094504ceca69d221"
-dependencies = [
- "log",
- "markup5ever",
-]
 
 [[package]]
 name = "xmltree"
