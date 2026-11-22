@@ -3238,8 +3238,8 @@ mod identity_tests;
 
 mod arrival;
 mod canonical_read;
+mod mutation_merge;
 mod opening;
-mod replica_merge;
 mod stored;
 pub use opening::ResourceOpening;
 #[cfg(test)]

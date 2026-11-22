@@ -28,7 +28,7 @@ impl ResourceStore {
         checkout: &DocumentCheckout,
         mutation: collab_types::DocumentMutation,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
-        self.merge_replica_with(checkout, mutation, None)
+        self.merge_with(checkout, mutation, None)
     }
 
     /// [`Self::merge_replica`] of `mutation`, which brings the resource to `heads`. Changes a
@@ -38,7 +38,7 @@ impl ResourceStore {
     /// second to apply on a page, and a copy a millisecond.
     /// # Errors
     /// As [`Self::merge_replica`].
-    pub fn merge_replica_at(
+    pub fn merge_at(
         &self,
         checkout: &DocumentCheckout,
         mutation: collab_types::DocumentMutation,
@@ -50,10 +50,10 @@ impl ResourceStore {
             }
             collab_types::DocumentMutation::Snapshot(_) => None,
         };
-        self.merge_replica_with(checkout, mutation, held)
+        self.merge_with(checkout, mutation, held)
     }
 
-    fn merge_replica_with(
+    fn merge_with(
         &self,
         checkout: &DocumentCheckout,
         mutation: collab_types::DocumentMutation,
