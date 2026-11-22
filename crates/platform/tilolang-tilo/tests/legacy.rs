@@ -51,7 +51,7 @@ fn fixtures() -> Vec<(&'static str, Vec<Package>)> {
                 include_str!("legacy/letters/app.ids"),
             )],
         ),
-        (include_str!("legacy/chat.hex"), vec![app!("chat")]),
+        (include_str!("legacy/chat.hex"), vec![app!("agent"), app!("chat")]),
         (include_str!("legacy/board.hex"), vec![app!("board")]),
         (
             include_str!("legacy/today.hex"),
@@ -59,6 +59,7 @@ fn fixtures() -> Vec<(&'static str, Vec<Package>)> {
                 app!("discussion"),
                 app!("notes"),
                 app!("tasks"),
+                app!("agent"),
                 app!("chat"),
                 app!("today"),
             ],
@@ -367,7 +368,7 @@ fn items_of_an_older_document_move_change_and_go_keeping_their_ids() {
 
 #[test]
 fn a_message_posted_to_an_older_conversation_follows_its_messages() {
-    let packages = vec![app!("chat")];
+    let packages = vec![app!("agent"), app!("chat")];
     let mut replica = open(include_str!("legacy/chat.hex"), &packages);
     let app = "so.tilo.lang.chat";
     let all = root(&replica, app);
@@ -552,7 +553,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
-    let packages = vec![app!("chat")];
+    let packages = vec![app!("agent"), app!("chat")];
     let bytes = include_str!("legacy/chat.hex");
     // The package's types are known once a host loaded it.
     drop(open(bytes, &packages));
