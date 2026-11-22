@@ -7,19 +7,19 @@
 # each branch holds what the tenant installed and wrote and none of the
 # source's sessions, and is deleted, its disk gone, while the source runs on.
 #
-# usage: test-vm-host.sh VM_HOST_ARCHIVE HOSTED_GUEST_DIR ENROLL
+# usage: test-vm-host.sh VM_HOST_ARCHIVE HOSTED_GUEST_DIR
 #
 # VM_HOST_ARCHIVE is image-vm-host's image.oci.tar, HOSTED_GUEST_DIR holds the
-# image-hosted-guest check's image.oci.tar with the digest beside it, and
-# ENROLL is a tilo-enroll.
+# image-hosted-guest check's image.oci.tar with the digest beside it. The host
+# founds its own identity here: this check starts no server, so there is no
+# person to join (TILO_VM_FOUND).
 #
 # What it needs: root, /dev/kvm and a loop device, in a micro-VM of its own (a
 # t check with `isolation = "vm"` and `requires = ["/dev/kvm"]`): a VM host
 # runs privileged containers, loop devices and Firecracker.
 set -euo pipefail
-archive=${1:?usage: test-vm-host.sh VM_HOST_ARCHIVE HOSTED_GUEST_DIR ENROLL}
+archive=${1:?usage: test-vm-host.sh VM_HOST_ARCHIVE HOSTED_GUEST_DIR}
 guest=${2:?the guest image outputs}
-enroll=${3:?the tilo-enroll program}
 
 say() { printf 'tilo-sh vm-host check: %s\n' "$*" >&2; }
 die() { say "$*"; exit 1; }
@@ -30,7 +30,6 @@ command -v podman >/dev/null || die 'no podman: this check needs the container r
 command -v losetup >/dev/null || die 'no losetup: the state disk is a loop device'
 python3 os/dev/probe-kvm.py "$(uname -m)" \
   || die 'this machine offers /dev/kvm but cannot create a VM with it: a VM host needs nested virtualization'
-[ -x "$enroll" ] || command -v "$enroll" >/dev/null || die "$enroll is not a tilo-enroll"
 
 state=$(mktemp -d /var/lib/tilo-sh-check.XXXXXX)
 cleanup() {
@@ -39,11 +38,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The server this stack runs places on it: the host's member device is
-# certified by the server's owner root, and reaches the server at its own
-# device. The stack's server leaves both; this check starts no server.
+# The server this stack runs places on it: the host's member device reaches the
+# server at its own device. This check starts no server, and gives the host no
+# ticket, so it founds its own identity; the stack's server leaves both.
 mkdir -p "$state/secrets" "$state/workspaces/lounge/server"
-head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$state/secrets/workspace-root-lounge"
 (umask 077 && head -c 32 /dev/urandom > "$state/workspaces/lounge/server/host-device.key")
 
 say "loading $archive"
@@ -55,7 +53,7 @@ vm_host() {
   TILO_SH_STATE=$state \
   TILO_SH_IMAGE_VM_HOST=$image \
   TILO_SH_HOSTED_GUEST=$guest \
-  TILO_SH_TILO_ENROLL=$enroll \
+  TILO_VM_FOUND=1 \
     bash "$(dirname -- "$0")/vm-host.sh" "$@"
 }
 
@@ -113,8 +111,11 @@ grep -q "guest kernel .*hosted-$(tr -d '[:space:]' < "$guest/digest" | sed 's/^s
   say "the host's log now: $(podman logs tilo-sh-vm-host-0 2>&1 | grep 'guest kernel' || echo none)"
   die 'the guest is not the local image this check handed it'
 }
-grep -q 'installing the member identity of vm-host-0' "$state/host.log" \
-  || die 'the host installed no member identity'
+member=$(podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups \
+  --inh-caps=-all tilo-device-admin key \
+  --identity-root /var/lib/tilo-hosted/member/profile/identity 2>&1)
+printf '%s\n' "$member" >&2
+grep -q '"device"' <<<"$member" || die 'the host holds no member device key'
 
 # A program in a workspace's VM as the tenant, and a question to the host, as
 # an operator asks them.

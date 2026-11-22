@@ -26,9 +26,10 @@
 #   TILO_SH_HOSTED_GUEST=<dir>          the image-hosted-guest check's outputs:
 #                                       an image.oci.tar with the digest beside
 #                                       it
-#   TILO_SH_TILO_ENROLL                 the tilo-enroll this host's member
-#                                       device is made with, as a release
-#                                       ships it (default: on PATH)
+#   TILO_VM_TICKET                      the ticket this host joins the person's
+#                                       devices with, printed by `tilo device
+#                                       add --capability admin` on an owner
+#                                       device (spent once, on this host's disk)
 #   TILO_SH_HOSTED_VM_SIZE=default      the size a workspace's VM runs at, as
 #                                       the plans file names it (`small`,
 #                                       `default`, `large`, `xlarge`): the
@@ -43,7 +44,7 @@
 #                                       not this stack's default
 #   TILO_SH_SERVER_SECRETS=<state>/secrets
 #                                       where the server's secrets are on this
-#                                       machine: the hosts' member devices and
+#                                       machine: the hosts' members file and
 #                                       the plans file are written there, for
 #                                       the server to read
 #   TILO_SH_SERVER_SECRETS_VIEW=/run/secrets
@@ -55,9 +56,6 @@
 #                                       where that server reads its own state
 #                                       (the image's volume, or natively the
 #                                       stack's state)
-#   TILO_SH_SERVER_ROOT=<state>/secrets/workspace-root-lounge
-#                                       the server's owner root, 64 hex
-#                                       characters: what certifies the member
 #   TILO_SH_SERVER_STATE=<state>/workspaces/lounge/server
 #                                       the server's own state, where the
 #                                       device key it answers as is
@@ -79,9 +77,8 @@ place_port=${TILO_SH_VM_HOST_PLACER_PORT:-7702}
 status_port=${TILO_SH_VM_HOST_STATUS_PORT:-7701}
 member_port=${TILO_SH_VM_HOST_MEMBER_PORT:-7703}
 server_iroh=${TILO_SH_SERVER_IROH:-127.0.0.1:24104}
-server_root=${TILO_SH_SERVER_ROOT:-$secrets/workspace-root-lounge}
 server_state=${TILO_SH_SERVER_STATE:-$state/workspaces/lounge/server}
-enroll=${TILO_SH_TILO_ENROLL:-tilo-enroll}
+server_admin=${TILO_SH_TILO_SERVER_ADMIN:-tilo-server-admin}
 # What the host holds awake at once: the size's warm template (a template is
 # counted at its size's whole memory, since warming it fills its guest), a
 # clone of that template awake beside it (a third of a gigabyte, measured), and
@@ -156,19 +153,13 @@ guest_ready() { # dir images -> reference
   printf '%s' "$reference"
 }
 
-# The server's own device, as the member must know it: the key it certified in
-# the server's state, its public key, and the endpoint id it answers on (a
-# server's endpoint is keyed apart from its device). `tilo-enroll device-key`
-# derives both from the key.
-server_device() {
-  local work=$vm/server-device
+# The server's endpoint id: an iroh endpoint is keyed apart from the device it
+# signs its runs as, and a VM's Browser session reaches the server there.
+# `tilo-server-admin node-id` derives it from the device key the server keeps.
+server_endpoint() {
   [ -f "$server_state/host-device.key" ] \
     || fail "$server_state/host-device.key: the server has not started yet: start the stack's server first"
-  rm -rf "$work"
-  mkdir -p "$work/device-private"
-  chmod 0700 "$work/device-private"
-  install -m 0600 "$server_state/host-device.key" "$work/device-private/keypair.bin"
-  "$enroll" device-key --identity-root "$work"
+  "$server_admin" node-id --key-file "$server_state/host-device.key"
 }
 
 # The state disk: a sparse file loop-attached and made XFS with reflink the
@@ -199,49 +190,20 @@ state_disk() {
   umount "$mount"
 }
 
-# The operator root as a signing key: the server's root file is 64 hex
-# characters, and `tilo-enroll certify --root-key` reads 32 bytes.
-root_key() { # work
-  local hex
-  hex=$(tr -d '[:space:]' < "$server_root")
-  [ ${#hex} = 64 ] || fail "$server_root: the server's root is 64 hex characters"
-  case $hex in
-    *[!0-9a-fA-F]*) fail "$server_root: the server's root is 64 hex characters" ;;
-  esac
-  printf "$(printf '%s' "$hex" | sed 's/../\\x&/g')" > "$1/root-key.bin"
-  chmod 0600 "$1/root-key.bin"
-}
-
-# This host's member device, as the tar the start installs on its state disk
-# (TILO_VM_MEMBER_IDENTITIES): its key, the server's root certifying it, and
-# the person's record. It prints the device's public key. The member holds the
-# workspaces it enters as any of the person's devices does, so it is certified
-# as one (`own`): a host certificate makes a store node, which holds none of
-# the person's own documents, and the member's runtime does not start as one.
-member_identity() {
-  local work=$vm/member identities=$vm/member-identities device
-  [ -f "$server_root" ] || fail "$server_root: the server's root is not there yet"
-  if [ ! -f "$identities/$pod.tar" ]; then
-    rm -rf "$work"
-    mkdir -p "$work/root" "$work/person"
-    chmod 0700 "$work/root"
-    device=$("$enroll" device-key --identity-root "$work/root" | json_field device_public_key)
-    [ -n "$device" ] || fail "the host's device key was not made"
-    root_key "$work"
-    "$enroll" certify --root-key "$work/root-key.bin" --identity-root "$work/root" \
-      --device "$device" --label "$pod of the local tilo.sh stack" \
-      --capability own --out "$work/cert.bin" >&2
-    "$enroll" install-cert --identity-root "$work/root" --identity-dir "$work/person" \
-      --cert "$work/cert.bin" >&2
-    # The start installs `root` as the host's identity and `person` as the
-    # person's record, in the member's profile, both as the service.
-    mkdir -p "$identities"
-    chmod 0755 "$identities"
-    tar -C "$work" -cf "$identities/$pod.tar" --owner=0 --group=0 root person
-    printf '%s' "$device" > "$identities/$pod.device"
-    rm -f "$work/root-key.bin"
-  fi
-  cat "$identities/$pod.device"
+# This host's member device, as the server reads it: its device key, which the
+# ticket's login left on the host's own state disk. The start joins the person's
+# devices once, so the key is read back from the running host, never made here.
+member_device() {
+  local device started=$SECONDS
+  while ((SECONDS - started < 180)); do
+    device=$(podman exec "$host_container" setpriv --reuid=10001 --regid=10001 --init-groups \
+      --inh-caps=-all tilo-device-admin key \
+      --identity-root /var/lib/tilo-hosted/member/profile/identity 2>/dev/null |
+      json_field device)
+    if [ -n "$device" ]; then printf '%s' "$device"; return 0; fi
+    sleep 2
+  done
+  fail "the host joined no identity in 180 s: set TILO_VM_TICKET to a ticket \`tilo device add --capability admin\` printed (podman logs $host_container says why)"
 }
 
 # The plans file the server and the host admit by (docs/hosted-browser.md,
@@ -302,19 +264,13 @@ up() {
   [ -e /dev/kvm ] || fail '/dev/kvm: the local stack runs the VMs the tilo.sh VM hosts run, which need KVM'
   [ -n "${TILO_SH_IMAGE_VM_HOST:-}" ] || fail 'TILO_SH_IMAGE_VM_HOST: the vm-host image is not named'
   [ -n "${TILO_SH_HOSTED_GUEST:-}" ] || fail 'TILO_SH_HOSTED_GUEST: the guest image is not named'
-  command -v "$enroll" >/dev/null || fail "$enroll: not found: name the tilo-enroll a release ships (TILO_SH_TILO_ENROLL)"
-  local server server_key server_endpoint device loop guest_ref image=$TILO_SH_IMAGE_VM_HOST
+  [ -n "${TILO_VM_TICKET:-}" ] || [ "${TILO_VM_FOUND:-0}" = 1 ] \
+    || fail 'TILO_VM_TICKET: the ticket `tilo device add --capability admin` printed on an owner device'
+  local device loop guest_ref image=$TILO_SH_IMAGE_VM_HOST
   if [ -f "$image" ]; then
     image=$(podman load -q -i "$image" | sed -n 's/^Loaded image[s]*: *//p' | tail -n 1)
     [ -n "$image" ] || fail "$TILO_SH_IMAGE_VM_HOST: podman loaded no image from it"
   fi
-  server=$(server_device)
-  server_key=$(printf '%s' "$server" | json_field device_public_key)
-  server_endpoint=$(printf '%s' "$server" | json_field server_node_id)
-  [ -n "$server_key" ] && [ -n "$server_endpoint" ] || fail "the server's own device: $server"
-  device=$(member_identity)
-  [ -n "$device" ] || fail "the host's member device"
-  members "$device"
   plans
   state_disk
   loop=$(state_loop)
@@ -335,26 +291,31 @@ up() {
     --hosts "$pod=127.0.0.1:$status_port" >/dev/null
 
   # The host itself: privileged for KVM, the cgroup tree, user namespaces and
-  # the jail helper's mounts, with its state disk as a raw block device and
-  # its member identity on a read-only mount, as the cloud's StatefulSet runs
-  # it. TILO_VM_SERVER_ENDPOINT is where a workspace's browser session reaches
-  # the server, the one address besides the internet a VM may reach.
+  # the jail helper's mounts, with its state disk as a raw block device, as the
+  # cloud's StatefulSet runs it. It joins the person's devices with the ticket
+  # on first start, and TILO_VM_SERVER_ENDPOINT is where a workspace's browser
+  # session reaches the server, the one address besides the internet a VM may
+  # reach.
   podman rm -f "$host_container" >/dev/null 2>&1 || true
   podman run -d --name "$host_container" --hostname "$pod" --network host --privileged \
     --log-driver k8s-file \
     --device "$loop:$state_device" \
-    -v "$vm/member-identities:/etc/tilo/member:ro" \
     -v "$plans_file:/etc/tilo/plans/plans.json:ro" \
     -e TILO_VM_STATE_DEVICE="$state_device" \
     -e TILO_VM_PLANS=/etc/tilo/plans/plans.json \
-    -e TILO_VM_MEMBER_IDENTITIES=/etc/tilo/member \
+    -e TILO_VM_TICKET="${TILO_VM_TICKET:-}" \
+    -e TILO_VM_FOUND="${TILO_VM_FOUND:-0}" \
     -e TILO_VM_MEMORY_MIB="$memory_mib" \
     -e TILO_VM_STATUS_LISTEN="127.0.0.1:$status_port" \
     -e TILO_VM_GUEST_REF="$guest_ref" \
     -e TILO_VM_SERVER_ENDPOINT="$server_iroh" \
-    -e TILO_TAKE_WORK_DEVICE="$server_key" \
-    -e TILO_TAKE_WORK_ENDPOINT="$server_endpoint" \
     "$image" >/dev/null
+  # The member's device key is the ticket's login's, made on the host's own
+  # disk: read back once it joined, and the server reads the members file it
+  # writes when the stack starts it.
+  device=$(member_device)
+  [ -n "$device" ] || fail "the host's member device"
+  members "$device"
   say "$pod and the placer are up: workspaces' VMs run here, joining the server at $server_iroh"
 }
 
@@ -395,8 +356,8 @@ status() {
 # nothing while the host is down.
 server_env() {
   podman container exists "$host_container" 2>/dev/null || return 0
-  local server_endpoint
-  server_endpoint=$(server_device | json_field server_node_id)
+  local endpoint
+  endpoint=$(server_endpoint)
   cat <<ENV
 TILO_HOSTED_PLACER=127.0.0.1:$place_port
 TILO_HOSTED_MEMBERS=$server_secrets/vm-host-members.json
@@ -404,7 +365,7 @@ TILO_HOSTED_ACCOUNT=acct-tilo-sh
 TILO_HOSTED_VM_SIZE=${TILO_SH_HOSTED_VM_SIZE:-default}
 TILO_HOSTED_PLANS=$server_secrets/vm-host-plans.json
 TILO_SERVER_BROWSER_ACTIONS=$server_workspaces/lounge/server/browser-actions.jsonl
-TILO_HOSTED_BROWSER_SERVER=$server_endpoint@$server_iroh
+TILO_HOSTED_BROWSER_SERVER=$endpoint@$server_iroh
 ENV
 }
 

@@ -12,7 +12,7 @@ set -euo pipefail
 out=${1:?usage: tilo-sh-programs.sh OUT}
 cd "$repo_root"
 target=${CARGO_TARGET_DIR:-$repo_root/target}
-bins=(tilo-server discord-worker tilo-api fake-discord fake-model-providers tilo tilo-runtime tilolang-process)
+bins=(tilo-server tilo-server-admin discord-worker tilo-api fake-discord fake-model-providers tilo tilo-runtime tilolang-process)
 rm -rf "$out"
 mkdir -p "$out"
 cargo build --locked --profile lounge-check --features tilo-server/agents \

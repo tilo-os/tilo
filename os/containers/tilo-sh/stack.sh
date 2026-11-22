@@ -1301,16 +1301,12 @@ vm_host_blocker() {
 
 # vm-host RUN…: os/containers/tilo-sh/vm-host.sh, as root when this stack is
 # not, over the VM host's own state; the images t built for this checkout, and
-# the server this stack runs (its device, its root, the secrets it mounts).
+# the server this stack runs (its device, the secrets it mounts).
 # A caller that names the images itself (t's checks hand them their outputs)
 # has them used as named, archive or directory.
 vm_host() {
   local sudo=()
   [[ $EUID == 0 ]] || sudo=(sudo -n)
-  # The enrolment program the caller named, else the one `up` settled on, which
-  # it leaves in the state: a later `vm_host env` reads the server's device with
-  # it, in a shell that has nothing else of `up`.
-  local enrol=${enroll:-${TILO_SH_TILO_ENROLL:-$(cat "$state/vm-host-enroll" 2>/dev/null || true)}}
   # Where the server that places here reads what the host writes for it: the
   # image's volumes with --images, the stack's own state natively.
   local secrets_view=/run/secrets workspaces_view=/run/tilo-workspaces
@@ -1319,11 +1315,11 @@ vm_host() {
     TILO_SH_STATE="$vm_state" \
     "TILO_SH_IMAGE_VM_HOST=${TILO_SH_IMAGE_VM_HOST:-$(image_archive image-vm-host image.oci.tar)}" \
     "TILO_SH_HOSTED_GUEST=${TILO_SH_HOSTED_GUEST:-$state/images/$commit/image-hosted-guest}" \
-    "TILO_SH_TILO_ENROLL=$enrol" \
+    "TILO_VM_TICKET=${TILO_VM_TICKET:-}" \
+    "TILO_SH_TILO_SERVER_ADMIN=$programs/tilo-server-admin" \
     "TILO_SH_SERVER_SECRETS=$state/secrets" \
     "TILO_SH_SERVER_SECRETS_VIEW=$secrets_view" \
     "TILO_SH_SERVER_WORKSPACES_VIEW=$workspaces_view" \
-    "TILO_SH_SERVER_ROOT=$state/secrets/workspace-root-lounge" \
     "TILO_SH_SERVER_STATE=$state/server/lounge/server" \
     "TILO_SH_SERVER_IROH=127.0.0.1:$iroh_port" \
     "TILO_SH_BROWSER_FREE_ACTIONS=${TILO_SH_BROWSER_FREE_ACTIONS:-}" \
@@ -1331,16 +1327,20 @@ vm_host() {
     bash "$here/vm-host.sh" "$@" 9>&-
 }
 
-# tilo-enroll, which makes the VM host's member device: this checkout's.
-find_enroll() {
-  if [[ -n ${TILO_SH_TILO_ENROLL:-} ]]; then printf '%s' "$TILO_SH_TILO_ENROLL"; return; fi
-  local candidate=${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-enroll
-  if [[ ! -x $candidate ]]; then
-    say 'building tilo-enroll (cargo.sh build -p tilo-server --bin tilo-enroll)'
-    (cd "$repo" && "$here/cargo.sh" build -p tilo-server --bin tilo-enroll >&2) \
-      || die 'could not build tilo-enroll; or set TILO_SH_TILO_ENROLL'
+# The ticket this stack's VM host joins the person's devices with: printed on
+# the stack's own person's device (`tilo device add --capability admin`), once
+# per VM host state disk, and kept until the disk it belongs to is wiped.
+host_ticket() {
+  local kept=$vm_state/ticket
+  if [[ ! -s $kept ]]; then
+    local issued
+    issued=$(owner_person device add --capability admin --json --no-wait) \
+      || die 'the stack'"'"'s person printed no ticket for the VM host (tilo device add)'
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["ticket"])' <<<"$issued" > "$kept" \
+      || die "the stack's person printed no ticket: $issued"
+    chmod 600 "$kept"
   fi
-  printf '%s' "$candidate"
+  TILO_VM_TICKET=$(cat "$kept")
 }
 
 # The tilo command to drive the stack with: TILO_SH_TILO_BIN, else this
@@ -1541,7 +1541,7 @@ build_programs() {
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
       -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
       "${oauth_programs[@]}" \
-      --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime \
+      --bin tilo-server --bin tilo-server-admin --bin discord-worker --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime \
       --bin tilolang-process >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
         -p tilo-account-probe --example mail_stand_in >&2) \
@@ -1609,7 +1609,7 @@ bundle_stage() {
 copy_programs() {
   local from=$1 file stand_in=$1/examples/mail_stand_in
   mkdir -p "$programs"
-  for file in tilo-server discord-worker tilo-api fake-discord fake-model-providers tilo tilo-runtime tilolang-process; do
+  for file in tilo-server tilo-server-admin discord-worker tilo-api fake-discord fake-model-providers tilo tilo-runtime tilolang-process; do
     [[ -x $from/$file ]] || die "the build left no $from/$file; TILO_SH_CARGO names another cargo drop-in to build with"
     cmp -s "$from/$file" "$programs/$file" && continue
     cp --reflink=auto "$from/$file" "$programs/.$file.next" || die "could not copy $file"
@@ -2117,8 +2117,7 @@ up_native() {
   if [[ -z $vm_skipped ]]; then
     [[ -n ${TILO_SH_IMAGE_VM_HOST:-} ]] || die 'TILO_SH_IMAGE_VM_HOST names no VM host image'
     [[ -n ${TILO_SH_HOSTED_GUEST:-} ]] || die 'TILO_SH_HOSTED_GUEST names no guest image'
-    enroll=$(find_enroll)  # read by server_env, so the stack's own is used
-    printf '%s\n' "$enroll" > "$state/vm-host-enroll"
+    host_ticket
     host_device_key
     say 'starting the VM host (Firecracker, as root)'
     vm_host up || die 'the VM host did not start; sudo -E bash '"$here"'/vm-host.sh status says why'
@@ -2365,8 +2364,7 @@ up_images() {
     # the host unpacks it onto its own state disk.
     [[ -n ${TILO_SH_IMAGE_VM_HOST:-} ]] || image VM_HOST image-vm-host image.oci.tar >/dev/null
     [[ -n ${TILO_SH_HOSTED_GUEST:-} ]] || image HOSTED_GUEST image-hosted-guest image.oci.tar >/dev/null
-    enroll=$(find_enroll)  # read by server_env, so the stack's own is used
-    printf '%s\n' "$enroll" > "$state/vm-host-enroll"
+    host_ticket
     say 'starting the VM host (Firecracker, as root)'
     vm_host up || die 'the VM host did not start; sudo -E bash '"$here"'/vm-host.sh status says why'
   fi
@@ -2473,6 +2471,8 @@ down() {
   # does: the next up is the same member with the workspaces' files it keeps.
   if vm_host_running || [[ -n $wipe && -d $vm_state/vm ]]; then
     vm_host down ${wipe:+--wipe} || say 'the VM host did not stop; sudo -E bash '"$here"'/vm-host.sh down'"${wipe:+ --wipe}"
+    # A ticket belongs to one VM host state disk: a wiped host takes a new one.
+    [[ -z $wipe ]] || rm -f "$vm_state/ticket"
   fi
   if command -v podman >/dev/null; then
     for name in web api server tls; do
