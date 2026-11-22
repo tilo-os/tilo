@@ -229,8 +229,12 @@ async fn write<W: AsyncWrite + Unpin>(send: &mut W, answer: &PageAnswer) -> std:
 pub(super) fn answer(
     address: &PageAddress,
     link: Option<&tilo_server_protocol::web::WebLink>,
+    peer: Option<&str>,
 ) -> hyper::Response<super::Body> {
-    let mut response = super::reply(hyper::StatusCode::OK, document(address, link).into_bytes());
+    let mut response = super::reply(
+        hyper::StatusCode::OK,
+        document(address, link, peer).into_bytes(),
+    );
     let headers = response.headers_mut();
     headers.insert(
         hyper::header::CONTENT_TYPE,
@@ -247,9 +251,15 @@ pub(super) fn answer(
 /// moment before the page arrives, and the script with where to reach this
 /// server. Nothing in it is the person's: the page itself arrives once their
 /// device proved itself.
+///
+/// `peer` is where this host's own routes are reached over HTTP (its public
+/// origin), which the page hands the browser's identity to: the envelope a
+/// passkey opens is kept there, so a browser that keeps nothing fetches it
+/// from the same place.
 pub(super) fn document(
     address: &PageAddress,
     link: Option<&tilo_server_protocol::web::WebLink>,
+    peer: Option<&str>,
 ) -> String {
     let link = link.map(|link| {
         serde_json::json!({
@@ -260,6 +270,7 @@ pub(super) fn document(
     });
     let config = serde_json::json!({
         "link": link,
+        "peer": peer,
         "protocol": tilo_server_protocol::auth::PEER_PROTOCOL_VERSION,
         "address": address,
     });

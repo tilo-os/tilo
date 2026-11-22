@@ -41,9 +41,11 @@
 //                   a check holds the person to seeing the agent's work on
 //                   their shell while it happens;
 //   --passkey       they keep themselves with a passkey (a virtual
-//                   authenticator, as a platform one answers), the browser
-//                   then forgets the site, and they sign in again with that
-//                   passkey: the same person comes back.
+//                   authenticator, as a platform one answers), pressed from
+//                   the workspace page's own search, the browser then forgets
+//                   the site, and they sign in again with that passkey from
+//                   the page (or, at a site that turns them away, from its
+//                   own "Use a passkey"): the same person comes back.
 //   --answer FIFO   once the rest is done, the report is printed and they
 //                   stay on the site, where the page holding their root shows
 //                   what their agents' hosts ask them on its question sheet.
@@ -174,6 +176,15 @@ const capture = async name => {
 // which its preload hints name.
 const identityModule = `await import(new URL('identity.mjs', new URL('.', (document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]').href
   || document.querySelector('script[type="module"][src]').src))).href)`;
+// The same module on the page the server renders: it loads no module script,
+// and the site serves the build the entry loaded under its own version
+// directory, `version.json` naming the version it serves now.
+const pageIdentityModule = `(async () => {
+  const at = location.pathname.indexOf('/w/');
+  const base = new URL(at < 0 ? '/' : location.pathname.slice(0, at + 1), location.href);
+  const {version} = await (await fetch(new URL('version.json', base), {cache: 'no-store'})).json();
+  return import(new URL('v/' + version + '/identity.mjs', base).href);
+})()`;
 const memberships = `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')`;
 const entered = `JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]')`;
 
@@ -266,19 +277,70 @@ if (passkey) {
   const added = await tab.send('WebAuthn.addVirtualAuthenticator', {options: {protocol: 'ctap2', transport: 'internal',
     hasResidentKey: true, hasUserVerification: true, isUserVerified: true, hasPrf: true}});
   if (added.error) await finish(1, `no virtual authenticator: ${added.error.message}`);
-  // Kept with a passkey for this site's name, then kept at the Lounge's host,
-  // as the page's "Keep me" does.
-  const kept = await tab.evaluate(`(async () => {
-    const id = ${identityModule};
+  const serverOrigin = new URL(server).origin;
+  // The workspace's search, as a person reaches it: the page's way in, typed
+  // into, narrowed to the rows that keep this browser's identity.
+  const searchForPasskey = async () => {
+    await until(`(() => {
+      if (document.querySelector('#tilo-page .tilo-search-field')) return true;
+      const home = document.querySelector('#tilo-page .tilo-home-search');
+      if (!home || home.dataset.pressed) return false;
+      home.dataset.pressed = '1';
+      home.click();
+      return false;
+    })()`, 'the page’s search opening');
+    await until(`(() => {
+      const field = document.querySelector('#tilo-page .tilo-search-field');
+      if (!field) return false;
+      if (field.value === 'passkey') return true;
+      field.focus();
+      field.value = 'passkey';
+      field.dispatchEvent(new Event('input', {bubbles: true}));
+      return false;
+    })()`, 'the search finding the passkey rows');
+  };
+  // A real pointer press on the row `title` names, once the page offers it: a
+  // row that runs in the browser is drawn disabled until it can, so a press
+  // reaches the passkey sheet at once, as a person's own press must.
+  const pressRow = async title => {
+    const box = JSON.parse(await until(`(() => {
+      const row = [...document.querySelectorAll('#tilo-page .tilo-search-row')]
+        .find(row => !row.disabled && (row.innerText || '').includes(${JSON.stringify(title)}));
+      if (!row) return '';
+      row.scrollIntoView({block: 'nearest'});
+      const rect = row.getBoundingClientRect();
+      return rect.width && rect.height
+        ? JSON.stringify({x: rect.x + Math.min(rect.width / 2, 40), y: rect.y + rect.height / 2}) : '';
+    })()`, `the row "${title}" ready to press`, stepLimit(12)));
+    await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: box.x, y: box.y});
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await tab.send('Input.dispatchMouseEvent', {type, x: box.x, y: box.y, button: 'left', clickCount: 1});
+    }
+  };
+  // They keep themselves with a passkey, from the page's own search: the
+  // ceremony runs in the page, where the root is, and the host keeps the
+  // envelope their next browser fetches.
+  await searchForPasskey();
+  await pressRow('Keep your name and work with a passkey');
+  const keptSaid = await until(`(() => {
+    const said = document.querySelector('#tilo-page [data-browser-status]');
+    return said?.dataset.state === 'kept' ? said.textContent.trim() : '';
+  })()`, 'the page saying the passkey was kept', stepLimit(18));
+  console.error(`ok: the page said "${keptSaid}"`);
+  // The assertions, read through the same module a person's next browser
+  // asks: the passkey wraps this browser's person, and a host keeps the
+  // envelope that passkey opens.
+  const kept = JSON.parse(await tab.evaluate(`(async () => {
+    const id = await ${pageIdentityModule};
     const person = await id.browserIdentity();
-    try {
-      await person.keepWithPasskey({userName: 'local passkey check'});
-      await id.publishEnvelope({origin: ${JSON.stringify(new URL(server).origin)}, identity: person});
-    } catch (error) { return JSON.stringify({error: String(error?.message ?? error), code: error?.code ?? error?.name}); }
-    return JSON.stringify({person: person.userPublicKey, rpIds: person.envelope.wraps.filter(wrap => wrap.kind === 'passkey').map(wrap => wrap.rp_id)});
-  })()`).then(JSON.parse);
-  if (kept.error) await finish(1, `the passkey was not registered on ${new URL(site).hostname}: ${kept.error} (${kept.code})`);
-  console.error(`ok: ${kept.person} kept themselves with a passkey for ${kept.rpIds.join(', ')}`);
+    const envelope = await id.fetchEnvelope(person.userPublicKey, [${JSON.stringify(serverOrigin)}]);
+    return JSON.stringify({person: person.userPublicKey,
+      rpIds: person.envelope.wraps.filter(wrap => wrap.kind === 'passkey').map(wrap => wrap.rp_id),
+      published: envelope?.root_public_key ?? null});
+  })()`));
+  if (!kept.rpIds.length) await finish(1, `no passkey wraps ${kept.person}'s envelope`);
+  if (kept.published !== kept.person) await finish(1, `no host kept the envelope of ${kept.person} (${kept.published})`);
+  console.error(`ok: ${kept.person} kept themselves with a passkey for ${kept.rpIds.join(', ')}, and the host keeps their envelope`);
   // The browser forgets the site: a fresh visitor, the authenticator alone
   // remembering them.
   await tab.send('Storage.clearDataForOrigin', {origin: new URL(site).origin, storageTypes: 'all'});
@@ -288,14 +350,14 @@ if (passkey) {
   // signs in from it with their passkey, as a person would. A stack whose
   // entry is open to anyone (TILO_SH_ADMISSION=open, as the e2e check brings
   // it up) lets the stranger in as a fresh guest instead; they sign in with
-  // the passkey from there, through the page's own sign-in.
+  // the passkey from the page's own search.
   const met = await until(`(() => {
     if (document.querySelector('#arrival-sign-in-button')?.offsetParent) return 'invite-only';
     return document.documentElement.dataset.arrival === 'done' ? 'open' : false;
   })()`, 'the invite-only page offering a passkey, or the page arriving as a fresh guest');
-  const before = await tab.evaluate(`(async () => (${identityModule}).currentIdentity()?.userPublicKey ?? null)()`);
   let back;
   if (met === 'invite-only') {
+    const before = await tab.evaluate(`(async () => (${identityModule}).currentIdentity()?.userPublicKey ?? null)()`);
     await tab.evaluate(`document.querySelector('#arrival-sign-in-button').click(); 1`);
     await until(`document.documentElement.dataset.arrival === 'done' || !!document.querySelector('#arrival-sign-in-note')?.textContent`, 'the page arriving after the passkey');
     back = await tab.evaluate(`(async () => {
@@ -304,12 +366,30 @@ if (passkey) {
       return JSON.stringify({before: ${JSON.stringify(before)}, person: (${identityModule}).currentIdentity()?.userPublicKey ?? null});
     })()`).then(JSON.parse);
   } else {
+    // What this browser is before the passkey signs in: a fresh guest the
+    // entry made, never the person it forgot.
+    const before = await tab.evaluate(`(async () => {
+      const id = await ${pageIdentityModule};
+      return (await id.keptIdentity())?.rootPublicKey ?? null;
+    })()`);
+    if (before === kept.person) await finish(1, 'the browser still held the person after it forgot the site');
+    await searchForPasskey();
+    // The page a press signs in from is a page of its own: sign in, then wait
+    // for the site's entry to let the person in as themselves and hand the
+    // browser to a page again. A passkey the page could not use is said there.
+    const shown = await tab.evaluate('performance.timeOrigin');
+    await pressRow('Sign in with a passkey');
+    const signedIn = await until(`(() => {
+      const failed = document.querySelector('#tilo-page [data-browser-status][data-state=failed]');
+      if (failed?.textContent.trim()) return JSON.stringify({error: failed.textContent.trim()});
+      if (location.pathname.includes('/w/') && document.documentElement.dataset.arrival === 'done'
+        && performance.timeOrigin !== ${shown}) return JSON.stringify({arrived: true});
+      return '';
+    })()`, 'the page arriving after the passkey', stepLimit(30)).then(JSON.parse);
+    if (signedIn.error) await finish(1, `signing in with the passkey failed: ${signedIn.error}`);
     back = await tab.evaluate(`(async () => {
-      const id = ${identityModule};
-      try {
-        const person = await id.signInWithPasskey({fetchEnvelope: root => id.fetchEnvelope(root, [${JSON.stringify(new URL(server).origin)}])});
-        return JSON.stringify({before: ${JSON.stringify(before)}, person: person.userPublicKey});
-      } catch (error) { return JSON.stringify({before: ${JSON.stringify(before)}, error: String(error?.message ?? error)}); }
+      const id = await ${pageIdentityModule};
+      return JSON.stringify({before: ${JSON.stringify(before)}, person: (await id.browserIdentity()).userPublicKey});
     })()`).then(JSON.parse);
   }
   if (back.error) await finish(1, `signing in with the passkey failed: ${back.error}`);
