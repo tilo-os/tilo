@@ -55,14 +55,16 @@ pub enum Appetite {
 }
 
 /// Where a subscriber stands on one lineage: it holds every frame up to
-/// `after_seq` and asks for the ones after it.
+/// `after_seq` and asks for the ones after it. A subscriber that holds none
+/// of a lineage names no cursor for it, and is sent the lineage from its
+/// first frame, a checkpoint at sequence number 0 included.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct Cursor {
     /// The lineage it resumes.
     pub lineage: Lineage,
-    /// The last sequence number it holds; `0` for a device that holds none.
+    /// The last sequence number it holds.
     pub after_seq: u64,
 }
 
@@ -94,8 +96,14 @@ pub struct Replay {
 pub enum Retained {
     /// The store now holds it.
     New,
-    /// It held it already.
+    /// It held it already, byte for byte.
     Duplicate,
+    /// Its author's newer checkpoint on its lineage covers it: the store
+    /// holds that one, which retired it, and keeps nothing of this one.
+    Covered,
+    /// The store held another frame at its author's sequence number on its
+    /// lineage, with other bytes: it now holds both, and serves both.
+    Beside,
 }
 
 /// How much one replay round may carry.
@@ -209,7 +217,7 @@ struct Workspace {
     /// Frames appended and waiting for their sync, by the segment they are
     /// in, so a second copy that arrives meanwhile is a duplicate and the
     /// segment is not written again without them.
-    staged: BTreeMap<(Lineage, u64), u32>,
+    staged: BTreeMap<(Lineage, u64, [u8; 8]), u32>,
     /// Records of retired frames still in their segments, by segment and
     /// offset: the retirement records naming them are kept until they go.
     retired: BTreeSet<(u32, u64)>,
@@ -263,6 +271,9 @@ struct Entry {
     segment: u32,
     /// Where its record starts there.
     at: u64,
+    /// Its record's check: two frames at one sequence number with other
+    /// bytes have other checks.
+    check: [u8; 8],
 }
 
 impl Entry {
@@ -335,6 +346,7 @@ enum Record<'a> {
         authored_at_ns: u64,
         retention: ContentRetention,
         bytes: &'a [u8],
+        check: [u8; 8],
     },
     Retire {
         lineage: Lineage,
@@ -356,7 +368,10 @@ fn check(kind: u8, body: &[u8]) -> [u8; 8] {
 
 fn record(kind: u8, body: &[u8]) -> Result<Vec<u8>, StoreError> {
     let len = u32::try_from(body.len()).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "a frame too long for a segment")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a frame too long for a segment",
+        )
     })?;
     let mut out = Vec::with_capacity(body.len().saturating_add(13));
     out.push(kind);
@@ -364,6 +379,15 @@ fn record(kind: u8, body: &[u8]) -> Result<Vec<u8>, StoreError> {
     out.extend_from_slice(body);
     out.extend_from_slice(&check(kind, body));
     Ok(out)
+}
+
+/// The check that ends `record`, as [`record`] wrote it.
+fn record_check(record: &[u8]) -> [u8; 8] {
+    record
+        .len()
+        .checked_sub(8)
+        .and_then(|at| array(record, at))
+        .unwrap_or_default()
 }
 
 fn frame_record(frame: &Frame, bytes: &[u8]) -> Result<Vec<u8>, StoreError> {
@@ -402,7 +426,8 @@ fn read_record(bytes: &[u8]) -> Option<(Record<'_>, usize)> {
     let len = usize::try_from(u32::from_le_bytes(array(bytes, 1)?)).ok()?;
     let body = bytes.get(5..5_usize.checked_add(len)?)?;
     let end = 5_usize.checked_add(len)?.checked_add(8)?;
-    if array::<8>(bytes, end.checked_sub(8)?)? != check(kind, body) {
+    let checked = check(kind, body);
+    if array::<8>(bytes, end.checked_sub(8)?)? != checked {
         return None;
     }
     let lineage = Lineage {
@@ -421,6 +446,7 @@ fn read_record(bytes: &[u8]) -> Option<(Record<'_>, usize)> {
                 _ => return None,
             },
             bytes: body.get(81..)?,
+            check: checked,
         },
         RETIRE_RECORD => Record::Retire {
             lineage,
@@ -615,8 +641,11 @@ impl Store {
             .workspaces
             .get(&workspace)
             .and_then(|held| held.lineages.get(&frame.lineage))
-            .and_then(|entries| entries.iter().find(|entry| entry.seq == frame.seq))
-            .is_some_and(|entry| entry.from_link)
+            .is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry.seq == frame.seq && entry.from_link)
+            })
     }
 
     fn retain_from(
@@ -627,17 +656,40 @@ impl Store {
     ) -> Result<Retained, StoreError> {
         let bytes = postcard::to_allocvec(&frame.message)?;
         let record = frame_record(frame, &bytes)?;
-        let key = (frame.lineage, frame.seq);
+        let check = record_check(&record);
+        let key = (frame.lineage, frame.seq, check);
+        let mut outcome = Retained::New;
         let (writer, at) = {
             let mut held = self.held.lock_recover();
-            if held.workspaces.get(&workspace).is_some_and(|stored| {
-                stored.staged.contains_key(&key)
+            if let Some(stored) = held.workspaces.get(&workspace) {
+                let entries = stored
+                    .lineages
+                    .get(&frame.lineage)
+                    .map_or(&[][..], Vec::as_slice);
+                if stored.staged.contains_key(&key)
+                    || entries
+                        .iter()
+                        .any(|entry| entry.seq == frame.seq && entry.check == check)
+                {
+                    return Ok(Retained::Duplicate);
+                }
+                if newest_checkpoint(entries).is_some_and(|newest| newest > frame.seq) {
+                    return Ok(Retained::Covered);
+                }
+                if entries.iter().any(|entry| entry.seq == frame.seq)
                     || stored
-                        .lineages
-                        .get(&frame.lineage)
-                        .is_some_and(|entries| entries.iter().any(|entry| entry.seq == frame.seq))
-            }) {
-                return Ok(Retained::Duplicate);
+                        .staged
+                        .keys()
+                        .any(|(lineage, seq, _)| *lineage == frame.lineage && *seq == frame.seq)
+                {
+                    tracing::warn!(
+                        %workspace,
+                        author = %hex::encode(frame.lineage.author),
+                        seq = frame.seq,
+                        "two frames with other bytes at one author's sequence number; the store keeps and serves both"
+                    );
+                    outcome = Retained::Beside;
+                }
             }
             let appended = append(&self.root, workspace, &mut held, &record)?;
             held.workspaces
@@ -661,6 +713,7 @@ impl Store {
             from_link,
             segment: writer.segment,
             at,
+            check,
         };
         if let Err(error) = synced {
             // Not acknowledged, so not served; a restart may read it back,
@@ -682,7 +735,28 @@ impl Store {
         }
         retire_to_appetite(&self.root, self.appetite, &mut held);
         drop(held);
-        Ok(Retained::New)
+        Ok(outcome)
+    }
+
+    /// Whether the store holds `frame` of `workspace` now, byte for byte.
+    ///
+    /// # Errors
+    ///
+    /// The frame does not encode.
+    pub fn holds_frame(&self, workspace: WorkspaceId, frame: &Frame) -> Result<bool, StoreError> {
+        let bytes = postcard::to_allocvec(&frame.message)?;
+        let check = record_check(&frame_record(frame, &bytes)?);
+        Ok(self
+            .held
+            .lock_recover()
+            .workspaces
+            .get(&workspace)
+            .and_then(|stored| stored.lineages.get(&frame.lineage))
+            .is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry.seq == frame.seq && entry.check == check)
+            }))
     }
 
     /// The frames after `cursors` in `workspace`, at most `budget` of them,
@@ -709,18 +783,21 @@ impl Store {
                 .iter()
                 .filter(|cursor| cursor.lineage == *lineage)
                 .map(|cursor| cursor.after_seq)
-                .max()
-                .unwrap_or(0);
+                .max();
             let Some(first) = entries.first().map(|entry| entry.seq) else {
                 continue;
             };
-            if first > after.saturating_add(1) {
+            if first > after.unwrap_or(0).saturating_add(1) {
                 replay.floors.push(Floor {
                     lineage: *lineage,
                     earliest_seq: first,
                 });
             }
-            let from = entries.partition_point(|entry| entry.seq <= after);
+            // A subscriber with no cursor holds none of the lineage, a
+            // checkpoint at sequence number 0 included.
+            let from = after.map_or(0, |after| {
+                entries.partition_point(|entry| entry.seq <= after)
+            });
             if let Some(rest) = entries.get(from..)
                 && !rest.is_empty()
             {
@@ -1162,15 +1239,18 @@ impl Store {
                                 continue;
                             }
                         };
+                        let today = postcard::to_allocvec(&message)?;
+                        let packed = frame_record(&frame, &today)?;
+                        let check = record_check(&packed);
                         if held.workspaces.get(&workspace).is_some_and(|stored| {
                             stored.lineages.get(&frame.lineage).is_some_and(|entries| {
-                                entries.iter().any(|entry| entry.seq == frame.seq)
+                                entries
+                                    .iter()
+                                    .any(|entry| entry.seq == frame.seq && entry.check == check)
                             })
                         }) {
                             continue;
                         }
-                        let today = postcard::to_allocvec(&message)?;
-                        let packed = frame_record(&frame, &today)?;
                         let (writer, at) = append(&self.root, workspace, held, &packed)?;
                         add(
                             held,
@@ -1184,6 +1264,7 @@ impl Store {
                                 from_link: false,
                                 segment: writer.segment,
                                 at,
+                                check,
                             },
                         );
                         moved = moved.saturating_add(1);
@@ -1193,7 +1274,10 @@ impl Store {
         }
         sync_writers(held)?;
         if moved > 0 {
-            tracing::info!(moved, "the store moved the frames it kept one file each into segments");
+            tracing::info!(
+                moved,
+                "the store moved the frames it kept one file each into segments"
+            );
         }
         Ok(())
     }
@@ -1236,6 +1320,7 @@ fn index_record(
             authored_at_ns,
             retention,
             bytes,
+            check,
         } => {
             let entry = Entry {
                 seq,
@@ -1245,12 +1330,14 @@ fn index_record(
                 from_link: false,
                 segment,
                 at,
+                check,
             };
             let stored = held.workspaces.entry(workspace).or_default();
-            let duplicate = stored
-                .lineages
-                .get(&lineage)
-                .is_some_and(|entries| entries.iter().any(|held| held.seq == seq));
+            let duplicate = stored.lineages.get(&lineage).is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|held| held.seq == seq && held.check == check)
+            });
             if duplicate {
                 stored.retired.insert((segment, at));
                 if let Some(segment) = stored.segments.get_mut(&segment) {
@@ -1283,7 +1370,9 @@ fn index_record(
             let found = stored.lineages.get(&lineage).and_then(|entries| {
                 entries
                     .iter()
-                    .find(|entry| entry.seq == seq && entry.segment == target && entry.at == target_at)
+                    .find(|entry| {
+                        entry.seq == seq && entry.segment == target && entry.at == target_at
+                    })
                     .copied()
             });
             if let Some(entry) = found {
@@ -1659,7 +1748,7 @@ fn files(dir: &Path) -> io::Result<Vec<PathBuf>> {
 fn add(held: &mut Held, workspace: WorkspaceId, lineage: Lineage, entry: Entry) {
     let stored = held.workspaces.entry(workspace).or_default();
     let entries = stored.lineages.entry(lineage).or_default();
-    let at = entries.partition_point(|held| held.seq < entry.seq);
+    let at = entries.partition_point(|held| held.seq <= entry.seq);
     entries.insert(at, entry);
     stored.bytes = stored.bytes.saturating_add(entry.bytes);
     held.bytes = held.bytes.saturating_add(entry.bytes);
@@ -1671,7 +1760,7 @@ fn unindex(held: &mut Held, workspace: WorkspaceId, lineage: Lineage, entry: Ent
         return;
     };
     if let Some(entries) = stored.lineages.get_mut(&lineage) {
-        entries.retain(|held| held.seq != entry.seq);
+        entries.retain(|held| (held.seq, held.check) != (entry.seq, entry.check));
         if entries.is_empty() {
             stored.lineages.remove(&lineage);
         }
@@ -1693,19 +1782,27 @@ fn retire_before(
     held: &mut Held,
 ) -> Retired {
     let mut retired = Retired::default();
-    let covered = held
-        .workspaces
-        .get(&workspace)
-        .and_then(|stored| stored.lineages.get(&lineage))
-        .map(|entries| {
-            entries
-                .iter()
-                .filter(|entry| entry.seq < seq)
-                .copied()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    for entry in covered {
+    let entries = |held: &Held| {
+        held.workspaces
+            .get(&workspace)
+            .and_then(|stored| stored.lineages.get(&lineage))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let covered: Vec<(u64, [u8; 8])> = entries(held)
+        .iter()
+        .filter(|entry| entry.seq < seq)
+        .map(|entry| (entry.seq, entry.check))
+        .collect();
+    for (seq, check) in covered {
+        // Read again for each: writing a segment again moves the records
+        // still in it.
+        let Some(entry) = entries(held)
+            .into_iter()
+            .find(|entry| (entry.seq, entry.check) == (seq, check))
+        else {
+            continue;
+        };
         if let Err(error) = retire(root, workspace, lineage, entry, held, &mut retired) {
             tracing::warn!(%error, "a covered frame could not be retired");
         }
@@ -1773,11 +1870,13 @@ fn rewrite(root: &Path, workspace: WorkspaceId, held: &mut Held, number: u32) ->
     let mut kept_retirements = 0_u64;
     for (at, len, record) in &found {
         let keep = match record {
-            Record::Frame { lineage, seq, .. } => stored.lineages.get(lineage).is_some_and(|entries| {
-                entries
-                    .iter()
-                    .any(|entry| entry.seq == *seq && entry.segment == number && entry.at == *at)
-            }),
+            Record::Frame { lineage, seq, .. } => {
+                stored.lineages.get(lineage).is_some_and(|entries| {
+                    entries.iter().any(|entry| {
+                        entry.seq == *seq && entry.segment == number && entry.at == *at
+                    })
+                })
+            }
             Record::Retire {
                 segment,
                 generation,
@@ -2662,22 +2761,117 @@ mod tests {
         let started = std::time::Instant::now();
         let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
         let open = started.elapsed();
-        eprintln!("store at 10k resources: {per_second:.0} writes/s ({WRITES} in {elapsed:?}), reopened in {open:?}");
+        eprintln!(
+            "store at 10k resources: {per_second:.0} writes/s ({WRITES} in {elapsed:?}), reopened in {open:?}"
+        );
         assert_eq!(reopened.lineages(workspace()).len(), RESOURCES);
         assert_eq!(reopened.bytes(), bytes);
         assert!(
             reopened.segments(workspace()).len() < 16,
             "the writes are packed in few files"
         );
-        assert!(per_second >= 1_000.0, "{per_second:.0} writes/s over {elapsed:?}");
+        assert!(
+            per_second >= 1_000.0,
+            "{per_second:.0} writes/s over {elapsed:?}"
+        );
         assert!(open < Duration::from_secs(5), "reopening took {open:?}");
         let last = reopened
             .replay(
                 workspace(),
                 &[cursor(signed[0].lineage, 10)],
-                Budget { max_frames: 1, ..Budget::default() },
+                Budget {
+                    max_frames: 1,
+                    ..Budget::default()
+                },
             )
             .unwrap();
         assert_eq!(last.frames.len(), 1);
+    }
+
+    /// Two frames with other bytes at one author's sequence number are both
+    /// kept and both served, across a restart: neither is taken for the
+    /// other. The same bytes again are one frame.
+    #[test]
+    fn two_frames_at_one_sequence_number_are_both_kept() {
+        let (dir, store) = open();
+        let key = device(2);
+        let one = frame(&key, 4, ContentRetention::Delta);
+        let other = frame(&key, 4, ContentRetention::Delta);
+        assert_ne!(one.message, other.message);
+        assert_eq!(store.retain(workspace(), &one).unwrap(), Retained::New);
+        assert_eq!(store.retain(workspace(), &other).unwrap(), Retained::Beside);
+        assert_eq!(
+            store.retain(workspace(), &other).unwrap(),
+            Retained::Duplicate
+        );
+        assert!(store.holds_frame(workspace(), &one).unwrap());
+        assert!(store.holds_frame(workspace(), &other).unwrap());
+        let served = |store: &Store| {
+            let mut served = store
+                .replay(workspace(), &[], Budget::default())
+                .unwrap()
+                .frames;
+            served.sort_by_key(|message| postcard::to_allocvec(message).unwrap());
+            served
+        };
+        let mut both = vec![one.message.clone(), other.message];
+        both.sort_by_key(|message| postcard::to_allocvec(message).unwrap());
+        assert_eq!(served(&store), both);
+        drop(store);
+        let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+        assert_eq!(served(&reopened), both, "a restart keeps both");
+        assert_eq!(
+            reopened.retain(workspace(), &one).unwrap(),
+            Retained::Duplicate
+        );
+    }
+
+    /// A checkpoint at sequence number 0 is served to a device that holds
+    /// none of its lineage, and not to one that holds it. A frame its
+    /// author's newer checkpoint covers is not kept, as a restart would not
+    /// keep it either.
+    #[test]
+    fn a_checkpoint_at_zero_is_served_and_a_covered_frame_is_not_kept() {
+        let (dir, store) = open();
+        let key = device(3);
+        let base = frame(&key, 0, ContentRetention::Checkpoint);
+        assert_eq!(store.retain(workspace(), &base).unwrap(), Retained::New);
+        let fresh = store.replay(workspace(), &[], Budget::default()).unwrap();
+        assert_eq!(fresh.frames, vec![base.message.clone()]);
+        assert!(fresh.floors.is_empty());
+        let holding = store
+            .replay(workspace(), &[cursor(base.lineage, 0)], Budget::default())
+            .unwrap();
+        assert!(
+            holding.frames.is_empty(),
+            "a device holding it is not sent it again"
+        );
+
+        let newer = frame(&key, 5, ContentRetention::Checkpoint);
+        assert_eq!(store.retain(workspace(), &newer).unwrap(), Retained::New);
+        assert!(
+            !store.holds_frame(workspace(), &base).unwrap(),
+            "the newer checkpoint retired it"
+        );
+        let older = frame(&key, 3, ContentRetention::Delta);
+        assert_eq!(
+            store.retain(workspace(), &older).unwrap(),
+            Retained::Covered
+        );
+        let before = store.lineages(workspace());
+        drop(store);
+        let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+        assert_eq!(
+            reopened.lineages(workspace()),
+            before,
+            "a restart retires nothing more"
+        );
+        assert_eq!(
+            reopened
+                .replay(workspace(), &[], Budget::default())
+                .unwrap()
+                .frames,
+            vec![newer.message]
+        );
     }
 }

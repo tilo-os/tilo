@@ -34,13 +34,8 @@ pub const MOVED: &str = "moved-into-store";
 pub struct Moved {
     /// Workspaces whose history was moved now.
     pub workspaces: usize,
-    /// Signed, sealed writes the store did not hold before.
-    pub frames: u64,
-    /// Signed, sealed writes the store had already: those the device link
-    /// carried as they were admitted.
-    pub kept_before: u64,
-    /// Channel governance frames the store keeps now.
-    pub channels: u64,
+    /// What the move did in each of them.
+    pub by_workspace: BTreeMap<WorkspaceId, Counts>,
     /// Signed, sealed writes by app, whether new or there already.
     pub by_app: BTreeMap<String, u64>,
     /// What the store does not keep, by kind: the workspace's own state and
@@ -48,6 +43,51 @@ pub struct Moved {
     pub not_kept: BTreeMap<String, u64>,
     /// Entries that did not decode as a change at all.
     pub unreadable: u64,
+}
+
+/// What the move did in one workspace, or in all of them.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Counts {
+    /// Signed, sealed writes the store did not hold before, and serves now.
+    pub frames: u64,
+    /// Signed, sealed writes the store had already, byte for byte: those the
+    /// device link carried as they were admitted.
+    pub kept_before: u64,
+    /// Signed, sealed writes kept beside another one at the same author's
+    /// sequence number, with other bytes: the store serves both.
+    pub beside: u64,
+    /// Signed, sealed writes their author's newer checkpoint on the same
+    /// record covers, which the store holds and serves instead.
+    pub covered: u64,
+    /// The channels whose governance the store holds once the move ran.
+    pub channels: u64,
+    /// Of the old checkpoints, those the store serves once the move ran.
+    pub checkpoints_served: u64,
+    /// Of the old checkpoints, those a newer checkpoint of their author's on
+    /// the same record retired.
+    pub checkpoints_retired: u64,
+}
+
+impl Moved {
+    /// What the move did in every workspace together.
+    #[must_use]
+    pub fn total(&self) -> Counts {
+        let mut total = Counts::default();
+        for counts in self.by_workspace.values() {
+            total.frames = total.frames.saturating_add(counts.frames);
+            total.kept_before = total.kept_before.saturating_add(counts.kept_before);
+            total.beside = total.beside.saturating_add(counts.beside);
+            total.covered = total.covered.saturating_add(counts.covered);
+            total.channels = total.channels.saturating_add(counts.channels);
+            total.checkpoints_served = total
+                .checkpoints_served
+                .saturating_add(counts.checkpoints_served);
+            total.checkpoints_retired = total
+                .checkpoints_retired
+                .saturating_add(counts.checkpoints_retired);
+        }
+        total
+    }
 }
 
 /// Move every workspace's history under `state_root` into `store`, for each
@@ -82,33 +122,40 @@ pub fn move_into_store(state_root: &Path, store: &Store) -> Result<Moved, String
     }
     workspaces.sort();
     for (workspace, path) in workspaces {
-        let before = moved.clone();
-        move_workspace(state_root, workspace, store, &mut moved)?;
+        let counts = move_workspace(state_root, workspace, store, &mut moved)?;
         tilo_files::native::atomic::write(&path.join(MOVED), b"")
             .map_err(|error| format!("{}: {error}", path.join(MOVED).display()))?;
         moved.workspaces = moved.workspaces.saturating_add(1);
+        moved.by_workspace.insert(workspace, counts);
         tracing::info!(
             %workspace,
-            frames = moved.frames.saturating_sub(before.frames),
-            kept_before = moved.kept_before.saturating_sub(before.kept_before),
-            channels = moved.channels.saturating_sub(before.channels),
+            frames = counts.frames,
+            kept_before = counts.kept_before,
+            beside = counts.beside,
+            covered = counts.covered,
+            channels = counts.channels,
+            checkpoints_served = counts.checkpoints_served,
+            checkpoints_retired = counts.checkpoints_retired,
             "a workspace's history moved into the device store"
         );
     }
     if moved.workspaces > 0 {
-        tracing::info!(?moved, "the host's history moved into the device store");
+        tracing::info!(total = ?moved.total(), ?moved, "the host's history moved into the device store");
     }
     Ok(moved)
 }
 
 /// Move `workspace`'s history: what it kept for every device, then what
-/// waited for a device that was offline.
+/// waited for a device that was offline. Each old checkpoint is then either
+/// served or retired by a newer one of its author's on the same record.
 fn move_workspace(
     state_root: &Path,
     workspace: WorkspaceId,
     store: &Store,
     moved: &mut Moved,
-) -> Result<(), String> {
+) -> Result<Counts, String> {
+    let mut counts = Counts::default();
+    let mut taken = Vec::new();
     let kept = WorkspaceStore::open(state_root, workspace, false)
         .map_err(|error| format!("{workspace}: {error}"))?;
     let retained = kept
@@ -145,9 +192,32 @@ fn move_workspace(
             moved.unreadable = moved.unreadable.saturating_add(1);
             continue;
         };
-        keep(workspace, author, &message, store, moved)?;
+        keep(workspace, author, &message, store, moved, &mut taken)?;
     }
-    Ok(())
+    // A write kept early in the move may be retired by a checkpoint kept
+    // after it: what counts as moved is what the store serves now.
+    for (frame, retained) in taken {
+        let held = store
+            .holds_frame(workspace, &frame)
+            .map_err(|error| format!("{workspace}: {error}"))?;
+        match retained {
+            Retained::New if held => counts.frames = counts.frames.saturating_add(1),
+            Retained::Beside if held => counts.beside = counts.beside.saturating_add(1),
+            Retained::Duplicate if held => {
+                counts.kept_before = counts.kept_before.saturating_add(1);
+            }
+            _ => counts.covered = counts.covered.saturating_add(1),
+        }
+        if frame.retention == collab_types::ContentRetention::Checkpoint {
+            if held {
+                counts.checkpoints_served = counts.checkpoints_served.saturating_add(1);
+            } else {
+                counts.checkpoints_retired = counts.checkpoints_retired.saturating_add(1);
+            }
+        }
+    }
+    counts.channels = store.channels(workspace).len() as u64;
+    Ok(counts)
 }
 
 /// The author and body of `bytes`, one framed change the old store kept.
@@ -165,9 +235,9 @@ fn change_of(bytes: &[u8], workspace: WorkspaceId) -> Option<([u8; 32], Vec<u8>)
         return None;
     }
     let body = match CoeditPayload::decode(&delta) {
-        Some(CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. }) => {
-            body
-        }
+        Some(
+            CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. },
+        ) => body,
         None => delta,
     };
     Some((author_device_public_key, body))
@@ -181,6 +251,7 @@ fn keep(
     message: &NeighbourMsg,
     store: &Store,
     moved: &mut Moved,
+    kept: &mut Vec<(Frame, Retained)>,
 ) -> Result<(), String> {
     match Frame::of(message) {
         Ok(frame) => {
@@ -188,13 +259,10 @@ fn keep(
                 let count = moved.by_app.entry(app_id.clone()).or_default();
                 *count = count.saturating_add(1);
             }
-            match store
+            let retained = store
                 .retain(workspace, &frame)
-                .map_err(|error| format!("{workspace}: {error}"))?
-            {
-                Retained::New => moved.frames = moved.frames.saturating_add(1),
-                Retained::Duplicate => moved.kept_before = moved.kept_before.saturating_add(1),
-            }
+                .map_err(|error| format!("{workspace}: {error}"))?;
+            kept.push((frame, retained));
             return Ok(());
         }
         Err(Refusal::NotADocument) => {}
@@ -206,12 +274,9 @@ fn keep(
         }
     }
     if message.governance_workspace().is_some() {
-        if store
+        store
             .keep_channel(workspace, author, message)
-            .map_err(|error| format!("{workspace}: {error}"))?
-        {
-            moved.channels = moved.channels.saturating_add(1);
-        }
+            .map_err(|error| format!("{workspace}: {error}"))?;
         return Ok(());
     }
     let count = moved.not_kept.entry(message.kind().to_owned()).or_default();
@@ -243,6 +308,20 @@ mod tests {
     /// `key`'s write `seq` of `record`, sealed under a content key when
     /// `sealed`, else in the clear.
     fn write(key: &SigningKey, record: &str, seq: u64, sealed: bool) -> NeighbourMsg {
+        signed(key, record, seq, sealed.then_some(ContentRetention::Delta))
+    }
+
+    /// `key`'s sealed checkpoint `seq` of `record`.
+    fn checkpoint(key: &SigningKey, record: &str, seq: u64) -> NeighbourMsg {
+        signed(key, record, seq, Some(ContentRetention::Checkpoint))
+    }
+
+    fn signed(
+        key: &SigningKey,
+        record: &str,
+        seq: u64,
+        sealed: Option<ContentRetention>,
+    ) -> NeighbourMsg {
         let mut op = SignedOp::new_unsigned(
             vec![seq as u8; 48],
             ArtifactId::new(),
@@ -252,8 +331,8 @@ mod tests {
             web_time::UNIX_EPOCH + std::time::Duration::from_nanos(seq),
             seq,
         );
-        if sealed {
-            op.encryption = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
+        if let Some(retention) = sealed {
+            op.encryption = Some(EncryptionMetadata::content_key(1, retention));
         }
         sign_op(&mut op, key).unwrap();
         NeighbourMsg::AppDocument {
@@ -327,8 +406,12 @@ mod tests {
         ];
         for (at, message) in writes.iter().enumerate() {
             let key = if at == 2 { &other } else { &author };
-            old.retain_delta(&[9; 32], at as u64 + 1, &framed(key, [9; 32], message, false))
-                .unwrap();
+            old.retain_delta(
+                &[9; 32],
+                at as u64 + 1,
+                &framed(key, [9; 32], message, false),
+            )
+            .unwrap();
         }
         let founded = genesis(&author);
         old.retain_checkpoint(&[8; 32], &framed(&author, [8; 32], &founded, true))
@@ -348,8 +431,10 @@ mod tests {
             .unwrap();
         let moved = move_into_store(root.path(), &store).unwrap();
         assert_eq!(moved.workspaces, 1);
-        assert_eq!((moved.frames, moved.kept_before), (3, 1), "{moved:?}");
-        assert_eq!(moved.channels, 1);
+        let total = moved.total();
+        assert_eq!((total.frames, total.kept_before), (3, 1), "{moved:?}");
+        assert_eq!(total.channels, 1);
+        assert_eq!(moved.by_workspace.get(&workspace()), Some(&total));
         assert_eq!(moved.by_app.get("test.app"), Some(&4));
         assert_eq!(moved.not_kept.values().sum::<u64>(), 1, "{moved:?}");
         assert_eq!(moved.unreadable, 0);
@@ -368,7 +453,11 @@ mod tests {
             bytes.sort();
             bytes
         };
-        assert_eq!(bytes(&served), bytes(&expected), "every write, byte for byte");
+        assert_eq!(
+            bytes(&served),
+            bytes(&expected),
+            "every write, byte for byte"
+        );
         assert_eq!(
             store.channels(workspace()),
             vec![(author.verifying_key().to_bytes(), founded)]
@@ -385,6 +474,95 @@ mod tests {
             .replay(workspace(), &[], Budget::default())
             .unwrap()
             .frames;
-        assert_eq!(bytes(&again), bytes(&expected), "and a restart serves the same");
+        assert_eq!(
+            bytes(&again),
+            bytes(&expected),
+            "and a restart serves the same"
+        );
+    }
+
+    /// What a host's old history holds besides plain writes: a host's own
+    /// checkpoint at sequence number 0, which a device that holds none of its
+    /// record is served; a checkpoint the store holds a newer one of, which
+    /// that one retires; a write at a sequence number the store holds other
+    /// bytes at, which is kept beside them; and a channel's governance kept
+    /// twice, one channel. A restart after the move retires nothing more.
+    #[test]
+    fn every_old_checkpoint_is_served_or_retired_by_a_newer_one() {
+        let root = tempfile::tempdir().unwrap();
+        let host = SigningKey::from_bytes(&[6; 32]);
+        let author = SigningKey::from_bytes(&[3; 32]);
+        let old = WorkspaceStore::open(root.path(), workspace(), false).unwrap();
+        let base = checkpoint(&host, "files:1", 0);
+        let stale = checkpoint(&author, "tab:1", 2);
+        let other_bytes = write(&author, "tab:2", 1, true);
+        for (at, message) in [&base, &stale, &other_bytes].into_iter().enumerate() {
+            let key = if at == 0 { &host } else { &author };
+            old.retain_checkpoint(&[at as u8; 32], &framed(key, [at as u8; 32], message, true))
+                .unwrap();
+        }
+        let founded = genesis(&author);
+        old.retain_checkpoint(&[8; 32], &framed(&author, [8; 32], &founded, true))
+            .unwrap();
+        old.enqueue_pending(&[5; 32], 1, &framed(&author, [8; 32], &founded, true))
+            .unwrap();
+        drop(old);
+
+        let store = Store::open(root.path().join("store"), Appetite::StoreAll).unwrap();
+        let newer = checkpoint(&author, "tab:1", 5);
+        let linked = write(&author, "tab:2", 1, true);
+        for message in [&newer, &linked] {
+            store
+                .retain(workspace(), &Frame::of(message).unwrap())
+                .unwrap();
+        }
+        let moved = move_into_store(root.path(), &store).unwrap();
+        let counts = moved.by_workspace[&workspace()];
+        assert_eq!(
+            counts,
+            Counts {
+                frames: 1,
+                kept_before: 0,
+                beside: 1,
+                covered: 1,
+                channels: 1,
+                checkpoints_served: 1,
+                checkpoints_retired: 1,
+            },
+            "{moved:?}"
+        );
+
+        let bytes = |messages: &[NeighbourMsg]| {
+            let mut bytes: Vec<Vec<u8>> = messages
+                .iter()
+                .map(|message| postcard::to_allocvec(message).unwrap())
+                .collect();
+            bytes.sort();
+            bytes
+        };
+        let expected = bytes(&[base, newer, linked, other_bytes]);
+        let fresh = store.replay(workspace(), &[], Budget::default()).unwrap();
+        assert_eq!(
+            bytes(&fresh.frames),
+            expected,
+            "a fresh device is served all four"
+        );
+        let lineages = store.lineages(workspace());
+        drop(store);
+        let reopened = Store::open(root.path().join("store"), Appetite::StoreAll).unwrap();
+        assert_eq!(
+            reopened.lineages(workspace()),
+            lineages,
+            "a restart retires nothing more"
+        );
+        assert_eq!(
+            bytes(
+                &reopened
+                    .replay(workspace(), &[], Budget::default())
+                    .unwrap()
+                    .frames
+            ),
+            expected
+        );
     }
 }
