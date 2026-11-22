@@ -118,8 +118,6 @@ fn delegate_account_secret(
         if !reply.matches(&command) {
             return Err(refused(NO_VAULT_HERE.to_owned()));
         }
-        reply
-            .encode()
-            .map_err(|error| refused(error.to_string()))
+        reply.encode().map_err(|error| refused(error.to_string()))
     }))
 }

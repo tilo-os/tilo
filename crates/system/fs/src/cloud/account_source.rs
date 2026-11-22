@@ -92,7 +92,10 @@ impl Inner {
                 let mut latest = self.latest.lock_recover();
                 let changed = latest.as_ref().is_none_or(|(held, _)| *held != revision);
                 if changed {
-                    tracing::info!(accounts = accounts.len(), "the session told other file accounts");
+                    tracing::info!(
+                        accounts = accounts.len(),
+                        "the session told other file accounts"
+                    );
                 }
                 *latest = Some((revision, accounts));
                 Ok(changed)

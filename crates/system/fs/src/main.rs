@@ -1429,8 +1429,14 @@ async fn serve(
         || tilo_server_protocol::servers::person_workspace_id(&credentials.user_public_key()),
         |ticket| ticket.workspace_id().to_string(),
     );
-    let (tree, namespace, kept) =
-        open_tree(np.as_deref(), workspace, &credentials, author.clone(), &store).await?;
+    let (tree, namespace, kept) = open_tree(
+        np.as_deref(),
+        workspace,
+        &credentials,
+        author.clone(),
+        &store,
+    )
+    .await?;
 
     if fresh {
         if let Some(seed) = seed {

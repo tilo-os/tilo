@@ -4299,7 +4299,9 @@ async fn drive_shovel(
                             "This account could not be opened".to_owned()
                         }
                     })
-                    .and_then(|result| result.map_err(|error| service_session_refusal(&command, error)))
+                    .and_then(|result| {
+                        result.map_err(|error| service_session_refusal(&command, error))
+                    })
                 } else {
                     Err("This account could not be opened".to_owned())
                 };

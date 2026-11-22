@@ -684,7 +684,8 @@ impl Apps {
         };
         // Opened and named for the app and workspace exactly as the launcher opens a launched
         // app's: the identity service signs for that app in that workspace only.
-        let identity = match launcher::services::resolve_identity_bind(app, Some(workspace), false) {
+        let identity = match launcher::services::resolve_identity_bind(app, Some(workspace), false)
+        {
             Ok(Some(identity)) => identity.host,
             Ok(None) => return Err("the identity service is unavailable".to_owned()),
             Err(error) => return Err(format!("the identity service: {error}")),
@@ -2161,11 +2162,7 @@ impl Apps {
     /// action that shows nothing runs in, whether an agent invokes it or the workspace starts the
     /// app. The instance gets the connections and grants a window's instance gets, and its
     /// collaboration connection is attested windowless, so the broker never hands it an `open`.
-    fn start_with_no_view(
-        &self,
-        app: &str,
-        workspace: &Workspace,
-    ) -> Result<(), ApiError> {
+    fn start_with_no_view(&self, app: &str, workspace: &Workspace) -> Result<(), ApiError> {
         let (processes, links) = {
             let state = self.state.borrow();
             (state.processes.clone(), state.links.clone())
@@ -2183,7 +2180,9 @@ impl Apps {
             .connections()
             .collaboration_with_no_view(app, &workspace.id, instance)
             .ok_or_else(|| {
-                ApiError::Failed(format!("{app} could not reach its workspace with no window"))
+                ApiError::Failed(format!(
+                    "{app} could not reach its workspace with no window"
+                ))
             })?;
         processes
             .start_with_no_view(tilo_app_launch::tilolang_processes::Instance {
