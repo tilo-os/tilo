@@ -66,6 +66,8 @@ pub struct Page {
         tilo_server_protocol::live::LiveResource,
         tilo_actions::SemanticInteraction,
     )>,
+    /// Told each time an event reaches the page's queue.
+    arrived: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl Page {
@@ -154,7 +156,11 @@ impl Page {
         let workspace = tilo_server_protocol::WorkspaceId::parse(cluster_id).unwrap();
         let mut board = tilo_live::presence::Board::new(cluster_id, device.cert.device_public_key);
         board.set_host(Some(host.cert.device_public_key));
+        let arrived = std::sync::Arc::new(tokio::sync::Notify::new());
+        let told = std::sync::Arc::clone(&arrived);
+        peer.on_event(&events, std::sync::Arc::new(move || told.notify_one()));
         Self {
+            arrived,
             board,
             narrated: Vec::new(),
             events,
@@ -365,19 +371,36 @@ impl Page {
         what: &str,
         pick: impl Fn(&RemoteActionMessage) -> Option<T>,
     ) -> T {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            self.pump();
-            if let Some(index) = self
+        self.until(|page| {
+            let index = page
                 .answers
                 .iter()
                 .position(|answer| pick(answer).is_some())
+                .ok_or_else(|| format!("no answer: {what}"))?;
+            Ok(pick(&page.answers.remove(index)).unwrap())
+        })
+        .await
+    }
+
+    /// What `read` first answers of the page, read again each time an event reaches it rather
+    /// than on a timer. `read` says what it still waits for, which the wait fails with once it
+    /// outlasts the hang bound.
+    pub async fn until<T>(&mut self, mut read: impl FnMut(&mut Self) -> Result<T, String>) -> T {
+        let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
+        loop {
+            self.pump();
+            let waiting = match read(self) {
+                Ok(answer) => return answer,
+                Err(waiting) => waiting,
+            };
+            // An event that reached the queue since the pump left its notice behind.
+            let arrived = std::sync::Arc::clone(&self.arrived);
+            if tokio::time::timeout_at(deadline, arrived.notified())
+                .await
+                .is_err()
             {
-                let answer = self.answers.remove(index);
-                return pick(&answer).unwrap();
+                panic!("{waiting}");
             }
-            assert!(Instant::now() < deadline, "no answer: {what}");
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -512,11 +535,11 @@ impl Page {
 
     /// Wait until the page has received more than `past` changes of `route`.
     pub async fn until_heard(&mut self, route: &DocumentRoute, past: usize) {
-        let deadline = tilo_test_env::hang_deadline();
-        while self.heard(route) <= past {
-            assert!(Instant::now() < deadline, "no change of {route:?} arrived");
-            self.pump();
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        self.until(|page| {
+            (page.heard(route) > past)
+                .then_some(())
+                .ok_or_else(|| format!("no change of {route:?} arrived"))
+        })
+        .await;
     }
 }

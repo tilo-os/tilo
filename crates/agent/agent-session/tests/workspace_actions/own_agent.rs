@@ -108,68 +108,76 @@ fn claude_code(person: &str) -> String {
     tilo_actions::remote::device_agent_id(&root, "Claude Code")
 }
 
-/// Who `bytes`' changes recorded acting, from the actions they carry.
-fn invokers(changes: &[([u8; 32], Vec<u8>)]) -> Vec<tilo_actions::ActionInvoker> {
-    let mut doc = automerge::AutoCommit::new();
-    for (_, bytes) in changes {
-        let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
-    }
-    doc.get_changes(&[])
-        .iter()
-        .filter_map(|change| change.message())
-        .filter_map(tilo_actions::ActionContext::from_change_message)
-        .filter_map(|context| context.invoker)
-        .collect()
-}
-
-/// The work group each entry the agent's changes open carries (a write
-/// continuing the one before it, as a batch's later steps do, says it once).
-fn agent_groups(changes: &[([u8; 32], Vec<u8>)]) -> Vec<Option<tilo_actions::WorkGroup>> {
-    let mut doc = automerge::AutoCommit::new();
-    for (_, bytes) in changes {
-        let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
-    }
-    // Read as History reads them: a change that continues the one before it
-    // carries the entry it continues.
-    let mut entries = tilo_actions::EntryReader::default();
-    doc.get_changes(&[])
-        .iter()
-        .filter_map(|change| entries.read(change.actor_id(), change.message()))
-        .filter(|context| {
-            context
-                .invoker
-                .as_ref()
-                .is_some_and(|invoker| invoker.acting.is_agent())
-        })
-        .map(|context| context.group)
-        .collect()
-}
-
-/// The comments on the issue titled `title`, in order, in each Tasks record
-/// the page received.
-fn page_comments(browser: &mut Browser, title: &str) -> Vec<Vec<String>> {
-    browser.pump();
-    browser
-        .documents
+/// Each Tasks record the page received (the tracker, and each part its issues are kept in),
+/// every change it received loaded.
+fn tasks_records(page: &Browser) -> Vec<automerge::AutoCommit> {
+    page.documents
         .iter()
         .filter(|(route, _)| route.app_id == TASKS)
         .map(|(_, changes)| {
             let mut doc = automerge::AutoCommit::new();
             for (_, bytes) in changes {
-                let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
+                tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes)
+                    .expect("a change the page received loads");
             }
-            tasks::issue_list::IssueList::read(&doc).map_or_else(
+            doc
+        })
+        .collect()
+}
+
+/// Who made each change to Tasks the page holds, from the action it carries, and in which run.
+fn tasks_authors(page: &Browser) -> Vec<(tilo_actions::ActionInvoker, Option<String>)> {
+    tasks_records(page)
+        .into_iter()
+        .flat_map(|mut doc| {
+            doc.get_changes(&[])
+                .iter()
+                .filter_map(|change| change.message())
+                .filter_map(tilo_actions::ActionContext::from_change_message)
+                .filter_map(|context| Some((context.invoker?, context.group.map(|group| group.id))))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The work group each entry the agent made in Tasks carries, as the page holds them (a write
+/// continuing the one before it, as a batch's later steps do, says it once).
+fn tasks_groups(page: &Browser) -> Vec<Option<tilo_actions::WorkGroup>> {
+    tasks_records(page)
+        .into_iter()
+        .flat_map(|mut doc| {
+            // Read as History reads them: a change that continues the one before it
+            // carries the entry it continues.
+            let mut entries = tilo_actions::EntryReader::default();
+            doc.get_changes(&[])
+                .iter()
+                .filter_map(|change| entries.read(change.actor_id(), change.message()))
+                .filter(|context| {
+                    context
+                        .invoker
+                        .as_ref()
+                        .is_some_and(|invoker| invoker.acting.is_agent())
+                })
+                .map(|context| context.group)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The comments on the issue titled `title`, in order, in each Tasks record
+/// the page received.
+fn page_comments(page: &Browser, title: &str) -> Vec<Vec<String>> {
+    tasks_records(page)
+        .iter()
+        .map(|doc| {
+            tasks::issue_list::IssueList::read(doc).map_or_else(
                 |_| Vec::new(),
                 |list| {
                     list.issues
                         .values()
                         .filter(|issue| issue.title == title)
                         .flat_map(|issue| {
-                            issue
-                                .comments
-                                .values()
-                                .map(|message| message.text.clone())
-                                .collect::<Vec<_>>()
+                            issue.comments.values().map(|message| message.text.clone())
                         })
                         .collect()
                 },
@@ -178,55 +186,185 @@ fn page_comments(browser: &mut Browser, title: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Wait until a change to Tasks reaches `page` as the agent's, for `person`.
+async fn until_the_agents_change(page: &mut Browser, person: &str) {
+    page.until(|page| {
+        let by = tasks_authors(page);
+        if by.iter().any(|(invoker, _)| the_agent_for(invoker, person)) {
+            return Ok(());
+        }
+        Err(format!(
+            "no change to Tasks reached the page as the agent's, for the person: {by:?}; the page \
+             holds {:?}, and could not open {:?}",
+            page.documents
+                .iter()
+                .map(|(route, changes)| (route.app_id.clone(), changes.len()))
+                .collect::<Vec<_>>(),
+            page.unopened()
+        ))
+    })
+    .await;
+}
+
+/// How the person's server runs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Serves {
+    /// The workspace's host, running its apps.
+    Apps,
+    /// The host with shells for terminals, and the person's laptop answering what it asks them
+    /// about the agent.
+    AppsAsking,
+    /// As tilo.sh's server runs: records served, no agents.
+    Records,
+}
+
+/// The server a person's workspace is on.
+enum Running {
+    Host(Box<Hosted>),
+    Records(Box<tilo_server::daemon::Server>),
+}
+
+impl Running {
+    fn server(&self) -> &tilo_server::daemon::Server {
+        match self {
+            Self::Host(hosted) => &hosted.server,
+            Self::Records(server) => server,
+        }
+    }
+}
+
+/// A person's workspace on a server of theirs, and the computer their agent "Claude Code" runs
+/// on (`tilo login`, then `tilo mcp`).
+struct OwnAgent {
+    root: ed25519_dalek::SigningKey,
+    host: crate::support::Device,
+    computer: crate::support::Device,
+    /// The person, as the actions the agent runs for them name them.
+    person: String,
+    running: Running,
+    _asked: Option<tokio::task::JoinHandle<()>>,
+    _shells: Option<tempfile::TempDir>,
+    _state: tempfile::TempDir,
+}
+
+impl OwnAgent {
+    async fn start(serves: Serves) -> Self {
+        let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+        let host = enrol(&root, "home-server", DeviceCapabilities::member());
+        let computer = enrol(
+            &root,
+            "Claude Code on build-box",
+            DeviceCapabilities::member(),
+        );
+        let state = crate::support::scratch_dir();
+        let shells = (serves == Serves::AppsAsking).then(|| tempfile::tempdir().unwrap());
+        let running = match serves {
+            Serves::Records => Running::Records(Box::new(
+                crate::harness::hosted::serving_documents(
+                    &root,
+                    &host,
+                    state.path(),
+                    crate::common::catalogue,
+                )
+                .await,
+            )),
+            Serves::Apps | Serves::AppsAsking => {
+                let options = Options {
+                    shell: shells.as_ref().map(|shells| {
+                        tilo_server::agents::host_shells(shells.path().join("shells")).unwrap()
+                    }),
+                    ..Options::offering(crate::common::catalogue)
+                };
+                Running::Host(Box::new(
+                    crate::harness::hosted::start(&root, &host, state.path(), options).await,
+                ))
+            }
+        };
+        // The person's laptop answers what the host asks them about the agent.
+        let asked = (serves == Serves::AppsAsking).then(|| {
+            let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
+            crate::harness::hosted::Laptop::new(
+                ["Claude Code".to_owned()],
+                crate::harness::hosted::Unlisted::Deny,
+            )
+            .spawn(running.server(), root.clone(), &laptop)
+        });
+        Self {
+            person: hex::encode(root.verifying_key().to_bytes()),
+            root,
+            host,
+            computer,
+            running,
+            _asked: asked,
+            _shells: shells,
+            _state: state,
+        }
+    }
+
+    fn server(&self) -> &tilo_server::daemon::Server {
+        self.running.server()
+    }
+
+    /// A tab of the person's, open on their workspace.
+    async fn tab(&self) -> Browser {
+        let device = enrol(&self.root, "browser", DeviceCapabilities::member());
+        Browser::open_at(self.server(), &device, &self.host, WORKSPACE).await
+    }
+
+    /// The agent's computer, entered as a device of the person's, its session saying, as `tilo
+    /// login` makes it say, that it runs the agent.
+    async fn agent(&self) -> Browser {
+        let agent = Browser::open_at(self.server(), &self.computer, &self.host, WORKSPACE).await;
+        tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code")
+            .await
+            .expect("the session is named as the agent");
+        agent
+    }
+
+    /// What the agent asks the host over `agent`'s session.
+    fn actions(&self, agent: &Browser) -> SessionActions {
+        SessionActions::new(
+            &agent.peer,
+            agent.workspace,
+            self.host.cert.device_public_key,
+        )
+    }
+
+    /// `tilo mcp` on the agent's computer, asking over `actions`.
+    fn mcp(&self, actions: &SessionActions) -> McpServer<SessionActions> {
+        McpServer::new(actions.clone(), WORKSPACE.into(), self.person.clone())
+    }
+
+    /// One agent connection per `runs`, each a run of its own over the one session `agent`
+    /// holds, as `tilo mcp` serves them.
+    fn runs(&self, agent: &Browser, runs: &[&str]) -> Vec<McpServer<SessionActions>> {
+        let actions = self.actions(agent);
+        runs.iter()
+            .map(|run| self.mcp(&actions).with_agent_session(*run))
+            .collect()
+    }
+}
+
+/// Whether `invoker` is the person's agent "Claude Code", acting for them.
+fn the_agent_for(invoker: &tilo_actions::ActionInvoker, person: &str) -> bool {
+    invoker.acting.is_agent()
+        && invoker.acting.agent_id() == Some(claude_code(person).as_str())
+        && invoker.acting.acted_for_person() == Some(person)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first() {
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::member());
-    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let laptop_device = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let computer = enrol(
-        &root,
-        "Claude Code on build-box",
-        DeviceCapabilities::member(),
-    );
-    let state = crate::support::scratch_dir();
-    let shell_state = tempfile::tempdir().unwrap();
-    let hosted = crate::harness::hosted::start(
-        &root,
-        &host,
-        state.path(),
-        Options {
-            shell: Some(
-                tilo_server::agents::host_shells(shell_state.path().join("shells")).unwrap(),
-            ),
-            ..Options::offering(crate::common::catalogue)
-        },
-    )
-    .await;
-    // The person's laptop answers what the host asks them about the agent.
-    let _asked = crate::harness::hosted::Laptop::new(
-        ["Claude Code".to_owned()],
-        crate::harness::hosted::Unlisted::Deny,
-    )
-    .spawn(&hosted.server, root.clone(), &laptop_device);
-    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let own = OwnAgent::start(Serves::AppsAsking).await;
+    let person = own.person.as_str();
+    let mut browser = own.tab().await;
     let tracker = browser.create(TASKS);
     let books = browser.create(EBOOK);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     // The tracker keeps its issues in the parts of its chain.
     browser.follow_chain(TASKS, tasks::issue_list::chain().chain_head().as_str());
-
-    // The agent's computer enters as a device of the person's and says, as
-    // `tilo login` makes it, that its session runs the agent.
-    let agent = Browser::open(&hosted, &computer, &host).await;
-    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
-    let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
-        SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
-        WORKSPACE.into(),
-        person.clone(),
-    )
-    .with_agent_session("session-3");
+    let agent = own.agent().await;
+    let actions = own.actions(&agent);
+    let server = own.mcp(&actions).with_agent_session("session-3");
 
     // Terminal: what it lists, it runs, as listed; a session first, then
     // that session's own listing.
@@ -268,11 +406,10 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
 
     // Tasks: what people alone are offered (planning an issue) is not
     // listed to the agent, asked over its own session.
-    let session = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let anyone = tilo_actions::remote::Caller::local_person("unused");
+    let caller = tilo_actions::remote::Caller::local_person("unused");
     let offered = tilo_actions::remote::ActionProvider::query(
-        &session,
-        &anyone,
+        &actions,
+        &caller,
         CatalogueQuery {
             provider: Some(resource_provider(&tracker)),
             max_results: 500,
@@ -282,21 +419,19 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     .await
     .unwrap()
     .unwrap();
-    let actions: Vec<_> = offered
+    let listed: Vec<_> = offered
         .rows
         .iter()
         .filter_map(|row| row.action.as_ref())
         .collect();
     assert!(
-        !actions.is_empty(),
+        !listed.is_empty(),
         "the agent is listed the tracker's actions"
     );
     assert!(
-        actions
-            .iter()
-            .all(|action| action.contract.reaches_agents()),
+        listed.iter().all(|action| action.contract.reaches_agents()),
         "nothing for people alone is listed to an agent: {:?}",
-        actions
+        listed
             .iter()
             .filter(|action| !action.contract.reaches_agents())
             .map(|action| &action.address)
@@ -322,30 +457,8 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     )
     .await;
     assert!(!failed, "tasks#create as listed: {made}");
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        browser.pump();
-        // The issue is written to a part of the issues, a document of Tasks
-        // beside the tracker.
-        let by: Vec<_> = browser
-            .documents
-            .iter()
-            .filter(|(route, _)| route.app_id == TASKS)
-            .flat_map(|(_, changes)| invokers(changes))
-            .collect();
-        if by.iter().any(|invoker| {
-            invoker.acting.is_agent()
-                && invoker.acting.agent_id() == Some(claude_code(&person).as_str())
-                && invoker.acting.acted_for_person() == Some(person.as_str())
-        }) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the issue never arrived as the agent's, for the person: {by:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // The issue is written to a part of the issues, a document of Tasks beside the tracker.
+    until_the_agents_change(&mut browser, person).await;
 
     // Removing a book asks first: the agent's own word does not do, and the
     // person, asked on their laptop, allows it.
@@ -357,10 +470,8 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
             InvokeArgument::Json(json!({"book": "book:dusk"}).as_object().unwrap().clone()),
         )
     };
-    let own_word = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let caller = tilo_actions::remote::Caller::local_person("unused");
     let refused = tilo_actions::remote::ActionProvider::invoke(
-        &own_word,
+        &actions,
         &caller,
         InvokeRequest {
             confirmation: Some(Confirmation::Confirmed),
@@ -374,7 +485,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         "an agent confirms nothing by its own word: {refused:?}"
     );
     let forged = tilo_actions::remote::ActionProvider::invoke(
-        &own_word,
+        &actions,
         &caller,
         InvokeRequest {
             confirmation: Some(Confirmation::Approved("x".into())),
@@ -388,7 +499,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         "a token the host did not issue confirms nothing: {forged:?}"
     );
     let asked = remove();
-    let accepted = tilo_actions::remote::ActionProvider::invoke(&own_word, &caller, asked.clone())
+    let accepted = tilo_actions::remote::ActionProvider::invoke(&actions, &caller, asked.clone())
         .await
         .unwrap()
         .unwrap();
@@ -396,9 +507,15 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         matches!(accepted.status, ReceiptStatus::Accepted),
         "it waits for the person: {accepted:?}"
     );
-    // Asked again under its id, the host answers how it stands.
+    // Asked again under its id once it moved, the host answers how it stands.
+    let deadline = tilo_test_env::hang_deadline();
     loop {
-        let now = tilo_actions::remote::ActionProvider::invoke(&own_word, &caller, asked.clone())
+        if let Some(moved) =
+            tilo_actions::remote::ActionProvider::next_change(&actions, &caller, &asked.invocation)
+        {
+            tilo_test_env::within("the person's answer moves the invocation", moved).await;
+        }
+        let now = tilo_actions::remote::ActionProvider::invoke(&actions, &caller, asked.clone())
             .await
             .unwrap();
         match now {
@@ -410,7 +527,6 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
             Instant::now() < deadline,
             "the person's answer never ran it"
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -421,32 +537,12 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
 /// agent's, the connection's, which History lists with its changes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_own_agent_lists_a_stopped_app_into_running_writes_and_reads_as_one_run() {
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::member());
-    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let computer = enrol(
-        &root,
-        "Claude Code on build-box",
-        DeviceCapabilities::member(),
-    );
-    let state = crate::support::scratch_dir();
-    let hosted = crate::harness::hosted::start(
-        &root,
-        &host,
-        state.path(),
-        Options::offering(crate::common::catalogue),
-    )
-    .await;
-    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
-    let agent = Browser::open(&hosted, &computer, &host).await;
-    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
-    let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
-        SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
-        WORKSPACE.into(),
-        person,
-    )
-    .with_agent_session("session-7");
+    let own = OwnAgent::start(Serves::Apps).await;
+    let mut browser = own.tab().await;
+    let agent = own.agent().await;
+    let server = own
+        .mcp(&own.actions(&agent))
+        .with_agent_session("session-7");
 
     // Nobody started Tasks: listing it starts it, so the agent sees its issues and can act
     // on them without opening anything first.
@@ -536,90 +632,51 @@ async fn a_persons_own_agent_lists_a_stopped_app_into_running_writes_and_reads_a
     assert!(!failed, "the single write: {single}");
     let (read, failed) = tool(&server, "tilo_read", json!({"path": issue_at})).await;
     assert!(!failed, "the issue read back: {read}");
-    for line in lines
-        .iter()
-        .copied()
-        .chain(["A second invocation, a moment later."])
-    {
-        assert!(read.contains(line), "the issue reads {line:?}: {read}");
-    }
-    // What the host answered `ok` reaches the person's page too, every line
-    // in the order it was written: an answer is a promise about the record,
-    // not about the host's own copy of it.
     let sent: Vec<&str> = lines
         .iter()
         .copied()
         .chain(["A second invocation, a moment later."])
         .collect();
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let seen = page_comments(&mut browser, "Launch notes");
-        if seen.iter().any(|texts| texts == &sent) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the page never read the issue as written ({sent:?}): {seen:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    for line in &sent {
+        assert!(read.contains(line), "the issue reads {line:?}: {read}");
     }
+    // What the host answered `ok` reaches the person's page too, every line
+    // in the order it was written: an answer is a promise about the record,
+    // not about the host's own copy of it.
+    browser
+        .until(|browser| {
+            let seen = page_comments(browser, "Launch notes");
+            seen.iter()
+                .any(|texts| texts == &sent)
+                .then_some(())
+                .ok_or_else(|| {
+                    format!("the page never read the issue as written ({sent:?}): {seen:?}")
+                })
+        })
+        .await;
 
     // Every change it made is the connection's run, as History groups an
     // agent's runs.
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        browser.pump();
-        let groups: Vec<_> = browser
-            .documents
-            .iter()
-            .filter(|(route, _)| route.app_id == TASKS)
-            .flat_map(|(_, changes)| agent_groups(changes))
-            .collect();
-        if groups.len() >= 3 {
-            assert!(
-                groups
-                    .iter()
-                    .all(|group| group.as_ref().is_some_and(|group| {
-                        group.kind == "agent-session"
-                            && group.id.starts_with("agent-session:")
-                            && group.label.as_deref() == Some("Claude Code")
-                    })),
-                "every change the agent made is its run: {groups:?}"
-            );
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the agent's writes never arrived: {groups:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// The person's own agent on a logged-in computer, on a host as tilo.sh's
-/// server runs (records served, no agents): `tilo mcp` holds one session for
-/// the computer's device, and every agent connection on it is a run of its
-/// own over that session. `runs` are those connections, each an agent
-/// surface over the one session the device `agent` holds.
-fn agent_runs(
-    agent: &Browser,
-    host: &crate::support::Device,
-    person: &str,
-    runs: &[&str],
-) -> Vec<McpServer<SessionActions>> {
-    // The session is shared: every run asks the host through it.
-    let session = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    runs.iter()
-        .map(|run| {
-            McpServer::new(session.clone(), WORKSPACE.into(), person.to_owned())
-                .with_agent_session(*run)
+    let groups = browser
+        .until(|browser| {
+            let groups = tasks_groups(browser);
+            if groups.len() >= 3 {
+                Ok(groups)
+            } else {
+                Err(format!("the agent's writes never arrived: {groups:?}"))
+            }
         })
-        .collect()
-}
-
-/// The person, as the actions the agent runs for them name them.
-fn person_of(root: &ed25519_dalek::SigningKey) -> String {
-    hex::encode(root.verifying_key().to_bytes())
+        .await;
+    assert!(
+        groups
+            .iter()
+            .all(|group| group.as_ref().is_some_and(|group| {
+                group.kind == "agent-session"
+                    && group.id.starts_with("agent-session:")
+                    && group.label.as_deref() == Some("Claude Code")
+            })),
+        "every change the agent made is its run: {groups:?}"
+    );
 }
 
 /// Each run opens Tasks and makes an issue: both succeed, whichever run asks.
@@ -662,23 +719,11 @@ async fn tracker_issues(server: &McpServer<SessionActions>) -> String {
 /// sees the issues arrive as the agent's, for the person.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_logged_in_computers_agents_act_while_the_persons_tab_is_open() {
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::member());
-    let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
-    let state = crate::support::scratch_dir();
-    let server = crate::harness::hosted::serving_documents(
-        &root,
-        &host,
-        state.path(),
-        crate::common::catalogue,
-    )
-    .await;
-    let mut tab = Browser::open_at(&server, &tab_device, &host, WORKSPACE).await;
-    let agent = Browser::open_at(&server, &computer, &host, WORKSPACE).await;
-    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
-    let person = person_of(&root);
-    let runs = agent_runs(&agent, &host, &person, &["run-a", "run-b"]);
+    let own = OwnAgent::start(Serves::Records).await;
+    let person = own.person.as_str();
+    let mut tab = own.tab().await;
+    let agent = own.agent().await;
+    let runs = own.runs(&agent, &["run-a", "run-b"]);
     let titles = open_and_write(&runs).await;
     let rows = tracker_issues(&runs[0]).await;
     for title in &titles {
@@ -688,36 +733,7 @@ async fn a_logged_in_computers_agents_act_while_the_persons_tab_is_open() {
         );
     }
 
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        tab.pump();
-        let changes: Vec<_> = tab
-            .documents
-            .iter()
-            .filter(|(route, _)| route.app_id == TASKS)
-            .flat_map(|(_, changes)| changes.iter().cloned())
-            .collect();
-        let by_agent = invokers(&changes).iter().any(|invoker| {
-            invoker.acting.is_agent()
-                && invoker.acting.agent_id() == Some(claude_code(&person).as_str())
-                && invoker.acting.acted_for_person() == Some(person.as_str())
-        });
-        if by_agent {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the tab never saw the issues arrive as the agent's: {:?}; the tab holds {:?}, and \
-             could not open {:?}",
-            invokers(&changes),
-            tab.documents
-                .iter()
-                .map(|(route, changes)| (route.app_id.clone(), changes.len()))
-                .collect::<Vec<_>>(),
-            tab.unopened()
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    until_the_agents_change(&mut tab, person).await;
 }
 
 /// With no tab of the person's open (it entered the workspace once, then
@@ -725,26 +741,13 @@ async fn a_logged_in_computers_agents_act_while_the_persons_tab_is_open() {
 /// issues: the host runs the apps, and the issues are there to read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_logged_in_computers_agents_act_with_no_tab_open() {
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::member());
-    let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
-    let state = crate::support::scratch_dir();
-    let server = crate::harness::hosted::serving_documents(
-        &root,
-        &host,
-        state.path(),
-        crate::common::catalogue,
-    )
-    .await;
+    let own = OwnAgent::start(Serves::Records).await;
     // The person's tab made the workspace, and is gone.
-    let tab = Browser::open_at(&server, &tab_device, &host, WORKSPACE).await;
+    let tab = own.tab().await;
     tab.peer.close();
     drop(tab);
-    let agent = Browser::open_at(&server, &computer, &host, WORKSPACE).await;
-    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
-    let person = person_of(&root);
-    let runs = agent_runs(&agent, &host, &person, &["run-a", "run-b"]);
+    let agent = own.agent().await;
+    let runs = own.runs(&agent, &["run-a", "run-b"]);
     let titles = open_and_write(&runs).await;
 
     // Each issue is in the tracker, as the other run reads it.
@@ -757,45 +760,16 @@ async fn a_logged_in_computers_agents_act_with_no_tab_open() {
     }
 }
 
-/// Who made each change to Tasks the tab holds, and in which run: in the
-/// tracker and in each part its issues are kept in, each document read on its
-/// own.
-fn tasks_authors(tab: &mut Browser) -> Vec<(Option<tilo_actions::ActionInvoker>, Option<String>)> {
-    tab.pump();
-    let mut authors = Vec::new();
-    for (route, changes) in &tab.documents {
-        if route.app_id != TASKS {
-            continue;
-        }
-        let mut doc = automerge::AutoCommit::new();
-        for (_, bytes) in changes {
-            let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
-        }
-        authors.extend(
-            doc.get_changes(&[])
-                .iter()
-                .filter_map(|change| change.message())
-                .filter_map(tilo_actions::ActionContext::from_change_message)
-                .filter(|context| context.invoker.is_some())
-                .map(|context| (context.invoker, context.group.map(|group| group.id))),
-        );
-    }
-    authors
-}
-
 /// How many of the changes to Tasks the tab holds are the agent's, for
 /// `person`, in a run of its own.
-fn agents_changes(tab: &mut Browser, person: &str) -> usize {
+fn agents_changes(tab: &Browser, person: &str) -> usize {
     tasks_authors(tab)
         .iter()
         .filter(|(invoker, run)| {
-            invoker.as_ref().is_some_and(|invoker| {
-                invoker.acting.is_agent()
-                    && invoker.acting.agent_id() == Some(claude_code(person).as_str())
-                    && invoker.acting.acted_for_person() == Some(person)
-            }) && run
-                .as_ref()
-                .is_some_and(|run| run.starts_with("agent-session:"))
+            the_agent_for(invoker, person)
+                && run
+                    .as_ref()
+                    .is_some_and(|run| run.starts_with("agent-session:"))
         })
         .count()
 }
@@ -809,6 +783,7 @@ async fn agents_issue_reaches(
     person: &str,
     title: &str,
 ) {
+    tab.pump();
     let before = agents_changes(tab, person);
     let (made, failed) = tool(
         server,
@@ -820,28 +795,24 @@ async fn agents_issue_reaches(
     // The issue is kept in a part beside the tracker, which the tab's window
     // follows.
     tab.follow_chain(TASKS, tasks::issue_list::chain().chain_head().as_str());
-    let deadline = tilo_test_env::hang_deadline();
-    while agents_changes(tab, person) <= before {
-        assert!(
-            Instant::now() < deadline,
-            "{title:?} never arrived as the agent's run: {:?}",
-            tasks_authors(tab)
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let persons = tasks_authors(tab)
+    tab.until(|tab| {
+        (agents_changes(tab, person) > before)
+            .then_some(())
+            .ok_or_else(|| {
+                format!(
+                    "{title:?} never arrived as the agent's run: {:?}",
+                    tasks_authors(tab)
+                )
+            })
+    })
+    .await;
+    let persons: Vec<_> = tasks_authors(tab)
         .into_iter()
-        .filter(|(invoker, _)| {
-            invoker
-                .as_ref()
-                .is_some_and(|invoker| !invoker.acting.is_agent())
-        })
-        .count();
-    assert_eq!(
-        persons,
-        0,
-        "a change of the agent's was the person's: {:?}",
-        tasks_authors(tab)
+        .filter(|(invoker, _)| !invoker.acting.is_agent())
+        .collect();
+    assert!(
+        persons.is_empty(),
+        "a change of the agent's was the person's: {persons:?}"
     );
 }
 
@@ -853,52 +824,34 @@ async fn agents_issue_reaches(
 /// agent's, in a run, for the person.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_first_call_after_tilo_login_is_the_agents() {
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::member());
-    let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
-    let state = crate::support::scratch_dir();
-    let server = crate::harness::hosted::serving_documents(
-        &root,
-        &host,
-        state.path(),
-        crate::common::catalogue,
-    )
-    .await;
-    let mut tab = Browser::open_at(&server, &tab_device, &host, WORKSPACE).await;
+    let own = OwnAgent::start(Serves::Records).await;
+    let person = own.person.as_str();
+    let mut tab = own.tab().await;
     // The peer, as the login's check of its tools starts it.
-    let peer = Browser::open_at(&server, &computer, &host, WORKSPACE).await;
-    let _ = tilo_session_client::device::session_as_agent(&peer.peer, "Claude Code").await;
+    let peer = own.agent().await;
     // The login's own entry as the same device, closed once the tab saw it.
-    let login = Browser::open_at(&server, &computer, &host, WORKSPACE).await;
-    let _ = tilo_session_client::device::session_as_agent(&login.peer, "Claude Code").await;
+    let login = own.agent().await;
     login.peer.close();
     drop(login);
-    let person = person_of(&root);
-    let runs = agent_runs(&peer, &host, &person, &["run-a"]);
+    let runs = own.runs(&peer, &["run-a"]);
     // The agent's first call, made while the peer is still finding its way
     // back into the workspace: it waits for the connection, and nothing lists
     // the workspace first.
-    let deadline = tilo_test_env::hang_deadline();
     let (opened, failed) = tool(&runs[0], "tilo_do", json!({"path": "tasks#open"})).await;
     assert!(!failed, "the first call after the login: {opened}");
-    agents_issue_reaches(&mut tab, &runs[0], &person, "The first issue").await;
+    agents_issue_reaches(&mut tab, &runs[0], person, "The first issue").await;
 
     // Whatever else drops the peer's connection, it comes back as the agent's run.
     peer.peer.send(tilo_session_client::Cmd::Reconnect).unwrap();
-    while peer.peer.status().phase != tilo_session_client::TransportPhase::Connected
-        || !peer.peer.status().workspaces.values().all(|ready| *ready)
-    {
-        assert!(Instant::now() < deadline, "the peer never came back");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    agents_issue_reaches(
-        &mut tab,
-        &runs[0],
-        &person,
-        "After the connection came back",
-    )
-    .await;
+    peer.peer
+        .until(tilo_test_env::hang_bound(), |status| {
+            (status.phase == tilo_session_client::TransportPhase::Connected
+                && status.workspaces.values().all(|ready| *ready))
+            .then_some(())
+        })
+        .await
+        .expect("the peer comes back");
+    agents_issue_reaches(&mut tab, &runs[0], person, "After the connection came back").await;
 }
 
 /// An agent on a logged-in computer whose harness named its session ("Release prep") goes by
@@ -906,30 +859,10 @@ async fn the_first_call_after_tilo_login_is_the_agents() {
 /// session, not by the agent's product, whatever the server knows the agent's member as.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_logged_in_agents_session_name_reaches_its_server() {
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let server_device = enrol(&root, "home-server", DeviceCapabilities::member());
-    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
-    let state = crate::support::scratch_dir();
-    let hosted = crate::harness::hosted::start(
-        &root,
-        &server_device,
-        state.path(),
-        Options::offering(crate::common::catalogue),
-    )
-    .await;
-    let mut browser = Browser::open(&hosted, &browser_device, &server_device).await;
-    let agent = Browser::open(&hosted, &computer, &server_device).await;
-    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
-    let mcp = McpServer::new(
-        SessionActions::new(
-            &agent.peer,
-            agent.workspace,
-            server_device.cert.device_public_key,
-        ),
-        WORKSPACE.into(),
-        person_of(&root),
-    );
+    let own = OwnAgent::start(Serves::Apps).await;
+    let mut browser = own.tab().await;
+    let agent = own.agent().await;
+    let mcp = own.mcp(&own.actions(&agent));
     browser.follow_chain(TASKS, tasks::issue_list::chain().chain_head().as_str());
     // What `tilo mcp` writes into the client's initialize when the harness named the session.
     let opened = mcp
@@ -950,49 +883,40 @@ async fn a_logged_in_agents_session_name_reaches_its_server() {
     .await;
     assert!(!failed, "tasks#create: {made}");
 
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        browser.pump();
-        let groups: Vec<_> = browser
-            .documents
+    let groups = browser
+        .until(|browser| {
+            let groups = tasks_groups(browser);
+            (!groups.is_empty())
+                .then_some(groups)
+                .ok_or_else(|| "the agent's issue never arrived".to_owned())
+        })
+        .await;
+    assert!(
+        groups
             .iter()
-            .filter(|(route, _)| route.app_id == TASKS)
-            .flat_map(|(_, changes)| agent_groups(changes))
-            .collect();
-        if !groups.is_empty() {
-            assert!(
-                groups
-                    .iter()
-                    .all(|group| group.as_ref().is_some_and(|group| {
-                        group.kind == "agent-session"
-                            && group.session.as_deref() == Some("Release prep")
-                            && group.label.as_deref() == Some("Release prep")
-                    })),
-                "the agent's invocation goes by its session's name: {groups:?}"
-            );
-            break;
-        }
-        assert!(Instant::now() < deadline, "the agent's issue never arrived");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+            .all(|group| group.as_ref().is_some_and(|group| {
+                group.kind == "agent-session"
+                    && group.session.as_deref() == Some("Release prep")
+                    && group.label.as_deref() == Some("Release prep")
+            })),
+        "the agent's invocation goes by its session's name: {groups:?}"
+    );
     // Among the people here it goes by that name too, as its windows do.
-    loop {
-        browser.pump();
-        let agents: Vec<String> = browser
-            .here()
-            .into_iter()
-            .filter(|member| member.agent)
-            .map(|member| member.label)
-            .collect();
-        if agents.iter().any(|label| label == "Release prep") {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the agent is never here as its session: {agents:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    browser
+        .until(|browser| {
+            let agents: Vec<String> = browser
+                .here()
+                .into_iter()
+                .filter(|member| member.agent)
+                .map(|member| member.label)
+                .collect();
+            agents
+                .iter()
+                .any(|label| label == "Release prep")
+                .then_some(())
+                .ok_or_else(|| format!("the agent is never here as its session: {agents:?}"))
+        })
+        .await;
 }
 
 /// A person's own agent opens the workspace's Terminal session on a terminal, as `run` is
@@ -1005,41 +929,10 @@ async fn a_command_typed_on_a_terminal_the_agent_opened_is_recorded_on_the_sessi
 
 async fn typed_on_a_terminal_is_recorded() {
     use ush::environment_terminals::{FromTerminal, ToTerminal, quic, wire};
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::member());
-    let laptop_device = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let computer = enrol(
-        &root,
-        "Claude Code on build-box",
-        DeviceCapabilities::member(),
-    );
-    let state = crate::support::scratch_dir();
-    let shell_state = tempfile::tempdir().unwrap();
-    let hosted = crate::harness::hosted::start(
-        &root,
-        &host,
-        state.path(),
-        Options {
-            shell: Some(
-                tilo_server::agents::host_shells(shell_state.path().join("shells")).unwrap(),
-            ),
-            ..Options::offering(crate::common::catalogue)
-        },
-    )
-    .await;
-    let _asked = crate::harness::hosted::Laptop::new(
-        ["Claude Code".to_owned()],
-        crate::harness::hosted::Unlisted::Deny,
-    )
-    .spawn(&hosted.server, root.clone(), &laptop_device);
-    let agent = Browser::open(&hosted, &computer, &host).await;
-    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
-    let server = McpServer::new(
-        SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
-        WORKSPACE.into(),
-        hex::encode(root.verifying_key().to_bytes()),
-    )
-    .with_agent_session("session-7");
+    let own = OwnAgent::start(Serves::AppsAsking).await;
+    let agent = own.agent().await;
+    let actions = own.actions(&agent);
+    let server = own.mcp(&actions).with_agent_session("session-7");
 
     let (opened, failed) = tool(
         &server,
@@ -1057,8 +950,8 @@ async fn typed_on_a_terminal_is_recorded() {
 
     // The agent's computer takes the stream as itself and types a command.
     let endpoint =
-        test_server::endpoint(iroh::SecretKey::from_bytes(&computer.key.to_bytes())).await;
-    let address = hosted.server.node_addr();
+        test_server::endpoint(iroh::SecretKey::from_bytes(&own.computer.key.to_bytes())).await;
+    let address = own.server().node_addr();
     let typed = tokio::time::timeout(
         Duration::from_secs(60),
         tokio::task::spawn_blocking(move || {
@@ -1094,9 +987,17 @@ async fn typed_on_a_terminal_is_recorded() {
     .await;
     typed.expect("the terminal answers in time").unwrap();
 
-    // The host recorded it on the session, by the agent, once.
+    // The host recorded it on the session, by the agent, once: read again each time the
+    // workspace's records change.
+    let watching = tilo_actions::remote::Caller::local_person("unused");
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     loop {
+        let changed = tilo_actions::remote::ActionProvider::changed(
+            &actions,
+            &watching,
+            tilo_actions::remote::WatchScope::Records,
+        )
+        .expect("the session follows the workspace's records");
         let (session, failed) = tool(
             &server,
             "tilo_read",
@@ -1118,6 +1019,6 @@ async fn typed_on_a_terminal_is_recorded() {
             std::time::Instant::now() < deadline,
             "never recorded: {session}"
         );
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tilo_test_env::within("a change of the workspace's records", changed).await;
     }
 }
