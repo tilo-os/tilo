@@ -1370,6 +1370,13 @@ impl TreeBrowser {
 
     /// The app that opens the file `name`, whose first bytes are `head`: on a computer the
     /// installed apps' own manifests say, in a page the platform's table does.
+    #[cfg_attr(
+        not(feature = "desktop"),
+        expect(
+            clippy::unused_self,
+            reason = "in a page the platform's table answers, not the tree's own apps"
+        )
+    )]
     fn app_opening(&self, head: &[u8], name: &str) -> Option<String> {
         #[cfg(feature = "desktop")]
         {
