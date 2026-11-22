@@ -8,19 +8,20 @@
 //!
 //! The cloud service reaches a socket below the runtime directory: it is told the file accounts of
 //! every workspace, and the use names Files, whose `~/Remote` folders the mounts are. Each origin
-//! connector is handed a connection of its own when it starts ([`serve_link`]), scoped to its
+//! connector is handed a connection of its own when it starts ([`hand`]), scoped to its
 //! workspace and app: it is told that workspace's accounts, and the use names the app.
 //!
 //! An ask for accounts that changed since a revision is held until a workspace's accounts record
 //! changes, as the session's one stream of record changes tells it, and let go once the asker
 //! goes away.
 
-use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
-use std::path::{Path, PathBuf};
 use accounts::sign_ins::{self, Answer, Ask, Held};
 use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
 };
+use std::os::fd::OwnedFd;
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+use std::path::{Path, PathBuf};
 use tilo_actions::remote::Caller;
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_service::workspaces::Workspaces;
@@ -28,10 +29,6 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::platform::records::Changes;
-
-/// What a sign-in's use says signed in for the cloud service: the app whose folders the mounts
-/// are.
-const SIGNS_IN_FOR: &str = tilo_app_id::apps::FILE_EXPLORER;
 
 /// What a connector's ask for the sign-in of another workspace's account is refused with.
 const OTHER_WORKSPACE: &str = "That account is another workspace's";
@@ -48,12 +45,12 @@ pub(crate) struct Scope {
 }
 
 impl Scope {
-    /// This login's cloud service: the file accounts of every workspace, for Files.
+    /// This login's cloud service: the file accounts of every workspace, for Files' mounts.
     fn cloud_service() -> Self {
         Self {
             workspace: None,
             keep: sign_ins::is_file_account,
-            signs_in_for: SIGNS_IN_FOR.to_owned(),
+            signs_in_for: tilo_app_id::apps::FILE_EXPLORER.to_owned(),
         }
     }
 
@@ -74,7 +71,8 @@ enum Served {
     Open(Box<Answering>),
 }
 
-/// What answers the connections handed to connectors.
+/// What answers the connections of the account sign-ins.
+#[derive(Clone)]
 struct Answering {
     workspaces: Workspaces,
     by: Caller,
@@ -84,80 +82,88 @@ struct Answering {
 
 static SERVED: std::sync::Mutex<Served> = std::sync::Mutex::new(Served::Waiting(Vec::new()));
 
-/// Answer `stream`, the session's end of the connection handed to an origin connector, within
-/// `scope`: now when this session's workspaces are open, else once they are.
-pub(crate) fn serve_link(stream: std::os::unix::net::UnixStream, scope: Scope) {
+/// Hand the origin connector of `app` in `workspace` on `connector` its account sign-ins,
+/// answered now when this session's workspaces are open, else once they are.
+pub(crate) fn hand(connector: &OwnedFd, app: &str, workspace: &str) -> std::io::Result<()> {
+    let (stream, connectors) = std::os::unix::net::UnixStream::pair()?;
+    runtime_portal::origin_connector::send_sign_ins(connector, connectors.into())?;
+    let scope = Scope::connector(app, workspace);
     let mut served = SERVED.lock_recover();
     match &mut *served {
         Served::Waiting(waiting) => waiting.push((stream, scope)),
-        Served::Open(open) => answer_link(open, stream, scope),
+        Served::Open(open) => open.answer(stream, scope),
     }
+    Ok(())
 }
 
-fn answer_link(answering: &Answering, stream: std::os::unix::net::UnixStream, scope: Scope) {
-    let workspaces = answering.workspaces.clone();
-    let by = answering.by.clone();
-    let changes = answering.changes.clone();
-    answering.tasks.spawn(async move {
-        let stream = match stream
-            .set_nonblocking(true)
-            .and_then(|()| UnixStream::from_std(stream))
-        {
-            Ok(stream) => stream,
-            Err(error) => {
-                tracing::warn!(%error, app = scope.signs_in_for, "a connector's account sign-ins are not answered");
-                return;
-            }
-        };
-        if let Err(error) = connection(stream, &workspaces, &by, &changes, &scope).await {
-            tilo_failure::ignored!(
-                "a connection that ends is its connector's to end, and nothing here waits on it",
-                tracing::debug!(%error, "a connector's account sign-ins connection ended")
-            );
+impl Answering {
+    /// Answering as `by`, on this runtime.
+    fn here(workspaces: Workspaces, by: Caller, changes: Changes) -> Self {
+        Self {
+            workspaces,
+            by,
+            changes,
+            tasks: tokio::runtime::Handle::current(),
         }
-    });
+    }
+
+    /// Answer `stream` within `scope` until its asker ends it.
+    fn answer(&self, stream: std::os::unix::net::UnixStream, scope: Scope) {
+        let answering = self.clone();
+        self.tasks.spawn(async move {
+            let stream = match stream
+                .set_nonblocking(true)
+                .and_then(|()| UnixStream::from_std(stream))
+            {
+                Ok(stream) => stream,
+                Err(error) => {
+                    tracing::warn!(%error, app = scope.signs_in_for, "an account sign-ins connection is not answered");
+                    return;
+                }
+            };
+            if let Err(error) = connection(stream, &answering, &scope).await {
+                tilo_failure::ignored!(
+                    "a connection that ends is its asker's to end, and nothing here waits on it",
+                    tracing::debug!(%error, app = scope.signs_in_for, "an account sign-ins connection ended")
+                );
+            }
+        });
+    }
 }
 
 /// Serve the socket below this login's runtime directory, and the connections handed to origin
 /// connectors, answering as `by`, the device's person, and holding an ask for changed accounts
 /// until `changes` tells of one.
 pub(crate) fn serve(workspaces: Workspaces, by: Caller, changes: Changes) {
-    {
-        let answering = Answering {
-            workspaces: workspaces.clone(),
-            by: by.clone(),
-            changes: changes.clone(),
-            tasks: tokio::runtime::Handle::current(),
-        };
-        let mut served = SERVED.lock_recover();
-        if let Served::Waiting(waiting) = &mut *served {
-            for (stream, scope) in std::mem::take(waiting) {
-                answer_link(&answering, stream, scope);
-            }
-        }
-        *served = Served::Open(Box::new(answering));
-    }
+    let answering = open(Answering::here(workspaces, by, changes));
     let Some(path) = sign_ins::socket() else {
         tracing::warn!("no runtime directory, so the cloud service reaches no account's sign-in");
         return;
     };
     tokio::spawn(async move {
-        if let Err(error) = serving(&path, workspaces, by, changes).await {
+        if let Err(error) = serving(&path, &answering).await {
             tracing::warn!(%error, path = %path.display(), "the account sign-ins socket stopped");
         }
     });
+}
+
+/// Answer the connections handed to connectors with `answering`, those waiting and those to come.
+fn open(answering: Answering) -> Answering {
+    let open = Served::Open(Box::new(answering.clone()));
+    let before = std::mem::replace(&mut *SERVED.lock_recover(), open);
+    if let Served::Waiting(waiting) = before {
+        for (stream, scope) in waiting {
+            answering.answer(stream, scope);
+        }
+    }
+    answering
 }
 
 /// Bind `path` and answer every connection on it.
 ///
 /// # Errors
 /// The socket's directory or the socket cannot be made.
-pub(crate) async fn serving(
-    path: &Path,
-    workspaces: Workspaces,
-    by: Caller,
-    changes: Changes,
-) -> std::io::Result<()> {
+async fn serving(path: &Path, answering: &Answering) -> std::io::Result<()> {
     let listener = bind(path)?;
     loop {
         let (stream, _) = listener.accept().await?;
@@ -165,18 +171,7 @@ pub(crate) async fn serving(
             tracing::warn!("a process of another user reached the account sign-ins socket");
             continue;
         }
-        let workspaces = workspaces.clone();
-        let by = by.clone();
-        let changes = changes.clone();
-        tokio::spawn(async move {
-            let scope = Scope::cloud_service();
-            if let Err(error) = connection(stream, &workspaces, &by, &changes, &scope).await {
-                tilo_failure::ignored!(
-                    "a connection that ends is its client's to end, and nothing here waits on it",
-                    tracing::debug!(%error, "an account sign-ins connection ended")
-                );
-            }
-        });
+        answering.answer(stream.into_std()?, Scope::cloud_service());
     }
 }
 
@@ -208,9 +203,7 @@ fn own(stream: &UnixStream) -> bool {
 
 async fn connection(
     stream: UnixStream,
-    workspaces: &Workspaces,
-    by: &Caller,
-    changes: &Changes,
+    answering: &Answering,
     scope: &Scope,
 ) -> std::io::Result<()> {
     let (read, mut write) = stream.into_split();
@@ -231,7 +224,7 @@ async fn connection(
             // An asker that went away is answered nothing: what its ask waited on is let go.
             Ok(ask) => tokio::select! {
                 biased;
-                answer = answer(workspaces, by, changes, scope, ask) => answer,
+                answer = answer(answering, scope, ask) => answer,
                 gone = gone(&mut read) => return gone,
             },
             Err(error) => Answer::Refused {
@@ -244,39 +237,35 @@ async fn connection(
 
 /// Once the asker on `read` went away: the end of its connection, or a read of it that failed.
 /// An asker that asks again before its answer is kept waiting for it.
-async fn gone(
-    read: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
-) -> std::io::Result<()> {
+async fn gone(read: &mut BufReader<tokio::net::unix::OwnedReadHalf>) -> std::io::Result<()> {
     if read.fill_buf().await?.is_empty() {
         return Ok(());
     }
     std::future::pending().await
 }
 
-/// The answer to `ask`, asked by `by` within `scope`. An ask for accounts that changed since a revision is held
+/// The answer to `ask` within `scope`. An ask for accounts that changed since a revision is held
 /// until a workspace's accounts record changes, as `changes` tells it, and answered with what the
 /// accounts are then, or with what they still are at [`sign_ins::LONGEST_WAIT`].
-async fn answer(
-    workspaces: &Workspaces,
-    by: &Caller,
-    changes: &Changes,
-    scope: &Scope,
-    ask: Ask,
-) -> Answer {
+async fn answer(answering: &Answering, scope: &Scope, ask: Ask) -> Answer {
     match ask {
         Ask::Accounts { after } => {
             let now = tokio::time::Instant::now();
             let deadline = now.checked_add(sign_ins::LONGEST_WAIT).unwrap_or(now);
             // Followed before the accounts are read, so a change while they are is not missed.
-            let mut told = changes.waiter();
+            let mut told = answering.changes.waiter();
             let record = tilo_workspace_service::workspaces::account_logins::accounts_document();
             loop {
-                let accounts: Vec<Held> = workspaces
+                let accounts: Vec<Held> = answering
+                    .workspaces
                     .held_accounts(scope.keep)
                     .await
                     .into_iter()
                     .filter(|(workspace, _)| {
-                        scope.workspace.as_ref().is_none_or(|only| only == workspace)
+                        scope
+                            .workspace
+                            .as_ref()
+                            .is_none_or(|only| only == workspace)
                     })
                     .map(|(workspace, account)| Held { workspace, account })
                     .collect();
@@ -299,15 +288,19 @@ async fn answer(
             }
         }
         Ask::SignIn { workspace, item } => {
-            if scope.workspace.as_ref().is_some_and(|only| *only != workspace) {
+            if scope
+                .workspace
+                .as_ref()
+                .is_some_and(|only| *only != workspace)
+            {
                 return Answer::Refused {
                     error: OTHER_WORKSPACE.into(),
                 };
             }
-            let by = by.clone().in_workspace(workspace.clone());
+            let by = answering.by.clone().in_workspace(workspace.clone());
             let command = Command::ReleaseAccountSecret { item };
             match crate::account_passwords::answer(
-                workspaces,
+                &answering.workspaces,
                 &workspace,
                 &scope.signs_in_for,
                 &by,

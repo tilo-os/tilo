@@ -146,11 +146,12 @@ fn installed_apps() -> std::collections::BTreeMap<String, String> {
 }
 
 /// The one origin (`imap`, `youtube`) the installed app `app` reaches an outside service through,
-/// when it declares one: its instance reaches that origin's connector.
+/// when it declares one, and whether its signed manifest grants that origin's connector the
+/// workspace's account sign-ins ([`tilo_app_package::manifest::ACCOUNT_SIGN_INS`]).
 ///
 /// # Errors
 /// The manifest does not read, or it declares more than one origin.
-pub fn origin_of(app: &str) -> Result<Option<String>, String> {
+pub fn origin_of(app: &str) -> Result<Option<(String, bool)>, String> {
     let installed = app_catalogue::apps::read_one_from_env(app)
         .ok()
         .flatten()
@@ -159,7 +160,10 @@ pub fn origin_of(app: &str) -> Result<Option<String>, String> {
         .map_err(|error| format!("reading {app}'s manifest: {error}"))?;
     match manifest.entrypoint.origins.as_slice() {
         [] => Ok(None),
-        [origin] => Ok(Some(origin.clone())),
+        [origin] => Ok(Some((
+            origin.clone(),
+            manifest.declares_capability(tilo_app_package::manifest::ACCOUNT_SIGN_INS),
+        ))),
         more => Err(format!(
             "{app} declares {} origins; an instance reaches one connector",
             more.len()

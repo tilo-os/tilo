@@ -58,14 +58,9 @@ fn youtube_connector_child() {
     let Some(socket) = runtime_portal::launch_hold::take_window_link() else {
         return;
     };
-    let attachments = std::iter::from_fn(move || {
-        match runtime_portal::origin_connector::receive_attachment(&socket) {
-            Ok(Some(connection)) => Some(std::os::unix::net::UnixStream::from(connection)),
-            Ok(None) => None,
-            Err(error) => {
-                eprintln!("the connector's socket failed: {error}");
-                None
-            }
+    let attachments = runtime_portal::origin_connector::attachments(socket, |failed| {
+        if let Some(error) = failed {
+            eprintln!("the connector's socket failed: {error}");
         }
     });
     // The production connector loop, over the scripted service rather than YouTube.

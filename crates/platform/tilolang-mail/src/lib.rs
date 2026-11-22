@@ -118,18 +118,9 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
         Ok(None) => return Ok(()),
         Err(error) => return Err(format!("the mail connector's socket: {error}")),
     };
-    let attachments = std::iter::from_fn(move || {
-        match origin_connector::receive_attachment(&socket) {
-            Ok(Some(connection)) => Some(std::os::unix::net::UnixStream::from(connection)),
-            Ok(None) => {
-                tracing::info!("the session closed the mail connector's socket");
-                None
-            }
-            Err(error) => {
-                tracing::error!(%error, "the mail connector's socket failed: it takes no more instances");
-                None
-            }
-        }
+    let attachments = origin_connector::attachments(socket, |failed| match failed {
+        None => tracing::info!("the session closed the mail connector's socket"),
+        Some(error) => tracing::error!(%error, "the mail connector's socket failed for good"),
     });
     serve::serve(sign_ins, attachments);
     Ok(())

@@ -694,14 +694,13 @@ impl Apps {
         // holds the network and ownership the host has none of.
         let origin = match tilo_app_launch::tilolang_processes::origin_of(app)? {
             None => None,
-            Some(origin) => {
+            Some((origin, _)) => {
                 let Some(connectors) = connectors else {
                     return Err("no connector can start here".to_owned());
                 };
                 let named = self.workspace_named(workspace);
-                let connection = connectors.connection(app, &origin, &named.id, &|origin| {
-                    self.plan_connector(app, origin, &named)
-                })?;
+                let plan = |origin: &str| self.plan_connector(app, origin, &named);
+                let connection = connectors.connection(app, &origin, &named.id, &plan)?;
                 Some(connection)
             }
         };

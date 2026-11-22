@@ -49,7 +49,7 @@ fn served() -> Served {
     let (workspaces, changes, at) = (device.workspaces(), device.changes(), socket.clone());
     runtime.spawn(async move {
         let by = Caller::authenticated([0x30; 32], [0x31; 32]);
-        super::serving(&at, workspaces, by, changes).await
+        super::serving(&at, &super::Answering::here(workspaces, by, changes)).await
     });
     Served {
         device,
@@ -78,7 +78,10 @@ fn connect(socket: &Path) -> Client {
 fn revision(socket: &Path) -> String {
     match connect(socket).ask(&Ask::Accounts { after: None }) {
         Ok(Answer::Accounts { revision, accounts }) => {
-            assert!(accounts.is_empty(), "the workspace keeps no file account yet");
+            assert!(
+                accounts.is_empty(),
+                "the workspace keeps no file account yet"
+            );
             revision
         }
         other => panic!("the accounts, not {other:?}"),
@@ -226,7 +229,8 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
         let stream = tokio::net::UnixStream::from_std(session).unwrap();
         let by = Caller::authenticated([0x30; 32], [0x31; 32]);
         let scope = super::Scope::connector(MAIL, WORKSPACE);
-        super::connection(stream, &workspaces, &by, &changes, &scope).await
+        let answering = super::Answering::here(workspaces, by, changes);
+        super::connection(stream, &answering, &scope).await
     });
     let connector = std::cell::RefCell::new(Client::over(connector).unwrap());
     let told = std::cell::RefCell::new(Vec::new());
@@ -246,7 +250,10 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
     );
     match connect(&served.socket).ask(&Ask::Accounts { after: None }) {
         Ok(Answer::Accounts { accounts, .. }) => {
-            assert!(accounts.is_empty(), "the cloud service is told file accounts only");
+            assert!(
+                accounts.is_empty(),
+                "the cloud service is told file accounts only"
+            );
         }
         other => panic!("the accounts, not {other:?}"),
     }

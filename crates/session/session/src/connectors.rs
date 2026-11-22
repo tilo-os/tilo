@@ -120,16 +120,15 @@ impl ConnectorHost {
             .map_err(|error| format!("no socket for {app}'s {origin} connector: {error}"))?;
         let planned = plan(origin)?;
         let child = Self::start(&planned, &socket)?;
-        // Its account sign-ins come first: the workspace's accounts, and the sign-ins the
-        // person's grant on Passwords releases to the app.
-        let (sign_ins, connectors) = std::os::unix::net::UnixStream::pair()
-            .map_err(|error| format!("no account sign-ins for {app}'s {origin} connector: {error}"))?;
-        origin_connector::send_sign_ins(&ours, connectors.into())
-            .map_err(|error| format!("{app}'s {origin} connector took no account sign-ins: {error}"))?;
-        crate::account_sign_ins::serve_link(
-            sign_ins,
-            crate::account_sign_ins::Scope::connector(app, workspace),
-        );
+        // Its account sign-ins come first, when its app's signed manifest grants them: the
+        // workspace's accounts, and the sign-ins the person's grant on Passwords releases to it.
+        let granted = tilo_app_launch::tilolang_processes::origin_of(app)
+            .is_ok_and(|declared| declared == Some((origin.to_owned(), true)));
+        if granted {
+            crate::account_sign_ins::hand(&ours, app, workspace).map_err(|error| {
+                format!("{app}'s {origin} connector took no account sign-ins: {error}")
+            })?;
+        }
         origin_connector::send_attachment(&ours, &theirs)
             .map_err(|error| format!("{app}'s {origin} connector took no connection: {error}"))?;
         running.insert(

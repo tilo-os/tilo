@@ -24,22 +24,11 @@ pub const ORIGIN: &str = "youtube";
 pub fn run(service: &Arc<dyn Service>) -> Result<(), String> {
     let socket = runtime_portal::origin_connector::take_socket()
         .ok_or_else(|| "the launcher handed the YouTube connector no socket".to_owned())?;
-    let attachments = std::iter::from_fn(move || {
-        match runtime_portal::origin_connector::receive_attachment(&socket) {
-            Ok(Some(connection)) => Some(UnixStream::from(connection)),
-            Ok(None) => {
-                tracing::info!("the session closed the YouTube connector's socket");
-                None
-            }
-            Err(error) => {
-                tracing::error!(
-                    %error,
-                    "the YouTube connector's socket failed: it takes no more instances"
-                );
-                None
-            }
-        }
-    });
+    let attachments =
+        runtime_portal::origin_connector::attachments(socket, |failed| match failed {
+            None => tracing::info!("the session closed the YouTube connector's socket"),
+            Some(error) => tracing::error!(%error, "the YouTube connector's socket failed"),
+        });
     serve(service, attachments);
     Ok(())
 }

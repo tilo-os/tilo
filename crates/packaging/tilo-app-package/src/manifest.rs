@@ -91,6 +91,9 @@ impl Platform {
 /// The targets of an app that does not declare `package.platforms`.
 pub const DEFAULT_PLATFORMS: &[Platform] = &[Platform::Linux, Platform::Macos, Platform::Web];
 
+/// The capability whose origin connector the session hands the workspace's account sign-ins.
+pub const ACCOUNT_SIGN_INS: &str = "account-sign-ins";
+
 /// `[capabilities]` — host capabilities by name (`network.http`,
 /// `notifications`, `files.save`, ...). A `required` capability that a host
 /// cannot provide stops the launch; an `optional` one degrades.

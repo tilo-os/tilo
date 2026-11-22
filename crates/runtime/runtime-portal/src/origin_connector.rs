@@ -8,10 +8,10 @@
 //! connections (`crate::process_link::InstanceFds::origin`) and the other to the connector on
 //! this socket, as one packet (`crate::packet`) carrying that one descriptor.
 //!
-//! Before any reader, the session hands the connector its account sign-ins on the same socket:
-//! a connection that speaks `accounts::sign_ins`'s lines, scoped to the connector's workspace and
-//! app. A connector reaches the workspace's accounts and their sign-ins over it, and over nothing
-//! else: it opens no file of them.
+//! Before any reader, the session hands the connector of an app whose signed manifest grants them
+//! its account sign-ins on the same socket: a connection that speaks `accounts::sign_ins`'s lines,
+//! scoped to the connector's workspace and app. A connector reaches the workspace's accounts and
+//! their sign-ins over it, and over nothing else: it opens no file of them.
 
 use std::io;
 
@@ -140,21 +140,37 @@ pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
     }))
 }
 
-/// The next reader's connection on `socket`, for a connector that signs in to no account: the
-/// account sign-ins it is handed are closed. `None` at end of file, when the session closed its
+/// The next reader's connection on `socket`; `None` at end of file, when the session closed its
 /// end.
 ///
 /// # Errors
-/// The socket's error; a message that is no attachment with its one descriptor;
-/// [`io::ErrorKind::Unsupported`] off Linux.
+/// The socket's error; a message that is no reader's attachment with its one descriptor, such as
+/// account sign-ins the app is not granted; [`io::ErrorKind::Unsupported`] off Linux.
 pub fn receive_attachment(socket: &Descriptor) -> io::Result<Option<Descriptor>> {
-    loop {
-        match receive(socket)? {
-            Some(Handed::Reader(connection)) => return Ok(Some(connection)),
-            Some(Handed::SignIns(_)) => {}
-            None => return Ok(None),
-        }
+    match receive(socket)? {
+        Some(Handed::Reader(connection)) => Ok(Some(connection)),
+        Some(Handed::SignIns(_)) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the session handed account sign-ins to a connector not granted them",
+        )),
+        None => Ok(None),
     }
+}
+
+/// The readers' connections the session hands the connector on `socket`, until it closes its end
+/// or the socket fails: `ended` is told which, with the failure.
+#[cfg(unix)]
+pub fn attachments(
+    socket: Descriptor,
+    mut ended: impl FnMut(Option<io::Error>) + Send + 'static,
+) -> impl Iterator<Item = std::os::unix::net::UnixStream> + Send + 'static {
+    std::iter::from_fn(move || match receive_attachment(&socket) {
+        Ok(Some(connection)) => Some(connection.into()),
+        next => {
+            ended(next.err());
+            None
+        }
+    })
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -166,8 +182,6 @@ mod tests {
         use std::io::{Read as _, Write as _};
         let (session, connector) = pair().unwrap();
         let (instance, theirs) = connection().unwrap();
-        let (_kept, sign_ins) = connection().unwrap();
-        send_sign_ins(&session, sign_ins).unwrap();
         send_attachment(&session, &theirs).unwrap();
         let received = receive_attachment(&connector)
             .unwrap()
@@ -178,6 +192,10 @@ mod tests {
         let mut read = [0_u8; 5];
         received.read_exact(&mut read).unwrap();
         assert_eq!(&read, b"hello");
+        let (_kept, sign_ins) = connection().unwrap();
+        send_sign_ins(&session, sign_ins).unwrap();
+        let refused = receive_attachment(&connector).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
         drop(session);
         assert!(receive_attachment(&connector).unwrap().is_none());
     }
