@@ -77,6 +77,9 @@ type Message {
     /// The reactions it had in the native Chat, each emoji with how many reacted with it: who
     /// reacted there is not carried, since this app names people only as its own members.
     reacted: Text = ""
+    /// The files it carries, handed over with it: what a bridge relays from another service, and
+    /// what anyone sends with a message.
+    attachments: Collection<Attached>
 
     search {
         kind message
@@ -130,6 +133,16 @@ type Direct (readers: people) {
         kind conversation
         people person
     }
+}
+
+/// A file a message carries, as the place it was copied from keeps it: its name, what it is, how
+/// many bytes, and the address of its content.
+type Attached {
+    name: Text
+    media: Text
+    size: Int = 0
+    /// The address its bytes read at: `tilo-blob://<hash>`.
+    blob: Text
 }
 
 /// A piece of a message kept as parts rather than as rich text: its text, or a block's source.
@@ -580,6 +593,7 @@ action relay(
     by: Text,
     written_in: Text,
     written: Int = 0,
+    attachments: List<File> = [],
     reply_to: Option<Message> = .none,
 ) -> Message (icon: .send, label: "Relay", did: "relayed a message") {
     require by.trim() != "" "Say who wrote the message"
@@ -590,6 +604,9 @@ action relay(
         written_in: written_in,
         written: written,
     )
+    for f in attachments {
+        m.attachments.insert(Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()))
+    }
     match to {
         c: TextChannel => c.messages.insert(m),
         t: Thread => t.messages.insert(m),
@@ -617,6 +634,34 @@ destructive action delete_category(all: Conversations, c: Category) (
 ) {
     require c.channels.is_empty() "Move or delete its channels first"
     all.channels.remove(c)
+}
+
+/// Moves a channel to a place in the sidebar: under `category`, or outside any, at `at` among
+/// the channels listed there (the end when it is negative). A move keeps the channel and what
+/// was written in it.
+action move_channel(
+    all: Conversations,
+    ch: TextChannel | VoiceChannel,
+    category: Option<Category> = .none,
+    at: Int = -1,
+) (icon: .arrow_up_down, label: "Move channel") {
+    if let c = category {
+        let place = if at < 0 { c.channels.len() } else { at }
+        c.channels.move(ch, to: place)
+    } else {
+        let place = if at < 0 { all.channels.len() } else { at }
+        all.channels.move(ch, to: place)
+    }
+}
+
+/// Moves a category to a place in the sidebar, at `at` among the categories and channels listed
+/// there (the end when it is negative). Its own channels move with it.
+action move_category(all: Conversations, c: Category, at: Int = -1) (
+    icon: .arrow_up_down,
+    label: "Move category",
+) {
+    let place = if at < 0 { all.channels.len() } else { at }
+    all.channels.move(c, to: place)
 }
 
 /// Changes what a message says. Only its author may.
@@ -1232,6 +1277,9 @@ view message(
         }
     } else {
         said(m)
+    }
+    for f in m.attachments {
+        ui.Link(f.blob, label: f.name)
     }
     if m.reacted != "" {
         ui.Text(m.reacted, role: .caption, secondary: true)

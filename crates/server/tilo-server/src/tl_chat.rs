@@ -505,6 +505,7 @@ pub fn relay(
             Value::Text(from.by.into()),
             Value::Text(from.service.into()),
             Value::Int(from.written),
+            Value::List(Vec::new()),
             option(reply_to),
         ],
     )?;

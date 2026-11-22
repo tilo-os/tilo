@@ -399,3 +399,42 @@ d-psjj65el = Weiterleiten~present
 d-gwrwo3w5 = Kategorie löschen~present
 
 d-5ips5yl3 = Entscheiden~present
+
+d-n7d27huf = Anhänge
+    .doc = Die Dateien, die sie mitbringt: was eine Brücke aus einem anderen Dienst weiterleitet, und was jemand mit einer Nachricht sendet.
+
+d-5rctnita = Anhang
+    .doc = Eine Datei, die eine Nachricht mitbringt, so wie die Stelle sie hält, von der sie kopiert wurde: ihr Name, was sie ist, wie viele Bytes, und die Adresse ihres Inhalts.
+    .noun = { $count ->
+        [one] Anhang
+       *[other] Anhänge
+    }
+
+d-qsdc77jc = Name
+
+d-h5lqkkjt = Medientyp
+
+d-g7nx7a7g = Größe
+
+d-wu2n7dpm = Inhalt
+    .doc = Die Adresse, unter der ihre Bytes liegen: `tilo-blob://<hash>`.
+
+d-5rctnita-filter-size = Größe
+
+d-6372fg6z-attachments = Anhänge
+
+d-ggtglnmb = Kanal verschieben
+    .doc = Verschiebt einen Kanal an eine Stelle der Seitenleiste: unter `category` oder außerhalb jeder, an `at` unter den dort gelisteten Kanälen (am Ende, wenn negativ).
+
+d-ggtglnmb-ch = Kanal
+
+d-ggtglnmb-category = Kategorie
+
+d-ggtglnmb-at = Stelle
+
+d-n4l2mod2 = Kategorie verschieben
+    .doc = Verschiebt eine Kategorie an eine Stelle der Seitenleiste, an `at` unter den dort gelisteten Kategorien und Kanälen (am Ende, wenn negativ).
+
+d-n4l2mod2-c = Kategorie
+
+d-n4l2mod2-at = Stelle

@@ -1,4 +1,9 @@
 # tilolang ids: generated, commit it. Edit only through `tilolang ids --rename`.
+Attached = 5rctnita
+Attached.blob = wu2n7dpm
+Attached.media = h5lqkkjt
+Attached.name = qsdc77jc
+Attached.size = g7nx7a7g
 Category = fe2st4jb
 Category.channels = hvqgmwrk
 Category.name = hbhrds5c
@@ -12,6 +17,7 @@ Direct.person = ycadyqh5
 Direct.reports = doiukw5i
 Direct.threads = 3p73kpuw
 Message = hk2t6bvk
+Message.attachments = n7d27huf
 Message.body = xfrqdy3y
 Message.by = tz5yw5dt
 Message.parts = mwily5kw
@@ -84,6 +90,8 @@ member_named = umcfcrti
 members_of = z5w4qu3e
 message = byyw3vqp
 message_person = 3cetzzm3
+move_category = n4l2mod2
+move_channel = ggtglnmb
 native_channel = 2qtzkpwq
 native_message = lywvlr7u
 native_report = ufnrt5ev

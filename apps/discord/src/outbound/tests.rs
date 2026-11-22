@@ -239,8 +239,11 @@ tilo_test_env::scenario! {
 
     phase a_large_file_becomes_a_line;
     {
-        let small = json!({"file": {"name": "a.txt", "media": "text/plain", "size": 5, "url": "tilo-blob://ff"}});
-        let big = json!({"file": {"name": "film.mkv", "media": "video/x-matroska", "size": 20_971_520, "url": "tilo-blob://ee"}});
+        let attached = |name: &str, media: &str, size: i64, blob: &str| {
+            json!({"fields": {"name": name, "media": media, "size": size, "blob": blob}})
+        };
+        let small = attached("a.txt", "text/plain", 5, "tilo-blob://ff");
+        let big = attached("film.mkv", "video/x-matroska", 20_971_520, "tilo-blob://ee");
         let chat = chat(&[
             msg("m1", "u_ada", "", &json!({"attachments": {"items": [small]}})),
             msg("m2", "u_ada", "watch", &json!({"attachments": {"items": [big]}})),
@@ -308,7 +311,7 @@ tilo_test_env::scenario! {
             bot.apply(action).unwrap();
         }
         let attachment = json!({"attachments": {"items": [
-            {"file": {"name": "notes.txt", "media": "text/plain", "size": 5, "url": "tilo-blob://ff"}}
+            {"fields": {"name": "notes.txt", "media": "text/plain", "size": 5, "blob": "tilo-blob://ff"}}
         ]}});
         let before = chat(&[msg("m1", "u_ada", "old caption", &attachment)]);
         let post = plan_post(&bot.state().unwrap(), &before, "m1", &context());

@@ -470,8 +470,7 @@ fn reactions(row: &Value) -> Vec<Reaction> {
     out
 }
 
-/// The files a message carries, as a `List<File>` reads: each `{"file": {name, media, size,
-/// content, url}}`.
+/// The files a message carries: each `Attached` row's name, media, size and content address.
 fn attachments(row: &Value) -> Vec<Attachment> {
     let Some(items) = row
         .get("fields")
@@ -484,19 +483,14 @@ fn attachments(row: &Value) -> Vec<Attachment> {
     items
         .iter()
         .filter_map(|entry| {
-            let file = entry.get("file").unwrap_or(entry);
-            let url = file.get("url").and_then(Value::as_str).unwrap_or_default();
-            let content = file
-                .get("content")
+            let file = entry.get("fields").unwrap_or(entry);
+            let url = file
+                .get("blob")
                 .and_then(Value::as_str)
+                .or_else(|| file.get("url").and_then(Value::as_str))
                 .unwrap_or_default();
-            let blob = content
-                .strip_prefix("tilo.content:")
-                .or_else(|| url.strip_prefix("tilo-blob://"))
-                .unwrap_or(content)
-                .to_owned();
             Some(Attachment {
-                blob,
+                blob: url.strip_prefix("tilo-blob://").unwrap_or(url).to_owned(),
                 name: file.get("name").and_then(Value::as_str)?.to_owned(),
                 media: file
                     .get("media")
@@ -672,12 +666,10 @@ mod tests {
                 "written_in": "Discord",
                 "written": 5,
                 "reactions": {"👍": {"count": 1, "items": [{"actor": {"member": {"bot": "b1"}}}]}},
-                "attachments": {"count": 1, "items": [{"file": {
-                    "name": "a.png",
-                    "media": "image/png",
-                    "size": 5,
-                    "url": "tilo-blob://abcd",
-                }}]},
+                "attachments": {"items": [{"item": "tl:so.tilo.chat:a1",
+                    "kind": "tl.so.tilo.chat.Attached",
+                    "fields": {"name": "a.png", "media": "image/png", "size": 5,
+                               "blob": "tilo-blob://abcd"}}]},
             },
         });
         let channel = json!({

@@ -91,6 +91,9 @@ d-mmlcexsa = Written
 d-jcgolgdf = Reacted
     .doc = The reactions it had in the native Chat, each emoji with how many reacted with it: who reacted there is not carried, since this app names people only as its own members.
 
+d-n7d27huf = Attachments
+    .doc = The files it carries, handed over with it: what a bridge relays from another service, and what anyone sends with a message.
+
 d-hk2t6bvk-filter-pinned = Pinned
 
 d-y3mwdnru = Report
@@ -160,6 +163,24 @@ d-doiukw5i = Reports
     .doc = The reports filed about its messages, for the workspace's moderators.
 
 d-5nkbpj6q-filter-person = Person
+
+d-5rctnita = Attached
+    .doc = A file a message carries, as the place it was copied from keeps it: its name, what it is, how many bytes, and the address of its content.
+    .noun = { $count ->
+        [one] attached
+       *[other] attacheds
+    }
+
+d-qsdc77jc = Name
+
+d-h5lqkkjt = Media
+
+d-g7nx7a7g = Size
+
+d-wu2n7dpm = Blob
+    .doc = The address its bytes read at: `tilo-blob://<hash>`.
+
+d-5rctnita-filter-size = Size
 
 d-yx5sbebu = Part
     .doc = A piece of a message kept as parts rather than as rich text: its text, or a block's source.
@@ -271,6 +292,8 @@ d-6372fg6z-written_in = Written in
 
 d-6372fg6z-written = Written
 
+d-6372fg6z-attachments = Attachments
+
 d-6372fg6z-reply_to = Reply to
 
 d-jozxp5qy = Delete channel
@@ -285,6 +308,22 @@ d-uukhgkjq = Delete category
     .w-move-or-delete-its-channels-first = Move or delete its channels first
 
 d-uukhgkjq-c = C
+
+d-ggtglnmb = Move channel
+    .doc = Moves a channel to a place in the sidebar: under `category`, or outside any, at `at` among the channels listed there (the end when it is negative).
+
+d-ggtglnmb-ch = Ch
+
+d-ggtglnmb-category = Category
+
+d-ggtglnmb-at = At
+
+d-n4l2mod2 = Move category
+    .doc = Moves a category to a place in the sidebar, at `at` among the categories and channels listed there (the end when it is negative).
+
+d-n4l2mod2-c = C
+
+d-n4l2mod2-at = At
 
 d-255qjx7d = Edit
     .doc = Changes what a message says.
