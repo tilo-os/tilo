@@ -2045,9 +2045,10 @@ impl<T> InvocationLog<T> {
     /// # Errors
     ///
     /// Returns [`ActionCallError::InvocationConflict`] when the id belongs to
-    /// another caller or request, and [`ActionCallError::Unavailable`] while
-    /// an earlier start of the same invocation is still in flight or every
-    /// slot is held by an in-flight reservation.
+    /// another caller or request, [`ActionCallError::Unanswered`] while an
+    /// earlier start of the same invocation is still in flight, and
+    /// [`ActionCallError::Unavailable`] while every slot is held by an
+    /// in-flight reservation.
     pub fn reserve(
         &mut self,
         caller: &Caller,
@@ -2060,12 +2061,14 @@ impl<T> InvocationLog<T> {
             }
             // Asked again on the connection that replaced its own: it is this one's from now on.
             entry.caller.clone_from(caller);
+            // Its first start has not ended: a workspace action that runs whole as it starts
+            // (a server taking in a workspace's gigabytes) is still going. Nothing is known of
+            // what it did yet, so the caller asks the same invocation again, as for one whose
+            // answer was lost.
             return if entry.handle.is_some() {
                 Ok(Reservation::Admitted)
             } else {
-                Err(ActionCallError::Unavailable {
-                    reason: "the invocation is still being admitted; retry".into(),
-                })
+                Err(ActionCallError::Unanswered)
             };
         }
         while self.order.len() >= self.capacity {
@@ -3133,7 +3136,7 @@ mod tests {
                 }
                 assert!(matches!(
                     log.admit(&caller, &pending, || panic!("duplicate dispatch")),
-                    Err(ActionCallError::Unavailable { .. })
+                    Err(ActionCallError::Unanswered)
                 ));
                 assert_eq!(
                     log.reserve(&mallory(), &pending),
@@ -3171,7 +3174,7 @@ mod tests {
                     for request in &pending {
                         assert!(matches!(
                             log.admit(&caller, request, || panic!("duplicate dispatch")),
-                            Err(ActionCallError::Unavailable { .. })
+                            Err(ActionCallError::Unanswered)
                         ));
                     }
                 }
@@ -3198,9 +3201,10 @@ mod tests {
         assert!(
             matches!(
                 log.reserve(&alice(), &request),
-                Err(ActionCallError::Unavailable { .. })
+                Err(ActionCallError::Unanswered)
             ),
-            "a retry during the start neither runs twice nor pretends to be admitted"
+            "a retry during the start neither runs twice nor pretends to be admitted: it is \
+             asked again, as an answer lost on its way is"
         );
         assert_eq!(log.get(&alice(), &request.invocation), None);
         log.complete(&request.invocation, 9);

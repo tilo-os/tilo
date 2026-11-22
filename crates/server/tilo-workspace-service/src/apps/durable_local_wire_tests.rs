@@ -100,7 +100,7 @@ async fn a_callers_invocation_id_admits_once_and_keeps_its_retained_outcome() {
             // then answered with the same invocation.
             match duplicate {
                 Ok(duplicate) => assert_eq!(duplicate, first),
-                Err(error) => assert!(error.contains("still being admitted"), "{error}"),
+                Err(error) => assert_eq!(error, "Unanswered"),
             }
             let wire = rig.delivered_effect(&env, invocation).await;
             assert_eq!(invoke_with(handle, request.clone()).await.unwrap(), first);
