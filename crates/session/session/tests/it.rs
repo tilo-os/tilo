@@ -275,6 +275,8 @@ mod visual_alerts;
 mod vpn;
 #[path = "wifi_continuity.rs"]
 mod wifi_continuity;
+#[path = "window_accent.rs"]
+mod window_accent;
 #[path = "window_bar_actions.rs"]
 mod window_bar_actions;
 #[path = "window_layout.rs"]

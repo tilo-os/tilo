@@ -505,3 +505,77 @@ fn switching_the_theme_changes_how_the_shell_looks_not_its_layout() {
         assert_different_frames(&frames);
     });
 }
+
+/// The window in front wears the focus ring: the shell's frames draw the window the session has in
+/// front — the one the keyboard goes to — in the accent, and follow it wherever the keyboard goes,
+/// whether the window was opened, brought forward or left from another start.
+#[test]
+fn the_shells_window_in_front_is_the_sessions() {
+    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    crate::common::show_preset(&mut session, "so.tilo.shell:strips");
+    step(&mut session, 30);
+
+    let resources = session.resources();
+    let note = find(&resources, "tl.so.tilo.notes.Note", "Groceries").expect("a seeded note");
+    let inbox = find(&resources, "tl.so.tilo.mail.Mailbox", "Inbox").expect("the seeded inbox");
+    place(&mut session, &note, 80, 60, 480, 360);
+    place(&mut session, &inbox, 700, 60, 480, 360);
+    step(&mut session, 40);
+
+    // The shell frames the window the session has in front, whichever window that is: what its
+    // frame's `focused` is read from.
+    let first = front_window(&session).expect("a window in front");
+    assert_eq!(
+        framed(&session).as_deref(),
+        Some(first.as_str()),
+        "the shell frames the window in front, the one the session gave the keyboard to"
+    );
+
+    // Bringing another window forward — a press on it, a key to it, or an agent's
+    // `session.focus` — moves the shell's frame with the keyboard.
+    let other = tab_outside(&session, &first);
+    session
+        .invoke(
+            &tilo_desktop::verbs::tab_resource_id(other),
+            "focus",
+            &Map::new(),
+        )
+        .expect("the other window comes forward");
+    step(&mut session, 40);
+    let front = front_window(&session).expect("a window in front");
+    assert_ne!(front, first, "the session brought another window forward");
+    assert_eq!(
+        framed(&session).as_deref(),
+        Some(front.as_str()),
+        "the shell's frame follows the window the session brought forward"
+    );
+}
+
+/// The window the session has in front, by its key: the one the keyboard goes to.
+fn front_window(session: &Session) -> Option<String> {
+    session.handle().read(|tree| {
+        tilo_desktop_surface::navigation::active_route(tree).map(|route| route.group.to_string())
+    })
+}
+
+/// The window the shell frames as the one in front, as its own record holds it.
+fn framed(session: &Session) -> Option<String> {
+    session
+        .shell_setting("focused")
+        .and_then(|held| held.as_str().map(str::to_owned))
+        .filter(|held| !held.is_empty())
+}
+
+/// A window that is not the one in front `front`, as its tab's id: one of the shell's places
+/// outside that window's strip.
+fn tab_outside(session: &Session, front: &str) -> u64 {
+    let reading = session.layout().borrow().reading();
+    reading
+        .places
+        .iter()
+        .find(|place| place.strip != front)
+        .and_then(|place| place.key.parse().ok())
+        .expect("a window outside the one in front")
+}
