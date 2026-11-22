@@ -57,7 +57,20 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         return planned.install();
     }
     LIVE_INSTALLER.store(true, std::sync::atomic::Ordering::Relaxed);
-    ui::framework::run::<crate::resource::ImagerShell>();
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = ui::framework::run_helper::<crate::resource::ImagerShell>(&args) {
+        #[allow(
+            clippy::exit,
+            reason = "a helper the installer runs ends the process with its own exit code"
+        )]
+        std::process::exit(code);
+    }
+    // The live installer is the device's own program, run before any person has a certificate
+    // here: like the greeter, it attaches to no person's runtime, and the device's daemon founds
+    // no identity for it.
+    ui::launch::run_or_exit(
+        &ui::framework::launch_spec::<crate::resource::ImagerShell>().runtime_attachment(|_| false),
+    );
     Ok(())
 }
 
