@@ -705,7 +705,7 @@ class Walk:
         offers ("Search the web for …") name the words without finding them,
         so they do not count as a found note."""
         query = pick(value, self.variant)
-        self.session.invoke(SHELL, f"{SHELL_RESOURCE}{ID_SEP}search", {"query": query})
+        self.session.invoke(SHELL, SHELL_RESOURCE, "search", {"query": query})
 
         def found():
             answer = self.session.search_rows()

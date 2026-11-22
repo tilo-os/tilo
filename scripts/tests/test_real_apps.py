@@ -165,5 +165,22 @@ class Launch(unittest.TestCase):
             self.session(desktop).launch("notes")
 
 
+class Invocation(unittest.TestCase):
+    """The frame an action is invoked with: its resource and action apart, its arguments typed."""
+
+    def test_arguments_go_as_the_typed_object(self):
+        sent = real_apps.invocation("session", "desktop:chrome", "new-workspace", {"name": "Q"})
+        request = sent["message"]["Invoke"]
+        self.assertEqual(request["target"]["address"],
+                         {"resource": "desktop:chrome", "action": "new-workspace"})
+        self.assertEqual(request["argument"], {"Json": {"name": "Q"}})
+
+    def test_a_resource_and_action_joined_in_one_id_is_refused_before_it_is_sent(self):
+        with self.assertRaises(TypeError):
+            real_apps.invocation("session", "desktop:chrome\x1fnew-workspace", {"name": "Q"})
+        with self.assertRaises(TypeError):
+            real_apps.invocation("session", "desktop:chrome\x1fnew-workspace", "new-workspace")
+
+
 if __name__ == "__main__":
     unittest.main()

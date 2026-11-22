@@ -213,6 +213,9 @@ def invocation(provider: str, resource: str, action: str, args: dict | None = No
                wait_ms: int | None = None, confirmed: bool = False) -> dict:
     """The frame that invokes `resource`'s `action` of `provider` with `args`, its answer held
     up to `wait_ms` while it runs; `confirmed` when the person confirms it as it asks."""
+    if not (isinstance(resource, str) and isinstance(action, str)) or "\x1f" in resource:
+        raise TypeError(f"an invocation names its resource and its action apart, each as text: "
+                        f"{resource!r}, {action!r}")
     request = {
         "invocation": str(uuid.uuid4()),
         "target": {"provider": provider, "address": {"resource": resource, "action": action}},

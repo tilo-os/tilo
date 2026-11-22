@@ -78,7 +78,7 @@ def members_of(workspace: dict) -> list[str]:
 
 def invitation(host: Session) -> str:
     """The link the host makes into the workspace in front, through its own shell action."""
-    answer = host.invoke(SHELL, f"{INVITATIONS}\u001fissue-invitation",
+    answer = host.invoke(SHELL, INVITATIONS, "issue-invitation",
                          {"role": "editor", "expires_in_seconds": 3600})
     issued = (answer.get("receipt") or {}).get("update", {}).get("output", {}).get("value") or {}
     link = issued.get("link")
@@ -92,7 +92,7 @@ def stand_in(session: Session, workspace: str) -> None:
     session says where its person is only in the workspace it is in front of."""
     front = front_workspace(session)
     if front is None or front["id"] != workspace:
-        session.invoke(SHELL, f"{WORKSPACE_COMMANDS}\u001fswitch-workspace", {"workspace": workspace})
+        session.invoke(SHELL, WORKSPACE_COMMANDS, "switch-workspace", {"workspace": workspace})
     until(f"the shell on {session.tag} to stand in the workspace",
           lambda: (now["id"] if (now := front_workspace(session)) and now["id"] == workspace
                    else None), 60, 0.25)

@@ -223,10 +223,10 @@ def steps(story: Story) -> None:
                              if w.get("app_id") == ACTIVITY and w.get("rect")), None)
 
             if activity():
-                ada.session.invoke(SHELL, f"{CHROME}\u001fclose-activity",
+                ada.session.invoke(SHELL, CHROME, "close-activity",
                                    {"workspace": tree.get("active")})
                 until("the Activity window closed", lambda: activity() is None, 30, 0.25)
-            ada.session.invoke(SHELL, f"{CHROME}\u001factivity",
+            ada.session.invoke(SHELL, CHROME, "activity",
                                {"workspace": tree.get("active"), "view": "explore",
                                 "author": author})
             until("the Activity window on Ada's shell", activity, 60, 0.25)
@@ -249,7 +249,7 @@ def steps(story: Story) -> None:
                    "the message": ("posted", CHAT)}
 
         def feed() -> list[dict]:
-            answer = ada.session.invoke(ACTIVITY_PROVIDER, f"{ACTIVITY_RESOURCE}\u001ffeed",
+            answer = ada.session.invoke(ACTIVITY_PROVIDER, ACTIVITY_RESOURCE, "feed",
                                         {"scope": "this-workspace", "limit": 0})
             # A read answers its value as the item it streams.
             update = (answer.get("receipt") or {}).get("update") or {}

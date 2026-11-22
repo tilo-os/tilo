@@ -139,7 +139,7 @@ def steps(story: Story) -> None:
         until("Ada's shell to hold a workspace", lambda: front(ada), 60)
         ada.name_self("Ada")
         before = {w.get("id") for w in workspaces(ada)}
-        ada.session.invoke(SHELL, f"{CHROME}\u001fnew-workspace", {"name": WORKSPACE})
+        ada.session.invoke(SHELL, CHROME, "new-workspace", {"name": WORKSPACE})
         made = until("a new workspace on Ada's shell", lambda: next(
             (w for w in workspaces(ada) if w.get("id") not in before), None), 30, 0.2)
         shared["id"] = made["id"]
