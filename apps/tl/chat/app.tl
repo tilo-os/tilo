@@ -590,10 +590,12 @@ view direct(d: Direct) {
     state replying: Option<Message> = .none
     state editing: Option<Message> = .none
     state revised: RichText = RichText("")
-    let asked = asked_outright(d, workspace.me)
+    // What was asked of the agent with no message to stand under, read once for the view and
+    // oldest first; each row draws only those asked between the message before it and itself.
+    let asked = if d.person.kind() == .agent { asked_outright(d, workspace.me) } else { [] }
     std.transcript(d, d.messages, unread: first_unseen(d)) { m ->
-        // What was asked with no message to stand under stands where it was asked.
-        for a in asked.filter(a -> asked_before(d, m, a)) {
+        let before = d.messages.previous(m)
+        for a in asked.filter(a -> made_before(a, m) and after(before, a)) {
             agent.replies(a)
         }
         direct_message(d, m, d.messages, replying, editing, revised)
@@ -605,6 +607,12 @@ view direct(d: Direct) {
             }
         }
         composer: {
+            // A Direct nothing was written in yet still shows what was asked in it.
+            if d.messages.is_empty() {
+                for a in asked {
+                    agent.replies(a)
+                }
+            }
             direct_typing_here(d)
             composer(d, d.messages, draft, replying, "Message {d.name}")
         }
@@ -612,20 +620,21 @@ view direct(d: Direct) {
 }
 
 /// The asks of the agent `d` is with that `me`, the person looking, made from something with no
-/// message of Chat's to stand under (an event, a task). An ask made from a message stands under
-/// that message instead.
+/// message of Chat's to stand under (an event, a task), oldest first. An ask made from a message
+/// stands under that message instead.
 fn asked_outright(d: Direct, me: Actor) -> List<agent.Ask> {
-    agent.agents.asks.filter(
-        a -> a.agent == d.person
-            and created(a)?.who == me
-            and if let from = created(a)?.from { [from].of(Message).is_empty() } else { false },
-    )
+    agent.agents.asks
+        .filter(
+            a -> a.agent == d.person
+                and created(a)?.who == me
+                and if let from = created(a)?.from { [from].of(Message).is_empty() } else { false },
+        )
+        .sort_by(a -> created(a))
 }
 
-/// Whether `a` was asked after the message before `m` (or before any) and before `m` itself.
-fn asked_before(d: Direct, m: Message, a: agent.Ask) -> Bool {
-    let after_previous = if let p = d.messages.previous(m) { made_before(p, a) } else { true }
-    after_previous and made_before(a, m)
+/// Whether `a` was made after `message`, or there is no message.
+fn after(message: Option<Message>, a: agent.Ask) -> Bool {
+    if let m = message { made_before(m, a) } else { true }
 }
 
 /// Whether `x` was made before `y`.
