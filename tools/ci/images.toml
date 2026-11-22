@@ -23,5 +23,5 @@ builder = "tilo-builder"
 # ci-fast: lint, planning and other quick jobs (os/Containerfile.ci-fast).
 # tilo-release-tools: release signing and publication tools.
 [pins]
-ci-fast = "sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+ci-fast = "sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 tilo-release-tools = "sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa"

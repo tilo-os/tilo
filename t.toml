@@ -552,7 +552,7 @@ git = true
 [[check]]
 name = "suite-{group}"
 run = "python3 -I tools/ci/suites.py run --jobs 8 --group {group}"
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 [check.matrix]
@@ -690,7 +690,7 @@ fix = "cargo fmt"
 [[check]]
 name = "hakari"
 run = "if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then\n  echo \"crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result (docs/policies.md).\" >&2\n  exit 1\nfi\ncargo hakari verify\n"
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 fix = "cargo hakari generate && cargo hakari manage-deps --yes"
@@ -773,7 +773,7 @@ default = false
 name = "security"
 run = "bash tools/run-security-boundary-invariants.sh"
 needs = ["vm-test-binaries"]
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin", TILO_IMAGE_POLICY_CHECK_BIN = "/target/debug/tilo-image-policy-check", TILO_CRYPTO_BIN = "/target/debug/tilo-crypto", TILO_ESP_WRITE_BIN = "/target/debug/tilo-esp-write", TILO_BOARD_SUCCESSOR_BIN = "/target/debug/tilo-board-successor", TILO_STAGING_HANDOFF_BIN = "/target/debug/tilo-staging-handoff" }
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -1100,9 +1100,11 @@ heavy = true
 
 [[check]]
 name = "device-vpn-namespaces"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -eu\ndnf install -y --setopt=install_weak_deps=False iproute nftables util-linux-core >/dev/null\n/target/vm/device-vpn-netns-tunnel --exact packets_cross_two_network_namespaces --nocapture --test-threads=1\n/target/vm/device-vpn-netns-profile-block --nocapture --test-threads=1\n"
+# The fixtures make their namespaces with ip, nft and unshare, which the ci-fast image carries;
+# the default image has only unshare and had them installed from Fedora's mirrors each run, so
+# the check reaches no network now and its result is served from the cache.
+run = "set -eu\n/target/vm/device-vpn-netns-tunnel --exact packets_cross_two_network_namespaces --nocapture --test-threads=1\n/target/vm/device-vpn-netns-profile-block --nocapture --test-threads=1\n"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 needs = ["device-vpn-namespaces-build"]
 env = { TILO_REQUIRE_TUN = "1" }
 requires = ["arch=x86_64"]
@@ -1619,7 +1621,7 @@ name = "perf-footprint"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/perf-scheduled.sh footprint"
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 requires = ["arch=x86_64"]
 outputs = ["/target/perf/footprint/**"]
 cache = false
@@ -1631,7 +1633,7 @@ name = "perf-footprint-image"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/perf-scheduled.sh footprint-image"
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 requires = ["arch=x86_64"]
 outputs = ["/target/perf/footprint-image/**"]
 cache = false
@@ -1677,7 +1679,7 @@ name = "perf-scheduled"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/perf-compare.sh"
 needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-server"]
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 outputs = ["/target/perf/compare/**"]
 cache = false
 on = ["dispatch"]
@@ -1688,7 +1690,7 @@ name = "perf-publish"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/perf-compare.sh /target/perf-publish"
 needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-server"]
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 outputs = ["/target/perf-publish/**"]
 cache = false
 on = ["dispatch"]
@@ -2422,7 +2424,7 @@ name = "vm-acceptance-perf"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "# Each shard of vm-acceptance writes the records of the checks it ran, and the\n# selection it ran beside them: a dispatched `--only A14` owes A14's measurements,\n# never every check of the job's.\nrecords=$TMPDIR/records.jsonl\ncat /target/vm-acceptance/*/report/records.jsonl > \"$records\" 2>/dev/null || true\n[[ -s $records ]] || { echo \"the acceptance run wrote no performance records\" >&2; exit 1; }\n[[ -s /target/vm-acceptance/only ]] || { echo \"the acceptance run did not record the checks it ran\" >&2; exit 1; }\nselection=$(cat /target/vm-acceptance/only)\npublish=false\n[[ -n ${T_REF:-} ]] && publish=true\nstatus=0\npython3 tools/perf/compare.py --results \"$records\" --store https://code.tilo.so --owner tilo --job vm-acceptance --groups \"$(python3 scripts/vm-acceptance/selected_groups.py \"$selection\")\" --publish-dir \"$TMPDIR/publish\" --run \"t-${T_COMMIT:-tree}-vm\" --summary \"$TMPDIR/summary.md\" || status=1\nif [[ $publish == true && -n ${TILO_PACKAGES_TOKEN:-} ]]; then\n  manifest=$(mktemp)\n  for file in \"$TMPDIR\"/publish/*/*.jsonl; do\n    month=$(basename \"$(dirname \"$file\")\")\n    printf '%s\t%s\n' \"$file\" \"https://code.tilo.so/api/packages/tilo/generic/tilo-perf-results/$month/$(basename \"$file\")\"\n  done > \"$manifest\"\n  TILO_PACKAGE_TOKEN=$TILO_PACKAGES_TOKEN bash tools/upload_immutable_packages.sh \"$manifest\" || status=1\nfi\ncat \"$TMPDIR/summary.md\" 2>/dev/null || true\nexit \"$status\"\n"
 needs = ["vm-acceptance/{shard}"]
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 cache = false
 on = ["dispatch"]
 
@@ -2432,7 +2434,7 @@ name = "vm-acceptance-perf-publish"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "# Each shard of vm-acceptance writes the records of the checks it ran, and the\n# selection it ran beside them: a dispatched `--only A14` owes A14's measurements,\n# never every check of the job's.\nrecords=$TMPDIR/records.jsonl\ncat /target/vm-acceptance/*/report/records.jsonl > \"$records\" 2>/dev/null || true\n[[ -s $records ]] || { echo \"the acceptance run wrote no performance records\" >&2; exit 1; }\n[[ -s /target/vm-acceptance/only ]] || { echo \"the acceptance run did not record the checks it ran\" >&2; exit 1; }\nselection=$(cat /target/vm-acceptance/only)\npublish=false\n[[ -n ${T_REF:-} ]] && publish=true\nstatus=0\npython3 tools/perf/compare.py --results \"$records\" --store https://code.tilo.so --owner tilo --job vm-acceptance --groups \"$(python3 scripts/vm-acceptance/selected_groups.py \"$selection\")\" --publish-dir \"$TMPDIR/publish\" --run \"t-${T_COMMIT:-tree}-vm\" --summary \"$TMPDIR/summary.md\" || status=1\nif [[ $publish == true && -n ${TILO_PACKAGES_TOKEN:-} ]]; then\n  manifest=$(mktemp)\n  for file in \"$TMPDIR\"/publish/*/*.jsonl; do\n    month=$(basename \"$(dirname \"$file\")\")\n    printf '%s\t%s\n' \"$file\" \"https://code.tilo.so/api/packages/tilo/generic/tilo-perf-results/$month/$(basename \"$file\")\"\n  done > \"$manifest\"\n  TILO_PACKAGE_TOKEN=$TILO_PACKAGES_TOKEN bash tools/upload_immutable_packages.sh \"$manifest\" || status=1\nfi\ncat \"$TMPDIR/summary.md\" 2>/dev/null || true\nexit \"$status\"\n"
 needs = ["vm-acceptance/{shard}"]
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 cache = false
 on = ["dispatch"]
 secrets = ["TILO_PACKAGES_TOKEN"]
@@ -3348,7 +3350,7 @@ name = "publish-desktop-payload"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json"
 needs = ["desktop-package-amd64", "desktop-package-arm64", "host-session-e2e"]
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/desktop/payload.json"]
 on = ["dispatch"]
@@ -3382,7 +3384,7 @@ egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west
 run = "bash tools/ci/publish/rpm-snapshot-ref.sh {arch} /target/publish/rpm-snapshot/{arch}"
 needs = ["signing-tools"]
 optional_needs = ["publish-rpms-{arch}"]
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 outputs = ["/target/publish/rpm-snapshot/{arch}/**"]
 default = false
 # Dispatched on a release tag, its optional need publishes this architecture's set (see
@@ -4363,7 +4365,7 @@ name = "imager-winget-acceptance"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "[[ -n ${TILO_SITE_TOKEN:-} ]] || {\n  echo 'TILO_SITE_TOKEN is not set: the server config must give this check the site bot token' >&2\n  exit 1\n}\ncommand -v npm >/dev/null || dnf -y -q install --setopt=install_weak_deps=False nodejs-npm >/dev/null\nGITHUB_SERVER_URL=https://code.tilo.so TILO_SITE_GIT_TOKEN=$TILO_SITE_TOKEN \\\n  bash apps/imager/packaging/monitor-winget-acceptance.sh\n"
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 requires = ["arch=x86_64"]
 cache = false
 timeout_secs = 1800
@@ -4394,7 +4396,7 @@ python3 apps/imager/packaging/validate-winget.py "$assets/winget"
 bash apps/imager/packaging/publish-winget.sh "$assets"
 '''
 needs = ["package/windows-x86_64", "package/windows-aarch64"]
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 env = { TILO_RELEASE_SERVER = "https://github.com", TILO_RELEASE_REPOSITORY = "tilo-os/releases", TILO_HOMEBREW_TAP_REPOSITORY = "tilo-os/homebrew-tilo", TILO_HOMEBREW_TAP_NAME = "tilo/tilo" }
 requires = ["arch=x86_64"]
 cache = false
@@ -4417,7 +4419,7 @@ for name in tilo-imager-linux-x86_64.tar.gz tilo-imager-linux-aarch64.tar.gz \
 done
 bash apps/imager/packaging/publish-homebrew-tap.sh "$assets"
 '''
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 env = { TILO_IMAGER_MACOS_ENABLED = "1", TILO_RELEASE_SERVER = "https://github.com", TILO_RELEASE_REPOSITORY = "tilo-os/releases", TILO_HOMEBREW_TAP_REPOSITORY = "tilo-os/homebrew-tilo", TILO_HOMEBREW_TAP_NAME = "tilo/tilo" }
 requires = ["os=linux", "arch=aarch64"]
 cache = false
@@ -4447,7 +4449,7 @@ else
 fi
 '''
 needs = ["publish-homebrew-tap"]
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 env = { PACKAGE_KIND = "{package_kind}", TILO_RELEASE_SERVER = "https://github.com", TILO_RELEASE_REPOSITORY = "tilo-os/releases", TILO_HOMEBREW_TAP_REPOSITORY = "tilo-os/homebrew-tilo", TILO_HOMEBREW_TAP_NAME = "tilo/tilo" }
 requires = ["os={os}", "arch={arch}"]
 cache = false
@@ -4466,7 +4468,7 @@ export GITHUB_REF_NAME="${T_REF#tag:}"
 bash apps/imager/packaging/publish-site-release.sh
 '''
 needs = ["homebrew-formula-x86_64", "homebrew-formula-aarch64", "homebrew-cask-x86_64", "homebrew-cask-aarch64", "publish-winget"]
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 env = { GITHUB_SERVER_URL = "https://code.tilo.so", TILO_RELEASE_SERVER = "https://github.com", TILO_RELEASE_REPOSITORY = "tilo-os/releases", TILO_HOMEBREW_TAP_REPOSITORY = "tilo-os/homebrew-tilo", TILO_HOMEBREW_TAP_NAME = "tilo/tilo" }
 secrets = ["TILO_SITE_GIT_TOKEN"]
 requires = ["arch=x86_64"]
@@ -5418,7 +5420,7 @@ name = "os-board-size-{board}"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/os/image-size.sh board-{board} /target/publish/os-board/{board}/oci /target/publish/os-board-size/{board}"
 needs = ["os-board-{board}"]
-image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/os-board-size/{board}/**"]
 default = false

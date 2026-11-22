@@ -12,7 +12,7 @@
 # the base on the pinned ci-fast image: the toolchain, python3 and the shell tools the checks
 # use come from it. The docs' examples run a host that links no desktop library, so none is
 # in here (tools/policy/check_crate_graph.py holds the example to that).
-ARG CI_FAST_IMAGE=registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
+ARG CI_FAST_IMAGE=registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f
 FROM ${CI_FAST_IMAGE}
 
 # Release tarballs, pinned by version and checksum. A floating uv or bun would change which
