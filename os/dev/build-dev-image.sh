@@ -90,8 +90,8 @@ esac
 base_build="${TILO_DEV_BASE_BUILD:-0}"
 case "$base_build" in 0|1|auto) ;; *) die "TILO_DEV_BASE_BUILD must be 0, 1 or auto" ;; esac
 
-python3 "$TILO_REPO/tools/policy/check_dev_image_contract.py" >/dev/null \
-  || { python3 "$TILO_REPO/tools/policy/check_dev_image_contract.py" || true; die "fix the dev image contract first (see above)"; }
+python3 "$TILO_REPO/tools/policy/check_dev_image_contract.py" --build >/dev/null \
+  || { python3 "$TILO_REPO/tools/policy/check_dev_image_contract.py" --build || true; die "fix the dev image contract first (see above)"; }
 
 # What the base build reads (os/dev/base-input-paths.py): os/Containerfile's build-context
 # sources, the workspace its compile builds, and the scripts and pins the build runs. A change

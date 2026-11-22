@@ -85,6 +85,18 @@ class DevImageContractTests(unittest.TestCase):
             self.assertIn('does not label the image sh.tilo.image.flavour="dev"', errors)
             self.assertIn("never runs os/scripts/unseal-rootfs.py", errors)
 
+    def test_a_build_leaves_out_the_rule_that_reads_every_script(self):
+        root = self.fixture()
+        bad = root / "os/dev/tags-the-dev-image-as-production.sh"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text("podman build -f os/Containerfile.dev -t localhost/tilo:latest .\n"
+                       "podman push localhost/tilo:latest registry.tilo.so/tilo/tilo:latest\n",
+                       encoding="utf-8")
+        self.assertIn("registry.tilo.so/tilo/tilo", "\n".join(self.findings(root)))
+        # An image build checks its own files and leaves this one scan to the policy suite: the
+        # build is keyed by what it reads, and this rule reads every script in the repository.
+        self.assertEqual([str(f) for f in check.audit(root, names=False)], [])
+
     def test_dev_server_image_stays_a_development_image(self):
         with self.subTest(phase='it adds to the server image instead of copying it'):
             root = self.fixture()

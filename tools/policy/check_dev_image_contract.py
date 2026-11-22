@@ -489,19 +489,28 @@ def check_production_containerfiles(repo: Path) -> list[Finding]:
     return findings
 
 
-def audit(repo: Path = REPO) -> list[Finding]:
-    return [*check_dev_containerfile(repo), *check_dev_server_containerfile(repo),
-            *check_dev_server_never_released(repo),
-            *check_builder_packages(repo), *check_dev_image_names(repo),
-            *check_production_policy(repo),
-            *check_production_containerfiles(repo)]
+def audit(repo: Path = REPO, names: bool = True) -> list[Finding]:
+    findings = [*check_dev_containerfile(repo), *check_dev_server_containerfile(repo),
+                *check_dev_server_never_released(repo),
+                *check_builder_packages(repo), *check_production_policy(repo),
+                *check_production_containerfiles(repo)]
+    # Which scripts build the dev image reads every shell script there is, so it is the one rule
+    # an image build leaves out: t keys a build by what it reads, and every script would be an
+    # input of every dev image.
+    if names:
+        findings += check_dev_image_names(repo)
+    return findings
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", type=Path, default=REPO)
+    parser.add_argument("--build", action="store_true",
+                        help="the rules an image build checks before it starts, leaving out which "
+                             "scripts build the dev image (that one reads every script in the "
+                             "repository; the policy suite runs the whole contract on every change)")
     args = parser.parse_args(argv)
-    findings = audit(args.repo.resolve())
+    findings = audit(args.repo.resolve(), names=not args.build)
     if findings:
         print(f"dev image contract failed ({len(findings)} problem(s)):\n", file=sys.stderr)
         for finding in findings:
