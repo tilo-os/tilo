@@ -696,14 +696,10 @@ fn a_peer_state_of_an_older_layout_opens_and_is_written_again_in_todays() {
             .unwrap();
     let path = created.path.clone();
     drop(created);
-    // The same state under the version before: what an earlier build wrote.
-    let (mut stored, mut peer) = kept_peer_state(&path);
-    assert_eq!(
-        peer.first(),
-        Some(&11),
-        "today's layout is one byte of version"
-    );
-    peer[0] = 10;
+    // The same state as the version before kept it: what an earlier build wrote.
+    let (mut stored, peer) = kept_peer_state(&path);
+    let peer = tilo_peer_state::kept_before_own_removal(&peer).unwrap();
+    assert_eq!(postcard::take_from_bytes::<u32>(&peer).unwrap().0, 11);
     stored.peer = vec![peer_parts::PeerPart::Inline(peer)];
     std::fs::write(&path, postcard::to_stdvec(&stored).unwrap()).unwrap();
 

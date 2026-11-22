@@ -1,0 +1,76 @@
+//! Messages as stores and replicas kept them while a document write named the member's own
+//! record it was: a store's frames before version 5 ([`crate::store`]) and a replica's waiting
+//! writes at durable versions 10 and 11 ([`crate::state`]). Each reads as the message of today. Nothing
+//! reads which member's own record a write was any more, so that is dropped; the envelope is the
+//! bytes its author signed.
+//!
+//! It brings up what earlier builds wrote, so a host moving onto this build keeps its history: a
+//! host's store is what every other device fetches from, so nothing else holds it. It can go once
+//! the hosts and devices kept by those builds have opened their state on one after them.
+
+use neighbour_wire::NeighbourMsg;
+use serde::Deserialize;
+
+/// A document write's fields before its reader set, as those builds kept them.
+#[derive(Deserialize)]
+struct DocumentWrite {
+    peer: neighbour_wire::PeerId,
+    app_id: String,
+    cluster_id: String,
+    document_id: String,
+    envelope: Box<collab_types::SignedOp>,
+    /// The own record's kind and its person, which nothing reads.
+    _own: Option<(String, [u8; 32])>,
+}
+
+impl DocumentWrite {
+    fn with(self, readers: Option<String>) -> NeighbourMsg {
+        NeighbourMsg::AppDocument {
+            peer: self.peer,
+            app_id: self.app_id,
+            cluster_id: self.cluster_id,
+            document_id: self.document_id,
+            envelope: self.envelope,
+            readers,
+        }
+    }
+}
+
+/// The message a whole frame `bytes` holds. A store's version 1 ended a document write before its
+/// reader set, which reads as naming none.
+///
+/// # Errors
+/// `bytes` are not one message of that layout.
+pub(crate) fn frame(bytes: &[u8]) -> Result<NeighbourMsg, postcard::Error> {
+    let Some(fields) = bytes.strip_prefix(&[NeighbourMsg::APP_DOCUMENT_TAG]) else {
+        return NeighbourMsg::decode(bytes);
+    };
+    let (write, rest) = postcard::take_from_bytes::<DocumentWrite>(fields)?;
+    if rest.is_empty() {
+        return Ok(write.with(None));
+    }
+    match postcard::take_from_bytes::<Option<String>>(rest)? {
+        (readers, []) => Ok(write.with(readers)),
+        _ => Err(postcard::Error::DeserializeBadEncoding),
+    }
+}
+
+/// The message at the start of `bytes`, and the bytes after it: for a message kept among other
+/// values. A document write kept before reader sets (`reader_sets` false) names none.
+///
+/// # Errors
+/// `bytes` do not start with a message of that layout.
+pub(crate) fn take(
+    bytes: &[u8],
+    reader_sets: bool,
+) -> Result<(NeighbourMsg, &[u8]), postcard::Error> {
+    let Some(fields) = bytes.strip_prefix(&[NeighbourMsg::APP_DOCUMENT_TAG]) else {
+        return postcard::take_from_bytes(bytes);
+    };
+    let (write, rest) = postcard::take_from_bytes::<DocumentWrite>(fields)?;
+    if !reader_sets {
+        return Ok((write.with(None), rest));
+    }
+    let (readers, rest) = postcard::take_from_bytes::<Option<String>>(rest)?;
+    Ok((write.with(readers), rest))
+}

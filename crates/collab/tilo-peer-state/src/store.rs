@@ -11,8 +11,9 @@
 //!
 //! A retired frame is named by a record of its own after it, and a segment
 //! whose bytes are mostly retired is written again with only what it still
-//! holds. A store kept one file per frame before segments
-//! ([`FRAMES_VERSION`]); opening one moves its frames into segments once.
+//! holds. A store kept one file per frame before segments, and its frames
+//! in an earlier layout before version 5 ([`FRAMES_VERSION`]); opening one
+//! moves its frames into segments, each as this build writes it, once.
 //!
 //! Beside its frames, a store keeps each workspace's channel governance: for
 //! each route a channel's group frames take ([`neighbour_wire::retention`]),
@@ -500,6 +501,19 @@ impl Store {
         if kept > FRAMES_VERSION {
             return Err(StoreError::Newer(kept));
         }
+        // Segments of an earlier layout are set aside, and their frames packed again as this
+        // build writes them. A packing a crash cut short starts again from what was set aside.
+        let earlier = root.join(EARLIER_SEGMENTS);
+        if (SEGMENTS_VERSION..FRAMES_VERSION).contains(&kept) {
+            if earlier.is_dir() {
+                if root.join(WORKSPACES).is_dir() {
+                    fs::remove_dir_all(root.join(WORKSPACES))?;
+                }
+            } else if root.join(WORKSPACES).is_dir() {
+                fs::create_dir_all(&earlier)?;
+                fs::rename(root.join(WORKSPACES), earlier.join(WORKSPACES))?;
+            }
+        }
         fs::create_dir_all(root.join(WORKSPACES))?;
         let store = Self {
             root,
@@ -528,6 +542,7 @@ impl Store {
             }
             if kept < FRAMES_VERSION {
                 store.pack_frame_files(&mut held)?;
+                store.pack_earlier_segments(&mut held, &earlier)?;
             }
             for (workspace, device, cursors) in holders {
                 held.workspaces
@@ -562,6 +577,9 @@ impl Store {
             )?;
         }
         store.remove_frame_files()?;
+        if earlier.is_dir() {
+            fs::remove_dir_all(&earlier)?;
+        }
         Ok(store)
     }
 
@@ -1269,50 +1287,9 @@ impl Store {
             for record in directories(&dir)? {
                 for author in directories(&record)? {
                     for file in files(&author)? {
-                        let bytes = fs::read(&file)?;
-                        let message = match NeighbourMsg::decode(&bytes) {
-                            Ok(message) => message,
-                            Err(error) => {
-                                tracing::warn!(path = %file.display(), %error, "a stored frame does not decode; it is not served");
-                                continue;
-                            }
-                        };
-                        let frame = match Frame::of(&message) {
-                            Ok(frame) => frame,
-                            Err(error) => {
-                                tracing::warn!(path = %file.display(), %error, "a stored file is not a frame a store keeps; it is not served");
-                                continue;
-                            }
-                        };
-                        let today = postcard::to_allocvec(&message)?;
-                        let packed = frame_record(&frame, &today)?;
-                        let check = record_check(&packed);
-                        if held.workspaces.get(&workspace).is_some_and(|stored| {
-                            stored.lineages.get(&frame.lineage).is_some_and(|entries| {
-                                entries
-                                    .iter()
-                                    .any(|entry| entry.seq == frame.seq && entry.check == check)
-                            })
-                        }) {
-                            continue;
+                        if self.pack(held, workspace, &fs::read(&file)?, &file)? {
+                            moved = moved.saturating_add(1);
                         }
-                        let (writer, at) = append(&self.root, workspace, held, &packed)?;
-                        add(
-                            held,
-                            workspace,
-                            frame.lineage,
-                            Entry {
-                                seq: frame.seq,
-                                bytes: today.len() as u64,
-                                authored_at_ns: frame.authored_at_ns,
-                                retention: frame.retention,
-                                from_link: false,
-                                segment: writer.segment,
-                                at,
-                                check,
-                            },
-                        );
-                        moved = moved.saturating_add(1);
                     }
                 }
             }
@@ -1325,6 +1302,106 @@ impl Store {
             );
         }
         Ok(())
+    }
+
+    /// Move the frames of the segments an earlier version wrote, set aside at
+    /// `earlier`, into segments, each as this build writes it: what a frame
+    /// retired there is not moved.
+    fn pack_earlier_segments(&self, held: &mut Held, earlier: &Path) -> Result<(), StoreError> {
+        if !earlier.is_dir() {
+            return Ok(());
+        }
+        let set_aside = Self {
+            root: earlier.to_path_buf(),
+            appetite: self.appetite,
+            held: std::sync::Mutex::new(Held {
+                bytes: 0,
+                workspaces: BTreeMap::new(),
+                writers: 0,
+                appends: 0,
+                limits: held.limits,
+                channel_order: 0,
+            }),
+        };
+        let mut kept = set_aside.held.lock_recover();
+        set_aside.read_segments(&mut kept)?;
+        let mut reading = Reading::default();
+        let mut moved = 0_u64;
+        for (workspace, stored) in &kept.workspaces {
+            for entry in stored.lineages.values().flatten() {
+                let bytes = reading.bytes(earlier, *workspace, stored, *entry)?;
+                let generation = stored
+                    .segments
+                    .get(&entry.segment)
+                    .map_or(0, |segment| segment.generation);
+                let at = segment_path(earlier, *workspace, entry.segment, generation);
+                if self.pack(held, *workspace, &bytes, &at)? {
+                    moved = moved.saturating_add(1);
+                }
+            }
+        }
+        drop(kept);
+        sync_writers(held)?;
+        tracing::info!(
+            moved,
+            "the store moved the frames of an earlier layout into segments as it writes them"
+        );
+        Ok(())
+    }
+
+    /// Append the frame `bytes` an earlier version kept, read at `from`, as
+    /// this build writes it, unless the store holds it already: whether it
+    /// was appended. One that does not read as a frame is logged and left.
+    fn pack(
+        &self,
+        held: &mut Held,
+        workspace: WorkspaceId,
+        bytes: &[u8],
+        from: &Path,
+    ) -> Result<bool, StoreError> {
+        let message = match crate::before_own_removal::frame(bytes) {
+            Ok(message) => message,
+            Err(error) => {
+                tracing::warn!(path = %from.display(), %error, "a stored frame does not decode; it is not served");
+                return Ok(false);
+            }
+        };
+        let frame = match Frame::of(&message) {
+            Ok(frame) => frame,
+            Err(error) => {
+                tracing::warn!(path = %from.display(), %error, "a stored file is not a frame a store keeps; it is not served");
+                return Ok(false);
+            }
+        };
+        let today = postcard::to_allocvec(&message)?;
+        let packed = frame_record(&frame, &today)?;
+        let check = record_check(&packed);
+        if held.workspaces.get(&workspace).is_some_and(|stored| {
+            stored.lineages.get(&frame.lineage).is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry.seq == frame.seq && entry.check == check)
+            })
+        }) {
+            return Ok(false);
+        }
+        let (writer, at) = append(&self.root, workspace, held, &packed)?;
+        add(
+            held,
+            workspace,
+            frame.lineage,
+            Entry {
+                seq: frame.seq,
+                bytes: today.len() as u64,
+                authored_at_ns: frame.authored_at_ns,
+                retention: frame.retention,
+                from_link: false,
+                segment: writer.segment,
+                at,
+                check,
+            },
+        );
+        Ok(true)
     }
 
     /// Remove the directories of frames kept one file each, once every frame
@@ -1558,6 +1635,19 @@ impl Reading {
         stored: &Workspace,
         entry: Entry,
     ) -> Result<NeighbourMsg, StoreError> {
+        Ok(NeighbourMsg::decode(
+            &self.bytes(root, workspace, stored, entry)?,
+        )?)
+    }
+
+    /// The bytes of the frame `entry` names, as they were written.
+    fn bytes(
+        &mut self,
+        root: &Path,
+        workspace: WorkspaceId,
+        stored: &Workspace,
+        entry: Entry,
+    ) -> Result<Vec<u8>, StoreError> {
         let reuse = matches!(&self.open, Some((id, segment, _)) if *id == workspace && *segment == entry.segment);
         if !reuse {
             let generation = stored
@@ -1578,7 +1668,7 @@ impl Reading {
         ))?;
         let mut bytes = vec![0; usize::try_from(entry.bytes).unwrap_or(usize::MAX)];
         file.read_exact(&mut bytes)?;
-        Ok(NeighbourMsg::decode(&bytes)?)
+        Ok(bytes)
     }
 }
 
@@ -1664,10 +1754,19 @@ const WORKSPACES: &str = "workspaces";
 /// file: version 1 kept a document write without the reader set it is sealed for, which version 2
 /// ends it with ([`NeighbourMsg::AppDocument`]), and version 3 is the frames a document write may
 /// name its own content key in ([`collab_types::EncryptionScheme::DocumentContentKey`]). Version 4
-/// keeps them in segments, each frame as version 3 writes it. A build before a version refuses
-/// the store by version instead of reading what it cannot; a store opening an earlier version
-/// moves its frames into segments, each written as today, before it records the version it keeps.
-pub(crate) const FRAMES_VERSION: u32 = 4;
+/// keeps them in segments, each frame as version 3 writes it. Version 5 is the frames whose
+/// document writes no longer name the member's own record they were. A build before a version
+/// refuses the store by version instead of reading what it cannot; a store opening an earlier
+/// version moves its frames into segments, each written as today
+/// ([`crate::before_own_removal::frame`]), before it
+/// records the version it keeps.
+pub(crate) const FRAMES_VERSION: u32 = 5;
+/// The first version that kept frames in segments.
+const SEGMENTS_VERSION: u32 = 4;
+/// Where a store opening segments of an earlier version sets them aside while it packs their
+/// frames again.
+const EARLIER_SEGMENTS: &str = "earlier-segments";
+
 /// Where a store records the version of the frames it keeps: no file is version 1, kept before
 /// a store recorded one.
 const FRAMES_VERSION_FILE: &str = "frames-version";
@@ -2891,7 +2990,7 @@ mod tests {
                     .join(hex::encode(frame.lineage.author))
                     .join(format!("{:016x}.d", frame.seq));
                 fs::create_dir_all(path.parent().unwrap()).unwrap();
-                fs::write(&path, postcard::to_allocvec(&frame.message).unwrap()).unwrap();
+                fs::write(&path, kept_bytes(&frame.message)).unwrap();
             }
             fs::write(dir.path().join(FRAMES_VERSION_FILE), b"3").unwrap();
 
@@ -2915,6 +3014,53 @@ mod tests {
             let again = Store::open(dir.path(), Appetite::StoreAll).unwrap();
             assert_eq!(again.replay(workspace(), &[], Budget::default()).unwrap().frames, replay.frames);
         }
+
+        phase frames_of_earlier_segments_are_packed_again_as_today_once;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let key = device(3);
+            let frames: Vec<Frame> = (1..=3)
+                .map(|seq| frame(&key, seq, ContentRetention::Delta))
+                .collect();
+            let mut segment = Vec::new();
+            for frame in &frames {
+                segment.extend(frame_record(frame, &kept_bytes(&frame.message)).unwrap());
+            }
+            let path = segment_path(dir.path(), workspace(), 0, 0);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, segment).unwrap();
+            fs::write(dir.path().join(FRAMES_VERSION_FILE), b"4").unwrap();
+
+            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
+            assert_eq!(
+                replay.frames,
+                frames.iter().map(|frame| frame.message.clone()).collect::<Vec<_>>(),
+                "every frame is served as this build writes it"
+            );
+            assert_eq!(
+                fs::read_to_string(dir.path().join(FRAMES_VERSION_FILE)).unwrap(),
+                FRAMES_VERSION.to_string()
+            );
+            assert!(!dir.path().join(EARLIER_SEGMENTS).exists(), "what was set aside is gone");
+            drop(store);
+            let again = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            assert_eq!(again.replay(workspace(), &[], Budget::default()).unwrap().frames, replay.frames);
+        }
+    }
+
+    /// `message` as a store kept it before version 5: a document write names the member's own
+    /// record it was before its reader set.
+    fn kept_bytes(message: &NeighbourMsg) -> Vec<u8> {
+        let mut bytes = postcard::to_allocvec(message).unwrap();
+        assert_eq!(
+            bytes.pop(),
+            Some(0),
+            "a write naming no reader set ends with none"
+        );
+        bytes.extend(postcard::to_allocvec(&Some(("notes.page".to_owned(), [7_u8; 32]))).unwrap());
+        bytes.push(0);
+        bytes
     }
 
     /// A host keeping a workspace of 10k resources: every resource written,
