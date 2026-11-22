@@ -440,6 +440,10 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
     );
     let router = serve(&issuer);
 
+    // Its own certificate administers no devices; the person's root approves one anyway.
+    let admin = json!({"capability": "admin", "server": true});
+    let approved = ask_device(&tickets, ISSUE, admin).await;
+    approved.expect("the person's root approves an administrator");
     let printed = ask_device(&tickets, ISSUE, json!({"capability": "member"}))
         .await
         .expect("a device with the person's root issues a ticket without a login");

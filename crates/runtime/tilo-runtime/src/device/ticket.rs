@@ -531,14 +531,16 @@ impl Tickets {
             Some(here) => (here.cert.user_public_key, &here.cert.capabilities),
             None => (self.0.cert.user_public_key, &self.0.cert.capabilities),
         };
-        // A device puts on a ticket only what it holds itself: the same rule every grant follows.
-        // One running on an operating system Tilo does not control adds computers as such.
+        // A device puts on a ticket only what it holds itself: the same rule every grant follows,
+        // unless it holds the person's root, which certifies whatever the person approves. One
+        // running on an operating system Tilo does not control adds computers as such.
         let mut capability = Self::capability(args);
         capability.foreign |= capabilities.foreign;
-        if !capability.grants_no_more_than(capabilities) {
+        let root = (self.0.root)()?;
+        if root.is_none() && !capability.grants_no_more_than(capabilities) {
             bail!("this device isn't an administrator, so it can't add one");
         }
-        let root = (self.0.root)()?.ok_or_else(|| {
+        let root = root.ok_or_else(|| {
             anyhow!(
                 "This computer does not hold your identity, so it cannot add a device: run \
                  `tilo device add` on the one that does."
