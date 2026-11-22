@@ -140,18 +140,20 @@ which is most of what happens in a workspace. It runs on the person's
 devices, like everything else, and does whatever it or its person starts it
 on.
 
-An agent is a member, and it is notified the way a member is, through the
-system's notifications: when it is mentioned anywhere, sent a direct message,
-assigned a task, and on a few other conditions by default, each of which can be
-changed per agent. A notification starts a turn, and the agent answers where it
-was notified: in the chat, on the task, in the note. There is no separate record
-of asking. The agent engine runs inside each device's one daemon and reads the
-agent's notifications; it never reads an app's own fields. Which eligible device takes a turn is decided in
+An agent is started by triggers, the same triggers a shortcut or any other
+automation uses: anything that can be watched, such as a mention anywhere, a
+direct message, a task assigned to it, a change to some resource, a time, or
+the weather in Bangalore. A new agent comes with the triggers a member would
+expect (mentions, direct messages, assigned tasks), and its person changes them
+like any automation's. A trigger starts a turn, and the agent answers where it
+was triggered: in the chat, on the task, in the note. There is no separate
+record of asking. The agent engine runs inside each device's one daemon and runs the
+agent's triggers; it never reads an app's own fields. Which eligible device takes a turn is decided in
 one function, `tilo_workspace_service::work::takes_turn`: an eligible device
 claims the turn with an ordinary change, the earliest claim wins, and a claim
 that writes nothing for a minute may be taken over. A lease is workspace state
 every device reads. The host declares `workspace` as one read-only resource with a tilolang
-schema, and its `leases` are keyed by the agent and the place it was notified about; a
+schema, and its `leases` are keyed by the agent and the place it was triggered about; a
 lease's `device` is the device whose claim stands now. A
 require reads it like any record (`workspace.leases.get(...)`), and `workspace.members` and
 `workspace.me` move onto the same resource, so the host fields under `workspace.` go. A require sees the device that signed an
@@ -163,7 +165,7 @@ of every record it is in: a direct conversation between Ada and her agent
 is sealed for Ada and the agent, never for Ada alone. A device that runs the
 agent, the tilo.sh server included, holds the agent's keys and so opens
 exactly the records the agent reads, and no others. A device that cannot
-open the record a notification is about is not eligible to take its turn.
+open the record a trigger is about is not eligible to take its turn.
 A sub-agent or coding agent that an agent starts acts as its starter's
 approved key, narrowed to its own conversation: a grant only narrows what
 its giver holds. Any device of the person an agent acts for may approve
@@ -231,6 +233,34 @@ other way round: its ticket names the tab's pending request, and the person runs
 certificate with its device key (member, 30 days; a certificate a device signed
 signs nothing). `tilo login` is always this computer logging in. There is no site lookup. `/v1` REST is only an edge
 for callers outside Tilo.
+
+### Where work runs
+
+Everything a person, an agent or an automation does is an action on a resource.
+The device it starts on admits it against the workspace's synced grants, bound
+by every actor in the chain. Most actions are a change to a synced resource:
+that device makes the change, signs it and syncs it, and nothing is sent
+anywhere to run.
+
+An action that needs what not every device has (a secret it may not read, a
+local model or GPU, Linux, a particular piece of hardware, a connection that
+stays up such as fetching mail) runs on a device of the workspace that has it:
+the starting device if it qualifies, otherwise an always-on server, otherwise
+any other. It runs under the caller's grants, streams its progress and output
+back to the caller as it goes, and ends in a result or a legible error the
+caller sees, and the caller can cancel it. What it writes goes into resources,
+so every view shows it, and work that outlives its device is carried on by
+another eligible device from what is written. When no eligible device is
+online, the call waits and says what it waits for ("waiting for a device that
+can use the workspace's Anthropic key"), until one connects or the caller
+cancels.
+
+A secret such as an API key is a resource in the workspace's vault. Reading it
+and using it are separate grants: a member may make model calls with the
+workspace's models without being able to read the key, and such a call runs on
+a device of someone who may read it. A member who loses access never held the
+key, so nothing is taken back from their devices. Models, keys, spend and
+limits are the workspace's; a limit for a member or an agent is a grant.
 
 ### Views
 
