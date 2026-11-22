@@ -27,6 +27,10 @@ const IMAGE_SECURITY_DATABASE_GUID: &str = "d719b2cb-3d3a-4596-a3bc-dad00e67656f
 /// `EFI_IMAGE_SECURITY_DATABASE`, the vendor GUID `db` lives under.
 const DB_GUID: &str = IMAGE_SECURITY_DATABASE_GUID;
 
+/// `EFI_GLOBAL_VARIABLE`, the vendor GUID `SecureBoot` lives under: the firmware's own state,
+/// not a signature database.
+const GLOBAL_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
+
 /// `EFI_CERT_X509_GUID`, encoded in EFI GUID byte order: an entry carrying an X.509 certificate.
 const EFI_CERT_X509_GUID: [u8; 16] = [
     0xa1, 0x59, 0xc0, 0xa5, 0xe4, 0x94, 0xa7, 0x4a, 0x87, 0xb5, 0xab, 0x15, 0x5c, 0x2b, 0xf0, 0x72,
@@ -62,8 +66,9 @@ impl BootFacts {
     /// boot without a firmware of its own.
     pub fn from_efivars(efivars: &Path, lockdown_report: &Path) -> Self {
         Self {
-            secure_boot: read_efi_variable(efivars, "SecureBoot").map(|b| b.first() == Some(&1)),
-            db: read_efi_variable(efivars, "db"),
+            secure_boot: read_efi_variable(efivars, "SecureBoot", GLOBAL_GUID)
+                .map(|b| b.first() == Some(&1)),
+            db: read_efi_variable(efivars, "db", DB_GUID),
             lockdown: std::fs::read_to_string(lockdown_report)
                 .ok()
                 .and_then(|text| active_lockdown(&text)),
@@ -81,9 +86,10 @@ pub fn active_lockdown(report: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// efivarfs hands back the variable's four attribute bytes, then its payload.
-fn read_efi_variable(efivars: &Path, variable: &str) -> Option<Vec<u8>> {
-    let path = efivars.join(format!("{variable}-{DB_GUID}"));
+/// efivarfs names a variable `<name>-<vendor GUID>` and hands back its four attribute bytes,
+/// then its payload.
+fn read_efi_variable(efivars: &Path, variable: &str, guid: &str) -> Option<Vec<u8>> {
+    let path = efivars.join(format!("{variable}-{guid}"));
     let bytes = std::fs::read(&path).ok()?;
     let payload = bytes.get(4..)?;
     Some(payload.to_vec())

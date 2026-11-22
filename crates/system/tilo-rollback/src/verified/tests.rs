@@ -57,7 +57,7 @@ impl Firmware {
         if let Some(on) = secure_boot {
             let mut bytes = [0x06, 0, 0, 0].to_vec();
             bytes.push(u8::from(on));
-            std::fs::write(dir.path().join(format!("SecureBoot-{DB_GUID}")), bytes).unwrap();
+            std::fs::write(dir.path().join(format!("SecureBoot-{GLOBAL_GUID}")), bytes).unwrap();
         }
         if let Some(db) = db {
             let mut bytes = vec![0x27, 0, 0, 0];
@@ -98,6 +98,17 @@ tilo_test_env::scenario! {
             verified_boot(&Firmware::new(None, Some(&db), Some("integrity")).facts()),
             Err(Unverified::NotUefi),
             "no SecureBoot variable is not a UEFI boot, however the rest reads"
+        );
+        let misfiled = Firmware::new(None, Some(&db), Some("integrity"));
+        std::fs::write(
+            misfiled.dir.path().join(format!("SecureBoot-{DB_GUID}")),
+            [0x06, 0, 0, 0, 1],
+        )
+        .unwrap();
+        assert_eq!(
+            verified_boot(&misfiled.facts()),
+            Err(Unverified::NotUefi),
+            "SecureBoot is the firmware's global variable; one under db's GUID is not it"
         );
         assert_eq!(
             verified_boot(&Firmware::new(Some(false), Some(&db), Some("integrity")).facts()),
