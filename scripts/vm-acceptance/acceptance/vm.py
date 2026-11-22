@@ -132,19 +132,18 @@ def update_of(invocation: str, status) -> dict:
 
 
 def invoked(ask, provider: str, action_id: str, args: dict | None = None, *,
-            confirmed: bool = False, rows=None, wait_ms: int = 0) -> dict:
+            confirmed: bool = False, wait_ms: int = 0) -> dict:
     """Invoke the action the checks name `provider` and `action_id` (see `row_of`), answered
     once it is admitted, or, with `wait_ms`, once it ended within that long:
-    `{"receipt": {"invocation", "update"}}`. A refusal raises, with its code. `rows` lists what
-    the session offers, for the open of an app by its id."""
+    `{"receipt": {"invocation", "update"}}`. A refusal raises, with its code. An app opens
+    by its id in the workspace its open row names, or its close row while it has a window."""
     if provider == APPLICATIONS:
-        found = next((row for row in (rows() if rows else listed(ask, action_id))
-                      if row["provider"] == APPLICATIONS and row["id"] == action_id), None)
-        if found is None:
+        resource, action = f"app.{action_id}", "open"
+        provider = next((row["target"]["provider"] for row in listed(ask, action_id)
+                         if row["target"]["address"]["resource"] == resource
+                         and row["target"]["provider"].startswith("workspace:")), None)
+        if provider is None:
             raise VmError(f"unknown_action: the session offers no app {action_id}")
-        target = found["target"]
-        provider, (resource, action) = target["provider"], (target["address"]["resource"],
-                                                             target["address"]["action"])
     elif provider == APP_ACTIONS:
         provider, resource, action = action_id.split(ID_SEP, 2)
     else:
