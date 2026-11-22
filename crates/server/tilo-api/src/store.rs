@@ -192,10 +192,9 @@ impl Grant {
 }
 
 fn scope_of(key: &GrantKey) -> Scope {
-    match key.scope() {
-        tilo_user_identity::AgentScope::AllWorkspaces => Scope::Account,
-        one @ tilo_user_identity::AgentScope::Workspace(_) => Scope::Workspace(one.name()),
-    }
+    key.scope()
+        .workspace_name()
+        .map_or(Scope::Account, Scope::Workspace)
 }
 
 fn expiry_ms(key: &GrantKey) -> Option<u64> {

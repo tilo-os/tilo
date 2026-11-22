@@ -758,7 +758,7 @@ async fn document_read_views_are_disclosed_without_exposing_the_publishers_priva
 #[tokio::test(flavor = "current_thread")]
 async fn private_directory_continuations_hide_source_metadata_and_bind_the_querying_person() {
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let fixture = Fixture::new().await;
             let editor = Connection::join(
                 &fixture.state,
@@ -847,7 +847,7 @@ async fn private_directory_continuations_hide_source_metadata_and_bind_the_query
             );
             drop(editor);
             drop(fixture);
-        })
+        }))
         .await;
 }
 

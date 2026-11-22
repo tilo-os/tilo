@@ -332,7 +332,7 @@ pub struct Branch<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Certification {
     /// The person's root on this machine signed it.
-    Certified(DeviceCert),
+    Certified(Box<DeviceCert>),
     /// Nothing here may sign it: issued at the person's next sign-in when
     /// their root is in their identity record, or by pairing again.
     Pending(String),
@@ -552,7 +552,7 @@ fn certify(
         .ok()
         .filter(|cert| verify_device_cert_at(cert, now_ns).is_ok());
     let certification = match held {
-        Some(cert) if cert.device_public_key == device => Certification::Certified(cert),
+        Some(cert) if cert.device_public_key == device => Certification::Certified(Box::new(cert)),
         Some(source) if previous.contains(&source.device_public_key) => Certification::Pending(
             "the person's identity service certifies the new device key".into(),
         ),

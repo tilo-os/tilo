@@ -1386,7 +1386,7 @@ impl Workspaces {
         if request.target.provider != WORKSPACE_GOVERNANCE_PROVIDER {
             return Err(ActionCallError::UnknownAction);
         }
-        self.invoke(Some(workspace_id), caller, None, request).await
+        Box::pin(self.invoke(Some(workspace_id), caller, None, request)).await
     }
 
     /// Whether `caller` may invite into the workspace `workspace_id`, as its

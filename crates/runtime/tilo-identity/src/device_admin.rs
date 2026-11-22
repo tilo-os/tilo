@@ -338,12 +338,7 @@ fn ms_since_epoch(ns: u64) -> i64 {
 /// reaches every workspace of the person's, or for a key that is no agent's
 /// grant.
 fn scope_id(scope: Option<tilo_user_identity::AgentScope>) -> Option<String> {
-    match scope? {
-        tilo_user_identity::AgentScope::AllWorkspaces => None,
-        tilo_user_identity::AgentScope::Workspace(id) => {
-            Some(tilo_user_identity::AgentScope::Workspace(id).name())
-        }
-    }
+    scope?.workspace_name()
 }
 
 /// The devices `listed`, this device's fleet, and the keys `record` adds: one

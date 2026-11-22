@@ -1585,9 +1585,9 @@ impl Server {
                     return;
                 }
             };
-            let workspaces = match key.scope() {
-                tilo_user_identity::AgentScope::Workspace(_) => vec![key.scope().name()],
-                tilo_user_identity::AgentScope::AllWorkspaces => connection
+            let workspaces = match key.scope().workspace_name() {
+                Some(one) => vec![one],
+                None => connection
                     .server()
                     .labelled(
                         &connection,

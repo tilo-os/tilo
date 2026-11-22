@@ -181,7 +181,7 @@ tilo_test_env::scenario! {
         let mut origin = InvocationCaller::NativePerson {
             invocation: InvocationId::new(),
             workspace: fixture.workspace.clone(),
-            certificate: admitted.certificate.clone().unwrap(),
+            certificate: Box::new(admitted.certificate.clone().unwrap()),
             time: fixture.state.registered_policy_time().unwrap().unwrap(),
         };
         assert!(

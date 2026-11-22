@@ -21,19 +21,17 @@ use tilo_server_protocol::WorkspaceId;
 pub enum EngineActions {
     /// The host's own action service, over the workspaces it governs.
     Host(WorkspaceActions),
-    /// A person's own device's broker, over the workspaces the device holds.
-    Device(Arc<dyn ActionProvider + Send + Sync>),
+    /// A person's own device's broker, over the workspaces the device holds, and the keys the
+    /// device's agents sign their calls with there.
+    Device(
+        Arc<dyn ActionProvider + Send + Sync>,
+        Arc<dyn super::agent_keys::AgentKeys>,
+    ),
 }
 
 impl From<WorkspaceActions> for EngineActions {
     fn from(actions: WorkspaceActions) -> Self {
         Self::Host(actions)
-    }
-}
-
-impl From<Arc<dyn ActionProvider + Send + Sync>> for EngineActions {
-    fn from(provider: Arc<dyn ActionProvider + Send + Sync>) -> Self {
-        Self::Device(provider)
     }
 }
 
@@ -45,7 +43,7 @@ impl EngineActions {
     pub fn host(&self) -> Option<&WorkspaceActions> {
         match self {
             Self::Host(actions) => Some(actions),
-            Self::Device(_) => None,
+            Self::Device(..) => None,
         }
     }
 
@@ -59,7 +57,7 @@ impl EngineActions {
     ) -> Option<Pending<RemoteActionMessage>> {
         match self {
             Self::Host(actions) => actions.serve(workspace, caller, message),
-            Self::Device(provider) => serve_device(provider.as_ref(), caller, message),
+            Self::Device(provider, _) => serve_device(provider.as_ref(), caller, message),
         }
     }
 
@@ -74,7 +72,7 @@ impl EngineActions {
     ) -> Option<Pending<RemoteActionMessage>> {
         match self {
             Self::Host(actions) => actions.serve_allowed(workspace, caller, request),
-            Self::Device(provider) => serve_device(
+            Self::Device(provider, _) => serve_device(
                 provider.as_ref(),
                 caller,
                 RemoteActionMessage::Invoke(request),
@@ -82,12 +80,12 @@ impl EngineActions {
         }
     }
 
-    /// Sign `request` as the agent `caller` is, with that agent's own key, on a host that holds
-    /// its session. A device's broker signs what it writes with the device's own key, naming
-    /// the agent, so nothing is signed here.
+    /// Sign `request` as the agent `caller` is, with that agent's own key: on a host the key of
+    /// its approved session, on the person's device the key that device made for it. A person's
+    /// own call is left as it is.
     ///
     /// # Errors
-    /// On a host, `caller` is a roster agent whose session is not open there.
+    /// `caller` is an agent whose key is not held here.
     pub(super) fn sign_for(
         &self,
         workspace: WorkspaceId,
@@ -96,7 +94,15 @@ impl EngineActions {
     ) -> Result<(), String> {
         match self {
             Self::Host(actions) => actions.sign_for(workspace, caller, request),
-            Self::Device(_) => Ok(()),
+            Self::Device(_, keys) => {
+                if caller.roster_created_at().is_none() {
+                    return Ok(());
+                }
+                let key = caller
+                    .device_public_key()
+                    .ok_or("the agent names no key it signs with")?;
+                keys.sign(workspace, key, request)
+            }
         }
     }
 
@@ -104,7 +110,7 @@ impl EngineActions {
     pub(super) fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         match self {
             Self::Host(actions) => actions.observe(caller, id),
-            Self::Device(provider) => provider.observe(caller, id),
+            Self::Device(provider, _) => provider.observe(caller, id),
         }
     }
 
@@ -120,7 +126,7 @@ impl EngineActions {
     pub(super) fn resource_reads(&self) -> Option<Arc<dyn ResourceReads>> {
         match self {
             Self::Host(actions) => Some(Arc::new(actions.clone())),
-            Self::Device(provider) => provider.resource_reads(),
+            Self::Device(provider, _) => provider.resource_reads(),
         }
     }
 }

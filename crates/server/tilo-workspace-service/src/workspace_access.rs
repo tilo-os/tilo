@@ -590,12 +590,9 @@ fn grant_decision(
     op: WorkspaceOperation,
 ) -> Decision {
     let here = workspace.runtime.workspace_id();
-    let reaches = match scope {
-        tilo_user_identity::AgentScope::AllWorkspaces => true,
-        tilo_user_identity::AgentScope::Workspace(_) => {
-            WorkspaceId::parse(&scope.name()) == Some(here)
-        }
-    };
+    let reaches = scope
+        .workspace_name()
+        .is_none_or(|one| WorkspaceId::parse(&one) == Some(here));
     let agents_protocol = matches!(
         op,
         WorkspaceOperation::Subscribe

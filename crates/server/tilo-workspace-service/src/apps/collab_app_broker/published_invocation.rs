@@ -13,7 +13,7 @@ pub(super) enum InvocationCaller {
     NativePerson {
         invocation: tilo_actions::InvocationId,
         workspace: String,
-        certificate: tilo_user_identity::DeviceCert,
+        certificate: Box<tilo_user_identity::DeviceCert>,
         time: crate::apps::policy_clock::PolicyTime,
     },
     Certified {
@@ -199,7 +199,7 @@ impl OriginalInvocationData {
                     return Err("original native caller route changed".into());
                 }
                 state.current_native_person(workspace, certificate)?;
-                certificate.clone()
+                (**certificate).clone()
             }
             InvocationCaller::Certified { caller, .. } => {
                 let admitted = state.current_action_caller(caller)?;
@@ -453,7 +453,7 @@ impl OriginalInvocation {
         match &self.data.caller {
             InvocationCaller::Certified { caller, .. } => caller.admitted.certificate.as_ref(),
             InvocationCaller::Local { admitted, .. } => admitted.certificate.as_ref(),
-            InvocationCaller::NativePerson { certificate, .. } => Some(certificate),
+            InvocationCaller::NativePerson { certificate, .. } => Some(&**certificate),
         }
         .ok_or_else(|| "original invocation certificate unavailable".into())
     }
