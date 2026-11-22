@@ -256,7 +256,8 @@ const copy = async (tab, id) => {
   }
   return null;
 };
-const codeOf = prompt => prompt?.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})/)?.[1] ?? null;
+const codeOf = prompt => prompt?.match(/(?:tilo|sh -s) login (tilo1[0-9a-f]+)/)?.[1]
+  ?? prompt?.match(/(?:tilo|sh -s) device add (\S+)/)?.[1] ?? null;
 const steps = tab => tab.evaluate(`document.getElementById('first-screen-steps')?.innerText ?? ''`).catch(() => '');
 
 // The agent's computer, as agent-setup.mjs makes it: its own home, where the
@@ -267,7 +268,7 @@ const computer = name => {
   return {PATH: `${join(home, 'bin')}:${process.env.PATH}`, HOME: home, XDG_STATE_HOME: join(home, 'state'),
     XDG_CONFIG_HOME: join(home, 'config')};
 };
-// `tilo login CODE --agent Reviewer` on that computer, then what its words ask
+// `tilo login TICKET --agent Reviewer` on that computer, then what its words ask
 // of the agent: Tilo's server added to the agent's own configuration and
 // confirmed with `tilo agent check --config`. A promise of how both ended, and
 // `asked`, which resolves once the login says it waits for the person's tab,
@@ -275,7 +276,7 @@ const computer = name => {
 const login = (code, env) => {
   let saidWaiting;
   const asked = new Promise(resolve => { saidWaiting = resolve; });
-  const child = execFile(tiloBin, ['login', code, '--site', site, '--agent', 'Reviewer'], {env, timeout: 600_000, maxBuffer: 1 << 20});
+  const child = execFile(tiloBin, ['login', code, '--agent', 'Reviewer'], {env, timeout: 600_000, maxBuffer: 1 << 20});
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => { stdout += chunk; });
   child.stderr.on('data', chunk => { stderr += chunk; if (/Waiting for the person/.test(stderr)) saidWaiting(true); });

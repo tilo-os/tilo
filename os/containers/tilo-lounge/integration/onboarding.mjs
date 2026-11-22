@@ -396,8 +396,14 @@ const copied = async (tab, before) => {
   await fail('the prompt never reached the clipboard');
 };
 const commandOf = prompt => {
-  const match = prompt.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
-  return match ? {code: match[1], site: match[2] ?? null} : null;
+  const login = prompt.match(/(?:tilo|sh -s) login (\S+)/);
+  const add = prompt.match(/(?:tilo|sh -s) device add (\S+)/);
+  const text = login?.[1] ?? add?.[1];
+  if (!text) return null;
+  return {text, kind: add ? 'device add' : 'login',
+    ticket: /^tilo1[0-9a-f]+$/.test(text) ? text : null,
+    code: /^[2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4}$/.test(text) ? text : null,
+    site: prompt.match(/--site (\S+?)(?:,|\s|$)/)?.[1] ?? null};
 };
 /** The page's own identity module: the one it holds its person in. */
 const identityModule = `await import(new URL('identity.mjs', new URL('.', (document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]').href
@@ -656,9 +662,9 @@ try {
   const prompt = await copied(stranger.tab, beforeCopy);
   report.prompt = prompt;
   const setup = commandOf(prompt);
-  if (!setup) await fail(`the prompt names no tilo login code: ${prompt}`);
+  if (!setup) await fail(`the prompt names no tilo login ticket: ${prompt}`);
   const env = await agentEnv();
-  const login = await tilo(env, ['login', setup.code, '--site', setup.site ?? site]);
+  const login = await tilo(env, setup.ticket ? ['login', setup.ticket] : ['login', setup.code, ...(setup.site ? ['--site', setup.site] : [])]);
   report.login = login;
   if (login.code !== 0) await fail(`tilo login failed (${login.code}): ${login.stderr}${login.stdout}`);
   // The agent adds Tilo's server to its own configuration, as the login's
@@ -737,8 +743,10 @@ try {
   report.signInPrompt = signInPrompt;
   await dump(returning.tab, '5-sign-in-with-agent');
   const signIn = commandOf(signInPrompt);
-  if (!signIn) await fail(`the sign-in prompt names no tilo login code: ${signInPrompt}`);
-  const claimed = await tilo(env, ['login', signIn.code, '--site', signIn.site ?? site]);
+  if (!signIn) await fail(`the sign-in prompt names no ticket or code: ${signInPrompt}`);
+  const claimed = await tilo(env, signIn.kind === 'device add'
+    ? ['device', 'add', signIn.ticket]
+    : ['login', signIn.code, ...(signIn.site ? ['--site', signIn.site] : [])]);
   report.signInLogin = claimed;
   if (claimed.code !== 0) await fail(`tilo login of the sign-in code failed (${claimed.code}): ${claimed.stderr}${claimed.stdout}`);
   // The person asked their agent to sign them in on this tab, so the tab asks

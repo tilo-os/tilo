@@ -255,11 +255,17 @@ const copied = async (tab, what, before) => {
   }
   await fail(`${what} never reached the clipboard`);
 };
-// The code and site a prompt names.
+// What a prompt names: the ticket this tab's host served (`tilo1…`), and, from a host still
+// handing out login codes, the short code it names instead.
 const commandOf = prompt => {
-  const match = prompt.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
-  if (!match) return null;
-  return {code: match[1], site: match[2] ?? null};
+  const login = prompt.match(/(?:tilo|sh -s) login (\S+)/);
+  const add = prompt.match(/(?:tilo|sh -s) device add (\S+)/);
+  const text = login?.[1] ?? add?.[1];
+  if (!text) return null;
+  return {text, kind: add ? 'device add' : 'login',
+    ticket: /^tilo1[0-9a-f]+$/.test(text) ? text : null,
+    code: /^[2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4}$/.test(text) ? text : null,
+    site: prompt.match(/--site (\S+?)(?:,|\s|$)/)?.[1] ?? null};
 };
 // The steps the tab shows, as it shows them: each line the list ever held,
 // kept in the page the moment the list changes. Read by polling, a step the
@@ -327,12 +333,11 @@ if (prompt !== shown) await fail(`the click copied something else than the promp
 report.prompt = prompt;
 mark('the page copied its setup prompt');
 const setup = commandOf(prompt);
-if (!setup) await fail(`the prompt names no tilo login code: ${prompt}`);
-if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh -s login /.test(prompt) || prompt.length > 200) {
-  await fail(`the prompt is not the short one-line setup: ${prompt}`);
+if (!setup) await fail(`the prompt names no tilo login ticket: ${prompt}`);
+if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh -s login tilo1[0-9a-f]+, then do what it tells you\.$/.test(prompt)) {
+  await fail(`the prompt is not the one-line setup naming the ticket: ${prompt}`);
 }
-if (setup.site && new URL(setup.site).origin !== new URL(site).origin) await fail(`the prompt names another site: ${setup.site}`);
-const login = tilo(['login', setup.code, '--site', setup.site ?? site, '--agent', agentName]);
+const login = tilo(['login', setup.ticket, '--agent', agentName]);
 // The tab's steps are followed while the agent goes: the screen leaves only
 // once the agent has confirmed Tilo's tools in its own configuration.
 const following = followSteps(first, `document.documentElement.dataset.firstScreen === undefined || document.documentElement.dataset.firstScreen === 'connected'`);
@@ -359,10 +364,11 @@ if (!checked.stdout.includes(`holds the MCP server tilo`) || !/tilo_[a-z]+/.test
 const steps = await following;
 report.steps = steps;
 if (steps.length < 2) await fail(`the tab showed no steps as the agent went: ${JSON.stringify(steps)}`);
-// The tools the tab says are added are the ones the agent's check found in
-// its own configuration; a step the command did not report is never claimed.
-if (!steps.some(line => line.includes(`Tilo’s tools are added to ${agentName}`))) {
-  await fail(`the tab never showed Tilo's tools added, though the agent's check confirmed them: ${JSON.stringify(steps)}`);
+// The tab shows what its host witnessed: the computer logged in as the person and entered
+// their workspace. What the agent added to its own configuration the tab does not claim to
+// read; the agent's configuration and its own check, above, are what confirm it.
+if (!steps.some(line => line.includes('logged in as you'))) {
+  await fail(`the tab never showed the agent logged in as the person: ${JSON.stringify(steps)}`);
 }
 
 // The screen leaves for the person's own workspace.
@@ -525,8 +531,10 @@ await until(second, `document.documentElement.dataset.firstScreen === 'waiting'`
 const again = await copied(second, 'the sign-in prompt', beforeSignIn);
 report.signInPrompt = again;
 const signIn = commandOf(again);
-if (!signIn) await fail(`the sign-in prompt names no tilo login code: ${again}`);
-const approved = await tilo(['login', signIn.code, '--site', signIn.site ?? site]);
+if (!signIn) await fail(`the sign-in prompt names no ticket or code: ${again}`);
+const approved = await tilo(signIn.kind === 'device add'
+  ? ['device', 'add', signIn.ticket]
+  : ['login', signIn.code, ...(signIn.site ? ['--site', signIn.site] : [])]);
 report.approve = approved;
 if (approved.code !== 0) await fail(`tilo login did not approve the tab (${approved.code}): ${approved.stderr}${approved.stdout}`);
 // The person asked their agent to sign them in on this tab, so the tab asks
