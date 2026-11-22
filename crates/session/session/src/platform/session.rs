@@ -1741,6 +1741,7 @@ impl Session {
             document_reads,
             document_writes: writes,
             held_stores: crate::engine_records::held_stores(workspace_service),
+            app_stores: Cell::default(),
             desktops,
             notes,
             membership_fed: std::cell::RefCell::new(None),

@@ -8,6 +8,15 @@ use crate::Session;
 use collab_types::Member;
 
 impl Session {
+    /// Whether the resources of the apps the session's services run over are kept in the
+    /// workspace the person is in: every app's moved there, and the workspace refused none. Until
+    /// then a fresh session holds them where its services started them, and moving them gives
+    /// them the workspace's ids.
+    #[must_use]
+    pub fn apps_kept_in_workspace(&self) -> bool {
+        self.shared.app_stores.get() == crate::engine_records::AppStores::Kept
+    }
+
     /// The workspaces this device holds: those whose content reached this computer, joined ones
     /// included.
     #[must_use]

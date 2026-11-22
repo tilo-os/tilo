@@ -304,6 +304,55 @@ fn the_seeded_tasks_are_in_the_store_the_tasks_window_opens() {
     );
 }
 
+/// Whether the session lists the task `title` among the resources it publishes.
+fn lists_task(session: &Session, title: &str) -> bool {
+    fn find(resources: &[tilo_actions::ResourceSpec], title: &str) -> bool {
+        resources.iter().any(|resource| {
+            resource.label == title && resource.kind.ends_with(".Task")
+                || find(&resource.children, title)
+        })
+    }
+    find(&session.resources(), title)
+}
+
+/// A fresh session founds the workspace it shows on its own service, and its device is enrolled
+/// in that workspace a moment later; the seeded apps' resources move there once it is, and the
+/// workspace takes them under keys the device holds as its founder. Until then the seeded tasks
+/// stay where the session started them: they are listed on every pass while the device enrols,
+/// and once they moved the person's REPL finds them in the workspace's store.
+#[test]
+fn a_fresh_sessions_seeded_tasks_move_into_the_workspace_it_founds_without_going_missing() {
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let mut session = crate::common::headless(Options {
+        services: crate::common::seeded_apps(),
+        ..crate::common::api_options(root.path())
+    });
+
+    wait_for(
+        &mut session,
+        "the seeded apps' resources in the workspace",
+        |session| {
+            assert!(
+                lists_task(session, SEEDED_TASK),
+                "the seeded tasks are listed while the device enrols"
+            );
+            session.apps_kept_in_workspace().then_some(())
+        },
+    );
+    let mut repl = Api::open(&mut session, root.path());
+    let (found, failed) = repl.run(&mut session, "find(tasks.Task)");
+    assert!(!failed, "the REPL's find ran: {found}");
+    assert!(
+        found.contains(SEEDED_TASK),
+        "the workspace's store holds the seeded tasks: {found}"
+    );
+    assert!(
+        lists_task(&session, SEEDED_TASK),
+        "the seeded tasks are listed once the workspace holds them"
+    );
+}
+
 /// A task made through the Tasks app's own action, at the session's API, is written in the
 /// workspace's store: the app's window reads it, and the person's REPL finds it.
 #[test]
