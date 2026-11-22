@@ -502,6 +502,8 @@ class Session:
         self.proc: subprocess.Popen | None = None
         self.ready = ready
         self.tag = ""
+        self.launcher_log: Path | None = None
+        self._launch_out = self.state
 
     # -- lifecycle --
 
@@ -517,10 +519,15 @@ class Session:
         backend's options."""
         if self.proc is not None:
             raise Failed("the session is running already")
-        out = Path(out).resolve() if out else self.state
-        out.mkdir(parents=True, exist_ok=True)
+        self._launch_out = Path(out).resolve() if out else self.state
+        self.state.mkdir(parents=True, exist_ok=True)
         self.tag = tag
-        ready = out / f"ready-{tag}.json"
+        # The launcher has errexit enabled and writes its progress before
+        # starting the desktop. A stale handle on a VM's shared output mount
+        # can make one of those writes exit the launcher. Keep its open log
+        # and ready handshake on the session's local filesystem.
+        self.launcher_log = self.state / f"session-{tag}.log"
+        ready = self.state / f"ready-{tag}.json"
         ready.unlink(missing_ok=True)
         argv = [str(SESSION), "--no-build", "--headless", "--software", "--apps", apps,
                 "--state", str(self.state), "--ready", str(ready)]
@@ -532,28 +539,42 @@ class Session:
             # Last: everything after the script's `--` is the session's own.
             argv += ["--", *session_args]
         print(f"==> starting the headless session ({tag}, lavapipe only)", file=sys.stderr)
-        log = open(out / f"session-{tag}.log", "w")
         # The session script picks its own private runtime directory (a login's
         # XDG_RUNTIME_DIR, or a short one of its own where a container's exec
         # leaves that unset): its sockets never sit under the state, whose depth
         # is this caller's.
-        self.proc = subprocess.Popen(
-            argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-            env={**os.environ,
-                 "RUST_LOG": os.environ.get(
-                     "RUST_LOG", "warn,tilo::launch_latency=info"), **(env or {})},
-        )
-        until("the session to start",
-              lambda: ready.is_file() or self.proc.poll() is not None, 300, 0.25)
-        if self.proc.poll() is not None:
-            code = self.proc.returncode
-            self.proc = None
-            raise Failed(f"the session ended ({code}); see {out / f'session-{tag}.log'}")
-        self.ready = json.loads(ready.read_text())
-        # A viewer is looking: headless frames are rasterized, and a snapshot
-        # then covers what the session painted instead of an empty texture.
-        self.control({"op": "watch", "watching": True})
+        try:
+            with self.launcher_log.open("w") as log:
+                self.proc = subprocess.Popen(
+                    argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                    env={**os.environ,
+                         "RUST_LOG": os.environ.get(
+                             "RUST_LOG", "warn,tilo::launch_latency=info"), **(env or {})},
+                )
+            until("the session to start",
+                  lambda: ready.is_file() or self.proc.poll() is not None, 300, 0.25)
+            if self.proc.poll() is not None:
+                code = self.proc.returncode
+                self.proc = None
+                raise Failed(f"the session ended ({code}); see "
+                             f"{self._launch_out / self.launcher_log.name}")
+            self.ready = json.loads(ready.read_text())
+            # A viewer is looking: headless frames are rasterized, and a snapshot
+            # then covers what the session painted instead of an empty texture.
+            self.control({"op": "watch", "watching": True})
+        finally:
+            self._keep_launch_file(self.launcher_log)
+        self._keep_launch_file(ready)
         return self
+
+    def _keep_launch_file(self, path: Path) -> None:
+        if self._launch_out == path.parent:
+            return
+        try:
+            self._launch_out.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, self._launch_out / path.name)
+        except OSError as error:
+            print(f"could not copy {path} to {self._launch_out}: {error}", file=sys.stderr)
 
     def stop(self) -> None:
         """Stop the session and everything it started: the script led each of
@@ -572,6 +593,8 @@ class Session:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait(10)
         self.ready = None
+        if self.launcher_log is not None:
+            self._keep_launch_file(self.launcher_log)
 
     def restart(self) -> "Session":
         self.stop()
@@ -816,29 +839,6 @@ class Session:
 
     def log(self) -> str:
         return (self.state / "logs/session.log").read_text(errors="replace")
-
-
-def start_session(state: Path, out: Path, tapps: list[Path] | None = None, tag: str = "session",
-                  apps: str = APPS, fresh: bool = True, env: dict | None = None):
-    """Start a session and answer `(proc, Session)`; `stop_session` stops the one
-    it started."""
-    session = Session(state)
-    session.start(apps=apps, fresh=fresh, out=out, tag=tag, tapps=tapps, env=env)
-    return session.proc, session
-
-
-def stop_session(proc) -> None:
-    """Stop the session `start_session` started, and everything it started."""
-    if proc is not None and proc.poll() is None:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            proc.wait(60)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-            proc.wait(10)
 
 
 def main() -> int:

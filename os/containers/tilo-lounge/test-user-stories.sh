@@ -223,12 +223,15 @@ for story in "${asked[@]}"; do
     # Each person a headless Tilo session of their own, on a scratch home of its own; the
     # driver keeps what a person reads the story by and removes the sessions' state. A story
     # that rehearses a mail provider is given the tree's stand-in mail server, which the
-    # nested-session build staged beside the session. The story's verdict is the driver's: a tee
-    # that cannot keep its copy of the log is the log's loss, not the story's failure.
+    # nested-session build staged beside the session. Spool the driver's log
+    # locally and move a copy to the shared output mount after the walk.
     if [[ $TILO_SH_MAIL_STAND_IN == 1 ]]; then
       export TILO_MAIL_STAND_IN=${TILO_NESTED_SESSION_BUILD:?}/bin/mail-stand-in
     fi
-    PYTHONDONTWRITEBYTECODE=1 python3 "$stories/$driver" "$out" 2>&1 | tee "$out/driver.log" || status=${PIPESTATUS[0]}
+    driver_log=$(mktemp)
+    PYTHONDONTWRITEBYTECODE=1 python3 "$stories/$driver" "$out" 2>&1 | tee "$driver_log" || status=${PIPESTATUS[0]}
+    cp "$driver_log" "$out/driver.log" || echo "could not keep $story's driver log" >&2
+    rm -f "$driver_log"
   elif ! on_stack "$story"; then
     # A story with no stack walks what it drives itself (its driver says what).
     node "$stories/$driver" "" "$out" 2>&1 | tee "$out/driver.log" || status=${PIPESTATUS[0]}

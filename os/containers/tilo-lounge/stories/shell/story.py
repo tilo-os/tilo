@@ -254,9 +254,8 @@ class Person:
         """The end of what this person's session said: its launcher's output and the session's
         own log."""
         said = []
-        launcher = sorted(self.logs.glob("session-*.log"), key=lambda path: path.stat().st_mtime)
-        for log in launcher[-1:] + [self.state / "logs/session.log"]:
-            if log.is_file():
+        for log in [self.session.launcher_log, self.state / "logs/session.log"]:
+            if log is not None and log.is_file():
                 text = log.read_text(errors="replace").splitlines()[-lines:]
                 said.append(f"=== {self.name}: {log.name}\n" + "\n".join(text))
         return "\n\n".join(said) or f"=== {self.name}: no session log"

@@ -86,8 +86,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # The session this checks and the tools that act in it: one harness for every
 # check of a desktop with the tree's apps (scripts/headless-examples/real_apps.py).
-from real_apps import (BUILD, TARGET, Failed, Session, prepare, run,  # noqa: E402
-                       start_session, stop_session, until)
+from real_apps import BUILD, TARGET, Failed, Session, prepare, run, until  # noqa: E402
 
 
 def app_id(name: str) -> str:
@@ -1139,11 +1138,12 @@ def run_checks(summary: dict, checks) -> bool:
     return True
 
 
-def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
+def apps_phases(summary: dict, session: Session, out: Path) -> bool:
     """The apps in a session of their own, then the route checks in a second start of it."""
-    proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS], "apps", apps="")
-    running["proc"] = proc
-    pid = proc.pid
+    state = session.state
+    apps = [out / "build" / f"{n}.tapp" for n in APPS]
+    session.start(out=out, tag="apps", tapps=apps, apps="")
+    pid = session.proc.pid
     # Today's window before Tasks holds a task, which its card is held to after.
     today_before: list[bytes] = []
     ok = run_checks(summary, [
@@ -1170,30 +1170,24 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("record-open", lambda: check_record_open(session, out)),
         ("places", lambda: check_places(session, out)),
     ])
-    stop_session(proc)
-    running["proc"] = None
+    session.stop()
     # The next start writes its own session log over this one.
     shutil.copy(state / "logs/session.log", out / "shell-apps.log")
     if not ok:
         return False
     if "kept" not in summary["failed"]:
         # The same session started again, with what Tasks held when it stopped, and Today opened.
-        proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS],
-                                      "reopened", apps="")
-        running["proc"] = proc
+        session.start(out=out, tag="reopened", tapps=apps, apps="")
         run_checks(summary, [("reopened", lambda: check_reopened(session, out))])
-        stop_session(proc)
-        running["proc"] = None
+        session.stop()
         shutil.copy(state / "logs/session.log", out / "shell-reopened.log")
     # Route access, with the probe installed as Today and as Tasks. The probes first: until
     # a package names the probe's runtime, the collection after each install reclaims it.
     tapps = [*probe_packages(state, out), out / "build/notes.tapp"]
     # Only the packages this check is about: the probe as Today and Tasks, and Notes.
-    proc, session = start_session(state, out, tapps, "routes", apps="")
-    running["proc"] = proc
+    session.start(out=out, tag="routes", tapps=tapps, apps="")
     run_checks(summary, [("routes", lambda: check_routes(session))])
-    stop_session(proc)
-    running["proc"] = None
+    session.stop()
     shutil.copy(state / "logs/session.log", out / "shell-routes.log")
     return True
 
@@ -1225,17 +1219,17 @@ def main() -> int:
 
     summary: dict = {"checks": {}, "failed": []}
     # The session running now, stopped at the end whatever happens.
-    running: dict = {"proc": None}
+    session = Session(state)
     try:
-        apps_phases(summary, state, out, running)
+        apps_phases(summary, session, out)
     except Failed as error:
         summary["failed"].append("session")
         summary["error"] = str(error)
         print(f"FAIL {error}", file=sys.stderr)
     finally:
-        (out / "summary.json").write_text(json.dumps(summary, indent=2))
         if not args.keep:
-            stop_session(running["proc"])
+            session.stop()
+        (out / "summary.json").write_text(json.dumps(summary, indent=2))
     print(f"==> {'FAILED: ' + ', '.join(summary['failed']) if summary['failed'] else 'every check passed'}"
           f" (summary: {out / 'summary.json'})", file=sys.stderr)
     return 1 if summary["failed"] else 0
