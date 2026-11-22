@@ -279,23 +279,6 @@ pub fn configured() -> EngineConfig {
     process().config
 }
 
-/// Forget the modules the process compiled, so the next runtime that loads one compiles it
-/// again: how a benchmark measures a cold start in a warm process. Runtimes keep what they
-/// already loaded; compiled modules kept on disk stay there.
-pub fn forget_compiled() {
-    match shared() {
-        Ok(Shared::Wasmi(p)) => p.forget(),
-        #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
-        Ok(Shared::Wasmtime(p)) => p.forget(),
-        #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
-        Ok(Shared::Tiered(t)) => {
-            t.base.forget();
-            t.top.forget();
-        }
-        Err(_) => {}
-    }
-}
-
 /// Keep the modules the tiered engine compiles in `dir`, and start modules found there on
 /// compiled code: a process calls it once, before its first runtime loads a module, with a
 /// directory that is its own (a tilolang host keeps them in its storage). Without it compiled
@@ -500,13 +483,6 @@ impl<B: Backend> Compiler<B> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(hash, module);
-    }
-
-    fn forget(&self) {
-        self.modules
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
     }
 
     #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]

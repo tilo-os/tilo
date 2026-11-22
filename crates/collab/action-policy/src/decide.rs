@@ -233,13 +233,6 @@ impl<'g> Party<'g> {
         self
     }
 
-    /// [`Self::also_as`] for each of `grantees`.
-    #[must_use]
-    pub fn with_also(mut self, grantees: impl IntoIterator<Item = Grantee>) -> Self {
-        self.grantees.extend(grantees);
-        self
-    }
-
     #[must_use]
     pub fn decide(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
         let held = self.decide_grants(node, kind, cx);
