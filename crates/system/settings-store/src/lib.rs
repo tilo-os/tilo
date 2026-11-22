@@ -82,7 +82,6 @@ pub mod keyboard_sources;
 pub mod live;
 pub mod lockdown;
 pub mod magnifier;
-pub mod mcp_server;
 pub mod notification_policy;
 pub mod paste_shortcut;
 pub mod person_displays;

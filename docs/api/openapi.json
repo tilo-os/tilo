@@ -19751,30 +19751,6 @@
         "required": [],
         "description": ""
       },
-      "settings.mcp-server.set-accept-own-devices.Arguments": {
-        "type": "object",
-        "properties": {
-          "on": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "on"
-        ],
-        "description": ""
-      },
-      "settings.mcp-server.set-act-without-asking.Arguments": {
-        "type": "object",
-        "properties": {
-          "on": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "on"
-        ],
-        "description": ""
-      },
       "sheets.workbook.new-sheet.Arguments": {
         "type": "object",
         "properties": {
@@ -38440,18 +38416,6 @@
       "resource": "settings.network-usage",
       "action": "forget-data-used",
       "arguments": "#/components/schemas/settings.network-usage.forget-data-used.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.mcp-server",
-      "action": "set-accept-own-devices",
-      "arguments": "#/components/schemas/settings.mcp-server.set-accept-own-devices.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.mcp-server",
-      "action": "set-act-without-asking",
-      "arguments": "#/components/schemas/settings.mcp-server.set-act-without-asking.Arguments"
     },
     {
       "app": "so.tilo.settings",

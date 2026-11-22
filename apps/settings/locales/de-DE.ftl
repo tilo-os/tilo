@@ -614,12 +614,6 @@ mesh-shared-with = { $count ->
 }
 mesh-audit-empty = Noch keine Änderungen am Teilen.
 mesh-privacy-title = Mit deinen Geräten teilen
-mesh-agents-title = Agenten
-mesh-agents-accept = Agenten von meinen anderen Geräten annehmen
-mesh-agents-accept-desc = Ein Agent, den du auf einem anderen deiner Geräte ausführst, arbeitet auf diesem, ohne dich hier zu fragen. Für ein Gerät, an dem niemand sitzt.
-mesh-agents-act = Ohne Rückfrage handeln lassen
-mesh-agents-act-desc = Ein Schritt, nach dem dich ein solcher Agent hier fragen würde, ist ohne die Frage erlaubt und bleibt in seinem Lauf wie jeder Schritt, den du erlaubt hast.
-mesh-agents-act-needs-accept = Schalte zuerst „Agenten von meinen anderen Geräten annehmen“ ein.
 mesh-activity-title = Letzte Aktivität
 mesh-trusted-title = Deine Geräte
 mesh-checking = Prüfung…
