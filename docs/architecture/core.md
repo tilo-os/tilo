@@ -142,7 +142,9 @@ on.
 
 Asking an agent is a resource of its own type: who asked, what, and on which
 resource. A mention in a chat message, a note or a task, or an ask from the
-canvas creates one, and the agent's reply is a resource linked to it. The
+canvas creates one, and the agent's reply is a resource linked to it. A person has at most
+one open ask of an agent in one place: their newer messages there while it is open are
+added to it, and it closes when the reply ends. The
 agent engine runs inside each device's one daemon and reads asks; it never
 reads an app's own fields. Which eligible device takes a turn is decided in
 one function, `tilo_workspace_service::work::takes_turn`: an eligible device
