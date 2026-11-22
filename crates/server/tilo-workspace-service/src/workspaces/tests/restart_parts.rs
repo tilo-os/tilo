@@ -52,15 +52,15 @@ impl Io {
                 .unwrap()
         };
         Self {
-            calls: field("syscr:") + field("syscw:"),
-            bytes: field("rchar:") + field("wchar:"),
+            calls: field("syscr:").saturating_add(field("syscw:")),
+            bytes: field("rchar:").saturating_add(field("wchar:")),
         }
     }
 
     fn since(self, before: Self) -> Self {
         Self {
-            calls: self.calls - before.calls,
-            bytes: self.bytes - before.bytes,
+            calls: self.calls.saturating_sub(before.calls),
+            bytes: self.bytes.saturating_sub(before.bytes),
         }
     }
 }
@@ -158,26 +158,33 @@ fn restart_with_chain_of(parts: usize) -> Restart {
 fn a_restart_does_the_same_work_for_each_part_of_a_long_chain() {
     let short = restart_with_chain_of(SHORT);
     let long = restart_with_chain_of(LONG);
-    let per_part = |io: Io, parts: usize| {
-        let parts = parts as f64;
-        (io.calls as f64 / parts, io.bytes as f64 / parts)
+    // Per part, compared without division: the long chain's work times the short chain's
+    // parts against the short chain's times the long chain's, within a quarter.
+    let (short_parts, long_parts) = (u64::try_from(SHORT).unwrap(), u64::try_from(LONG).unwrap());
+    let within = |long: u64, short: u64, slack: u64| {
+        long.saturating_mul(short_parts).saturating_mul(4)
+            <= short
+                .saturating_mul(long_parts)
+                .saturating_mul(5)
+                .saturating_add(slack.saturating_mul(long_parts).saturating_mul(short_parts).saturating_mul(4))
     };
-    let (short_calls, short_bytes) = per_part(short.opened, SHORT);
-    let (long_calls, long_bytes) = per_part(long.opened, LONG);
     assert!(
-        long_calls <= short_calls * 1.25 + 1.0,
-        "a restart's open makes {long_calls:.1} system calls for each of {LONG} parts, \
-         {short_calls:.1} for each of {SHORT}"
+        within(long.opened.calls, short.opened.calls, 1),
+        "a restart's open made {} system calls for {LONG} parts, {} for {SHORT}",
+        long.opened.calls,
+        short.opened.calls
     );
     assert!(
-        long_bytes <= short_bytes * 1.25,
-        "a restart's open moves {long_bytes:.0} bytes for each of {LONG} parts, \
-         {short_bytes:.0} for each of {SHORT}"
+        within(long.opened.bytes, short.opened.bytes, 0),
+        "a restart's open moved {} bytes for {LONG} parts, {} for {SHORT}",
+        long.opened.bytes,
+        short.opened.bytes
     );
     // Its first answer reads the document asked for, none of the chain's.
     assert!(
-        long.answered.calls <= short.answered.calls + 4
-            && long.answered.bytes <= short.answered.bytes * 5 / 4 + 4096,
+        long.answered.calls <= short.answered.calls.saturating_add(4)
+            && long.answered.bytes
+                <= short.answered.bytes.saturating_mul(5).div_ceil(4).saturating_add(4096),
         "a restart's first answer took {:?} after a chain of {LONG} parts, {:?} after {SHORT}",
         long.answered,
         short.answered
