@@ -97,6 +97,34 @@ pub fn member_record(kind: &str, person: &str) -> Option<String> {
     ))
 }
 
+/// The id of the workspace of the person whose root is `person`: the same on each of their
+/// devices, so none has to be told it. It is an ordinary workspace whose only member is the
+/// person: it holds what is theirs alone, their servers, devices, workspace list and the settings
+/// that follow them, and decides the changes of those records.
+#[must_use]
+pub fn person_workspace_id(person: &[u8; 32]) -> String {
+    // The domain names the workspace's first use, the person's servers; the
+    // ids of the workspaces already founded follow from it.
+    let hash = blake3::Hasher::new()
+        .update(b"tilo admin workspace v1\0")
+        .update(person)
+        .finalize();
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hash.as_bytes()[..16]);
+    uuid::Builder::from_random_bytes(bytes)
+        .into_uuid()
+        .to_string()
+}
+
+/// [`person_workspace_id`] of the person `person` names (the lowercase hex of their user root
+/// key); `None` when it is not a person id.
+#[must_use]
+pub fn workspace_of_person(person: &str) -> Option<String> {
+    let mut root = [0; 32];
+    hex::decode_to_slice(person, &mut root).ok()?;
+    Some(person_workspace_id(&root))
+}
+
 /// The derived record `record` belongs to: itself, or the record a part, chunk or child of it
 /// names. Only [`member_record`] makes version-8 ids.
 fn derived_record_in(record: &str) -> Option<&str> {

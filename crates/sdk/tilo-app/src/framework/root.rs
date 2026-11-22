@@ -1105,6 +1105,7 @@ fn without_children(resource: &ResourceSpec) -> ResourceSpec {
         actions,
         views,
         personal,
+        workspace,
         resource_type,
     } = resource;
     ResourceSpec {
@@ -1118,6 +1119,7 @@ fn without_children(resource: &ResourceSpec) -> ResourceSpec {
         actions: actions.clone(),
         views: views.clone(),
         personal: *personal,
+        workspace: workspace.clone(),
         resource_type: resource_type.clone(),
     }
 }

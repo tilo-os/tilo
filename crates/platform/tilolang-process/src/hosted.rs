@@ -403,6 +403,7 @@ fn shallow(spec: &ResourceSpec) -> ResourceSpec {
         actions: spec.actions.clone(),
         views: spec.views.clone(),
         personal: spec.personal,
+        workspace: spec.workspace.clone(),
         resource_type: spec.resource_type.clone(),
     }
 }
