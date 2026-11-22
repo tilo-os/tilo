@@ -40,8 +40,7 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_identity::device_admin;
 use tilo_lock::MutexRecover as _;
 use tilo_server_session::workspaces::{PersonalList, WorkspaceLabels};
-use tilo_session_actions::SessionActions;
-use tilo_session_client::device::Device;
+use tilo_session_client::device::{Device, DeviceActions};
 use tilo_session_client::{Cmd, Outbox as _};
 use tilo_session_client::{PeerConfig, PersonalWorkspaces};
 
@@ -99,7 +98,7 @@ struct ServerAddress {
     /// Whether the person's list is followed on this session yet.
     followed: AtomicBool,
     /// Each entered workspace's actions on the host, by its id there.
-    entered: Mutex<HashMap<WorkspaceId, SessionActions>>,
+    entered: Mutex<HashMap<WorkspaceId, DeviceActions>>,
     /// Held while a workspace is entered, so two invocations enter it once.
     entering: tokio::sync::Mutex<()>,
 }
@@ -712,7 +711,7 @@ struct OnHost {
 
 impl OnHost {
     /// The workspace's actions on the host, once this device entered it there.
-    fn entered(&self) -> Option<SessionActions> {
+    fn entered(&self) -> Option<DeviceActions> {
         self.host
             .entered
             .lock_recover()
@@ -723,7 +722,7 @@ impl OnHost {
     /// Ask `ask` of the workspace's actions on the host once this device is in it there.
     fn asking<T: Send + 'static>(
         &self,
-        ask: impl FnOnce(SessionActions) -> Pending<Result<T, ActionCallError>> + Send + 'static,
+        ask: impl FnOnce(DeviceActions) -> Pending<Result<T, ActionCallError>> + Send + 'static,
     ) -> Pending<Result<T, ActionCallError>> {
         let (answer, answered) = pending();
         let host = Arc::clone(&self.host);
@@ -752,7 +751,7 @@ async fn enter(
     host: &ServerAddress,
     workspace: &str,
     workspace_id: WorkspaceId,
-) -> Result<SessionActions, ActionCallError> {
+) -> Result<DeviceActions, ActionCallError> {
     let _entering = host.entering.lock().await;
     if let Some(actions) = host.entered.lock_recover().get(&workspace_id) {
         return Ok(actions.clone());
@@ -764,7 +763,7 @@ async fn enter(
             .map_err(|error| ActionCallError::Unavailable {
                 reason: format!("the workspace's host did not let this device in: {error}"),
             })?;
-    let actions = host.device.actions(entered);
+    let actions = host.device.workspace_actions(entered);
     host.entered
         .lock_recover()
         .insert(workspace_id, actions.clone());

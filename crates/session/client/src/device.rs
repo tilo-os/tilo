@@ -26,6 +26,9 @@ use crate::{MemoryPeerStore, PeerStore};
 use tilo_server_protocol::WorkspaceId;
 use tilo_session_actions::SessionActions;
 
+mod members;
+pub use members::DeviceActions;
+
 /// How long joining a workspace waits for its host to admit this device.
 const ADMITTING: Wait = Wait::from_secs(20);
 /// How long a workspace's host has to answer an operation of its own.

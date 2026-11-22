@@ -8,6 +8,7 @@ use tilo_actions::remote::{
     ActionCallError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,
     WORKSPACE_INVITATIONS, workspace_governance_child, workspace_governance_resource,
+    workspace_member,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
@@ -447,8 +448,9 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
     super::members::admit(&server, &host, &phone, &workspace.workspace).await;
     assert!(admitted(&server, &phone, workspace.workspace_id).await);
 
-    // The owner's own request is the confirmation removing asks for.
+    // Removing is published on the person it removes, and answers the people left.
     let owner = subscribed(&server, &laptop, workspace.workspace_id).await;
+    let bob_hex = hex::encode(bob.user_pk);
     let removed = outcome(
         ask(
             &owner,
@@ -456,18 +458,18 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
             workspace.workspace_id,
             invocation(
                 WORKSPACE_GOVERNANCE_PROVIDER,
-                workspace_governance_resource(&workspace.workspace),
-                "remove-member",
-                serde_json::json!({ "person": hex::encode(bob.user_pk) }),
+                workspace_member(&workspace.workspace, &bob_hex),
+                "remove",
+                serde_json::json!({}),
             ),
         )
         .await,
     )
     .unwrap();
     assert!(
-        removed["generation"]
-            .as_u64()
-            .is_some_and(|generation| generation > workspace.generation),
+        removed
+            .as_array()
+            .is_some_and(|people| people.iter().all(|row| row["member"]["person"] != bob_hex)),
         "{removed}"
     );
     assert!(!admitted(&server, &phone, workspace.workspace_id).await);

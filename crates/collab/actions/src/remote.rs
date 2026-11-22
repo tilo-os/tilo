@@ -218,6 +218,13 @@ pub const WORKSPACE_APPS: &str = "apps";
 pub const WORKSPACE_MAIL_ACCOUNTS: &str = "mail-accounts";
 /// The people in a workspace, under its governance root (`workspace/members`).
 pub const WORKSPACE_MEMBERS: &str = "members";
+/// One person among a workspace's people (`workspace/members/<person>`, their user public key
+/// in hex): what changes their role and removes them is published on them.
+pub const WORKSPACE_MEMBER: &str = "members/*";
+/// The question a device of a person's asks the workspace's host before it signs a change to
+/// who is in the workspace: `{change, ...the change's arguments}`, where `change` is `member.add`
+/// or `remove-member`. Answered `{}` when the change is the device's to make.
+pub const WORKSPACE_MEMBER_ADMIT: &str = "member.admit";
 /// The invitations a workspace has open, under its governance root
 /// (`workspace/invitations`).
 pub const WORKSPACE_INVITATIONS: &str = "invitations";
@@ -229,10 +236,13 @@ pub const WORKSPACE_WAITING: &str = "waiting";
 /// another name: the operation a grant and a policy name it by, the resource
 /// under the root it is on (none for the root itself) and its id there, as a
 /// person names it. An operation not listed is published on the root under its
-/// own name.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 20] = [
+/// own name; one listed on [`WORKSPACE_MEMBER`] is published on each person, who
+/// is its `person`.
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 22] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     ("member.add", Some(WORKSPACE_MEMBERS), "add"),
+    ("member.add", Some(WORKSPACE_MEMBER), "role"),
+    ("remove-member", Some(WORKSPACE_MEMBER), "remove"),
     ("member.name", Some(WORKSPACE_MEMBERS), "name"),
     ("invite", Some(WORKSPACE_INVITATIONS), "invite"),
     ("invitation.list", Some(WORKSPACE_INVITATIONS), "list"),
@@ -267,13 +277,22 @@ pub fn workspace_governance_child(workspace: &str, child: Option<&str>) -> Strin
     }
 }
 
+/// The resource of the person `person` (their user public key in hex) among `workspace`'s people.
+#[must_use]
+pub fn workspace_member(workspace: &str, person: &str) -> String {
+    format!(
+        "{}/{person}",
+        workspace_governance_child(workspace, Some(WORKSPACE_MEMBERS))
+    )
+}
+
 /// The address `workspace`'s governance tree publishes the operation
-/// `operation` at.
+/// `operation` at, where it is not one person's.
 #[must_use]
 pub fn workspace_governance_address(workspace: &str, operation: &str) -> ActionAddress {
     match WORKSPACE_GOVERNANCE_PUBLISHED
         .iter()
-        .find(|(granted, _, _)| *granted == operation)
+        .find(|(granted, child, _)| *granted == operation && *child != Some(WORKSPACE_MEMBER))
     {
         Some((_, child, action)) => {
             ActionAddress::new(workspace_governance_child(workspace, *child), *action)
@@ -299,6 +318,11 @@ pub fn workspace_governance_operation(address: &ActionAddress) -> Option<(&str, 
         return None;
     }
     let action = address.action.as_str();
+    let child = if workspace_person(address).is_some() {
+        Some(WORKSPACE_MEMBER)
+    } else {
+        child
+    };
     let published = WORKSPACE_GOVERNANCE_PUBLISHED
         .iter()
         .find(|(_, at, published)| *at == child && *published == action);
@@ -313,6 +337,20 @@ pub fn workspace_governance_operation(address: &ActionAddress) -> Option<(&str, 
         }
         None => None,
     }
+}
+
+/// The person (their user public key in hex) `address` names among its workspace's people
+/// (`workspace/members/<person>`), when it names one.
+#[must_use]
+pub fn workspace_person(address: &ActionAddress) -> Option<&str> {
+    let named = address
+        .resource
+        .strip_prefix(workspace_governance_resource("").as_str())?;
+    let (members, person) = named.split_once('/')?.1.split_once('/')?;
+    (members == WORKSPACE_MEMBERS
+        && person.len() == 64
+        && person.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    .then_some(person)
 }
 
 /// Pairing a nearby device with the person's identity. The provider runs it —

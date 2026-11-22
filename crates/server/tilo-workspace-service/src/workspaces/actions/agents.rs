@@ -357,7 +357,7 @@ pub(crate) fn question_id() -> [u8; 32] {
 /// Each request a page asks ([`WorkspacesRequest`]), by its name, as the
 /// action asked of the server itself (`true`) or of the workspaces it is: an agent's grant
 /// for the one is its grant for the other.
-const PAGE_ACTIONS: [(&str, bool, &str); 21] = [
+const PAGE_ACTIONS: [(&str, bool, &str); 20] = [
     ("List", true, LIST_WORKSPACES),
     ("Create", true, CREATE_WORKSPACE),
     ("Place", true, CREATE_WORKSPACE),
@@ -369,7 +369,6 @@ const PAGE_ACTIONS: [(&str, bool, &str); 21] = [
     ("WaitList", false, super::WAIT_LIST),
     ("Unlist", false, super::UNLIST),
     ("MailInvite", false, super::MAIL_INVITATION),
-    ("Remove", false, governance::REMOVE_MEMBER),
     ("Notices", false, super::MEMBERS),
     ("Permits", false, super::MEMBERS),
     ("Name", false, super::NAME),
@@ -481,7 +480,7 @@ const CREATING: WorkspaceOp<'static> =
 
 impl Workspaces {
     /// The person's own checks of the page request `request` by `device`, as
-    /// the request makes them when it is carried out: whom a role or a removal reaches,
+    /// the request makes them when it is carried out:
     /// the role an invitation gives, making a workspace, and the governance
     /// action an invitation's or the workspace's name's change is decided by.
     async fn check_page(
@@ -489,18 +488,8 @@ impl Workspaces {
         device: &DeviceCert,
         request: &WorkspacesRequest,
     ) -> Result<(), super::super::CollaborationError> {
-        use super::super::collaboration::Membership;
         use WorkspacesRequest as Asked;
-        let change;
         let (workspace, op) = match request {
-            Asked::Remove {
-                workspace,
-                user_public_key,
-                ..
-            } => {
-                change = Membership::Remove.change(*user_public_key);
-                (Some(workspace), WorkspaceOp::Change(&change))
-            }
             Asked::Invite {
                 workspace,
                 role,

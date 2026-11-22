@@ -329,24 +329,23 @@ async fn a_page_deletes_a_workspace_of_its_own_with_nobody_else_in_it() {
         "the owner deleted a workspace with someone else in it: {refused:?}"
     );
     // A member leaves by taking themselves out, and the workspace stays for its owner.
-    let WorkspacesReply::Workspace(after) = workspaces
-        .page_workspaces(
+    workspaces
+        .remove_member(
+            &workspace,
             &ada,
-            WorkspacesRequest::Remove {
-                workspace: workspace.clone(),
+            crate::workspaces::RemoveMemberRequest {
                 request_id: [9; 32],
                 user_public_key: ada.user_public_key,
             },
         )
         .await
-    else {
-        panic!("a member leaves the workspace");
-    };
+        .expect("a member leaves the workspace");
+    let after = workspaces.summary(&workspace).await.unwrap();
     assert!(
         !after
             .members
             .iter()
-            .any(|member| member.is_self && !member.removed),
+            .any(|member| member.root() == Some(ada.user_public_key) && !member.removed),
         "the member is no longer in it: {after:?}"
     );
     assert!(

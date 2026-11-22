@@ -35,7 +35,6 @@
 //! server says nothing of it itself.
 
 pub mod keys;
-pub mod members;
 pub mod models;
 pub mod unattended;
 
@@ -369,7 +368,8 @@ impl Session {
         } else {
             let id = connection.server().enter(connection, workspace).await?;
             Served {
-                server: self.agent_surface(Arc::new(connection.device.actions(id)), workspace),
+                server: self
+                    .agent_surface(Arc::new(connection.device.workspace_actions(id)), workspace),
                 on_device: false,
             }
         };
@@ -412,8 +412,7 @@ impl Session {
     }
 
     /// Answer `request` in `workspace`'s session, showing the person what a
-    /// tool call did beside the agent. The changes to who is in it a key's
-    /// own device signs are made here ([`members`]).
+    /// tool call did beside the agent.
     async fn serve(&self, workspace: &str, request: Value) -> Reply {
         self.serve_in(workspace, None, request).await
     }
@@ -425,7 +424,7 @@ impl Session {
         let looking = timing_start();
         let on_device = self.on_device(workspace, program).await;
         timing_done("api.device", looking);
-        // The server answers the people and the unattended runs of a workspace it keeps; a device
+        // The server answers the unattended runs of a workspace it keeps; a device
         // that keeps one answers them itself.
         if !on_device
             && matches!(self.reach, Reach::Forwarded(_))
@@ -440,10 +439,6 @@ impl Session {
                 .pointer("/params/_meta/so.tilo.mcp/structured")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            if members::addresses(tool, arguments) {
-                let answered = self.members(workspace, arguments, structured).await;
-                return Reply::one(result(&id, &answered));
-            }
             if unattended::addresses(tool, arguments) {
                 let answered = self
                     .unattended(workspace, tool, arguments, structured)
@@ -778,15 +773,13 @@ impl Session {
         arguments: Value,
         group: Option<Value>,
     ) -> Result<Value, ApiError> {
-        // The server answers the people and the unattended runs of a workspace it keeps; a device
+        // The server answers the unattended runs of a workspace it keeps; a device
         // that keeps one answers them itself.
-        if !self.on_device(workspace, program).await && matches!(self.reach, Reach::Forwarded(_)) {
-            if members::addresses(tool, &arguments) {
-                return structured(&self.members(workspace, &arguments, true).await);
-            }
-            if unattended::addresses(tool, &arguments) {
-                return structured(&self.unattended(workspace, tool, &arguments, true).await);
-            }
+        if unattended::addresses(tool, &arguments)
+            && matches!(self.reach, Reach::Forwarded(_))
+            && !self.on_device(workspace, program).await
+        {
+            return structured(&self.unattended(workspace, tool, &arguments, true).await);
         }
         let served = self.served(workspace, program).await?;
         Box::pin(served.server.typed(tool, arguments, group))

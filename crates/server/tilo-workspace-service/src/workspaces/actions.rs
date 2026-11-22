@@ -60,10 +60,11 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
-    WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, mcp_server, person_accounts,
-    person_asking, person_connections, person_formats, person_models, person_telling, person_vault,
-    server_account, workspace_governance_address, workspace_governance_operation,
-    workspace_governance_resource,
+    WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, mcp_server,
+    person_accounts, person_asking, person_connections, person_formats, person_models,
+    person_telling, person_vault, server_account, workspace_governance_address,
+    workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
+    workspace_member, workspace_person,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -225,7 +226,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 28] = [
+const VERBS: [Verb; 29] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -260,6 +261,15 @@ const VERBS: [Verb; 28] = [
         check: governance::ADD_MEMBER,
         kind: roles::GOVERNANCE_KIND,
         params: add_member_params,
+    },
+    // A member removes someone ranked below them, as the workspace's roles say; an agent of
+    // theirs, once they said yes.
+    Verb {
+        id: governance::REMOVE_MEMBER,
+        label: "Remove member",
+        check: governance::REMOVE_MEMBER,
+        kind: roles::GOVERNANCE_KIND,
+        params: person_params,
     },
     Verb {
         id: WAIT_LIST,
@@ -433,22 +443,13 @@ const VERBS: [Verb; 28] = [
 /// Destructive governance: run for the workspace's owner, whose own request is
 /// their confirmation, and for nobody else until the person's own
 /// confirmation can be asked for.
-const OWNER_CONFIRMED: [Verb; 2] = [
-    Verb {
-        id: governance::REMOVE_MEMBER,
-        label: "Remove member",
-        check: governance::REMOVE_MEMBER,
-        kind: roles::GOVERNANCE_KIND,
-        params: person_params,
-    },
-    Verb {
-        id: governance::BAN,
-        label: "Ban",
-        check: governance::BAN,
-        kind: roles::GOVERNANCE_KIND,
-        params: person_params,
-    },
-];
+const OWNER_CONFIRMED: [Verb; 1] = [Verb {
+    id: governance::BAN,
+    label: "Ban",
+    check: governance::BAN,
+    kind: roles::GOVERNANCE_KIND,
+    params: person_params,
+}];
 
 fn person_param() -> ActionParam {
     ActionParam::required(
@@ -875,6 +876,8 @@ impl Verb {
         if child.is_some() {
             row.parent_resource.clone_from(&root);
         }
+        // The workspace's people each hold what changes their place.
+        row.has_children = child == Some(WORKSPACE_MEMBERS);
         if let Some(action) = row.action.as_mut() {
             // Reading what the tree holds (`tilo_read workspace/members`) lists it.
             if child.is_some() && address.action == "list" && self.kind == ActionKind::Read {
@@ -911,6 +914,22 @@ fn governance_tree(mut rows: Vec<CatalogueRow>, name: &str) -> Vec<CatalogueRow>
         }
     }
     rows
+}
+
+/// `request` as the workspace's governance runs it: its `operation` on `workspace`'s root, asked
+/// of the person its address names when it names one.
+fn governance_request(request: &InvokeRequest, workspace: &str, operation: &str) -> InvokeRequest {
+    let mut asked = request.clone();
+    asked.target.address = ActionAddress::new(workspace_governance_resource(workspace), operation);
+    if let Some(person) = workspace_person(&request.target.address) {
+        let mut arguments = match asked.argument {
+            InvokeArgument::Json(arguments) => arguments,
+            _ => Map::new(),
+        };
+        arguments.insert("person".into(), person.into());
+        asked.argument = InvokeArgument::Json(arguments);
+    }
+    asked
 }
 
 /// The governance action `action` depends on, for one this provider names.
@@ -1388,38 +1407,18 @@ impl Workspaces {
                 let now = tilo_clock::unix_now_ns();
                 let owner = device.user_public_key == self.inner.host.cert.user_public_key;
                 let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
-                let agent_may = |verb: &Verb| {
-                    grants.as_ref().is_none_or(|grants| {
-                        grants.answer(&verb.operation(GOVERNANCE), now) != Answer::Deny
-                    })
+                let offered = |verb: &Verb| {
+                    self.offers(verb, (caller, &device), &workspace, grants.as_ref(), now)
                 };
+                // Removing is published on each person, under the workspace's people.
                 let mut rows: Vec<CatalogueRow> = VERBS
                     .iter()
                     .chain(confirmed)
-                    .filter(|verb| {
-                        // A verb with no check is the caller's own business. Naming
-                        // themselves is every person's, and an agent's grant has it
-                        // not. Its own grant is a key's: the key lists and revokes
-                        // it by asking for the verb by name, and no person is
-                        // offered what only a key or the key that minted it can do.
-                        if verb.check.is_empty() {
-                            return verb.id == NAME && caller.acting().is_person();
-                        }
-                        if !agent_may(verb) {
-                            return false;
-                        }
-                        if verb.check == CHOOSES_SERVERS {
-                            return self.may_choose_servers(&workspace, &device);
-                        }
-                        self.permits(
-                            &device,
-                            Some(&workspace),
-                            WorkspaceOp::Govern(verb.check),
-                            now,
-                        )
-                    })
+                    .filter(|verb| verb.id != governance::REMOVE_MEMBER && offered(verb))
                     .map(|verb| verb.governance_row(workspace.workspace(), &workspace.name()))
                     .collect();
+                let own = device.user_public_key;
+                rows.extend(self.member_rows(&workspace, (query, own), offered));
                 if operating.is_some() {
                     rows.extend(server::rows(&workspace));
                 }
@@ -1552,9 +1551,7 @@ impl Workspaces {
                 let (workspace, operation) =
                     workspace_governance_operation(&request.target.address)
                         .ok_or(ActionCallError::UnknownAction)?;
-                let mut asked = request.clone();
-                asked.target.address =
-                    ActionAddress::new(workspace_governance_resource(workspace), operation);
+                let asked = governance_request(request, workspace, operation);
                 if operation == tilo_server_session::workspaces::RUN_UNATTENDED {
                     self.unattended_invoke(workspace_id, caller, certificate, &asked)
                         .await
@@ -1689,11 +1686,27 @@ impl Workspaces {
                 .server_operation_invoke(workspace_id, caller, certificate, verb, request)
                 .await;
         }
-        let check = server::check_of(&address.action).ok_or(ActionCallError::UnknownAction)?;
+        let args = Args::of(&request.argument)?;
+        // A device of a person's asks whether a change to who is in the workspace is its to make
+        // before it signs the change itself: decided here as the change would be, and nothing
+        // done. This round trip is temporary: the device will admit the call itself, through
+        // `admit_invocation` over its synced grants, asking the person through the Confirm
+        // frame, and that replaces this.
+        let admitting = address.action == WORKSPACE_MEMBER_ADMIT;
+        let action = if admitting {
+            let change = args.required_text("change")?;
+            [ADD_MEMBER, governance::REMOVE_MEMBER]
+                .into_iter()
+                .find(|action| *action == change)
+                .ok_or(ActionCallError::UnknownAction)?
+        } else {
+            address.action.as_str()
+        };
+        let check = server::check_of(action).ok_or(ActionCallError::UnknownAction)?;
         // A key's own record is read by the key itself, whatever its grant may
         // govern: the workspace lists the grants of its person's, and only the
         // key or the key that minted it revokes one.
-        let listed_key = matches!(address.action.as_str(), KEYS | REVOKE_KEY);
+        let listed_key = matches!(action, KEYS | REVOKE_KEY);
         let (governed, device) = match self.governed_by(workspace_id, caller).await {
             Some(found) => found,
             None if listed_key => self
@@ -1727,8 +1740,12 @@ impl Workspaces {
             // Unknown and forbidden are the same answer. A verb with no check
             // is the caller's own business, which its run decides: naming
             // themselves, in [`NAME`]'s case, and nobody else.
+            // Anyone may leave: removing themselves is decided by the change itself.
+            let leaving = action == governance::REMOVE_MEMBER
+                && args.key("person")? == Some(device.user_public_key);
             let permitted = match check {
                 "" => true,
+                _ if leaving => true,
                 CHOOSES_SERVERS => Self::chooses_servers(&workspace, &device),
                 check => self.permits(
                     &device,
@@ -1744,16 +1761,8 @@ impl Workspaces {
             }
             workspace.workspace().to_owned()
         };
-        let args = Args::of(&request.argument)?;
-        // The caller's own device writes this change to who is in the workspace, signed as its
-        // person's, and the host only answers whether it may: it removes nobody itself, so there
-        // is no removal of its own to confirm.
-        let signed_by_caller = matches!(
-            address.action.as_str(),
-            ADD_MEMBER | governance::REMOVE_MEMBER
-        ) && args.flag(tilo_server_session::workspaces::SIGNED_BY_CALLER)?;
         let owner = device.user_public_key == self.inner.host.cert.user_public_key;
-        if !signed_by_caller && unconfirmed(&address.action, &args, owner) {
+        if unconfirmed(action, &args, owner) {
             return Err(ActionCallError::confirmation_required());
         }
         // A key's own grant is its own business; anything else an agent asks
@@ -1763,9 +1772,9 @@ impl Workspaces {
             && let Some(verb) = VERBS
                 .iter()
                 .chain(&OWNER_CONFIRMED)
-                .find(|verb| verb.id == address.action)
+                .find(|verb| verb.id == action)
         {
-            self.check_governance(&device, &workspace, verb.id, &args, signed_by_caller)
+            self.check_governance(&device, &workspace, verb.id, &args, admitting)
                 .await?;
             self.admit_operation(
                 Some(workspace_id),
@@ -1776,8 +1785,8 @@ impl Workspaces {
             )
             .await?;
         }
-        if signed_by_caller {
-            return Ok(json!({ "admitted": true }));
+        if admitting {
+            return Ok(json!({}));
         }
         let call = GovernanceCall {
             workspace: &workspace,
@@ -1785,20 +1794,20 @@ impl Workspaces {
             request_id: request_id(&device.user_public_key, request.invocation),
             args: &args,
         };
-        self.governance_run(&address.action, call).await
+        self.governance_run(action, call).await
     }
 
     /// The person's own checks of the governance action `action` with `args`
     /// by `device`, beyond the action itself, as carrying it out makes them: the place
-    /// a person is given or invited to, and whom a removal or a ban reaches. A change
-    /// `signed_by_caller` is checked as the device's own, which this host only relays.
+    /// a person is given or invited to, and whom a removal or a ban reaches. A change the device
+    /// `signs` itself is checked as its own, which this host only relays.
     async fn check_governance(
         &self,
         device: &DeviceCert,
         workspace: &str,
         action: &str,
         args: &Args,
-        signed_by_caller: bool,
+        signs: bool,
     ) -> Result<(), ActionCallError> {
         let change;
         let op = match action {
@@ -1808,6 +1817,11 @@ impl Workspaces {
                 super::MemberPlace::Administrator => WorkspaceOp::InviteAdministrator,
                 super::MemberPlace::Owner => WorkspaceOp::MakeOwner,
             },
+            governance::REMOVE_MEMBER
+                if args.required_key("person")? == self.inner.host.cert.user_public_key =>
+            {
+                return Err(refused(&"the owner cannot be removed"));
+            }
             governance::REMOVE_MEMBER | governance::BAN | governance::UNBAN => {
                 let membership = match action {
                     governance::REMOVE_MEMBER => super::collaboration::Membership::Remove,
@@ -1819,7 +1833,7 @@ impl Workspaces {
             }
             _ => return Ok(()),
         };
-        if signed_by_caller {
+        if signs {
             return self
                 .check_signed_now(device, workspace, op)
                 .await
@@ -2060,6 +2074,98 @@ impl Workspaces {
             super::app_files::Uploaded::Partial(received) => Ok(json!({ "received": received })),
             super::app_files::Uploaded::Complete => Ok(json!({ "received": total, "kept": true })),
         }
+    }
+
+    /// Whether the catalogue offers `verb` to `caller` on `device` in `workspace` at `now`, as
+    /// the `grants` of the agent it is, if it is one, let it.
+    fn offers(
+        &self,
+        verb: &Verb,
+        (caller, device): (&Caller, &DeviceCert),
+        workspace: &super::GovernedWorkspace,
+        grants: Option<&agents::AgentGrants>,
+        now: u64,
+    ) -> bool {
+        // A verb with no check is the caller's own business. Naming
+        // themselves is every person's, and an agent's grant has it
+        // not. Its own grant is a key's: the key lists and revokes
+        // it by asking for the verb by name, and no person is
+        // offered what only a key or the key that minted it can do.
+        if verb.check.is_empty() {
+            return verb.id == NAME && caller.acting().is_person();
+        }
+        if grants
+            .is_some_and(|grants| grants.answer(&verb.operation(GOVERNANCE), now) == Answer::Deny)
+        {
+            return false;
+        }
+        if verb.check == CHOOSES_SERVERS {
+            return self.may_choose_servers(workspace, device);
+        }
+        self.permits(
+            device,
+            Some(workspace),
+            WorkspaceOp::Govern(verb.check),
+            now,
+        )
+    }
+
+    /// What each person among `workspace`'s people publishes (`workspace/members/<person>`) that
+    /// `offered` lets the caller ask, when `query` browses the people: moving them to another
+    /// place, and removing them. Every member, `own`, is offered removing themselves, leaving,
+    /// but the owner, who cannot be removed.
+    fn member_rows(
+        &self,
+        workspace: &super::GovernedWorkspace,
+        (query, own): (&CatalogueQuery, [u8; 32]),
+        offered: impl Fn(&Verb) -> bool,
+    ) -> Vec<CatalogueRow> {
+        let members = workspace_governance_child(workspace.workspace(), Some(WORKSPACE_MEMBERS));
+        if query.parent_resource.as_deref() != Some(members.as_str()) {
+            return Vec::new();
+        }
+        let verbs: Vec<(&Verb, bool)> = VERBS
+            .iter()
+            .filter(|verb| matches!(verb.id, ADD_MEMBER | governance::REMOVE_MEMBER))
+            .map(|verb| (verb, offered(verb)))
+            .collect();
+        let mut rows = Vec::new();
+        for member in self.people(workspace).members {
+            let Some(root) = member.root().filter(|_| !member.removed) else {
+                continue;
+            };
+            let person = hex::encode(root);
+            let resource = workspace_member(workspace.workspace(), &person);
+            let label = if member.name.is_empty() {
+                &person
+            } else {
+                &member.name
+            };
+            let leaves = |verb: &Verb| {
+                verb.id == governance::REMOVE_MEMBER
+                    && root == own
+                    && own != self.inner.host.cert.user_public_key
+            };
+            for (verb, _) in verbs
+                .iter()
+                .filter(|(verb, offered)| *offered || leaves(verb))
+            {
+                let mut row = verb.row(GOVERNANCE, &resource, label);
+                row.parent_resource.clone_from(&members);
+                if let Some(action) = row.action.as_mut() {
+                    let (name, said) = if verb.id == ADD_MEMBER {
+                        ("role", "Change role")
+                    } else {
+                        ("remove", verb.label)
+                    };
+                    action.address = ActionAddress::new(resource.as_str(), name);
+                    action.action_label = said.into();
+                    action.params.retain(|param| param.name != "person");
+                }
+                rows.push(row);
+            }
+        }
+        rows
     }
 
     /// The people in `workspace`, one row each: who they are, their role,
@@ -2424,7 +2530,14 @@ impl Workspaces {
             }
             governance::REMOVE_MEMBER => {
                 let person = member(args.required_key("person")?);
-                generation(self.remove_member(workspace, device, person).await)
+                self.remove_member(workspace, device, person)
+                    .await
+                    .map_err(|error| refused(&error))?;
+                Ok(self
+                    .members(workspace)
+                    .await
+                    .map_err(|error| refused(&error))?
+                    .into())
             }
             governance::BAN => {
                 let person = member(args.required_key("person")?);

@@ -273,7 +273,7 @@ async fn an_owners_key_adds_an_administrator_by_key_whose_key_brings_people_in()
     )
     .await;
     assert_eq!(added["status"], "ok", "{added}");
-    let rows = added["result"]["members"].as_array().unwrap().clone();
+    let rows = added["result"].as_array().unwrap().clone();
     let grace_row = rows
         .iter()
         .find(|row| row["member"]["person"] == grace_hex)
@@ -305,7 +305,7 @@ async fn an_owners_key_adds_an_administrator_by_key_whose_key_brings_people_in()
     )
     .await;
     assert_eq!(by_grace["status"], "ok", "{by_grace}");
-    let hal_row = by_grace["result"]["members"]
+    let hal_row = by_grace["result"]
         .as_array()
         .unwrap()
         .iter()
@@ -376,7 +376,7 @@ async fn an_owners_key_moves_a_member_and_an_editors_removes_nobody() {
     let workspace = made["workspace"]["id"].as_str().unwrap().to_owned();
     let here = Some(workspace.as_str());
     let row = |answer: &Value, person: &str| {
-        answer["result"]["members"]
+        answer["result"]
             .as_array()
             .unwrap()
             .iter()
@@ -402,8 +402,8 @@ async fn an_owners_key_moves_a_member_and_an_editors_removes_nobody() {
     let moved = members(
         &mut ada_mcp,
         here,
-        "workspace/members#role",
-        json!({"person": hal_hex, "role": "viewer"}),
+        &format!("workspace/members/{hal_hex}#role"),
+        json!({"role": "viewer"}),
     )
     .await;
     assert_eq!(moved["status"], "ok", "{moved}");
@@ -424,8 +424,8 @@ async fn an_owners_key_moves_a_member_and_an_editors_removes_nobody() {
     let refused = members(
         &mut grace_mcp,
         here,
-        "workspace/members#remove",
-        json!({"person": hal_hex}),
+        &format!("workspace/members/{hal_hex}#remove"),
+        json!({}),
     )
     .await;
     assert_eq!(refused["status"], "failed", "{refused}");

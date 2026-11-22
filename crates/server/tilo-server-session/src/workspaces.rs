@@ -175,13 +175,6 @@ pub const DELETE_WORKSPACE: &str = "workspace.delete";
 /// workspace that is not their own it is refused with [`Refusal::NotYourOwn`].
 /// Answers `{"workspace": uuid, "unattended": bool}`.
 pub const RUN_UNATTENDED: &str = "commands.unattended";
-/// The argument (`true`) a device of a person's passes with the workspace's governance verbs
-/// that add, place or remove someone (`member.add`, `remove-member`) when it writes the change to
-/// who is in the workspace itself, signed as theirs, as each of their devices writes it: the host
-/// then makes no change of its own, and only answers whether the change is theirs to make, by
-/// their own place in the workspace and, for an agent the device's session was handed to, by its
-/// grants there, asking the person first where those say so. Answers `{"admitted": true}`.
-pub const SIGNED_BY_CALLER: &str = "signed_by_caller";
 /// Why the host refused one of its own workspace operations (asking for,
 /// branching or deleting a workspace, or turning a workspace's commands
 /// unattended on): what the refusal's words carry as JSON

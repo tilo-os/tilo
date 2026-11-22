@@ -1528,6 +1528,9 @@ async fn get_content(
     })
 }
 
+/// The workspace's people, as a path names them.
+const PEOPLE: &str = "workspace/members";
+
 /// `tilo workspace people … -w <workspace>`: the workspace's people, its invitations and its
 /// wait list, as the workspace's own `workspace/members`, `workspace/invitations` and
 /// `workspace/waiting` actions.
@@ -1535,19 +1538,19 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
         let workspace = client.workspace_id(workspace).await?;
-        let act = |path: &'static str, action: &'static str, args: Value| {
+        let act = |path: String, action: &'static str, args: Value| {
             let (client, workspace) = (&client, &workspace);
             async move {
                 let answer = client
-                    .act(workspace, path, action, &args, &format!("{path}#{action}"))
+                    .act(workspace, &path, action, &args, &format!("{path}#{action}"))
                     .await?;
                 anyhow::Ok(answer.get("result").cloned().unwrap_or_default())
             }
         };
         let (answer, said) = match cmd {
             PeopleCmd::Ls => {
-                let members = act("workspace/members", "list", json!({})).await?;
-                let invitations = act("workspace/invitations", "list", json!({})).await?;
+                let members = act(PEOPLE.into(), "list", json!({})).await?;
+                let invitations = act("workspace/invitations".into(), "list", json!({})).await?;
                 let listed = json!({"members": members, "invitations": invitations});
                 let said = people_text(&listed);
                 (listed, said)
@@ -1566,7 +1569,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         fields.insert("wait_list_entry".into(), Value::String(waiting));
                     }
                 }
-                let invited = act("workspace/invitations", "invite", args).await?;
+                let invited = act("workspace/invitations".into(), "invite", args).await?;
                 let mut said = text(&invited, "link").to_owned();
                 if let Some(next) = invited.get("next").and_then(Value::as_str) {
                     let _ = write!(said, "\n{next}");
@@ -1580,38 +1583,39 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                 if let (Some(fields), Some(name)) = (args.as_object_mut(), name) {
                     fields.insert("name".into(), Value::String(name));
                 }
-                let listed = act("workspace/members", "add", args).await?;
+                let listed = json!({"members": act(PEOPLE.into(), "add", args).await?});
                 let said = people_text(&listed);
                 (listed, said)
             }
             PeopleCmd::Role { key, role } => {
-                let args = json!({"person": key, "role": role});
-                let listed = act("workspace/members", "role", args).await?;
+                let moved = act(format!("{PEOPLE}/{key}"), "role", json!({ "role": role }));
+                let listed = json!({"members": moved.await?});
                 let said = people_text(&listed);
                 (listed, said)
             }
             PeopleCmd::Rm { key } => {
-                let listed = act("workspace/members", "remove", json!({"person": key})).await?;
+                let removed = act(format!("{PEOPLE}/{key}"), "remove", json!({}));
+                let listed = json!({"members": removed.await?});
                 let said = people_text(&listed);
                 (listed, said)
             }
             PeopleCmd::Revoke { invite } => {
                 let args = json!({ "invite": invite });
-                let answer = act("workspace/invitations", "cancel", args).await?;
+                let answer = act("workspace/invitations".into(), "cancel", args).await?;
                 (answer, format!("revoked {invite}: its link lets nobody in"))
             }
             PeopleCmd::Name { name } => {
-                let answer = act("workspace/members", "name", json!({ "name": name })).await?;
+                let answer = act(PEOPLE.into(), "name", json!({ "name": name })).await?;
                 (answer, format!("the workspace calls you {name}"))
             }
             PeopleCmd::WaitList => {
-                let listed = act("workspace/waiting", "list", json!({})).await?;
+                let listed = act("workspace/waiting".into(), "list", json!({})).await?;
                 let said = waiting_text(&listed);
                 (listed, said)
             }
             PeopleCmd::Unlist { entry } => {
                 let args = json!({ "entry": entry });
-                let listed = act("workspace/waiting", "unlist", args).await?;
+                let listed = act("workspace/waiting".into(), "unlist", args).await?;
                 let said = waiting_text(&listed);
                 (listed, said)
             }
@@ -2704,11 +2708,13 @@ mod tests {
             assert_eq!(moved.method, "POST");
             assert_eq!(
                 moved.target,
-                format!("/v1/workspaces/{WORKSPACE}/resources/workspace/members/actions/role")
+                format!(
+                    "/v1/workspaces/{WORKSPACE}/resources/workspace/members/{ada}/actions/role"
+                )
             );
             assert_eq!(
                 serde_json::from_slice::<Value>(&moved.body).unwrap(),
-                json!({"person": ada, "role": "editor"})
+                json!({"role": "editor"})
             );
             members(reach, "applicant-jane-doe", PeopleCmd::Rm { key: ada.clone() });
             let removed = api_server.drain_requests();
@@ -2716,11 +2722,13 @@ mod tests {
             assert_eq!(removed.method, "POST");
             assert_eq!(
                 removed.target,
-                format!("/v1/workspaces/{WORKSPACE}/resources/workspace/members/actions/remove")
+                format!(
+                    "/v1/workspaces/{WORKSPACE}/resources/workspace/members/{ada}/actions/remove"
+                )
             );
             assert_eq!(
                 serde_json::from_slice::<Value>(&removed.body).unwrap(),
-                json!({ "person": ada })
+                json!({})
             );
 
             // A workspace is named again with `PUT …/name`.

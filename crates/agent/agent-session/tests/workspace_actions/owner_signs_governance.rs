@@ -104,6 +104,11 @@ fn people(workspace: &str, action: &str) -> String {
     format!("/v1/workspaces/{workspace}/resources/workspace/members/actions/{action}")
 }
 
+/// The route of `workspace/members/<person>#action` in `workspace`.
+fn person(workspace: &str, person: &str, action: &str) -> String {
+    format!("/v1/workspaces/{workspace}/resources/workspace/members/{person}/actions/{action}")
+}
+
 /// `POST path` with `body` as the key `token`: the status and the answer.
 async fn as_key(on_server: &OnServer, token: &str, path: &str, body: &Value) -> (u16, Value) {
     let bearer = format!("Bearer {token}");
@@ -132,8 +137,6 @@ async fn an_owner_unmakes_administrators_and_hands_the_workspace_on_from_their_c
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
     let workspace = own_workspace(&on_server, &ada, &page).await;
     let add = people(&workspace, "add");
-    let role = people(&workspace, "role");
-    let remove = people(&workspace, "remove");
     let list = people(&workspace, "list");
     let ada_hex = hex::encode(ada.verifying_key().to_bytes());
     let (grace, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
@@ -165,7 +168,7 @@ async fn an_owner_unmakes_administrators_and_hands_the_workspace_on_from_their_c
     let grace_mac = Holder::start(&on_server, &grace, &workspace, "Claude Code").await;
     let removing = grace_mac
         .command()
-        .post(&remove, &json!({ "person": hal_hex }))
+        .post(&person(&workspace, &hal_hex, "remove"), &json!({}))
         .await
         .expect_err("an administrator does not remove another");
     assert!(
@@ -174,7 +177,10 @@ async fn an_owner_unmakes_administrators_and_hands_the_workspace_on_from_their_c
     );
     let demoting = grace_mac
         .command()
-        .post(&role, &json!({"person": hal_hex, "role": "viewer"}))
+        .post(
+            &person(&workspace, &hal_hex, "role"),
+            &json!({"role": "viewer"}),
+        )
         .await
         .expect_err("an administrator does not demote another");
     assert!(format!("{demoting:#}").contains("refused"), "{demoting:#}");
@@ -188,13 +194,25 @@ async fn an_owner_unmakes_administrators_and_hands_the_workspace_on_from_their_c
     // A key Ada approved acts for her through the host, which signs what it carries out: it may
     // not unmake an administrator on its own authority, whoever asks it.
     let token = approved_key(&on_server, &ada, &page, "Ada's backend").await;
-    let (status, by_host) =
-        as_key(&on_server, &token, &remove, &json!({ "person": hal_hex })).await;
+    let (status, by_host) = as_key(
+        &on_server,
+        &token,
+        &person(&workspace, &hal_hex, "remove"),
+        &json!({}),
+    )
+    .await;
     assert_ne!(
         status, 200,
         "the host does not remove an administrator: {by_host}"
     );
-    assert_eq!(by_host["error"]["code"], "not_permitted", "{by_host}");
+    // Refused as any action on the workspace is, saying why.
+    assert_eq!(by_host["error"]["code"], "refused", "{by_host}");
+    assert!(
+        by_host["error"]["message"]
+            .as_str()
+            .is_some_and(|said| said.contains("only the workspace's owner may")),
+        "{by_host}"
+    );
 
     let listed = ada_mac.command().post(&list, &json!({})).await.unwrap();
     assert!(
@@ -212,7 +230,7 @@ async fn an_owner_unmakes_administrators_and_hands_the_workspace_on_from_their_c
     ada_at_page.refuse_next();
     let refused = ada_mac
         .command()
-        .post(&remove, &json!({ "person": hal_hex }))
+        .post(&person(&workspace, &hal_hex, "remove"), &json!({}))
         .await
         .expect_err("what Ada refuses her agent is not done");
     assert!(
@@ -225,13 +243,16 @@ async fn an_owner_unmakes_administrators_and_hands_the_workspace_on_from_their_c
     // Ada's computer removes Hal and moves Grace to a role: her own device signs both.
     let removed = ada_mac
         .command()
-        .post(&remove, &json!({ "person": hal_hex }))
+        .post(&person(&workspace, &hal_hex, "remove"), &json!({}))
         .await
         .expect("the owner removes an administrator");
     assert!(row(&removed, &hal_hex).is_none(), "Hal is gone: {removed}");
     let demoted = ada_mac
         .command()
-        .post(&role, &json!({"person": grace_hex, "role": "editor"}))
+        .post(
+            &person(&workspace, &grace_hex, "role"),
+            &json!({"role": "editor"}),
+        )
         .await
         .expect("the owner moves an administrator to a role");
     let grace_row = row(&demoted, &grace_hex).expect("Grace stays");
@@ -256,7 +277,10 @@ async fn an_owner_unmakes_administrators_and_hands_the_workspace_on_from_their_c
     // Now Grace is its owner, and her computer unmakes Ada's administration.
     let unmade = grace_mac
         .command()
-        .post(&role, &json!({"person": ada_hex, "role": "editor"}))
+        .post(
+            &person(&workspace, &ada_hex, "role"),
+            &json!({"role": "editor"}),
+        )
         .await
         .expect("the new owner unmakes the old one's administration");
     assert_eq!(

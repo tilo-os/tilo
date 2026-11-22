@@ -305,14 +305,6 @@ pub enum WorkspacesRequest {
     Pending {
         workspace: String,
     },
-    /// Remove a member and every device of theirs.
-    Remove {
-        workspace: String,
-        /// Caller-chosen idempotency key.
-        request_id: [u8; 32],
-        /// The member.
-        user_public_key: [u8; 32],
-    },
     /// Issue a single-use invitation that admits whoever redeems it with
     /// the token `grant` names, without the owner deciding again: answered
     /// with [`WorkspacesReply::Invitation`].

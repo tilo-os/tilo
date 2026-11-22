@@ -10,7 +10,7 @@
 //! - every agent's `tilo mcp`, each a connection to the one socket it listens on ([`serve`]):
 //!   the host keeps one session per device, so one process holds the device's session and every
 //!   agent is a run of its own over it, its actions asked of the workspace's host through that
-//!   session ([`SessionActions`]);
+//!   session ([`DeviceActions`]);
 //! - Tilo's API as this computer's key, over that session, which `tilo do`, `ls` and `read` reach;
 //! - the person's workspaces' folders below their home ([`peer`]).
 //!
@@ -48,8 +48,7 @@ use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
-use tilo_session_actions::SessionActions;
-use tilo_session_client::device::Device as Entered;
+use tilo_session_client::device::{Device as Entered, DeviceActions};
 
 use tilo_api::daemon::enter::{self, NOT_LOGGED_IN};
 use tilo_api::daemon::{Claim, PEER_STATUS, STEP_DOWN, unreachable_answer};
@@ -407,7 +406,7 @@ pub(crate) struct Connection<E> {
 /// and the device entered anew) goes then, not with the last agent connection that used it.
 struct Served {
     session: std::sync::Weak<Session>,
-    server: McpServer<SessionActions>,
+    server: McpServer<DeviceActions>,
 }
 
 impl Served {
@@ -455,7 +454,7 @@ impl<E: Enter> Connection<E> {
 fn open(session: &Arc<Session>, device: &Device, run: &str) -> Served {
     let workspace_id = session.device.workspace_id();
     let user = device.cert.user_public_key;
-    let actions = session.device.actions(workspace_id);
+    let actions = session.device.workspace_actions(workspace_id);
     let person = hex::encode(user);
     // Every session of this agent, on any computer of the person's, is the one agent the host
     // and the workspace's record of its agents know it by.
@@ -542,7 +541,7 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
         }
     });
     let answer = match &served {
-        Ok(served) => match account_or_people(request, connection) {
+        Ok(served) => match account_call(request) {
             Ok(call) => match served.current().and_then(|session| session.api.clone()) {
                 Some(api) => Some(api.mcp(call.clone()).await.unwrap_or_else(|problem| {
                     unreachable_answer(&call, &problem).unwrap_or(Value::Null)
@@ -561,15 +560,9 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
 }
 
 /// `request` when it is a tool call on the person's account (`account/…`:
-/// their workspaces and keys) or a change to who is in a workspace this
-/// computer's device signs (`workspace/members#add`, `#role`, `#remove`),
-/// which Tilo's API answers as for any key of theirs, the changes in the
-/// workspace this computer entered unless they name another; any other request
-/// back, for the workspace's own projection.
-fn account_or_people<E: Enter>(
-    mut request: Value,
-    connection: &Connection<E>,
-) -> Result<Value, Value> {
+/// their workspaces and keys), which Tilo's API answers as for any key of
+/// theirs; any other request back, for the workspace's own projection.
+fn account_call(request: Value) -> Result<Value, Value> {
     let tool = request.pointer("/params/name").and_then(Value::as_str);
     if !matches!(tool, Some("tilo_ls" | "tilo_read" | "tilo_do")) {
         return Err(request);
@@ -578,23 +571,8 @@ fn account_or_people<E: Enter>(
         .pointer("/params/arguments/path")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let account = path.split(['/', '#']).next() == Some("account");
-    let people = matches!(
-        path,
-        "workspace/members#add" | "workspace/members#role" | "workspace/members#remove"
-    );
-    if !account && !people {
+    if path.split(['/', '#']).next() != Some("account") {
         return Err(request);
-    }
-    if people
-        && let Ok(device) = &connection.shared.device
-        && let Some(arguments) = request
-            .pointer_mut("/params/arguments")
-            .and_then(Value::as_object_mut)
-    {
-        arguments
-            .entry("workspace")
-            .or_insert_with(|| json!(device.workspace));
     }
     Ok(request)
 }

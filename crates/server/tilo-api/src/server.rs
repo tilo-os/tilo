@@ -534,39 +534,6 @@ impl Server {
             .ok_or_else(|| Administration::Unanswered("the workspace was not listed".into()))
     }
 
-    /// Remove the member whose user public key is `person` from `workspace`,
-    /// and every device of theirs, as `connection`. The server decides who may,
-    /// as it decides for the person's own page.
-    ///
-    /// # Errors
-    /// Not a workspace the grant reaches, or the workspace refused or did not
-    /// answer.
-    pub async fn remove_member(
-        &self,
-        connection: &Connection,
-        workspace: &str,
-        person: [u8; 32],
-    ) -> Result<(), Administration> {
-        if !connection.key.scope().reaches(workspace)
-            || tilo_server_protocol::WorkspaceId::parse(workspace).is_none()
-        {
-            return Err(Administration::Refused(ServerError::NotFound.to_string()));
-        }
-        let mut request_id = [0; 32];
-        getrandom::fill(&mut request_id)
-            .map_err(|error| Administration::Unanswered(error.to_string()))?;
-        connection
-            .administer(
-                tilo_server_protocol::workspaces::WorkspacesRequest::Remove {
-                    workspace: workspace.to_owned(),
-                    request_id,
-                    user_public_key: person,
-                },
-            )
-            .await
-            .map(drop)
-    }
-
     /// Bring `connection` into `workspace`, one its grant reaches: its id on
     /// the session.
     ///

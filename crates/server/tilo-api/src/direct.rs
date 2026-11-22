@@ -342,9 +342,7 @@ impl Direct {
 
     /// Answer one MCP request (a `tools/call`) as the API's MCP endpoint
     /// answers it, on this key's own session for the API's calls: its answer. What a
-    /// person's account does (`account/…`) and the changes to who is in a workspace
-    /// their device signs (`workspace/members#add`, `#role`, `#remove`) are answered
-    /// here as for any key of theirs.
+    /// person's account does (`account/…`) is answered here as for any key of theirs.
     ///
     /// # Errors
     /// The key cannot act now, or the call was not answered.
