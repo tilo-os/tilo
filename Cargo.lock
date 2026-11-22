@@ -22466,7 +22466,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bytes",
- "chat",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "fs-protocol",
@@ -23771,7 +23770,6 @@ dependencies = [
  "blake3",
  "bytes",
  "calendar-model",
- "chat",
  "collab-types",
  "collaboration",
  "ed25519-dalek 3.0.0",

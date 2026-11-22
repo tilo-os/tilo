@@ -36,13 +36,13 @@ use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TY
 use collaboration::{
     CollabEvent, CollabRequest, DocumentMutation, SurfaceDelta, SurfacePublication, WorkspaceCommit,
 };
+use runtime_portal::process_link::Shows;
 use tilo_actions::{
     ActionAddress, ActionContext, ActionDescriptor, ActionInvoker, ActionRegistry, EncodedAction,
     InvocationId, InvocationUpdate, ResourceSpec,
 };
 use tilo_render_protocol::WireError;
 use tilo_render_protocol::patch::{ActionCatalogue, ToUi, Transport};
-use runtime_portal::process_link::Shows;
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
@@ -63,6 +63,7 @@ mod used;
 use tilolang_tilo::{HostEffect, OpenEffect};
 use used::{Used, used_apps, workspace_id};
 
+use crate::call::Calls;
 use crate::phrases::Phrases;
 use crate::presence::Presence;
 
@@ -459,9 +460,7 @@ fn with_app_actions(
     activate: Option<&tilo_actions::ActionSpec>,
 ) -> ResourceSpec {
     let mut resource = tilolang_tilo::history::with_verbs(resource);
-    for spec in std::iter::once(tilo_resource::read::spec(None))
-        .chain(activate.cloned())
-    {
+    for spec in std::iter::once(tilo_resource::read::spec(None)).chain(activate.cloned()) {
         if !resource
             .actions
             .iter()
@@ -942,6 +941,8 @@ pub struct Hosted {
     /// Who else is where in the document, as the connection hears it, and what the instance last
     /// said of its own person there.
     presence: Presence,
+    /// Who is in the system's calls the views show, and the steps the person takes in them.
+    calls: Calls,
     /// What the connection delivered before the instance ran, taken on its first frame.
     early: Vec<CollabEvent>,
     /// The file the app was opened with, until the turn that published its surface runs the action
@@ -1058,6 +1059,7 @@ impl Hosted {
         registry.connect_content(record.content().clone());
         drop(in_scope);
         let presence = Presence::new(&spec.app, &spec.person);
+        let calls = Calls::new(&spec.person);
         // The mailbox's recovery reads the copy an earlier Mail left on this device: the
         // package's one-time conversion, as a native app's records are.
         let mail_archive = (spec.app == crate::mail_recovery::APP)
@@ -1097,6 +1099,7 @@ impl Hosted {
             mail_archive,
             access,
             presence,
+            calls,
             early: Vec::new(),
             opening: None,
             files: kept.content.clone(),
@@ -1184,10 +1187,14 @@ impl Hosted {
     /// stop reading as typing. `None` when neither waits.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
-        [self.instance.wakes_in(), self.presence.wakes_in()]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            self.instance.wakes_in(),
+            self.presence.wakes_in(),
+            self.calls.wakes_in(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// The workspace record the instance holds.
@@ -1277,9 +1284,10 @@ impl Hosted {
         }
         // Who else is here and who is writing, before the views that show it run.
         let before = events.len();
-        events.retain(|event| !self.presence.take(event));
+        events.retain(|event| !self.presence.take(event) && !self.calls.take(event));
         changed |= events.len() != before;
         self.presence.show(&mut self.instance);
+        self.calls.show(&mut self.instance);
         changed |= self.instance.update();
         let chose = self.chosen();
         changed |= chose;
@@ -1303,8 +1311,16 @@ impl Hosted {
             }
             changed |= self.take_step(&asked);
         }
-        // Where the person is and whether they write there, as the views now stand.
+        // The steps the person took in a call, through the system's call service.
+        for (target, step) in self.instance.take_call_steps() {
+            self.calls.step(&target, step);
+        }
         let document = &mut self.record;
+        if self.instance.reads_calls() || self.calls.joined() {
+            self.calls
+                .say(|request| document.manager_mut().send(request));
+        }
+        // Where the person is and whether they write there, as the views now stand.
         self.presence.say(&self.instance, |request| {
             if !document.manager_mut().send(request) {
                 tracing::debug!("the connection did not take the person's presence");
@@ -1901,7 +1917,11 @@ impl Hosted {
     /// cursors, results of requests it never makes), but for what it names: what each app
     /// installed here is called rides with the context, and is what this window's history reads
     /// another app's change as.
-    fn delivered(&mut self, event: CollabEvent, cancelled: &std::collections::HashSet<u64>) -> bool {
+    fn delivered(
+        &mut self,
+        event: CollabEvent,
+        cancelled: &std::collections::HashSet<u64>,
+    ) -> bool {
         if let Some(moved) = self.personal.take(&event, self.record.manager_mut()) {
             return moved;
         }

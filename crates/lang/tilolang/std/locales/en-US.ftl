@@ -2,3 +2,5 @@
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
 d-tilo-std = Standard library
+
+d-li6q74vm = Call member

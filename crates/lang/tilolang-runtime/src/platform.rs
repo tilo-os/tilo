@@ -25,6 +25,9 @@ use tilolang::types::Ty;
 /// The window the lenses on each resource are kept under, as view state of no window: set by
 /// the host as presence moves, read by `lenses(r)`.
 pub const LENS_WINDOW: &str = "$lenses";
+/// The window who is in the system's call held on each resource is kept under, as view state of
+/// no window: set by the host as the call service tells it, read by `call_members(r)`.
+pub const CALL_WINDOW: &str = "$calls";
 /// Where the runtime keeps how each resource's outside effects stand (`delivery(r)`).
 pub const DELIVERY_WINDOW: &str = "$delivery";
 
@@ -204,6 +207,23 @@ pub fn lens_key(id: &str) -> StateKey {
     StateKey::runtime(LENS_WINDOW, None, id)
 }
 
+/// The key of who is in the call held on the resource whose own id (an item's, or a document's
+/// when it is no item) is `id`: what the call service names a call's place by.
+#[must_use]
+pub fn call_key(id: &str) -> StateKey {
+    StateKey::runtime(CALL_WINDOW, None, id)
+}
+
+/// The id the call service names the call held on `target` by: the item's own id, or the
+/// document's for a resource that is no item.
+#[must_use]
+pub fn call_place(target: &ResourceRef) -> String {
+    target
+        .item
+        .as_ref()
+        .map_or_else(|| target.doc.clone(), ToString::to_string)
+}
+
 /// The seen mark a slot holds ([`crate::Runtime::set_seen`]): `.some((change, at))`.
 fn mark_of(held: Option<&Value>) -> Option<SeenMark> {
     let Some(Value::Opt(Some(mark))) = held else {
@@ -294,6 +314,20 @@ impl Core {
         value
     }
 
+    /// The list the host keeps under `key` for the views (empty while it said none); a view that
+    /// read it runs again when it moves.
+    fn host_list(&self, key: StateKey) -> Value {
+        let (value, generation) = {
+            let states = self.view_states.borrow();
+            (
+                states.get(&key).cloned().unwrap_or(Value::List(Vec::new())),
+                states.generation(&key),
+            )
+        };
+        self.note_state_read(key, generation, &value);
+        value
+    }
+
     pub(crate) fn platform_import(
         &self,
         imp: crate::abi::Imp,
@@ -319,15 +353,13 @@ impl Core {
             }
             Imp::Lenses => {
                 let target = self.ref_arg(a.h(0)?)?;
-                let key = lens_key(&target.target.id_string());
-                let (value, generation) = {
-                    let states = self.view_states.borrow();
-                    (
-                        states.get(&key).cloned().unwrap_or(Value::List(Vec::new())),
-                        states.generation(&key),
-                    )
-                };
-                self.note_state_read(key, generation, &value);
+                let value = self.host_list(lens_key(&target.target.id_string()));
+                self.ret_h(value)
+            }
+            Imp::CallMembers => {
+                self.calls_read.set(true);
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.host_list(call_key(&call_place(&target.target)));
                 self.ret_h(value)
             }
             Imp::Versions

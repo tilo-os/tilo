@@ -10,7 +10,7 @@ use so.tilo.lang.agent as agent
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people.
 type Conversations {
-    channels: Collection<Category | TextChannel | Direct>
+    channels: Collection<Category | TextChannel | VoiceChannel | Direct>
 }
 
 root conversations: Conversations
@@ -19,9 +19,14 @@ root conversations: Conversations
 type Category {
     name: Text
     /// The server's channels.
-    // TODO: `Collection<Channel>` with `type Channel = TextChannel | VoiceChannel |
-    // ForumChannel` once voice and forum channels land.
-    channels: Collection<TextChannel>
+    channels: Collection<TextChannel | VoiceChannel>
+}
+
+/// A place to talk live: joining it puts the person in its call, the system's, with whoever else
+/// joined. Who is in it is the call's presence, never stored; who may speak or listen is the
+/// workspace's.
+type VoiceChannel {
+    name: Text
 }
 
 /// Messages in one stream; any message can start a thread. A post is a change of its channel,
@@ -104,11 +109,15 @@ default view direct for Direct
 
 default view thread for Thread
 
+default view voice for VoiceChannel
+
 row view channel_summary for TextChannel
 
 row view direct_summary for Direct
 
 row view category_summary for Category
+
+row view voice_summary for VoiceChannel
 
 /// Adds a text channel to the sidebar.
 primary action new_channel(all: Conversations, name: Text = std.say("new-channel")) -> TextChannel (
@@ -134,14 +143,31 @@ action add_channel(c: Category, name: Text = std.say("new-channel")) -> TextChan
     c.channels.insert(TextChannel(name: name))
 }
 
+/// Adds a voice channel to the sidebar.
+action new_voice_channel(all: Conversations, name: Text = std.say("Voice")) -> VoiceChannel (
+    icon: .volume_2,
+    label: "New voice channel",
+) {
+    all.channels.insert(VoiceChannel(name: name))
+}
+
+/// Adds a voice channel to a category.
+action add_voice_channel(c: Category, name: Text = std.say("Voice")) -> VoiceChannel (
+    icon: .volume_2,
+    label: "New voice channel",
+) {
+    c.channels.insert(VoiceChannel(name: name))
+}
+
 /// The conversations the native Chat kept before this app took its id over, carried into these
 /// once: its categories and channels in the sidebar's order, each with its name and topic, and
 /// every message of a channel with what it said, whether it was pinned and the id it had there.
-/// The replies in a message's thread are the messages of that message's thread, a reply quoting
-/// it answers it, and who wrote each message, when, and its reactions are kept with it. What this
-/// app has no place for is set aside in a category of its own instead of dropped: an archived
-/// channel, a voice channel, and each direct conversation, as a channel holding its messages.
-/// The native app's own documents are left as they are.
+/// A voice channel stays a voice channel, under the id it had. The replies in a message's thread
+/// are the messages of that message's thread, a reply quoting it answers it, and who wrote each
+/// message, when, and its reactions are kept with it. What this app has no place for is set aside
+/// in a category of its own instead of dropped: an archived channel, and each direct
+/// conversation, as a channel holding its messages. The native app's own documents are left as
+/// they are.
 migration action carry_native_chat(all: Conversations) {
     let earlier = earlier(all)
     // Oldest first: when each was written, the same time by id.
@@ -156,12 +182,20 @@ migration action carry_native_chat(all: Conversations) {
     // Each conversation carried, by the id it had in the native app.
     let carried: Map<TextChannel> = Map<TextChannel>()
     for ch in shown.filter(e -> not known.contains(e.texts.get("category") ?? "")) {
-        carried.put(ch.id, all.channels.insert(native_channel(ch), id: ch.id))
+        if was_voice(ch) {
+            all.channels.insert(VoiceChannel(name: ch.texts.get("name") ?? ""), id: ch.id)
+        } else {
+            carried.put(ch.id, all.channels.insert(native_channel(ch), id: ch.id))
+        }
     }
     for cat in categories {
         let c = all.channels.insert(Category(name: cat.texts.get("name") ?? ""), id: cat.id)
         for ch in shown.filter(e -> (e.texts.get("category") ?? "") == cat.id) {
-            carried.put(ch.id, c.channels.insert(native_channel(ch), id: ch.id))
+            if was_voice(ch) {
+                c.channels.insert(VoiceChannel(name: ch.texts.get("name") ?? ""), id: ch.id)
+            } else {
+                carried.put(ch.id, c.channels.insert(native_channel(ch), id: ch.id))
+            }
         }
     }
     let aside = channels.filter(e -> set_aside(e))
@@ -175,9 +209,7 @@ migration action carry_native_chat(all: Conversations) {
     if not aside.is_empty() or not directs.keys().is_empty() {
         let c = all.channels.insert(Category(name: "Set aside"), id: "set-aside")
         for ch in aside {
-            let kind = if (ch.texts.get("kind") ?? "").lower() == "voice" {
-                "A voice channel"
-            } else { "An archived channel" }
+            let kind = if was_voice(ch) { "An archived voice channel" } else { "An archived channel" }
             let topic = ch.texts.get("topic") ?? ""
             let made = c.channels.insert(
                 TextChannel(
@@ -230,10 +262,14 @@ migration action carry_native_chat(all: Conversations) {
     }
 }
 
-/// Whether the native channel `e` has no place among this app's channels: an archived one, or a
-/// voice channel, which held a call and no messages.
+/// Whether the native channel `e` has no place among this app's channels: an archived one.
 fn set_aside(e: host.Earlier) -> Bool {
-    (e.texts.get("archived") ?? "") == "true" or (e.texts.get("kind") ?? "").lower() == "voice"
+    (e.texts.get("archived") ?? "") == "true"
+}
+
+/// Whether the native channel `e` was a voice channel.
+fn was_voice(e: host.Earlier) -> Bool {
+    (e.texts.get("kind") ?? "").lower() == "voice"
 }
 
 /// The native channel `e` as a channel of this app: its name and its topic.
@@ -313,6 +349,7 @@ action message_person(all: Conversations, who: Actor) -> Direct (
         match item {
             c: Category => {}
             ch: TextChannel => {}
+            v: VoiceChannel => {}
             d: Direct => {
                 if d.person == who {
                     return d
@@ -441,6 +478,7 @@ view unread(all: Conversations) {
         x -> match x {
             c: Category => unread_in(c),
             ch: TextChannel => if first_unseen(ch) != .none { [ch] } else { [] },
+            v: VoiceChannel => [],
             d: Direct => if first_unseen(d) != .none { [d] } else { [] },
         },
     )
@@ -449,9 +487,15 @@ view unread(all: Conversations) {
     }
 }
 
-/// The conversations `c` holds that the person looking has not read.
+/// The conversations `c` holds that the person looking has not read. A voice channel holds no
+/// messages, so it never stands here.
 fn unread_in(c: Category) -> List<TextChannel | Direct> {
-    c.channels.filter(ch -> first_unseen(ch) != .none)
+    c.channels.flat_map(
+        x -> match x {
+            ch: TextChannel => if first_unseen(ch) != .none { [ch] } else { [] },
+            v: VoiceChannel => [],
+        },
+    )
 }
 
 /// The sidebar: channels outside any category first, then each category with its channels.
@@ -481,18 +525,41 @@ view sidebar(all: Conversations) {
                                 // nothing.
                                 if not c.channels.is_empty() {
                                     ui.NavSection(c.name, collapsible: true) {
-                                        for ch in c.channels {
-                                            ui.NavItem(
-                                                "{c.name}/{ch.name}",
-                                                ch.name,
-                                                icon: .hash,
-                                                item: ch,
-                                                mentions: mentions(ch),
-                                            ) {
-                                                on select: set(shown, "{c.name}/{ch.name}")
-                                                    .then(
-                                                        open(ch),
-                                                    )
+                                        for x in c.channels {
+                                            match x {
+                                                ch: TextChannel => {
+                                                    ui.NavItem(
+                                                        "{c.name}/{ch.name}",
+                                                        ch.name,
+                                                        icon: .hash,
+                                                        item: ch,
+                                                        mentions: mentions(ch),
+                                                    ) {
+                                                        on select: set(
+                                                            shown,
+                                                            "{c.name}/{ch.name}",
+                                                        )
+                                                            .then(open(ch))
+                                                    }
+                                                }
+                                                v: VoiceChannel => {
+                                                    // A voice channel, and under it who is in
+                                                    // its call now.
+                                                    let key = "{c.name}/voice/{v.name}"
+                                                    ui.NavItem(key, v.name, icon: .volume_2, item: v) {
+                                                        on select: set(shown, key).then(open(v))
+                                                    }
+                                                    for m in call_members(v) {
+                                                        ui.NavItem(
+                                                            "{key}/{m.who.name()}",
+                                                            m.who.name(),
+                                                            person: m.who,
+                                                            parent: key,
+                                                        ) {
+                                                            on select: set(shown, key).then(open(v))
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -507,6 +574,22 @@ view sidebar(all: Conversations) {
                                     mentions: mentions(ch),
                                 ) {
                                     on select: set(shown, "/{ch.name}").then(open(ch))
+                                }
+                            }
+                            v: VoiceChannel => {
+                                let key = "/voice/{v.name}"
+                                ui.NavItem(key, v.name, icon: .volume_2, item: v) {
+                                    on select: set(shown, key).then(open(v))
+                                }
+                                for m in call_members(v) {
+                                    ui.NavItem(
+                                        "{key}/{m.who.name()}",
+                                        m.who.name(),
+                                        person: m.who,
+                                        parent: key,
+                                    ) {
+                                        on select: set(shown, key).then(open(v))
+                                    }
                                 }
                             }
                             d: Direct => {
@@ -600,6 +683,23 @@ view direct(d: Direct) {
 /// A channel as another app's page summarizes it: its name, and what it is about.
 view channel_summary(c: TextChannel) {
     row(c.name, secondary: c.topic, icon: .hash)
+}
+
+/// A voice channel: the system's call, with this channel as its place.
+view voice(v: VoiceChannel) {
+    std.call(v)
+}
+
+/// A voice channel as another app's page summarizes it: its name, and who is in its call.
+view voice_summary(v: VoiceChannel) {
+    let people = call_members(v)
+    row(
+        v.name,
+        secondary: if people.is_empty() {
+            ""
+        } else if people.len() == 1 { "1 in the call" } else { "{people.len()} in the call" },
+        icon: .volume_2,
+    )
 }
 
 /// A direct conversation as another app's page summarizes it: whose it is and the last thing
@@ -885,9 +985,11 @@ scenario "a team's channels" -> TextChannel {
     design.topic = "Reviews and critique"
     add_channel(team, "release")
     add_channel(team, "planning")
+    add_voice_channel(team, "Standup")
     let social = new_category(conversations, "Social")
     add_channel(social, "weekend")
     add_channel(social, "books")
+    new_voice_channel(conversations, "Lounge")
     invoke(
         send(design, RichText("The new onboarding build is on the test machines.")),
         by: mia,

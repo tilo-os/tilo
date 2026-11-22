@@ -1,34 +1,36 @@
-//! A call binds to the exact Chat voice channel it was made in, read from
-//! the channel tree of an admitted document.
+//! A call binds to the exact Chat voice channel it was made in, read from the items of an
+//! admitted Chat document.
 
 use super::super::{
     CallPhaseV1, CallV1, ChatCallBindingV1, DirectionsV1, MediaPolicyError, WorkspaceMediaV1,
     resolve_chat_binding, validate_bound_chat_change,
 };
+use super::{CHAT_APP as APP, CONVERSATIONS, put_voice_channel};
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use std::collections::BTreeMap;
 use tilo_automerge::ApplyIncoming;
 
-const APP: &str = "so.tilo.chat";
-const DOCUMENT: &str = "tab:voice";
+const DOCUMENT: &str = "";
 
-fn fixture() -> AutoCommit {
+fn on(actor: Vec<u8>) -> AutoCommit {
     let mut doc = AutoCommit::new();
-    doc.set_actor(ActorId::from(vec![17; 32]));
-    let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
-    let voice = {
-        let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
-        doc.put_object(&entry, "v", ObjType::Map).unwrap()
-    };
-    doc.put(&voice, "kind", "voice").unwrap();
-    doc.put(&voice, "workspace", "main").unwrap();
+    doc.set_actor(ActorId::from(actor));
+    doc
+}
+fn fixture() -> AutoCommit {
+    let mut doc = on(vec![17; 32]);
+    put_voice_channel(&mut doc, "voice", "Lounge");
     doc.commit();
     doc
 }
+fn items(doc: &AutoCommit) -> automerge::ObjId {
+    let records = doc.get(ROOT, "tl").unwrap().unwrap().1;
+    let app = doc.get(&records, APP).unwrap().unwrap().1;
+    let resource = doc.get(&app, CONVERSATIONS).unwrap().unwrap().1;
+    doc.get(&resource, "$items").unwrap().unwrap().1
+}
 fn voice_value(doc: &AutoCommit) -> automerge::ObjId {
-    let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-    let entry = doc.get(&channels, "voice").unwrap().unwrap().1;
-    doc.get(&entry, "v").unwrap().unwrap().1
+    doc.get(items(doc), "voice").unwrap().unwrap().1
 }
 fn binding(doc: &AutoCommit) -> Result<ChatCallBindingV1, MediaPolicyError> {
     resolve_chat_binding(APP, DOCUMENT, "voice", doc)
@@ -58,35 +60,56 @@ fn policy_for(binding: ChatCallBindingV1) -> WorkspaceMediaV1 {
 tilo_test_env::scenario! {
     fn a_call_binds_its_exact_voice_channel_or_is_refused;
 
-    phase a_voice_channel_binds_its_object_and_the_workspace_it_once_named;
+    phase a_voice_channel_binds_its_object;
     {
         let doc = fixture();
         let bound = binding(&doc).unwrap();
+        assert_eq!(bound.app_id, APP);
         assert_eq!(bound.channel_id, "voice");
         assert_eq!(bound.channel_object, voice_value(&doc).to_string());
-        assert_eq!(bound.chat_workspace_id, "main");
+        assert_eq!(bound.chat_workspace_id, "");
         bound.validate().unwrap();
     }
 
-    phase a_channel_that_is_archived_or_not_voice_binds_nothing;
+    phase a_channel_that_is_removed_or_not_voice_binds_nothing;
     {
         type Change = fn(&mut AutoCommit);
         let cases: Vec<(&str, Change)> = vec![
-            ("archived", |doc| {
+            ("removed", |doc| {
                 let voice = voice_value(doc);
-                doc.put(&voice, "archived", true).unwrap();
+                doc.put(&voice, "$at", r#"{"removed":true}"#).unwrap();
             }),
-            ("another kind", |doc| {
+            ("in a removed category", |doc| {
+                let items = items(doc);
+                let category = doc.put_object(&items, "team", ObjType::Map).unwrap();
+                doc.put(&category, "$at", r#"{"removed":true}"#).unwrap();
                 let voice = voice_value(doc);
-                doc.put(&voice, "kind", "text").unwrap();
+                doc.put(&voice, "$at", r#"{"in":"team","f":"channels","k":"a"}"#).unwrap();
             }),
-            ("not a channel map", |doc| {
-                let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-                doc.put(&channels, "voice", "text").unwrap();
+            ("in a category that is not there", |doc| {
+                let voice = voice_value(doc);
+                doc.put(&voice, "$at", r#"{"in":"gone","f":"channels","k":"a"}"#).unwrap();
+            }),
+            ("a text channel", |doc| {
+                let voice = voice_value(doc);
+                doc.put(&voice, "$type", "q7llygsa").unwrap();
+            }),
+            ("not an item map", |doc| {
+                let items = items(doc);
+                doc.put(&items, "voice", "text").unwrap();
             }),
             ("no channel", |doc| {
-                let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-                doc.delete(&channels, "voice").unwrap();
+                let items = items(doc);
+                doc.delete(&items, "voice").unwrap();
+            }),
+            ("another app's", |doc| {
+                let records = doc.get(ROOT, "tl").unwrap().unwrap().1;
+                doc.delete(&records, APP).unwrap();
+                let other = doc.put_object(&records, "so.tilo.lang.notes", ObjType::Map).unwrap();
+                let resource = doc.put_object(&other, "notes", ObjType::Map).unwrap();
+                let items = doc.put_object(&resource, "$items", ObjType::Map).unwrap();
+                let item = doc.put_object(&items, "voice", ObjType::Map).unwrap();
+                doc.put(&item, "$type", super::VOICE_CHANNEL_TYPE).unwrap();
             }),
         ];
         for (what, change) in cases {
@@ -95,13 +118,21 @@ tilo_test_env::scenario! {
             doc.commit();
             assert_eq!(binding(&doc), Err(MediaPolicyError::Binding), "{what}");
         }
+        let mut inside = fixture();
+        let items = items(&inside);
+        let category = inside.put_object(&items, "team", ObjType::Map).unwrap();
+        inside.put(&category, "$at", r#"{"f":"channels","k":"a"}"#).unwrap();
+        let voice = voice_value(&inside);
+        inside.put(&voice, "$at", r#"{"in":"team","f":"channels","k":"a"}"#).unwrap();
+        inside.commit();
+        assert!(binding(&inside).is_ok(), "a category's voice channel binds");
     }
 
-    phase a_workspace_that_is_not_text_is_malformed_not_unbound;
+    phase a_type_that_is_not_text_is_malformed_not_unbound;
     {
         let mut doc = fixture();
         let voice = voice_value(&doc);
-        doc.put(&voice, "workspace", true).unwrap();
+        doc.put(&voice, "$type", true).unwrap();
         doc.commit();
         assert_eq!(binding(&doc), Err(MediaPolicyError::Malformed));
     }
@@ -110,19 +141,14 @@ tilo_test_env::scenario! {
     {
         let mut doc = fixture();
         let policy = policy_for(binding(&doc).unwrap());
-        let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-        let voice = {
-            let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
-            doc.put_object(&entry, "v", ObjType::Map).unwrap()
-        };
-        doc.put(&voice, "kind", "voice").unwrap();
+        let voice = put_voice_channel(&mut doc, "voice", "Lounge");
         doc.commit();
         assert_eq!(
             validate_bound_chat_change(&policy, APP, DOCUMENT, &doc),
             Ok(()),
             "the channel id names the call's channel, whatever object holds it"
         );
-        doc.put(&voice, "kind", "text").unwrap();
+        doc.put(&voice, "$type", "q7llygsa").unwrap();
         doc.commit();
         assert_eq!(
             validate_bound_chat_change(&policy, APP, DOCUMENT, &doc),
@@ -142,45 +168,23 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_chat_that_named_no_workspace_binds_an_empty_one;
+    phase two_devices_that_each_made_chat_bind_its_channels_the_same;
     {
-        let mut doc = fixture();
-        let earlier = binding(&doc).unwrap();
-        assert_eq!(earlier.chat_workspace_id, "main");
-        let voice = voice_value(&doc);
-        doc.delete(&voice, "workspace").unwrap();
-        doc.commit();
-        let now = binding(&doc).unwrap();
-        assert_eq!(now.chat_workspace_id, "");
-        assert!(now.same_channel(&earlier));
-        assert_eq!(
-            validate_bound_chat_change(&policy_for(earlier), APP, DOCUMENT, &doc),
-            Ok(()),
-            "the call stays the channel's once its workspace is gone"
-        );
-    }
-
-    phase two_devices_making_the_same_channel_bind_it_the_same;
-    {
-        let mut first = AutoCommit::new();
-        first.set_actor(ActorId::from(vec![17; 32]));
-        let mut second = AutoCommit::new();
-        second.set_actor(ActorId::from(vec![18; 32]));
-        for doc in [&mut first, &mut second] {
-            let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
-            let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
-            let voice = doc.put_object(&entry, "v", ObjType::Map).unwrap();
-            doc.put(&voice, "kind", "voice").unwrap();
-            doc.put(&voice, "archived", false).unwrap();
-            doc.commit();
-        }
+        let mut first = on(vec![17; 32]);
+        put_voice_channel(&mut first, "voice", "Lounge");
+        first.commit();
+        let mut second = on(vec![18; 32]);
+        put_voice_channel(&mut second, "standup", "Standup");
+        second.commit();
         let mut merged_first = first.fork();
         merged_first.merge_incoming(&mut second.fork()).unwrap();
         let mut merged_second = second.fork();
         merged_second.merge_incoming(&mut first.fork()).unwrap();
-        let on_first = binding(&merged_first).unwrap();
-        let on_second = binding(&merged_second).unwrap();
-        assert_eq!(on_first, on_second);
+        for channel in ["voice", "standup"] {
+            let on_first = resolve_chat_binding(APP, DOCUMENT, channel, &merged_first).unwrap();
+            let on_second = resolve_chat_binding(APP, DOCUMENT, channel, &merged_second).unwrap();
+            assert_eq!(on_first, on_second, "{channel}");
+        }
     }
 
     phase a_history_that_is_missing_its_dependencies_binds_nothing;
@@ -188,7 +192,7 @@ tilo_test_env::scenario! {
         let mut doc = fixture();
         let before = doc.get_heads();
         let voice = voice_value(&doc);
-        doc.put(&voice, "workspace", "later").unwrap();
+        doc.put(&voice, "name", "Later").unwrap();
         doc.commit();
         let child = doc.get_changes(&before)[0].raw_bytes().to_vec();
         let mut orphan = AutoCommit::new();
@@ -200,13 +204,8 @@ tilo_test_env::scenario! {
     phase a_channel_object_past_its_bound_binds_nothing;
     {
         for (actor_bytes, binds) in [(127, true), (128, false)] {
-            let mut doc = AutoCommit::new();
-            doc.set_actor(ActorId::from(vec![17; actor_bytes]));
-            let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
-            let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
-            let voice = doc.put_object(&entry, "v", ObjType::Map).unwrap();
-            doc.put(&voice, "kind", "voice").unwrap();
-            doc.put(&voice, "workspace", "main").unwrap();
+            let mut doc = on(vec![17; actor_bytes]);
+            put_voice_channel(&mut doc, "voice", "Lounge");
             doc.commit();
             let bound = binding(&doc);
             if binds {

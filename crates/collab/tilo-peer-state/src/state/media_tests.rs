@@ -7,7 +7,7 @@ use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const APP: &str = "so.tilo.chat";
+const APP: &str = media::CHAT_APP;
 fn fixture() -> (StatePeer, SigningKey, SystemTime) {
     let root = SigningKey::from_bytes(&[101; 32]);
     let key = SigningKey::from_bytes(&[102; 32]);
@@ -33,14 +33,7 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
         now,
     )
     .unwrap();
-    let mut chat = AutoCommit::new();
-    let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
-    let channel = {
-        let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
-        chat.put_object(&entry, "v", ObjType::Map).unwrap()
-    };
-    chat.put(&channel, "kind", "voice").unwrap();
-    chat.put(&channel, "workspace", "home").unwrap();
+    let mut chat = media::voice_chat("voice", "Lounge");
     peer.install_seed(
         SeedState {
             workspace_changes: seed_workspace(WORKSPACE, &certificate, &[certificate.clone()])
@@ -461,13 +454,16 @@ tilo_test_env::scenario! {
         );
     }
 }
+/// The map of Chat's items, in `chat`.
+fn chat_items(chat: &AutoCommit) -> automerge::ObjId {
+    let records = chat.get(ROOT, "tl").unwrap().unwrap().1;
+    let app = chat.get(&records, APP).unwrap().unwrap().1;
+    let resource = chat.get(&app, media::CONVERSATIONS).unwrap().unwrap().1;
+    chat.get(&resource, "$items").unwrap().unwrap().1
+}
 fn policy(peer: &StatePeer) -> media::WorkspaceMediaV1 {
     let chat = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
-    let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
-    let object = {
-        let entry = chat.get(&channels, "voice").unwrap().unwrap().1;
-        chat.get(&entry, "v").unwrap().unwrap().1
-    };
+    let object = chat.get(chat_items(&chat), "voice").unwrap().unwrap().1;
     media::WorkspaceMediaV1 {
         version: 1,
         workspace: *uuid::Uuid::parse_str(WORKSPACE).unwrap().as_bytes(),
@@ -482,7 +478,7 @@ fn policy(peer: &StatePeer) -> media::WorkspaceMediaV1 {
                     document_id: String::new(),
                     channel_id: "voice".into(),
                     channel_object: object.to_string(),
-                    chat_workspace_id: "home".into(),
+                    chat_workspace_id: String::new(),
                 },
                 epoch: 1,
                 phase: media::CallPhaseV1::Active,
@@ -518,24 +514,21 @@ fn install_policy(
 fn edited_chat(peer: &StatePeer, operation: u8) -> (Vec<u8>, Vec<u8>) {
     let mut chat = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
     let heads = chat.get_heads();
-    let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
-    let object = {
-        let entry = chat.get(&channels, "voice").unwrap().unwrap().1;
-        chat.get(&entry, "v").unwrap().unwrap().1
-    };
+    let items = chat_items(&chat);
+    let object = chat.get(&items, "voice").unwrap().unwrap().1;
     match operation {
-        0 => chat.delete(&channels, "voice").unwrap(),
+        0 => chat.delete(&items, "voice").unwrap(),
         1 => {
-            {
-                let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
-                chat.put_object(&entry, "v", ObjType::Map).unwrap()
-            };
+            let remade = chat.put_object(&items, "voice", ObjType::Map).unwrap();
+            chat.put(&remade, "$type", "q7llygsa").unwrap();
         }
-        2 => chat.put(&object, "kind", "text").unwrap(),
+        2 => chat.put(&object, "$type", "q7llygsa").unwrap(),
         // A call names its channel by app, record and channel id; the
-        // workspace a channel once named is recorded, not compared.
-        3 => chat.put(&object, "workspace", "elsewhere").unwrap(),
-        4 => chat.put(&object, "archived", true).unwrap(),
+        // object holding it is recorded, not compared.
+        3 => {
+            media::put_voice_channel(&mut chat, "voice", "Lounge");
+        }
+        4 => chat.put(&object, "$at", r#"{"removed":true}"#).unwrap(),
         _ => chat.put(&object, "name", "new title").unwrap(),
     }
     chat.commit_edit("fixture", "name");
@@ -576,8 +569,7 @@ tilo_test_env::scenario! {
                 );
             }
         }
-        // Chat dropped its workspaces: a channel's former workspace changing
-        // keeps the call bound.
+        // A channel remade under its id keeps the call bound.
         let (mut peer, key, now) = fixture();
         let value = policy(&peer);
         install_policy(&mut peer, &key, now, &value).unwrap();

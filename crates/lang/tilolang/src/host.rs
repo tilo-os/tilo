@@ -464,6 +464,32 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
+        name: "CallMember",
+        id: "host-call-member",
+        doc: "Someone in the system's call held on a resource: who is in a voice channel.",
+        fields: &[
+            ("who", "Actor", "Who it is."),
+            (
+                "mine",
+                "Bool",
+                "Whether it is the person looking, from this device.",
+            ),
+            ("speaking", "Bool", "Whether they are heard talking now."),
+            ("muted", "Bool", "Whether their microphone is off."),
+            (
+                "deafened",
+                "Bool",
+                "Whether they hear nothing of the call, which mutes them too.",
+            ),
+            ("camera", "Bool", "Whether their camera shows in the call."),
+            (
+                "screen",
+                "Bool",
+                "Whether they share their screen in the call.",
+            ),
+        ],
+    },
+    ValueType {
         name: "Meta",
         id: "host-meta",
         doc: "What the platform shows of a resource or of its type.",

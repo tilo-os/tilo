@@ -2033,8 +2033,15 @@ fn channel_named(name: Text) -> Option<chat.TextChannel> {
     for x in chat.conversations.channels {
         match x {
             c: chat.Category => {
-                if let t = c.channels.find(t -> t.name == name) {
-                    return t
+                for y in c.channels {
+                    match y {
+                        t: chat.TextChannel => {
+                            if t.name == name {
+                                return t
+                            }
+                        }
+                        v: chat.VoiceChannel => {}
+                    }
                 }
             }
             t: chat.TextChannel => {
@@ -2042,6 +2049,7 @@ fn channel_named(name: Text) -> Option<chat.TextChannel> {
                     return t
                 }
             }
+            v: chat.VoiceChannel => {}
             d: chat.Direct => {}
         }
     }

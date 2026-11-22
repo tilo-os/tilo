@@ -787,7 +787,7 @@ tilo_test_env::scenario! {
             panic!("a member reads what the workspace admitted");
         };
         let doc = AutoCommit::load(&document.bytes).unwrap();
-        assert!(doc.get(ROOT, "channels").unwrap().is_some());
+        assert!(doc.get(ROOT, "tl").unwrap().is_some());
         assert!(matches!(
             read(member, "", Some(document.revision), usize::MAX),
             Ok(DocumentRead::Unchanged(revision)) if revision == document.revision

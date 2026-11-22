@@ -11,7 +11,6 @@ pub(crate) enum WorkspaceValue<'a> {
     Object { kind: ObjType, object: ObjId },
     Bytes(&'a [u8]),
     Str(&'a str),
-    Boolean(bool),
     Other,
 }
 
@@ -220,9 +219,6 @@ fn entry_value<'a>(
         },
         automerge::ValueRef::Scalar(ScalarValueRef::Bytes(bytes)) => WorkspaceValue::Bytes(bytes),
         automerge::ValueRef::Scalar(ScalarValueRef::Str(value)) => WorkspaceValue::Str(value),
-        automerge::ValueRef::Scalar(ScalarValueRef::Boolean(value)) => {
-            WorkspaceValue::Boolean(*value)
-        }
         automerge::ValueRef::Scalar(_) => WorkspaceValue::Other,
     }
 }
@@ -237,7 +233,6 @@ fn keyed_value<'a>(value: &'a Value<'_>, object: ObjId) -> WorkspaceValue<'a> {
         Value::Scalar(value) => match value.as_ref() {
             ScalarValue::Bytes(bytes) => WorkspaceValue::Bytes(bytes),
             ScalarValue::Str(value) => WorkspaceValue::Str(value),
-            ScalarValue::Boolean(value) => WorkspaceValue::Boolean(*value),
             _ => WorkspaceValue::Other,
         },
     }
@@ -257,7 +252,6 @@ pub(super) fn visit_value<E>(
     let view = match value.as_ref() {
         ScalarValue::Bytes(bytes) => WorkspaceValue::Bytes(bytes),
         ScalarValue::Str(value) => WorkspaceValue::Str(value),
-        ScalarValue::Boolean(value) => WorkspaceValue::Boolean(*value),
         _ => WorkspaceValue::Other,
     };
     visitor(view).map_err(ReadError::Visitor)
@@ -455,7 +449,6 @@ mod tests {
             WorkspaceValue::Object { kind, object } => format!("{kind:?} {object}"),
             WorkspaceValue::Bytes(bytes) => format!("bytes {bytes:?}"),
             WorkspaceValue::Str(value) => format!("str {value}"),
-            WorkspaceValue::Boolean(value) => format!("bool {value}"),
             WorkspaceValue::Other => "other".into(),
         }
     }

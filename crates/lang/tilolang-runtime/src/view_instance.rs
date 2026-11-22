@@ -14,8 +14,8 @@ use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
-    CHOOSE_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, SAVE_ACTION,
-    SET_ACTION, THEN_ACTION, UNDO_ACTION,
+    CALL_ACTION, CHOOSE_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION,
+    SAVE_ACTION, SET_ACTION, THEN_ACTION, UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
@@ -50,6 +50,42 @@ pub enum ViewEvent {
     /// *Mark all seen* was pressed and moved `count` marks: the window says so, and the person
     /// can take the move back with it.
     Seen { count: usize },
+    /// A step of the person's own in the system's call held on `target` was pressed: the
+    /// window's host carries it out through the call service.
+    Call { target: ResourceRef, step: CallStep },
+}
+
+/// A step of the person's own in the system's call held on a resource.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallStep {
+    /// Join it, leaving any other call this device is in.
+    Join,
+    /// Leave it.
+    Leave,
+    /// Turn the microphone off, or back on.
+    Mute(bool),
+    /// Hear nothing of the call and be heard by no one, or stop.
+    Deafen(bool),
+    /// Show the camera in it, or stop.
+    Camera(bool),
+    /// Share the screen in it, or stop.
+    Screen(bool),
+}
+
+impl CallStep {
+    /// The step `name` names (`join_call` is `join`), turning its switch `on`.
+    #[must_use]
+    pub fn named(name: &str, on: bool) -> Option<Self> {
+        Some(match name {
+            "join" => Self::Join,
+            "leave" => Self::Leave,
+            "mute" => Self::Mute(on),
+            "deafen" => Self::Deafen(on),
+            "camera" => Self::Camera(on),
+            "screen" => Self::Screen(on),
+            _ => return None,
+        })
+    }
 }
 
 /// What an `undo(...)` a view applied takes back.
@@ -694,6 +730,19 @@ impl ViewInstance {
             }
             CHOOSE_ACTION => self.platform_choose(aref),
             SAVE_ACTION => self.platform_save(aref),
+            CALL_ACTION => {
+                let [Value::Ref(r), Value::Text(step), Value::Bool(on)] = aref.args.as_slice()
+                else {
+                    return Err(RuntimeError::BadArgs("a malformed call step".into()));
+                };
+                let step = CallStep::named(step, *on)
+                    .ok_or_else(|| RuntimeError::BadArgs(format!("no call step `{step}`")))?;
+                self.events.borrow_mut().push(ViewEvent::Call {
+                    target: ResourceRef::clone(&r.target),
+                    step,
+                });
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
             _ => self.core.invoke_direct_in(&self.live.viewer, aref, gesture),
         }
     }

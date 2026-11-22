@@ -21,11 +21,11 @@ const WORKSPACE_PREFIX: &str = "workspace:";
 const WINDOW_PREFIX: &str = "window:";
 const CALL_PREFIX: &str = "call:";
 
-/// Chat holds a workspace's voice channels: each channel has a call row with the
-/// action that joins its call.
+/// Chat holds a workspace's voice channels, each an item of its conversations: the root
+/// resource its sidebar shows, `root-` and the type id of its `Conversations`. A call is held on
+/// its channel, and opening the channel shows its call, with whoever is in it and the way in.
 use ui::apps::CHAT as CHAT_APP;
-const CHAT_RECORD_KIND: &str = "chat.workspace";
-const JOIN_CALL: &str = "join-call";
+const CHAT_CONVERSATIONS: &str = "root-lmdoxbnn";
 
 /// The kind the group is listed under, in the desktop's language.
 #[must_use]
@@ -128,10 +128,12 @@ fn names_line(people: &[PersonHere], key: &str) -> String {
     }
 }
 
-/// Chat's resource id of voice channel `channel`'s row: where its call is
-/// joined.
-fn channel_row(channel: &str) -> String {
-    format!("{CHAT_RECORD_KIND}/channels/{channel}/call")
+/// The resource Chat publishes for its conversations, and the one of voice channel `channel`
+/// in them: what opening the channel's call asks of Chat.
+fn channel_resource(channel: &str) -> (String, String) {
+    let conversations = format!("tl:{CHAT_APP}:{CHAT_CONVERSATIONS}");
+    let channel = format!("{conversations}/{channel}");
+    (conversations, channel)
 }
 
 /// Who is in the person's workspaces now, as the shell holds it.
@@ -228,13 +230,16 @@ impl Happening {
             score: 0,
             icon: Some(ui::icons::Icon::Phone),
             faces: call.people.iter().map(PersonHere::face).collect(),
-            outcome: Some(crate::i18n::t("search-launcher-outcome-join")),
-            target: Target::Invoke(Box::new(InvokeTarget::action(
-                CHAT_APP,
-                &workspace.workspace,
-                channel_row(&call.channel),
-                JOIN_CALL,
-            ))),
+            outcome: Some(crate::i18n::t("search-launcher-outcome-open")),
+            target: {
+                let (conversations, channel) = channel_resource(&call.channel);
+                Target::Invoke(Box::new(InvokeTarget::open(
+                    CHAT_APP,
+                    &workspace.workspace,
+                    conversations,
+                    channel,
+                )))
+            },
         }
     }
 }
@@ -368,23 +373,28 @@ mod tests {
             assert!(happening.query("ada").is_empty(), "typed text is not this");
         }
 
-        phase a_call_joins_chats_channel;
-        // Choosing a call joins it: Chat's own action on the channel's call
-        // row, in the workspace the call is in.
+        phase a_call_opens_chats_channel;
+        // Choosing a call opens its voice channel in Chat, in the workspace the call is in,
+        // where the call shows who is in it and the way in.
         {
             let happening = Happening::new(false, vec![workspace()]);
             let rows = happening.query("");
             let call = rows.iter().find(|row| row.id == "call:c_voice").unwrap();
             let Target::Invoke(invoke) = &call.target else {
-                panic!("a call is joined by asking Chat, not by the shell");
+                panic!("a call is opened by asking Chat, not by the shell");
             };
-            assert_eq!(invoke.app, "so.tilo.chat");
+            assert_eq!(invoke.app, ui::apps::CHAT);
             assert_eq!(invoke.workspace, "workspace-3");
+            let conversations = format!("tl:{}:root-lmdoxbnn", ui::apps::CHAT);
             assert_eq!(
                 invoke.address,
-                tilo_actions::ActionAddress::new("chat.workspace/channels/c_voice/call", "join-call")
+                tilo_actions::ActionAddress::new(conversations.as_str(), crate::model::OPEN_ACTION)
             );
-            assert_eq!(call.outcome.as_deref(), Some("Join"));
+            assert_eq!(
+                invoke.arguments[crate::model::OPEN_ANCHOR],
+                format!("{conversations}/c_voice")
+            );
+            assert_eq!(call.outcome.as_deref(), Some("Open"));
             let window = &rows[1];
             assert_eq!(window.target, Target::Window { tab: 7, app: None });
             let Target::Invoke(panel) = &rows[0].target else {

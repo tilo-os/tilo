@@ -246,3 +246,40 @@ d-6uysx57s-c = C
 d-6uysx57s-m = M
 
 d-6uysx57s-name = Name
+
+d-xr347kui = Sprachkanal
+    .doc = Ein Ort, um live zu sprechen: Wer beitritt, ist im Anruf des Systems, mit allen, die sonst beigetreten sind.
+    .noun = { $count ->
+        [one] Sprachkanal
+       *[other] Sprachkanäle
+    }
+
+d-olqjezxu = Name
+
+d-egiu6ag4 = Neuer Sprachkanal
+    .doc = Fügt der Seitenleiste einen Sprachkanal hinzu.
+    .w-voice = Sprache
+
+d-egiu6ag4-name = Name
+
+d-bjtbjfox = Neuer Sprachkanal
+    .doc = Fügt einer Kategorie einen Sprachkanal hinzu.
+    .w-voice = Sprache
+
+d-bjtbjfox-name = Name
+
+d-qnkkcusk = Sprachkanal
+
+d-lkjppscz = Sprachkanalübersicht
+
+d-tz5yw5dt = Von
+    .doc = Wer sie im früheren Chat geschrieben hat, wie diese App die Person nannte, bei einer von dort übernommenen Nachricht: ihr eigener Verlauf nennt, wer sie übernommen hat und wann.
+
+d-mmlcexsa = Geschrieben
+    .doc = Wann sie im früheren Chat geschrieben wurde, in Millisekunden seit 1970; 0 bei einer hier geschriebenen Nachricht.
+
+d-jcgolgdf = Reaktionen
+    .doc = Die Reaktionen, die sie im früheren Chat hatte, jedes Emoji mit der Zahl derer, die damit reagiert haben: wer dort reagiert hat, wird nicht übernommen, da diese App Personen nur als ihre eigenen Mitglieder nennt.
+
+d-aod7dups = Früheren Chat übernehmen
+    .doc = Die Unterhaltungen, die der frühere Chat hatte, bevor diese App seine ID übernahm, einmal hierher übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jeweils mit Name und Thema, und jede Nachricht eines Kanals mit ihrem Text, ob sie angeheftet war, und der ID, die sie dort hatte.

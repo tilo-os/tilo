@@ -34,6 +34,11 @@ pub const CHOOSE_ACTION: &str = "$choose";
 /// where the person says, under the name `n`. Its arguments are `a` and the name.
 pub const SAVE_ACTION: &str = "$save";
 
+/// The action of `join_call(r)` and its kin: a step of the person's own in the system's call held
+/// on `r`. Its arguments are `r`, the step's name (`join`, `leave`, `mute`, `deafen`, `camera`,
+/// `screen`) and whether it turns its switch on.
+pub const CALL_ACTION: &str = "$call";
+
 /// The prefix of the view state slot that names the view a window shows a resource through,
 /// the resource's id after it: what the bar's view switch sets. Empty until a person picks a
 /// view, so the resource's type's default view shows until then.
@@ -391,6 +396,29 @@ impl Core {
         }))
     }
 
+    /// `join_call(r)`, `leave_call(r)`, `mute_call(r, on)` and their kin: a step of the person's
+    /// own in the system's call held on `r`, which the window's host carries out.
+    fn act_call(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let target = match self.val(a.h(0)?)? {
+            Value::Ref(target) => Value::Ref(target),
+            other => {
+                return trap(format!(
+                    "a call is held on a resource, not {}",
+                    other.kind_name()
+                ));
+            }
+        };
+        let step = self.text(a.h(1)?)?;
+        let on = a.h(2)? != 0;
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: CALL_ACTION.to_owned(),
+            args: vec![target, Value::Text(step), Value::Bool(on)],
+            author,
+            from: None,
+        }))
+    }
+
     /// `undo(v)` of a `host.Version` (`a.h(1) == 0`) or `undo(run)` of a `host.Run`.
     fn act_undo(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let held = self.val(a.h(0)?)?;
@@ -572,6 +600,7 @@ impl Core {
             Imp::ActMadeFrom => self.act_made_from(a),
             Imp::ActMany => self.act_many(a),
             Imp::ActOpen => self.act_open(a),
+            Imp::ActCall => self.act_call(a),
             Imp::ActUndo => self.act_undo(a),
             Imp::ChangeView => self.change_view(a),
             _ => trap("not a ui import"),

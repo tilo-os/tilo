@@ -386,6 +386,10 @@ pub struct Instance {
     /// The lenses on each resource of the package, as presence last reported them.
     lenses: HashMap<String, Vec<(Actor, bool, bool)>>,
     lenses_changed: bool,
+    /// Who is in each call the call service told of, by the id it names the call's place by.
+    calls: HashMap<String, Vec<crate::runtime::CallMember>>,
+    /// The steps the person took in the system's calls, in order, not yet taken by the host.
+    call_steps: Vec<(ResourceRef, crate::runtime::CallStep)>,
     /// The person and the workspace's policy the runtime's members were last read from.
     members_from: Option<(String, tilo_action_policy::WorkspacePolicy)>,
     /// The person's environment moved: their language, their formats, or what the member list
@@ -517,6 +521,8 @@ impl Instance {
             out: Vec::new(),
             lenses: HashMap::new(),
             lenses_changed: false,
+            calls: HashMap::new(),
+            call_steps: Vec::new(),
             members_from: None,
             person_changed: false,
             outgoing: Rc::default(),
@@ -819,6 +825,40 @@ impl Instance {
     /// on a notice, and the window's undo and redo.
     pub fn take_history(&mut self) -> Vec<HistoryAsk> {
         std::mem::take(&mut self.history)
+    }
+
+    /// The steps the person took in the system's calls since last asked, in order: each the
+    /// resource the call is held on and what they did there. The host carries them out through
+    /// the call service.
+    pub fn take_call_steps(&mut self) -> Vec<(ResourceRef, crate::runtime::CallStep)> {
+        std::mem::take(&mut self.call_steps)
+    }
+
+    /// Whether a view of the instance read who is in a call: its host follows the system's calls
+    /// from then on.
+    #[must_use]
+    pub fn reads_calls(&self) -> bool {
+        self.host().is_some_and(|host| host.runtime().reads_calls())
+    }
+
+    /// Who is in each call the call service told of now, by the id it names each call's place by
+    /// (`call_members(r)` of the resource that id is the own id of): a call not named is empty.
+    pub fn set_calls(&mut self, now: HashMap<String, Vec<crate::runtime::CallMember>>) {
+        if now == self.calls {
+            return;
+        }
+        if let Some(host) = self.host() {
+            for gone in self.calls.keys().filter(|key| !now.contains_key(*key)) {
+                host.runtime().set_call(gone, &[]);
+            }
+            for (place, members) in &now {
+                if self.calls.get(place) != Some(members) {
+                    host.runtime().set_call(place, members);
+                }
+            }
+        }
+        self.calls = now;
+        self.lenses_changed = true;
     }
 
     /// The next action the person chose at the window, with the press it is and the argument

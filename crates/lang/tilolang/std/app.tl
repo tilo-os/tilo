@@ -883,6 +883,102 @@ view composer(draft: State<RichText>, placeholder: Text, send: Action, speakers:
     }
 }
 
+/// The system's call held on `of`: who is in it, each with their face and what they do there
+/// (talking, muted, deafened, on camera, sharing their screen), and the person's own controls:
+/// Join while they are not in it; mute, deafen, camera, screen and Leave while they are. Who is
+/// in it is the call service's presence, never stored; who may speak or listen is the
+/// workspace's, and the microphone, camera and screen are asked for through the system's prompts.
+view call<R>(of: R) {
+    let people = call_members(of)
+    let mine = people.filter(m -> m.mine)
+    ui.NavShell(content_kind: .page, title: meta(of).title) {
+        content: {
+            ui.Docked {
+                foot: {
+                    row(gap: .tight, distribute: .center, wrap: true) {
+                        if let me = mine.first() {
+                            ui.Button(
+                                phrase(if me.muted { "tilolang-call-unmute" } else { "tilolang-call-mute" }),
+                                icon: if me.muted { .mic_off } else { .mic },
+                                icon_only: true,
+                            ) {
+                                on press: mute_call(of, not me.muted)
+                            }
+                            ui.Button(
+                                phrase(if me.deafened { "tilolang-call-undeafen" } else { "tilolang-call-deafen" }),
+                                icon: if me.deafened { .volume_x } else { .headphones },
+                                icon_only: true,
+                            ) {
+                                on press: deafen_call(of, not me.deafened)
+                            }
+                            ui.Button(
+                                phrase(if me.camera { "tilolang-call-camera-off" } else { "tilolang-call-camera-on" }),
+                                icon: .video,
+                                icon_only: true,
+                            ) {
+                                on press: camera_call(of, not me.camera)
+                            }
+                            ui.Button(
+                                phrase(if me.screen { "tilolang-call-screen-off" } else { "tilolang-call-screen-on" }),
+                                icon: .screen_share,
+                                icon_only: true,
+                            ) {
+                                on press: screen_call(of, not me.screen)
+                            }
+                            ui.Button(phrase("tilolang-call-leave"), icon: .phone_off, role: .destructive) {
+                                on press: leave_call(of)
+                            }
+                        } else {
+                            ui.Button(phrase("tilolang-call-join"), icon: .phone, role: .primary) {
+                                on press: join_call(of)
+                            }
+                        }
+                    }
+                }
+                if people.is_empty() {
+                    ui.EmptyState(
+                        phrase("tilolang-call-empty"),
+                        icon: .volume_2,
+                        message: phrase("tilolang-call-empty-message"),
+                    )
+                } else {
+                    ui.Scroll {
+                        page {
+                            stack(gap: .related) {
+                                for m in people {
+                                    call_member(m)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One person in a call, as [`call`] lists them: their face and name, and what they do there.
+view call_member(m: host.CallMember) {
+    row(gap: .tight, align: .center) {
+        avatar(m.who)
+        ui.Text(m.who.name(), role: .label, fill: 1.0, truncate)
+        if m.speaking {
+            ui.Text(phrase("tilolang-call-speaking"), role: .caption, secondary: true)
+        }
+        if m.screen {
+            ui.Text(phrase("tilolang-call-sharing"), role: .caption, secondary: true)
+        }
+        if m.camera {
+            ui.Text(phrase("tilolang-call-on-camera"), role: .caption, secondary: true)
+        }
+        if m.deafened {
+            ui.Text(phrase("tilolang-call-deafened"), role: .caption, secondary: true)
+        } else if m.muted {
+            ui.Text(phrase("tilolang-call-muted"), role: .caption, secondary: true)
+        }
+    }
+}
+
 /// Under a message that started a thread: how many replies it has, opening the thread.
 view thread_chip<T>(thread: T, count: Int) {
     ui.Chip(phrase("tilolang-thread-replies", count: count), icon: .message_square) {

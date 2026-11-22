@@ -468,19 +468,26 @@ impl Carried {
     }
 }
 
-/// What voice channel `channel` is called, as the app that holds it published the row its call is
-/// joined from: its label, empty when the app publishes no such row.
+/// What voice channel `channel` is called, as the app that holds it published the channel: the
+/// label of the item `channel` of any of its resources (`tl:<app>:<resource>/<channel>`), empty
+/// when the app publishes no such item.
 pub(crate) fn channel_name(
     surfaces: &[tilo_broker_core::published::PublishedSurface],
-    (workspace, app, record): (&str, &str, &str),
+    (workspace, app): (&str, &str),
     channel: &str,
 ) -> Option<String> {
-    let row = format!("{record}/channels/{channel}/call");
+    let prefix = format!("tl:{app}:");
     surfaces
         .iter()
         .filter(|surface| surface.app_id == app && surface.route.cluster_id == workspace)
         .flat_map(|surface| &surface.actions)
-        .find(|action| action.resource == row)
+        .find(|action| {
+            action
+                .resource
+                .strip_prefix(&prefix)
+                .and_then(|id| id.split_once('/'))
+                .is_some_and(|(_, item)| item == channel)
+        })
         .map(|action| action.resource_label.trim().to_owned())
         .filter(|name| !name.is_empty())
 }

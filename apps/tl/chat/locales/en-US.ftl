@@ -24,6 +24,15 @@ d-hbhrds5c = Name
 d-hvqgmwrk = Channels
     .doc = The server's channels.
 
+d-xr347kui = Voice channel
+    .doc = A place to talk live: joining it puts the person in its call, the system's, with whoever else joined.
+    .noun = { $count ->
+        [one] voice channel
+       *[other] voice channels
+    }
+
+d-olqjezxu = Name
+
 d-q7llygsa = Text channel
     .doc = Messages in one stream; any message can start a thread.
     .noun = { $count ->
@@ -141,6 +150,18 @@ d-abono4ra = New channel
 
 d-abono4ra-name = Name
 
+d-egiu6ag4 = New voice channel
+    .doc = Adds a voice channel to the sidebar.
+    .w-voice = Voice
+
+d-egiu6ag4-name = Name
+
+d-bjtbjfox = New voice channel
+    .doc = Adds a voice channel to a category.
+    .w-voice = Voice
+
+d-bjtbjfox-name = Name
+
 d-aod7dups = Carry native chat
     .doc = The conversations the native Chat kept before this app took its id over, carried into these once: its categories and channels in the sidebar's order, each with its name and topic, and every message of a channel with what it said, whether it was pinned and the id it had there.
 
@@ -234,6 +255,10 @@ d-jbezqvlc = Direct
     .w-send = Send
 
 d-q45utnmh = Channel summary
+
+d-qnkkcusk = Voice
+
+d-lkjppscz = Voice summary
 
 d-enkldjck = Direct summary
 

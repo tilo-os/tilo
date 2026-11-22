@@ -489,6 +489,8 @@ impl Instance {
                 }
                 // One move marked a catch-up seen: the window says how much, and offers to take
                 // it back while it says it.
+                // A step in a call is the system's call service's to carry out: the host takes it.
+                ViewEvent::Call { target, step } => self.call_steps.push((target, step)),
                 ViewEvent::Seen { count } => {
                     self.seen_offer = true;
                     self.out.push(ToUi::Notice {
