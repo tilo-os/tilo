@@ -169,7 +169,9 @@ that view to its answer.
 Our own code calls only over the device link (`tilo-actions/1` on iroh).
 That includes signing in: `tilo login` is an action to the server, with the
 login code as its input, which the server admits before the device holds a
-certificate. `/v1` REST is only an edge for callers outside Tilo.
+certificate. A device finds a site's server by the iroh endpoint id the site
+publishes in DNS (`_tilo.<site>` TXT; tilo.sh unless `TILO_SITE` says
+otherwise). `/v1` REST is only an edge for callers outside Tilo.
 
 ### Views
 
