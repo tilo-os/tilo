@@ -86,7 +86,6 @@ fn spawn_workspace(
         .arg(root_file)
         .arg("--workspace-id-file")
         .arg(state.join("workspace-id"))
-        .args(["--seed-app", "so.tilo.chat"])
         .args(extra)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -387,8 +386,8 @@ fn a_volume_a_workspace_service_left_keeps_its_workspace_and_people() {
     workspace.stop();
 }
 
-/// A workspace started with an app it no longer names keeps the workspace it
-/// served: members write as their roles allow, whatever apps they use.
+/// A workspace a host seeded keeps the workspace it served across restarts: members write as
+/// their roles allow, whatever apps they use.
 #[test]
 fn a_persistent_workspace_keeps_serving_across_restarts() {
     let scratch = tempfile::tempdir().unwrap();
@@ -408,9 +407,9 @@ fn a_persistent_workspace_keeps_serving_across_restarts() {
         (workspace, id)
     };
 
-    let (workspace, id) = started(&["--seed-app", "so.tilo.chat"]);
+    let (workspace, id) = started(&["--seed-app", "so.tilo.sheets"]);
     workspace.stop();
-    let (workspace, again) = started(&["--seed-app", "so.tilo.chat"]);
+    let (workspace, again) = started(&["--seed-app", "so.tilo.sheets"]);
     workspace.stop();
     assert_eq!(again, id, "the volume's workspace is the one it serves");
 }
@@ -631,13 +630,19 @@ fn edit(doc: &mut automerge::AutoCommit, text: &str) -> collab_types::DocumentMu
 }
 
 fn chat_channels(doc: &automerge::AutoCommit) -> Option<Vec<String>> {
-    use tilo_resource::Resource as _;
+    use tilo_workspace_service::tl_records::{Opened, RecordBytes};
+    let mut doc = doc.clone();
+    let record = RecordBytes {
+        documents: std::collections::BTreeMap::from([(String::new(), doc.save())]),
+    };
+    let packages = tilo_server::tl_chat::packages().ok()?;
+    let opened = Opened::open(&record, &packages, tilo_server::tl_chat::viewer(), None).ok()?;
     Some(
-        chat::Chat::read(doc)
+        tilo_server::tl_chat::sidebar(&opened)
             .ok()?
             .channels
-            .values()
-            .map(|channel| channel.name.clone())
+            .into_iter()
+            .map(|channel| channel.name)
             .collect(),
     )
 }
@@ -755,12 +760,7 @@ async fn assert_page_reads_the_chat(
                                 )
                             })
                             .map(|holder| {
-                                holder.read(
-                                    &route.cluster_id,
-                                    &route.app_id,
-                                    &route.document,
-                                    None,
-                                )
+                                holder.read(&route.cluster_id, &route.app_id, &route.document, None)
                             });
                         if let Some(Ok(DocumentRead::Whole { bytes, .. })) = read {
                             doc = automerge::AutoCommit::load(&bytes).unwrap();

@@ -8,28 +8,33 @@
     reason = "every test here keeps its server and workspace alive to the end"
 )]
 
-use chat::projection::ChatProjection as _;
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
 use crate::workspaces::fixtures::{governor, test_host, test_host_taking_part};
 use automerge::AutoCommit;
-use collab_types::DocumentMutation;
 use serde_json::Value;
 use tilo_action_policy::{Answer, KindSet, TreePath};
 use tilo_actions::MemberId;
+use tilo_agent_session::AppCatalogue;
 use tilo_agent_session::bot::host_steps::{
     HostStepError, HostSteps, Instruction, Judgement, Question,
 };
-use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_app_id::apps::CHAT;
 
+use crate::tl_chat;
+
+/// The kind tl Chat publishes `send` on, and the kind its posts name in the workspace's events.
+const TEXT_CHANNEL_KIND: &str = "tl.so.tilo.chat.TextChannel";
+
+/// The Discord bridge mirroring a guild into the workspace's Chat.
+mod bridge;
 /// A workspace's events through the host's own actions.
 mod events;
 mod initiative;
 /// The host's own answers for the programs it runs for a person.
 mod judging;
-/// Reading a chat's messages.
+/// Reading tl Chat's messages.
 mod messages;
 /// A person's decision that the workspace has a moderation bot.
 mod moderation_settings;
@@ -37,6 +42,8 @@ mod moderation_settings;
 mod outside;
 /// A person's event that waits on their mail.
 mod sources;
+/// A program over a tilolang app the server is built with.
+mod tilolang;
 /// A program's triggers at a time its person's calendars hold.
 mod times;
 
@@ -156,19 +163,22 @@ impl Judge for FakeJudge {
     }
 }
 
-pub(super) use messages::{chat_of, first_part, message_ids, posts};
+pub(super) use messages::posts;
 
-/// Post `text` in `channel` of `workspace` as `author`, as their page does: a
-/// view of the chat record and the parts of its messages, posting through
-/// the chain into the head (starting the first part), its change carried
-/// to the workspace on the part's own route. The new message's id.
-async fn post_in(
-    workspaces: &Workspaces,
-    workspace: &str,
-    cert: &DeviceCert,
-    (author, channel, text): (&str, &str, &str),
-) -> String {
-    post_with(workspaces, workspace, cert, (author, channel, text), None).await
+/// The step `step` that posts `text` in tl Chat's channel `target`.
+fn saying(step: &str, target: tilo_automation::Selector, text: &str) -> tilo_automation::Step {
+    use tilo_automation::{Binding, Step, StepKind};
+    Step::new(
+        step,
+        StepKind::Invoke {
+            action: tilo_actions::ActionKey::new(CHAT, TEXT_CHANNEL_KIND, "send"),
+            resource: target,
+            args: [("body".to_owned(), Binding::Literal(text.into()))]
+                .into_iter()
+                .collect(),
+            appearance: None,
+        },
+    )
 }
 
 /// Introduce `person` to `workspace` as an editor, as a server admits a
@@ -202,102 +212,45 @@ async fn introduce(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert, 
         .unwrap();
 }
 
-/// [`post_in`] with `attachment`, a file another action put in the store.
-async fn post_with(
+/// Post `text` in `channel` of `workspace` as `author`, as their page does: through Chat's own
+/// `send`, the change the person's, which the workspace decides.
+async fn post_in(
     workspaces: &Workspaces,
     workspace: &str,
     cert: &DeviceCert,
     (author, channel, text): (&str, &str, &str),
-    attachment: Option<serde_json::Value>,
-) -> String {
+) {
     introduce(workspaces, workspace, cert, author).await;
-    let catalogue = AppCatalogue::native();
-    let chat = workspaces
-        .resource_document(workspace, CHAT, "")
-        .await
-        .unwrap()
-        .unwrap();
-    let mut held = Vec::new();
-    for (app, record) in workspaces.document_routes(workspace).await.unwrap() {
-        let Some(part) = collab_types::document::DocumentId::parse(&record)
-            .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
-        else {
-            continue;
-        };
-        let bytes = workspaces
-            .resource_document(workspace, CHAT, &record)
-            .await
-            .unwrap()
-            .unwrap();
-        held.push((part, bytes));
-    }
-    // The page lives on this thread only; what it changed leaves with it.
-    let (id, taken) = {
-        let mut page = Replica::open(
-            &catalogue,
-            CHAT,
+    let (author, channel, text) = (author.to_owned(), channel.to_owned(), text.to_owned());
+    workspaces
+        .with_tl_record(
             workspace,
-            &MemberId::person(author),
-            ReplicaActor::Owner,
-            Seed::Existing {
-                record: collab_types::document::DocumentId::package_primary(),
-                changes: vec![chat],
+            &tl_chat::packages().unwrap(),
+            tl_chat::viewer(),
+            move |chat| {
+                let who = tl_chat::member(MemberId::person(author));
+                let to = tl_chat::resource(chat, "TextChannel", &channel)?;
+                tl_chat::send(chat, &who, &to, &text, None).map(drop)
             },
         )
+        .await
         .unwrap();
-        for (part, bytes) in held {
-            page.apply_document(&part, &DocumentMutation::Snapshot(bytes))
-                .unwrap();
-        }
-        let before = message_ids(&page);
-        let mut arguments = serde_json::json!({ "channel": channel, "text": text });
-        if let Some(attachment) = attachment {
-            arguments["attachments"] = serde_json::json!([attachment]);
-        }
-        page.invoke(
-            &tilo_actions::api::ActionAddress::new(
-                collab_types::document::chain_resource_id(&chat::parts::chain()),
-                "post",
-            ),
-            arguments.as_object().unwrap(),
-            false,
-        )
-        .unwrap();
-        let id = message_ids(&page)
-            .into_iter()
-            .find(|id| !before.contains(id))
-            .expect("the post is in a part");
-        (id, page.take_document_mutations().unwrap())
-    };
-    for (record, mutation) in taken {
-        match mutation {
-            DocumentMutation::Snapshot(bytes) => workspaces
-                .author_workspace_document(workspace, cert, (CHAT, record.as_str()), |doc| {
-                    tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                        .map(drop)
-                        .map_err(|error| error.to_string())
-                })
-                .await
-                .unwrap(),
-            DocumentMutation::Incremental(bytes) => workspaces
-                .author_application(workspace, cert, &catalogue, CHAT, record.as_str(), |doc| {
-                    tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                        .map(drop)
-                        .map_err(|error| error.to_string())
-                })
-                .await
-                .unwrap(),
-        }
-    }
-    id
 }
 
-/// A bot that answers every person's post in `channel`.
-fn greeter(channel: &str) -> installed::InstalledBot {
-    use tilo_automation::{ActorFilter, Binding, Selector, Shortcut, Step, StepKind, TriggerSpec};
+/// A bot that answers every person's post in the workspace's Chat.
+fn greeter() -> installed::InstalledBot {
+    greeter_into(tilo_automation::Selector::FirstOfKind(
+        TEXT_CHANNEL_KIND.into(),
+    ))
+}
+
+/// A bot that answers every person's post in the workspace's Chat by posting through the
+/// channel `target` names.
+fn greeter_into(target: tilo_automation::Selector) -> installed::InstalledBot {
+    use tilo_automation::{ActorFilter, Shortcut, TriggerSpec};
     let trigger = TriggerSpec::ResourceChanged {
-        kind: "chat.messages".into(),
-        actions: vec!["post".into()],
+        kind: TEXT_CHANNEL_KIND.into(),
+        actions: vec!["send".into()],
         fields: Vec::new(),
         by: ActorFilter::People,
     };
@@ -305,20 +258,7 @@ fn greeter(channel: &str) -> installed::InstalledBot {
         id: "greeter".into(),
         name: "Greeter".into(),
         inputs: trigger.payload().to_vec(),
-        steps: vec![Step::new(
-            "answer",
-            StepKind::Invoke {
-                action: tilo_actions::ActionKey::new(CHAT, "chat.messages", "post"),
-                resource: Selector::FirstOfKind("chat.messages".into()),
-                args: [
-                    ("channel".to_owned(), Binding::Literal(channel.into())),
-                    ("text".to_owned(), Binding::Literal("welcome!".into())),
-                ]
-                .into_iter()
-                .collect(),
-                appearance: None,
-            },
-        )],
+        steps: vec![saying("answer", target, "welcome!")],
         step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
@@ -346,47 +286,31 @@ fn greeter(channel: &str) -> installed::InstalledBot {
     }
 }
 
-/// A bot that posts `tick` in `channel` once every `seconds`, answering
+/// A bot that posts `tick` in the workspace's Chat once every `seconds`, answering
 /// fire times missed while its host was down as `catch_up` says.
-fn ticker(
-    channel: &str,
-    seconds: u64,
-    catch_up: tilo_automation::CatchUp,
-) -> installed::InstalledBot {
-    on_the_clock(
-        channel,
-        tilo_automation::TriggerSpec::Schedule {
-            schedule: tilo_automation::Schedule::Interval { seconds },
-            catch_up,
-        },
-    )
+fn ticker(seconds: u64, catch_up: tilo_automation::CatchUp) -> installed::InstalledBot {
+    on_the_clock(tilo_automation::TriggerSpec::Schedule {
+        schedule: tilo_automation::Schedule::Interval { seconds },
+        catch_up,
+    })
 }
 
-/// A bot that posts `tick` in `channel` once, at `at_ms`.
-fn reminder(channel: &str, at_ms: i64) -> installed::InstalledBot {
-    on_the_clock(channel, tilo_automation::TriggerSpec::Once { at_ms })
+/// A bot that posts `tick` in the workspace's Chat once, at `at_ms`.
+fn reminder(at_ms: i64) -> installed::InstalledBot {
+    on_the_clock(tilo_automation::TriggerSpec::Once { at_ms })
 }
 
-/// A bot that posts `tick` in `channel` whenever `trigger`'s time comes.
-fn on_the_clock(channel: &str, trigger: tilo_automation::TriggerSpec) -> installed::InstalledBot {
-    use tilo_automation::{Binding, Selector, Shortcut, Step, StepKind};
+/// A bot that posts `tick` in the workspace's Chat whenever `trigger`'s time comes.
+fn on_the_clock(trigger: tilo_automation::TriggerSpec) -> installed::InstalledBot {
+    use tilo_automation::Shortcut;
     let shortcut = Shortcut {
         id: "ticker".into(),
         name: "Ticker".into(),
         inputs: Vec::new(),
-        steps: vec![Step::new(
+        steps: vec![saying(
             "announce",
-            StepKind::Invoke {
-                action: tilo_actions::ActionKey::new(CHAT, "chat.messages", "post"),
-                resource: Selector::FirstOfKind("chat.messages".into()),
-                args: [
-                    ("channel".to_owned(), Binding::Literal(channel.into())),
-                    ("text".to_owned(), Binding::Literal("tick".into())),
-                ]
-                .into_iter()
-                .collect(),
-                appearance: None,
-            },
+            tilo_automation::Selector::FirstOfKind(TEXT_CHANNEL_KIND.into()),
+            "tick",
         )],
         step_timeout_secs: None,
         output: None,
@@ -421,40 +345,13 @@ async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
-    let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-    let catalogue = AppCatalogue::native();
-    workspaces
-        .prepare_application(&workspace, &cert, &catalogue, CHAT, "")
-        .await
-        .unwrap();
+    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let ada = hex::encode(ADA);
-    let general = workspaces
-        .author_application(&workspace, &cert, &catalogue, CHAT, "", |doc| {
-            chat::demo::apply_as(
-                doc,
-                &hex::encode(cert.user_public_key),
-                chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
-                    name: "general".parse().unwrap(),
-                    category: None,
-                    kind: None,
-                    topic: None,
-                }),
-            )
-            .map_err(|error| error.to_string())?;
-            Ok(chat::projection::read(doc)
-                .channel_rows()
-                .into_iter()
-                .find(|channel| channel.kind == chat::model::ChannelKind::Text)
-                .expect("the chat has a text channel")
-                .id)
-        })
-        .await
-        .unwrap();
     let mut runner = member_runner(
         &workspaces,
         &workspace,
         &cert,
-        greeter(general.as_str()),
+        greeter(),
         scratch.path().join("greeter.json"),
     )
     .await;
@@ -496,37 +393,27 @@ async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
         .filter(|message| message.text == "welcome!")
         .collect();
     assert_eq!(answers.len(), 1, "one answer to one post");
-    assert_eq!(answers[0].author, MemberId::bot(GREETER));
+    assert_eq!(
+        answers[0].who,
+        Some(tl_chat::member(MemberId::bot(GREETER)))
+    );
 }
 
-/// A workspace with the chat, Ada introduced, and `#general`'s id.
+/// A workspace with tl Chat's `#general`: the workspace, and the channel's id as Chat's record
+/// names it.
 async fn chat_workspace(workspaces: &Workspaces, cert: &DeviceCert) -> (String, String) {
-    let catalogue = AppCatalogue::native();
     let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-    workspaces
-        .prepare_application(&workspace, cert, &catalogue, CHAT, "")
-        .await
-        .unwrap();
+    let owner = hex::encode(cert.user_public_key);
     let general = workspaces
-        .author_application(&workspace, cert, &catalogue, CHAT, "", |doc| {
-            chat::demo::apply_as(
-                doc,
-                &hex::encode(cert.user_public_key),
-                chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
-                    name: "general".parse().unwrap(),
-                    category: None,
-                    kind: None,
-                    topic: None,
-                }),
-            )
-            .map_err(|error| error.to_string())?;
-            Ok(chat::projection::read(doc)
-                .channel_rows()
-                .into_iter()
-                .find(|channel| channel.kind == chat::model::ChannelKind::Text)
-                .expect("the chat has a text channel")
-                .id)
-        })
+        .with_tl_record(
+            &workspace,
+            &tl_chat::packages().unwrap(),
+            tl_chat::viewer(),
+            move |chat| {
+                let who = tl_chat::member(MemberId::person(owner));
+                tl_chat::new_channel(chat, &who, ("general", ""), None).map(|at| at.id_string())
+            },
+        )
         .await
         .unwrap();
     (workspace, general)
@@ -551,15 +438,7 @@ async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("greeter.json");
-    let start = || {
-        member_runner(
-            &workspaces,
-            &workspace,
-            &cert,
-            greeter(general.as_str()),
-            state.clone(),
-        )
-    };
+    let start = || member_runner(&workspaces, &workspace, &cert, greeter(), state.clone());
     let mut runner = start().await;
     assert!(runner.step().await.unwrap().is_empty());
     drop(runner);
@@ -601,13 +480,13 @@ async fn a_scheduled_bot_runs_at_its_time_once_and_again_at_the_next() {
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
-    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
     let mut runner = member_runner(
         &workspaces,
         &workspace,
         &cert,
-        ticker(general.as_str(), 60, tilo_automation::CatchUp::Skip),
+        ticker(60, tilo_automation::CatchUp::Skip),
         scratch.path().join("ticker.json"),
     )
     .await;
@@ -658,14 +537,14 @@ async fn a_restarted_host_runs_a_missed_time_once_when_the_schedule_catches_up()
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
-    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("ticker.json");
     let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
     let mut runner = member_runner(
         &workspaces,
         &workspace,
         &cert,
-        ticker(general.as_str(), 60, tilo_automation::CatchUp::RunOnce),
+        ticker(60, tilo_automation::CatchUp::RunOnce),
         state.clone(),
     )
     .await;
@@ -680,7 +559,7 @@ async fn a_restarted_host_runs_a_missed_time_once_when_the_schedule_catches_up()
         &workspaces,
         &workspace,
         &cert,
-        ticker(general.as_str(), 60, tilo_automation::CatchUp::RunOnce),
+        ticker(60, tilo_automation::CatchUp::RunOnce),
         state,
     )
     .await;
@@ -706,14 +585,14 @@ async fn a_restarted_host_skips_the_times_it_missed() {
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
-    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("ticker.json");
     let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
     let mut runner = member_runner(
         &workspaces,
         &workspace,
         &cert,
-        ticker(general.as_str(), 60, tilo_automation::CatchUp::Skip),
+        ticker(60, tilo_automation::CatchUp::Skip),
         state.clone(),
     )
     .await;
@@ -727,7 +606,7 @@ async fn a_restarted_host_skips_the_times_it_missed() {
         &workspaces,
         &workspace,
         &cert,
-        ticker(general.as_str(), 60, tilo_automation::CatchUp::Skip),
+        ticker(60, tilo_automation::CatchUp::Skip),
         state,
     )
     .await;
@@ -759,7 +638,7 @@ async fn a_moment_fires_once_at_its_time_and_never_again() {
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
-    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("reminder.json");
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
     let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
@@ -767,7 +646,7 @@ async fn a_moment_fires_once_at_its_time_and_never_again() {
         &workspaces,
         &workspace,
         &cert,
-        reminder(general.as_str(), at_ms),
+        reminder(at_ms),
         state.clone(),
     )
     .await;
@@ -806,14 +685,7 @@ async fn a_moment_fires_once_at_its_time_and_never_again() {
     drop(runner);
 
     // A restarted host reads that it answered the moment.
-    let mut runner = member_runner(
-        &workspaces,
-        &workspace,
-        &cert,
-        reminder(general.as_str(), at_ms),
-        state,
-    )
-    .await;
+    let mut runner = member_runner(&workspaces, &workspace, &cert, reminder(at_ms), state).await;
     runner.use_clock(manual.clone());
     assert!(
         runner.step().await.unwrap().is_empty(),
@@ -832,7 +704,7 @@ async fn a_moment_that_passed_while_the_host_was_down_fires_once_when_it_is_back
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
-    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("reminder.json");
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
     let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
@@ -840,7 +712,7 @@ async fn a_moment_that_passed_while_the_host_was_down_fires_once_when_it_is_back
         &workspaces,
         &workspace,
         &cert,
-        reminder(general.as_str(), at_ms),
+        reminder(at_ms),
         state.clone(),
     )
     .await;
@@ -856,7 +728,7 @@ async fn a_moment_that_passed_while_the_host_was_down_fires_once_when_it_is_back
         &workspaces,
         &workspace,
         &cert,
-        reminder(general.as_str(), at_ms),
+        reminder(at_ms),
         state.clone(),
     )
     .await;
@@ -875,14 +747,7 @@ async fn a_moment_that_passed_while_the_host_was_down_fires_once_when_it_is_back
     );
     assert!(runner.step().await.unwrap().is_empty());
     drop(runner);
-    let mut runner = member_runner(
-        &workspaces,
-        &workspace,
-        &cert,
-        reminder(general.as_str(), at_ms),
-        state,
-    )
-    .await;
+    let mut runner = member_runner(&workspaces, &workspace, &cert, reminder(at_ms), state).await;
     runner.use_clock(manual.clone());
     assert!(
         runner.step().await.unwrap().is_empty(),
@@ -896,7 +761,7 @@ async fn a_moment_that_passed_while_the_host_was_down_fires_once_when_it_is_back
         &workspaces,
         &workspace,
         &cert,
-        reminder(general.as_str(), at_ms + 1_000),
+        reminder(at_ms + 1_000),
         scratch.path().join("installed-late.json"),
     )
     .await;
@@ -1706,13 +1571,15 @@ async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("greeter.json");
-    // Its answer goes to a conversation the chat does not have.
+    // Its answer names a conversation the chat does not have.
     let start = || {
         member_runner(
             &workspaces,
             &workspace,
             &cert,
-            greeter("no-such-channel"),
+            greeter_into(tilo_automation::Selector::Fixed(
+                "tl:so.tilo.chat:no-such-channel".into(),
+            )),
             state.clone(),
         )
     };
@@ -1739,8 +1606,8 @@ async fn the_host_installs_a_bot_as_a_member_and_renews_it_as_it_runs_out() {
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
-    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
-    let mut bot = greeter(general.as_str());
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let mut bot = greeter();
     bot.installation = "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into();
 
     // Installed with a delegation that is already running out.
@@ -1793,8 +1660,8 @@ async fn a_bot_step_reads_the_records_it_follows_through_the_record_api() {
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let trigger = TriggerSpec::ResourceChanged {
-        kind: "chat.messages".into(),
-        actions: vec!["post".into()],
+        kind: TEXT_CHANNEL_KIND.into(),
+        actions: vec!["send".into()],
         fields: Vec::new(),
         by: ActorFilter::People,
     };
@@ -1815,8 +1682,8 @@ async fn a_bot_step_reads_the_records_it_follows_through_the_record_api() {
                 "messages",
                 StepKind::Read {
                     app: CHAT.into(),
-                    record: chat::parts::chain().route().to_owned(),
-                    joined: true,
+                    record: tilo_workspace_service::tl_records::TREE.into(),
+                    joined: false,
                 },
             ),
         ],
@@ -1877,12 +1744,13 @@ async fn a_bot_step_reads_the_records_it_follows_through_the_record_api() {
     };
     let chat = read("chat");
     assert!(
-        chat["records"][0]["value"]["channels"]
-            .as_object()
-            .is_some_and(|channels| channels.contains_key(&general)),
-        "{chat}"
+        chat["records"].as_array().is_some_and(|records| records
+            .iter()
+            .any(|record| record["kind"] == "tl.so.tilo.chat.Conversations")),
+        "the read lists the workspace's conversations: {chat}"
     );
     let messages = read("messages").to_string();
+    assert!(messages.contains("general"), "{messages}");
     assert!(messages.contains("what is here?"), "{messages}");
 }
 
@@ -1893,7 +1761,7 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
-    let mut bridge = greeter(general.as_str());
+    let mut bridge = greeter();
     let mut shortcut = bridge.shortcut().unwrap();
     if let tilo_automation::StepKind::Invoke { appearance, .. } = &mut shortcut.steps[0].kind {
         *appearance = Some(tilo_automation::Binding::Literal(
@@ -1918,7 +1786,7 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
         "the workspace admits the bridge's post: {reports:?}"
     );
     let bytes = workspaces
-        .resource_document(&workspace, CHAT, &first_part())
+        .resource_document(&workspace, CHAT, "")
         .await
         .unwrap()
         .unwrap();
@@ -1926,9 +1794,13 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
         .await
         .iter()
         .find(|message| message.text == "welcome!")
-        .map(|message| message.author.clone())
+        .map(|message| message.who.clone())
         .expect("the bridge posted");
-    assert_eq!(post, MemberId::bot(GREETER), "still the bot's");
+    assert_eq!(
+        post,
+        Some(tl_chat::member(MemberId::bot(GREETER))),
+        "still the bot's"
+    );
     let shown: Vec<_> = AutoCommit::load(&bytes)
         .unwrap()
         .get_changes(&[])
@@ -1957,7 +1829,7 @@ async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_
     let server = bot_server_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
-    let bot = greeter(general.as_str());
+    let bot = greeter();
     let certifier = membership::HostRootCertifier::new(owner_root());
     // The workspace has it installed with no grant at all, so it refuses the
     // post this host's copy of the program lets the bot make.
@@ -1997,7 +1869,7 @@ async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_
     assert!(
         dead[0]
             .reason
-            .starts_with("the workspace refused the bot's change to so.tilo.chat/"),
+            .starts_with("the workspace refused the bot's change to so.tilo.chat:"),
         "{}",
         dead[0].reason
     );
@@ -2124,6 +1996,7 @@ fn membership_changes_fire_a_bots_workspace_triggers_as_governance_verbs() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     use crate::workspaces::sealed_fixtures::{SealingMember, governor_published, member_device};
+    use tilo_workspace_service::tl_records::{Opened, RecordBytes};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = crate::workspaces::fixtures::governor_with(
         tilo_user_identity::DeviceCapabilities::member(),
@@ -2131,59 +2004,46 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     let server = bot_server_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
-    let (guest, guest_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
-    let guest = SealingMember::join(&workspaces, &workspace, (CHAT, ""), guest).await;
-    // The chat's messages start in a part the guest's page starts sealed.
-    let part = guest.part(&workspaces, &workspace, &first_part()).await;
+    // A guest takes part in the chat's record, under the keys its members seal it with.
+    let (guest_key, guest_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let guest = SealingMember::join(&workspaces, &workspace, (CHAT, ""), guest_key).await;
     let mut runner = member_runner(
         &workspaces,
         &workspace,
         &cert,
-        greeter(general.as_str()),
+        greeter(),
         scratch.path().join("greeter.json"),
     )
     .await;
     assert!(runner.step().await.unwrap().is_empty());
 
-    // The guest's post leaves its page sealed, in the first part of the
-    // chat's messages: those are sealed now.
-    let started = {
-        let chat = workspaces
-            .resource_document(&workspace, CHAT, "")
-            .await
-            .unwrap()
-            .unwrap();
-        let mut page = Replica::open(
-            &AppCatalogue::native(),
-            CHAT,
-            &workspace,
-            &MemberId::person(hex::encode(guest_cert.user_public_key)),
-            ReplicaActor::Owner,
-            Seed::Existing {
-                record: collab_types::document::DocumentId::package_primary(),
-                changes: vec![chat],
-            },
+    // The guest's post is written sealed, as their page writes one: through Chat's own `send`,
+    // on the record the workspace holds.
+    let sealed = {
+        let record = RecordBytes {
+            documents: std::collections::BTreeMap::from([(String::new(), guest.document().save())]),
+        };
+        let mut chat = Opened::open(
+            &record,
+            &tl_chat::packages().unwrap(),
+            tl_chat::viewer(),
+            None,
         )
         .unwrap();
-        let arguments = serde_json::json!({ "channel": general, "text": "hello" });
-        page.invoke(
-            &tilo_actions::api::ActionAddress::new(
-                collab_types::document::chain_resource_id(&chat::parts::chain()),
-                "post",
-            ),
-            arguments.as_object().unwrap(),
-            false,
-        )
-        .unwrap();
-        match page.take_document_mutations().unwrap().pop() {
-            Some((_, DocumentMutation::Snapshot(bytes))) => bytes,
-            other => panic!("the page started the first part: {other:?}"),
-        }
+        let who = tl_chat::member(MemberId::person(hex::encode(guest_cert.user_public_key)));
+        let to = tl_chat::resource(&chat, "TextChannel", &general).unwrap();
+        tl_chat::send(&mut chat, &who, &to, "hello", None).unwrap();
+        chat.written()
+            .into_iter()
+            .find(|written| written.document.is_empty())
+            .expect("the post changed the chat's record")
+            .changes
     };
-    part.writes(&workspaces, &workspace, |doc| {
-        tilo_automerge::ApplyIncoming::load_incoming(doc, &started).unwrap();
-    })
-    .await;
+    guest
+        .writes(&workspaces, &workspace, |doc| {
+            tilo_automerge::ApplyIncoming::load_incoming(doc, &sealed).unwrap();
+        })
+        .await;
     let reports = runner.step().await.unwrap();
     assert!(
         matches!(reports[..], [ref report] if report.outcome == tilo_automation::InvocationOutcome::Completed),
@@ -2191,202 +2051,25 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     );
 
     // The guest opens what the workspace published, as its page does.
-    let post = governor_published(&workspaces, &workspace, &first_part(), &cert)
+    let post = governor_published(&workspaces, &workspace, "", &cert)
         .await
         .expect("the bot's post was published");
     assert!(post.encryption.is_some(), "never in the clear");
-    part.take_in(&post);
-    let _ = part.document();
+    guest.take_in(&post);
+    let _ = guest.document();
     let posted = posts(&workspaces, &workspace).await;
     let answers: Vec<_> = posted
         .iter()
         .filter(|message| message.text == "welcome!")
         .collect();
     assert_eq!(answers.len(), 1, "the guest reads the bot's answer");
-    assert_eq!(answers[0].author, MemberId::bot(GREETER));
+    assert_eq!(
+        answers[0].who,
+        Some(tl_chat::member(MemberId::bot(GREETER)))
+    );
     assert!(
         posted.iter().any(|message| message.text == "hello"),
-        "beside Ada's post"
-    );
-}
-
-/// The Discord bridge as a workspace installs it.
-pub(super) fn discord_bridge() -> installed::InstalledBot {
-    installed::InstalledBot {
-        installation: "5b8d2278-de54-4bf8-a0b8-8ae4f0587eed".into(),
-        entry: "discord-bridge".into(),
-        name: "Discord Bridge".into(),
-        program: include_str!("../../../../../apps/discord/bridge/program.json").to_owned(),
-        inputs: serde_json::Map::new(),
-        installed_at_ms: 1,
-        release: String::new(),
-    }
-}
-
-/// The workspace's Chat categories by name, each with its conversations' names.
-async fn chat_layout(workspaces: &Workspaces, workspace: &str) -> Vec<(String, Vec<String>)> {
-    let record = workspace_resource(&AppCatalogue::native(), CHAT);
-    let saved = workspaces
-        .resource_document(workspace, CHAT, &record)
-        .await
-        .unwrap()
-        .unwrap();
-    let chat = chat_of(&saved);
-    let named = |category: Option<&tilo_resource::Id>| {
-        chat.channels
-            .values()
-            .filter(|channel| channel.is_channel())
-            .filter(|channel| channel.category.as_ref() == category)
-            .map(|channel| channel.name.clone())
-            .collect::<Vec<_>>()
-    };
-    std::iter::once((String::new(), named(None)))
-        .chain(
-            chat.categories
-                .iter()
-                .map(|(id, category)| (category.name.clone(), named(Some(id)))),
-        )
-        .collect()
-}
-
-/// Connect `workspace` to the Discord server the bridge last saw as `goal`, and
-/// `chat` holding `general` and `voice`.
-async fn bridged_lounge(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert) {
-    use tilo_resource::Fields as _;
-    let link = discord::DiscordLink {
-        guild_id: "1000".into(),
-        only_channel: None,
-        name: "Fake".into(),
-        mirror_channels: false,
-        map_roles: false,
-    };
-    discord::connect(workspaces, workspace, cert, &link)
-        .await
-        .unwrap();
-    let catalogue = AppCatalogue::native();
-    // The server as the bridge last saw it: `goal`, and `chat` holding
-    // `general` and `voice`.
-    workspaces
-        .author_application(
-            workspace,
-            cert,
-            &catalogue,
-            discord::APP,
-            &workspace_resource(&catalogue, discord::APP),
-            |doc| {
-                let current = ::discord::Guild::read_fields(doc, &automerge::ROOT)
-                    .map_err(|error| error.to_string())?;
-                let mut seen = current.clone();
-                let channel = |id: &str, kind: &str, name: &str, parent: Option<&str>, at: i64| {
-                    serde_json::json!({"id": id, "kind": kind, "name": name, "parent": parent, "position": at})
-                };
-                seen.observe(
-                    "2000".into(),
-                    serde_json::from_value(serde_json::json!([
-                        channel("1103", "text", "goal", None, 0),
-                        channel("1100", "category", "chat", None, 1),
-                        channel("1101", "text", "general", Some("1100"), 2),
-                        channel("1102", "voice", "voice", Some("1100"), 3),
-                    ]))
-                    .map_err(|error| error.to_string())?,
-                    Vec::new(),
-                );
-                seen.write_changed_fields(
-                    &current,
-                    doc,
-                    &automerge::ROOT,
-                    &tilo_resource::Delta::default(),
-                )
-                .map_err(|error| error.to_string())
-            },
-        )
-        .await
-        .unwrap();
-}
-
-/// A bridge run the workspace refuses part of leaves the import half done: the
-/// category it made stands, the moves after it were dropped. The run goes
-/// again from the workspace's records and finishes the layout, the channels
-/// under the server's category as in Discord.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_bridge_run_the_workspace_refuses_part_of_finishes_the_import_when_it_goes_again() {
-    let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
-    let workspaces = server.workspaces().clone();
-    let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-    bridged_lounge(&workspaces, &workspace, &cert).await;
-    let catalogue = AppCatalogue::native();
-    let mut runner = member_runner(
-        &workspaces,
-        &workspace,
-        &cert,
-        discord_bridge(),
-        scratch.path().join("bridge.json"),
-    )
-    .await;
-    assert!(runner.step().await.unwrap().is_empty());
-
-    // A change to the workspace's Chat has the bridge reconcile; the workspace
-    // refuses the run's second change, mapping the category it just made.
-    let owner = hex::encode(cert.user_public_key);
-    workspaces
-        .author_application(
-            &workspace,
-            &cert,
-            &catalogue,
-            CHAT,
-            &workspace_resource(&catalogue, CHAT),
-            |doc| {
-                chat::demo::apply_as(
-                    doc,
-                    &owner,
-                    chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
-                        name: "welcome".parse().unwrap(),
-                        category: None,
-                        kind: None,
-                        topic: None,
-                    }),
-                )
-                .map_err(|error| error.to_string())
-            },
-        )
-        .await
-        .unwrap();
-    runner.refuse_change_after(1);
-    runner.step().await.unwrap();
-    let half = chat_layout(&workspaces, &workspace).await;
-    assert!(
-        half.iter()
-            .any(|(name, channels)| name == "chat" && channels.is_empty()),
-        "the category stands, empty: {half:?}"
-    );
-
-    // It goes again, from the workspace's records, and finishes.
-    let done = |layout: &[(String, Vec<String>)]| {
-        layout.iter().any(|(name, channels)| {
-            name == "chat"
-                && channels.contains(&"general".to_owned())
-                && channels.contains(&"voice".to_owned())
-        })
-    };
-    for _ in 0..40 {
-        if done(&chat_layout(&workspaces, &workspace).await) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        runner.step().await.unwrap();
-    }
-    let layout = chat_layout(&workspaces, &workspace).await;
-    assert!(done(&layout), "general and voice under chat: {layout:?}");
-    assert_eq!(
-        layout.iter().filter(|(name, _)| name == "chat").count(),
-        1,
-        "one chat category, the one the refused run made: {layout:?}"
-    );
-    assert!(
-        layout[0].1.contains(&"goal".to_owned()),
-        "goal stands apart, as in Discord: {layout:?}"
+        "beside the guest's post"
     );
 }
 
@@ -2535,7 +2218,7 @@ async fn a_bot_program_pushed_into_a_running_workspace_replaces_the_one_it_runs(
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
-    let first = greeter(general.as_str()).program;
+    let first = greeter().program;
     let second = first.replace("welcome!", "welcome, again!");
     assert_ne!(first, second);
     let follower = requested::Follower {
@@ -2639,7 +2322,7 @@ async fn a_bot_a_governed_workspace_asks_for_runs_beside_that_workspace() {
     let (annex, annex_general) = chat_workspace(&workspaces, &cert).await;
     assert_ne!(started, annex);
 
-    let program = greeter(annex_general.as_str()).program;
+    let program = greeter().program;
     let request_id = *blake3::hash(program.as_bytes()).as_bytes();
     workspaces
         .ask_for_bot(
@@ -2689,10 +2372,11 @@ async fn a_bot_a_governed_workspace_asks_for_runs_beside_that_workspace() {
         "the operator's workspace runs no bot it never asked for"
     );
     assert!(
-        posts(&workspaces, &annex)
-            .await
-            .iter()
-            .any(|post| post.author.is_bot()),
+        posts(&workspaces, &annex).await.iter().any(|post| post
+            .who
+            .as_ref()
+            .and_then(|who| who.member_id())
+            .is_some_and(MemberId::is_bot)),
         "the answer is the requested bot's"
     );
 

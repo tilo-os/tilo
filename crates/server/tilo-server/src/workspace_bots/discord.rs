@@ -16,7 +16,6 @@ use crate::workspaces::Workspaces;
 pub use tilo_app_id::apps::DISCORD as APP;
 /// The secret the connector's worker reads its bot token from.
 pub const TOKEN_PURPOSE: &str = "bot-token";
-use tilo_app_id::apps::CHAT;
 
 /// The bridge bot inputs that name its [`DiscordLink`]: read by the host,
 /// never handed to the program.
@@ -105,10 +104,7 @@ pub async fn connect(
 ) -> Result<(), String> {
     let catalogue = AppCatalogue::native();
     let owner = hex::encode(host.user_public_key);
-    let (chat_record, guild_record) = (
-        workspace_resource(&catalogue, CHAT),
-        workspace_resource(&catalogue, APP),
-    );
+    let guild_record = workspace_resource(&catalogue, APP);
     workspaces
         .prepare_application(workspace, host, &catalogue, APP, &guild_record)
         .await
@@ -139,10 +135,6 @@ pub async fn connect(
             ))
         };
     }
-    workspaces
-        .prepare_application(workspace, host, &catalogue, CHAT, &chat_record)
-        .await
-        .map_err(|error| format!("add Chat: {error}"))?;
     let connect = discord::Guild::CONNECT.with(discord::guild::guild::Connect {
         guild_id: link.guild_id.clone(),
         name: link.name.clone(),
@@ -468,10 +460,6 @@ mod tests {
             }
         };
         let guild = discord::Guild::read(&read(APP).await).unwrap();
-        assert!(
-            chat::Chat::read(&read(CHAT).await).is_ok(),
-            "the workspace's Chat is added for the bridge to mirror"
-        );
         assert_eq!(
             (guild.guild_id.as_str(), guild.only_channel.as_deref()),
             ("12", Some("34"))

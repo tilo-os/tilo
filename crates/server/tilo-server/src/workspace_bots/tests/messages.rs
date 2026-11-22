@@ -1,42 +1,33 @@
-//! A chat's messages: reading a part, and the ids a page holds beside its
-//! chat's document.
+//! tl Chat's record as a workspace holds it: the messages of every channel and thread, read
+//! through Chat's own types, as the workspace's Chat actions leave them.
 
+use tilo_workspace_service::tl_records::runtime::ResourceRef;
+
+use crate::tl_chat::Message;
 use crate::workspaces::Workspaces;
-use automerge::AutoCommit;
-use tilo_agent_session::Replica;
-use tilo_app_id::apps::CHAT;
-use tilo_resource::Resource as _;
 
-pub(crate) fn chat_of(bytes: &[u8]) -> chat::Chat {
-    chat::Chat::read(&AutoCommit::load(bytes).unwrap()).unwrap()
-}
-
-/// The chat's first part of messages, as a document of the workspace.
-pub(crate) fn first_part() -> String {
-    chat::parts::part(0).as_str().to_owned()
-}
-
-/// The messages of the chat's first part, as the workspace holds it.
-pub(crate) async fn posts(workspaces: &Workspaces, workspace: &str) -> Vec<chat::chat::Message> {
+/// Every message of `workspace`'s Chat, in each channel and each channel's threads, with the
+/// conversation it is in.
+pub(crate) async fn messages(
+    workspaces: &Workspaces,
+    workspace: &str,
+) -> Vec<(ResourceRef, Message)> {
     workspaces
-        .resource_document(workspace, CHAT, &first_part())
+        .with_tl_record(
+            workspace,
+            &crate::tl_chat::packages().unwrap(),
+            crate::tl_chat::viewer(),
+            |chat| crate::tl_chat::all_messages(chat),
+        )
         .await
         .unwrap()
-        .map(|bytes| chat::messages::read_part(&AutoCommit::load(&bytes).unwrap()))
-        .map(|part| part.messages.values().cloned().collect())
-        .unwrap_or_default()
 }
 
-/// The message ids `page` holds in the parts beside its chat's document.
-pub(crate) fn message_ids(page: &Replica) -> Vec<String> {
-    page.resources_beside()
-        .iter()
-        .filter_map(|document| page.read_resource(document, chat::messages::read_part))
-        .flat_map(|part| {
-            part.messages
-                .ids()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
+/// The messages of `workspace`'s Chat, in order, as the tests read what the bots posted.
+pub(crate) async fn posts(workspaces: &Workspaces, workspace: &str) -> Vec<Message> {
+    messages(workspaces, workspace)
+        .await
+        .into_iter()
+        .map(|(_, message)| message)
         .collect()
 }

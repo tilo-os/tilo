@@ -381,7 +381,8 @@ pub fn new_channel(
             ],
         )?,
         None => {
-            let all = root(opened)?;
+            // The first channel of a new workspace founds Chat's root.
+            let all = opened.open_root()?;
             call(
                 opened,
                 who,
@@ -402,7 +403,7 @@ pub fn new_channel(
 /// # Errors
 /// Chat refused it.
 pub fn new_category(opened: &mut Opened, who: &Actor, name: &str) -> Result<ResourceRef, String> {
-    let all = root(opened)?;
+    let all = opened.open_root()?;
     let made = call(
         opened,
         who,
