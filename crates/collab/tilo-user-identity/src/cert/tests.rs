@@ -441,17 +441,28 @@ tilo_test_env::scenario! {
         assert!(one.within(one));
         assert!(AgentScope::AllWorkspaces.within(AgentScope::AllWorkspaces));
         assert!(!AgentScope::AllWorkspaces.within(one));
+        // One agent's key names that agent, in one workspace, and stands for no other.
+        let scribe = AgentScope::agent_in(one.workspace().unwrap(), "scribe");
+        assert_eq!(AgentScope::parse(&scribe.name()), Some(scribe));
+        assert!(scribe.reaches(workspace) && !scribe.makes_workspaces());
+        assert!(scribe.is_agent("scribe") && !scribe.is_agent("critic"));
+        assert!(!one.is_agent("scribe"));
+        assert!(scribe.within(one) && scribe.within(AgentScope::AllWorkspaces));
+        assert!(!one.within(scribe));
+        assert!(!AgentScope::agent_in(one.workspace().unwrap(), "critic").within(scribe));
         for malformed in [
             "",
             "ALL",
             "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0",
             "00000000-0000-0000-0000-000000000000",
             "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+            "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0/",
+            "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0/ab",
         ] {
             assert_eq!(AgentScope::parse(malformed), None, "{malformed}");
         }
 
-        for scope in [AgentScope::AllWorkspaces, one] {
+        for scope in [AgentScope::AllWorkspaces, one, scribe] {
             let grant = golden_cert_with(DeviceCapabilities::agent_grant(scope));
             verify_device_cert(&grant).unwrap();
             assert_eq!(
@@ -467,7 +478,7 @@ tilo_test_env::scenario! {
             let mut moved = grant.clone();
             moved.capabilities.agent = Some(match scope {
                 AgentScope::AllWorkspaces => one,
-                AgentScope::Workspace(_) => AgentScope::AllWorkspaces,
+                AgentScope::Workspace(_) | AgentScope::Agent { .. } => AgentScope::AllWorkspaces,
             });
             assert_eq!(
                 verify_device_cert(&moved),

@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::mcp_server::{AgentSession, Grant, Reach, Server};
 use tilo_lock::MutexRecover as _;
-use tilo_user_identity::{AgentScope, DeviceCert};
+use tilo_user_identity::DeviceCert;
 use tokio::sync::{Notify, watch};
 
 /// One session of an agent's device, open now.
@@ -155,15 +155,17 @@ impl McpServer {
             .map(|(device, agent)| Grant {
                 id: hex::encode(device),
                 agent: agent.name.clone(),
-                reach: match agent.cert.capabilities.agent {
-                    Some(AgentScope::Workspace(id)) => {
-                        let id = AgentScope::Workspace(id).name();
-                        Reach::Workspace {
-                            name: id.clone(),
-                            id,
-                        }
-                    }
-                    Some(AgentScope::AllWorkspaces) | None => Reach::Account,
+                reach: match agent
+                    .cert
+                    .capabilities
+                    .agent
+                    .and_then(|scope| scope.workspace_name())
+                {
+                    Some(id) => Reach::Workspace {
+                        name: id.clone(),
+                        id,
+                    },
+                    None => Reach::Account,
                 },
                 device: agent.cert.device_label.clone(),
                 expires_ms: agent

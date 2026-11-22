@@ -267,7 +267,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     // writes the record's history, sealed and naming the other version's
     // surface.
     let note = issues_route();
-    let laptop = joined(&started, laptop).await;
+    let laptop = Box::pin(joined(&started, laptop)).await;
     let document = write_history(&laptop, &note, surface);
     let issues = document.get(automerge::ROOT, "issues").unwrap().unwrap().1;
 
@@ -323,7 +323,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
 async fn the_server_s_own_device_decides_what_an_older_version_wrote_from_its_server_s_surfaces() {
     let started = started().await;
     let laptop = enrol(&started.root, "laptop", DeviceCapabilities::primary());
-    let laptop = joined(&started, laptop).await;
+    let laptop = Box::pin(joined(&started, laptop)).await;
     let notes: Vec<_> = ["note-1", "note-2"]
         .into_iter()
         .map(|document| tilo_peer_state::document_frame::DocumentRoute {

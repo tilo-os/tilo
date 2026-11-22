@@ -72,6 +72,7 @@ use tilo_actions::remote::workspace_events;
 use tilo_actions::remote::workspace_initiative;
 use turn_provider::TurnProvider;
 
+pub mod agent_keys;
 pub mod assistant;
 pub mod events;
 pub mod initiative;
@@ -661,14 +662,24 @@ pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvid
     // own network or on this machine included: a local model answers with no network at all.
     workspaces.call_private_model_addresses(true);
     telling::start(&workspaces);
+    // Each agent signs its calls with a key of its own, made here from its person's root.
+    let keys = match agent_keys::FleetAgentKeys::from_env() {
+        Ok(keys) => Arc::new(keys),
+        Err(error) => {
+            tracing::warn!("this device runs no agents: its identity store is not open ({error})");
+            return;
+        }
+    };
     tracing::info!(
         "this device runs its workspaces' agents, each on the model its workspace linked"
     );
-    ServerAgents::on_device(workspaces, actions).run().await;
+    ServerAgents::on_device(workspaces, actions, keys)
+        .run()
+        .await;
 }
 
 /// What carries one turn's model calls, made fresh for each turn on its own thread: a test's
-/// script, standing where a workspace's model would ([`ServerAgents::for_test`]).
+/// script, standing where a workspace's model would ([`ServerAgents::scripted`]).
 pub type Model = Arc<dyn Fn() -> Option<Box<dyn PlanTurns>> + Send + Sync>;
 
 /// Something a person asked an agent, and where its answer goes.
@@ -785,52 +796,42 @@ pub trait SessionDevices: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<[u8; 32]>> + Send + 'a>>;
 }
 
-/// What runs each agent as its own approved key on a host: where its approval is read, and the
-/// signing sessions that hold the keys. A person's own device has none, and its agents act
-/// through its broker, held to their own bound.
-type Roster = Option<(Arc<dyn SessionDevices>, tilo_agent_session::AgentSessions)>;
+/// What each agent acts under: on a host, its own approved key, where its approval is read and
+/// the signing sessions that hold the keys; on the person's device, the key that device makes
+/// for it ([`agent_keys`]).
+#[derive(Clone)]
+enum Roster {
+    Hosted(Arc<dyn SessionDevices>, tilo_agent_session::AgentSessions),
+    Device(Arc<dyn agent_keys::AgentKeys>),
+}
 
-/// `agent` of `workspace`, working for `person`: what everything it does there goes as. On a
-/// host that is its own approved key, each invocation signed by that key; on the person's own
-/// device it is the agent their device hands its turns to, which the device's broker holds to
-/// the agent's own bound.
+/// `agent` of `workspace` as its own key, working for `person`: what everything it does there
+/// goes as, each invocation signed by that key.
 ///
 /// # Errors
-/// The agent has no keeper, or no approved signing session for the workspace, or the person is
-/// admitted on no device here.
+/// The agent belongs to no person; on a host, no approved signing session for the workspace; on a
+/// device, no key of its own there.
 async fn agent_caller(
     roster: &Roster,
-    workspaces: &Workspaces,
     workspace: WorkspaceId,
     agent: &Agent,
     person: [u8; 32],
 ) -> Result<Caller, String> {
-    let Some((server, sessions)) = roster else {
-        let device = workspaces
-            .work_device(
-                workspace,
-                person,
-                &tilo_action_policy::MemberId::agent(agent.id.0.clone()),
-            )
-            .await
-            .ok_or("the person who asked is admitted here on no device")?;
-        return Ok(Caller::authenticated(person, device)
-            .in_workspace(workspace.to_string())
-            .delegated_to(agent.id.0.clone())
-            .named(&agent.name));
-    };
-    let keeper = tilo_action_policy::PersonId::parse(&agent.keeper)
+    let root = tilo_action_policy::PersonId::parse(&agent.keeper)
         .ok()
-        .and_then(|keeper| keeper.root())
-        .ok_or("the hosted agent has no keeper")?;
-    let device = server
-        .session_device(sessions, workspace, &agent.id.0, &keeper)
-        .await
-        .filter(|device| {
-            sessions.matches_roster(device, workspace, &agent.id.0, &keeper, agent.created_at)
-        })
-        .ok_or("the hosted agent has no approved signing session for this workspace")?;
-    Ok(Caller::delegated_agent(agent.id.0.clone(), keeper, device)
+        .and_then(|its| its.root())
+        .ok_or("the agent belongs to no person")?;
+    let key = match roster {
+        Roster::Hosted(server, sessions) => server
+            .session_device(sessions, workspace, &agent.id.0, &root)
+            .await
+            .filter(|device| {
+                sessions.matches_roster(device, workspace, &agent.id.0, &root, agent.created_at)
+            })
+            .ok_or("the hosted agent has no approved signing session for this workspace")?,
+        Roster::Device(keys) => keys.grant(workspace, &agent.id.0, &agent.name, root)?,
+    };
+    Ok(Caller::delegated_agent(agent.id.0.clone(), root, key)
         .in_workspace(workspace.to_string())
         .named(&agent.name)
         .on_roster(agent.created_at, person))
@@ -873,28 +874,28 @@ impl ServerAgents {
         devices: Arc<dyn SessionDevices>,
         sessions: tilo_agent_session::AgentSessions,
     ) -> Self {
-        Self::build(workspaces, actions.into(), None, Some((devices, sessions)))
+        Self::build(
+            workspaces,
+            actions.into(),
+            None,
+            Roster::Hosted(devices, sessions),
+        )
     }
 
     /// The agents a person's own device runs for the workspaces it holds: their turns' calls go
-    /// through the device's broker (`actions`), decided there as the person's own calls are.
+    /// through the device's broker (`actions`), each signed by the agent's own key from `keys`.
     #[must_use]
     pub fn on_device(
         workspaces: Workspaces,
         actions: Arc<dyn ActionProvider + Send + Sync>,
+        keys: Arc<dyn agent_keys::AgentKeys>,
     ) -> Self {
-        Self::build(workspaces, EngineActions::Device(actions), None, None)
-    }
-
-    /// Exercise turn machinery in fixtures that do not provision peer sessions.
-    #[cfg(feature = "test-support")]
-    #[must_use]
-    pub fn for_test(
-        workspaces: Workspaces,
-        actions: impl Into<EngineActions>,
-        model: Option<Model>,
-    ) -> Self {
-        Self::build(workspaces, actions.into(), model, None)
+        Self::build(
+            workspaces,
+            EngineActions::Device(actions, Arc::clone(&keys)),
+            None,
+            Roster::Device(keys),
+        )
     }
 
     fn build(
@@ -944,7 +945,7 @@ impl ServerAgents {
         agent: &Agent,
         person: [u8; 32],
     ) -> Result<Caller, String> {
-        agent_caller(&self.roster, &self.workspaces, workspace, agent, person).await
+        agent_caller(&self.roster, workspace, agent, person).await
     }
 
     /// These agents, told the devices this server placed itself for its workspaces' windows:
@@ -1535,8 +1536,8 @@ impl ServerAgents {
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or("the ask names no person")?;
         // A host serves only a person it admits on a device of theirs; on the person's own
-        // device, the caller is that device ([`agent_caller`]).
-        if self.roster.is_some()
+        // device the person is the one whose root made the agent's key ([`agent_caller`]).
+        if matches!(self.roster, Roster::Hosted(..))
             && self
                 .workspaces
                 .person_device(workspace_id, person)
@@ -2116,10 +2117,7 @@ impl TurnScope {
             .clone()
             .in_agent_session(&session)
             .asked(&turn.asked)
-            .on_roster_turn(cause.clone(), turn.agent.created_at, self.person)
-            // On the person's own device, the agent their device hands the turn to, held to the
-            // bound its own record carries.
-            .on_turn(cause, turn.agent.turn_rules(&self.workspace));
+            .on_roster_turn(cause, turn.agent.created_at, self.person);
         let provider = self.provider.clone();
         // A sub-agent's turn grows the messages its answer goes on in, and whoever keeps it
         // to its own writes reads which those are.

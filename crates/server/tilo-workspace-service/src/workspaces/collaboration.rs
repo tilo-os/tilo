@@ -489,10 +489,7 @@ impl Workspaces {
             person: hex::encode(cert.user_public_key),
             device: hex::encode(cert.device_public_key),
             name: cert.device_label.clone(),
-            scope: match scope {
-                AgentScope::AllWorkspaces => None,
-                one @ AgentScope::Workspace(_) => Some(one.name()),
-            },
+            scope: scope.workspace_name(),
             expires_ms: cert.expires_at_ns.map(|expiry| expiry / 1_000_000),
             // A key that another grant minted names it, so the key that made
             // it lists it wherever the workspace is held.

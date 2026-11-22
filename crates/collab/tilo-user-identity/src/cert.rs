@@ -109,6 +109,7 @@ const EXTENDED_BROWSER_PAGES: u8 = 64;
 const EXTENDED_WORKSPACE_SERVICE: u8 = 128;
 const SCOPE_ALL: u8 = 0;
 const SCOPE_WORKSPACE: u8 = 1;
+const SCOPE_AGENT: u8 = 2;
 
 /// The version of the binary certificate layout this build reads and writes:
 /// the fields in [`DeviceCert`]'s order, the capabilities as four flags after
@@ -147,34 +148,97 @@ pub enum AgentScope {
     AllWorkspaces,
     /// One workspace, by its id: a UUID's 16 bytes.
     Workspace([u8; 16]),
+    /// One agent's key in one workspace: the workspace by its id, and the agent by
+    /// [`AgentScope::agent_of`] its id, so the grant names the agent it was certified for
+    /// and no other of the person's agents may sign under it.
+    Agent {
+        /// The workspace's UUID, 16 bytes.
+        workspace: [u8; 16],
+        /// [`AgentScope::agent_of`] the agent's id.
+        agent: [u8; 32],
+    },
 }
 
 impl AgentScope {
-    /// The scope as text: `all`, or the workspace's canonical UUID.
+    /// One agent's key in one workspace: `agent` is the agent's id.
+    #[must_use]
+    pub fn agent_in(workspace: [u8; 16], agent: &str) -> Self {
+        Self::Agent {
+            workspace,
+            agent: Self::agent_of(agent),
+        }
+    }
+
+    /// What an [`AgentScope::Agent`] grant names an agent by: the hash of its id.
+    #[must_use]
+    pub fn agent_of(agent: &str) -> [u8; 32] {
+        *blake3::hash(agent.as_bytes()).as_bytes()
+    }
+
+    /// Whether the grant was certified for the agent whose id is `agent` alone. A grant that
+    /// names no agent is no agent's own key.
+    #[must_use]
+    pub fn is_agent(&self, agent: &str) -> bool {
+        matches!(self, Self::Agent { agent: named, .. } if *named == Self::agent_of(agent))
+    }
+
+    /// The one workspace the grant reaches, by its id; `None` for one reaching them all.
+    #[must_use]
+    pub const fn workspace(&self) -> Option<[u8; 16]> {
+        match self {
+            Self::AllWorkspaces => None,
+            Self::Workspace(id) | Self::Agent { workspace: id, .. } => Some(*id),
+        }
+    }
+
+    /// The canonical UUID of the one workspace the grant reaches; `None` for one reaching
+    /// them all.
+    #[must_use]
+    pub fn workspace_name(&self) -> Option<String> {
+        self.workspace().map(|id| uuid_text(&id))
+    }
+
+    /// The scope as text: `all`, the workspace's canonical UUID, or that UUID, `/` and
+    /// the agent's hash in hex.
     #[must_use]
     pub fn name(&self) -> String {
         match self {
             Self::AllWorkspaces => "all".to_owned(),
             Self::Workspace(id) => uuid_text(id),
+            Self::Agent { workspace, agent } => {
+                format!("{}/{}", uuid_text(workspace), hex::encode(agent))
+            }
         }
     }
 
     /// The scope [`Self::name`] wrote: `all`, or a canonical (lower-case,
-    /// hyphenated) UUID other than the nil one.
+    /// hyphenated) UUID other than the nil one, alone or followed by `/` and an
+    /// agent's hash in lower-case hex.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         if text == "all" {
             return Some(Self::AllWorkspaces);
         }
-        uuid_bytes(text).map(Self::Workspace)
+        let Some((workspace, agent)) = text.split_once('/') else {
+            return uuid_bytes(text).map(Self::Workspace);
+        };
+        let lower = agent
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+        Some(Self::Agent {
+            workspace: uuid_bytes(workspace)?,
+            agent: lower
+                .then(|| hex::decode(agent).ok()?.try_into().ok())
+                .flatten()?,
+        })
     }
 
     /// Whether the grant reaches the workspace `workspace` names (its UUID).
     #[must_use]
     pub fn reaches(&self, workspace: &str) -> bool {
-        match self {
-            Self::AllWorkspaces => true,
-            Self::Workspace(id) => uuid_bytes(workspace).is_some_and(|asked| asked == *id),
+        match self.workspace() {
+            None => true,
+            Some(id) => uuid_bytes(workspace).is_some_and(|asked| asked == id),
         }
     }
 
@@ -186,7 +250,8 @@ impl AgentScope {
     pub fn within(self, asked: Self) -> bool {
         match asked {
             Self::AllWorkspaces => true,
-            Self::Workspace(_) => self == asked,
+            Self::Workspace(id) => self.workspace() == Some(id),
+            Self::Agent { .. } => self == asked,
         }
     }
 
@@ -241,7 +306,7 @@ impl<'de> Deserialize<'de> for AgentScope {
         Self::parse(&text).ok_or_else(|| {
             serde::de::Error::invalid_value(
                 serde::de::Unexpected::Str(&text),
-                &"`all` or a canonical workspace UUID",
+                &"`all`, a canonical workspace UUID, or one followed by `/` and an agent's hash",
             )
         })
     }
@@ -407,6 +472,9 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         None => Vec::new(),
         Some(AgentScope::AllWorkspaces) => vec![SCOPE_ALL],
         Some(AgentScope::Workspace(id)) => [&[SCOPE_WORKSPACE][..], &id].concat(),
+        Some(AgentScope::Agent { workspace, agent }) => {
+            [&[SCOPE_AGENT][..], &workspace, &agent].concat()
+        }
     };
     let bit = |set: bool, bit: u8| if set { bit } else { 0 };
     let extended = bit(capabilities.foreign, EXTENDED_FOREIGN)
@@ -477,9 +545,9 @@ impl<'de> Deserialize<'de> for BinaryCapabilitiesOf {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Postcard reads only the elements the visitor asks for, so the upper
         // bound admits the four native flags, marker + four flags, and the
-        // extended marker + its byte + an agent's scope (up to 17 bytes) +
+        // extended marker + its byte + an agent's scope (up to 49 bytes) +
         // four flags.
-        deserializer.deserialize_tuple(23, BinaryCapabilities)
+        deserializer.deserialize_tuple(55, BinaryCapabilities)
     }
 }
 
@@ -532,7 +600,7 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 } else {
                     match next()? {
                         SCOPE_ALL => Some(AgentScope::AllWorkspaces),
-                        SCOPE_WORKSPACE => {
+                        tag @ (SCOPE_WORKSPACE | SCOPE_AGENT) => {
                             let mut id = [0u8; 16];
                             for byte in &mut id {
                                 *byte = next()?;
@@ -543,12 +611,23 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                                     &"a workspace id other than the nil UUID",
                                 ));
                             }
-                            Some(AgentScope::Workspace(id))
+                            if tag == SCOPE_WORKSPACE {
+                                Some(AgentScope::Workspace(id))
+                            } else {
+                                let mut agent = [0u8; 32];
+                                for byte in &mut agent {
+                                    *byte = next()?;
+                                }
+                                Some(AgentScope::Agent {
+                                    workspace: id,
+                                    agent,
+                                })
+                            }
                         }
                         other => {
                             return Err(A::Error::invalid_value(
                                 serde::de::Unexpected::Unsigned(other.into()),
-                                &"an agent scope of all workspaces or one",
+                                &"an agent scope of all workspaces, one, or one agent in one",
                             ));
                         }
                     }

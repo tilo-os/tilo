@@ -169,7 +169,7 @@ impl ContinuingCaller {
                 ..
             } => Self::NativePerson {
                 workspace: workspace.clone(),
-                certificate: Box::new(certificate.clone()),
+                certificate: certificate.clone(),
                 time: time.clone(),
                 direct: tilo_actions::remote::Caller::local_person(person_id_for_root(
                     certificate.user_public_key,
@@ -210,7 +210,7 @@ impl ContinuingCaller {
                 }),
             ) => Some(Self::NativePerson {
                 workspace: workspace.clone(),
-                certificate: Box::new(certificate.clone()),
+                certificate: certificate.clone(),
                 time: time.clone(),
                 direct: direct.clone(),
             }),
