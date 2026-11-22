@@ -457,6 +457,32 @@ tilo_test_env::scenario! {
     }
 }
 
+/// The group the person's two devices read the record with, and the first device's keys.
+fn group_for_two_devices(
+    workspace: collab_types::WorkspaceId,
+    first: &mut key_group::KeyGroup,
+    second_device: [u8; 32],
+) -> (key_group::KeyGroup, key_group::ContentKeys) {
+    let second_key = key_group::MemberKey::generate(second_device).unwrap();
+    let welcome = first
+        .add_member(second_key.fresh_key_package().unwrap())
+        .unwrap();
+    let second_group =
+        key_group::KeyGroup::process_welcome(workspace, &welcome, second_key).unwrap();
+    (second_group, first.content_keys().unwrap())
+}
+
+/// Opens what `keys` sealed.
+fn unseal_with(
+    keys: &key_group::ContentKeys,
+) -> impl FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String> + '_ {
+    move |op| {
+        keys.open_content(op.artifact, op.encryption.as_ref().unwrap(), &op.payload)
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| error.to_string())
+    }
+}
+
 #[test]
 fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
     use crate::state::document_capture::{KeptDocument, PeerDocumentReadError};
@@ -481,12 +507,8 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
     let mut first_group =
         key_group::KeyGroup::create(group, key_group::MemberKey::generate(device).unwrap())
             .unwrap();
-    let second_key = key_group::MemberKey::generate(second.device_public_key).unwrap();
-    let welcome = first_group
-        .add_member(second_key.fresh_key_package().unwrap())
-        .unwrap();
-    let second_group = key_group::KeyGroup::process_welcome(group, &welcome, second_key).unwrap();
-    let keys = first_group.content_keys().unwrap();
+    let (second_group, keys) =
+        group_for_two_devices(group, &mut first_group, second.device_public_key);
     assert_eq!(
         peer.document_key_holders(APP, &history, now).unwrap(),
         [device, second.device_public_key].into(),
@@ -530,12 +552,7 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
         .unwrap();
 
     let second_keys = second_group.content_keys().unwrap();
-    let mut unseal = |op: &collab_types::SignedOp| {
-        second_keys
-            .open_content(op.artifact, op.encryption.as_ref().unwrap(), &op.payload)
-            .map(|bytes| bytes.to_vec())
-            .map_err(|error| error.to_string())
-    };
+    let mut unseal = unseal_with(&second_keys);
     let mut held = KeptDocument::default();
     assert!(matches!(
         peer.open_document(owner, route, now, usize::MAX, Some(&mut unseal), &mut held),

@@ -142,6 +142,26 @@ fn post(r: &mut Replica, view: &ViewInstance, text: &str) {
     r.commit();
 }
 
+/// Phrases say their id and arguments, so a count shows in what a chip says.
+fn echo_words(replicas: &[&Replica]) {
+    for r in replicas {
+        r.host.set_words(EchoWords);
+    }
+}
+
+/// The sidebar lists the category's channel under the category's heading.
+fn sidebar_lists_design(replica: &Replica) {
+    let sidebar = replica.view(APP);
+    let mut shown = Vec::new();
+    texts(sidebar.tree(), &mut shown);
+    assert!(shown.contains(&"design".to_owned()), "{shown:?}");
+    let section = sidebar.tree().first_of_kind("ui.NavSection").unwrap();
+    assert_eq!(section.props.get("title"), Some(&Value::text("Team")));
+    let mut under = Vec::new();
+    texts(section, &mut under);
+    assert!(under.contains(&"design".to_owned()), "{under:?}");
+}
+
 #[test]
 fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     let (mut ada, loaded) = Replica::new(
@@ -156,21 +176,10 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     ada.commit();
     let mut ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
     ben.host.sync_from(&ben.doc);
-    // Phrases say their id and arguments, so a count shows in what a chip says.
-    for r in [&ada, &ben] {
-        r.host.set_words(EchoWords);
-    }
+    echo_words(&[&ada, &ben]);
 
     // The sidebar lists the category's channel under the category's heading.
-    let sidebar = ada.view(APP);
-    let mut shown = Vec::new();
-    texts(sidebar.tree(), &mut shown);
-    assert!(shown.contains(&"design".to_owned()), "{shown:?}");
-    let section = sidebar.tree().first_of_kind("ui.NavSection").unwrap();
-    assert_eq!(section.props.get("title"), Some(&Value::text("Team")));
-    let mut under = Vec::new();
-    texts(section, &mut under);
-    assert!(under.contains(&"design".to_owned()), "{under:?}");
+    sidebar_lists_design(&ada);
 
     let mut ada_design = ada.host.open_resource(&target(&design), None).unwrap();
     let mut ben_design = ben.host.open_resource(&target(&design), None).unwrap();
