@@ -34,7 +34,10 @@
 # (`tilo-vm --local apply-incoming`) before its session starts.
 #
 # Evidence: every stage is recorded under OUT/evidence; serials that may hold
-# a secret are never copied.
+# a secret are never copied. As the run ends, a failure included, each guest's
+# serial and QEMU logs are copied to OUT/<guest>-serial.log and
+# OUT/<guest>-qemu.log, the owner's profile logs to OUT/owner-logs.tar, and
+# OUT/evidence/verdict.json names the phase it ended in.
 set -euo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
