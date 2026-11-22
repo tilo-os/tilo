@@ -65,8 +65,28 @@ const ORDER: &str = "o";
 const FIELDS: &str = "f";
 
 /// The content document of the resource `id` of `kind`, read by `readers`.
+/// The field the index holds when a resource was made: the time its first version was stamped
+/// at, as a query filters and orders by.
+pub const CREATED: &str = "$created";
+
+/// The field the index holds when a resource last changed, its content included.
+pub const UPDATED: &str = "$updated";
+
+/// What the field the index holds when one field of a resource last changed begins with; the
+/// field's name follows. A field no change wrote after the resource was made has none: when it
+/// was made ([`CREATED`]) stands for it.
+pub const CHANGED: &str = "$changed.";
+
 fn content_id(readers: &str, kind: &str, id: &str) -> String {
     format!("{}/{kind}/{id}~0", collab_types::reader_set_name(readers))
+}
+
+/// The kind and id of the resource whose content the document `doc` holds ([`content_id`]);
+/// `None` for a document of resources.
+fn content_resource(doc: &str) -> Option<(&str, &str)> {
+    let (_, rest) = doc.strip_suffix("~0")?.split_once('/')?;
+    // A kind names no `/`; an id may.
+    rest.split_once('/')
 }
 
 /// Why the store refused a write or a peer's changes.
@@ -174,6 +194,10 @@ pub struct Store {
     made_from: HashMap<String, BTreeSet<String>>,
     /// Per document, the versions of each resource in it, read as far as its changes go.
     touches: std::sync::Mutex<HashMap<String, crate::history::Touches>>,
+    /// Per resource, the time of the latest change that made a resource in it or removed one
+    /// from it: a change of it too, which its [`UPDATED`] reflects without reading the
+    /// history of what it holds.
+    nested_at: HashMap<String, String>,
 }
 
 impl Store {
@@ -386,8 +410,94 @@ impl Store {
         ids
     }
 
-    /// Hands `commit` to the index and notes the watches it concerns.
+    /// The holders of what `changes`, to the document `doc`, make or remove, each noted as
+    /// changed when that happened if it is later than it was: what was made in a resource or
+    /// removed from it moves when it last changed.
+    fn moved_holders(&mut self, doc: &str, changes: &[Change]) -> BTreeSet<String> {
+        let mut holders: BTreeSet<String> = BTreeSet::new();
+        for change in changes {
+            let (holder, at) = match change {
+                Change::Put {
+                    kind,
+                    id,
+                    parent: Some(parent),
+                    fields,
+                    ..
+                } if self.index.get(kind, id).is_none() => (
+                    parent.clone(),
+                    fields.get(CREATED).and_then(|cell| match cell {
+                        Cell::One(Value::Text(at)) => Some(at.clone()),
+                        _ => None,
+                    }),
+                ),
+                Change::Remove { kind, id } => {
+                    let Some(parent) = self.index.get(kind, id).and_then(|held| held.parent.clone())
+                    else {
+                        continue;
+                    };
+                    (parent, self.removed_at(doc, id))
+                }
+                Change::Put { .. } => continue,
+            };
+            let Some(at) = at.filter(|at| !at.is_empty()) else {
+                continue;
+            };
+            let later = self.nested_at.get(&holder).is_none_or(|was| *was < at);
+            if later {
+                self.nested_at.insert(holder.clone(), at);
+                holders.insert(holder);
+            }
+        }
+        holders
+    }
+
+    /// Hands `commit` to the index and notes the watches it concerns. Each resource it puts is
+    /// indexed with the times its history gives it ([`Self::reflected`]).
     fn commit(&mut self, commit: &Commit<'_>) {
+        let mut changes: Vec<Change> = commit
+            .changes
+            .iter()
+            .map(|change| match change {
+                Change::Put {
+                    kind,
+                    id,
+                    parent,
+                    order,
+                    fields,
+                } => {
+                    let mut fields = fields.clone();
+                    fields.extend(self.reflected(commit.doc, commit.readers, kind, id));
+                    Change::Put {
+                        kind: kind.clone(),
+                        id: id.clone(),
+                        parent: parent.clone(),
+                        order: order.clone(),
+                        fields,
+                    }
+                }
+                Change::Remove { .. } => change.clone(),
+            })
+            .collect();
+        let mut holders = self.moved_holders(commit.doc, &changes);
+        // A holder this commit puts itself is put with the time that moved.
+        for change in &mut changes {
+            if let Change::Put { id, fields, .. } = change
+                && holders.remove(id.as_str())
+                && let Some(nested) = self.nested_at.get(id.as_str())
+            {
+                let own = fields.get(UPDATED).and_then(|cell| match cell {
+                    Cell::One(Value::Text(at)) => Some(at.as_str()),
+                    _ => None,
+                });
+                if own.is_none_or(|own| own < nested.as_str()) {
+                    fields.insert(UPDATED.to_owned(), Cell::One(Value::Text(nested.clone())));
+                }
+            }
+        }
+        let commit = &Commit {
+            changes: &changes,
+            ..*commit
+        };
         for change in commit.changes {
             let kind = match change {
                 Change::Put { kind, id, .. } => {
@@ -410,6 +520,143 @@ impl Store {
             }
         }
         self.index.committed(commit);
+        // Each holder of what was made or removed, put again with the time that moved; one
+        // this commit puts itself already reads it.
+        for holder in holders {
+            let Some(kind) = self.index.kind_anywhere(&holder) else {
+                continue;
+            };
+            let Some(held) = self.index.get(&kind, &holder).cloned() else {
+                continue;
+            };
+            let Some(readers) = self.index.readers(&held.doc).map(str::to_owned) else {
+                continue;
+            };
+            let heads = self.index.heads(&held.doc).unwrap_or_default().to_vec();
+            let mut fields = held.fields;
+            fields.remove(UPDATED);
+            self.commit(&Commit {
+                doc: &held.doc,
+                readers: &readers,
+                heads: &heads,
+                changes: &[Change::Put {
+                    kind,
+                    id: holder,
+                    parent: held.parent,
+                    order: held.order,
+                    fields,
+                }],
+            });
+        }
+    }
+
+    /// The time of the version of `doc` that removed `id`, as its stamp says.
+    fn removed_at(&self, doc: &str, id: &str) -> Option<String> {
+        let mut touches = self
+            .touches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = touches.entry(doc.to_owned()).or_default();
+        if let Some(read) = self.docs.get(doc) {
+            held.read(read, doc);
+        }
+        let at = held
+            .versions_of(id)?
+            .iter()
+            .rev()
+            .find(|version| version.kind == crate::history::VersionKind::Removed)?
+            .stamp
+            .as_ref()
+            .map(|stamp| stamp.at.clone());
+        drop(touches);
+        at
+    }
+
+    /// The times the history of the resource `id` of `kind`, in the document `doc_id` read by
+    /// `readers`, gives it, as the fields a query filters and orders by: when it was made
+    /// ([`CREATED`]), when it last changed, its content included ([`UPDATED`]), and when each of
+    /// its fields last changed ([`CHANGED`] and the field's name), or when it was made for one no
+    /// change after that wrote. Each is its version's time, as the stamp of the action that wrote
+    /// it says. Reading them reads only the changes the documents took since they were last read.
+    fn reflected(
+        &self,
+        doc_id: &str,
+        readers: &str,
+        kind: &str,
+        id: &str,
+    ) -> Vec<(String, Cell)> {
+        let mut touches = self
+            .touches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut made: Option<&crate::history::Version> = None;
+        let mut last: Option<&crate::history::Version> = None;
+        let mut changed: BTreeMap<&str, &crate::history::Version> = BTreeMap::new();
+        let content = content_id(readers, kind, id);
+        for doc in [doc_id, content.as_str()] {
+            if let Some(held) = self.docs.get(doc) {
+                touches.entry(doc.to_owned()).or_default().read(held, doc);
+            }
+        }
+        for (doc, of_fields) in [(doc_id, true), (content.as_str(), false)] {
+            let Some(versions) = touches.get(doc).and_then(|held| held.versions_of(id)) else {
+                continue;
+            };
+            for version in versions {
+                if version.stamp.as_ref().is_none_or(|stamp| stamp.at.is_empty()) {
+                    continue;
+                }
+                let newer = |held: Option<&crate::history::Version>| {
+                    held.is_none_or(|held| held.order() <= version.order())
+                };
+                if version.kind == crate::history::VersionKind::Made && made.is_none() {
+                    made = Some(version);
+                }
+                if newer(last) {
+                    last = Some(version);
+                }
+                if of_fields {
+                    for field in &version.fields {
+                        if newer(changed.get(field.as_str()).copied()) {
+                            changed.insert(field, version);
+                        }
+                    }
+                }
+            }
+        }
+        let at = |version: &crate::history::Version| {
+            Cell::One(Value::Text(
+                version
+                    .stamp
+                    .as_ref()
+                    .map(|stamp| stamp.at.clone())
+                    .unwrap_or_default(),
+            ))
+        };
+        let made = made.map(&at);
+        let last = last.map(&at);
+        let changed: Vec<(String, Cell)> = changed
+            .into_iter()
+            .map(|(field, version)| (format!("{CHANGED}{field}"), at(version)))
+            .collect();
+        drop(touches);
+        let mut out = Vec::new();
+        if let Some(made) = made {
+            out.push((CREATED.to_owned(), made));
+        }
+        // What was made in it or removed from it changed it too.
+        let updated = match (last, self.nested_at.get(id)) {
+            (Some(Cell::One(Value::Text(own))), Some(nested)) if *nested > own => {
+                Some(Cell::One(Value::Text(nested.clone())))
+            }
+            (None, Some(nested)) => Some(Cell::One(Value::Text(nested.clone()))),
+            (own, _) => own,
+        };
+        if let Some(updated) = updated {
+            out.push((UPDATED.to_owned(), updated));
+        }
+        out.extend(changed);
+        out
     }
 
     /// The document `doc`, read from the source when it is not in memory, made when it is
@@ -779,6 +1026,26 @@ impl Store {
             heads: &heads,
             changes: &[],
         });
+        // The resource changed when its content did: it is indexed again with the time.
+        if let Some(held) = self.index.get(kind, id).cloned() {
+            let heads = self
+                .docs
+                .get(&held.doc)
+                .map(|doc| doc.get_heads())
+                .unwrap_or_default();
+            self.commit(&Commit {
+                doc: &held.doc,
+                readers: &readers,
+                heads: &heads,
+                changes: &[Change::Put {
+                    kind: kind.to_owned(),
+                    id: id.to_owned(),
+                    parent: held.parent.clone(),
+                    order: held.order.clone(),
+                    fields: held.fields,
+                }],
+            });
+        }
         self.note_group(&doc_id, stamp);
         Ok((
             answer,
@@ -940,6 +1207,62 @@ impl Store {
         self.versions_unlocked(&mut touches, kind, id)
     }
 
+    /// The first version of the resource `id` of `kind`, or its last with `last`. The versions
+    /// it is picked from are not sent, so a resource whose history names thousands of nested
+    /// resources (a root, through each change that put items in it) answers with the one.
+    #[must_use]
+    pub fn version_end(&self, kind: &str, id: &str, last: bool) -> Option<crate::history::Version> {
+        let mut touches = self
+            .touches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (held, readers) = self.placed(kind, id)?;
+        let order = |version: &crate::history::Version| {
+            (
+                version.stamp.as_ref().map_or(0, |stamp| stamp.moment),
+                version.op,
+            )
+        };
+        let mut ends: Vec<crate::history::Version> = Vec::new();
+        let content = content_id(&readers, kind, id);
+        for doc_id in [&held, &content] {
+            if let Some(doc) = self.docs.get(doc_id) {
+                let read = touches.entry(doc_id.clone()).or_default();
+                read.read(doc, doc_id);
+                let own = read.versions_of(id).map(Vec::as_slice).unwrap_or_default();
+                ends.extend(if last { own.last() } else { own.first() }.cloned());
+            }
+        }
+        let none = BTreeSet::new();
+        let removed_here = self.removed_under.get(id).unwrap_or(&none);
+        for doc_id in self.nested_in.get(id).into_iter().flatten() {
+            if let Some(doc) = self.docs.get(doc_id) {
+                ends.extend(touches.entry(doc_id.clone()).or_default().nested_end(
+                    doc,
+                    doc_id,
+                    id,
+                    removed_here,
+                    last,
+                ));
+            }
+        }
+        drop(touches);
+        // As [`Self::versions`] orders them: by when their writer wrote them, a document's own
+        // in its order, so the same one ends it.
+        let mut end = if last {
+            ends.into_iter().max_by_key(order)
+        } else {
+            ends.into_iter().min_by_key(order)
+        }?;
+        if last
+            && end.kind == crate::history::VersionKind::Removed
+            && let Some(removed) = self.removed.get(&(kind.to_owned(), id.to_owned()))
+        {
+            end.parent.clone_from(&removed.parent);
+        }
+        Some(end)
+    }
+
     /// [`Self::versions`], with the cache of what each document's changes touched at hand.
     fn versions_unlocked(
         &self,
@@ -1008,6 +1331,13 @@ impl Store {
         kind: &str,
         id: &str,
     ) -> Result<Vec<crate::history::Version>, StoreError> {
+        self.read_back_history(kind, id)?;
+        Ok(self.versions(kind, id))
+    }
+
+    /// Reads back from the source each document the history of the resource `id` of `kind` is
+    /// read from: where it is stored, its content, and those it holds nested resources in.
+    fn read_back_history(&mut self, kind: &str, id: &str) -> Result<(), StoreError> {
         let mut wanted: Vec<String> = Vec::new();
         if let Some((held, readers)) = self.placed(kind, id) {
             wanted.push(content_id(&readers, kind, id));
@@ -1017,7 +1347,22 @@ impl Store {
         for doc in wanted {
             self.existing(&doc)?;
         }
-        Ok(self.versions(kind, id))
+        Ok(())
+    }
+
+    /// [`Self::version_end`], with documents evicted or indexed from snapshots read back first,
+    /// as [`Self::read_versions`] does.
+    ///
+    /// # Errors
+    /// A saved document does not decode.
+    pub fn read_version_end(
+        &mut self,
+        kind: &str,
+        id: &str,
+        last: bool,
+    ) -> Result<Option<crate::history::Version>, StoreError> {
+        self.read_back_history(kind, id)?;
+        Ok(self.version_end(kind, id, last))
     }
 
     /// The newest version of each resource `within` names (it, and every resource whose id is
@@ -1049,77 +1394,130 @@ impl Store {
             .touches
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Each resource's newest version, borrowed while the documents are walked: only the
-        // page read is copied.
-        let mut found: Vec<((u64, u64), String, String, String)> = Vec::new();
+        // The documents that hold what `within` names, and the documents of their content: each
+        // keeps its resources in the order of their newest version.
+        let mut docs: Vec<(&str, Option<(&str, &str)>)> = Vec::new();
         for doc_id in self.index.documents() {
-            let Some(readers) = self
+            if !self
                 .index
                 .readers(doc_id)
-                .filter(|readers| may_read(readers))
-            else {
+                .is_some_and(may_read)
+            {
                 continue;
-            };
-            let Some(doc) = self.docs.get(doc_id) else {
-                continue;
-            };
-            let held: Vec<(&str, &str)> = self
-                .index
-                .held(doc_id)
-                .filter(|(_, id)| under(id) && *id != within)
-                .collect();
-            if self.index.held(doc_id).any(|(_, id)| id == within) {
-                for (kind, id) in self.index.held(doc_id).filter(|(_, id)| *id == within) {
-                    if let Some(last) = self.versions_unlocked(&mut touches, kind, id).pop() {
-                        newest.push((kind.to_owned(), id.to_owned(), last));
+            }
+            // `within` itself, by its own changes: what was made in it or removed from it is
+            // a resource of the page, or a removed one, below.
+            if let Some(kind) = self.index.kind_of(within, doc_id)
+                && let Some(readers) = self.index.readers(doc_id)
+            {
+                let content = content_id(readers, &kind, within);
+                let mut last: Option<crate::history::Version> = None;
+                for doc in [doc_id, content.as_str()] {
+                    let Some(held) = self.docs.get(doc) else {
+                        continue;
+                    };
+                    let read = touches.entry(doc.to_owned()).or_default();
+                    read.read(held, doc);
+                    if let Some(version) = read.versions_of(within).and_then(|all| all.last())
+                        && last.as_ref().is_none_or(|was| order(was) <= order(version))
+                    {
+                        last = Some(version.clone());
                     }
                 }
-            }
-            if held.is_empty() {
-                continue;
-            }
-            let lasts = touches
-                .entry(doc_id.to_owned())
-                .or_default()
-                .lasts(doc, doc_id);
-            for (kind, id) in &held {
-                if let Some(last) = lasts.get(*id).and_then(|versions| versions.last()) {
-                    found.push((
-                        order(last),
-                        (*kind).to_owned(),
-                        (*id).to_owned(),
-                        doc_id.to_owned(),
-                    ));
+                if let Some(last) = last {
+                    newest.push((kind, within.to_owned(), last));
                 }
             }
-            // What was written in a resource's content, in a document of its own.
-            for (kind, id) in held {
-                let content = content_id(readers, kind, id);
-                let Some(doc) = self.docs.get(&content) else {
+            docs.push((doc_id, None));
+        }
+        // What was written in a resource's content, in a document of its own.
+        for content in self.docs.keys() {
+            let Some((kind, id)) = content_resource(content) else {
+                continue;
+            };
+            if !under(id) || id == within {
+                continue;
+            }
+            let Some(held) = self.index.get(kind, id) else {
+                continue;
+            };
+            if self
+                .index
+                .readers(&held.doc)
+                .is_some_and(may_read)
+            {
+                docs.push((content.as_str(), Some((kind, id))));
+            }
+        }
+        for (doc_id, _) in &docs {
+            if let Some(doc) = self.docs.get(*doc_id) {
+                touches
+                    .entry((*doc_id).to_owned())
+                    .or_default()
+                    .read(doc, doc_id);
+            }
+        }
+        // The newest of each resource, most recent first, a page of them: the documents' orders
+        // merged, each read only as far as the page goes.
+        let mut found: Vec<(String, String, String)> = Vec::new();
+        {
+            let mut walks: Vec<_> = docs
+                .iter()
+                .filter_map(|(doc_id, content)| {
+                    let held = touches.get(*doc_id)?;
+                    Some((*doc_id, *content, held.by_newest().peekable()))
+                })
+                .collect();
+            let mut next: std::collections::BinaryHeap<((u64, u64), usize)> = walks
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(at, (_, _, walk))| walk.peek().map(|(order, _, _)| (*order, at)))
+                .collect();
+            let mut seen = BTreeSet::new();
+            while seen.len() <= limit {
+                let Some((_, at)) = next.pop() else {
+                    break;
+                };
+                let Some((doc_id, content, walk)) = walks.get_mut(at) else {
                     continue;
                 };
-                let written = touches
-                    .entry(content.clone())
-                    .or_default()
-                    .lasts(doc, &content)
-                    .get(id)
-                    .and_then(|versions| versions.last())
-                    .map(order);
-                if let Some(written) = written {
-                    found.push((written, kind.to_owned(), id.to_owned(), content));
+                let Some((_, id, kind)) = walk.next() else {
+                    continue;
+                };
+                if let Some((order, _, _)) = walk.peek() {
+                    next.push((*order, at));
+                }
+                let kind = match content {
+                    Some((kind, held)) if *held == id => (*kind).to_owned(),
+                    Some(_) => continue,
+                    None => {
+                        if !under(id) || id == within {
+                            continue;
+                        }
+                        let Some(kind) = kind
+                            .map(str::to_owned)
+                            .or_else(|| self.index.kind_of(id, doc_id))
+                        else {
+                            continue;
+                        };
+                        // Only what the document holds now: one moved on or removed is read
+                        // where it is.
+                        if self
+                            .index
+                            .get(&kind, id)
+                            .is_none_or(|held| held.doc != **doc_id)
+                        {
+                            continue;
+                        }
+                        kind
+                    }
+                };
+                if seen.insert(id.to_owned()) {
+                    found.push((kind, id.to_owned(), (*doc_id).to_owned()));
                 }
             }
         }
-        // The newest of each resource, most recent first, a page of them.
-        found.sort_by_key(|found| std::cmp::Reverse(found.0));
-        let mut seen = BTreeSet::new();
-        for (_, kind, id, doc_id) in found {
-            if newest.len() > limit {
-                break;
-            }
-            if !seen.insert(id.clone()) {
-                continue;
-            }
+        for (kind, id, doc_id) in found {
             let last = touches
                 .get(&doc_id)
                 .and_then(|held| held.versions_of(&id))

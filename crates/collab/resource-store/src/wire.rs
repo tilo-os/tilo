@@ -82,6 +82,24 @@ pub enum Command {
     /// The newest version of each resource `within` names (it, and those whose ids are under
     /// it), of at most `limit` of them, most recent first.
     Newest { within: String, limit: usize },
+    /// Where the resource `id` stands in the listing of `query`, read from the index's order
+    /// rather than by paging to it: where a reader showing the listing puts a row that came,
+    /// and finds one that left.
+    Position { query: Query, id: String },
+    /// The page of `query` that starts at `at` in its listing, its cursor ignored: the rows a
+    /// reader shows far down a listing, read from the index's counts rather than by paging to
+    /// them.
+    PageAt { query: Query, at: usize },
+    /// The first version of the resource `id` of `kind`, or its last with `last`: what a view
+    /// showing when it was made or last changed reads, without the rest of its history.
+    VersionEnd { kind: String, id: String, last: bool },
+    /// The content of each resource `ids` names, of `kind`, in their order: what [`Self::Content`]
+    /// answers of each, in one read, for a reader taking the contents of a page of resources.
+    Contents { kind: String, ids: Vec<String> },
+    /// One page of `query`, each resource holding only the indexed fields `fields` names: what
+    /// a reader taking a few fields of every resource of a kind (search, its titles) asks for,
+    /// rather than each resource whole.
+    Fields { query: Query, fields: Vec<String> },
 }
 
 /// One edit of a resource's content.
@@ -138,6 +156,12 @@ pub enum Reply {
         versions: Vec<(String, String, Version)>,
         more: bool,
     },
+    /// Where a resource stands in a listing, `None` where the listing holds none the person may
+    /// read.
+    Position(Option<usize>),
+    /// The content of each resource asked for, in the order asked: as [`Self::Content`] answers
+    /// one.
+    Contents(Vec<Option<Json>>),
 }
 
 impl Command {
@@ -264,11 +288,16 @@ fn write_into(
         | Command::Count { .. }
         | Command::Content { .. }
         | Command::Newest { .. }
+        | Command::Position { .. }
+        | Command::PageAt { .. }
         | Command::Versions { .. }
+        | Command::VersionEnd { .. }
         | Command::At { .. }
         | Command::Grouped { .. }
         | Command::Removed { .. }
-        | Command::MadeFrom { .. } => return Err(StoreError::NotAWrite),
+        | Command::MadeFrom { .. }
+        | Command::Contents { .. }
+        | Command::Fields { .. } => return Err(StoreError::NotAWrite),
     }
     Ok(())
 }
@@ -279,11 +308,27 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
     Some(match command {
         Command::Get { kind, id } => Reply::Resource(store.get(kind, id, may_read).cloned()),
         Command::Query(query) => Reply::Page(store.query(query, may_read)),
+        Command::Fields { query, fields } => {
+            let mut page = store.query(query, may_read);
+            for (_, resource) in &mut page.resources {
+                resource.fields.retain(|name, _| fields.contains(name));
+            }
+            Reply::Page(page)
+        }
         Command::Count { kind, filters } => Reply::Count(store.count(kind, filters, may_read)),
         Command::Content { kind, id } => Reply::Content(
             store
                 .get(kind, id, may_read)
                 .and_then(|_| store.content_json(kind, id)),
+        ),
+        Command::Contents { kind, ids } => Reply::Contents(
+            ids.iter()
+                .map(|id| {
+                    store
+                        .get(kind, id, may_read)
+                        .and_then(|_| store.content_json(kind, id))
+                })
+                .collect(),
         ),
         // A resource's history stays readable after its removal, by whoever could read it.
         Command::Versions { kind, id } => Reply::Versions(
@@ -292,6 +337,14 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
                 .filter(|readers| may_read(readers))
                 .map(|_| store.versions(kind, id))
                 .unwrap_or_default(),
+        ),
+        Command::VersionEnd { kind, id, last } => Reply::Versions(
+            store
+                .readers_of(kind, id)
+                .filter(|readers| may_read(readers))
+                .and_then(|_| store.version_end(kind, id, *last))
+                .into_iter()
+                .collect(),
         ),
         Command::At {
             kind,
@@ -329,6 +382,8 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
             let (versions, more) = store.newest(within, *limit, may_read);
             Reply::Newest { versions, more }
         }
+        Command::Position { query, id } => Reply::Position(store.position(query, id, may_read)),
+        Command::PageAt { query, at } => Reply::Page(store.at(query, *at, may_read)),
         Command::Put { .. }
         | Command::Remove { .. }
         | Command::Undo { .. }

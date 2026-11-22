@@ -963,6 +963,16 @@ impl Workspaces {
                 )
             }
             Command::Versions { .. } => Reply::Versions(Vec::new()),
+            Command::VersionEnd { kind, id, last } if store.get(kind, id, &may_read).is_some() => {
+                Reply::Versions(
+                    store
+                        .read_version_end(kind, id, *last)
+                        .map_err(|error| error.to_string())?
+                        .into_iter()
+                        .collect(),
+                )
+            }
+            Command::VersionEnd { .. } => Reply::Versions(Vec::new()),
             _ => read(store, command, &may_read).unwrap_or(Reply::Written),
         };
         drop(governed);
@@ -1209,7 +1219,12 @@ fn stamp_resource_invoker(command: &mut tilo_resource_store::wire::Command, invo
         | Command::Grouped { .. }
         | Command::Removed { .. }
         | Command::MadeFrom { .. }
-        | Command::Newest { .. } => {}
+        | Command::Newest { .. }
+        | Command::Position { .. }
+        | Command::PageAt { .. }
+        | Command::VersionEnd { .. }
+        | Command::Contents { .. }
+        | Command::Fields { .. } => {}
     }
 }
 

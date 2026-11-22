@@ -39,6 +39,15 @@ pub struct Version {
     pub nested: Vec<Nested>,
 }
 
+impl Version {
+    /// Its place in the order versions are listed newest first by: the moment its action was
+    /// stamped at, then the counter of its change's first operation.
+    #[must_use]
+    pub fn order(&self) -> (u64, u64) {
+        (self.stamp.as_ref().map_or(0, |stamp| stamp.moment), self.op)
+    }
+}
+
 /// A resource nested in another that a change made or removed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nested {
@@ -64,6 +73,12 @@ pub(crate) struct Touches {
     made_in: std::collections::HashMap<String, Vec<(usize, usize, String, String)>>,
     /// The steps that removed each resource, with its place in each.
     removed_by: std::collections::HashMap<String, Vec<(usize, usize)>>,
+    /// Each resource's newest version's place in the order of [`Version::order`], and its kind
+    /// when a change named it.
+    newest_of: std::collections::HashMap<String, ((u64, u64), Option<String>)>,
+    /// The resources by their newest version, the most recent first: what a window's catch-up
+    /// reads a page of, however many resources the document holds.
+    by_newest: std::collections::BTreeSet<(std::cmp::Reverse<(u64, u64)>, String)>,
 }
 
 impl Touches {
@@ -127,24 +142,77 @@ impl Touches {
         versions.into_iter().map(|(_, version)| version).collect()
     }
 
+    /// The first of [`Self::nested`], or its last with `last`, read without building the rest:
+    /// a root's versions name every item each change put in it, and one end of its history is
+    /// one step and the items of that step.
+    pub(crate) fn nested_end(
+        &mut self,
+        doc: &Automerge,
+        doc_id: &str,
+        parent: &str,
+        removed: &std::collections::BTreeSet<(String, String)>,
+        last: bool,
+    ) -> Option<Version> {
+        self.read(doc, doc_id);
+        let made = self.made_in.get(parent).map(Vec::as_slice).unwrap_or_default();
+        let steps = made.iter().map(|(step, ..)| *step).chain(
+            removed
+                .iter()
+                .flat_map(|(_, id)| self.removed_by.get(id).into_iter().flatten())
+                .map(|(step, _)| *step),
+        );
+        let step = if last { steps.max() } else { steps.min() }?;
+        let mut picked: Vec<(usize, Nested)> = made
+            .iter()
+            .filter(|(at_step, ..)| *at_step == step)
+            .map(|(_, at, kind, id)| {
+                (
+                    *at,
+                    Nested {
+                        kind: kind.clone(),
+                        id: id.clone(),
+                        made: true,
+                    },
+                )
+            })
+            .collect();
+        for (kind, id) in removed {
+            for (at_step, at) in self.removed_by.get(id).into_iter().flatten() {
+                if *at_step == step {
+                    picked.push((
+                        *at,
+                        Nested {
+                            kind: kind.clone(),
+                            id: id.clone(),
+                            made: false,
+                        },
+                    ));
+                }
+            }
+        }
+        picked.sort_by_key(|(at, _)| *at);
+        let mut version = self.steps.get(step)?.clone();
+        version.nested.extend(picked.into_iter().map(|(_, nested)| nested));
+        Some(version)
+    }
+
+    /// The resources of this document by their newest version, most recent first, each with
+    /// that version's place in the order and its kind when a change named it, as last read
+    /// ([`Self::read`]).
+    pub(crate) fn by_newest(&self) -> impl Iterator<Item = ((u64, u64), &str, Option<&str>)> {
+        self.by_newest.iter().map(|(std::cmp::Reverse(at), id)| {
+            let kind = self.newest_of.get(id).and_then(|(_, kind)| kind.as_deref());
+            (*at, id.as_str(), kind)
+        })
+    }
+
     /// The versions of `id` as last read, oldest first.
     pub(crate) fn versions_of(&self, id: &str) -> Option<&Vec<Version>> {
         self.by_id.get(id)
     }
 
-    /// The versions of every resource of this document, by id, oldest first: borrowed, so a
-    /// reader that looks at every resource of a document copies none of them.
-    pub(crate) fn lasts(
-        &mut self,
-        doc: &Automerge,
-        doc_id: &str,
-    ) -> &std::collections::HashMap<String, Vec<Version>> {
-        self.read(doc, doc_id);
-        &self.by_id
-    }
-
     /// Read the changes the document took since the last read.
-    fn read(&mut self, doc: &Automerge, doc_id: &str) {
+    pub(crate) fn read(&mut self, doc: &Automerge, doc_id: &str) {
         let heads = doc.get_heads();
         if heads != self.heads {
             for change in doc.get_changes(&self.heads) {
@@ -181,6 +249,23 @@ impl Touches {
                             ..version.clone()
                         });
                     }
+                    let at = version.order();
+                    let kind = touch.kind.clone();
+                    match self.newest_of.get_mut(resource) {
+                        Some((was, held_kind)) => {
+                            self.by_newest
+                                .remove(&(std::cmp::Reverse(*was), resource.clone()));
+                            *was = at;
+                            if kind.is_some() {
+                                *held_kind = kind;
+                            }
+                        }
+                        None => {
+                            self.newest_of.insert(resource.clone(), (at, kind));
+                        }
+                    }
+                    self.by_newest
+                        .insert((std::cmp::Reverse(at), resource.clone()));
                     self.by_id
                         .entry(resource.clone())
                         .or_default()

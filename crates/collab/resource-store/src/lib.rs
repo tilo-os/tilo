@@ -40,5 +40,5 @@ pub use history::{Nested, Version, VersionKind};
 pub use index::{Change, Commit, CommitHook, Index, Indexed, PARENT};
 pub use query::{Absent, Cursor, Filter, Order, Page, Query, Sort};
 pub use schema::{Expected, FIELD_EDIT, Field, FieldKind, Schema, Type, Verb, Writes};
-pub use store::{Resource, Source, Store, StoreError, Written};
+pub use store::{CHANGED, CREATED, Resource, Source, Store, StoreError, UPDATED, Written};
 pub use value::{Cell, Value};

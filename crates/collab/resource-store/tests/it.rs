@@ -98,6 +98,139 @@ fn listed(index: &Index, query: &Query, may_read: &dyn Fn(&str) -> bool) -> Vec<
 }
 
 #[test]
+fn any_of_several_values_lists_and_counts_each_holder_of_one() {
+    // What a resource is mentioned by, under each of its names: a set member or a scalar.
+    let index = board();
+    let filters = vec![Filter::Any(vec![
+        Filter::Has("labels".into(), "open".into()),
+        Filter::Is("title".into(), "Issue 3".into()),
+        Filter::Has("labels".into(), "nothing holds this".into()),
+    ])];
+    let mut wanted: Vec<String> = (0..10)
+        .filter(|n| n % 2 == 0 || *n == 3)
+        .map(|n| format!("i{n}"))
+        .collect();
+    wanted.sort();
+    let mut query = Query::of(ISSUE, 2);
+    query.filters.clone_from(&filters);
+    let mut shown = listed(&index, &query, &anyone);
+    shown.sort();
+    assert_eq!(shown, wanted);
+    assert_eq!(count(&index, ISSUE, &filters), wanted.len());
+    // One alternative the index keeps no values of leaves the rest to the filter itself.
+    let mut walked = filters;
+    if let Some(Filter::Any(any)) = walked.first_mut() {
+        any.push(Filter::Not(Box::new(Filter::Present("points".into()))));
+    }
+    query.filters = walked;
+    let mut shown = listed(&index, &query, &anyone);
+    shown.sort();
+    assert_eq!(shown, wanted);
+}
+
+#[test]
+fn several_values_asked_together_find_their_holders_in_either_order() {
+    // The parent every issue holds and a title one holds: the answer is the same whichever is
+    // asked first, and a value no resource holds answers nothing.
+    let index = board();
+    let parent = Filter::Is(PARENT.into(), "board".into());
+    let title = Filter::Is("title".into(), "Issue 3".into());
+    for filters in [
+        vec![parent.clone(), title.clone()],
+        vec![title, parent.clone()],
+    ] {
+        assert_eq!(count(&index, ISSUE, &filters), 1);
+        let mut query = Query::of(ISSUE, 5);
+        query.filters = filters;
+        assert_eq!(listed(&index, &query, &anyone), ["i3"]);
+    }
+    let none = Filter::Is("title".into(), "nothing holds this".into());
+    assert_eq!(count(&index, ISSUE, &[parent, none]), 0);
+}
+
+#[test]
+fn a_listing_kept_across_writes_answers_as_one_read_after_them() {
+    use tilo_resource_store::{Absent, Change};
+    // The index keeps a listing of several filters over hundreds of resources once it is asked
+    // for, and each write moves the
+    // resources it changed in or out of it. One index is asked before the writes and keeps the
+    // listing through them; the other is asked only after, and reads the listing whole.
+    let queries = [
+        Query::of(ISSUE, 5)
+            .filter(Filter::Is(PARENT.into(), "board".into()))
+            .filter(Filter::Not(Box::new(Filter::Is("state".into(), "done".into())))),
+        Query::of(ISSUE, 5)
+            .filter(Filter::Is(PARENT.into(), "board".into()))
+            .filter(Filter::Not(Box::new(Filter::Is("state".into(), "done".into()))))
+            .order(Order::by("points").absent(Absent::Last).then("title", true)),
+    ];
+    let seed = |index: &mut Index| {
+        let changes: Vec<Change> = (0..1200)
+            .map(|n| {
+                issue(
+                    &format!("i{n:04}"),
+                    if n % 4 == 0 { "other" } else { "board" },
+                    &format!("{n:04}"),
+                    &format!("Issue {n}"),
+                    ["open", "doing", "done"][n % 3],
+                    i64::try_from(n % 7).unwrap(),
+                )
+            })
+            .collect();
+        commit(index, "doc-1", &changes);
+    };
+    let writes = |index: &mut Index| {
+        for n in (0..1200).step_by(5) {
+            // Done, then open again with other points, moves it out of the listing and back.
+            let state = if n % 10 == 0 { "done" } else { "open" };
+            let change = issue(
+                &format!("i{n:04}"),
+                "board",
+                &format!("{n:04}"),
+                &format!("Issue {n}"),
+                state,
+                i64::from(n % 13),
+            );
+            commit(index, "doc-1", &[change]);
+        }
+        commit(
+            index,
+            "doc-1",
+            &[Change::Remove {
+                kind: ISSUE.to_owned(),
+                id: "i0007".to_owned(),
+            }],
+        );
+    };
+    let (mut kept, mut fresh) = (Index::new(), Index::new());
+    seed(&mut kept);
+    seed(&mut fresh);
+    for query in &queries {
+        assert!(kept.len(query, &anyone) > 0, "the listing is kept from here on");
+    }
+    writes(&mut kept);
+    writes(&mut fresh);
+    for query in &queries {
+        let all = listed(&fresh, query, &anyone);
+        assert!(!all.contains(&"i0007".to_owned()), "a removed issue leaves it");
+        assert!(!all.contains(&"i0010".to_owned()), "an issue done leaves it");
+        assert!(all.contains(&"i0005".to_owned()), "an issue moved to it joins it");
+        assert_eq!(listed(&kept, query, &anyone), all, "{query:?}");
+        assert_eq!(kept.len(query, &anyone), all.len(), "{query:?}");
+        for (position, id) in all.iter().enumerate() {
+            assert_eq!(kept.position(query, id, &anyone), Some(position), "{query:?} {id}");
+        }
+        for start in [0, 3, all.len().saturating_sub(2)] {
+            assert_eq!(
+                kept.at(query, start, &anyone).ids().collect::<Vec<_>>(),
+                all.iter().skip(start).take(5).map(String::as_str).collect::<Vec<_>>(),
+                "{query:?} at {start}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_row_is_found_by_its_position_and_a_position_by_its_row() {
     // Three reader sets, interleaved in the kind's order, so a listing merges their tables.
     let mut index = Index::new();
@@ -673,6 +806,62 @@ mod store {
         );
     }
 
+    /// The first and the last version of a resource read alone are the ends of its whole
+    /// history, for a root whose history is mostly what was put in it and taken out of it, at
+    /// every step, its own removal last.
+    #[test]
+    fn the_ends_of_a_history_read_alone_are_those_of_the_whole_of_it() {
+        let mut store = Store::new();
+        let at = |invocation: &str, moment: u64| Stamp {
+            invocation: invocation.to_owned(),
+            moment,
+            ..Stamp::default()
+        };
+        let root = |title: &str| Resource {
+            readers: MEMBERS.to_owned(),
+            parent: None,
+            order: None,
+            fields: fields(title, "open"),
+        };
+        let ends_agree = |store: &Store, step: &str| {
+            for id in ["board", "board/a", "board/b"] {
+                let all = store.versions(ISSUE, id);
+                assert_eq!(
+                    store.version_end(ISSUE, id, false),
+                    all.first().cloned(),
+                    "{id}'s first version after {step}"
+                );
+                assert_eq!(
+                    store.version_end(ISSUE, id, true),
+                    all.last().cloned(),
+                    "{id}'s last version after {step}"
+                );
+            }
+        };
+        store.put(ISSUE, "board", root("Board"), &at("make", 1)).unwrap();
+        ends_agree(&store, "the making");
+        for (id, moment) in [("board/a", 2), ("board/b", 3)] {
+            store
+                .put(ISSUE, id, resource("board", id, id, "open"), &at(id, moment))
+                .unwrap();
+            ends_agree(&store, id);
+        }
+        store.put(ISSUE, "board", root("Renamed"), &at("rename", 4)).unwrap();
+        ends_agree(&store, "the rename");
+        store
+            .put(ISSUE, "board/a", resource("board", "a", "Changed", "done"), &at("change", 5))
+            .unwrap();
+        ends_agree(&store, "an item's change");
+        store.remove(ISSUE, "board/b", &at("take out", 6)).unwrap();
+        ends_agree(&store, "an item's removal");
+        let last = store.version_end(ISSUE, "board", true).unwrap();
+        assert_eq!(last.stamp.map(|stamp| stamp.invocation).as_deref(), Some("take out"));
+        assert!(!last.nested.is_empty(), "the root's last version names what it took out");
+        store.remove(ISSUE, "board/a", &at("empty", 7)).unwrap();
+        store.remove(ISSUE, "board", &at("remove", 8)).unwrap();
+        ends_agree(&store, "the root's removal");
+    }
+
     /// The newest version of each resource under a document, most recent first, a page of
     /// them: what changed last stands first, a removed one too, and a resource elsewhere is not
     /// among them.
@@ -1070,6 +1259,59 @@ mod store {
         ) {
             Some(Reply::Content(content)) => content,
             _ => None,
+        }
+    }
+
+    #[test]
+    fn the_contents_of_several_resources_read_as_one_are_each_as_read_alone() {
+        use tilo_resource_store::wire::{Command, Reply, read};
+        let (here, _) = edited_on_two_devices();
+        let contents = |may_read: &dyn Fn(&str) -> bool| match read(
+            &here,
+            &Command::Contents {
+                kind: ISSUE.to_owned(),
+                ids: vec!["a".to_owned(), "nothing by this id".to_owned(), "a".to_owned()],
+            },
+            may_read,
+        ) {
+            Some(Reply::Contents(contents)) => contents,
+            other => panic!("contents are read: {other:?}"),
+        };
+        let alone = content_of(&here);
+        assert!(alone.is_some(), "the issue holds content");
+        assert_eq!(contents(&|_| true), [alone.clone(), None, alone]);
+        assert_eq!(
+            contents(&|_| false),
+            [None, None, None],
+            "content is read only by whom the resource's readers admit"
+        );
+    }
+
+    #[test]
+    fn a_page_of_some_fields_holds_those_of_each_resource_the_whole_page_holds() {
+        use tilo_resource_store::Query;
+        use tilo_resource_store::wire::{Command, Reply, read};
+        let (here, _) = edited_on_two_devices();
+        let page = |command: &Command| match read(&here, command, &|_| true) {
+            Some(Reply::Page(page)) => page,
+            other => panic!("a page is read: {other:?}"),
+        };
+        let query = Query::of(ISSUE, 10);
+        let whole = page(&Command::Query(query.clone()));
+        let name = whole
+            .resources
+            .first()
+            .and_then(|(_, resource)| resource.fields.keys().next().cloned())
+            .expect("an issue holds an indexed field");
+        let some = page(&Command::Fields {
+            query,
+            fields: vec![name.clone(), "no field by this name".to_owned()],
+        });
+        assert_eq!(some.ids().collect::<Vec<_>>(), whole.ids().collect::<Vec<_>>());
+        for ((_, part), (_, all)) in some.resources.iter().zip(&whole.resources) {
+            assert_eq!(part.fields.keys().collect::<Vec<_>>(), [&name]);
+            assert_eq!(part.fields.get(&name), all.fields.get(&name));
+            assert_eq!(part.parent, all.parent);
         }
     }
 

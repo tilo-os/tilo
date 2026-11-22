@@ -1,7 +1,9 @@
 //! The index and the hook every commit updates it through.
 
+use std::cell::{Cell as Counter, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound;
+use std::sync::Arc;
 
 use automerge::ChangeHash;
 
@@ -157,6 +159,71 @@ impl Placed {
     }
 }
 
+/// Where a resource stands in a listing the index keeps ([`Kept`]): ordered as the listing's
+/// order sorts it, so the set of them is the listing.
+#[derive(Clone, Debug)]
+struct KeptKey {
+    placed: Placed,
+    order: Arc<Order>,
+}
+
+impl Ord for KeptKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.placed.cmp_in(&self.order, &other.placed)
+    }
+}
+
+impl PartialOrd for KeptKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for KeptKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for KeptKey {}
+
+/// A listing no span of the index's orders holds (several filters, or an order that sorts
+/// further than one field), kept as writes land: each write moves the one resource it changed in
+/// or out of it. Its length, a resource's position in it and the page from any place in it are
+/// read off it, where each was a walk of the listing on every ask, and a write that moved one
+/// task cost a walk of every task.
+#[derive(Clone, Debug)]
+struct Kept {
+    filters: Vec<Filter>,
+    order: Arc<Order>,
+    keys: Ranked<KeptKey>,
+    /// When it was last asked for, by the table's count of asks.
+    asked: u64,
+}
+
+impl Kept {
+    fn key(&self, id: &str, stored: &Indexed) -> Option<KeptKey> {
+        if !self.filters.iter().all(|filter| filter.holds(stored)) {
+            return None;
+        }
+        Some(KeptKey {
+            placed: Table::placed(&self.order, id, stored)?,
+            order: Arc::clone(&self.order),
+        })
+    }
+}
+
+/// The most listings a table keeps. Each costs a key per resource it lists and a little work on
+/// every write of one, so those not asked for longest go first: a listing a window shows is asked
+/// for whenever it is read.
+const KEPT: usize = 32;
+
+/// The fewest resources a listing reads before the index keeps it: a listing its first filter
+/// narrows to fewer (a task's subtasks, one board's lists) is read in less than its upkeep on
+/// every write would cost, and keeping one per row a window shows would push out the listings
+/// worth keeping.
+const KEEP_FROM: usize = 512;
+
 /// The resources of one kind, wherever they are stored, and their orders.
 #[derive(Clone, Default)]
 struct Table {
@@ -172,9 +239,68 @@ struct Table {
     /// Per field, how many resources hold each value: what a query reads to choose its path, and
     /// a count of one value answers from.
     counts: HashMap<String, HashMap<Value, usize>>,
+    /// The listings it keeps, by their filters and order ([`Kept`]).
+    kept: RefCell<HashMap<String, Kept>>,
+    /// How many times a kept listing was asked for: the clock [`Kept::asked`] reads.
+    asks: Counter<u64>,
 }
 
 impl Table {
+    /// Whether a listing of `query` can be kept: every field it sorts by holds one value per
+    /// resource, so a resource stands in one place in it.
+    fn keepable(&self, query: &Query) -> bool {
+        let scalar = |field: &str| !self.sets.contains(field);
+        let by = match &query.order.by {
+            Sort::Position => true,
+            Sort::Field(field) => scalar(field),
+        };
+        by && query.order.then.iter().all(|(field, _)| scalar(field))
+    }
+
+    /// Read `read` off the kept listing of `query`, keeping it from now on when it is not yet;
+    /// `None` when it cannot be kept ([`Self::keepable`]).
+    fn with_kept<R>(&self, query: &Query, read: impl FnOnce(&Kept) -> R) -> Option<R> {
+        if !self.keepable(query) {
+            return None;
+        }
+        let name = format!("{:?}|{:?}", query.order, query.filters);
+        let now = self.asks.get().saturating_add(1);
+        self.asks.set(now);
+        let mut kept = self.kept.borrow_mut();
+        if !kept.contains_key(&name) {
+            let ids: Vec<&str> = match self.narrowed(&query.filters) {
+                Some(ids) => ids,
+                None => self.rows.keys().map(String::as_str).collect(),
+            };
+            if ids.len() < KEEP_FROM {
+                return None;
+            }
+            if kept.len() >= KEPT
+                && let Some(oldest) = kept
+                    .iter()
+                    .min_by_key(|(_, listing)| listing.asked)
+                    .map(|(name, _)| name.clone())
+            {
+                kept.remove(&oldest);
+            }
+            let mut listing = Kept {
+                filters: query.filters.clone(),
+                order: Arc::new(query.order.clone()),
+                keys: Ranked::default(),
+                asked: now,
+            };
+            for id in ids {
+                if let Some(key) = self.rows.get(id).and_then(|stored| listing.key(id, stored)) {
+                    listing.keys.insert(key);
+                }
+            }
+            kept.insert(name.clone(), listing);
+        }
+        let listing = kept.get_mut(&name)?;
+        listing.asked = now;
+        Some(read(listing))
+    }
+
     fn insert(&mut self, id: &str, stored: Indexed) {
         self.unlink(id);
         let place = position(&stored);
@@ -221,6 +347,11 @@ impl Table {
                 id.to_owned(),
             ));
         }
+        for listing in self.kept.get_mut().values_mut() {
+            if let Some(key) = listing.key(id, &stored) {
+                listing.keys.insert(key);
+            }
+        }
         self.rows.insert(id.to_owned(), stored);
     }
 
@@ -229,6 +360,11 @@ impl Table {
         let Some(stored) = self.rows.get(id) else {
             return false;
         };
+        for listing in self.kept.get_mut().values_mut() {
+            if let Some(key) = listing.key(id, stored) {
+                listing.keys.remove(&key);
+            }
+        }
         let place = position(stored);
         let lacked = self.lacked(stored);
         let mut key = (place.clone(), Value::Null, id.to_owned());
@@ -290,6 +426,16 @@ impl Table {
         )
     }
 
+    /// How many resources [`Self::holding`] names, from the ranks the index keeps: none walked.
+    fn holding_len(&self, field: &str, value: &Value) -> usize {
+        let Some(entries) = self.by_field.get(field) else {
+            return 0;
+        };
+        let from = entries.partition_point(|(held, _, _)| held < value);
+        let to = entries.partition_point(|(held, _, _)| held <= value);
+        to.saturating_sub(from)
+    }
+
     /// The ids whose `field` lies between the bounds, as its index lists them.
     fn ranging<'a>(
         &'a self,
@@ -327,12 +473,18 @@ impl Table {
     }
 
     fn narrowed<'a>(&'a self, filters: &'a [Filter]) -> Option<Vec<&'a str>> {
-        let by_value = filters.iter().find_map(|filter| match filter {
-            Filter::Is(field, value) | Filter::Has(field, value) => {
-                Some(self.holding(field, value).map(Iterator::collect))
-            }
-            _ => None,
-        });
+        // Of the values asked for, the one fewest resources hold: a task's subtasks are found
+        // by their parent, not by walking every task of the list they are in.
+        let by_value = filters
+            .iter()
+            .filter_map(|filter| match filter {
+                Filter::Is(field, value) | Filter::Has(field, value) => {
+                    Some((self.holding_len(field, value), field, value))
+                }
+                _ => None,
+            })
+            .min_by_key(|(len, _, _)| *len)
+            .map(|(_, field, value)| self.holding(field, value).map(Iterator::collect));
         let by_range = || {
             filters.iter().find_map(|filter| match filter {
                 Filter::Within { field, from, to } => {
@@ -341,8 +493,28 @@ impl Table {
                 _ => None,
             })
         };
+        // Any of several values, each of a field the index keeps by value: the resources holding
+        // one of them, as what a resource is mentioned by under each of its names.
+        let by_any = || {
+            filters.iter().find_map(|filter| match filter {
+                Filter::Any(any) if !any.is_empty() => any
+                    .iter()
+                    .map(|alternative| match alternative {
+                        // A resource that holds no such field may have no entry of it.
+                        Filter::Is(field, value) | Filter::Has(field, value)
+                            if *value != Value::Null =>
+                        {
+                            Some(self.holding(field, value).into_iter().flatten())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .map(|holders| Some(holders.into_iter().flatten().collect())),
+                _ => None,
+            })
+        };
         // A filter on a field no resource holds names none.
-        by_value.or_else(by_range).map(|ids: Option<Vec<&str>>| {
+        by_value.or_else(by_any).or_else(by_range).map(|ids: Option<Vec<&str>>| {
             let mut ids = ids.unwrap_or_default();
             ids.sort_unstable();
             ids.dedup();
@@ -958,6 +1130,11 @@ impl Index {
     /// listed, counted or skipped over.
     #[must_use]
     pub fn query(&self, query: &Query, may_read: &dyn Fn(&str) -> bool) -> Page {
+        if self.windows(query, may_read).is_none()
+            && let Some(page) = self.kept_page(query, None, may_read)
+        {
+            return page;
+        }
         if query.order.is_composite() {
             return self.composite(query, may_read);
         }
@@ -1010,6 +1187,21 @@ impl Index {
     /// How many resources of `kind` whose readers `may_read` admits hold to every filter.
     #[must_use]
     pub fn count(&self, kind: &str, filters: &[Filter], may_read: &dyn Fn(&str) -> bool) -> usize {
+        // Several filters, or one the index keeps no count of, are a listing kept as writes land
+        // (in the kind's order): counted off it, where each count walked every resource of the
+        // kind the first filter narrowed to.
+        let counted_as_held = match filters {
+            [] => true,
+            [Filter::Is(_, value)] => *value != Value::Null,
+            _ => false,
+        };
+        if !counted_as_held {
+            let mut listing = Query::of(kind, 0);
+            listing.filters = filters.to_vec();
+            if let Some(lens) = self.kept_tables(&listing, may_read, |kept| kept.keys.len()) {
+                return lens.into_iter().fold(0, usize::saturating_add);
+            }
+        }
         self.readable(kind, may_read)
             .map(|table| table.count(filters))
             .fold(0, usize::saturating_add)
@@ -1034,7 +1226,12 @@ impl Index {
                 .iter()
                 .map(Window::len)
                 .fold(0, usize::saturating_add),
-            None => self.count(&query.kind, &query.filters, may_read),
+            None => self
+                .kept_tables(query, may_read, |listing| listing.keys.len())
+                .map_or_else(
+                    || self.count(&query.kind, &query.filters, may_read),
+                    |lens| lens.into_iter().fold(0, usize::saturating_add),
+                ),
         }
     }
 
@@ -1045,6 +1242,9 @@ impl Index {
     #[must_use]
     pub fn at(&self, query: &Query, position: usize, may_read: &dyn Fn(&str) -> bool) -> Page {
         let Some(windows) = self.windows(query, may_read) else {
+            if let Some(page) = self.kept_page(query, Some(position), may_read) {
+                return page;
+            }
             let mut walked = query.clone();
             walked.after = None;
             walked.limit = position.saturating_add(query.limit);
@@ -1123,13 +1323,16 @@ impl Index {
         }
         let key = stored.key(&query.order.by)?;
         let Some(windows) = self.windows(query, may_read) else {
-            let mut walked = query.clone();
-            walked.after = None;
-            walked.limit = usize::MAX;
             return self
-                .query(&walked, may_read)
-                .ids()
-                .position(|listed| listed == id);
+                .kept_tables(query, may_read, |listing| {
+                    listing
+                        .key(id, stored)
+                        .map_or(0, |key| listing.keys.rank(&key))
+                })
+                .map_or_else(
+                    || self.walked_position(query, id, may_read),
+                    |ranks| Some(ranks.into_iter().fold(0, usize::saturating_add)),
+                );
         };
         let total = windows
             .iter()
@@ -1144,6 +1347,119 @@ impl Index {
         } else {
             before
         })
+    }
+
+    /// What `read` reads off the kept listing of `query` ([`Kept`]) in each table `may_read`
+    /// admits; `None` when one of them cannot keep it.
+    fn kept_tables<R>(
+        &self,
+        query: &Query,
+        may_read: &dyn Fn(&str) -> bool,
+        read: impl Fn(&Kept) -> R,
+    ) -> Option<Vec<R>> {
+        self.readable(&query.kind, may_read)
+            .map(|table| table.with_kept(query, &read))
+            .collect()
+    }
+
+    /// The page of `query` off its kept listings ([`Kept`]): after its cursor, or from `at` when
+    /// a position is given. A position spanning several tables is no one place in each, so it is
+    /// read off kept listings only where one table lists the kind; `None` where it cannot be read
+    /// so, or a table cannot keep the listing.
+    fn kept_page(
+        &self,
+        query: &Query,
+        at: Option<usize>,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> Option<Page> {
+        let tables: Vec<&Table> = self.readable(&query.kind, may_read).collect();
+        if at.is_some() && tables.len() > 1 {
+            return None;
+        }
+        let order = Arc::new(query.order.clone());
+        let after = match (at, &query.after) {
+            (None, Some(cursor)) => Some(KeptKey {
+                placed: Placed {
+                    levels: std::iter::once(cursor.key.clone())
+                        .chain(cursor.rest.iter().cloned())
+                        .collect(),
+                    place: cursor.place.clone(),
+                    id: cursor.id.clone(),
+                },
+                order: Arc::clone(&order),
+            }),
+            _ => None,
+        };
+        let wanted = query.limit.saturating_add(1);
+        let mut keys: Vec<(Placed, &Table)> = Vec::new();
+        for table in tables {
+            let taken = table.with_kept(query, |listing| {
+                let from = match (&after, at) {
+                    (Some(after), _) => {
+                        listing.keys.partition_point(|key| key <= after)
+                    }
+                    (None, Some(at)) => at,
+                    (None, None) => 0,
+                };
+                listing
+                    .keys
+                    .between(from, from.saturating_add(wanted))
+                    .map(|key| key.placed.clone())
+                    .collect::<Vec<_>>()
+            })?;
+            keys.extend(taken.into_iter().map(|placed| (placed, table)));
+        }
+        keys.sort_by(|a, b| a.0.cmp_in(&order, &b.0));
+        let more = keys.len() > query.limit;
+        keys.truncate(query.limit);
+        let next = more.then(|| keys.last()).flatten().map(|(placed, _)| {
+            let mut levels = placed.levels.iter().cloned();
+            Cursor {
+                key: levels.next().unwrap_or(Value::Null),
+                rest: levels.collect(),
+                place: placed.place.clone(),
+                id: placed.id.clone(),
+            }
+        });
+        let resources = keys
+            .into_iter()
+            .filter_map(|(placed, table)| {
+                let stored = table.rows.get(&placed.id)?.clone();
+                Some((placed.id, stored))
+            })
+            .collect();
+        Some(Page { resources, next })
+    }
+
+    /// Where `id` stands in the listing of `query`, which no one span of the index holds: the
+    /// listing is walked in its order as a page of it is, keeping the keys it sorts by and no
+    /// copy of a resource, and the item found among them. A position asked for after each write
+    /// copied every resource of the listing before.
+    fn walked_position(
+        &self,
+        query: &Query,
+        id: &str,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> Option<usize> {
+        let mut walked = query.clone();
+        walked.after = None;
+        walked.limit = usize::MAX;
+        let tables = self.readable(&query.kind, may_read);
+        if query.order.is_composite() {
+            let order = &query.order;
+            let mut keys: Vec<Placed> = tables
+                .flat_map(|table| table.composite_keys(&walked))
+                .collect();
+            keys.sort_by(|a, b| a.cmp_in(order, b));
+            return keys.iter().position(|placed| placed.id == id);
+        }
+        let mut keys: Vec<Entry> = tables.flat_map(|table| table.keys(&walked)).collect();
+        if query.order.descending {
+            keys.sort_unstable_by(|a, b| b.cmp(a));
+        } else {
+            keys.sort_unstable();
+        }
+        keys.iter().position(|(_, _, listed)| listed == id)
     }
 
     /// Takes out everything stored in `doc`: a document this store no longer keeps.
