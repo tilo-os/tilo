@@ -1,17 +1,21 @@
 //! A direct conversation is read by its people alone: in a workspace of Ada, Bo and the agent
 //! Scout, Ada's conversation with Scout is Ada's and Scout's. Bo is not shown it in the sidebar,
 //! cannot open it, search finds nothing of it for him, `std.may_read` says he does not read it,
-//! and an agent mentioned in it that is not one of its people is asked with nothing of it. A
-//! channel is everyone's. Two devices opening the same conversation apart make one, and a
-//! conversation an earlier Chat kept with one person alone comes in with both of its people.
+//! his History and the workspace's feed of changes list none of its changes to him, a mention of
+//! him in it tells him nothing, and an agent mentioned in it that is not one of its people is
+//! asked with nothing of it. A channel is everyone's. Two devices opening the same conversation
+//! apart make one, and a conversation an earlier Chat kept with one person alone comes in with
+//! both of its people, or with that person alone when no person opened it.
 
 use automerge::AutoCommit;
+use collaboration::history_source::feed::ChangeLog;
 use tilo_action_policy::{
     Answer, Grant, Grantee, KindSet, MemberAccess, PersonId, Role, TreePath, WorkspacePolicy,
 };
 use tilolang_runtime::rich::{Reference, RichValue};
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
-use tilolang_tilo::runtime::ids::MemberId;
+use tilolang_tilo::history::HostWords;
+use tilolang_tilo::runtime::ids::{AppId, MemberId};
 
 use crate::fixtures::{Replica, target};
 
@@ -79,6 +83,11 @@ fn chat(name: &str, doc: AutoCommit) -> Replica {
 
 /// The action `action` of Chat, invoked by the person of `r`.
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
+    call_as(r, &person(&r.name), action, args)
+}
+
+/// The action `action` of Chat, invoked by `by`.
+fn call_as(r: &Replica, by: &Actor, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
     let id = meta
         .actions
@@ -90,7 +99,7 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     match r
         .host
         .runtime()
-        .invoke_action(&person(&r.name), (id.as_str(), args))
+        .invoke_action(by, (id.as_str(), args))
         .unwrap()
     {
         InvokeOutcome::Done(v) => v,
@@ -419,4 +428,143 @@ fn a_conversation_an_earlier_chat_kept_with_one_person_comes_in_with_both() {
     assert!(now.host.runtime().may_read(&agent("scout"), &with_scout));
     assert!(placed(&now).contains(&with_scout.id_string()));
     assert_eq!(now.host.migrate(), 0, "it runs once");
+}
+
+/// The versions the History of the conversations' document lists to `who` on `r`.
+fn history_of(r: &Replica, who: &str) -> Vec<serde_json::Value> {
+    let listed = collaboration::history_source::verbs::answer(
+        &r.doc,
+        br#"{"op":"history","last":null}"#,
+        &HostWords::new("en-US").read_by(who),
+    )
+    .unwrap()
+    .value
+    .unwrap();
+    listed["versions"].as_array().unwrap().clone()
+}
+
+#[test]
+fn bo_s_history_and_the_workspace_s_feed_list_nothing_of_ada_s_conversation_with_scout() {
+    let Workspace {
+        mut ada,
+        mut bo,
+        general,
+        with_scout,
+    } = workspace();
+    let ada_sees = history_of(&bo, "ada");
+    let theirs: Vec<&serde_json::Value> = ada_sees
+        .iter()
+        .filter(|version| version.get("readers").is_some())
+        .collect();
+    assert!(
+        !theirs.is_empty(),
+        "Ada's History lists the changes of her conversation with Scout"
+    );
+    assert!(
+        theirs
+            .iter()
+            .all(|version| version["readers"] == serde_json::json!(["ada", "agent:scout"])),
+        "as Ada's and Scout's alone: {theirs:?}"
+    );
+    let bo_sees = history_of(&bo, "bo");
+    assert!(
+        bo_sees
+            .iter()
+            .all(|version| version.get("readers").is_none()),
+        "Bo's lists none of them: {bo_sees:?}"
+    );
+    assert_eq!(
+        bo_sees.len(),
+        ada_sees.len() - theirs.len(),
+        "and every other change"
+    );
+
+    // What changed in the workspace, as a watch of all of it reads it on Bo's device.
+    let mut log = ChangeLog::new();
+    let record = (APP.to_owned(), String::new());
+    let take = |log: &mut ChangeLog, r: &Replica, revision: u8| {
+        log.take_in(
+            std::slice::from_ref(&record),
+            |_| Some([revision; 32]),
+            |_| Some(r.doc.clone().save()),
+            &HostWords::new("en-US"),
+        );
+    };
+    take(&mut log, &bo, 1);
+    let start = log.page(None, None).cursor;
+    call(&ada, "send", vec![general, rich("Coffee?"), Value::none()]);
+    call(
+        &ada,
+        "send",
+        vec![with_scout, rich("The bonus list too"), Value::none()],
+    );
+    settle(&mut ada);
+    ada.send_to(&mut bo);
+    take(&mut log, &bo, 2);
+    let told = |who: MemberId| log.page(Some(&start), Some(&who)).changes.len();
+    assert_eq!(told(MemberId::person("ada")), 2, "Ada is told of both");
+    assert_eq!(told(MemberId::agent("scout")), 2, "and so is Scout");
+    assert_eq!(
+        told(MemberId::person("bo")),
+        1,
+        "Bo of the channel's message alone"
+    );
+}
+
+#[test]
+fn a_mention_of_bo_in_a_conversation_he_is_not_in_tells_him_nothing() {
+    let Workspace {
+        mut ada,
+        general,
+        with_scout,
+        ..
+    } = workspace();
+    for to in [with_scout, general] {
+        let mut body = RichValue::from_text("Ask ");
+        body.push_reference("@Bo", &Reference::Member(MemberId::person("bo")));
+        body.push_text(" about it");
+        call(&ada, "send", vec![to, Value::Rich(body), Value::none()]);
+    }
+    settle(&mut ada);
+    let of_bo: Vec<ui::mentions::Mention> =
+        ui::mentions::in_resource_for(&ada.doc, &ui::mentions::reading_nothing)
+            .into_iter()
+            .filter(|mention| mention.person == MemberId::person("bo"))
+            .collect();
+    assert_eq!(
+        of_bo.len(),
+        1,
+        "the channel's mention of Bo is news to him, the one where he does not read is not: \
+         {of_bo:?}"
+    );
+}
+
+#[test]
+fn a_conversation_an_earlier_chat_kept_that_no_person_opened_is_its_one_person_s_alone() {
+    let mut before = device("ada", AutoCommit::new(), &[BEFORE]);
+    let all = Value::resource(&before.host.root_of(APP).unwrap());
+    before.commit();
+    // The app made it by itself, as an automation or a migration does: no person opened it.
+    let made = call_as(
+        &before,
+        &Actor::App(AppId::from(APP)),
+        "message_person",
+        vec![all, Value::Actor(agent("scout"))],
+    );
+    before.commit();
+    let with_scout = target(&made);
+
+    let mut now = chat("ada", before.doc.fork());
+    now.host.sync_from(&now.doc);
+    assert!(now.host.migrate() >= 1, "its migration runs");
+    settle(&mut now);
+    assert_eq!(
+        people(&now, &with_scout),
+        [agent("scout")],
+        "the one person it was with, never everyone"
+    );
+    for who in [person("ada"), person("bo")] {
+        assert!(!now.host.runtime().may_read(&who, &with_scout), "{who:?}");
+    }
+    assert!(now.host.runtime().may_read(&agent("scout"), &with_scout));
 }

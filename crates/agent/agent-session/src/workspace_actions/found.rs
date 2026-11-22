@@ -1007,7 +1007,7 @@ impl Worker {
             },
             &ui::history_source::sentence::ThreadWords,
         );
-        let page = log.page(after);
+        let page = log.page(after, caller.acting().member_id());
         // What is said in a direct conversation is told to the people it is between
         // ([`super::direct`]).
         let page = self.told(caller, &cluster_id, &state, page);

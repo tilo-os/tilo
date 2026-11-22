@@ -357,6 +357,7 @@ impl Store for TiloStore {
                 count: note.count.max(1),
                 invocation: note.invocation.clone(),
                 gesture,
+                readers: note.readers.clone(),
             },
             edits,
         };

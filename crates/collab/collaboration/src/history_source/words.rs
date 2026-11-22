@@ -14,4 +14,11 @@ use super::authors::ResolveAuthor;
 pub trait HistoryWords: ResolveAuthor {
     /// What a step did, as a sentence ("Renamed Draft to Report").
     fn sentence(&self, entry: &ActionContext) -> String;
+
+    /// Who reads the history: a change only some members read
+    /// ([`tilo_actions::READERS_FACET`]) is listed to them alone. `None` for
+    /// nobody in particular, who is listed none of those.
+    fn reader(&self) -> Option<tilo_actions::MemberId> {
+        None
+    }
 }

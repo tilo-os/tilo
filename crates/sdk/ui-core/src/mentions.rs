@@ -194,9 +194,35 @@ pub fn in_resource_for(doc: &AutoCommit, read: Reader<'_>) -> Vec<Mention> {
         budget: MAX_OBJECTS,
         read,
         unshared: crate::i18n::I18nManager::lookup(tilo_reference::embed::UNSHARED_PHRASE, None),
+        read_by: read_by(doc),
     };
     walk.object(&ROOT, ObjType::Map, &mut Vec::new(), &Context::default());
     walk.found
+}
+
+/// The changes of `doc` only some members read ([`tilo_actions::READERS_FACET`]): each one's
+/// author, the counters of the operations it made, and how it names those who alone read it.
+type ReadBy = Vec<(
+    automerge::ActorId,
+    std::ops::RangeInclusive<u64>,
+    Vec<String>,
+)>;
+
+fn read_by(doc: &AutoCommit) -> ReadBy {
+    let mut entries = tilo_actions::EntryReader::default();
+    doc.committed_document()
+        .get_changes_meta(&[])
+        .iter()
+        .filter_map(|meta| {
+            let context = entries.read(&meta.actor, meta.message.as_deref())?;
+            let named = tilo_actions::contract::readers_named(&context.facets)?;
+            Some((
+                meta.actor.as_ref().clone(),
+                meta.start_op..=meta.max_op,
+                named,
+            ))
+        })
+        .collect()
 }
 
 #[derive(Clone, Default)]
@@ -212,6 +238,9 @@ struct Walk<'a> {
     read: Reader<'a>,
     /// What a reference to a resource the reader cannot read says, in their language.
     unshared: String,
+    /// The changes only some members read: a mention in a text one of them made is news to
+    /// those members alone, as its history is theirs alone.
+    read_by: ReadBy,
 }
 
 impl Walk<'_> {
@@ -286,6 +315,9 @@ impl Walk<'_> {
             let Some(person) = member_of(value) else {
                 continue;
             };
+            if !self.reads_text(obj, &person) {
+                continue;
+            }
             let by = marks
                 .iter()
                 .filter(|other| other.name() == tilo_resource::text::AUTHOR_MARK)
@@ -301,6 +333,20 @@ impl Walk<'_> {
             let excerpt = self.read_around(&text, &references, mark.start);
             self.push(person, by, block, excerpt, cx);
         }
+    }
+
+    /// Whether `person` reads the text `obj`: every member reads a text no change only some
+    /// members read made ([`Walk::read_by`]).
+    fn reads_text(&self, obj: &ObjId, person: &MemberId) -> bool {
+        let ObjId::Id(counter, actor, _) = obj else {
+            return true;
+        };
+        self.read_by
+            .iter()
+            .find(|(by, ops, _)| by == actor && ops.contains(counter))
+            .is_none_or(|(_, _, named)| {
+                named.contains(&tilo_actions::contract::reader_name(person))
+            })
     }
 
     /// An item said in a direct conversation is addressed to each member of it but its author: news
@@ -533,6 +579,7 @@ pub fn channel_name(tree: &AutoCommit, id: &str) -> Option<String> {
         budget: 0,
         read: &reading_nothing,
         unshared: String::new(),
+        read_by: Vec::new(),
     };
     let channel = walk.object_at(&[CHANNELS.to_owned(), id.to_owned(), ITEM_VALUE.to_owned()])?;
     walk.string(&channel, "name")

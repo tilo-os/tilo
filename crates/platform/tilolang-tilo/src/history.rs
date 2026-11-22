@@ -40,6 +40,9 @@ pub fn with_verbs(mut resource: ResourceSpec) -> ResourceSpec {
 pub struct HostWords {
     pub(crate) locale: String,
     pub(crate) labels: std::sync::Arc<tilo_history::ActionLabels>,
+    /// The person the history is listed to: a change only some members read is listed to them
+    /// alone ([`HistoryWords::reader`]).
+    reader: Option<tilo_actions::MemberId>,
 }
 
 impl HostWords {
@@ -49,7 +52,16 @@ impl HostWords {
         Self {
             locale: locale.into(),
             labels: std::sync::Arc::default(),
+            reader: None,
         }
+    }
+
+    /// These words, listing history to `person` (the lowercase hex of their user root key);
+    /// to nobody in particular for none.
+    #[must_use]
+    pub fn read_by(mut self, person: &str) -> Self {
+        self.reader = (!person.is_empty()).then(|| tilo_actions::MemberId::person(person));
+        self
     }
 }
 
@@ -65,6 +77,10 @@ impl HistoryWords for HostWords {
         tilo_history::Reader::new(&self.locale)
             .with_labels(&*self.labels)
             .sentence(entry)
+    }
+
+    fn reader(&self) -> Option<tilo_actions::MemberId> {
+        self.reader.clone()
     }
 }
 

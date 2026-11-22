@@ -139,7 +139,8 @@ action add_channel(c: Category, name: Text = std.say("new-channel")) -> TextChan
 
 /// The direct conversations an earlier version kept with one person alone (`person`), which
 /// every member could read: in each are that person and whoever opened it, as its history says.
-/// One whose opener is not known is read by that person alone, never by everyone.
+/// One no person opened (its maker is not known, or was software) is read by that person alone,
+/// never by everyone.
 migration action carry_direct_people(all: Conversations) {
     for item in all.channels {
         match item {
@@ -147,10 +148,11 @@ migration action carry_direct_people(all: Conversations) {
             ch: TextChannel => {}
             d: Direct => {
                 if d.people.is_empty() {
+                    d.people = [d.person]
                     if let opener = created(d)?.who {
-                        d.people = people_of(opener, d.person)
-                    } else {
-                        d.people = [d.person]
+                        if opener.kind() == .person {
+                            d.people = people_of(opener, d.person)
+                        }
                     }
                 }
             }

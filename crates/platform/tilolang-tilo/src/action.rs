@@ -122,6 +122,11 @@ pub struct Authorship {
     /// and undo takes back as one step. `None` for a change that is a step of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gesture: Option<tilo_actions::ActionId>,
+    /// The members who alone read what the change wrote, when it wrote under a record that
+    /// names its readers ([`tilolang_runtime::store::ChangeNote::readers`]): history lists the
+    /// change to them alone ([`tilo_actions::READERS_FACET`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readers: Option<Vec<tilo_actions::MemberId>>,
 }
 
 /// The invocation a run's changes name ([`Authorship::invocation`]) as the workspace writes it:
@@ -150,6 +155,18 @@ pub(crate) fn is_one(count: &u32) -> bool {
 }
 
 impl Authorship {
+    /// Take in `readers`, those of another change this one is made of: a change two records
+    /// that name their readers wrote is read by the members both name.
+    pub fn read_also(&mut self, readers: Option<&[tilo_actions::MemberId]>) {
+        let Some(readers) = readers else {
+            return;
+        };
+        self.readers = Some(match self.readers.take() {
+            None => readers.to_vec(),
+            Some(held) => held.into_iter().filter(|m| readers.contains(m)).collect(),
+        });
+    }
+
     /// The facets that carry this chain in the change's `ActionContext`, so history can say
     /// "you, via Alex's view".
     #[must_use]
@@ -1403,6 +1420,10 @@ impl Action for DynAction {
 
     fn describe(&self, doc: &Doc) -> Option<Described> {
         Some(self.described_with(|edit| read_target(&self.app, edit, doc)))
+    }
+
+    fn readers(&self) -> Option<Vec<tilo_actions::MemberId>> {
+        self.authorship.readers.clone()
     }
 }
 

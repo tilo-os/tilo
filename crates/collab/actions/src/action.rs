@@ -301,6 +301,15 @@ pub trait Action: std::fmt::Debug {
         false
     }
 
+    /// The members who alone read what this value changes, when what it
+    /// changes says who reads it (a direct conversation); `None` when every
+    /// member who reads the record reads it. The executor marks its change
+    /// with [`READERS_FACET`](crate::READERS_FACET). Must be a pure function
+    /// of `self`.
+    fn readers(&self) -> Option<Vec<crate::MemberId>> {
+        None
+    }
+
     /// Whether this value loses something Undo cannot bring back, beside
     /// the document change Undo reverts (an account's secret every device
     /// forgets). See [`IRREVERSIBLE_TAG`](crate::IRREVERSIBLE_TAG). Must be

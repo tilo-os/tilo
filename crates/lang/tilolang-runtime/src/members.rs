@@ -249,6 +249,30 @@ impl Core {
         out
     }
 
+    /// Who alone reads a change of the resources `touched` (as [`ResourceRef::id_string`] writes
+    /// them): the members every record holding one of them names as its readers, when any does;
+    /// `None` when none of them is held by a record that names its readers. What history lists the
+    /// change to (`tilo_actions::READERS_FACET`).
+    pub(crate) fn change_readers(&self, touched: &[String]) -> Option<Vec<MemberId>> {
+        let mut out: Option<Vec<MemberId>> = None;
+        for at in touched
+            .iter()
+            .filter_map(|id| ResourceRef::parse_id(id, String::new()))
+        {
+            for people in self.readers_of(&at) {
+                let named: Vec<MemberId> = people
+                    .iter()
+                    .filter_map(|who| who.member_id().cloned())
+                    .collect();
+                out = Some(match out {
+                    None => named,
+                    Some(held) => held.into_iter().filter(|m| named.contains(m)).collect(),
+                });
+            }
+        }
+        out
+    }
+
     /// The people the resource `at` says read it, when its type names its readers.
     fn readers_here(&self, at: &ResourceRef) -> Option<Vec<Actor>> {
         let ty = if at.ty.is_empty() {

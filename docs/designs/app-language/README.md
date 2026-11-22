@@ -107,8 +107,11 @@ type Direct (readers: people) {
 }
 ```
 
-The rule is enforced where these are read. The record is still an item of its document, synced
-and sealed with it, so it is not yet sealed under its readers' own keys.
+A change written under such a record names the members who alone read it, and History, the
+workspace's feed of changes and mention notices list it to them alone. The rule is enforced
+where these are read. The record is still an item of its document, synced and sealed with it,
+so every device holding the document holds the record: it is not yet sealed under its readers'
+own keys.
 
 A resource's document body is its `RichText` field, whether it is kept as `RichText` (its
 paragraphs, lists, quotes, tables and code kept as such) or as `Text` (the body kept as
