@@ -142,12 +142,17 @@ impl Workspace {
             NetMode::Host => vec!["*".to_owned()],
             _ => return None,
         };
-        let answered = self
-            .grants
+        (!image_shipped && !self.answers_reach(app)).then_some(declared)
+    }
+
+    /// Whether anyone in this workspace answered what `app` may reach: a network grant or
+    /// restriction here names it.
+    #[must_use]
+    pub fn answers_reach(&self, app: &str) -> bool {
+        self.grants
             .sandbox
             .iter()
-            .any(|cap| cap.names_app(app) && matches!(cap.scope, Scope::NetHost(_)));
-        (!image_shipped && !answered).then_some(declared)
+            .any(|cap| cap.names_app(app) && matches!(cap.scope, Scope::NetHost(_)))
     }
 
     /// Whether `person` may change this workspace through `app`: what its
