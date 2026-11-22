@@ -60,9 +60,7 @@ impl WorkspacePackages {
     pub fn at_host_data_home() -> Result<Self, String> {
         let data_home = launcher::appdir::host_data_home()
             .ok_or("this server has no data home to keep its workspaces' apps in")?;
-        Ok(Self::new(
-            data_home.join("tilo").join("workspace-packages"),
-        ))
+        Ok(Self::new(data_home.join("tilo").join("workspace-packages")))
     }
 
     /// The package store of `workspace`.
@@ -134,13 +132,13 @@ impl ContentService {
     /// The store does not open, or the socket cannot be bound.
     pub async fn start(content: &Path, socket: &Path) -> std::io::Result<Self> {
         let store = std::sync::Arc::new(
-            fs::ContentStore::open(content)
+            tilo_fs::ContentStore::open(content)
                 .await
                 .map_err(std::io::Error::other)?,
         );
-        let media = fs::document_media::DocumentMedia::new(store);
-        let server = fs::document_media::serve_socket(socket, media)
-            .map_err(std::io::Error::other)?;
+        let media = tilo_fs::document_media::DocumentMedia::new(store);
+        let server =
+            tilo_fs::document_media::serve_socket(socket, media).map_err(std::io::Error::other)?;
         Ok(Self { _server: server })
     }
 }
@@ -223,12 +221,7 @@ impl ServerLauncher {
     ///
     /// # Errors
     /// The broker's socket cannot be reached, or the connection could not be named.
-    pub fn connect_window(
-        &self,
-        app: &str,
-        workspace: &str,
-        tab: u64,
-    ) -> std::io::Result<OwnedFd> {
+    pub fn connect_window(&self, app: &str, workspace: &str, tab: u64) -> std::io::Result<OwnedFd> {
         if tab == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,

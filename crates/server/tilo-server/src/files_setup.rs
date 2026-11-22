@@ -3,8 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use fs::workspace_authority::{AuthorityRequest, WorkspaceAuthority, WorkspaceAuthorityEnvelope};
 use tilo_device_identity::{IdentityPaths, persist};
+use tilo_fs::workspace_authority::{
+    AuthorityRequest, WorkspaceAuthority, WorkspaceAuthorityEnvelope,
+};
 use tilo_user_identity::StatementSigner;
 
 #[derive(clap::Args, Debug)]
@@ -41,7 +43,7 @@ fn existing_person(paths: &IdentityPaths) -> Result<[u8; 32]> {
         cert.capabilities.can_own_workspaces,
         "existing device cannot own workspaces"
     );
-    let revocations = fs::load_revocation_list(paths)?;
+    let revocations = tilo_fs::load_revocation_list(paths)?;
     anyhow::ensure!(
         !revocations.refuses_at(&cert, tilo_clock::unix_now_ns()),
         "existing device is revoked"
@@ -74,10 +76,10 @@ fn capabilities(acl: &Path) -> Result<Vec<collab_types::CapOverride>> {
 }
 
 fn require_files_access(person: [u8; 32], policy: &[collab_types::CapOverride]) -> Result<()> {
-    let access = fs::WorkspaceAcl::from_capabilities(person, policy, &[], None);
+    let access = tilo_fs::WorkspaceAcl::from_capabilities(person, policy, &[], None);
     anyhow::ensure!(
-        access.permits(&person, "/", fs::acl::Access::Read)
-            && access.permits(&person, "/", fs::acl::Access::Write),
+        access.permits(&person, "/", tilo_fs::acl::Access::Read)
+            && access.permits(&person, "/", tilo_fs::acl::Access::Write),
         "existing policy does not authorize this person to read/write the Files workspace; request an exact Files capability through the normal permission surface first"
     );
     Ok(())
@@ -94,9 +96,9 @@ pub(super) fn check(root: &Path, cache: &Path) -> Result<()> {
     let key = persist::load_device_key(&paths)?;
     let ticket = cache.join("workspace-ticket");
     let workspace = if ticket.try_exists()? {
-        fs::Ticket::decode(&std::fs::read_to_string(ticket)?)?.workspace_id()
+        tilo_fs::Ticket::decode(&std::fs::read_to_string(ticket)?)?.workspace_id()
     } else {
-        fs::Ticket::workspace_id_for_topic(key.verifying_key().to_bytes())
+        tilo_fs::Ticket::workspace_id_for_topic(key.verifying_key().to_bytes())
     };
     let envelope: WorkspaceAuthorityEnvelope =
         postcard::from_bytes(&std::fs::read(&authority_path)?)?;
@@ -132,7 +134,7 @@ fn new_cache(cache: &Path) -> Result<()> {
 }
 
 fn prepare_new(cache: &Path, device: [u8; 32], envelope: WorkspaceAuthorityEnvelope) -> Result<()> {
-    let workspace = fs::Ticket::workspace_id_for_topic(device);
+    let workspace = tilo_fs::Ticket::workspace_id_for_topic(device);
     envelope.verify(workspace, envelope.governor)?;
     new_cache(cache)?;
     let authority = WorkspaceAuthority::open(
@@ -176,7 +178,7 @@ pub(super) fn initialize(options: &InitializeOptions) -> Result<()> {
     let key = persist::load_device_key(&paths)?;
     let device = key.verifying_key().to_bytes();
     let envelope = WorkspaceAuthorityEnvelope::sign_with(
-        fs::Ticket::workspace_id_for_topic(device),
+        tilo_fs::Ticket::workspace_id_for_topic(device),
         1,
         policy,
         false,
@@ -190,13 +192,13 @@ pub(super) fn initialize(options: &InitializeOptions) -> Result<()> {
     prepare_new(&options.cache_dir, device, envelope)?;
     println!(
         "Prepared NEW empty Files workspace in existing device workspace {}. Existing host files and recovery candidates were not imported or replaced.",
-        fs::Ticket::workspace_id_for_topic(device)
+        tilo_fs::Ticket::workspace_id_for_topic(device)
     );
     Ok(())
 }
 
 pub(super) fn publish(acl: &Path) -> Result<()> {
-    let paths = fs::identity_paths();
+    let paths = tilo_fs::identity_paths();
     let person = existing_person(&paths)?;
     let dir = std::env::var_os("TILO_IDENTITY_DIR")
         .map(PathBuf::from)
@@ -205,8 +207,8 @@ pub(super) fn publish(acl: &Path) -> Result<()> {
     let identity = protected_identity(&dir, person)?;
     let policy = capabilities(acl)?;
     tilo_rt::block_on(async move {
-        let (workspace, socket) = fs::workspace_authority::find_local_authority()?;
-        let current = fs::workspace_authority::local_authority_request(
+        let (workspace, socket) = tilo_fs::workspace_authority::find_local_authority()?;
+        let current = tilo_fs::workspace_authority::local_authority_request(
             &socket,
             AuthorityRequest {
                 workspace,
@@ -228,7 +230,7 @@ pub(super) fn publish(acl: &Path) -> Result<()> {
                     .map_err(|e| anyhow::anyhow!("sign existing policy: {e}"))
             },
         )?;
-        let accepted = fs::workspace_authority::local_authority_request(
+        let accepted = tilo_fs::workspace_authority::local_authority_request(
             &socket,
             AuthorityRequest {
                 workspace,
@@ -353,7 +355,7 @@ mod tests {
                 lifetime: tilo_action_policy::Lifetime::UntilRevoked,
                 granted_by: None,
             };
-            let workspace = fs::Ticket::workspace_id_for_topic(device.verifying_key().to_bytes());
+            let workspace = tilo_fs::Ticket::workspace_id_for_topic(device.verifying_key().to_bytes());
             let envelope =
                 WorkspaceAuthorityEnvelope::sign(workspace, 1, vec![grant], false, &root).unwrap();
             let cache = temp.path().join("files");
@@ -390,7 +392,7 @@ mod tests {
             let cache = temp.path().join("files");
             let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
             let device = [42; 32];
-            let workspace = fs::Ticket::workspace_id_for_topic(device);
+            let workspace = tilo_fs::Ticket::workspace_id_for_topic(device);
             let envelope = WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &root)
                 .expect("signed existing policy");
             prepare_new(&cache, device, envelope.clone()).expect("explicit new fixture");

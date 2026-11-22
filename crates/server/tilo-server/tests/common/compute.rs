@@ -91,7 +91,7 @@ pub fn installed_package(
 /// instead of the bytes moving.
 #[derive(Clone)]
 pub struct WorkspaceVersions {
-    store: std::sync::Arc<fs::store::ContentStore>,
+    store: std::sync::Arc<tilo_fs::store::ContentStore>,
     bound: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<[u8; 32], [u8; 32]>>>,
     runtime: tokio::runtime::Handle,
 }
@@ -99,7 +99,7 @@ pub struct WorkspaceVersions {
 impl WorkspaceVersions {
     /// The versions of `store`, whose blocking reads run on `runtime`.
     pub fn new(
-        store: std::sync::Arc<fs::store::ContentStore>,
+        store: std::sync::Arc<tilo_fs::store::ContentStore>,
         runtime: tokio::runtime::Handle,
     ) -> Self {
         Self {
@@ -171,7 +171,7 @@ impl WorkspaceVersions {
 
 /// The whole of file version `manifest`, checked against it.
 async fn read_version(
-    store: &fs::store::ContentStore,
+    store: &tilo_fs::store::ContentStore,
     manifest: [u8; 32],
 ) -> Result<Vec<u8>, String> {
     let decoded = store

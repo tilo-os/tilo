@@ -1,9 +1,8 @@
-
 use cloud_source::{CloudSource, Credential, ItemId, StaticCredential, UploadTarget};
 use cloud_source_gdrive::{DriveConfig, GDrive, Url};
-use fs::cloud::volume::{DEFAULT_IDLE_POLL_MAX, ROOT_INO};
-use fs::cloud::{CloudVolume, VolumeConfig};
 use std::{io::Read, path::Path, sync::Arc, time::Duration};
+use tilo_fs::cloud::volume::{DEFAULT_IDLE_POLL_MAX, ROOT_INO};
+use tilo_fs::cloud::{CloudVolume, VolumeConfig};
 
 fn config(root: Option<&ItemId>) -> DriveConfig {
     let endpoint = std::env::var("TILO_RYSTIC_GDRIVE_URL")

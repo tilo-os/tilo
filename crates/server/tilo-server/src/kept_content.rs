@@ -60,9 +60,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _, ScalarValueRef, Value, ValueRef};
-use fs::content::Manifest;
 use fs_content::{MANIFEST_PREFIX_LEN, begins_manifest};
 use neighbour_wire::content::ContentWants;
+use tilo_fs::content::Manifest;
 use tilo_lock::MutexRecover as _;
 
 use crate::workspaces::{ContentKeeper, ResourceWrite, Workspaces};

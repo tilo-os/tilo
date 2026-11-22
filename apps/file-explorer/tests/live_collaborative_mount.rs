@@ -13,12 +13,14 @@
 use std::sync::{Arc, Mutex};
 
 use file_explorer::{FileCommand, FileExplorerWidget};
-use fs::availability::{DocumentAvailability, EntryKind};
-use fs::{AvailabilityRegistry, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO};
 use fs_protocol::AvailabilityPolicy;
 use fs_protocol::Residency;
 use fs_protocol::Residency as FsResidency;
 use fuser::{Config, MountOption};
+use tilo_fs::availability::{DocumentAvailability, EntryKind};
+use tilo_fs::{
+    AvailabilityRegistry, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
@@ -220,7 +222,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
 
     drop(files);
     drop(env);
-    fs::fuse_session::unmount_and_join(session, &mount).unwrap();
+    tilo_fs::fuse_session::unmount_and_join(session, &mount).unwrap();
     shutdown_endpoint.close().await;
     shutdown_store.shutdown().await.unwrap();
 }

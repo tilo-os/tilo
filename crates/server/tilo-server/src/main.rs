@@ -334,23 +334,23 @@ mod tests {
         let filesystem_endpoint =
             EndpointAddr::new(iroh::SecretKey::from_bytes(&device_sk.to_bytes()).public())
                 .with_ip_addr("127.0.0.1:43210".parse().unwrap());
-        let mut status = fs::full_replica::FullReplicaStatus::syncing();
+        let mut status = tilo_fs::full_replica::FullReplicaStatus::syncing();
         status.state = "ready".into();
         status.full_content_replication = true;
         status.filesystem_endpoints.push(filesystem_endpoint);
-        fs::full_replica::save_status(&status_path, &status).unwrap();
+        tilo_fs::full_replica::save_status(&status_path, &status).unwrap();
         // The server judges the stamp by a clock stopped where it was written,
         // so it stays recent however long the server takes to start.
-        let stamped = fs::full_replica::load_status(&status_path)
+        let stamped = tilo_fs::full_replica::load_status(&status_path)
             .unwrap()
             .unwrap()
             .updated_at_ms;
 
         let bundle_path = temp.path().join("home-peer.toml");
-        let bundle = fs::full_replica::HomePeerSet {
+        let bundle = tilo_fs::full_replica::HomePeerSet {
             status_file: status_path.clone(),
-            workspaces: vec![fs::full_replica::HomePeerBundle {
-                ticket: fs::Ticket {
+            workspaces: vec![tilo_fs::full_replica::HomePeerBundle {
+                ticket: tilo_fs::Ticket {
                     node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
                     workspace: [9; 32],
                 }

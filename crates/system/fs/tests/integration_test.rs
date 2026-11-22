@@ -18,12 +18,12 @@ use std::{
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use collab_types::{Access as CapAccess, CapOverride, Effect, Scope};
-use fs::namespace::ROOT_INO;
-use fs::{Access, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, WorkspaceAcl};
 use fuser::{Config, MountOption};
 use iroh::endpoint::{Endpoint, presets};
 use tempfile::tempdir;
 use tilo_action_policy::{Grantee, MemberId};
+use tilo_fs::namespace::ROOT_INO;
+use tilo_fs::{Access, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, WorkspaceAcl};
 
 fn fuse_available() -> bool {
     std::path::Path::new("/dev/fuse").exists()
@@ -63,7 +63,7 @@ async fn shutdown_fuse_fixture(
     endpoint: Endpoint,
     store: Arc<ContentStore>,
 ) {
-    fs::fuse_session::unmount_and_join(session, mount).expect("unmount and join FUSE session");
+    tilo_fs::fuse_session::unmount_and_join(session, mount).expect("unmount and join FUSE session");
     endpoint.close().await;
     store.shutdown().await.expect("shut down blob store");
 }
@@ -113,7 +113,7 @@ fn teardown_reads_an_aborted_fuse_connection_as_a_clean_end() {
     if let Some(abort) = &abort {
         std::fs::write(abort, b"1").expect("abort the FUSE connection");
     }
-    let ended = fs::fuse_session::unmount_and_join(session, &mount);
+    let ended = tilo_fs::fuse_session::unmount_and_join(session, &mount);
     let _ = std::process::Command::new("fusermount3")
         .args(["-u", "-q", "-z", "--"])
         .arg(&mount)
@@ -167,7 +167,7 @@ fn stopping_a_held_auto_unmount_session_ends_it() {
     let (done, ended) = std::sync::mpsc::channel();
     let stop_at = mount.clone();
     std::thread::spawn(move || {
-        let _ = done.send(fs::fuse_session::unmount_and_join(session, &stop_at));
+        let _ = done.send(tilo_fs::fuse_session::unmount_and_join(session, &stop_at));
     });
     let ended = ended
         .recv_timeout(tilo_test_env::hang_bound())
@@ -229,12 +229,12 @@ impl CapFixture {
 async fn cap_fixture(identity: [u8; 32], caps: &[CapOverride], now: Option<u64>) -> CapFixture {
     cap_fixture_with(
         identity,
-        fs::AclHandle::new(WorkspaceAcl::from_capabilities(identity, caps, &[], now)),
+        tilo_fs::AclHandle::new(WorkspaceAcl::from_capabilities(identity, caps, &[], now)),
     )
     .await
 }
 
-async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture {
+async fn cap_fixture_with(identity: [u8; 32], acl: tilo_fs::AclHandle) -> CapFixture {
     let endpoint = Endpoint::bind(presets::Minimal)
         .await
         .expect("bind endpoint");
@@ -513,9 +513,10 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
 
             let bob_read = std::fs::read(bob_dir.path().join("secret.txt")).expect("Bob may read");
             assert_eq!(bob_read, body, "Bob (holds cap) reads the real content");
-            fs::fuse_session::unmount_and_join(sa, alice_dir.path())
+            tilo_fs::fuse_session::unmount_and_join(sa, alice_dir.path())
                 .expect("unmount Alice session");
-            fs::fuse_session::unmount_and_join(sb, bob_dir.path()).expect("unmount Bob session");
+            tilo_fs::fuse_session::unmount_and_join(sb, bob_dir.path())
+                .expect("unmount Bob session");
             shutdown_endpoint.close().await;
             shutdown_store
                 .shutdown()
@@ -621,7 +622,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
     }
     fuse_mount_enforces_identity_acl_end_to_end().await;
     {
-        use fs::CapabilityFile;
+        use tilo_fs::CapabilityFile;
 
         let dir = tempdir().unwrap();
         let caps_path = dir.path().join("caps.json");
@@ -641,7 +642,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
             &caps_path,
             &[read_cap(ALICE, "/w/docs"), read_cap(ALICE, "/w/other")],
         );
-        assert_eq!(file.refresh(), fs::Refresh::Reloaded(2));
+        assert_eq!(file.refresh(), tilo_fs::Refresh::Reloaded(2));
 
         assert_eq!(
             f.fs.check_access(f.other_child, Access::Read),
@@ -651,7 +652,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         f.shutdown().await;
     }
     {
-        use fs::CapabilityFile;
+        use tilo_fs::CapabilityFile;
 
         let dir = tempdir().unwrap();
         let caps_path = dir.path().join("caps.json");
@@ -665,7 +666,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         assert_eq!(f.fs.check_access(f.other_child, Access::Read), Ok(()));
 
         put_caps(&caps_path, &[read_cap(ALICE, "/w/docs")]);
-        assert_eq!(file.refresh(), fs::Refresh::Reloaded(1));
+        assert_eq!(file.refresh(), tilo_fs::Refresh::Reloaded(1));
 
         assert_eq!(
             f.fs.check_access(f.other_child, Access::Read),
@@ -834,7 +835,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             assert!(listed.contains(&b"renamed-\xFE.txt".to_vec()));
 
             let snapshot = namespace.lock().unwrap().save();
-            fs::fuse_session::unmount_and_join(session, first_mount.path()).unwrap();
+            tilo_fs::fuse_session::unmount_and_join(session, first_mount.path()).unwrap();
             shutdown_endpoint.close().await;
             let reopened = Arc::new(Mutex::new(
                 Namespace::from_bytes("reopened", &snapshot).unwrap(),
@@ -849,7 +850,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let mut after_restart = second_mount.path().to_path_buf();
             after_restart.push(std::ffi::OsString::from_vec(b"renamed-\xFE.txt".to_vec()));
             assert_eq!(std::fs::read(after_restart).unwrap(), b"exact bytes");
-            fs::fuse_session::unmount_and_join(session, second_mount.path()).unwrap();
+            tilo_fs::fuse_session::unmount_and_join(session, second_mount.path()).unwrap();
             shutdown_endpoint.close().await;
             store.shutdown().await.unwrap();
         })
@@ -1675,8 +1676,8 @@ struct SignalledMount {
     store: Arc<ContentStore>,
     dir: tempfile::TempDir,
     namespace: Arc<Mutex<Namespace>>,
-    signal: Arc<fs::change_signal::ChangeSignal>,
-    availability: Arc<Mutex<fs::AvailabilityRegistry>>,
+    signal: Arc<tilo_fs::change_signal::ChangeSignal>,
+    availability: Arc<Mutex<tilo_fs::AvailabilityRegistry>>,
     hydrator: Arc<Hydrator>,
     _registry_dir: tempfile::TempDir,
 }
@@ -1694,10 +1695,10 @@ async fn signalled_mount() -> SignalledMount {
         .unwrap();
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-    let signal = Arc::new(fs::change_signal::ChangeSignal::new().unwrap());
+    let signal = Arc::new(tilo_fs::change_signal::ChangeSignal::new().unwrap());
     let registry_dir = tempdir().unwrap();
     let availability = Arc::new(Mutex::new(
-        fs::AvailabilityRegistry::open(registry_dir.path().join("availability.json")).unwrap(),
+        tilo_fs::AvailabilityRegistry::open(registry_dir.path().join("availability.json")).unwrap(),
     ));
     let quick_fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics)
         .with_change_signal(signal.clone())
@@ -1720,7 +1721,7 @@ async fn signalled_mount() -> SignalledMount {
     }
 }
 
-async fn start_signal(mount: &SignalledMount) -> fs::change_signal::ChangeSignalTask {
+async fn start_signal(mount: &SignalledMount) -> tilo_fs::change_signal::ChangeSignalTask {
     let (signal, namespace, availability, path, notifier) = (
         mount.signal.clone(),
         mount.namespace.clone(),
@@ -1833,7 +1834,7 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_availability_change_reaches_inotify_on_its_directory() {
-    use fs::availability::{DocumentAvailability, EntryKind, TransferError};
+    use tilo_fs::availability::{DocumentAvailability, EntryKind, TransferError};
 
     require_fuse!();
     let mount = signalled_mount().await;
@@ -2140,7 +2141,7 @@ async fn a_write_through_the_mount_is_named_for_the_agent_that_made_it() {
         "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-org.gnome.TextEditor-77.scope\n",
     )
     .unwrap();
-    let writers = Arc::new(fs::writer::WriterResolver::new(
+    let writers = Arc::new(tilo_fs::writer::WriterResolver::new(
         fake.path().join("proc"),
         Vec::new(),
     ));
@@ -2211,6 +2212,6 @@ async fn a_write_through_the_mount_is_named_for_the_agent_that_made_it() {
             .all(|name| name.as_deref() == Some("Claude Code")),
         "each change names the agent: {named:?}"
     );
-    fs::fuse_session::unmount_and_join(session, mount_dir.path()).expect("unmount");
+    tilo_fs::fuse_session::unmount_and_join(session, mount_dir.path()).expect("unmount");
     endpoint.close().await;
 }

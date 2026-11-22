@@ -46,7 +46,7 @@ struct FullReplicaStatusProof {
 /// The headless replica's completeness proof: the status file it writes,
 /// honoured only while the replica that wrote it is alive. The running
 /// replica holds its liveness lock beside the file
-/// ([`fs::full_replica::replica_is_running`]), which the kernel releases
+/// ([`tilo_fs::full_replica::replica_is_running`]), which the kernel releases
 /// when it exits however it exits; a stamp recent by `clock` also counts,
 /// for a replica that keeps no lock (#4224: the replica used to restamp
 /// the file every second to stay recent).
@@ -66,7 +66,7 @@ impl ReplicaProof {
                     && proof.full_content_replication
                     && !proof.filesystem_endpoints.is_empty()
                     && (self.clock.now_ms().saturating_sub(proof.updated_at_ms) <= 5_000
-                        || fs::full_replica::replica_is_running(&self.path))
+                        || tilo_fs::full_replica::replica_is_running(&self.path))
             })
     }
 }
@@ -1133,9 +1133,9 @@ impl Server {
 /// A home-peer workspace's filesystem ticket and the server workspaces it
 /// backs.
 fn home_peer_server_workspaces(
-    workspace: &fs::full_replica::HomePeerBundle,
-) -> Result<(fs::Ticket, Vec<WorkspaceId>), ServerError> {
-    let ticket = fs::Ticket::decode(&workspace.ticket)
+    workspace: &tilo_fs::full_replica::HomePeerBundle,
+) -> Result<(tilo_fs::Ticket, Vec<WorkspaceId>), ServerError> {
+    let ticket = tilo_fs::Ticket::decode(&workspace.ticket)
         .map_err(|error| ServerError::Identity(format!("invalid home-peer ticket: {error}")))?;
     let server_workspace_ids = if workspace.server_workspace_ids.is_empty() {
         // Bundles exported before workspace bindings existed have one stable
@@ -1169,9 +1169,9 @@ fn import_home_peer(cfg: &mut ServerConfig) -> Result<(), ServerError> {
         return Ok(());
     }
     let text = std::fs::read_to_string(&cfg.home_peer_bundle)?;
-    let bundle: fs::full_replica::HomePeerSet = toml::from_str(&text)
+    let bundle: tilo_fs::full_replica::HomePeerSet = toml::from_str(&text)
         .map_err(|error| ServerError::Identity(format!("invalid home-peer bundle: {error}")))?;
-    fs::full_replica::validate_home_peer_set(&bundle)
+    tilo_fs::full_replica::validate_home_peer_set(&bundle)
         .map_err(|error| ServerError::Identity(error.to_string()))?;
     if bundle.status_file != cfg.full_replica_status {
         return Err(ServerError::Identity(
@@ -1963,7 +1963,7 @@ impl ProtocolHandler for DiscoveryProtocol {
         let same_owner = peer.user_public_key == self.identity.user_public_key;
         let filesystem_ticket = std::fs::read_to_string(&self.home_peer_bundle)
             .ok()
-            .and_then(|text| toml::from_str::<fs::full_replica::HomePeerSet>(&text).ok())
+            .and_then(|text| toml::from_str::<tilo_fs::full_replica::HomePeerSet>(&text).ok())
             .and_then(|set| {
                 let sole_workspace = same_owner && set.workspaces.len() == 1;
                 set.workspaces.into_iter().find(|bundle| {
@@ -2059,13 +2059,13 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let status = temp.path().join("status.json");
             let bundle_path = temp.path().join("home-peer.toml");
-            let ticket = fs::Ticket {
+            let ticket = tilo_fs::Ticket {
                 node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
                 workspace: [9; 32],
             };
-            let bundle = fs::full_replica::HomePeerSet {
+            let bundle = tilo_fs::full_replica::HomePeerSet {
                 status_file: status.clone(),
-                workspaces: vec![fs::full_replica::HomePeerBundle {
+                workspaces: vec![tilo_fs::full_replica::HomePeerBundle {
                     ticket: ticket.encode().unwrap(),
                     cache_dir: temp.path().join("cache"),
                     capability_json: "[]".into(),
@@ -2091,10 +2091,10 @@ mod tests {
     /// however long starting the server or answering a discovery takes.
     fn publish_status(
         path: &std::path::Path,
-        status: &fs::full_replica::FullReplicaStatus,
+        status: &tilo_fs::full_replica::FullReplicaStatus,
     ) -> Arc<dyn Clock> {
-        fs::full_replica::save_status(path, status).unwrap();
-        let stamped = fs::full_replica::load_status(path)
+        tilo_fs::full_replica::save_status(path, status).unwrap();
+        let stamped = tilo_fs::full_replica::load_status(path)
             .unwrap()
             .unwrap()
             .updated_at_ms;
@@ -2108,14 +2108,14 @@ mod tests {
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("status.json");
-            let mut status = fs::full_replica::FullReplicaStatus::syncing();
+            let mut status = tilo_fs::full_replica::FullReplicaStatus::syncing();
             status.state = "ready".into();
             status.full_content_replication = true;
             status.filesystem_endpoints.push(EndpointAddr::new(
                 iroh::SecretKey::from_bytes(&[7; 32]).public(),
             ));
-            fs::full_replica::save_status(&path, &status).unwrap();
-            let stamped = fs::full_replica::load_status(&path)
+            tilo_fs::full_replica::save_status(&path, &status).unwrap();
+            let stamped = tilo_fs::full_replica::load_status(&path)
                 .unwrap()
                 .unwrap()
                 .updated_at_ms;
@@ -2137,15 +2137,15 @@ mod tests {
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("status.json");
-            let mut status = fs::full_replica::FullReplicaStatus::syncing();
+            let mut status = tilo_fs::full_replica::FullReplicaStatus::syncing();
             status.state = "ready".into();
             status.full_content_replication = true;
             status.filesystem_endpoints.push(EndpointAddr::new(
                 iroh::SecretKey::from_bytes(&[7; 32]).public(),
             ));
-            let alive = fs::full_replica::ReplicaLiveness::hold(&path).unwrap();
-            fs::full_replica::save_status(&path, &status).unwrap();
-            let stamped = fs::full_replica::load_status(&path)
+            let alive = tilo_fs::full_replica::ReplicaLiveness::hold(&path).unwrap();
+            tilo_fs::full_replica::save_status(&path, &status).unwrap();
+            let stamped = tilo_fs::full_replica::load_status(&path)
                 .unwrap()
                 .unwrap()
                 .updated_at_ms;
@@ -2260,7 +2260,7 @@ mod tests {
                     .public(),
             )
             .with_ip_addr("127.0.0.1:43210".parse().unwrap());
-            let mut status = fs::full_replica::FullReplicaStatus::syncing();
+            let mut status = tilo_fs::full_replica::FullReplicaStatus::syncing();
             status.state = "ready".into();
             status.full_content_replication = true;
             status
@@ -2331,7 +2331,7 @@ mod tests {
                 EndpointAddr::new(iroh::SecretKey::from_bytes(&host_key.to_bytes()).public())
                     .with_ip_addr("127.0.0.1:40123".parse().unwrap());
             let status_path = temp.path().join("status.json");
-            let mut status = fs::full_replica::FullReplicaStatus::syncing();
+            let mut status = tilo_fs::full_replica::FullReplicaStatus::syncing();
             status.state = "ready".into();
             status.full_content_replication = true;
             status.filesystem_endpoints.push(filesystem.clone());
@@ -2341,10 +2341,10 @@ mod tests {
             // The workspace this server holds, and the one it does not.
             let given = WorkspaceId::from_u128(7);
             let bundle_path = temp.path().join("home-peer.toml");
-            let bundle = fs::full_replica::HomePeerSet {
+            let bundle = tilo_fs::full_replica::HomePeerSet {
                 status_file: status_path.clone(),
-                workspaces: vec![fs::full_replica::HomePeerBundle {
-                    ticket: fs::Ticket {
+                workspaces: vec![tilo_fs::full_replica::HomePeerBundle {
+                    ticket: tilo_fs::Ticket {
                         node: owner_endpoint.clone(),
                         workspace,
                     }
@@ -2462,7 +2462,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let advertised_ticket = fs::Ticket::decode(&registration.ticket).unwrap();
+            let advertised_ticket = tilo_fs::Ticket::decode(&registration.ticket).unwrap();
             assert_ne!(owner_endpoint, filesystem);
             assert_eq!(advertised_ticket.node, owner_endpoint);
             assert_ne!(advertised_ticket.node, registration.endpoint);

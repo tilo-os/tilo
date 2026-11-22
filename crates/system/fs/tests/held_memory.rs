@@ -1,7 +1,7 @@
 //! What a namespace replica holds after remote deltas, compared with a full save.
 
-use fs::{Namespace, ROOT_INO};
 use tilo_automerge::heap::{self, ThreadCounting};
+use tilo_fs::{Namespace, ROOT_INO};
 
 #[global_allocator]
 static HEAP: ThreadCounting = ThreadCounting;

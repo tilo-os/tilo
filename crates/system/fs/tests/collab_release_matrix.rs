@@ -1,8 +1,7 @@
-
 use std::collections::BTreeSet;
 
-use fs::{Namespace, ROOT_INO};
 use iroh_blobs::Hash;
+use tilo_fs::{Namespace, ROOT_INO};
 
 fn hash(byte: u8) -> Hash {
     Hash::from([byte; 32])

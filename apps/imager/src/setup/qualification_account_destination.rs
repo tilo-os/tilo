@@ -4,7 +4,6 @@ use accounts::{
     AccountStore, AccountSyncHealth, AccountSyncStatusStore, SecretVault, VaultBackend,
 };
 use cloud_source_dav::fake::{FakeDav, USER};
-use fs::cloud::{CloudService, ProcessLauncher, ServiceConfig};
 use imager_backend::account_transfer::{Connector, PasswordSealedAccounts, SourceRoots, discover};
 use imager_backend::setup::service_sessions::official_format_native as backend;
 use serde::Deserialize;
@@ -17,6 +16,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tilo_fs::cloud::{CloudService, ProcessLauncher, ServiceConfig};
 
 const FS: &str = "/usr/bin/fs";
 const HELPER: &str = "/usr/libexec/tilo-account-credential";
@@ -216,7 +216,7 @@ fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_f
             state_root: state_root.clone(),
             control_socket: None,
             file_socket: None,
-            accounts: Arc::new(fs::cloud::SessionAccounts::new(session.socket())),
+            accounts: Arc::new(tilo_fs::cloud::SessionAccounts::new(session.socket())),
         },
         Box::new(ProcessLauncher {
             executable: FS.into(),

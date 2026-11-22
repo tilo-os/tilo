@@ -110,7 +110,7 @@ fn command(args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result
         .arg("--workspace-key-socket")
         .arg(&paths.identity_socket)
         .arg("--session-link")
-        .arg(paths.runtime.join(fs::net::LINK_FILE))
+        .arg(paths.runtime.join(tilo_fs::net::LINK_FILE))
         .env("TILO_IDENTITY_ROOT", &paths.identity)
         .env("TILO_AUTHORITY_SOCKET_DIR", &paths.runtime);
     Ok(serve)

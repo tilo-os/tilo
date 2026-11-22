@@ -26,7 +26,7 @@ fn public_status(
         "discovery returned another server service"
     );
     let ticket =
-        fs::Ticket::decode(&registration.ticket).context("invalid Files workspace binding")?;
+        tilo_fs::Ticket::decode(&registration.ticket).context("invalid Files workspace binding")?;
     Ok(FilesStatus {
         schema_version: 1,
         server_workspace_id,
@@ -62,7 +62,7 @@ pub(super) fn discover(
         cert.device_public_key == key.verifying_key().to_bytes(),
         "certificate belongs to another device key"
     );
-    let revocations = fs::load_revocation_list(&paths)
+    let revocations = tilo_fs::load_revocation_list(&paths)
         .context("load signed device revocations for Files probe")?;
     let expected_device = super::device_key(device)?;
     anyhow::ensure!(
@@ -174,7 +174,7 @@ mod tests {
         phase output_contains_only_public_binding_metadata;
         {
             let endpoint = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public());
-            let ticket = fs::Ticket {
+            let ticket = tilo_fs::Ticket {
                 node: endpoint.clone(),
                 workspace: [8; 32],
             };

@@ -375,10 +375,10 @@ mod tests {
         let hash = store.put_public(original).unwrap();
         let later = b"The current version is also readable";
         let later_hash = store.put_public(later).unwrap();
-        let mut namespace = fs::Namespace::new("existing Files").unwrap();
+        let mut namespace = tilo_fs::Namespace::new("existing Files").unwrap();
         let ino = namespace
             .create_file(
-                fs::ROOT_INO,
+                tilo_fs::ROOT_INO,
                 "report.txt",
                 Some(&hash.parse().unwrap()),
                 original.len() as u64,

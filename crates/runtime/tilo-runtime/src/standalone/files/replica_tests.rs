@@ -694,7 +694,7 @@ fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole()
     if let Some(profile) = std::env::var_os(super::super::super::tests::PROCESS_ROOT) {
         let file = std::fs::File::create(PathBuf::from(profile).with_extension("log")).unwrap();
         let _ = tracing_subscriber::fmt()
-            .with_env_filter("warn,fs=info,tilo_runtime=debug")
+            .with_env_filter("warn,tilo_fs=info,tilo_runtime=debug")
             .with_ansi(false)
             .with_writer(std::sync::Mutex::new(file))
             .try_init();
@@ -839,7 +839,7 @@ fn wipe_all_but_identity(root: &Path) {
 /// workspace's files until the test stops it.
 fn serve_as_member(invitation: &std::ffi::OsStr) -> ! {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("warn,fs=info,tilo_runtime=info")
+        .with_env_filter("warn,tilo_fs=info,tilo_runtime=info")
         .with_ansi(false)
         .with_writer(std::io::stderr)
         .try_init();

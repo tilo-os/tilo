@@ -43,9 +43,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fs::kept_documents::KeptDocuments;
-use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO};
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
+use tilo_fs::kept_documents::KeptDocuments;
+use tilo_fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO};
 
 const SMALL_BYTES: u64 = 4096;
 const RANGE_BYTES: u64 = 1024 * 1024;

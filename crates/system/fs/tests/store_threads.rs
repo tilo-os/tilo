@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use fs::ContentStore;
+use tilo_fs::ContentStore;
 
 const ROUNDS: usize = 8;
 

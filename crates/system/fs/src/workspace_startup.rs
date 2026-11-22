@@ -2,8 +2,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use fs::Ticket;
 use serde::Serialize;
+use tilo_fs::Ticket;
 
 #[derive(Debug, Serialize)]
 pub(super) struct WorkspaceStatus {
@@ -105,8 +105,8 @@ pub(super) fn owner_authority(
     workspace: uuid::Uuid,
     person: [u8; 32],
     members: Vec<tilo_action_policy::MemberId>,
-) -> Result<Option<std::sync::Arc<fs::workspace_authority::WorkspaceAuthority>>> {
-    use fs::workspace_authority::WorkspaceAuthority;
+) -> Result<Option<std::sync::Arc<tilo_fs::workspace_authority::WorkspaceAuthority>>> {
+    use tilo_fs::workspace_authority::WorkspaceAuthority;
     let path = cache.join("workspace-authority.bin");
     if !regular_file(&path)? {
         return Ok(None);
@@ -124,14 +124,14 @@ pub(super) fn owner_authority(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fs::workspace_authority::PersistedContentPeer;
+    use tilo_fs::workspace_authority::PersistedContentPeer;
 
     tilo_test_env::scenario! {
         fn a_saved_signed_authority_is_what_resumes_a_workspace;
 
         phase saved_signed_authority_resumes_without_a_raw_root_key;
         {
-            use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+            use tilo_fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
             let dir = tempfile::tempdir().unwrap();
             let root = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
             let person = root.verifying_key().to_bytes();
@@ -207,7 +207,7 @@ mod tests {
 
         phase a_saved_signed_authority_resumes_a_workspace_with_no_tree_yet;
         {
-            use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+            use tilo_fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
             let dir = tempfile::tempdir().unwrap();
             let root = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
             let person = root.verifying_key().to_bytes();

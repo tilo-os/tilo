@@ -395,7 +395,7 @@ impl QuickFS {
                     Listed::Link => continue,
                     Listed::Unprojectable => {
                         tracing::warn!(
-                            target: "fs::native",
+                            target: "tilo_fs::native",
                             ino,
                             "not projecting an entry whose name is not one path component",
                         );
@@ -516,15 +516,16 @@ impl QuickFS {
             return;
         }
         let hydrator = &self.hydrator;
-        self.hydrator.block_on(futures_util::StreamExt::for_each_concurrent(
-            futures_util::stream::iter(wanted),
-            AT_ONCE,
-            |hash| async move {
-                let _ = hydrator
-                    .hydrate_range(hash, 0, u64::MAX, crate::hydration::Priority::Foreground)
-                    .await;
-            },
-        ));
+        self.hydrator
+            .block_on(futures_util::StreamExt::for_each_concurrent(
+                futures_util::stream::iter(wanted),
+                AT_ONCE,
+                |hash| async move {
+                    let _ = hydrator
+                        .hydrate_range(hash, 0, u64::MAX, crate::hydration::Priority::Foreground)
+                        .await;
+                },
+            ));
     }
 
     /// Makes every new version of the file at `rel` fail with `errno`, or none when `None`.

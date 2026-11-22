@@ -43,8 +43,8 @@ pub(super) struct MountServices {
     pub(super) namespace: Arc<Mutex<Namespace>>,
     pub(super) hydrator: Arc<Hydrator>,
     pub(super) acl: Option<(AclHandle, IdentityKey)>,
-    pub(super) availability: Option<Arc<Mutex<fs::AvailabilityRegistry>>>,
-    pub(super) eviction_queue: Option<Arc<tokio::sync::Mutex<fs::eviction::EvictionQueue>>>,
+    pub(super) availability: Option<Arc<Mutex<tilo_fs::AvailabilityRegistry>>>,
+    pub(super) eviction_queue: Option<Arc<tokio::sync::Mutex<tilo_fs::eviction::EvictionQueue>>>,
     pub(super) actor: Option<fs_protocol::FileActor>,
     pub(super) rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
 }
@@ -84,13 +84,13 @@ pub(super) async fn run_mount(
     // A daemon that ended without unmounting (a kill, a crash, a mount this process may not
     // unmount) leaves a mount answering nothing; the path cannot be mounted again, and making it
     // fails, until the dead mount is gone.
-    fs::fuse_session::clear_stale_mount(&mount_point)?;
+    tilo_fs::fuse_session::clear_stale_mount(&mount_point)?;
     if !mount_point.exists() {
         match std::fs::create_dir_all(&mount_point) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 // The mount died as the path was being made; clear it and make the path again.
-                fs::fuse_session::clear_stale_mount(&mount_point)?;
+                tilo_fs::fuse_session::clear_stale_mount(&mount_point)?;
                 std::fs::create_dir_all(&mount_point)?;
             }
             Err(error) => return Err(error.into()),
@@ -99,10 +99,10 @@ pub(super) async fn run_mount(
 
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     // The person's prefetch switch and cache budget, applied before the mount is served.
-    let (cache_policies, kept_policy) = fs::cache_policy::CachePolicies::load(
+    let (cache_policies, kept_policy) = tilo_fs::cache_policy::CachePolicies::load(
         predictive_cache_root
             .as_ref()
-            .map(|root| root.join(fs::cache_policy::CACHE_POLICY_FILE)),
+            .map(|root| root.join(tilo_fs::cache_policy::CACHE_POLICY_FILE)),
         Arc::clone(&heuristics),
         Arc::clone(hydrator.store.files()),
     );
@@ -111,7 +111,7 @@ pub(super) async fn run_mount(
     }
     let cache_policies = Arc::new(cache_policies);
     let predictive_policy_task =
-        fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root.clone()).await;
+        tilo_fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root.clone()).await;
     // Settings' socket receives these same durable services below; it never falls back to
     // Hydrator-only proof or direct blob deletion.
     let storage_availability = availability.clone();
@@ -136,7 +136,7 @@ pub(super) async fn run_mount(
     };
     // Who writes, from the process each request comes from: an agent session, an app, another
     // program, or the person (the same resolver a computer's `tilo login` folder uses).
-    let fs = fs.with_writers(Arc::new(fs::writer::WriterResolver::default()));
+    let fs = fs.with_writers(Arc::new(tilo_fs::writer::WriterResolver::default()));
     // Bind the capability list, if given, before the mount goes live, so every op is checked from the start.
     let fs = match acl {
         Some((acl, identity)) => fs.with_acl(acl, identity),
@@ -147,7 +147,7 @@ pub(super) async fn run_mount(
     let fs = fs.with_pinned_hydration();
     // Host-side thumbnails: generate previews as metadata, served via the `user.tilo.thumb` xattr.
     let fs = match thumb_dir {
-        Some(dir) => match fs::ThumbProvider::open(&dir) {
+        Some(dir) => match tilo_fs::ThumbProvider::open(&dir) {
             Ok(provider) => fs.with_thumbs(provider),
             Err(e) => {
                 eprintln!(
@@ -172,7 +172,7 @@ pub(super) async fn run_mount(
         .filter(|_| !read_only)
         .map(|root| root.join("unsaved-writes").join(workspace_id.to_string()));
     let fs = match unsaved_dir {
-        Some(dir) => match fs::unsaved::UnsavedStore::open(&dir) {
+        Some(dir) => match tilo_fs::unsaved::UnsavedStore::open(&dir) {
             Ok(store) => {
                 let fs = fs.with_unsaved_store(store);
                 let placed = fs.recover_unsaved_writes();
@@ -202,7 +202,7 @@ pub(super) async fn run_mount(
     };
 
     let storage_authority = storage_sock.as_ref().map(|_| {
-        fs::storage::StorageAuthority::new(
+        tilo_fs::storage::StorageAuthority::new(
             Arc::clone(&fs.namespace),
             Arc::clone(&fs.hydrator),
             fs.write_buffers_handle(),
@@ -234,7 +234,7 @@ pub(super) async fn run_mount(
                     use std::os::unix::fs::PermissionsExt;
                     let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o660));
                     println!("Storage accounting socket at {}", sock.display());
-                    tokio::spawn(fs::storage::serve(listener, authority));
+                    tokio::spawn(tilo_fs::storage::serve(listener, authority));
                     Some(ServedSocket(sock))
                 }
                 Err(error) => {
@@ -247,8 +247,9 @@ pub(super) async fn run_mount(
     // Both backends: every change the mount makes is journaled on disk under the namespace's
     // lock, before the request that made it is answered, so a process killed at any instant
     // starts again holding every change it answered for.
-    let journal: Option<fs::fs::ChangeJournal> = kept.clone().map(|kept| {
-        Arc::new(move |namespace: &mut Namespace| kept.journal(namespace)) as fs::fs::ChangeJournal
+    let journal: Option<tilo_fs::fs::ChangeJournal> = kept.clone().map(|kept| {
+        Arc::new(move |namespace: &mut Namespace| kept.journal(namespace))
+            as tilo_fs::fs::ChangeJournal
     });
     let fs = match journal.clone() {
         Some(journal) => fs.with_change_journal(journal),
@@ -263,7 +264,7 @@ pub(super) async fn run_mount(
         fs.sync_on_window(
             Arc::clone(&content),
             kept.clone()
-                .map(|kept| Arc::new(move || kept.sync()) as fs::fs::DurabilityHook),
+                .map(|kept| Arc::new(move || kept.sync()) as tilo_fs::fs::DurabilityHook),
         );
     }
     #[cfg(target_os = "linux")]
@@ -314,7 +315,7 @@ pub(super) async fn run_mount(
     let change_signal = if read_only {
         None
     } else {
-        match fs::change_signal::ChangeSignal::new() {
+        match tilo_fs::change_signal::ChangeSignal::new() {
             Ok(signal) => Some(Arc::new(signal)),
             Err(error) => {
                 eprintln!("folders on the mount will not signal their changes: {error}");
@@ -356,7 +357,7 @@ pub(super) async fn run_mount(
     let mut mount_task = tokio::task::spawn_blocking(move || {
         // A daemon that ended without unmounting (a kill, a crash) leaves its mount answering
         // nothing; the path cannot be mounted again until it is gone.
-        fs::fuse_session::clear_stale_mount(&mp)?;
+        tilo_fs::fuse_session::clear_stale_mount(&mp)?;
         let session = fuser::spawn_mount(fs, &mp, &config)?;
         // Held until the session ends: dropping it stops the signals.
         #[cfg(target_os = "linux")]

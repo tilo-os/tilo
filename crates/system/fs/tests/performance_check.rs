@@ -10,10 +10,10 @@
 use std::path::Path;
 use std::sync::{Arc, Barrier, Mutex};
 
-use fs::document_media::DocumentMedia;
-use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO};
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use runtime_fs::blobs::{BlobScope, MAX_BLOB_BYTES, MAX_READ_CHUNK, ReadOutcome};
+use tilo_fs::document_media::DocumentMedia;
+use tilo_fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO};
 use tilo_lock::MutexRecover as _;
 
 const DIRECTORY_ENTRIES: usize = 1_000;

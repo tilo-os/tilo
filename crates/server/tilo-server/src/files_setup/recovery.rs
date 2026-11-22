@@ -44,7 +44,7 @@ fn validate_binding(
         registration.ticket.len() <= 64 * 1024,
         "Files binding exceeds its size limit"
     );
-    let ticket = fs::Ticket::decode(&registration.ticket)?;
+    let ticket = tilo_fs::Ticket::decode(&registration.ticket)?;
     anyhow::ensure!(
         ticket.workspace_id() == expected,
         "discovery returned another Files workspace"
@@ -69,13 +69,13 @@ fn validate_authority(
 
 async fn fetch_joined_namespace(
     endpoint: &iroh::Endpoint,
-    identity: &fs::sync::FsTransportIdentity,
+    identity: &tilo_fs::sync::FsTransportIdentity,
     workspace: uuid::Uuid,
     registration: tilo_server::transport::ContentPeerRegistration,
 ) -> Result<JoinedNamespace> {
     validate_binding(workspace, &registration)?;
     let person = identity.user_public_key();
-    let authority = fs::sync::submit_workspace_authority(
+    let authority = tilo_fs::sync::submit_workspace_authority(
         endpoint,
         registration.endpoint.clone(),
         identity,
@@ -85,7 +85,7 @@ async fn fetch_joined_namespace(
     .await?
     .context("peer has no signed Files authority; establish its existing policy before recovery")?;
     validate_authority(person, workspace, &authority)?;
-    let current = fs::sync::submit_workspace_authority(
+    let current = tilo_fs::sync::submit_workspace_authority(
         endpoint,
         registration.endpoint.clone(),
         identity,
@@ -109,13 +109,15 @@ async fn fetch_existing(
     registration: tilo_server::transport::ContentPeerRegistration,
 ) -> Result<JoinedNamespace> {
     validate_binding(workspace, &registration)?;
-    let certified =
-        fs::identity::load_existing_certified_mount_identity(paths, tilo_clock::unix_now_ns())?;
-    let revocations = fs::load_revocation_list(paths)?;
+    let certified = tilo_fs::identity::load_existing_certified_mount_identity(
+        paths,
+        tilo_clock::unix_now_ns(),
+    )?;
+    let revocations = tilo_fs::load_revocation_list(paths)?;
     let (device, credentials) = certified.into_parts();
     let identity =
-        fs::sync::FsTransportIdentity::new(credentials, Arc::new(RwLock::new(revocations)));
-    let (endpoint, _) = fs::sync::bind_endpoint_with_key(device.secret).await?;
+        tilo_fs::sync::FsTransportIdentity::new(credentials, Arc::new(RwLock::new(revocations)));
+    let (endpoint, _) = tilo_fs::sync::bind_endpoint_with_key(device.secret).await?;
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(20),
         fetch_joined_namespace(&endpoint, &identity, workspace, registration),
@@ -134,7 +136,7 @@ fn prepare_join(
 ) -> Result<()> {
     validate_binding(expected, &joined.registration)?;
     validate_authority(person, expected, &joined.authority)?;
-    let peers = [fs::workspace_authority::PersistedContentPeer {
+    let peers = [tilo_fs::workspace_authority::PersistedContentPeer {
         endpoint: joined.registration.endpoint,
         ticket: Some(joined.registration.ticket.clone()),
         server_service_id: Some(joined.registration.server_service_id),

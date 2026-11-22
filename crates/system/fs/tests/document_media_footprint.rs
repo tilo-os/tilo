@@ -33,7 +33,6 @@
     clippy::panic,
     reason = "a failed unwrap or index in a test is its assertion"
 )]
-
 #![allow(
     clippy::unwrap_used,
     clippy::arithmetic_side_effects,
@@ -49,13 +48,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use fs::ContentStore;
-use fs::document_media::DocumentMedia;
-use fs::store::{BLOB_CACHE_BYTES, MAX_CACHED_BLOB};
 use runtime_fs::blobs::{
     BlobActor, BlobBackend, BlobChunks, BlobClient, BlobError, BlobFuture, BlobRef, BlobScope,
     MAX_BLOB_BYTES, MAX_PUT_CHUNK, MAX_READ_CHUNK, ReadOutcome, write_handoff,
 };
+use tilo_fs::ContentStore;
+use tilo_fs::document_media::DocumentMedia;
+use tilo_fs::store::{BLOB_CACHE_BYTES, MAX_CACHED_BLOB};
 
 struct PeakCounting;
 

@@ -186,7 +186,7 @@ fn export_local_home_peer(
     let _ = std::fs::remove_file(&output);
     let _ = std::fs::remove_dir(&temp_dir);
     let bytes = bytes.context("prepare local full-sync export")?;
-    let _: fs::full_replica::HomePeerSet = toml::from_str(std::str::from_utf8(&bytes)?)?;
+    let _: tilo_fs::full_replica::HomePeerSet = toml::from_str(std::str::from_utf8(&bytes)?)?;
     Ok(bytes)
 }
 
@@ -202,8 +202,8 @@ fn project_home_peer_workspaces(
     bytes: &[u8],
     selected_ids: &[tilo_server_protocol::WorkspaceId],
 ) -> anyhow::Result<Vec<u8>> {
-    let mut home: fs::full_replica::HomePeerSet = toml::from_str(std::str::from_utf8(bytes)?)?;
-    fs::full_replica::validate_home_peer_set(&home)?;
+    let mut home: tilo_fs::full_replica::HomePeerSet = toml::from_str(std::str::from_utf8(bytes)?)?;
+    tilo_fs::full_replica::validate_home_peer_set(&home)?;
     let workspace = home
         .workspaces
         .first_mut()
@@ -802,7 +802,7 @@ mod tests {
             let server = dir.path().join("server.toml");
             let home = dir.path().join("home.toml");
             let governor = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
-            let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            let authority = tilo_fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
                 uuid::Uuid::from_bytes([3; 16]),
                 1,
                 Vec::new(),
@@ -810,9 +810,9 @@ mod tests {
                 &governor,
             )
             .unwrap();
-            let bundle = fs::full_replica::HomePeerSet {
+            let bundle = tilo_fs::full_replica::HomePeerSet {
                 status_file: dir.path().join("status.json"),
-                workspaces: vec![fs::full_replica::HomePeerBundle {
+                workspaces: vec![tilo_fs::full_replica::HomePeerBundle {
                     ticket: "test-ticket".into(),
                     cache_dir: dir.path().join("cache"),
                     capability_json: "[]".into(),
@@ -836,7 +836,7 @@ mod tests {
             )
             .unwrap();
             commit_transaction(&server, b"server-add", &home, Some(&added), || Ok(())).unwrap();
-            let after_add: fs::full_replica::HomePeerSet =
+            let after_add: tilo_fs::full_replica::HomePeerSet =
                 toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
             assert_eq!(
                 after_add.workspaces[0].server_workspace_ids,
@@ -853,7 +853,7 @@ mod tests {
             .unwrap();
             commit_transaction(&server, b"server-remove", &home, Some(&removed), || Ok(()))
                 .unwrap();
-            let after_remove: fs::full_replica::HomePeerSet =
+            let after_remove: tilo_fs::full_replica::HomePeerSet =
                 toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
             assert_eq!(
                 after_remove.workspaces[0].server_workspace_ids,

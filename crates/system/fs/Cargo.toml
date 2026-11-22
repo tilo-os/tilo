@@ -15,7 +15,7 @@ description = "Portable content-addressed storage and the default Tilo filesyste
 ignored = ["serde_bytes"]
 
 [lib]
-name = "fs"
+name = "tilo_fs"
 path = "src/lib.rs"
 
 # The content store is portable. Filesystem projection, mounting and service

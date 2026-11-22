@@ -14,23 +14,6 @@ mod workspace_startup;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
-use fs::clock::unix_now_ms;
-use fs::full_replica::{
-    HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace,
-    prune_obsolete_workspace_content, save_status, validate_home_peer_set,
-};
-use fs::namespace::{MountAuthor, ROOT_INO};
-use fs::sync;
-use fs::workspace_authority::{
-    WorkspaceAuthority, WorkspaceAuthorityEnvelope, load_persisted_content_peers,
-    local_authority_socket_path, local_content_socket_path, register_local_content_peer,
-    serve_local_authority, serve_local_content_peer,
-};
-use fs::{
-    AclHandle, CapabilityFile, ContentStore, FsTransportIdentity, Heuristics, Hydrator,
-    IdentityKey, Namespace, QuickFS, Ticket, Workspace, identity_paths,
-    load_certified_mount_identity_once_valid, load_revocation_list,
-};
 use fuser::{Config, MountOption, SessionACL};
 use mount::{MountConfig, MountOutcome, MountServices, run_mount};
 use std::io::Read;
@@ -38,6 +21,23 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tilo_action_policy::MemberId;
+use tilo_fs::clock::unix_now_ms;
+use tilo_fs::full_replica::{
+    HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace,
+    prune_obsolete_workspace_content, save_status, validate_home_peer_set,
+};
+use tilo_fs::namespace::{MountAuthor, ROOT_INO};
+use tilo_fs::sync;
+use tilo_fs::workspace_authority::{
+    WorkspaceAuthority, WorkspaceAuthorityEnvelope, load_persisted_content_peers,
+    local_authority_socket_path, local_content_socket_path, register_local_content_peer,
+    serve_local_authority, serve_local_content_peer,
+};
+use tilo_fs::{
+    AclHandle, CapabilityFile, ContentStore, FsTransportIdentity, Heuristics, Hydrator,
+    IdentityKey, Namespace, QuickFS, Ticket, Workspace, identity_paths,
+    load_certified_mount_identity_once_valid, load_revocation_list,
+};
 use tilo_lock::MutexRecover as _;
 
 #[derive(Parser, Debug)]
@@ -70,14 +70,14 @@ mod namespace_tests {
         namespace
             .lock()
             .unwrap()
-            .create_dir(fs::ROOT_INO, "placed", 1)
+            .create_dir(tilo_fs::ROOT_INO, "placed", 1)
             .unwrap();
         kept.journal(&mut namespace.lock().unwrap()).unwrap();
         assert!(namespace_kept(&dir), "the change is journaled");
 
         let (mut restarted, _) = open_namespace("restarted".into(), Some(&dir)).unwrap();
         assert!(
-            restarted.lookup(fs::ROOT_INO, "placed").is_some(),
+            restarted.lookup(tilo_fs::ROOT_INO, "placed").is_some(),
             "a process restarted after the change holds it"
         );
 
@@ -85,13 +85,13 @@ mod namespace_tests {
         namespace
             .lock()
             .unwrap()
-            .create_dir(fs::ROOT_INO, "saved", 2)
+            .create_dir(tilo_fs::ROOT_INO, "saved", 2)
             .unwrap();
         kept.journal(&mut namespace.lock().unwrap()).unwrap();
         keep_now(&namespace, &kept);
         let (mut again, _) = open_namespace("again".into(), Some(&dir)).unwrap();
         for name in ["placed", "saved"] {
-            assert!(again.lookup(fs::ROOT_INO, name).is_some(), "{name}");
+            assert!(again.lookup(tilo_fs::ROOT_INO, name).is_some(), "{name}");
         }
         drop(again);
         let kept_heads = namespace.lock().unwrap().document_heads();
@@ -126,20 +126,20 @@ mod legacy_namespace_tests {
         namespace
             .lock()
             .unwrap()
-            .create_file(fs::ROOT_INO, "kept.txt", None, 0, 1)
+            .create_file(tilo_fs::ROOT_INO, "kept.txt", None, 0, 1)
             .unwrap();
         kept.journal(&mut namespace.lock().unwrap()).unwrap();
 
         let legacy = temp.path().join("namespace.bin");
         std::fs::write(&legacy, b"one whole document").unwrap();
-        let backups = fs::durable_backup::backup_dir(&legacy).unwrap();
+        let backups = tilo_fs::durable_backup::backup_dir(&legacy).unwrap();
         std::fs::create_dir_all(&backups).unwrap();
         std::fs::write(backups.join("generation-1.bak"), b"older").unwrap();
 
         let (mut reopened, _) = open_namespace("restarted".into(), Some(&dir))
             .expect("a previous build's file does not keep the mount down");
         assert!(
-            reopened.lookup(fs::ROOT_INO, "kept.txt").is_some(),
+            reopened.lookup(tilo_fs::ROOT_INO, "kept.txt").is_some(),
             "the kept documents are what the mount reads"
         );
         assert!(!legacy.exists(), "the one-file namespace is out of the way");
@@ -190,7 +190,7 @@ struct SocketArgs {
     blob_sock: Option<PathBuf>,
     /// Reach the network through the session's endpoint, linking to it at this file, instead of
     /// binding an endpoint of this mount's own under the device key: a device has one endpoint id,
-    /// the session's (see `fs::net`).
+    /// the session's (see `tilo_fs::net`).
     #[arg(long, value_name = "FILE")]
     session_link: Option<PathBuf>,
 }
@@ -441,7 +441,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,fs::cloud=info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,tilo_fs::cloud=info")),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -459,7 +459,8 @@ fn main() -> Result<()> {
 )]
 async fn run_command(cli: Cli) -> Result<()> {
     if let Some(path) = &cli.test_clock_file {
-        fs::clock::install_test_clock_file(path).context("configuring deterministic test clock")?;
+        tilo_fs::clock::install_test_clock_file(path)
+            .context("configuring deterministic test clock")?;
     }
     match cli.command {
         Command::WorkspaceStatus {
@@ -528,18 +529,20 @@ async fn run_command(cli: Cli) -> Result<()> {
             let sign_ins = accounts::sign_ins::socket()
                 .context("no runtime directory for the session's account sign-ins")?;
             let result = tokio::task::spawn_blocking(move || {
-                fs::cloud::CloudService::new(
-                    fs::cloud::ServiceConfig {
+                tilo_fs::cloud::CloudService::new(
+                    tilo_fs::cloud::ServiceConfig {
                         // The session tells the workspaces' file accounts and releases their
                         // passwords.
-                        accounts: std::sync::Arc::new(fs::cloud::SessionAccounts::new(sign_ins)),
+                        accounts: std::sync::Arc::new(tilo_fs::cloud::SessionAccounts::new(
+                            sign_ins,
+                        )),
                         config_root,
                         mounts_root,
                         state_root,
                         control_socket,
                         file_socket,
                     },
-                    Box::new(fs::cloud::ProcessLauncher {
+                    Box::new(tilo_fs::cloud::ProcessLauncher {
                         executable,
                         ready_timeout: std::time::Duration::from_secs(30),
                     }),
@@ -559,7 +562,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             state_dir,
         } => {
             tokio::task::spawn_blocking(move || {
-                fs::cloud::service::run_mount(&mount_point, &state_dir)
+                tilo_fs::cloud::service::run_mount(&mount_point, &state_dir)
             })
             .await??;
             Ok(())
@@ -630,12 +633,12 @@ async fn register_content_peer(cache_dir: PathBuf, endpoint_stdin: bool) -> Resu
         "content endpoint input is empty or too large"
     );
     let registration =
-        serde_json::from_slice::<fs::workspace_authority::ContentPeerRequest>(&encoded)
+        serde_json::from_slice::<tilo_fs::workspace_authority::ContentPeerRequest>(&encoded)
             .or_else(|_| {
                 // The original CLI accepted a raw EndpointAddr. Keep that wire contract
                 // while letting server discovery carry the NAS ticket a stock `fs serve` needs.
                 serde_json::from_slice::<iroh_base::EndpointAddr>(&encoded).map(|endpoint| {
-                    fs::workspace_authority::ContentPeerRequest {
+                    tilo_fs::workspace_authority::ContentPeerRequest {
                         endpoint,
                         ticket: None,
                         server_service_id: None,
@@ -757,8 +760,8 @@ async fn serve_media(store: &Path, socket: &Path) -> Result<()> {
             .await
             .with_context(|| format!("opening the content store at {}", store.display()))?,
     );
-    let media = fs::document_media::DocumentMedia::new(Arc::clone(&store));
-    let _server = fs::document_media::serve_socket(socket, media)
+    let media = tilo_fs::document_media::DocumentMedia::new(Arc::clone(&store));
+    let _server = tilo_fs::document_media::serve_socket(socket, media)
         .with_context(|| format!("serving document media at {}", socket.display()))?;
     println!("Document media socket at {}", socket.display());
     // Serve until this process is ended, as the mount's own daemon does: the session that
@@ -778,10 +781,10 @@ fn spawn_document_media(
     // The device's one document-media service also keeps the device's copies
     // of public files, beside the content store whose budget evicts them.
     let public = cache_dir.and_then(|dir| {
-        let origin = fs::public_content::NetOrigin::new()
+        let origin = tilo_fs::public_content::NetOrigin::new()
             .map_err(|error| eprintln!("public content cannot be fetched here: {error}"))
             .ok()?;
-        fs::public_content::PublicContent::open(
+        tilo_fs::public_content::PublicContent::open(
             &dir.join("public-content"),
             Arc::clone(store.files()),
             origin,
@@ -790,10 +793,12 @@ fn spawn_document_media(
         .ok()
     });
     let media = match public {
-        Some(public) => fs::document_media::DocumentMedia::with_public(Arc::clone(store), public),
-        None => fs::document_media::DocumentMedia::new(Arc::clone(store)),
+        Some(public) => {
+            tilo_fs::document_media::DocumentMedia::with_public(Arc::clone(store), public)
+        }
+        None => tilo_fs::document_media::DocumentMedia::new(Arc::clone(store)),
     };
-    match fs::document_media::serve_socket(socket, media) {
+    match tilo_fs::document_media::serve_socket(socket, media) {
         Ok(handle) => Some(handle),
         Err(error) => {
             eprintln!(
@@ -865,25 +870,28 @@ fn native_content_dir(backend: &BackendArgs, _workspace: uuid::Uuid) -> Option<P
 }
 
 /// A mount's network: the session's endpoint when it was given the session's link, else an
-/// endpoint of its own under the device key ([`fs::net`]).
-async fn network(secret: &iroh::SecretKey, session_link: Option<&Path>) -> Result<fs::net::Net> {
+/// endpoint of its own under the device key ([`tilo_fs::net`]).
+async fn network(
+    secret: &iroh::SecretKey,
+    session_link: Option<&Path>,
+) -> Result<tilo_fs::net::Net> {
     if let Some(file) = session_link {
-        return Ok(fs::net::Net::Session(
-            fs::net::SessionLink::bind(secret.public(), file).await?,
+        return Ok(tilo_fs::net::Net::Session(
+            tilo_fs::net::SessionLink::bind(secret.public(), file).await?,
         ));
     }
     let (endpoint, lookup) = sync::bind_endpoint_with_key(secret.clone()).await?;
-    Ok(fs::net::Net::Direct { endpoint, lookup })
+    Ok(tilo_fs::net::Net::Direct { endpoint, lookup })
 }
 
 /// Keep the saved ticket naming where peers reach this device: through the session, its address
 /// is the session's, known once the session says hello.
 fn follow_session_address(
-    net: &fs::net::Net,
+    net: &tilo_fs::net::Net,
     cache_dir: PathBuf,
     mut ticket: Ticket,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    let fs::net::Net::Session(link) = net else {
+    let tilo_fs::net::Net::Session(link) = net else {
         return None;
     };
     let mut hellos = link.hellos();
@@ -997,7 +1005,7 @@ fn export_home_peer(
     }
     let capability_json = std::fs::read_to_string(acl)
         .with_context(|| format!("read capability list {}", acl.display()))?;
-    fs::caps_file::authority(capability_json.as_bytes(), acl)?;
+    tilo_fs::caps_file::authority(capability_json.as_bytes(), acl)?;
     // The person's identity signed the authority this workspace serves; the bundle carries that
     // revision, since the person's root is never on this device.
     let person = tilo_device_identity::persist::read_public_key(&identity_paths().user_pubkey)
@@ -1041,15 +1049,17 @@ fn export_home_peer(
 }
 
 /// Serve this replica's small file versions to the compute worker beside it
-/// ([`fs::replica_content`]), owner-only, from the workspace's cache directory; without it
+/// ([`tilo_fs::replica_content`]), owner-only, from the workspace's cache directory; without it
 /// the worker fetches those inputs.
 fn spawn_replica_content(
     cache_dir: &Path,
     store: Arc<ContentStore>,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    let socket = fs::replica_content::socket_path(cache_dir);
+    let socket = tilo_fs::replica_content::socket_path(cache_dir);
     match bind_private_socket(&socket) {
-        Ok(listener) => Some(tokio::spawn(fs::replica_content::serve(listener, store))),
+        Ok(listener) => Some(tokio::spawn(tilo_fs::replica_content::serve(
+            listener, store,
+        ))),
         Err(error) => {
             eprintln!(
                 "could not serve replica content at {}: {error}",
@@ -1073,10 +1083,10 @@ async fn replica(config_path: PathBuf) -> Result<()> {
     // is held (or its stamp is a few seconds old), so the status is written when it changes
     // rather than every second. Taken before the status is touched, so a second replica
     // refused here cannot clobber a running one's status.
-    let _alive = fs::full_replica::ReplicaLiveness::hold(&bundle.status_file)?;
+    let _alive = tilo_fs::full_replica::ReplicaLiveness::hold(&bundle.status_file)?;
     save_status(
         &bundle.status_file,
-        &fs::full_replica::FullReplicaStatus::syncing(),
+        &tilo_fs::full_replica::FullReplicaStatus::syncing(),
     )?;
     let workspace_count = bundle.workspaces.len();
     let (status_tx, mut status_rx) = tokio::sync::mpsc::channel(workspace_count.saturating_mul(2));
@@ -1084,7 +1094,7 @@ async fn replica(config_path: PathBuf) -> Result<()> {
         let status_tx = status_tx.clone();
         tokio::spawn(async move {
             if let Err(error) = replica_workspace(workspace, index, status_tx.clone()).await {
-                let mut failed = fs::full_replica::FullReplicaStatus::syncing();
+                let mut failed = tilo_fs::full_replica::FullReplicaStatus::syncing();
                 failed.state = "failed".into();
                 failed.error = Some(error.to_string());
                 let _ = status_tx.send((index, failed)).await;
@@ -1092,7 +1102,7 @@ async fn replica(config_path: PathBuf) -> Result<()> {
         });
     }
     drop(status_tx);
-    let mut states = vec![fs::full_replica::FullReplicaStatus::syncing(); workspace_count];
+    let mut states = vec![tilo_fs::full_replica::FullReplicaStatus::syncing(); workspace_count];
     loop {
         let Some((index, worker_status)) = status_rx.recv().await else {
             bail!("all home-peer workspace workers exited");
@@ -1113,12 +1123,12 @@ async fn replica(config_path: PathBuf) -> Result<()> {
 async fn replica_workspace(
     bundle: HomePeerBundle,
     index: usize,
-    status_tx: tokio::sync::mpsc::Sender<(usize, fs::full_replica::FullReplicaStatus)>,
+    status_tx: tokio::sync::mpsc::Sender<(usize, tilo_fs::full_replica::FullReplicaStatus)>,
 ) -> Result<()> {
     let ticket = Ticket::decode(&bundle.ticket).context("decode home-peer ticket")?;
     std::fs::create_dir_all(&bundle.cache_dir)?;
 
-    let (transport_switch, _transport_switch_task) = fs::transport_switch::spawn_from_env()?;
+    let (transport_switch, _transport_switch_task) = tilo_fs::transport_switch::spawn_from_env()?;
     let paths = identity_paths();
     let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
@@ -1155,7 +1165,7 @@ async fn replica_workspace(
     let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret).await?;
     let store = Arc::new(open_store(Some(bundle.cache_dir.clone())).await?);
     let _replica_content = spawn_replica_content(&bundle.cache_dir, Arc::clone(&store));
-    let net = fs::net::Net::Direct {
+    let net = tilo_fs::net::Net::Direct {
         endpoint: endpoint.clone(),
         lookup,
     };
@@ -1208,7 +1218,7 @@ async fn replica_workspace(
         // Withdraw first. A partial or stalled pass must never leave the
         // previous workspace revision advertised as a complete replica.
         let _ = status_tx
-            .send((index, fs::full_replica::FullReplicaStatus::syncing()))
+            .send((index, tilo_fs::full_replica::FullReplicaStatus::syncing()))
             .await;
         let mut status = hydrate_full_workspace(&namespace, &hydrator).await;
         if status.full_content_replication {
@@ -1227,7 +1237,7 @@ async fn replica_workspace(
             // current authenticated root set, then force a fresh pass if a concurrent update
             // arrives.
             if let Err(error) = prune_obsolete_workspace_content(&namespace, &hydrator).await {
-                status = fs::full_replica::FullReplicaStatus::syncing();
+                status = tilo_fs::full_replica::FullReplicaStatus::syncing();
                 status.state = "failed".into();
                 status.error = Some(format!("prune obsolete replica content: {error}"));
             } else if replica_namespace_fingerprint(&namespace) != after {
@@ -1242,7 +1252,7 @@ async fn replica_workspace(
             // durable too, or it could not prove which retained blobs are live after the owner
             // goes offline.
             let Some(kept) = kept.as_ref() else {
-                status = fs::full_replica::FullReplicaStatus::syncing();
+                status = tilo_fs::full_replica::FullReplicaStatus::syncing();
                 status.state = "failed".into();
                 status.error = Some("home peer keeps no durable workspace tree".into());
                 let _ = status_tx.send((index, status)).await;
@@ -1265,7 +1275,7 @@ async fn replica_workspace(
                     continue;
                 }
                 Err(error) => {
-                    status = fs::full_replica::FullReplicaStatus::syncing();
+                    status = tilo_fs::full_replica::FullReplicaStatus::syncing();
                     status.state = "failed".into();
                     status.error = Some(format!("persist replica namespace: {error}"));
                 }
@@ -1352,7 +1362,7 @@ async fn serve(
         blob_sock,
         session_link,
     } = sockets;
-    let (transport_switch, _transport_switch_task) = fs::transport_switch::spawn_from_env()?;
+    let (transport_switch, _transport_switch_task) = tilo_fs::transport_switch::spawn_from_env()?;
     let np = namespace_path(cache_dir.as_deref());
     let thumb_dir = thumb_path(cache_dir.as_deref());
     let availability = open_availability(cache_dir.as_deref())?;
@@ -1622,7 +1632,7 @@ async fn mount(
         blob_sock,
         session_link,
     } = sockets;
-    let (transport_switch, _transport_switch_task) = fs::transport_switch::spawn_from_env()?;
+    let (transport_switch, _transport_switch_task) = tilo_fs::transport_switch::spawn_from_env()?;
     let ticket = Ticket::decode(&ticket)?;
     if let Some(cache_dir) = &cache_dir {
         save_workspace_ticket(cache_dir, &ticket)?;
@@ -1769,11 +1779,11 @@ const TREE_STOPS_WITHIN: Duration = Duration::from_secs(10);
 async fn open_tree(
     dir: Option<&Path>,
     workspace: String,
-    credentials: &fs::identity::PeerCredentials,
+    credentials: &tilo_fs::identity::PeerCredentials,
     author: String,
     store: &Arc<ContentStore>,
 ) -> Result<(
-    Option<fs::tree_sync::TreeSync>,
+    Option<tilo_fs::tree_sync::TreeSync>,
     Arc<Mutex<Namespace>>,
     Option<Arc<KeptTree>>,
 )> {
@@ -1783,8 +1793,8 @@ async fn open_tree(
         return Ok((None, Arc::new(Mutex::new(Namespace::new(mount)?)), None));
     };
     set_aside_older_namespace_file(dir)?;
-    let tree = fs::tree_sync::remote::start(
-        tilo_paths::xdg::service_socket(fs::tree_sync::remote::SOCKET),
+    let tree = tilo_fs::tree_sync::remote::start(
+        tilo_paths::xdg::service_socket(tilo_fs::tree_sync::remote::SOCKET),
         workspace,
         (
             credentials.device_public_key(),
@@ -1817,9 +1827,9 @@ fn thumb_path(cache_dir: Option<&Path>) -> Option<PathBuf> {
 
 fn open_availability(
     cache_dir: Option<&Path>,
-) -> Result<Option<Arc<Mutex<fs::AvailabilityRegistry>>>> {
+) -> Result<Option<Arc<Mutex<tilo_fs::AvailabilityRegistry>>>> {
     cache_dir
-        .map(|dir| fs::AvailabilityRegistry::open(dir.join("availability.json")))
+        .map(|dir| tilo_fs::AvailabilityRegistry::open(dir.join("availability.json")))
         .transpose()
         .map(|registry| registry.map(|registry| Arc::new(Mutex::new(registry))))
         .map_err(Into::into)
@@ -1827,15 +1837,15 @@ fn open_availability(
 
 fn open_eviction_queue(
     cache_dir: Option<&Path>,
-) -> Result<Option<Arc<tokio::sync::Mutex<fs::eviction::EvictionQueue>>>> {
+) -> Result<Option<Arc<tokio::sync::Mutex<tilo_fs::eviction::EvictionQueue>>>> {
     cache_dir
-        .map(|dir| fs::eviction::EvictionQueue::open(dir.join("evictions.json")))
+        .map(|dir| tilo_fs::eviction::EvictionQueue::open(dir.join("evictions.json")))
         .transpose()
         .map(|queue| queue.map(|queue| Arc::new(tokio::sync::Mutex::new(queue))))
         .map_err(Into::into)
 }
 
-type KeptTree = fs::kept_documents::KeptDocuments;
+type KeptTree = tilo_fs::kept_documents::KeptDocuments;
 
 /// Save the tree's documents that changed since their last save, and answer the digest of the
 /// heads they are durable at: what an always-on peer proves the generation it published with, so
@@ -1863,7 +1873,7 @@ const WARM_READ_BYTES: u64 = 4096;
 /// opening the workspace's folder and reading something would touch first.
 fn first_file_content(namespace: &Arc<Mutex<Namespace>>) -> Option<iroh_blobs::Hash> {
     let mut ns = namespace.lock().ok()?;
-    let mut folders = vec![fs::ROOT_INO];
+    let mut folders = vec![tilo_fs::ROOT_INO];
     for _level in 0..3 {
         let mut deeper = Vec::new();
         for folder in folders {
@@ -1896,12 +1906,12 @@ fn keep_now(namespace: &Arc<Mutex<Namespace>>, kept: &KeptTree) {
 }
 
 /// Saves each document of the tree whole now and then while changes keep arriving
-/// ([`fs::namespace_persist`]), letting its journal go; an idle tree costs nothing.
+/// ([`tilo_fs::namespace_persist`]), letting its journal go; an idle tree costs nothing.
 fn spawn_keeper(
     namespace: Arc<Mutex<Namespace>>,
     kept: Arc<KeptTree>,
 ) -> tokio::task::JoinHandle<()> {
-    fs::namespace_persist::spawn_persister(namespace, move |namespace| {
+    tilo_fs::namespace_persist::spawn_persister(namespace, move |namespace| {
         kept.keep(namespace)
             .inspect_err(|error| eprintln!("saving the workspace tree failed: {error}"))
             .map_err(Into::into)
@@ -2005,7 +2015,7 @@ fn set_aside_older_namespace(path: &Path) -> Result<PathBuf> {
     let kept = aside(path);
     std::fs::rename(path, &kept)
         .with_context(|| format!("set the older namespace {} aside", path.display()))?;
-    let backups = fs::durable_backup::backup_dir(path)?;
+    let backups = tilo_fs::durable_backup::backup_dir(path)?;
     if backups.exists() {
         std::fs::rename(&backups, aside(&backups)).with_context(|| {
             format!(
@@ -2027,29 +2037,29 @@ fn native_config(
     mount_point: &Path,
     cache_dir: Option<&Path>,
     read_only: bool,
-) -> Result<Option<fs::native::NativeConfig>> {
-    use fs::native::Backend;
+) -> Result<Option<tilo_fs::native::NativeConfig>> {
+    use tilo_fs::native::Backend;
     let choice = match args.backend {
         BackendChoice::Auto => Backend::Auto,
         BackendChoice::Fuse => Backend::Fuse,
         BackendChoice::Native => Backend::Native,
     };
     let selection = match (cache_dir, read_only) {
-        (_, true) => fs::native::TierSelection {
+        (_, true) => tilo_fs::native::TierSelection {
             native: false,
             store: args.store.clone(),
             reasons: vec!["read-only mounts are served by FUSE".into()],
             report: None,
             probe_time: Duration::ZERO,
         },
-        (None, _) => fs::native::TierSelection {
+        (None, _) => tilo_fs::native::TierSelection {
             native: false,
             store: args.store.clone(),
             reasons: vec!["no cache directory to keep the native backend's state in".into()],
             report: None,
             probe_time: Duration::ZERO,
         },
-        (Some(_), false) => fs::native::tier::select(choice, &args.store),
+        (Some(_), false) => tilo_fs::native::tier::select(choice, &args.store),
     };
     println!("{}", selection.summary());
     if let Some(report) = &selection.report {
@@ -2067,7 +2077,7 @@ fn native_config(
     let Some(cache_dir) = cache_dir else {
         return Ok(None);
     };
-    let mut cfg = fs::native::NativeConfig::new(
+    let mut cfg = tilo_fs::native::NativeConfig::new(
         args.store.clone(),
         workspace.to_string(),
         mount_point.to_path_buf(),
@@ -2085,7 +2095,7 @@ fn native_config(
 #[cfg(target_os = "linux")]
 async fn run_native(
     fs: QuickFS,
-    cfg: fs::native::NativeConfig,
+    cfg: tilo_fs::native::NativeConfig,
     mut rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
     stop: &mut StopSignals,
 ) -> Result<MountOutcome> {
@@ -2094,7 +2104,7 @@ async fn run_native(
     let hydrator = Arc::clone(&fs.hydrator);
     let runtime = tokio::runtime::Handle::current();
     let backend = tokio::task::spawn_blocking(move || {
-        fs::native::NativeBackend::start(cfg, fs, content, runtime)
+        tilo_fs::native::NativeBackend::start(cfg, fs, content, runtime)
     })
     .await??;
     let outcome = tokio::select! {
@@ -2126,7 +2136,7 @@ async fn run_native(
 /// The signals that end a mount cleanly: SIGINT from a terminal, SIGTERM from systemd's stop,
 /// SIGHUP when the controlling terminal goes away. The default action of each kills the process at
 /// once, before the caller's final namespace save, so a write acknowledged in the last
-/// [`fs::namespace_persist::QUIET`] was lost. A handler, once installed, stays installed: a signal
+/// [`tilo_fs::namespace_persist::QUIET`] was lost. A handler, once installed, stays installed: a signal
 /// that arrives after the mount ended no longer cuts that save short.
 struct StopSignals {
     interrupt: tokio::signal::unix::Signal,
@@ -2376,7 +2386,7 @@ mod tests {
                 );
             }
             {
-                use fs::Access;
+                use tilo_fs::Access;
 
                 let path = os_file("os/usr/share/tilo/fs-capabilities.json");
                 let identity: IdentityKey = [0x5A; 32]; // stands in for the per-start node key
@@ -2410,7 +2420,7 @@ mod tests {
         // installed with across every update. Every version in the history must mount with its grant
         // through the same loader fs.service uses.
         {
-            use fs::Access;
+            use tilo_fs::Access;
 
             let history = os_file("os/tests/seeded-state/var/lib/tilo/fs-capabilities.json");
             let mut versions: Vec<_> = std::fs::read_dir(&history)
@@ -2498,13 +2508,13 @@ mod tests {
                 }
                 .encode()
                 .unwrap();
-                let peers = vec![fs::workspace_authority::PersistedContentPeer {
+                let peers = vec![tilo_fs::workspace_authority::PersistedContentPeer {
                     endpoint: nas,
                     ticket: Some(ticket),
                     server_service_id: None,
                 }];
                 tilo_files::native::atomic::write(
-                    &fs::workspace_authority::content_peers_path(temp.path()),
+                    &tilo_fs::workspace_authority::content_peers_path(temp.path()),
                     &serde_json::to_vec(&peers).unwrap(),
                 )
                 .unwrap();
@@ -2548,7 +2558,7 @@ mod tests {
                 );
             }
             {
-                use fs::Access;
+                use tilo_fs::Access;
 
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().join("caps.json");
@@ -2564,7 +2574,7 @@ mod tests {
             }
             {
                 use collab_types::{Access as CapAccess, CapOverride, Effect, Scope};
-                use fs::Access;
+                use tilo_fs::Access;
 
                 let who = [0x0A; 32];
                 let caps = vec![CapOverride::new(

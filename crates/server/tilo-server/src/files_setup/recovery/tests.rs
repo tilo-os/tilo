@@ -21,7 +21,7 @@ fn files_grant(person: [u8; 32]) -> CapOverride {
 struct SyntheticPeer {
     endpoint: iroh::Endpoint,
     lookup: iroh::address_lookup::memory::MemoryLookup,
-    identity: fs::sync::FsTransportIdentity,
+    identity: tilo_fs::sync::FsTransportIdentity,
     root: PathBuf,
 }
 
@@ -43,9 +43,11 @@ async fn peer(root: PathBuf, governor: &ed25519_dalek::SigningKey, seed: u8) -> 
     };
     sign_device_cert(&mut cert, governor).unwrap();
     persist::write_device_cert(&paths.device_cert, &cert).unwrap();
-    let certified =
-        fs::identity::load_existing_certified_mount_identity(&paths, tilo_clock::unix_now_ns())
-            .unwrap();
+    let certified = tilo_fs::identity::load_existing_certified_mount_identity(
+        &paths,
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
     assert!(!certified.mount.created);
     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -54,7 +56,7 @@ async fn peer(root: PathBuf, governor: &ed25519_dalek::SigningKey, seed: u8) -> 
         .bind()
         .await
         .unwrap();
-    let identity = fs::sync::FsTransportIdentity::new(
+    let identity = tilo_fs::sync::FsTransportIdentity::new(
         certified.credentials,
         Arc::new(RwLock::new(tilo_user_identity::RevocationList::default())),
     );
@@ -69,7 +71,7 @@ async fn peer(root: PathBuf, governor: &ed25519_dalek::SigningKey, seed: u8) -> 
 fn fixture_state(governor: &ed25519_dalek::SigningKey) -> JoinedNamespace {
     let endpoint = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[74; 32]).public());
     // Replicas may legitimately differ from the originating ticket endpoint.
-    let ticket = fs::Ticket {
+    let ticket = tilo_fs::Ticket {
         node: iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[75; 32]).public()),
         workspace: [76; 32],
     };
@@ -120,7 +122,7 @@ tilo_test_env::scenario! {
         }
         // The tree is the workspace's Files record, not a file recovery wrote.
         assert!(!cache.join("namespace").exists());
-        let peers = fs::workspace_authority::load_persisted_content_peers(&cache).unwrap();
+        let peers = tilo_fs::workspace_authority::load_persisted_content_peers(&cache).unwrap();
         assert_ne!(
             peers[0].endpoint.id,
             peers[0].decoded_ticket().unwrap().unwrap().node.id
@@ -177,7 +179,7 @@ tilo_test_env::scenario! {
         let root = temp.path().join("absent");
         let paths = IdentityPaths::under(&root);
         assert!(
-            fs::identity::load_existing_certified_mount_identity(&paths, tilo_clock::unix_now_ns())
+            tilo_fs::identity::load_existing_certified_mount_identity(&paths, tilo_clock::unix_now_ns())
                 .is_err()
         );
         assert!(!root.exists());
@@ -186,7 +188,7 @@ tilo_test_env::scenario! {
 
 struct NativeHost {
     /// Kept for the test's lifetime: it serves the authority this host signed.
-    _hosted: fs::Workspace,
+    _hosted: tilo_fs::Workspace,
     registration: tilo_server::transport::ContentPeerRegistration,
     authority: Arc<WorkspaceAuthority>,
 }
@@ -197,7 +199,7 @@ fn serve_host(
     governor: &ed25519_dalek::SigningKey,
 ) -> NativeHost {
     let person = governor.verifying_key().to_bytes();
-    let workspace = fs::Ticket::workspace_id_for_topic(*host.endpoint.id().as_bytes());
+    let workspace = tilo_fs::Ticket::workspace_id_for_topic(*host.endpoint.id().as_bytes());
     let signed =
         WorkspaceAuthorityEnvelope::sign(workspace, 11, vec![files_grant(person)], false, governor)
             .unwrap();
@@ -212,14 +214,17 @@ fn serve_host(
         .unwrap(),
     );
     authority.apply(signed).unwrap();
-    let store = Arc::new(fs::ContentStore::memory());
-    let hydrator = Arc::new(fs::Hydrator::new(host.endpoint.clone(), Arc::clone(&store)));
-    let namespace = Arc::new(Mutex::new(
-        fs::Namespace::new("native-host-history").unwrap(),
+    let store = Arc::new(tilo_fs::ContentStore::memory());
+    let hydrator = Arc::new(tilo_fs::Hydrator::new(
+        host.endpoint.clone(),
+        Arc::clone(&store),
     ));
-    let (hosted, ticket) = fs::Workspace::host(
-        fs::sync::SyncNode {
-            net: fs::net::Net::Direct {
+    let namespace = Arc::new(Mutex::new(
+        tilo_fs::Namespace::new("native-host-history").unwrap(),
+    ));
+    let (hosted, ticket) = tilo_fs::Workspace::host(
+        tilo_fs::sync::SyncNode {
+            net: tilo_fs::net::Net::Direct {
                 endpoint: host.endpoint.clone(),
                 lookup: host.lookup.clone(),
             },

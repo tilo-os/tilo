@@ -6,10 +6,10 @@
 
 use std::fs as stdfs;
 
-use fs::eviction::EvictionQueue;
-use fs::{AvailabilityRegistry, Namespace, load_mount_identity};
 use tempfile::tempdir;
 use tilo_device_identity::IdentityPaths;
+use tilo_fs::eviction::EvictionQueue;
+use tilo_fs::{AvailabilityRegistry, Namespace, load_mount_identity};
 
 fn truncated(bytes: &[u8]) -> Vec<u8> {
     let midpoint = bytes.len().div_ceil(2);
@@ -25,11 +25,15 @@ fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
     {
         let mut namespace = Namespace::new("corruption-source").unwrap();
         namespace
-            .create_file(fs::ROOT_INO, "preserved.bin", None, 0, 1)
+            .create_file(tilo_fs::ROOT_INO, "preserved.bin", None, 0, 1)
             .unwrap();
         let good = namespace.save();
         let mut control = Namespace::from_bytes("control", &good).unwrap();
-        assert!(control.lookup(fs::ROOT_INO, b"preserved.bin").is_some());
+        assert!(
+            control
+                .lookup(tilo_fs::ROOT_INO, b"preserved.bin")
+                .is_some()
+        );
 
         for damaged in [truncated(&good), {
             let mut value = good.clone();
@@ -43,7 +47,9 @@ fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
             );
             let mut restored = Namespace::from_bytes("restored", &good).unwrap();
             assert!(
-                restored.lookup(fs::ROOT_INO, b"preserved.bin").is_some(),
+                restored
+                    .lookup(tilo_fs::ROOT_INO, b"preserved.bin")
+                    .is_some(),
                 "a caller-retained known-good snapshot remains a complete rollback boundary"
             );
         }
@@ -53,23 +59,23 @@ fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
         let path = dir.path().join("namespace.bin");
         let mut first = Namespace::new("backup-source").unwrap();
         first
-            .create_file(fs::ROOT_INO, "retained.txt", None, 0, 1)
+            .create_file(tilo_fs::ROOT_INO, "retained.txt", None, 0, 1)
             .unwrap();
-        fs::durable_backup::write(&path, &first.save(), |bytes| {
+        tilo_fs::durable_backup::write(&path, &first.save(), |bytes| {
             Namespace::from_bytes("validator", bytes).is_ok()
         })
         .unwrap();
         first
-            .create_file(fs::ROOT_INO, "newer.txt", None, 0, 2)
+            .create_file(tilo_fs::ROOT_INO, "newer.txt", None, 0, 2)
             .unwrap();
-        fs::durable_backup::write(&path, &first.save(), |bytes| {
+        tilo_fs::durable_backup::write(&path, &first.save(), |bytes| {
             Namespace::from_bytes("validator", bytes).is_ok()
         })
         .unwrap();
 
         let damaged = b"not-an-automerge-document";
         stdfs::write(&path, damaged).unwrap();
-        let outcome = fs::durable_backup::read_or_recover(&path, |bytes| {
+        let outcome = tilo_fs::durable_backup::read_or_recover(&path, |bytes| {
             Namespace::from_bytes("validator", bytes).is_ok()
         })
         .unwrap()
@@ -83,9 +89,13 @@ fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
         );
         assert!(evidence.receipt_path.is_file());
         let mut recovered = Namespace::from_bytes("recovered", &outcome.bytes).unwrap();
-        assert!(recovered.lookup(fs::ROOT_INO, b"retained.txt").is_some());
         assert!(
-            recovered.lookup(fs::ROOT_INO, b"newer.txt").is_none(),
+            recovered
+                .lookup(tilo_fs::ROOT_INO, b"retained.txt")
+                .is_some()
+        );
+        assert!(
+            recovered.lookup(tilo_fs::ROOT_INO, b"newer.txt").is_none(),
             "recovery chooses the last completed generation; signed-record reconciliation replays later state"
         );
     }

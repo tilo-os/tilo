@@ -479,7 +479,7 @@ fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
     let prepared = prepare_join(&token_text, options).unwrap();
     let machine = prepared.device.verifying_key().to_bytes();
     let cert = root_signed(&root, machine, "NAS", DeviceCapabilities::member(), now);
-    let home_peer = fs::full_replica::HomePeerSet {
+    let home_peer = tilo_fs::full_replica::HomePeerSet {
         status_file: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
         workspaces: Vec::new(),
     };

@@ -1007,7 +1007,7 @@ tilo_test_env::scenario! {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let content = fs::store::ContentStore::open(&packages.layout().content())
+            let content = tilo_fs::store::ContentStore::open(&packages.layout().content())
                 .await
                 .unwrap();
             content

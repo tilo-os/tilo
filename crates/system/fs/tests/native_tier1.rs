@@ -101,13 +101,13 @@ fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], p
 /// The serving daemon's Files authority, signed by the person's identity as `tilo-server
 /// files-workspace-initialize` signs it: the daemon holds no root to sign one.
 fn publish_authority(cache: &Path, person_seed: [u8; 32], device_seed: [u8; 32], acl: &Path) {
-    use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+    use tilo_fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
     let person = SigningKey::from_bytes(&person_seed);
     let device = SigningKey::from_bytes(&device_seed)
         .verifying_key()
         .to_bytes();
-    let workspace = fs::Ticket::workspace_id_for_topic(device);
-    let capabilities = fs::caps_file::authority(&std::fs::read(acl).unwrap(), acl).unwrap();
+    let workspace = tilo_fs::Ticket::workspace_id_for_topic(device);
+    let capabilities = tilo_fs::caps_file::authority(&std::fs::read(acl).unwrap(), acl).unwrap();
     std::fs::create_dir_all(cache).unwrap();
     let governor = person.verifying_key().to_bytes();
     WorkspaceAuthority::open(
@@ -191,7 +191,7 @@ impl Daemon {
         }
         command
             .env(
-                fs::identity::IDENTITY_ROOT_ENV,
+                tilo_fs::identity::IDENTITY_ROOT_ENV,
                 dir.join(format!("{profile}-identity")),
             )
             .env("TILO_AUTHORITY_SOCKET_DIR", &sockets)
@@ -279,7 +279,7 @@ impl Daemon {
     fn wait_ticket(&mut self) -> String {
         loop {
             let line = self.wait_line("");
-            if fs::Ticket::decode(line.trim()).is_ok() {
+            if tilo_fs::Ticket::decode(line.trim()).is_ok() {
                 return line.trim().to_string();
             }
         }
@@ -679,10 +679,10 @@ fn assert_records_follow_writer_order(pair: &mut Pair, m1: &Path, m2: &Path) {
     );
 }
 
-fn persisted_namespace(cache: &Path) -> fs::Namespace {
+fn persisted_namespace(cache: &Path) -> tilo_fs::Namespace {
     let (_kept, documents) =
-        fs::kept_documents::KeptDocuments::open(&cache.join("namespace")).unwrap();
-    fs::Namespace::from_records("reader", documents).unwrap()
+        tilo_fs::kept_documents::KeptDocuments::open(&cache.join("namespace")).unwrap();
+    tilo_fs::Namespace::from_records("reader", documents).unwrap()
 }
 
 /// When each file at `paths` last had its content written.

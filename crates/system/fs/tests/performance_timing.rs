@@ -14,12 +14,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use fs::document_media::DocumentMedia;
-use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO, ThumbProvider};
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use runtime_fs::blobs::{BlobScope, MAX_BLOB_BYTES, MAX_READ_CHUNK, ReadOutcome};
 use thumbnail::FileCategory;
+use tilo_fs::document_media::DocumentMedia;
+use tilo_fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO, ThumbProvider};
 use tilo_lock::MutexRecover as _;
 
 const ENABLE_ENV: &str = "TILO_FS_PERF_CHECK";
