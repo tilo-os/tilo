@@ -378,11 +378,26 @@ pub fn workspace_person(address: &ActionAddress) -> Option<&str> {
     .then_some(person)
 }
 
-/// Pairing a nearby device with the person's identity. The provider runs it —
-/// LAN discovery, and the approval an administrator authenticates — so no
-/// application starts a privileged process. It is answered under its own
-/// provider name, for the person at this device in the workspace they joined.
-pub mod device_pairing;
+/// Adding a computer to the person's devices with a one-use ticket: the computer's own daemon
+/// issues it, prints the one string, and the new computer logs in with it.
+pub mod device_tickets {
+    use super::{ActionAddress, RemoteActionTarget};
+
+    /// The provider the device's daemon answers tickets under.
+    pub const PROVIDER: &str = "tilo.device";
+    /// The resource the actions act on: the person's devices.
+    pub const RESOURCE: &str = "devices";
+    /// Serve a ticket for a new computer.
+    pub const ISSUE: &str = "issue";
+
+    #[must_use]
+    pub fn target(action: &str) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: ActionAddress::new(RESOURCE, action),
+        }
+    }
+}
 
 /// Machines a person prepared to install: the plan and its waiting entry in
 /// their Servers workspace, read and written through the session that holds

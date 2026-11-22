@@ -417,17 +417,6 @@ search-action-identity-devices-list = Vertrauenswürdige Geräte anzeigen
 search-action-identity-devices-list-subtitle = Die Geräte zeigen, denen die Identität dieses Arbeitsbereichs vertraut, und welche widerrufen sind
 search-action-identity-device-revoke = Gerät einer Identität widerrufen
 search-action-identity-device-revoke-subtitle = Einem verlorenen, ausgemusterten oder kompromittierten Gerät dauerhaft nicht mehr vertrauen
-search-action-identity-device-pair-resource = Geräte in der Nähe koppeln
-search-action-identity-device-pair-discover = Gerät in der Nähe zum Koppeln suchen
-search-action-identity-device-pair-discover-subtitle = In diesem Netzwerk nach einem neuen Gerät oder Heimserver suchen, das beitreten möchte
-search-action-identity-device-pair-approve = Gerät in der Nähe bestätigen
-search-action-identity-device-pair-approve-subtitle = Das gefundene Gerät beitreten lassen, sobald beide Bildschirme denselben Code zeigen
-search-action-identity-device-pair-reject = Gerät in der Nähe ablehnen
-search-action-identity-device-pair-reject-subtitle = Ein gefundenes Gerät vergessen und seine Bestätigung abbrechen
-search-action-identity-device-pair-asking = Geräte, die als du beitreten möchten
-search-action-identity-device-pair-asking-subtitle = Neue Geräte, die deine anderen Geräte gefunden haben und hier auf deine Bestätigung warten
-search-action-identity-device-pair-answer = Einem Gerät antworten, das als du beitreten möchte
-search-action-identity-device-pair-answer-subtitle = Ein Gerät, das ein anderes deiner Geräte gefunden hat, bestätigen oder ablehnen, wie in seiner Mitteilung
 
 # Ein neues Gerät, das ein anderes deiner Geräte gefunden hat: die Mitteilung,
 # die hier die Person fragt.

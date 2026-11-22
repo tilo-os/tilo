@@ -914,108 +914,65 @@ mod identity_admin_tests {
 
         phase certified_host_steps_admit_only_nonforeign_local_ownership;
         {
-            for pairing in [false, true] {
-                for foreign in [false, true] {
-                    let host = Arc::new(PairingHost::default());
-                    let identity = Arc::new(Host::default());
-                    let services = crate::apps::services::ProcessServices {
-                        host_steps: vec![if pairing {
-                            host.clone() as Arc<dyn HostStepServices>
-                        } else {
-                            identity.clone()
-                        }],
-                        ..Default::default()
-                    };
-                    let f = if foreign {
-                        super::signed_test_support::Fixture::new_certified_foreign(services)
-                    } else {
-                        super::signed_test_support::Fixture::new_certified(services)
-                    };
-                    let mut asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
-                    if pairing {
-                        asked.target = tilo_actions::remote::device_pairing::target(
-                            tilo_actions::remote::device_pairing::APPROVE,
-                        );
-                    }
-                    let service = if pairing { &host.0 } else { identity.as_ref() };
-                    assert_eq!(
-                        f.query(&asked.target.provider).rows.is_empty(),
-                        foreign,
-                        "only the retained local api offers host steps"
-                    );
-                    assert!(
-                        f.state
-                            .eager_catalogue(
-                                &f.caller,
-                                super::super::action_provider::RowScope::Provider(&asked.target.provider),
-                            )
-                            .0
-                            .is_empty(),
-                        "transport keys alone do not offer local host steps"
-                    );
-                    if foreign {
-                        assert!(f.invoke(&asked).is_err());
-                        assert!(service.started.lock().unwrap().is_empty());
-                        continue;
-                    }
-                    assert!(
-                        invoked(&f.state, &f.caller, &asked).is_err(),
-                        "device keys without certified local ownership are not a local api"
-                    );
-                    assert!(service.started.lock().unwrap().is_empty());
-                    *service.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
-                    f.invoke(&asked).unwrap();
-                    f.assert_signed(&asked, false);
-                    assert_eq!(service.started.lock().unwrap().len(), 1);
-                    service
-                        .answers
-                        .lock()
-                        .unwrap()
-                        .pop()
-                        .unwrap()
-                        .complete(Ok(tilo_actions::ActionOutput::default()));
-                    f.assert_signed(&asked, true);
-                    f.invoke(&asked).unwrap();
-                    assert_eq!(service.started.lock().unwrap().len(), 1);
-                    f.authority
-                        .revoked
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    asked.invocation = tilo_actions::InvocationId::new();
+            for foreign in [false, true] {
+                let service = Arc::new(Host::default());
+                let services = crate::apps::services::ProcessServices {
+                    host_steps: vec![service.clone() as Arc<dyn HostStepServices>],
+                    ..Default::default()
+                };
+                let f = if foreign {
+                    super::signed_test_support::Fixture::new_certified_foreign(services)
+                } else {
+                    super::signed_test_support::Fixture::new_certified(services)
+                };
+                let mut asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+                assert_eq!(
+                    f.query(&asked.target.provider).rows.is_empty(),
+                    foreign,
+                    "only the retained local api offers host steps"
+                );
+                assert!(
+                    f.state
+                        .eager_catalogue(
+                            &f.caller,
+                            super::super::action_provider::RowScope::Provider(&asked.target.provider),
+                        )
+                        .0
+                        .is_empty(),
+                    "transport keys alone do not offer local host steps"
+                );
+                if foreign {
                     assert!(f.invoke(&asked).is_err());
-                    drop(f);
-                    assert_eq!(service.started.lock().unwrap().len(), 1);
+                    assert!(service.started.lock().unwrap().is_empty());
+                    continue;
                 }
+                assert!(
+                    invoked(&f.state, &f.caller, &asked).is_err(),
+                    "device keys without certified local ownership are not a local api"
+                );
+                assert!(service.started.lock().unwrap().is_empty());
+                *service.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
+                f.invoke(&asked).unwrap();
+                f.assert_signed(&asked, false);
+                assert_eq!(service.started.lock().unwrap().len(), 1);
+                service
+                    .answers
+                    .lock()
+                    .unwrap()
+                    .pop()
+                    .unwrap()
+                    .complete(Ok(tilo_actions::ActionOutput::default()));
+                f.assert_signed(&asked, true);
+                f.invoke(&asked).unwrap();
+                assert_eq!(service.started.lock().unwrap().len(), 1);
+                f.authority
+                    .revoked
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                asked.invocation = tilo_actions::InvocationId::new();
+                assert!(f.invoke(&asked).is_err());
+                drop(f);
+                assert_eq!(service.started.lock().unwrap().len(), 1);
             }
-        }
-
-        phase device_pairing_uses_the_same_signed_admission_and_terminal_path;
-        {
-            let host = Arc::new(PairingHost::default());
-            let f = super::signed_test_support::Fixture::new(crate::apps::services::ProcessServices {
-                host_steps: vec![host.clone()],
-                ..Default::default()
-            });
-            let mut asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
-            asked.target = tilo_actions::remote::device_pairing::target(
-                tilo_actions::remote::device_pairing::APPROVE,
-            );
-            *host.0.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
-            f.invoke(&asked).unwrap();
-            f.assert_signed(&asked, false);
-            assert_eq!(host.0.started.lock().unwrap().len(), 1);
-            host.0
-                .answers
-                .lock()
-                .unwrap()
-                .pop()
-                .unwrap()
-                .complete(Ok(tilo_actions::ActionOutput::default()));
-            let completed = f.assert_signed(&asked, true);
-            assert!(
-                matches!(completed.update, tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == asked.invocation)
-            );
-            f.invoke(&asked).unwrap();
-            assert_eq!(host.0.started.lock().unwrap().len(), 1);
         }
 
         phase host_steps_recheck_live_authority_after_blocked_durable_admission;
@@ -1134,38 +1091,6 @@ mod identity_admin_tests {
             .ok()
             .flatten()
             .expect("admission answers at once")
-    }
-
-    #[derive(Default)]
-    struct PairingHost(Host);
-
-    impl HostStepServices for PairingHost {
-        fn provider(&self) -> &'static str {
-            tilo_actions::remote::device_pairing::PROVIDER
-        }
-
-        fn app_id(&self) -> &str {
-            self.0.app_id()
-        }
-
-        fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
-            let mut descriptor = self
-                .0
-                .descriptors()
-                .into_iter()
-                .find(|descriptor| descriptor.address.action == identity_admin::REMOVE)
-                .unwrap();
-            descriptor.address = tilo_actions::remote::device_pairing::target(
-                tilo_actions::remote::device_pairing::APPROVE,
-            )
-            .address;
-            descriptor.resource_kind = tilo_actions::remote::device_pairing::RESOURCE.into();
-            vec![descriptor]
-        }
-
-        fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-            self.0.start(request)
-        }
     }
 
     tilo_test_env::scenario! {

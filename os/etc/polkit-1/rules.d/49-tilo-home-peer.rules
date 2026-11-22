@@ -1,5 +1,5 @@
-// The executable itself accepts only two bounded operations and no paths:
-// apply a validated stdin projection, or approve a nearby host enrollment.
+// The executable itself accepts one bounded operation and no paths:
+// apply a validated stdin projection.
 polkit.addRule(function (action, subject) {
     if (action.id == "org.freedesktop.policykit.exec" &&
         action.lookup("program") == "/usr/libexec/tilo-home-peer-control" &&

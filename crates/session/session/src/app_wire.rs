@@ -404,6 +404,10 @@ pub struct Hosted {
     /// what it dials the hosts of its workspaces from. `None` when the
     /// session runs none.
     pub endpoint: Option<std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>>>,
+    /// This device's action service, once the network runs it: what a ticket for a new computer
+    /// is served through ([`crate::device_tickets`]).
+    pub device_actions:
+        Option<std::sync::Arc<std::sync::OnceLock<crate::device_actions::DeviceActions>>>,
     /// The approver sessions this device keeps with the hosts it reaches: where the person is asked
     /// what a host of their workspaces puts to them. `None` when the session runs no peer network.
     pub answering: Option<crate::network::Answering>,
@@ -1119,9 +1123,10 @@ fn broker_services(
         sealed,
         own_device,
         engine,
-        endpoint: _,
+        endpoint: hosted_endpoint,
         answering: _,
         service,
+        device_actions: hosted_device_actions,
         documents,
         resources,
         document_content,
@@ -1142,11 +1147,10 @@ fn broker_services(
     // What each window this session runs shows, kept with its launches: read
     // by the service a window's app speaks on, and by the session's own passes.
     let window_notes = launches.notes();
-    // The session decides who may administer a workspace's identity, and the
-    // fabric is where pairing reaches the person's other devices.
+    // The session decides who may administer a workspace's identity.
+    let ticket_service = service.clone();
     let layout_authority = std::sync::Arc::clone(&layout);
     let grants_layout = std::sync::Arc::clone(&layout);
-    let steps_fabric = fabric.clone();
     // The certificate checks this session's broker decides a join and a
     // retained action against: the session's own, or one of the tests'.
     let certificates: std::sync::Arc<dyn tilo_workspace_service::apps::CertificateAuthority> =
@@ -1372,18 +1376,18 @@ fn broker_services(
         // workspace's: no app keeps a store of its own.
         resources,
         // The steps only this session may take for the person: the
-        // workspace's activity the Activity app reads, pairing a nearby
-        // device, administering their identities and the devices trusted
+        // workspace's activity the Activity app reads, a ticket for a new
+        // computer, administering their identities and the devices trusted
         // under them, whose secret stays here, and their hosting account.
         host_steps: BrokerService::served(
             [
                 vec![
                     activity as std::sync::Arc<dyn HostStepServices>,
-                    std::sync::Arc::new(crate::pairing::BrokerApi {
-                        layout: std::sync::Arc::clone(&layout_authority),
-                        fabric: steps_fabric,
-                        pairing: crate::pairing::Pairing::session(),
-                    }),
+                    std::sync::Arc::new(crate::device_tickets::DeviceTickets::new(
+                        hosted_endpoint,
+                        hosted_device_actions,
+                        ticket_service,
+                    )),
                     // The machines the person planned to install: their plans
                     // are entries in their Servers workspace, which this
                     // session's own workspace service keeps.
@@ -1788,6 +1792,7 @@ mod tests {
             item_lending: std::sync::Arc::default(),
             fanout: std::sync::Arc::new(FanoutState::new()),
             endpoint: None,
+            device_actions: None,
             answering: None,
             service: tilo_workspace_service::service::ServiceSlot::default(),
             documents: crate::broker_services::document_reads(
@@ -2292,8 +2297,8 @@ mod tests {
         assert_eq!(
             services.host_steps.len(),
             7,
-            "the steps this session serves are the workspace's activity, device \
-             pairing, identity administration, the person's hosting account, the machines they \
+            "the steps this session serves are the workspace's activity, a ticket for a new \
+             computer, identity administration, the person's hosting account, the machines they \
              planned, its own actions and its agents' transforms"
         );
         let providers: Vec<&str> = services
@@ -2303,8 +2308,8 @@ mod tests {
             .collect();
         for (provider, why) in [
             (
-                tilo_actions::remote::device_pairing::PROVIDER,
-                "Settings pairs a device",
+                tilo_actions::remote::device_tickets::PROVIDER,
+                "Settings adds a device with a ticket",
             ),
             (
                 tilo_actions::remote::identity_admin::PROVIDER,

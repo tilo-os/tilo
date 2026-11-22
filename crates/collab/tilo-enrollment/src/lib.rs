@@ -19,8 +19,6 @@ pub mod certification;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod client;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod discovery;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod install;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod local_link;

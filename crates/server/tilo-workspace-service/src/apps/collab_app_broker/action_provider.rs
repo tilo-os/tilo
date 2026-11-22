@@ -3492,6 +3492,3 @@ mod argument_size_tests {
         assert!(reason.contains("split"), "{reason}");
     }
 }
-
-#[cfg(test)]
-mod device_pairing_tests;

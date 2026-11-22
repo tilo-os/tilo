@@ -33,7 +33,7 @@ pub struct HostStepRequest<'a> {
 /// How a host step ended.
 pub type HostStepOutcome = Result<ActionOutput, Box<ActionFailure>>;
 
-/// Steps the host itself runs for the person at this device: pairing a nearby device,
+/// Steps the host itself runs for the person at this device: a ticket for a new computer,
 /// administering the person's identities and the devices trusted under them, changing the
 /// person's settings whether or not the app that shows them is open. The broker answers each
 /// service under its [`Self::provider`] and decides each invocation before the host runs it.
