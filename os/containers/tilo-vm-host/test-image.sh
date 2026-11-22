@@ -26,6 +26,7 @@ inside grep -qx 'ID=fedora' /etc/os-release || die 'the runtime is not a Fedora 
 grep -q 'v1.17.0' <<<"$(inside jailer --version)" || die 'not the jailer of Firecracker 1.17.0'
 inside pasta --version >/dev/null || die 'no pasta'
 inside skopeo --version >/dev/null || die 'no skopeo'
+hosted_help=$(inside tilo-linux-vm hosted help)
 inside mkfs.xfs -V >/dev/null || die 'no mkfs.xfs'
 inside tar --version >/dev/null || die 'no tar'
 [[ -x $root/usr/local/bin/tilo-runtime ]] || die 'no tilo-runtime, the member that takes the server'"'"'s runs'
