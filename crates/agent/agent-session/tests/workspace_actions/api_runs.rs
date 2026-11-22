@@ -305,8 +305,7 @@ async fn every_run_listed() {
     let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
         tokio::time::sleep(Duration::from_millis(50))
     });
-    let mut questions_page = Box::pin(page);
-    let mut page = questions_page.as_mut();
+    tokio::pin!(page);
     let (status, ran) = beside(&mut page, agent.run(&ws, "echo listed-while-waiting")).await;
     let command = waiting(status, &ran).unwrap_or_else(|| panic!("asked: {status} {ran}"));
     asked(&mut page, &ada_at_page, 1).await;
@@ -341,9 +340,6 @@ async fn every_run_listed() {
         .await;
         panic!("the command's run is in the terminal's history: {ended} {history}");
     }
-    // The page stops asking before it lets go of the server: one left
-    // paused mid-ask holds the approver's link, and closing waits on it.
-    drop(questions_page);
     host.close().await;
 
     // The person's key takes its run back: it reads as undone.

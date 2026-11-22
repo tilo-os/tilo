@@ -367,12 +367,14 @@ pub async fn ask_member(
     read_approver_reply(&mut recv).await
 }
 
-/// The link a device keeps to its server's certification, and how many it
-/// has dialled: an ask lets go only of the link it failed on.
+/// The link a device keeps to its server's certification, with which of its
+/// dials it was, and how many it has dialled: an ask lets go only of the link
+/// it failed on. Once closed it keeps none.
 #[derive(Default)]
 struct Kept {
-    link: Option<Link>,
+    link: Option<(Link, u64)>,
     dialled: u64,
+    closed: bool,
 }
 
 /// A device's asks of its server's certification ([`MemberApproval`]s), each
@@ -407,7 +409,7 @@ impl KeptAsks {
     ) -> Result<ApproverReply, CertifyError> {
         let mut first = true;
         loop {
-            let (link, dialled, kept_before) = self.link(dialer).await?;
+            let (link, dialled, kept_before, kept) = self.link(dialer).await?;
             let (mut send, mut recv) = match link.open_bi().await {
                 Ok(streams) => streams,
                 Err(error) => {
@@ -428,36 +430,45 @@ impl KeptAsks {
                 read_approver_reply(&mut recv).await
             }
             .await;
-            if reply.is_err() || link.protocol() != Some(LINK_CERTIFY_KEPT) {
+            if reply.is_err() || !kept {
                 self.let_go(&link, dialled).await;
             }
             return reply;
         }
     }
 
-    /// The link to ask on, which dial of this device's it was, and whether it
-    /// was kept from an earlier ask: the kept one, else one dialled now,
-    /// which is kept when the server answers the offer to.
-    async fn link(&self, dialer: &Dialer) -> Result<(Link, u64, bool), CertifyError> {
-        let mut kept = self.kept.lock().await;
-        if let Some(link) = &kept.link {
-            return Ok((link.clone(), kept.dialled, true));
+    /// The link to ask on, which dial of this device's it was, whether it was
+    /// kept from an earlier ask, and whether it is kept now: the kept one, else
+    /// one dialled now, which is kept when the server answers the offer to and
+    /// no other ask kept one meanwhile.
+    ///
+    /// The dial is made outside the lock: an ask that waits for its server, or
+    /// that its caller stopped polling there, keeps no other ask and no
+    /// [`Self::close`] waiting behind it.
+    async fn link(&self, dialer: &Dialer) -> Result<(Link, u64, bool, bool), CertifyError> {
+        if let Some((link, dialled)) = &self.kept.lock().await.link {
+            return Ok((link.clone(), *dialled, true, true));
         }
         let link = dialer
             .link_offering(Purpose::Certify, &[LINK_CERTIFY_KEPT])
             .await?;
+        let mut kept = self.kept.lock().await;
         kept.dialled = kept.dialled.saturating_add(1);
-        if link.protocol() == Some(LINK_CERTIFY_KEPT) {
-            kept.link = Some(link.clone());
+        let dialled = kept.dialled;
+        let keeps =
+            !kept.closed && kept.link.is_none() && link.protocol() == Some(LINK_CERTIFY_KEPT);
+        if keeps {
+            kept.link = Some((link.clone(), dialled));
         }
-        Ok((link, kept.dialled, false))
+        drop(kept);
+        Ok((link, dialled, false, keeps))
     }
 
     /// Close `link`, the `dialled`th this device dialled, and keep it no
     /// longer.
     async fn let_go(&self, link: &Link, dialled: u64) {
         let mut kept = self.kept.lock().await;
-        if kept.dialled == dialled {
+        if kept.link.as_ref().is_some_and(|(_, at)| *at == dialled) {
             kept.link = None;
         }
         drop(kept);
@@ -466,8 +477,12 @@ impl KeptAsks {
 
     /// Let go of the kept link: the device asks nothing more.
     pub async fn close(&self) {
-        let link = self.kept.lock().await.link.take();
-        if let Some(link) = link {
+        let link = {
+            let mut kept = self.kept.lock().await;
+            kept.closed = true;
+            kept.link.take()
+        };
+        if let Some((link, _)) = link {
             link.close("");
         }
     }
@@ -477,7 +492,7 @@ impl Drop for KeptAsks {
     fn drop(&mut self) {
         // A page's session closes only when it is told to: one left open
         // holds its socket for as long as the page lives.
-        if let Some(link) = self.kept.get_mut().link.take() {
+        if let Some((link, _)) = self.kept.get_mut().link.take() {
             link.close("");
         }
     }
@@ -514,5 +529,36 @@ impl MemberApprover {
 impl MemberServer for MemberApprover {
     async fn ask(&self, approval: &MemberApproval) -> Result<ApproverReply, CertifyError> {
         self.asks.ask(&self.dialer, approval).await
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod kept_asks_tests {
+    use super::KeptAsks;
+    use crate::host::{Carrier, ServerAddress};
+    use crate::link::Dialer;
+    use iroh_base::{EndpointAddr, SecretKey};
+    use std::future::Future as _;
+    use std::time::Duration;
+
+    /// A page that stops polling an ask while the ask dials its server holds nothing closing
+    /// waits for: the approver closes at once, as a person closing the page expects.
+    #[tokio::test]
+    async fn closing_waits_for_no_ask_left_paused_on_its_dial() {
+        // A server that never answers: its address is a socket nothing reads.
+        let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = EndpointAddr::new(SecretKey::from_bytes(&[7; 32]).public())
+            .with_ip_addr(silent.local_addr().unwrap());
+        let dialer = Dialer::new(ServerAddress::at(addr).over(Carrier::Direct), None);
+        let asks = KeptAsks::default();
+        let mut dialing = std::pin::pin!(asks.link(&dialer));
+        let mut polled = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            dialing.as_mut().poll(&mut polled).is_pending(),
+            "the server answers nothing, so the dial waits"
+        );
+        tokio::time::timeout(Duration::from_secs(5), asks.close())
+            .await
+            .expect("closing waits for no ask left paused on its dial");
     }
 }

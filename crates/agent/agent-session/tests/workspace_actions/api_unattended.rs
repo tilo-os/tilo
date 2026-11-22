@@ -238,8 +238,7 @@ async fn own_key_runs_unasked_only_while_let() {
     let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
         tokio::time::sleep(Duration::from_millis(50))
     });
-    let mut questions_page = Box::pin(page);
-    let mut page = questions_page.as_mut();
+    tokio::pin!(page);
 
     // Off, as every workspace starts: the workspace's own key's command is put
     // to the person.
@@ -363,9 +362,6 @@ async fn own_key_runs_unasked_only_while_let() {
     asked(&mut page, &person, 7).await;
     person.answer(ConfirmationAnswer::Deny);
     beside(&mut page, tokio::time::sleep(Duration::from_millis(200))).await;
-    // The page stops asking before it lets go of the server: one left
-    // paused mid-ask holds the approver's link, and closing waits on it.
-    drop(questions_page);
     host.close().await;
 }
 
@@ -450,8 +446,7 @@ async fn branch_runs_unasked_and_goes_on_apart() {
     let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
         tokio::time::sleep(Duration::from_millis(50))
     });
-    let mut questions_page = Box::pin(page);
-    let mut page = questions_page.as_mut();
+    tokio::pin!(page);
 
     // The person lets the template run its keys' commands unattended, asked
     // by the backend's key.
@@ -530,9 +525,6 @@ async fn branch_runs_unasked_and_goes_on_apart() {
     );
     assert_eq!(person.questions(), 3);
     beside(&mut page, tokio::time::sleep(Duration::from_millis(200))).await;
-    // The page stops asking before it lets go of the server: one left
-    // paused mid-ask holds the approver's link, and closing waits on it.
-    drop(questions_page);
     host.close().await;
 }
 
@@ -571,8 +563,7 @@ async fn terminal_open_is_asked_once() {
     let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
         tokio::time::sleep(Duration::from_millis(50))
     });
-    let mut questions_page = Box::pin(page);
-    let mut page = questions_page.as_mut();
+    tokio::pin!(page);
     let (path, body) = (
         format!("/v1/workspaces/{ws}/resources/terminal/actions/open-terminal"),
         json!({"cols": 100, "rows": 30}),
@@ -630,8 +621,5 @@ async fn terminal_open_is_asked_once() {
     asked(&mut page, &person, 2).await;
     person.answer(ConfirmationAnswer::Deny);
     beside(&mut page, tokio::time::sleep(Duration::from_millis(200))).await;
-    // The page stops asking before it lets go of the server: one left
-    // paused mid-ask holds the approver's link, and closing waits on it.
-    drop(questions_page);
     host.close().await;
 }
