@@ -826,10 +826,8 @@ impl Worker {
                 Some(peer) => peer
                     .barrier_for(&documents)
                     .map_err(|closed| closed.to_string())?,
-                // A change written as this device itself went to its workspace service, never
-                // through this session's outbox. A governed workspace kept it there, and the
-                // session's barrier answers for it as for the session's own; a member copy is
-                // held by the device serving the workspace, which says when it holds the write.
+                // A change written as this device itself went to its workspace service, which
+                // answers for it.
                 None => self.saved_in_workspace(&workspace_id, &documents)?,
             };
             barred.push((group, (link, saved)));
@@ -857,56 +855,36 @@ impl Worker {
     }
 
     /// A receipt that completes once the writes this service made as this device to `documents`
-    /// of `workspace_id` are held: by the device serving a member copy, else by the host this
-    /// session's own barrier asks.
+    /// of `workspace_id` are held. The write went to this device's own workspace service, never
+    /// through a session: a member copy is answered by the device serving the workspace, which
+    /// says when it holds each write; a workspace this device's service governs kept the write
+    /// before the write was answered, so it is held already.
     fn saved_in_workspace(
         &self,
         workspace_id: &WorkspaceId,
         documents: &[DocumentRoute],
     ) -> Result<tilo_session_client::Receipt<Result<(), String>>, String> {
-        if let Some(held) = self.saved_by_device(workspace_id, documents)? {
-            return Ok(held);
-        }
-        let peer = &self
-            .workspaces
-            .get(workspace_id)
-            .ok_or_else(|| "the workspace was not joined".to_owned())?
-            .peer;
-        peer.barrier_for(documents)
-            .map_err(|closed| closed.to_string())
-    }
-
-    /// A receipt that completes once the device serving the workspace holds `documents`, the
-    /// app-and-document routes of the writes this service made as this device: `None` when this
-    /// device's service answers for them itself, where this session's barrier does instead.
-    fn saved_by_device(
-        &self,
-        workspace_id: &WorkspaceId,
-        documents: &[DocumentRoute],
-    ) -> Result<Option<tilo_session_client::Receipt<Result<(), String>>>, String> {
         let writes = self
             .shared
             .writes()
             .ok_or("this device holds no documents to write")?;
-        let workspace = workspace_id.to_string();
-        let documents: Vec<(String, String)> = documents
+        let documents: Vec<(&str, &str)> = documents
             .iter()
-            .map(|route| (route.app_id.clone(), route.document.clone()))
+            .map(|route| (route.app_id.as_str(), route.document.as_str()))
             .collect();
-        let Some(serving) = writes.served(
-            &workspace,
-            &documents
-                .iter()
-                .map(|(app, document)| (app.as_str(), document.as_str()))
-                .collect::<Vec<_>>(),
-        ) else {
-            return Ok(None);
-        };
+        let serving = writes.served(&workspace_id.to_string(), &documents);
         let (answer, receipt) = tilo_session_client::answer();
-        self.own_device.runtime.spawn(async move {
-            let _ = answer.send(serving.await);
-        });
-        Ok(Some(receipt))
+        match serving {
+            Some(serving) => {
+                self.own_device.runtime.spawn(async move {
+                    let _ = answer.send(serving.await);
+                });
+            }
+            None => {
+                let _ = answer.send(Ok(()));
+            }
+        }
+        Ok(receipt)
     }
 
     /// What says why `written` are not saved, read from the `peer` they were
