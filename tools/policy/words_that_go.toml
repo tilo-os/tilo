@@ -4,7 +4,11 @@
 #   row     the row's first cell in core.md, which names it in the baseline
 #   idents  identifiers counted: each is a run of words matched against the words of an
 #           identifier (`app_keeper`, `AppKeeper` and `APP_KEEPER` all hold "keeper"), the last
-#           word also in its plural
+#           word also in its plural. A use above the baseline fails the check.
+#           A term starting with `=` is the whole identifier (`=answers` is `answers` and
+#           `Answers`, not a test named `…_answers_…`).
+#   generic identifiers matched the same way, but words so common in ordinary code that they
+#           are counted and printed only, never failing the check
 #   text    exact text counted wherever it is in the code, strings included
 #   paths   files (or a directory, ending in `/`) whose every line of code counts, for a row
 #           whose concept is a piece of code rather than a name
@@ -68,7 +72,8 @@ idents = ["own service", "own device"]
 
 [[word]]
 row = "held, holder, HeldWorkspace, member copy, replica"
-idents = ["held", "holder", "member copy", "replica"]
+idents = ["member copy", "replica"]
+generic = ["held", "holder"]
 
 [[word]]
 row = "listing workspace, governed/member/held/own workspace kinds"
@@ -110,7 +115,8 @@ idents = ["relay runtime"]
 
 [[word]]
 row = "fleet, DeviceFleetStore, CertifiedFleet"
-idents = ["fleet"]
+idents = ["device fleet", "certified fleet", "fleet store"]
+generic = ["fleet"]
 
 [[word]]
 row = "ceremony, tilo-identity-ceremony"
@@ -126,15 +132,18 @@ idents = ["enrol", "enroll", "enrolment", "enrollment", "pairing", "handoff"]
 
 [[word]]
 row = "document (as the unit), workspace_documents, document host"
-idents = ["document"]
+idents = ["workspace documents", "document host"]
+generic = ["document"]
 
 [[word]]
 row = "record, item, ItemId, item node"
-idents = ["record", "item"]
+idents = ["item id", "item node"]
+generic = ["record", "item"]
 
 [[word]]
 row = "kind, KindSet"
-idents = ["kind"]
+idents = ["kind set"]
+generic = ["kind"]
 
 [[word]]
 row = "channel ops, broker (two), publication, CommittedView, committed_surface"
@@ -142,11 +151,13 @@ idents = ["channel op", "broker", "publication", "committed view", "committed su
 
 [[word]]
 row = "surface, surface.toml"
-idents = ["surface"]
+text = ["surface.toml"]
+generic = ["surface"]
 
 [[word]]
 row = "instance, windowless, showing action, packaged model, native model, model.wasm"
-idents = ["instance", "windowless", "showing action", "packaged model", "native model"]
+idents = ["windowless", "showing action", "packaged model", "native model"]
+generic = ["instance"]
 text = ["model.wasm"]
 
 [[word]]
@@ -164,7 +175,8 @@ idents = ["outbox", "effect receipt"]
 
 [[word]]
 row = "Answering, answers (MCP)"
-idents = ["answering", "answers"]
+idents = ["=answering", "=answers"]
+generic = ["answers"]
 
 [[word]]
 row = "legacy, compat readers"

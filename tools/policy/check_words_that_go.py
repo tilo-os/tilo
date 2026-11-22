@@ -7,12 +7,13 @@ that spell it, and `words_that_go_baseline.json` how often the code holds them.
 This check counts them again over the code (Rust, tilolang, TypeScript,
 JavaScript and Python; never vendored code or docs, never comments, and inside a
 string only what is shaped like an identifier, `held_by` but not the prose word
-"held") and fails:
-
-- when a count is above its baseline: a change added a use of a word that goes;
-- when a count is below its baseline: the baseline is lowered in the same push
-  that lowered the count, with `--update`, so it can never rise back unseen;
-- when the table and `words_that_go.toml` no longer name the same rows.
+"held"). It fails only when a row's specific words are used more than their
+baseline says: a change added a use of a word that goes. A row's generic words
+(`record`, `kind`, `document`, `held`...) are too common in ordinary code to hold
+every push to, so they are counted and printed but never fail. A count that falls
+never fails either; `--update` lowers the baseline to it, and never raises one.
+The check also fails when the table and `words_that_go.toml` no longer name the
+same rows.
 
 A count falls when the code that holds the concept is deleted. A rename alone
 moves the word out of the count without removing the concept, so it is not a
@@ -20,7 +21,7 @@ way to lower one.
 
     python3 tools/policy/check_words_that_go.py            # check
     python3 tools/policy/check_words_that_go.py --print    # every row's count
-    python3 tools/policy/check_words_that_go.py --update   # write the counts as the baseline
+    python3 tools/policy/check_words_that_go.py --update   # lower the baseline to the counts
 """
 from __future__ import annotations
 
@@ -157,7 +158,8 @@ def spec_rows() -> list[str]:
     return rows
 
 
-def count(root: Path, rows: list[dict]) -> dict[str, int]:
+def count(root: Path, rows: list[dict]) -> dict[str, tuple[int, int]]:
+    """Each row's uses of its specific words, and of its generic ones."""
     identifiers: Counter[str] = Counter()
     texts: Counter[str] = Counter()
     literals = sorted({text for row in rows for text in row.get("text", [])})
@@ -173,17 +175,22 @@ def count(root: Path, rows: list[dict]) -> dict[str, int]:
             if path.as_posix().startswith(prefix):
                 lines[prefix] += sum(1 for line in body.splitlines() if line.strip())
     split = {identifier: words(identifier) for identifier in identifiers}
+
+    def uses(terms: list[str]) -> int:
+        runs = [tuple(term.split()) for term in terms if not term.startswith("=")]
+        whole = {tuple(term[1:].split()) for term in terms if term.startswith("=")}
+        return sum(
+            used
+            for identifier, used in identifiers.items()
+            if split[identifier] in whole or any(holds(split[identifier], run) for run in runs)
+        )
+
     counts = {}
     for row in rows:
-        terms = [tuple(term.split()) for term in row.get("idents", [])]
-        total = sum(
-            uses
-            for identifier, uses in identifiers.items()
-            if any(holds(split[identifier], term) for term in terms)
-        )
-        total += sum(texts[literal] for literal in row.get("text", []))
-        total += sum(lines[prefix] for prefix in row.get("paths", []))
-        counts[row["row"]] = total
+        specific = uses(row.get("idents", []))
+        specific += sum(texts[literal] for literal in row.get("text", []))
+        specific += sum(lines[prefix] for prefix in row.get("paths", []))
+        counts[row["row"]] = (specific, uses(row.get("generic", [])))
     return counts
 
 
@@ -201,34 +208,33 @@ def main(argv: list[str]) -> int:
         if row not in spec
     ]
     counts = count(ROOT, rows)
+    baseline = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
     if "--print" in argv:
+        print(f"{'specific':>8} {'baseline':>8} {'generic':>8}  row")
         for row in named:
-            print(f"{counts[row]:>8}  {row}")
+            specific, generic = counts[row]
+            print(f"{specific:>8} {baseline.get(row, '-'):>8} {generic:>8}  {row}")
         return 0
     if "--update" in argv:
-        BASELINE.write_text(json.dumps(counts, indent=2) + "\n", encoding="utf-8")
+        lowered = {
+            row: min(counts[row][0], baseline.get(row, counts[row][0])) for row in named
+        }
+        BASELINE.write_text(json.dumps(lowered, indent=2) + "\n", encoding="utf-8")
         print(f"wrote {BASELINE.relative_to(ROOT)}", file=sys.stderr)
         return 0
-    baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
     for row in named:
-        was, now = baseline.get(row), counts[row]
+        was, now = baseline.get(row), counts[row][0]
         if was is None:
             problems.append(f"{BASELINE.relative_to(ROOT)}: no count for '{row}' ({now} now)")
         elif now > was:
             problems.append(f"'{row}': {now} uses, {now - was} more than the baseline's {was}")
-        elif now < was:
-            problems.append(
-                f"'{row}': {now} uses, {was - now} fewer than the baseline's {was}:"
-                " lower the baseline in this push"
-            )
     for problem in problems:
         print(problem)
     if problems:
         print(
-            "words that go: a count rose, fell without its baseline, or the rows differ."
-            " A word goes with the code that holds its concept, never by a rename alone;"
-            " after deleting that code, run"
-            " `python3 tools/policy/check_words_that_go.py --update` and commit the baseline.",
+            "words that go: a word that goes gained a use, or the rows differ. Name the new"
+            " code with the word core.md's table has instead; a word goes with the code that"
+            " holds its concept. A lower count is lowered into the baseline with `--update`.",
             file=sys.stderr,
         )
         return 1
