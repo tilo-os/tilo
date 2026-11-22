@@ -1028,6 +1028,29 @@ impl Drop for FrameRecorder {
     }
 }
 
+/// The system's monotonic clock, in nanoseconds since boot: the clock a measurement
+/// outside the compositor (a boot, a sign-in) places the session's own records on.
+#[cfg(unix)]
+pub fn monotonic_time_ns() -> Option<u128> {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a valid, writable timespec for the duration of the call.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) } != 0 {
+        return None;
+    }
+    u128::try_from(now.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u128::try_from(now.tv_nsec).ok()?)
+}
+
+#[cfg(not(unix))]
+pub fn monotonic_time_ns() -> Option<u128> {
+    None
+}
+
 /// CPU time the calling thread has consumed.
 #[cfg(unix)]
 fn thread_cpu_time() -> Option<Duration> {

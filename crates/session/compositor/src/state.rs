@@ -2890,10 +2890,23 @@ impl State {
 
     /// The frame `serial` of `output` reached the display: answer the keys it carried, and close a
     /// workspace switch when it was the resting frame.
+    ///
+    /// The session's first presented frame is logged with the system's monotonic clock, so a
+    /// measurement outside the compositor (a boot, a sign-in) can place the moment the desktop
+    /// first showed on its own clock.
     pub(crate) fn frame_presented(&self, serial: u64, output: &str) {
         let at = Instant::now();
-        self.frames_presented
+        let before = self
+            .frames_presented
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if before == 0 {
+            let monotonic_us = tilo_frame_metrics::monotonic_time_ns()
+                .map_or_else(|| "none".to_owned(), |ns| (ns / 1_000).to_string());
+            eprintln!(
+                "FRAME-LIFECYCLE serial={serial} event=render-retired output={output} \
+                 monotonic_us={monotonic_us}"
+            );
+        }
         if let Ok(mut presented) = self.presented_outputs.lock()
             && !presented.contains(output)
         {
