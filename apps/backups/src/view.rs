@@ -1150,15 +1150,21 @@ pub enum Setup<'a> {
 
 /// The one screen of a device that has no backups to show.
 pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
+    let set_up = {
+        let intents = intents.clone();
+        move || intents.push(Intent::Setup)
+    };
     let state = match state {
         Setup::Start => EmptyState::new("Protect your important files")
             .with_icon(Icon::Archive)
             .with_message(CATALOG.t("backups-setup-start-hint"))
-            .with_action("Choose folder…"),
+            .with_action("Choose folder…")
+            .on_view(set_up),
         Setup::ChooseDestination => EmptyState::new("Choose where to keep backups")
             .with_icon(Icon::HardDrive)
             .with_message(CATALOG.t("backups-setup-destination-hint"))
-            .with_action("Choose location…"),
+            .with_action("Choose location…")
+            .on_view(set_up),
         Setup::Running(status) => EmptyState::new("Creating your first backup")
             .with_icon(Icon::Archive)
             .with_message(*status),
@@ -1168,18 +1174,13 @@ pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
         )
         .with_details(*error)
         .with_icon(Icon::HardDrive)
-        .with_action("Choose another location…"),
+        .with_action("Choose another location…")
+        .on_view(set_up),
     };
-    Box::new(OnSignal::new(
-        state,
-        EmptyState::take_action,
-        intents.clone(),
-        Intent::Setup,
-    ))
+    Box::new(state)
 }
 
-/// A widget whose one signal (a dismissed banner, an empty state's action) leaves as an
-/// intent.
+/// A widget whose one signal (a dismissed banner) leaves as an intent.
 pub struct OnSignal<W> {
     inner: W,
     take: fn(&mut W) -> bool,
