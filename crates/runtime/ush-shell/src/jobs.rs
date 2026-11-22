@@ -139,14 +139,15 @@ impl Job {
         lock(&self.signallers).len()
     }
 
-    fn signal_programs(&self, signal: Signal) {
+    fn signal_programs(&self, signal: Signal) -> usize {
         let signallers: Vec<Signaller> = lock(&self.signallers)
             .iter()
             .map(|(_, s)| Arc::clone(s))
             .collect();
-        for signaller in signallers {
+        for signaller in &signallers {
             signaller(signal);
         }
+        signallers.len()
     }
 
     fn set_phase(&self, phase: Phase) {
@@ -163,10 +164,12 @@ impl Job {
         self.set_phase(Phase::Stopped);
     }
 
-    /// Stop the job: its programs, and its own commands at their next step.
+    /// Stop the job: its programs, and its own commands at their next step. A job running
+    /// programs is stopped once one of them stops ([`Self::stopped`]), never before.
     pub fn stop(&self) {
-        self.set_phase(Phase::Stopped);
-        self.signal_programs(Signal::Stop);
+        if self.signal_programs(Signal::Stop) == 0 {
+            self.set_phase(Phase::Stopped);
+        }
     }
 
     pub fn resume(&self, foreground: bool) {

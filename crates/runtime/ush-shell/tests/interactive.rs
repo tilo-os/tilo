@@ -584,6 +584,9 @@ impl Host for Guest {
         let tx = Mutex::new(tx);
         let _attached = job.attach(move |signal| {
             signals.lock().unwrap().push((signal, seen.foreground()));
+            if signal == Signal::Stop {
+                seen.stopped();
+            }
             let _ = tx.lock().unwrap().send(signal);
         });
         self.files.file("/home/me/serving", "");
@@ -593,14 +596,7 @@ impl Host for Guest {
                 Ok(Signal::Terminate | Signal::Kill | Signal::Interrupt) | Err(_) => {
                     return Program::Exited(143);
                 }
-                Ok(Signal::Stop) => match rx.try_recv() {
-                    Ok(Signal::Continue) => {}
-                    Ok(Signal::Terminate | Signal::Kill | Signal::Interrupt) => {
-                        return Program::Exited(143);
-                    }
-                    _ => job.stopped(),
-                },
-                Ok(Signal::Continue) => {}
+                Ok(Signal::Stop | Signal::Continue) => {}
             }
         }
     }
