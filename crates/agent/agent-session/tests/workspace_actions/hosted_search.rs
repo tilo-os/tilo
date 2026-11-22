@@ -909,7 +909,9 @@ async fn a_write_by_another_device_answers_a_wait_for_a_change_within_a_second()
 /// What a person tells an agent is found by that person and by a turn of theirs, and by nobody
 /// else: not by another member, though they read the workspace's chat, and not through a turn
 /// another member started on the same agent, though the agent takes part in both conversations.
-/// What the workspace shares, every one of them finds.
+/// What the workspace shares, every one of them finds; and where Ada holds her agent to Chat
+/// alone, a turn Bo starts on it finds the letter no more than the agent may, though Bo himself
+/// does: his turn does what both of them may, and no more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_a_person_tells_an_agent_is_found_by_them_and_their_own_turns_alone() {
     let mut served = Served::start(1).await;
@@ -934,12 +936,14 @@ async fn what_a_person_tells_an_agent_is_found_by_them_and_their_own_turns_alone
         (&conversation_with(&served.ada, SCOUT), &hers),
         Vec::new(),
     );
+    // A turn Bo starts on Ada's agent acts for him as her agent, as a server's turn does.
     let his_turn = on_a_turn(
         &bo_himself,
         SCOUT,
         (&conversation_with(&bo, SCOUT), &his),
         Vec::new(),
-    );
+    )
+    .agent_of(person_of(&served.ada));
 
     // Each finds their own, themselves and through a turn of theirs.
     for (who, caller, word, message) in [
@@ -983,6 +987,32 @@ async fn what_a_person_tells_an_agent_is_found_by_them_and_their_own_turns_alone
             .await;
         assert!(found.contains(WRITER), "{who} finds the letter: {found}");
     }
+    let only_chat = Agent {
+        id: ui::tilo_resource::Atom(SCOUT.into()),
+        keeper: person_of(&served.ada),
+        bound: vec![
+            reading(format!("workspace:{workspace}"), "deny"),
+            reading(chat_in(&workspace), "allow"),
+        ],
+        ..Agent::default()
+    };
+    let his_bounded_turn = on_a_turn(
+        &bo_himself,
+        SCOUT,
+        (&conversation_with(&bo, SCOUT), &his),
+        only_chat.turn_rules(&workspace),
+    )
+    .agent_of(person_of(&served.ada));
+    served
+        .finds_soon(&workspace, &his_bounded_turn, ("kestrel", his.as_str()))
+        .await;
+    let found = served
+        .finds(&workspace, &his_bounded_turn, "Gooseberry")
+        .await;
+    assert!(
+        !found.contains(WRITER) && !found.contains("Gooseberry"),
+        "a turn of his on an agent held to Chat finds no letter, though he does: {found}"
+    );
     // What each of them finds of an issue in Tasks by its title is said here and not judged:
     // being held to what they may read takes nothing of Tasks from any of them.
     file_issue(

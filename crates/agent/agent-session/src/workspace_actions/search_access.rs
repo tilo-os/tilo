@@ -57,7 +57,9 @@ fn item_node(route: &DocumentRoute, resource: &str) -> Option<TreePath> {
 /// Who an answer kept here is about: the person on the device they speak through, and the agent
 /// acting for them, as the workspace's policy decides them. A turn neither changes who they are
 /// nor what they may read of a document the workspace has not changed; an agent inside a turn and
-/// the same agent outside one act on different grants, so the two are told apart.
+/// the same agent outside one act on different grants, so the two are told apart. So are turns
+/// held to different rules, and a turn that answers one person through another's agent, which
+/// both people bound: each may read what the others may not.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Reader {
     person: ui::permissions::policy::PersonId,
@@ -66,17 +68,22 @@ pub(super) struct Reader {
     on_turn: bool,
     user: Option<[u8; 32]>,
     device: Option<[u8; 32]>,
+    people: Vec<String>,
+    granted: Vec<ui::permissions::policy::Grant>,
 }
 
 impl Reader {
     pub(super) fn of(who: &Bounded) -> Self {
+        let acting = who.caller.acting();
         Self {
             person: who.person.clone(),
-            agent: who.caller.acting().agent_id().map(str::to_owned),
+            agent: acting.agent_id().map(str::to_owned),
             delegated: who.caller.is_session_delegated(),
             on_turn: who.caller.turn().is_some(),
             user: who.caller.user_public_key().copied(),
             device: who.caller.device_public_key().copied(),
+            people: acting.people().into_iter().map(str::to_owned).collect(),
+            granted: who.caller.granted(&[]),
         }
     }
 }

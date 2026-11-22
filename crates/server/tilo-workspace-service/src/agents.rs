@@ -1425,7 +1425,7 @@ impl ServerAgents {
                 // same on a host as on the device that would answer it.
                 // What was learned about the person on their devices is their own record,
                 // which nothing here reads. What this server keeps of what its own agents
-                // learned is told to a turn that is the keeper's own, in their own
+                // learned is told to a turn of the person it is about, in their own
                 // conversation with the agent ([`learned`]), and to no other.
                 let asked_by = (summons.person.as_str(), &summons.conversation);
                 let known =
@@ -2789,7 +2789,7 @@ async fn work(
         Ok(server) => server,
         Err(error) => return (Outcome::Failed(error.to_string()), 0, TurnUsage::default()),
     };
-    // What the turn keeps about its keeper, and in a conversation the view it may answer with,
+    // What the turn keeps about its person, and in a conversation the view it may answer with,
     // are its own tools beside the agent tools.
     let mut own_tools = learned::with_tools(Vec::new(), keeping);
     own_tools.extend([view_tool(turn), shares::tool(turn)].into_iter().flatten());
@@ -2880,7 +2880,7 @@ impl tilo_agent_turn::Model for Asking {
 struct Answering<'a> {
     scope: &'a TurnScope,
     going: &'a going::Going,
-    /// What a turn that is its keeper's own keeps of what it learns ([`learned`]).
+    /// What a turn that knows and keeps facts keeps of what it learns ([`learned`]).
     keeping: Option<&'a learned::Keeping>,
     /// Which of the turn's tools only read, by its server's own word of each.
     reads: Mutex<HashSet<String>>,
@@ -2968,7 +2968,7 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         answer
     }
 
-    /// What the turn keeps about its keeper is carried out here, and the view or document it
+    /// What the turn keeps about its person is carried out here, and the view or document it
     /// answers with;
     /// every other tool is the agent tools'.
     async fn own(&self, call: &ToolCall) -> Option<tilo_agent_turn::Answer> {

@@ -529,7 +529,13 @@ pub(super) fn bounded(
             None => person,
         })
     })?;
-    let person = person_caller.acting().person_id()?.into();
+    // An agent device on a turn answers the person whose message caused it, whoever the agent
+    // belongs to: that person is who it is decided for and what is kept from.
+    let person = if caller.roster_created_at().is_some() {
+        caller.acting().acted_for_person()?.into()
+    } else {
+        person_caller.acting().person_id()?.into()
+    };
     Some(Bounded {
         caller: caller.clone(),
         person,

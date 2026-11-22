@@ -10,8 +10,8 @@
 //! - **Where it is shown is the turn's, never the model's.** It is the conversation the turn
 //!   answers in ([`shows_in`]); no argument names another, and none names whose share it is.
 //! - **Only where nobody else reads.** A turn shows a document only where it knows and keeps
-//!   what it learns ([`learned::keeps`]): in its keeper's own conversation with the agent,
-//!   which the agent takes part in and no person but the keeper. Anywhere else the name and
+//!   what it learns ([`learned::keeps`]): in the asker's own conversation with the agent,
+//!   which the agent takes part in and no other person. Anywhere else the name and
 //!   the address of a document would reach other members by the agent's choice; that takes
 //!   its person's own word, and is refused here.
 //! - **Only what its person may read, and the one the turn worked on.** The path is read as
@@ -42,13 +42,13 @@ conversation in its own app: the document, the sheet, the board. The person sees
 while you or they work on it, and can work in it right there. Use it when they ask to see what \
 you made or changed, or to work on it with you. `path` is the path you worked on it with, \
 without an action: `word-processor`. `title` is what its card is called. Where it is shown is \
-never an argument: it is the conversation you are answering in, and only your keeper's own \
+never an argument: it is the conversation you are answering in, and only the person's own \
 conversation with you. For a count, a list or a status over what apps keep, write a view with \
 `answer_with_view` instead. Afterwards say in a sentence what it is.";
 
-/// What the model is told in a conversation that is not its keeper's own with it.
-const NOT_THEIR_OWN: &str = "The document was not shown: you show a document only in your \
-keeper's own conversation with you, and this is not it, or others read it too. Say where the \
+/// What the model is told in a conversation that is not the asker's own with it.
+const NOT_THEIR_OWN: &str = "The document was not shown: you show a document only in a \
+person's own conversation with you, and this is not one, or others read it too. Say where the \
 document is (`tilo_link` gives a link only the workspace's members can open); the person \
 shares it here themselves if they want to.";
 
@@ -92,7 +92,7 @@ pub(super) fn tool(turn: &Turn) -> Option<ToolDefinition> {
 }
 
 /// The conversation `turn` may show a document in, by its id: the one it answers in, where
-/// that is its agent's keeper's own with the agent ([`learned::keeps`]). None for every other
+/// that is the asker's own with the agent ([`learned::keeps`]). None for every other
 /// turn: one somebody else asked, one in a conversation another person takes part in or the
 /// whole workspace reads, a sub-agent's, an issue's.
 pub(super) fn shows_in(turn: &Turn) -> Option<String> {

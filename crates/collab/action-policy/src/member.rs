@@ -450,6 +450,19 @@ impl Acting {
         self
     }
 
+    /// The same agent acting, as the agent of `owner`, the person it belongs to: where it
+    /// answers someone else, `owner` bounds it as well, so a turn answering one person through
+    /// another's agent does no more than both people and the agent may, on every resource. An
+    /// acting that names `owner` already is returned as it is.
+    #[must_use]
+    pub fn agent_of(mut self, owner: impl Into<PersonId>) -> Self {
+        let owner = owner.into();
+        if !self.people().contains(&owner.as_str()) {
+            self.acted_for.push(Self::person(owner));
+        }
+        self
+    }
+
     /// The same acting, from a device that is not theirs when `foreign`.
     #[must_use]
     pub fn on_foreign_device(mut self, foreign: bool) -> Self {
@@ -704,6 +717,15 @@ mod tests {
             assert!(person.direct());
             assert_eq!(person.direct_person(), Some("q"));
             assert!(Acting::person("q").on_foreign_device(true).delegated());
+        }
+
+        phase an_agent_answering_someone_else_is_bounded_by_its_own_person_too;
+        {
+            let for_bo = Acting::handed_agent("scout", "bo").agent_of("ada");
+            assert_eq!(for_bo.people(), vec!["bo", "ada"], "Bo first, Ada bounding it");
+            assert_eq!(for_bo.acted_for_person(), Some("bo"), "it answers Bo");
+            let for_ada = Acting::handed_agent("scout", "ada").agent_of("ada");
+            assert_eq!(for_ada, Acting::handed_agent("scout", "ada"), "its own person once");
         }
 
         phase a_member_is_read_back_from_the_bytes_a_document_names_it_by;

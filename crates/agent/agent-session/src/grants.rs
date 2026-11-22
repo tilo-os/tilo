@@ -184,11 +184,12 @@ impl AgentSessions {
             || delegation.scope.workspaces.as_slice() != [workspace]
             || delegation.delegate.agent_id() != caller.approved_agent()
             || caller.acting().app().is_some()
-            || caller
-                .acting_for_person()
-                .and_then(|person| tilo_actions::PersonId::parse(person).ok())
-                .and_then(|person| person.root())
-                != Some(delegation.user_public_key)
+            || !caller.acting().people().iter().any(|person| {
+                tilo_actions::PersonId::parse(person)
+                    .ok()
+                    .and_then(|person| person.root())
+                    == Some(delegation.user_public_key)
+            })
             || Some(&delegation.user_public_key) != caller.user_public_key()
             || &delegation.device_public_key != device
             || tilo_clock::unix_now_ns() >= delegation.expires_at_ns

@@ -414,14 +414,34 @@ impl Caller {
     }
 
     /// Bind a certified agent caller to the hosted roster entry it was
-    /// approved as, working for `person`: the author of the message whose
-    /// turn it answers, as its provider read it. The workspace service must
-    /// verify this binding.
+    /// approved as, answering `person`: the author of the message whose turn
+    /// it answers, as its provider read it. The agent's own key still signs:
+    /// every call is decided for `person`, bounded by the agent and by the
+    /// person it belongs to ([`Acting::agent_of`],
+    /// [`tilo_action_policy::Acting::signed_by`]), so the turn does only what
+    /// both the agent and `person` may, whoever the agent belongs to. The
+    /// workspace service must verify this binding.
     #[must_use]
     pub fn on_roster(mut self, created_at: i64, person: [u8; 32]) -> Self {
         if !self.session_delegated && self.acting.is_agent() && self.device_public_key.is_some() {
             self.roster_created_at = Some(created_at);
             self.turn_person = Some(person);
+            self.acting.acted_for = vec![Acting::person(hex::encode(person))];
+            if let Some(owner) = self.user_public_key.map(hex::encode) {
+                self.acting = self.acting.clone().agent_of(owner);
+            }
+        }
+        self
+    }
+
+    /// This agent caller as the agent of `owner`, the person it belongs to, answering whoever
+    /// it acts for ([`Acting::agent_of`]): where that is someone else, `owner` bounds it too.
+    /// Set only by the provider that runs the agent, from the agent's own record. Changes
+    /// nothing for a caller that is not an agent.
+    #[must_use]
+    pub fn agent_of(mut self, owner: impl Into<tilo_action_policy::PersonId>) -> Self {
+        if self.acting.is_agent() {
+            self.acting = self.acting.agent_of(owner);
         }
         self
     }

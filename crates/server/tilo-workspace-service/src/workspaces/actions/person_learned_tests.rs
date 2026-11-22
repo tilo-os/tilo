@@ -132,10 +132,11 @@ impl AsksPeople for Asked {
     }
 }
 
-/// A member reads what an agent on the workspace's server kept, writes a
-/// fact down themselves and corrects the agent's: every change of theirs is
-/// theirs in the resource, and the list says when it moved. Every member of
-/// the workspace reads the one list.
+/// A member reads what an agent on the workspace's server kept about them,
+/// writes a fact down themselves and corrects the agent's: every change of
+/// theirs is theirs in the resource, and the list says when it moved. The
+/// workspace keeps one list, and each member reads only the facts about them
+/// in it: another member reads none of hers.
 #[tokio::test]
 async fn a_member_reads_and_changes_what_the_workspaces_agents_learned() {
     stage!(_dir, served, workspaces, workspace, provider, ada, bo);
@@ -160,10 +161,9 @@ async fn a_member_reads_and_changes_what_the_workspaces_agents_learned() {
         ("Takes her coffee black.", KEPT_IN, Some(SCOUT))
     );
     assert!(fact.at_ms > 0 && !listed.revision.is_empty(), "{listed:?}");
-    assert_eq!(
-        provider.list(&bo).await,
-        listed,
-        "the other member reads the one list"
+    assert!(
+        provider.list(&bo).await.facts.is_empty(),
+        "the other member reads nothing about her"
     );
 
     // She writes one down herself: nobody's but hers, and the list has moved.
@@ -180,10 +180,9 @@ async fn a_member_reads_and_changes_what_the_workspaces_agents_learned() {
         (own.source.as_str(), own.by.as_deref()),
         ("I wrote it down", None)
     );
-    assert_eq!(
-        provider.list(&bo).await,
-        two,
-        "what a member writes is the workspace's"
+    assert!(
+        provider.list(&bo).await.facts.is_empty(),
+        "what she writes down about herself is hers"
     );
 
     // She corrects the agent's fact: the same fact, hers now, from where it came.
@@ -277,15 +276,15 @@ async fn what_a_member_forgets_is_gone_and_what_is_no_change_is_refused() {
     served.shutdown().await;
 }
 
-/// An agent her device handed its session to reads the list, and its changes ask her first:
+/// An agent her device handed its session to reads her facts, and its changes ask her first:
 /// unanswered they change nothing, her no refuses them, and her yes makes the change as the
-/// agent's, which `bo`, another member, then reads. `his` is the list before.
+/// agent's, about her, which `bo`, another member, does not read. `hers` is her list before.
 async fn her_agent_asks_her_first(
     workspaces: &crate::workspaces::Workspaces,
     provider: &Asking<'_>,
     ada: &DeviceCert,
     bo: &DeviceCert,
-    his: &Facts,
+    hers: &Facts,
 ) {
     let agent = caller(ada).delegated_to(SCOUT);
     let seen = provider
@@ -293,7 +292,7 @@ async fn her_agent_asks_her_first(
         .await
         .unwrap();
     let seen: Facts = serde_json::from_value(seen).unwrap();
-    assert_eq!(&seen, his, "an agent reads the workspace's list");
+    assert_eq!(&seen, hers, "her agent reads her facts");
     let teaching = (
         LEARN,
         json!({"text": "Prefers calls after noon.", "source": "She said so"}),
@@ -320,14 +319,14 @@ async fn her_agent_asks_her_first(
         "her agent, her own answer"
     );
     assert_eq!(question.agent_id, SCOUT);
-    assert_eq!(provider.list(ada).await, *his, "nothing changed");
+    assert_eq!(provider.list(ada).await, *hers, "nothing changed");
 
     let refusing = Asked::answering(Some(ConfirmationAnswer::Deny));
     workspaces.ask_people(refusing.clone());
     let refused = provider.ask_as(ada, &agent, teaching.clone()).await;
     assert!(matches!(refused, Err(Refused { .. })), "{refused:?}");
     assert_eq!(refusing.count(), 1, "the change asked her");
-    assert_eq!(provider.list(ada).await, *his, "nothing changed");
+    assert_eq!(provider.list(ada).await, *hers, "nothing changed");
 
     let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
     workspaces.ask_people(allowing.clone());
@@ -340,10 +339,14 @@ async fn her_agent_asks_her_first(
         .expect("the fact the agent kept");
     assert_eq!(kept.by.as_deref(), Some(SCOUT), "the agent wrote it");
     assert_eq!(allowing.count(), 1, "one question for one change");
-    assert_eq!(
-        provider.list(bo).await,
-        changed,
-        "the change is the workspace's"
+    assert!(
+        !provider
+            .list(bo)
+            .await
+            .facts
+            .iter()
+            .any(|held| held.text == "Prefers calls after noon."),
+        "what her agent kept about her is not his to read"
     );
 }
 
@@ -412,7 +415,7 @@ async fn nobody_else_reaches_it(
 }
 
 /// Nobody outside the workspace reaches its list. Another member reads and
-/// changes the one list; a member of another workspace, a device of nobody,
+/// changes only his own facts in it, never hers; a member of another workspace, a device of nobody,
 /// a bare agent turn with no device of a member's behind it and an app are
 /// answered nothing; and an agent a member's session was handed to reads,
 /// while its changes ask that member first.
@@ -457,8 +460,25 @@ async fn nobody_outside_the_workspace_reaches_what_was_learned() {
         ]
     };
 
-    // Another member of the workspace reads and changes the one list.
-    assert_eq!(provider.ask(&bo, (LIST, json!({}))).await.unwrap(), hers);
+    // Another member of the workspace reads none of her facts, and neither corrects nor
+    // forgets hers: to him there is no such fact.
+    assert!(
+        provider
+            .ask(&bo, (LIST, json!({})))
+            .await
+            .unwrap()
+            .facts
+            .is_empty()
+    );
+    for asking in asks().into_iter().skip(2) {
+        let action = asking.0;
+        let refused = provider.ask(&bo, asking).await;
+        assert!(
+            matches!(&refused, Err(Refused { reason }) if reason.contains("no fact")),
+            "{action}: {refused:?}"
+        );
+    }
+    // What he writes down is his.
     let his = provider
         .ask(
             &bo,
@@ -469,21 +489,20 @@ async fn nobody_outside_the_workspace_reaches_what_was_learned() {
         )
         .await
         .unwrap();
-    assert!(
+    assert_eq!(
         his.facts
             .iter()
-            .any(|held| held.text == "Wants invoices paid to account 7."),
-        "{his:?}"
+            .map(|held| held.text.as_str())
+            .collect::<Vec<_>>(),
+        ["Wants invoices paid to account 7."],
+        "his own fact and nothing of hers: {his:?}"
     );
-    assert_eq!(
-        provider.ask(&ada, (LIST, json!({}))).await.unwrap(),
-        his,
-        "what one member writes, every member reads"
-    );
+    let hers_now = provider.ask(&ada, (LIST, json!({}))).await.unwrap();
+    assert_eq!(hers_now.facts, hers.facts, "and none of his is hers");
 
     nobody_else_reaches_it(&provider, &ada, &bo, [&cy, &stranger], &asks()).await;
 
-    her_agent_asks_her_first(workspaces, &provider, &ada, &bo, &his).await;
+    her_agent_asks_her_first(workspaces, &provider, &ada, &bo, &hers_now).await;
     served.shutdown().await;
 }
 
