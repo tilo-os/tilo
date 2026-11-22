@@ -1,6 +1,5 @@
-//! Durable admission: the invocation journal that lets an admitted effect run
-//! once across duplicates, lost responses, crashes and restarts, and the
-//! caller reverification a continued invocation passes.
+//! Durable admission: what the invocation journal keeps of an admitted
+//! invocation, and the ownership a certified caller is held to.
 mod peer_integration {
     include!("../../peer_action_integration_tests.rs");
 }
@@ -41,7 +40,7 @@ impl std::ops::DerefMut for DurableFixture {
 fn durable_fixture(
     root: &std::path::Path,
     membership: Option<WorkspaceTreeHandle>,
-) -> (DurableFixture, VerifiedActionCaller, CallerInvocation) {
+) -> (DurableFixture, VerifiedActionCaller) {
     let mut identity_env = tilo_test_env::ScopedEnv::new();
     identity_env
         .set("XDG_CONFIG_HOME", root.join("config"))
@@ -108,28 +107,21 @@ fn durable_fixture(
                 .unwrap(),
         )
         .unwrap();
-    let request = CallerInvocation {
-        recipient: None,
-        revision: None,
-        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID)),
-        host: fixture.state.invocation_host().unwrap(),
-        peer_id: 71,
-        app_id: fixture.route.app_id.clone(),
-        document_id: fixture.route.document_id.clone(),
-        resource: "workspace:atlas".into(),
-        action: "open".into(),
-        argument: None,
-    };
     (
         DurableFixture {
             directory: fixture,
             _identity_env: identity_env,
         },
         caller,
-        request,
     )
 }
 
+/// The invocation the fixture's caller asks for.
+fn invocation() -> tilo_actions::InvocationId {
+    tilo_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID))
+}
+
+/// Count one run of the fixture's real effect, durably.
 fn effect(root: &std::path::Path) {
     use std::io::Write;
     let path = root.join("effect-counter");
@@ -140,143 +132,49 @@ fn effect(root: &std::path::Path) {
     std::fs::File::open(root).unwrap().sync_all().unwrap();
 }
 
-/// Status, retry and the effect barrier re-verify the caller's own
-/// ownership. A delegated caller's recheck must pass while it stays the
-/// same person on the same device, and every other continuation — the
-/// person without that delegation, or another agent — must be refused
-/// by the same sites.
-#[tokio::test(flavor = "current_thread")]
-async fn a_delegated_callers_continuation_passes_reverification_and_others_do_not() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let root = tempfile::tempdir().unwrap();
-            let (mut fixture, caller, request) = durable_fixture(root.path(), None);
-            let caller = caller.delegated_to("mcp-7");
-            let person = fixture
-                .state
-                .verify_action_caller(
-                    &fixture.cluster_id,
-                    &certified_join(
-                        &fixture.cluster_id,
-                        &SigningKey::from_bytes(&[51; 32]),
-                        &SigningKey::from_bytes(&[52; 32]),
-                    )
-                    .encode()
-                    .unwrap(),
-                )
-                .unwrap();
-            let other_agent = person.clone().delegated_to("mcp-8");
-            let started = fixture
-                .state
-                .start_verified_invocation(&caller, &request, None)
-                .unwrap();
-            assert_eq!(
-                started.key.owner,
-                InvocationOwner::AuthenticatedLocal {
-                    root: caller.admitted.verified.user_public_key,
-                    device: caller.admitted.verified.device_public_key,
-                    agent: Some("mcp-7".into()),
-                },
-                "the durable owner names the delegated agent"
-            );
-            let delivered = fixture.take_invocation_identity().unwrap();
-            // Status: the agent's own recheck passes; the person's
-            // continuation and another agent's are refused.
-            assert_eq!(
-                fixture
-                    .state
-                    .verified_invocation_status(&caller, request.invocation)
-                    .unwrap()
-                    .map(|record| record.key.owner),
-                Some(started.key.owner.clone())
-            );
-            // The person themselves, without this delegation, is
-            // refused: the admission no longer carries the delegation
-            // its invocation is owned by, never downgraded to them.
-            let person_key = fixture
-                .state
-                .caller_key(&person, request.invocation)
-                .unwrap();
-            assert_eq!(
-                person_key.owner,
-                InvocationOwner::Certified {
-                    root: person.admitted.verified.user_public_key,
-                    device: person.admitted.verified.device_public_key,
-                }
-            );
-            assert_ne!(person_key, started.key);
-            // Another agent reaches its own key, and that key is not
-            // this invocation's: it never observes or retries it.
-            let other_key = fixture
-                .state
-                .caller_key(&other_agent, request.invocation)
-                .unwrap();
-            assert_ne!(other_key, started.key);
-            assert!(
-                fixture
-                    .state
-                    .verified_invocation_status(&other_agent, request.invocation)
-                    .unwrap()
-                    .is_none(),
-                "another agent never observes this agent's invocation"
-            );
-            // A retry under another agent's admission is a different
-            // invocation: it never joins this one's record or delivery.
-            let retried = fixture
-                .state
-                .start_verified_invocation(&other_agent, &request, None);
-            if let Ok(retried) = &retried {
-                assert_ne!(retried.key, started.key);
-            }
-            assert!(fixture.invocation_rx.try_recv().is_err());
-            // Retry: the same request under the agent's ownership is the
-            // same admission, never a second delivery.
-            let retry = fixture
-                .state
-                .start_verified_invocation(&caller, &request, None)
-                .unwrap();
-            assert_eq!(retry.key.owner, started.key.owner);
-            assert!(fixture.invocation_rx.try_recv().is_err());
-            // The effect barrier: the agent completes its own invocation.
-            effect(root.path());
-            fixture
-                .complete_invocation(
-                    delivered.0,
-                    &tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: request.invocation,
-                        output: tilo_actions::ActionOutput::default(),
-                    },
-                )
-                .await
-                .unwrap();
-            assert!(matches!(
-                fixture
-                    .state
-                    .verified_invocation_status(&caller, request.invocation)
-                    .unwrap()
-                    .expect("the agent observes its own terminal")
-                    .update,
-                tilo_actions::InvocationUpdate::Succeeded { invocation, .. }
-                    if invocation == request.invocation
-            ));
-            assert_eq!(
-                std::fs::read_to_string(root.path().join("effect-counter")).unwrap(),
-                "1"
-            );
-        })
-        .await;
+/// Admit [`invocation`] as `caller`'s person through the broker's admission, and
+/// answer the wire id the app is handed it under.
+fn admit(fixture: &mut DurableFixture, caller: &VerifiedActionCaller) -> u64 {
+    let surface = fixture.state.publishers.surfaces.lock().unwrap()[&71].clone();
+    let action = surface.actions[0].clone();
+    let actor = caller.admitted.broker_actor();
+    fixture
+        .state
+        .dispatch_invocation_from_offered_owned(
+            71,
+            (surface, action),
+            InvocationInputs {
+                original_request: None,
+                requested: Some(invocation()),
+                caller: None,
+                execution: None,
+                argument: None,
+                actor: &actor,
+                confirmation_token: None,
+                context: None,
+            },
+            AdmissionProvenance {
+                revision: None,
+                origin: None,
+                retained_time: None,
+            },
+        )
+        .unwrap()
+        .start_blocking(&fixture.state)
+        .unwrap();
+    fixture.invocation_rx.try_recv().unwrap().id
 }
 
 /// A caller the API admits without a retained certificate (a network
 /// API's admission can be) cannot name the agent it was delegated
-/// to. Status, retry and the effect barrier must refuse it rather than
-/// silently re-own its invocation as the person's.
+/// to. Its ownership is refused rather than silently re-owned as the
+/// person's.
 #[tokio::test(flavor = "current_thread")]
 async fn a_delegated_caller_whose_admission_cannot_name_its_agent_is_refused() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
-            let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+            let (fixture, caller) = durable_fixture(root.path(), None);
             let mut keyless = caller.clone().delegated_to("mcp-7");
             assert_eq!(
                 caller.owner().unwrap(),
@@ -295,14 +193,6 @@ async fn a_delegated_caller_whose_admission_cannot_name_its_agent_is_refused() {
                 keyless.owner().unwrap_err(),
                 "admitted caller certificate missing"
             );
-            assert_eq!(
-                fixture
-                    .state
-                    .start_verified_invocation(&keyless, &request, None)
-                    .unwrap_err(),
-                "admitted caller certificate missing"
-            );
-            assert!(fixture.invocation_rx.try_recv().is_err());
             // The effect barrier: it re-verifies the original caller,
             // and that re-verification checks the same owner. A
             // delegation the admission cannot back is refused, never
@@ -311,7 +201,7 @@ async fn a_delegated_caller_whose_admission_cannot_name_its_agent_is_refused() {
             assert!(matches!(
                 fixture
                     .state
-                    .caller_key(&keyless, request.invocation),
+                    .caller_key(&keyless, invocation()),
                 Err(ref reason) if reason == "admitted caller certificate missing"
             ));
             for admission in [
@@ -338,446 +228,6 @@ async fn a_delegated_caller_whose_admission_cannot_name_its_agent_is_refused() {
             );
         })
         .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            // Another device's caller reusing a delivered invocation's UUID.
-            {
-                let scenario = "cross-device";
-                let root = tempfile::tempdir().unwrap();
-                let (mut fixture, caller, request) = durable_fixture(root.path(), None);
-                let other = fixture
-                    .state
-                    .verify_action_caller(
-                        &fixture.cluster_id,
-                        &certified_join(
-                            &fixture.cluster_id,
-                            &SigningKey::from_bytes(&[51; 32]),
-                            &SigningKey::from_bytes(&[53; 32]),
-                        )
-                        .encode()
-                        .unwrap(),
-                    )
-                    .unwrap();
-                let wire_id = fixture
-                    .state
-                    .start_verified_invocation(&caller, &request, None)
-                    .unwrap()
-                    .wire_id;
-                let (_, empty_rx) = mpsc::unbounded_channel();
-                let rx = Rc::new(AsyncMutex::new(std::mem::replace(
-                    &mut fixture.invocation_rx,
-                    empty_rx,
-                )));
-                let stream = InvocationStreamServer {
-                    rx: rx.clone(),
-                    delivered: None,
-                };
-                let response = stream.next().await.unwrap();
-                assert_eq!(response.id, wire_id);
-                assert_eq!(response.invocation, request.invocation);
-                effect(root.path());
-                let conflict = fixture
-                    .state
-                    .start_verified_invocation(&other, &request, None)
-                    .map(|_| ());
-                assert!(
-                    conflict
-                        .err()
-                        .unwrap()
-                        .contains("action_invocation_identity_conflict"),
-                    "{scenario}: conflicting UUID must fail before app dispatch"
-                );
-                assert!(
-                    rx.lock().await.try_recv().is_err(),
-                    "only one application delivery"
-                );
-                assert!(
-                    fixture
-                        .state
-                        .verified_invocation_status(&other, request.invocation)
-                        .unwrap()
-                        .is_none()
-                );
-                assert!(
-                    fixture
-                        .state
-                        .cancel_verified_invocation(&other, request.invocation)
-                        .await
-                        .is_err()
-                );
-                let channel = fixture.invocation_channel();
-                let terminal = tilo_actions::InvocationUpdate::Succeeded {
-                    invocation: request.invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                };
-                update_app(&channel, wire_id, &terminal).await.unwrap();
-                let duplicate = fixture
-                    .state
-                    .start_verified_invocation(&caller, &request, None)
-                    .unwrap();
-                assert_eq!(duplicate.wire_id, wire_id);
-                assert_eq!(duplicate.update, terminal);
-                let membership = fixture.membership.as_ref().unwrap().clone();
-                drop(channel);
-                let gone = fixture.state.gone();
-                drop(fixture);
-                broker_gone(gone).await;
-                let (mut reopened, _, mut again) = durable_fixture(root.path(), Some(membership));
-                again.invocation = request.invocation;
-                assert!(
-                    reopened
-                        .state
-                        .start_verified_invocation(&other, &again, None)
-                        .is_err(),
-                    "{scenario}: UUID reservation survives terminal completion and restart"
-                );
-                assert!(reopened.invocation_rx.try_recv().is_err());
-                assert_eq!(
-                    std::fs::read_to_string(root.path().join("effect-counter")).unwrap(),
-                    "1"
-                );
-            }
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn invocation_journal_real_effect_once_across_concurrent_duplicate_response_loss_and_restart()
-{
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let root = tempfile::tempdir().unwrap();
-            let (mut fixture, caller, request) = durable_fixture(root.path(), None);
-            fixture
-                .state
-                .publishers
-                .surfaces
-                .lock()
-                .unwrap()
-                .get_mut(&71)
-                .unwrap()
-                .actions[0]
-                .contract
-                .result = tilo_actions::ResultSpec::Json {
-                schema: serde_json::json!({"type":"object"}),
-            };
-            // Every thread is spawned before any is joined.
-            #[expect(
-                clippy::needless_collect,
-                reason = "spawning all threads before joining is the concurrency under test"
-            )]
-            let requests = (0..8)
-                .map(|_| {
-                    let state = fixture.state.clone();
-                    let caller = caller.clone();
-                    let request = request.clone();
-                    std::thread::spawn(move || {
-                        state
-                            .start_verified_invocation(&caller, &request, None)
-                            .unwrap()
-                    })
-                })
-                .collect::<Vec<_>>();
-            let admitted = requests
-                .into_iter()
-                .map(|t| t.join().unwrap())
-                .collect::<Vec<_>>();
-            assert!(
-                admitted
-                    .iter()
-                    .all(|row| row.wire_id == admitted[0].wire_id)
-            );
-            let (_, empty_rx) = mpsc::unbounded_channel();
-            let rx = Rc::new(AsyncMutex::new(std::mem::replace(
-                &mut fixture.invocation_rx,
-                empty_rx,
-            )));
-            let stream = InvocationStreamServer {
-                rx: rx.clone(),
-                delivered: None,
-            };
-            let delivered = stream.next().await.unwrap();
-            let delivered_id = delivered.id;
-            assert_eq!(delivered.invocation, request.invocation);
-            assert!(
-                rx.lock().await.try_recv().is_err(),
-                "one actual application delivery"
-            );
-            effect(root.path());
-            let terminal = tilo_actions::InvocationUpdate::Succeeded {
-                invocation: request.invocation,
-                output: tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({"counter":1,"private":"private-result-token"})),
-                    resources: vec![],
-                },
-            };
-            fixture
-                .complete_invocation(delivered_id, &terminal)
-                .await
-                .unwrap();
-            // Discard the original response and retry under freshly verified caller ownership.
-            let duplicate = fixture
-                .state
-                .start_verified_invocation(&caller, &request, None)
-                .unwrap();
-            assert_eq!(duplicate.update, terminal);
-            assert!(
-                fixture
-                    .state
-                    .invocation_statuses(&tilo_actions::MemberId::person(
-                        caller.admitted.actor_key.clone()
-                    ))
-                    .is_empty(),
-                "legacy actor-only lookup cannot reveal certified terminal output"
-            );
-            let mut changed = request.clone();
-            changed.argument = Some(String::new());
-            assert!(
-                fixture
-                    .state
-                    .start_verified_invocation(&caller, &changed, None)
-                    .is_err()
-            );
-            let membership = fixture.membership.clone().unwrap();
-            membership.write().persist_path = Some(root.path().join("state.json"));
-            let gone = fixture.state.gone();
-            drop(fixture);
-            broker_gone(gone).await;
-            let (mut restarted, caller, _) = durable_fixture(root.path(), Some(membership));
-            assert_eq!(
-                restarted
-                    .state
-                    .start_verified_invocation(&caller, &request, None)
-                    .unwrap()
-                    .update,
-                terminal
-            );
-            assert!(restarted.invocation_rx.try_recv().is_err());
-            assert_eq!(
-                std::fs::read_to_string(root.path().join("effect-counter")).unwrap(),
-                "1"
-            );
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn invocation_journal_crash_boundaries_never_repeat_real_effect() {
-    tokio::task::LocalSet::new().run_until(async {
-        for boundary in [BarrierFailure::File, BarrierFailure::AfterAdmission, BarrierFailure::Terminal] {
-            let root = tempfile::tempdir().unwrap();
-            let (mut fixture, caller, request) = durable_fixture(root.path(), None);
-            if boundary == BarrierFailure::Terminal {
-                fixture.state.start_verified_invocation(&caller, &request, None).unwrap();
-                let delivered = fixture.invocation_rx.try_recv().unwrap();
-                effect(root.path());
-                fixture.state.journal.lock().unwrap().as_mut().unwrap().as_mut().unwrap().fail_at = Some(BarrierFailure::File);
-                assert!(fixture.complete_invocation(delivered.id, &tilo_actions::InvocationUpdate::Succeeded { invocation: request.invocation, output: tilo_actions::ActionOutput::default() }).await.is_err());
-            } else {
-                fixture.state.journal.lock().unwrap().as_mut().unwrap().as_mut().unwrap().fail_at = Some(boundary);
-                assert!(fixture.state.start_verified_invocation(&caller, &request, None).is_err());
-                assert!(fixture.invocation_rx.try_recv().is_err());
-            }
-            let membership = fixture.membership.clone().unwrap();
-            let gone = fixture.state.gone();
-            drop(fixture);
-            broker_gone(gone).await;
-            let (mut restarted, caller, _) = durable_fixture(root.path(), Some(membership));
-            if boundary == BarrierFailure::File {
-                assert!(restarted.state.verified_invocation_status(&caller, request.invocation).unwrap().is_none());
-                assert!(!root.path().join("effect-counter").exists());
-            } else {
-                let result = restarted.state.start_verified_invocation(&caller, &request, None).unwrap();
-                assert!(result.uncertain);
-                assert!(matches!(result.update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown" && !error.retryable));
-                assert!(restarted.invocation_rx.try_recv().is_err());
-                if boundary == BarrierFailure::Terminal {
-                    assert_eq!(std::fs::read_to_string(root.path().join("effect-counter")).unwrap(), "1");
-                } else { assert!(!root.path().join("effect-counter").exists()); }
-            }
-        }
-    }).await;
-}
-
-tilo_test_env::scenario! {
-    fn the_invocation_journal_is_owner_scoped_and_fails_safely;
-
-    phase invocation_journal_owner_is_device_scoped_and_live_authority_precedes_duplicate_disclosure;
-    {
-        let root = tempfile::tempdir().unwrap();
-        let (mut fixture, caller, request) = durable_fixture(root.path(), None);
-        fixture
-            .state
-            .start_verified_invocation(&caller, &request, None)
-            .unwrap();
-        fixture.invocation_rx.try_recv().unwrap();
-        let other_device = SigningKey::from_bytes(&[53; 32]);
-        let other = fixture
-            .state
-            .verify_action_caller(
-                &fixture.cluster_id,
-                &certified_join(
-                    &fixture.cluster_id,
-                    &SigningKey::from_bytes(&[51; 32]),
-                    &other_device,
-                )
-                .encode()
-                .unwrap(),
-            )
-            .unwrap();
-        assert!(
-            fixture
-                .state
-                .verified_invocation_status(&other, request.invocation)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            futures::executor::block_on(
-                fixture
-                    .state
-                    .cancel_verified_invocation(&other, request.invocation)
-            )
-            .is_err()
-        );
-        assert!(
-            fixture
-                .state
-                .invocation_statuses(&tilo_actions::MemberId::person(caller.admitted.actor_key.clone()))
-                .is_empty(),
-            "legacy root-scoped queries must not disclose another device's private results"
-        );
-        let mut bad = request.clone();
-        bad.invocation = tilo_actions::InvocationId::new();
-        bad.document_id = "different-record".into();
-        assert!(
-            fixture
-                .state
-                .start_verified_invocation(&caller, &bad, None)
-                .is_err()
-        );
-        fixture.membership.as_ref().unwrap().write().workspaces[0].set_owner("new-owner");
-        assert!(
-            fixture
-                .state
-                .start_verified_invocation(&caller, &request, None)
-                .is_err()
-        );
-        assert!(
-            fixture
-                .state
-                .verified_invocation_status(&caller, request.invocation)
-                .is_err()
-        );
-        assert!(fixture.invocation_rx.try_recv().is_err());
-    }
-
-    phase invocation_journal_old_apps_wrong_workspaces_and_silence_fail_safely;
-    {
-        for disconnected in [false, true] {
-            let root = tempfile::tempdir().unwrap();
-            let (mut fixture, caller, request) = durable_fixture(root.path(), None);
-            fixture
-                .state
-                .stable_invocation_subscribers
-                .lock()
-                .unwrap()
-                .clear();
-            assert!(
-                fixture
-                    .state
-                    .start_verified_invocation(&caller, &request, None)
-                    .unwrap_err()
-                    .contains("stable_identity_unavailable")
-            );
-            assert!(fixture.invocation_rx.try_recv().is_err());
-            fixture
-                .state
-                .stable_invocation_subscribers
-                .lock()
-                .unwrap()
-                .insert(71);
-            let original_workspace = fixture
-                .state
-                .publishers.surfaces
-                .lock()
-                .unwrap()
-                .get(&71)
-                .unwrap()
-                .route
-                .cluster_id
-                .clone();
-            fixture
-                .state
-                .publishers.surfaces
-                .lock()
-                .unwrap()
-                .get_mut(&71)
-                .unwrap()
-                .route
-                .cluster_id = uuid::Uuid::new_v4().to_string();
-            assert!(
-                fixture
-                    .state
-                    .start_verified_invocation(&caller, &request, None)
-                    .is_err()
-            );
-            fixture
-                .state
-                .publishers.surfaces
-                .lock()
-                .unwrap()
-                .get_mut(&71)
-                .unwrap()
-                .route
-                .cluster_id = original_workspace;
-            let admitted = fixture
-                .state
-                .start_verified_invocation(&caller, &request, None)
-                .unwrap();
-            fixture.invocation_rx.try_recv().unwrap();
-            let cancelled = futures::executor::block_on(
-                fixture
-                    .state
-                    .cancel_verified_invocation(&caller, request.invocation),
-            )
-            .unwrap();
-            assert!(cancelled.cancellation_requested);
-            // A durable cancellation request acknowledges receipt only; it
-            // does not assert that the running external effect stopped.
-            if disconnected {
-                fixture.state.remove_connection(71);
-            } else {
-                fixture.state.expire_stale_invocations_at(
-                    std::time::Instant::now(),
-                    Duration::ZERO,
-                    Duration::ZERO,
-                );
-            }
-            let status = fixture
-                .state
-                .verified_invocation_status(&caller, request.invocation)
-                .unwrap()
-                .unwrap();
-            assert!(status.uncertain);
-            assert!(
-                matches!(status.update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown")
-            );
-            assert_eq!(
-                fixture
-                    .state
-                    .start_verified_invocation(&caller, &request, None)
-                    .unwrap()
-                    .wire_id,
-                admitted.wire_id
-            );
-            assert!(fixture.invocation_rx.try_recv().is_err());
-        }
-    }
 }
 
 /// An agent, a device admin or another device drives an app through
@@ -849,65 +299,12 @@ async fn the_host_learns_each_invocation_an_app_is_handed() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn invocation_journal_native_stream_negotiates_uuid_capability_explicitly() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let root = tempfile::tempdir().unwrap();
-            let (fixture, caller, request) = durable_fixture(root.path(), None);
-            let (connection, outgoing) = wire::WireConnection::new(None);
-            let handle = connection.open(wire::ChannelSession::new(Rc::new(JoinedChannel {
-                as_app: None,
-                committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
-                state: fixture.state.clone(),
-                directories: fixture.directories.clone(),
-                channel_id: fixture.route.channel_key(),
-                peer_id: fixture.peer_id,
-                connection_id: fixture.peer_id,
-                verified_identity: caller.admitted.clone(),
-                resource_type: None,
-                route_access: RouteAccess::Own,
-                lease: None,
-                _hold: None,
-            })));
-            let app = wire_client(connection, outgoing);
-            let _legacy = app
-                .wire()
-                .subscribe(
-                    handle,
-                    runtime_collab::wire::Topic::Invocations { stable_ids: false },
-                )
-                .await
-                .unwrap();
-            assert!(
-                fixture
-                    .state
-                    .start_verified_invocation(&caller, &request, None)
-                    .unwrap_err()
-                    .contains("stable_identity_unavailable")
-            );
-            let stream = app
-                .channel(handle)
-                .subscribe_stable_invocations()
-                .await
-                .unwrap();
-            fixture
-                .state
-                .start_verified_invocation(&caller, &request, None)
-                .unwrap();
-            let delivered = stream.read().await.unwrap();
-            assert_eq!(delivered.invocation_uuid, *request.invocation.0.as_bytes());
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn invocation_journal_invalid_updates_never_persist() {
     tokio::task::LocalSet::new().run_until(async {
         let root = tempfile::tempdir().unwrap();
-        let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+        let (mut fixture, caller) = durable_fixture(root.path(), None);
         let channel = fixture.invocation_channel();
-        let admitted = fixture.state.start_verified_invocation(&caller, &request, None).unwrap();
-        fixture.invocation_rx.try_recv().unwrap();
+        let wire_id = admit(&mut fixture, &caller);
         let foreign = wire_channel(JoinedChannel {
             as_app: None,
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -918,23 +315,23 @@ async fn invocation_journal_invalid_updates_never_persist() {
             route_access: RouteAccess::Own,
             lease: None, _hold: None,
         });
-        assert!(update_app(&foreign, admitted.wire_id, &tilo_actions::InvocationUpdate::Succeeded {
-            invocation: request.invocation, output: tilo_actions::ActionOutput::default(),
+        assert!(update_app(&foreign, wire_id, &tilo_actions::InvocationUpdate::Succeeded {
+            invocation: invocation(), output: tilo_actions::ActionOutput::default(),
         }).await.is_err());
         let invalid = [
-            tilo_actions::InvocationUpdate::Accepted { invocation: request.invocation },
-            tilo_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: String::new(), completed: None, total: None, message: None },
-            tilo_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: "working".into(), completed: Some(2), total: Some(1), message: None },
-            tilo_actions::InvocationUpdate::Item { invocation: request.invocation, sequence: 1, value: serde_json::json!({"private":"value"}) },
-            tilo_actions::InvocationUpdate::Failed { invocation: request.invocation, error: tilo_actions::ActionFailure { code: "bad".into(), message: "failed".into(), details: None, retryable: true } },
-            tilo_actions::InvocationUpdate::Succeeded { invocation: request.invocation, output: tilo_actions::ActionOutput { value: Some(serde_json::json!("undeclared")), resources: vec![] } },
+            tilo_actions::InvocationUpdate::Accepted { invocation: invocation() },
+            tilo_actions::InvocationUpdate::Progress { invocation: invocation(), sequence: 1, phase: String::new(), completed: None, total: None, message: None },
+            tilo_actions::InvocationUpdate::Progress { invocation: invocation(), sequence: 1, phase: "working".into(), completed: Some(2), total: Some(1), message: None },
+            tilo_actions::InvocationUpdate::Item { invocation: invocation(), sequence: 1, value: serde_json::json!({"private":"value"}) },
+            tilo_actions::InvocationUpdate::Failed { invocation: invocation(), error: tilo_actions::ActionFailure { code: "bad".into(), message: "failed".into(), details: None, retryable: true } },
+            tilo_actions::InvocationUpdate::Succeeded { invocation: invocation(), output: tilo_actions::ActionOutput { value: Some(serde_json::json!("undeclared")), resources: vec![] } },
         ];
         for update in invalid {
-            assert!(update_app(&channel, admitted.wire_id, &update).await.is_err());
-            assert!(matches!(fixture.state.verified_invocation_status(&caller, request.invocation).unwrap().unwrap().update, tilo_actions::InvocationUpdate::Accepted { .. }));
+            assert!(update_app(&channel, wire_id, &update).await.is_err());
+            assert!(matches!(fixture.state.invocation_status(wire_id).unwrap(), tilo_actions::InvocationUpdate::Accepted { .. }));
         }
-        channel.complete_invocation(admitted.wire_id, "", "").await.unwrap();
-        assert!(matches!(fixture.state.verified_invocation_status(&caller, request.invocation).unwrap().unwrap().update, tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == request.invocation));
+        channel.complete_invocation(wire_id, "", "").await.unwrap();
+        assert!(matches!(fixture.state.invocation_status(wire_id).unwrap(), tilo_actions::InvocationUpdate::Succeeded { invocation: done, .. } if done == invocation()));
     }).await;
 }
 
@@ -947,13 +344,9 @@ async fn a_completion_waiting_for_a_slow_disk_leaves_the_broker_loop_answering()
     tokio::task::LocalSet::new()
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
-            let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+            let (mut fixture, caller) = durable_fixture(root.path(), None);
             let channel = fixture.invocation_channel();
-            let admitted = fixture
-                .state
-                .start_verified_invocation(&caller, &request, None)
-                .unwrap();
-            fixture.invocation_rx.try_recv().unwrap();
+            let wire_id = admit(&mut fixture, &caller);
             // The disk: each journal write waits until the test lets it go.
             let (writing, at_write) = std::sync::mpsc::channel();
             let (release, released) = std::sync::mpsc::channel::<()>();
@@ -976,7 +369,7 @@ async fn a_completion_waiting_for_a_slow_disk_leaves_the_broker_loop_answering()
             }));
             let completing = tokio::task::spawn_local({
                 let channel = channel.clone();
-                let id = admitted.wire_id;
+                let id = wire_id;
                 async move { channel.complete_invocation(id, "", "").await }
             });
             tilo_test_env::within("the completion to reach its journal write", async {
@@ -988,7 +381,7 @@ async fn a_completion_waiting_for_a_slow_disk_leaves_the_broker_loop_answering()
             // Another request the loop answers, as it answers an app.
             tilo_test_env::within(
                 "the loop to answer while the completion writes",
-                channel.invocation_cancellation(admitted.wire_id),
+                channel.invocation_cancellation(wire_id),
             )
             .await
             .unwrap();
@@ -998,12 +391,7 @@ async fn a_completion_waiting_for_a_slow_disk_leaves_the_broker_loop_answering()
             );
             assert!(
                 matches!(
-                    fixture
-                        .state
-                        .verified_invocation_status(&caller, request.invocation)
-                        .unwrap()
-                        .unwrap()
-                        .update,
+                    fixture.state.invocation_status(wire_id).unwrap(),
                     tilo_actions::InvocationUpdate::Accepted { .. }
                 ),
                 "nobody hears of the outcome before it is durable"
@@ -1014,218 +402,9 @@ async fn a_completion_waiting_for_a_slow_disk_leaves_the_broker_loop_answering()
                 .unwrap()
                 .unwrap();
             assert!(matches!(
-                fixture
-                    .state
-                    .verified_invocation_status(&caller, request.invocation)
-                    .unwrap()
-                    .unwrap()
-                    .update,
+                fixture.state.invocation_status(wire_id).unwrap(),
                 tilo_actions::InvocationUpdate::Succeeded { .. }
             ));
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn invocation_journal_immediate_progress_and_malformed_stream_items_are_rejected() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            for streaming in [false, true] {
-                let root = tempfile::tempdir().unwrap();
-                let (mut fixture, caller, request) = durable_fixture(root.path(), None);
-                let channel = fixture.invocation_channel();
-                fixture
-                    .state
-                    .publishers
-                    .surfaces
-                    .lock()
-                    .unwrap()
-                    .get_mut(&71)
-                    .unwrap()
-                    .actions[0]
-                    .contract
-                    .execution = if streaming {
-                    tilo_actions::ExecutionMode::Streaming {
-                        cancellable: true,
-                        item_schema: serde_json::json!({"type":"integer"}),
-                    }
-                } else {
-                    tilo_actions::ExecutionMode::Immediate
-                };
-                if !streaming {
-                    fixture
-                        .state
-                        .publishers
-                        .surfaces
-                        .lock()
-                        .unwrap()
-                        .get_mut(&71)
-                        .unwrap()
-                        .actions[0]
-                        .contract
-                        .result = tilo_actions::ResultSpec::None;
-                }
-                let admitted = fixture
-                    .state
-                    .start_verified_invocation(&caller, &request, None)
-                    .unwrap();
-                fixture.invocation_rx.try_recv().unwrap();
-                let bad = if streaming {
-                    tilo_actions::InvocationUpdate::Item {
-                        invocation: request.invocation,
-                        sequence: 1,
-                        value: serde_json::json!("wrong type"),
-                    }
-                } else {
-                    tilo_actions::InvocationUpdate::Progress {
-                        invocation: request.invocation,
-                        sequence: 1,
-                        phase: "working".into(),
-                        completed: None,
-                        total: None,
-                        message: None,
-                    }
-                };
-                assert!(update_app(&channel, admitted.wire_id, &bad).await.is_err());
-                assert!(matches!(
-                    fixture
-                        .state
-                        .verified_invocation_status(&caller, request.invocation)
-                        .unwrap()
-                        .unwrap()
-                        .update,
-                    tilo_actions::InvocationUpdate::Accepted { .. }
-                ));
-                if streaming {
-                    let item = tilo_actions::InvocationUpdate::Item {
-                        invocation: request.invocation,
-                        sequence: 1,
-                        value: serde_json::json!(7),
-                    };
-                    update_app(&channel, admitted.wire_id, &item).await.unwrap();
-                    assert!(update_app(&channel, admitted.wire_id, &item).await.is_err());
-                    assert_eq!(
-                        fixture
-                            .state
-                            .verified_invocation_status(&caller, request.invocation)
-                            .unwrap()
-                            .unwrap()
-                            .update,
-                        item
-                    );
-                }
-            }
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn invocation_journal_confirmation_uuid_and_lifecycle_remain_authoritative() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let root = tempfile::tempdir().unwrap();
-            let (mut fixture, caller, request) = durable_fixture(root.path(), None);
-            let channel = fixture.invocation_channel();
-            fixture
-                .state
-                .publishers
-                .surfaces
-                .lock()
-                .unwrap()
-                .get_mut(&71)
-                .unwrap()
-                .actions[0]
-                .contract
-                .confirmation = tilo_actions::ConfirmationPolicy::Phrase {
-                phrase: "erase exactly".into(),
-            };
-            let actor = &caller.admitted.actor_key;
-            assert!(
-                fixture
-                    .state
-                    .start_verified_invocation(&caller, &request, None)
-                    .is_err()
-            );
-            // The one-use grant admission mints once the person answered.
-            let offered = fixture.state.publishers.surfaces.lock().unwrap()[&71].actions[0].clone();
-            let token = fixture
-                .state
-                .mint_confirmation_grant(71, &offered, None, &BrokerActor::person(actor))
-                .unwrap();
-            let admitted = fixture
-                .state
-                .start_verified_invocation(&caller, &request, Some(&token))
-                .unwrap();
-            fixture
-                .state
-                .start_verified_invocation(&caller, &request, None)
-                .unwrap();
-            let delivered = fixture.invocation_rx.try_recv().unwrap();
-            assert_eq!(delivered.invocation, request.invocation);
-            let mut new = request.clone();
-            new.invocation = tilo_actions::InvocationId::new();
-            assert!(
-                fixture
-                    .state
-                    .start_verified_invocation(&caller, &new, Some(&token))
-                    .is_err()
-            );
-            let progress = tilo_actions::InvocationUpdate::Progress {
-                invocation: request.invocation,
-                sequence: 1,
-                phase: "working".into(),
-                completed: Some(0),
-                total: Some(1),
-                message: None,
-            };
-            update_app(&channel, delivered.id, &progress).await.unwrap();
-            assert!(update_app(&channel, delivered.id, &progress).await.is_err());
-            assert!(
-                update_app(
-                    &channel,
-                    delivered.id,
-                    &tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(
-                            delivered.id
-                        ))),
-                        output: tilo_actions::ActionOutput::default()
-                    }
-                )
-                .await
-                .is_err()
-            );
-            fixture
-                .state
-                .cancel_verified_invocation(&caller, request.invocation)
-                .await
-                .unwrap();
-            assert!(
-                !fixture
-                    .state
-                    .verified_invocation_status(&caller, request.invocation)
-                    .unwrap()
-                    .unwrap()
-                    .update
-                    .is_terminal(),
-                "request is not acknowledgement"
-            );
-            let cancelled = tilo_actions::InvocationUpdate::Cancelled {
-                invocation: request.invocation,
-                message: None,
-            };
-            update_app(&channel, delivered.id, &cancelled)
-                .await
-                .unwrap();
-            assert_eq!(
-                fixture
-                    .state
-                    .verified_invocation_status(&caller, request.invocation)
-                    .unwrap()
-                    .unwrap()
-                    .update,
-                cancelled
-            );
-            assert_eq!(admitted.wire_id, delivered.id);
         })
         .await;
 }

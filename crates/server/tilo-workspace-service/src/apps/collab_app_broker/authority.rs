@@ -87,43 +87,6 @@ pub(super) fn same_root_and_device(owner: &InvocationOwner) -> Option<([u8; 32],
     }
 }
 
-/// Inert transport-neutral request. The production peer entrypoint validates
-/// its wire host against the durable broker authority before constructing this
-/// request. Tests retain that host to exercise the equivalent direct-admission
-/// boundary. Task4c must also bind this to the certified recipient device
-/// before entering this API.
-#[derive(Clone, Debug)]
-pub(crate) struct CallerInvocation {
-    pub invocation: tilo_actions::InvocationId,
-    #[cfg(test)]
-    pub host: uuid::Uuid,
-    pub peer_id: u64,
-    pub app_id: String,
-    pub document_id: String,
-    pub resource: String,
-    pub action: String,
-    pub argument: Option<String>,
-    pub revision: Option<String>,
-    pub recipient: Option<[u8; 32]>,
-}
-
-impl CallerInvocation {
-    pub(super) fn intent(&self) -> serde_json::Value {
-        let mut intent = serde_json::json!({ "peer_id": self.peer_id, "app_id": self.app_id,
-            "document_id": self.document_id, "resource": self.resource,
-            "action": self.action, "argument": self.argument });
-        if let Some(fields) = intent.as_object_mut() {
-            if let Some(revision) = &self.revision {
-                fields.insert("revision".into(), serde_json::json!(revision));
-            }
-            if let Some(recipient) = &self.recipient {
-                fields.insert("recipient".into(), serde_json::json!(recipient));
-            }
-        }
-        intent
-    }
-}
-
 pub(super) fn revalidate_workspace_control(
     state: &AppBrokerState,
     route: &CrdtRoute,

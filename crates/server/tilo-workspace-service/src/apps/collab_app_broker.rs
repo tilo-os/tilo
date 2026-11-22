@@ -119,16 +119,15 @@ pub use committed_document::{
     AwaitingDocument, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
     NativeDocumentReadContext, NativeDocumentReads, ResourceRead,
 };
-use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
 use invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
 
+pub use action_provider::delivering::LaunchOrigin;
 pub use native_media::{
     AudioOutputFuture, AudioOutputServices, NativeMediaFuture, NativeMediaRequestContext,
     NativeMediaServices,
 };
 pub use published_invocation::OriginalInvocation;
-pub use action_provider::delivering::LaunchOrigin;
 use published_invocation::{InvocationCaller, OriginalInvocationData};
 
 use std::cell::RefCell;
@@ -323,15 +322,13 @@ struct InvocationInputs<'a> {
     confirmation_token: Option<&'a str>,
     context: Option<tilo_actions::ActionContext>,
 }
-/// Who an admission is held for and where it came from: genuine durable
-/// caller evidence, the directory revision the target was admitted at (the
+/// Who an admission is held for and where it came from: the directory revision the target was admitted at (the
 /// one the caller chose it at or, when it named none, the one its owner
 /// resolved it against; `None` only for an action no directory resolved), a
 /// private owner and original caller, the original policy time a retained
 /// invocation keeps, and a task-owned durable identity. Each call site names
 /// every field, so no ownership input is filled implicitly.
 struct AdmissionProvenance<'a> {
-    durable: Option<DurableContext<'a>>,
     revision: Option<&'a str>,
     origin: Option<InvocationCaller>,
     retained_time: Option<&'a crate::apps::policy_clock::PolicyTime>,
@@ -347,7 +344,6 @@ struct IntentInputs<'a> {
     argument: Option<&'a str>,
     revision: Option<&'a str>,
     original_request: Option<&'a tilo_actions::remote::InvokeRequest>,
-    durable: Option<DurableContext<'a>>,
     local_report: Option<&'a crate::apps::local_document_action::Request>,
     typed_local_arguments: Option<&'a serde_json::Map<String, serde_json::Value>>,
     receipt_context: &'a tilo_actions::ActionContext,

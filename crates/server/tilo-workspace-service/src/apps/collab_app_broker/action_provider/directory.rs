@@ -380,7 +380,6 @@ impl AppBrokerState {
                 context: request.context.clone(),
             },
             super::super::AdmissionProvenance {
-                durable: None,
                 revision: Some(&revision),
                 origin: origin.cloned(),
                 retained_time: None,

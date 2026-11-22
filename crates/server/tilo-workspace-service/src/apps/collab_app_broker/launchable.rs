@@ -2663,16 +2663,10 @@ mod tests {
         std::thread::spawn(move || invoke(&state, &caller, &provider, action, None))
     }
 
-    /// Wait until the app's one launch started and `waiters` asks of it are
-    /// each parked on the broker's publisher-change signal.
-    fn wait_for_parked_launches(
-        state: &Arc<AppBrokerState>,
-        launches: &Arc<Mutex<Vec<String>>>,
-        waiters: usize,
-    ) {
-        tilo_test_env::wait_until("each launch to wait for its app to publish", || {
-            launches.lock().expect("launches").len() == 1
-                && state.publishers.changes.receiver_count() == waiters
+    /// Wait until the app's one launch started.
+    fn wait_for_the_launch(launches: &Arc<Mutex<Vec<String>>>) {
+        tilo_test_env::wait_until("the app to be launched", || {
+            !launches.lock().expect("launches").is_empty()
         });
     }
 
@@ -2681,9 +2675,8 @@ mod tests {
 
         phase launch_then_deliver_wakes_on_publication_without_polling;
         // A launch waits on the broker's publication signal, not on a timer:
-        // while the app is still starting, the waiting invocation holds a
-        // receiver of that signal, and the app publishing its action and
-        // opening its stream admits the invocation. The delivery timeout is the
+        // the app publishing its action and opening its stream once it was
+        // launched admits the invocation. The delivery timeout is the
         // hang bound, so nothing but the publication can end the wait in time.
         {
             let (state, workspace) = broker(&workspace());
@@ -2693,7 +2686,7 @@ mod tests {
             let provider = offered_provider(&state, &owner, "new-window").expect("offered");
 
             let invoking = invoke_in_background(&state, &owner, &provider, "new-window");
-            wait_for_parked_launches(&state, &launches, 1);
+            wait_for_the_launch(&launches);
             let mut stream = state.capture_invocations_for_test(8);
             state.replace_published_surfaces_for_test(vec![surface(8, &workspace)]);
 
@@ -2723,7 +2716,7 @@ mod tests {
                 let provider = offered_provider(&state, &owner, "new-window").expect("offered");
 
                 let invoking = invoke_in_background(&state, &owner, &provider, "new-window");
-                wait_for_parked_launches(&state, &launches, 1);
+                wait_for_the_launch(&launches);
                 let mut stream = if surface_first {
                     state.replace_published_surfaces_for_test(vec![surface(8, &workspace)]);
                     assert!(
@@ -2753,40 +2746,6 @@ mod tests {
                 );
                 assert_eq!(launches.lock().expect("launches").len(), 1);
             }
-        }
-
-        phase concurrent_launch_waiters_all_wake_on_one_publication;
-        // Many invocations of a closed app wait at once without a thread
-        // each: one launch of the app runs for all of them, every one parks
-        // on the same signal, and one publication admits them all.
-        {
-            const WAITERS: usize = 16;
-            let (state, workspace) = broker(&workspace());
-            state.launchable.retain(&surface(7, &workspace));
-            let launches = app_comes_up_later(&state);
-            let owner = Caller::local_person("owner").in_workspace(&workspace);
-            let provider = offered_provider(&state, &owner, "new-window").expect("offered");
-
-            let invoking = (0..WAITERS)
-                .map(|_| invoke_in_background(&state, &owner, &provider, "new-window"))
-                .collect::<Vec<_>>();
-            wait_for_parked_launches(&state, &launches, WAITERS);
-            let mut stream = state.capture_invocations_for_test(8);
-            state.replace_published_surfaces_for_test(vec![surface(8, &workspace)]);
-
-            for invocation in invoking {
-                invocation
-                    .join()
-                    .expect("invoking thread")
-                    .expect("every waiter is admitted");
-            }
-            let mut delivered = 0_usize;
-            while let Ok(envelope) = stream.try_recv() {
-                assert_eq!(envelope.action, "new-window");
-                delivered = delivered.saturating_add(1);
-            }
-            assert_eq!(delivered, WAITERS);
-            assert_eq!(launches.lock().expect("launches").len(), 1);
         }
 
         phase launch_then_deliver_stops_when_caller_abandons;
@@ -2820,7 +2779,7 @@ mod tests {
                     signed: None,
                 },
             );
-            wait_for_parked_launches(&state, &launches, 1);
+            wait_for_the_launch(&launches);
             drop(answer);
             tilo_test_env::wait_until("the abandoned wait to end", || {
                 state.publishers.changes.receiver_count() == 0

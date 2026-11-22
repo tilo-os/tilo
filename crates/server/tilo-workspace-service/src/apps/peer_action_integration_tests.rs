@@ -97,7 +97,7 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
-            let (mut fixture, _, _) = durable_fixture(root.path(), None);
+            let (mut fixture, _) = durable_fixture(root.path(), None);
             let api = device_api(&fixture);
             let caller = a_device(&fixture, 52);
             let other = a_device(&fixture, 53);
@@ -270,7 +270,7 @@ async fn a_resolved_target_that_is_gone_or_stale_is_refused() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
-            let (mut fixture, _, _) = durable_fixture(root.path(), None);
+            let (mut fixture, _) = durable_fixture(root.path(), None);
             let api = device_api(&fixture);
             let caller = a_device(&fixture, 52);
             // What the caller names is resolved by the directory that publishes
@@ -315,7 +315,7 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
-            let (mut fixture, _, _) = durable_fixture(root.path(), None);
+            let (mut fixture, _) = durable_fixture(root.path(), None);
             let membership = fixture.membership.as_ref().unwrap().clone();
             let caller = a_device(&fixture, 52);
             let host = fixture.state.invocation_host().unwrap();
@@ -365,7 +365,7 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
             drop(api);
             drop(fixture);
             broker_gone(gone).await;
-            let (mut reopened, _, _) = durable_fixture(root.path(), Some(membership));
+            let (mut reopened, _) = durable_fixture(root.path(), Some(membership));
             assert_eq!(reopened.state.invocation_host().unwrap(), host);
             let api = device_api(&reopened);
             assert_eq!(

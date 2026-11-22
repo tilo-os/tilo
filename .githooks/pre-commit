@@ -152,18 +152,9 @@ fi
 # workspace-hack dependency), so those are staged as well; a file that already had unstaged
 # edits is left for its author and the commit fails.
 if grep -qE '(^|/)Cargo\.toml$|^Cargo\.lock$' <<< "$lock_staged_names"; then
-  # Where cargo-hakari is not installed (a machine that builds nothing itself), t runs the
-  # hakari check's fix on the build server and writes what it changes here.
-  hakari_regenerate=""
   if command -v cargo >/dev/null 2>&1 && cargo hakari --version >/dev/null 2>&1; then
-    hakari_regenerate="cargo hakari generate && cargo hakari manage-deps --yes"
-  elif command -v t >/dev/null 2>&1; then
-    hakari_regenerate="t fix hakari"
-  fi
-  if [ -n "$hakari_regenerate" ]; then
     hakari_dirty=$(GIT_INDEX_FILE="$full_index" git diff --name-only)
-    # git points GIT_INDEX_FILE at the commit's index; the generator reads the worktree.
-    if env -u GIT_INDEX_FILE bash -c "$hakari_regenerate" >/dev/null 2>&1; then
+    if cargo hakari generate >/dev/null 2>&1 && cargo hakari manage-deps --yes >/dev/null 2>&1; then
       hakari_wrote=0
       hakari_left=""
       while IFS= read -r f; do
