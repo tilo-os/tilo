@@ -774,6 +774,7 @@ impl Worker {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let invocation = request.invocation;
         let logged = self.log().insert(caller, request);
