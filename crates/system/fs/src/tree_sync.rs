@@ -761,6 +761,11 @@ struct Refusals {
     last: Option<(Instant, String)>,
 }
 
+/// How long one write may take to reach the workspace before it counts as refused: a write
+/// waits for the workspace's keys and for the device that serves it, and a link that stopped
+/// answering would otherwise hold every pass, and with it every later write of the folder.
+const WRITE_WITHIN: Duration = Duration::from_secs(60);
+
 /// The first wait after a refusal.
 const FIRST_REFUSED_WAIT: Duration = Duration::from_secs(1);
 /// The longest wait after refusals in a row.
@@ -1132,6 +1137,26 @@ impl Sync {
         }
     }
 
+    /// Write `changes` to record `chunk` through the writer, its founding write and the whole
+    /// record as `founding` and `snapshot` say. A write that did not end within
+    /// [`WRITE_WITHIN`] is refused as one the workspace refused: it goes again after the
+    /// record's wait, and the folder says why its changes wait.
+    async fn write(
+        &mut self,
+        chunk: TreeChunk,
+        changes: &[u8],
+        founding: bool,
+        snapshot: bool,
+    ) -> Result<(), String> {
+        let writing = self.writer.write(chunk, changes, founding, snapshot);
+        if let Ok(written) = tokio::time::timeout(WRITE_WITHIN, writing).await {
+            return written;
+        }
+        let why = format!("no answer within {} s", WRITE_WITHIN.as_secs());
+        self.refused(chunk, &why);
+        Err(why)
+    }
+
     /// Merge what each opened record holds that this namespace has not merged yet, and open
     /// the chunks the tree's own record lists that this device has not opened.
     async fn pull_all(&mut self) {
@@ -1360,7 +1385,6 @@ impl Sync {
             // this device.
             if !write.changes.is_empty()
                 && self
-                    .writer
                     .write(write.chunk, &write.changes, false, false)
                     .await
                     .is_err()
@@ -1449,12 +1473,7 @@ impl Sync {
                     continue;
                 }
                 let genesis = automerge::AutoCommit::new().save();
-                if self
-                    .writer
-                    .write(chunk, &genesis, true, true)
-                    .await
-                    .is_err()
-                {
+                if self.write(chunk, &genesis, true, true).await.is_err() {
                     waiting = true;
                     continue;
                 }
@@ -1930,6 +1949,97 @@ mod tests {
             }
         }
         went
+    }
+
+    /// A workspace with nothing yet, which answers each record the sync opens as one it holds
+    /// none of.
+    struct Empty(tokio::sync::mpsc::UnboundedSender<Wake>);
+
+    impl Records for Empty {
+        fn read(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<&[[u8; 32]]>,
+        ) -> Result<Reading, String> {
+            Ok(Reading::Absent)
+        }
+    }
+
+    impl TreePeer for Empty {
+        fn open(&self, chunk: TreeChunk) {
+            let answer = DocumentAnswer::Sent { frames: 0 };
+            let _ = self.0.send(Wake::Opened { chunk, answer });
+        }
+        fn answer(&self, _: TreeChunk) -> Option<DocumentAnswer> {
+            Some(DocumentAnswer::Sent { frames: 0 })
+        }
+        fn holds(&self, _: TreeChunk) -> bool {
+            false
+        }
+        fn holding(&self, _: TreeChunk) -> bool {
+            false
+        }
+        fn pending(&self) -> usize {
+            0
+        }
+        fn reask_content(&self) {}
+    }
+
+    /// A writer whose first write never ends, as one over a link that stopped answering, and
+    /// whose later writes are taken.
+    struct Unanswered(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl TreeWriter for Unanswered {
+        fn write<'a>(&'a mut self, _: TreeChunk, _: &'a [u8], _: bool, _: bool) -> WriteFuture<'a> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                Box::pin(std::future::pending())
+            } else {
+                Box::pin(std::future::ready(Ok(())))
+            }
+        }
+    }
+
+    /// A write that never ends holds the folder no longer than its bound: it counts as refused,
+    /// and the change goes again after the refusal's wait and is taken.
+    #[tokio::test(start_paused = true)]
+    async fn a_write_that_never_ends_is_refused_and_sent_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tell, wakes) = tokio::sync::mpsc::unbounded_channel();
+        let workspace = Arc::new(Empty(tell));
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sync = TreeSync::start(Config {
+            workspace: "studio".to_owned(),
+            device: [1; 32],
+            person: [2; 32],
+            kept_at: dir.path().join("tree"),
+            documents: Arc::clone(&workspace) as Arc<dyn Records>,
+            writer: Box::new(Unanswered(Arc::clone(&writes))),
+            peer: workspace,
+            content: Arc::new(
+                crate::ContentStore::open(dir.path().join("blobs"))
+                    .await
+                    .unwrap(),
+            ),
+            wakes,
+        })
+        .await
+        .unwrap();
+        sync.namespace
+            .lock_recover()
+            .create_file(crate::namespace::ROOT_INO, "a.txt", None, 1, 1)
+            .unwrap();
+        // The refusal's wait is read on the wall clock, the write's bound on the runtime's.
+        let began = std::time::Instant::now();
+        while writes.load(Ordering::SeqCst) < 2 {
+            assert!(
+                began.elapsed() < Duration::from_secs(30),
+                "the folder never wrote again after a write that did not end: {:?}",
+                sync.status()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// A record this device sent all of, then merged as the workspace held it before (a holder
