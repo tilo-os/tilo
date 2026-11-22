@@ -45,8 +45,7 @@ DECISION = "crates/system/endpoint-reachability/src/directory.rs"
 # handed; the session's and the filesystem's endpoints are not here.
 EXEMPT = {
     # The registry transport dials the registry with an address it was given.
-    # The server's own diagnostic probes.
-    "crates/server/tilo-server/src/files_probe.rs": "server diagnostic probe",
+    # The server's admin client.
     "crates/server/tilo-server/src/admin.rs": "server admin client",
     # A client of the device administrator, which chooses its own relays.
     "crates/dev/tilo-device-admin/src/net.rs": "device-admin client",
