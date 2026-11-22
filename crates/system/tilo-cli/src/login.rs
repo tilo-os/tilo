@@ -100,7 +100,7 @@ pub fn logged_in() -> bool {
 /// # Errors
 /// A Tilo desktop serves this login, so it is a device already, or the key cannot be read or
 /// kept.
-fn this_device_key() -> Result<SigningKey> {
+pub(crate) fn this_device_key() -> Result<SigningKey> {
     if tilo_api::client::desktop_socket().is_some() {
         bail!(
             "This computer's Tilo desktop is one of your devices already: `tilo` commands and \
@@ -581,7 +581,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
 }
 
 /// The workspace this computer's daemon serves before a login exists: the one it founded.
-async fn founded_workspace(client: &Client) -> Result<String> {
+pub(crate) async fn founded_workspace(client: &Client) -> Result<String> {
     let listed = client.workspaces().await?;
     listed
         .get("workspaces")

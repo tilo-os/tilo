@@ -77,15 +77,27 @@ fn person_here() -> Result<(SigningKey, Device, crate::identity::Person)> {
 
 /// `tilo device add`: print a ticket, wait for a computer to log in with it, and say which one
 /// it was. With `no_wait`, print only the ticket: this computer's daemon keeps serving it while
-/// it lasts.
+/// it lasts. With `server`, the computer is a server, which keeps the person's workspaces; with
+/// `plan`, it is the machine that plan describes, and its certification takes the plan's entry
+/// into its own.
+///
+/// A computer with the person's root and no login adds devices too: the workspace its daemon
+/// serves is where the action is asked.
 ///
 /// # Errors
 /// This computer cannot add devices, or no computer came before the ticket ran out.
-pub fn add(json: bool, adding: Adding, no_wait: bool) -> Result<ExitCode> {
+pub fn add(
+    json: bool,
+    adding: Adding,
+    no_wait: bool,
+    plan: Option<&str>,
+    server: bool,
+) -> Result<ExitCode> {
     login::trust_test_certificates()?;
     crate::identity::convert_earlier()?;
     let login_place = login::Place::here(crate::identity::paths())?;
-    let (key, here) = login::load(&login_place)?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    let key = login::this_device_key()?;
+    let here = login::load(&login_place)?;
     let place = DaemonPlace::of(login_place.dir(), &key.verifying_key().to_bytes())
         .map_err(anyhow::Error::msg)?;
     login::ensure_daemon(&place)?;
@@ -96,17 +108,27 @@ pub fn add(json: bool, adding: Adding, no_wait: bool) -> Result<ExitCode> {
             key_file: None,
             json: false,
         })?;
-        let workspace = here.workspace.clone();
+        let workspace = match &here {
+            Some((_, device)) => device.workspace.clone(),
+            None => login::founded_workspace(&client).await?,
+        };
         let capability = match adding {
             Adding::Member => "member",
             Adding::Admin => "admin",
         };
+        let mut args = json!({ "capability": capability });
+        if let Some(plan) = plan {
+            args["plan"] = json!(plan);
+        }
+        if server {
+            args["server"] = json!(true);
+        }
         let issued = client
             .act(
                 &workspace,
                 "devices",
                 tilo_device_identity::login::ISSUE,
-                &json!({ "capability": capability }),
+                &args,
                 "Add a device",
             )
             .await?;
@@ -148,16 +170,19 @@ pub fn add(json: bool, adding: Adding, no_wait: bool) -> Result<ExitCode> {
         let bytes = hex::decode(encoded).map_err(|error| anyhow!("the certificate: {error}"))?;
         let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&bytes)
             .map_err(|error| anyhow!("the certificate: {error}"))?;
-        // The person's other devices list it as soon as the host keeps it there.
-        match login::connect(&key, &here, None).await {
-            Ok(entered) => {
-                let kept = keep_in_list(&entered, &cert).await;
-                entered.close();
-                if let Err(error) = kept {
-                    eprintln!("Your other devices list it once it enters: {error}");
+        // The person's other devices list it as soon as the host keeps it there. A computer with
+        // no login has no session of its own to enter with: the host lists it as it enters.
+        if let Some((key, here)) = &here {
+            match login::connect(key, here, None).await {
+                Ok(entered) => {
+                    let kept = keep_in_list(&entered, &cert).await;
+                    entered.close();
+                    if let Err(error) = kept {
+                        eprintln!("Your other devices list it once it enters: {error}");
+                    }
                 }
+                Err(error) => eprintln!("Your other devices list it once it enters: {error}"),
             }
-            Err(error) => eprintln!("Your other devices list it once it enters: {error}"),
         }
         Ok::<Option<DeviceCert>, anyhow::Error>(Some(cert))
     })?;

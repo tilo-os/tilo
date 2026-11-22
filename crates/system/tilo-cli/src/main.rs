@@ -507,6 +507,14 @@ enum DeviceCmd {
         /// provisioner that hands it on rather than waiting for the computer itself.
         #[arg(long)]
         no_wait: bool,
+        /// The planned machine this computer will be, by its plan's id in your Servers
+        /// workspace: its certification takes that entry into its own, under its device key.
+        #[arg(long)]
+        plan: Option<String>,
+        /// The computer is a server, which keeps your workspaces: its certification leaves a
+        /// new entry for it in your Servers workspace.
+        #[arg(long)]
+        server: bool,
     },
     /// Your devices, as your workspaces know them.
     Ls {
@@ -1539,7 +1547,9 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
             capability,
             json,
             no_wait,
-        } => device::add(json, capability, no_wait),
+            plan,
+            server,
+        } => device::add(json, capability, no_wait, plan.as_deref(), server),
         DeviceCmd::Ls { json } => device::list(json),
         DeviceCmd::Revoke {
             device: which,

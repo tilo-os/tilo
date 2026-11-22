@@ -1334,7 +1334,7 @@ host_ticket() {
   local kept=$vm_state/ticket
   if [[ ! -s $kept ]]; then
     local issued
-    issued=$(owner_person device add --capability admin --json --no-wait) \
+    issued=$(owner_person device add --capability admin --server --json --no-wait) \
       || die 'the stack'"'"'s person printed no ticket for the VM host (tilo device add)'
     python3 -c 'import json,sys; print(json.load(sys.stdin)["ticket"])' <<<"$issued" > "$kept" \
       || die "the stack's person printed no ticket: $issued"
