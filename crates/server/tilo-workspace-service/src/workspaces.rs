@@ -1139,6 +1139,7 @@ struct WorkspacesInner {
     own: std::sync::OnceLock<own::OwnWorkspaces>,
     /// The trees this service puts files into when no folder of a device holds them
     /// ([`Workspaces::puts`]).
+    #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
     puts: std::sync::OnceLock<Arc<crate::files::Puts>>,
     /// Which people each workspace here lists, by person, as its governance
     /// settled last ([`memberships`]).
@@ -1292,6 +1293,7 @@ impl Workspaces {
     /// The trees files are put into where this service holds them: the one writer of a
     /// workspace's tree for a caller that has the content and no folder
     /// ([`crate::files::Puts`]).
+    #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
     #[must_use]
     pub fn puts(&self) -> Arc<crate::files::Puts> {
         Arc::clone(self.inner.puts.get_or_init(|| {
@@ -1402,6 +1404,7 @@ impl Workspaces {
                 entry: wait_list::EntrySettings::default(),
                 releasing: AsyncMutex::new(()),
                 own: std::sync::OnceLock::new(),
+                #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
                 puts: std::sync::OnceLock::new(),
                 memberships: memberships::Memberships::default(),
                 owner_invitations: host_invitations::OwnerInvitations::open(&dir),
