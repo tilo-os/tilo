@@ -372,7 +372,7 @@ fn write_kept(root: &Path, account: &str, kept: &Kept) -> Result<(), String> {
 }
 
 /// The calendar accounts of the workspace's accounts `held`.
-fn accounts_in(held: &accounts::person::PersonAccounts) -> Vec<Account> {
+fn accounts_in(held: &accounts::person::AccountList) -> Vec<Account> {
     held.of_type(TYPE_ID)
         .into_iter()
         .filter_map(|stored| {
@@ -431,7 +431,7 @@ pub(super) struct Asking {
 
 impl Asking {
     /// The workspace's accounts now, read on the runtime the sign-ins are resolved on.
-    fn accounts(&self) -> Result<accounts::person::PersonAccounts, String> {
+    fn accounts(&self) -> Result<accounts::person::AccountList, String> {
         self.runtime.block_on(self.vault.at().accounts())
     }
 
@@ -1302,7 +1302,7 @@ fn note_put_in(root: &Path, account: &Account, entry: &str, by: PutIn) {
 /// this holder knows them, in lower case: the name the account signs in
 /// with, where that is an address, and the mail accounts they keep here.
 fn own_addresses(
-    held: &accounts::person::PersonAccounts,
+    held: &accounts::person::AccountList,
     root: &Path,
     account: &Account,
 ) -> BTreeSet<String> {

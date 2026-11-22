@@ -459,10 +459,6 @@ pub struct Hosted {
     /// Files' clipboard: what a person copied or cut there, pasted into a
     /// folder of this desktop's, and what it put on the desktop's clipboard.
     pub file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
-    /// The person's own store, which the broker keeps their own records in as
-    /// well as in this desktop: what their other devices' records reach this
-    /// session's apps through. `None` on a session that keeps none.
-    pub personal: Option<tilo_peer_state::PersonalSync>,
     /// What Browser's asks for vault items are answered with: nothing in a person's own
     /// session, and the workspace's server's word where this session holds a workspace's
     /// Browser.
@@ -1221,7 +1217,6 @@ fn broker_services(
         settings_steps,
         nearby,
         file_clipboard,
-        personal,
         item_lending,
         fanout: _,
     } = hosted;
@@ -1440,10 +1435,6 @@ fn broker_services(
         workspace_nodes: BrokerService::when(crate::workspace_nodes::WorkspaceNodes::service(
             engine.as_ref(),
         )),
-        // The person's own records, kept in their store as well as in this
-        // desktop: what an app writes of its own scope reaches their other
-        // devices, and what those wrote reaches the app here.
-        personal: BrokerService::when(personal),
         // A workspace placed on a host has its records changed there: the
         // person's actions on them are sent to the host, which decides and
         // runs them, and the change reaches the windows here by sync. The
@@ -1616,9 +1607,6 @@ pub(crate) struct AppWire {
     /// Files' clipboard, whose copies the loop puts on the desktop's
     /// clipboard: what the person pastes into any other app.
     pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
-    /// The person's own store open to their other devices, held so its links
-    /// and the writes it keeps end with the session.
-    pub(crate) _personal: Option<tilo_workspace_service::apps::personal::Links>,
     /// The workspaces' trees served to the files daemon that mounts them, until the session ends.
     pub(crate) _files_tree: Option<tilo_workspace_service::files::socket::Serving>,
     /// The hosts of the workspaces this device takes part in but does not host: where the
@@ -1876,7 +1864,6 @@ mod tests {
             file_clipboard: std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
                 std::sync::Arc::new(|| ()),
             )),
-            personal: None,
             item_lending: std::sync::Arc::default(),
             fanout: std::sync::Arc::new(FanoutState::new()),
             endpoint: None,

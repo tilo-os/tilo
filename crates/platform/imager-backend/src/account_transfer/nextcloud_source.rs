@@ -212,9 +212,10 @@ mod tests {
                 "private-native-password"
             );
             assert!(
-                !fs::read_to_string(accounts::store_path_in(&fixture.target))
-                    .unwrap()
-                    .contains("private-native-password")
+                !String::from_utf8_lossy(
+                    &fs::read(accounts::person::staged_path_in(&fixture.target)).unwrap()
+                )
+                .contains("private-native-password")
             );
             assert_eq!(fs::read(&fixture.candidate.profile).unwrap(), source_before);
             assert_eq!(

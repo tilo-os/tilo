@@ -13,7 +13,7 @@ tilo_test_env::scenario! {
 
     phase the_differences_drain_to_the_calendars_this_device_holds;
     {
-        let accounts = AccountStore::sample();
+        let accounts = CalendarAccounts::sample();
         let (_, calendar) = accounts.all_calendars().next().expect("a sample calendar");
         let mut replica = Replica::<Calendar>::new();
         let mut held = crate::resource::event_at(
@@ -105,7 +105,7 @@ tilo_test_env::scenario! {
 
     phase a_move_to_another_calendar_deletes_there_then_uploads_here;
     {
-        let accounts = AccountStore::sample();
+        let accounts = CalendarAccounts::sample();
         let mut calendars = accounts
             .all_calendars()
             .map(|(_, calendar)| calendar.id.clone());
@@ -162,7 +162,7 @@ tilo_test_env::scenario! {
 
     phase what_no_longer_needs_doing_leaves_the_queue;
     {
-        let accounts = AccountStore::sample();
+        let accounts = CalendarAccounts::sample();
         let (_, calendar) = accounts.all_calendars().next().expect("a sample calendar");
         let mut replica = Replica::<Calendar>::new();
         let mut event = crate::resource::event_at(
@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
 /// What a server holds of an event is told by a fingerprint, which must not change with that.
 #[test]
 fn an_adopted_event_is_owed_no_upload_whatever_order_its_guests_stand_in() {
-    let accounts = AccountStore::sample();
+    let accounts = CalendarAccounts::sample();
     let (_, held) = accounts.all_calendars().next().expect("a sample calendar");
     let guest = |id: u128, name: &str, email: &str| crate::model::Attendee {
         id: uuid::Uuid::from_u128(id),

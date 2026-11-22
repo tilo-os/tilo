@@ -69,7 +69,7 @@ impl SignalAuthority for Authority {
         if self.revoked.load(Ordering::SeqCst) || *requested != route() {
             return Err(SendError::Revoked);
         }
-        let mut accounts = accounts::person::PersonAccounts::default();
+        let mut accounts = accounts::person::AccountList::default();
         accounts
             .keep(&accounts::Account::new("fixture-signal", "signal"))
             .map_err(|_| SendError::Revoked)?;

@@ -21,8 +21,8 @@ fn route() -> Route {
     .unwrap()
 }
 
-fn accounts() -> accounts::person::PersonAccounts {
-    let mut accounts = accounts::person::PersonAccounts::default();
+fn accounts() -> accounts::person::AccountList {
+    let mut accounts = accounts::person::AccountList::default();
     accounts
         .keep(&accounts::Account::new("tilo-account-a", "signal"))
         .unwrap();

@@ -159,7 +159,7 @@ impl Serving {
         (service, records, person): (
             tilo_workspace_service::service::ServiceSlot,
             crate::platform::records::Changes,
-            crate::person_resources::PersonResources,
+            crate::PersonResources,
         ),
     ) -> Self {
         Self {
@@ -197,7 +197,7 @@ pub(crate) struct Beside {
     pub(crate) records: crate::platform::records::Changes,
     /// The person's own workspace's resources, read and written through that service once it
     /// opened.
-    pub(crate) person: crate::person_resources::PersonResources,
+    pub(crate) person: crate::PersonResources,
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
@@ -774,7 +774,7 @@ async fn listening(
         person.attach(
             service.workspaces().clone(),
             &tokio::runtime::Handle::current(),
-            move |workspace: &str| {
+            Some(Arc::new(move |workspace: &str| {
                 let Some(engine) = holding.as_ref().and_then(std::sync::Weak::upgrade) else {
                     return false;
                 };
@@ -782,7 +782,7 @@ async fn listening(
                     return false;
                 };
                 engine.workspaces().contains(&id)
-            },
+            })),
         );
     }
     if let (true, Some(documents), Some(service)) = (opened, documents, service) {

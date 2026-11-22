@@ -363,14 +363,14 @@ pub(crate) struct Local {
     /// The devices each workspace's record content reaches this one from: those heard on its topic,
     /// and its hosts.
     topologies: RefCell<std::collections::BTreeMap<WorkspaceId, content::Topology>>,
-    /// The person's own store this session keeps for their other devices, served on this device's
-    /// endpoint from the pass it binds. `None` on a session that has no state to keep it in.
-    personal_store: RefCell<Option<crate::personal::Personal>>,
     /// This device's fabric, when it is a certified device of the person's: `None` on a session
     /// that takes part as nobody.
     fabric: Option<Arc<SessionFabric>>,
     /// This session's Nearby Send, once the session made it.
     nearby: RefCell<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
+    /// The machines this session answers, once it serves their enrollment endpoint: what a
+    /// pairing link shown here is made by.
+    enrollment_links: std::sync::OnceLock<crate::enrollment::LocalLinks>,
     /// Where this device's actions are served, and how an app here reaches the person's other
     /// devices: `None` until the endpoint has bound.
     device_actions: Arc<std::sync::OnceLock<DeviceActions>>,
@@ -831,7 +831,7 @@ impl Local {
     /// it holds the workspace.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn person_resources(&self) -> Option<crate::person_resources::PersonResources> {
+    pub(crate) fn person_resources(&self) -> Option<crate::PersonResources> {
         self.fabric.as_ref()?.person_resources()
     }
 
@@ -868,21 +868,6 @@ impl Local {
             publisher,
         );
         self.content.replace(Some(content));
-    }
-
-    /// Take the person's own store, opened where this session keeps its state, to their other
-    /// devices: what the broker keeps their own records in, and what a sibling's writes reach this
-    /// session's apps through.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn attach_personal(&self, personal: crate::personal::Personal) {
-        self.personal_store.replace(Some(personal));
-    }
-
-    /// The person's own store this session keeps, once it has one.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn personal(&self) -> Option<std::cell::Ref<'_, crate::personal::Personal>> {
-        std::cell::Ref::filter_map(self.personal_store.borrow(), Option::as_ref).ok()
     }
 
     /// Where this device's actions are served, and how an app here runs its actions on the person's
@@ -1461,7 +1446,7 @@ impl Client {
         let link_outbox = host_outbox.clone();
         // What is the person's alone, read from their own workspace once this device's service
         // holds it.
-        let person = crate::person_resources::PersonResources::default();
+        let person = crate::PersonResources::default();
         let fabric = fabric_of(
             identity.as_ref(),
             person.clone(),
@@ -1837,18 +1822,52 @@ impl Client {
         self.hosting.local.attach_nearby(nearby);
     }
 
-    /// The person's own store this session keeps, once it has one.
+    /// The machines this session answers from now on: what a pairing link shown here is made by.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn keep_machine_links(&self, links: crate::enrollment::LocalLinks) {
+        let _ = self.hosting.local.enrollment_links.set(links);
+    }
+
+    /// The machines this session answers, once it serves their enrollment endpoint.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn personal(&self) -> Option<std::cell::Ref<'_, crate::personal::Personal>> {
-        self.hosting.local.personal()
+    pub(crate) fn enrollment_links(&self) -> Option<&crate::enrollment::LocalLinks> {
+        self.hosting.local.enrollment_links.get()
+    }
+
+    /// Dial the person's other devices as this session's siblings, and wake the session when
+    /// their own workspace moves: the session between two of theirs is where they tell each other
+    /// what they hold, and carries their device fabric.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn follow_person(&self, runtime: &tokio::runtime::Handle, wake: tilo_service::Wake) {
+        let (Some(dials), Some(store)) = (self.sibling_dials(), self.person_resources()) else {
+            return;
+        };
+        runtime.spawn(async move {
+            let mut changes = store.changes();
+            let mut again = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                for device in store.kept_devices() {
+                    dials.dial(device.device_public_key);
+                }
+                wake();
+                tokio::select! {
+                    moved = changes.changed() => {
+                        if moved.is_err() {
+                            return;
+                        }
+                    }
+                    _ = again.tick() => {}
+                }
+            }
+        });
     }
 
     /// The person's own workspace's resources, which this session reads and writes what is theirs
     /// alone through once its service holds the workspace.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn person_resources(&self) -> Option<crate::person_resources::PersonResources> {
+    pub(crate) fn person_resources(&self) -> Option<crate::PersonResources> {
         self.hosting.local.person_resources()
     }
 
@@ -1958,13 +1977,6 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn attach_content(&self, content: Arc<content::ContentService>) {
         self.hosting.local.attach_content(content, self.publisher());
-    }
-
-    /// Hand the person's own store, opened where this session keeps its state, to their other
-    /// devices.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn attach_personal(&self, personal: crate::personal::Personal) {
-        self.hosting.local.attach_personal(personal);
     }
 
     /// This device's workspaces, when this session holds any.
@@ -2157,9 +2169,9 @@ impl Local {
                 versions,
                 content: RefCell::new(None),
                 topologies: RefCell::new(std::collections::BTreeMap::new()),
-                personal_store: RefCell::new(None),
                 fabric,
                 nearby: RefCell::new(None),
+                enrollment_links: std::sync::OnceLock::new(),
                 device_actions,
                 reachability: RefCell::new(reachability),
                 live: RefCell::new(live),
@@ -2193,9 +2205,9 @@ impl Local {
             versions,
             content: RefCell::new(None),
             topologies: RefCell::new(std::collections::BTreeMap::new()),
-            personal_store: RefCell::new(None),
             fabric: None,
             nearby: RefCell::new(None),
+            enrollment_links: std::sync::OnceLock::new(),
             device_actions: Arc::new(std::sync::OnceLock::new()),
             reachability: RefCell::new(Reachability::default()),
             live: RefCell::new(None),
@@ -2281,7 +2293,7 @@ fn certified_as(identity: Option<&DeviceIdentity>) -> (Option<[u8; 32]>, String)
 #[cfg(target_os = "linux")]
 fn fabric_of(
     identity: Option<&DeviceIdentity>,
-    resources: crate::person_resources::PersonResources,
+    resources: crate::PersonResources,
     outgoing: HostOutbox,
     continuity: Continuity,
     lan: tilo_endpoint_reachability::Nearby,

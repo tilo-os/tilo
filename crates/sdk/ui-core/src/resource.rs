@@ -9,7 +9,7 @@ pub use collab_types::document::{
     DOCUMENT_ID_XATTR, MAX_DOCUMENT_RELATION_BYTES, chain_of_resource_id, chain_resource_id,
     valid_label,
 };
-pub use collab_types::personal_cluster_of;
+pub use collab_types::person_workspace_of;
 pub mod capability;
 pub mod person;
 pub use person::StoredResource;

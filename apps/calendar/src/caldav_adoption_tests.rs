@@ -1,5 +1,6 @@
 use account_credentials::{CredentialStore, OAuthIssuer, TokenSet, portable};
-use accounts::{Account, AccountId, AccountStore, SecretVault};
+use accounts::person::AccountList;
+use accounts::{Account, AccountId, SecretVault};
 
 /// The adopted event as its server answers a read of it.
 const ADOPTED_HELD: &str = "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:remote-event\n\
@@ -71,9 +72,11 @@ END:VCALENDAR
     )
     .unwrap();
     let id = AccountId::from("canonical-google");
-    let mut store = AccountStore::new();
-    store.upsert(account);
-    store.save_in(source.path()).unwrap();
+    let mut record = accounts::person::staged_in(source.path()).unwrap();
+    record
+        .apply_confirmed(AccountList::saving(&account))
+        .unwrap();
+    accounts::person::keep_staged_in(source.path(), &mut record).unwrap();
     let expired = TokenSet {
         access_token: "expired".into(),
         refresh_token: "selected-refresh".into(),
@@ -124,10 +127,16 @@ fn portable_google_selection_uses_production_report_and_etag_guards() {
         expired,
         selected,
     } = adopted_google();
-    let store = AccountStore::load_in(destination.path());
-    assert_eq!(store.all().len(), 1);
-    assert_eq!(store.get(&id).unwrap().config["use_files"], true);
-    let projection = crate::AccountStore::from_store(&store);
+    let staged = accounts::person::staged_in(destination.path())
+        .unwrap()
+        .state()
+        .unwrap();
+    assert_eq!(staged.all().len(), 1);
+    assert_eq!(
+        staged.account(id.as_str()).unwrap().config["use_files"],
+        true
+    );
+    let projection = crate::CalendarAccounts::from_shared(&staged);
     assert_eq!(projection.accounts.len(), 1);
     let adopted = &projection.accounts[0];
     assert_eq!(adopted.calendars.len(), 1);

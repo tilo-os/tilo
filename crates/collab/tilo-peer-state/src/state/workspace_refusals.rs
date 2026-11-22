@@ -8,8 +8,8 @@
 //! survives restarts, and joins the write's history row. One verdict per route
 //! and author, the highest sequence: the verdict a device no longer holds is
 //! deleted, so a write that later lands stops being shown as missing.
+use super::change_hashes::change_hashes;
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
-use super::personal::change_hashes;
 use super::{NeighbourMsg, SystemTime, now_ns};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -57,7 +57,7 @@ impl ChangeRefused {
     ) -> Self {
         let mut changes: Vec<[u8; 32]> = envelope.claims.iter().map(|claim| claim.change).collect();
         if changes.is_empty() {
-            changes = super::personal::change_hashes(&envelope.payload);
+            changes = change_hashes(&envelope.payload);
         }
         Self {
             workspace_id,

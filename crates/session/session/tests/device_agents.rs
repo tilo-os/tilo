@@ -110,7 +110,7 @@ impl ThisComputer {
             .expect("this identity's record");
         let root = tilo_identity::store::load_from_path(record)
             .expect("the person's root signs on this box");
-        let workspace = collab_types::personal_cluster(&cert.user_public_key).to_string();
+        let workspace = tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key);
         held_here(state.path(), &workspace, &cert, &key);
         Self {
             key,

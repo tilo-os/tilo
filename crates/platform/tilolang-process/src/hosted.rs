@@ -1922,7 +1922,7 @@ impl Hosted {
             .as_deref()
             .and_then(collab_types::person_document_context);
         let reaches = profile_record.is_none()
-            || person.and_then(collab_types::personal_cluster_of) == Some(route.cluster_id);
+            || person.and_then(collab_types::person_workspace_of) == Some(route.cluster_id);
         if !reaches {
             let update = failed(
                 invocation,

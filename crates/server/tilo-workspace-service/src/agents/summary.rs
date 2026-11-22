@@ -8,9 +8,9 @@
 //! they write meanwhile gets a turn of its own. One summary of a conversation is written at a
 //! time, and a turn that began before one was kept asks for none of what that one holds.
 //!
-//! The question is one short answer, so it goes to the model the agent's keeper chose for such
+//! The question is one short answer, so it goes to the model the agent's person chose for such
 //! work ([`Interaction::OneShot`]), with their own key and counted on the agent's day like every
-//! call made for it. A keeper who chose none for it is asked through the model the turn itself
+//! call made for it. A person who chose none for it is asked through the model the turn itself
 //! was worked with. Nothing here can fail a turn: no model, a refusal, a call that ran out of
 //! time or a summary Chat did not take all leave the summary as it stood, and the next turn that
 //! still sees the messages outside it asks again.
@@ -173,9 +173,9 @@ impl ServerAgents {
         let tokens = fold.output_tokens();
         let theirs = tilo_failure::ignored!(
             "an agent kept by nobody's person pays for no summary",
-            tilo_action_policy::PersonId::parse(&turn.agent.keeper).ok()
+            tilo_action_policy::PersonId::parse(&turn.agent.acts_for).ok()
         )
-        .and_then(|keeper| keeper.root())
+        .and_then(|acts_for| acts_for.root())
         .map(|_| {
             self.workspaces
                 .workspace_model(workspace_id, Interaction::OneShot)
@@ -189,7 +189,7 @@ impl ServerAgents {
         });
         if let Some(theirs) = theirs {
             let asked = (instructions.clone(), input.clone());
-            // As a turn's own model is chosen: what the keeper linked decides alone, and only
+            // As a turn's own model is chosen: what the person linked decides alone, and only
             // one who chose nothing for a short answer is asked as the turn was.
             let said = tokio::task::spawn_blocking(move || match theirs.linked() {
                 Ok(_) => Some(theirs.say_blocking(

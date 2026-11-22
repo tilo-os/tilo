@@ -1,6 +1,6 @@
 //! An agent a workspace made to run on its server works around the clock there: a person gives it
 //! an issue, and the server's agent works on it through the agent tools, as the person's agent, then
-//! answers in the issue's thread. Its keeper's daily limit stops it before it spends past it.
+//! answers in the issue's thread. Its person's daily limit stops it before it spends past it.
 use super::*;
 use std::sync::Mutex;
 use tilo_model_gateway::host_backend::protocol::{
@@ -273,8 +273,8 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &host, &workspace).await;
-    let keeper = root.verifying_key().to_bytes();
-    let person = hex::encode(keeper);
+    let acts_for = root.verifying_key().to_bytes();
+    let person = hex::encode(acts_for);
     let agents_record = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
@@ -292,7 +292,7 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,
                 endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-                key: Some("sk-the-keepers-own"),
+                key: Some("sk-the-persons-own"),
                 models: &["gemini-main"],
             },
             true,
@@ -317,13 +317,13 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
 
     assert!(
         unasked.lock().unwrap().is_empty(),
-        "the host's own model is not asked for a keeper who linked theirs"
+        "the host's own model is not asked for a person who linked theirs"
     );
     let asked = theirs.asked();
     assert_eq!(asked.len(), 2, "one call to look, one to answer");
     for call in &asked {
         assert_eq!(call.model, "gemini-main");
-        assert_eq!(call.key.as_deref(), Some("sk-the-keepers-own"));
+        assert_eq!(call.key.as_deref(), Some("sk-the-persons-own"));
     }
     assert!(
         asked[0]
@@ -346,7 +346,7 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
         "{said:?}"
     );
 
-    // What the keeper's provider charged is what the agent's day counts.
+    // What the person's provider charged is what the agent's day counts.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let bytes = workspaces
@@ -376,11 +376,11 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
     }
 }
 
-/// A keeper who linked a provider is never answered by another model: one whose key is missing is
-/// told so, where they asked, and the server's own model stays unasked. A keeper who linked nothing
+/// A person who linked a provider is never answered by another model: one whose key is missing is
+/// told so, where they asked, and the server's own model stays unasked. A person who linked nothing
 /// on a server that runs no model is told what to link.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked() {
+async fn a_person_whose_agent_model_cannot_answer_is_told_and_no_other_model_is_asked() {
     use tilo_server::workspaces::person_model::ProviderProtocol;
     use tilo_server::workspaces::person_model::scripted::Linking;
 
@@ -399,8 +399,8 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &host, &workspace).await;
-    let keeper = root.verifying_key().to_bytes();
-    let person = hex::encode(keeper);
+    let acts_for = root.verifying_key().to_bytes();
+    let person = hex::encode(acts_for);
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
 
@@ -465,7 +465,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
         WorkspaceId::parse(&workspace).unwrap(),
     );
     let asking =
-        tilo_actions::remote::Caller::authenticated(keeper, browser.cert.device_public_key)
+        tilo_actions::remote::Caller::authenticated(acts_for, browser.cert.device_public_key)
             .in_workspace(&workspace);
     let route = DocumentRoute {
         app_id: TASKS.into(),
@@ -603,7 +603,7 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
         "answered once"
     );
 
-    // What its turns cost is counted on its record, for its keeper.
+    // What its turns cost is counted on its record, for its person.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let bytes = workspaces
@@ -638,7 +638,7 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
+async fn an_agent_on_the_host_stops_at_its_persons_daily_limit() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
@@ -1092,8 +1092,8 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &host, &workspace).await;
-    let keeper = root.verifying_key().to_bytes();
-    let person = hex::encode(keeper);
+    let acts_for = root.verifying_key().to_bytes();
+    let person = hex::encode(acts_for);
     let agents_record = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let catalogue = crate::common::catalogue();
@@ -1124,7 +1124,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
     )
     .await;
 
-    // The keeper linked nothing yet, so the server's model answers the turn, and the summary's
+    // The person linked nothing yet, so the server's model answers the turn, and the summary's
     // question is asked as the turn was.
     let unasked = Arc::new(Mutex::new(Vec::new()));
     let asked = Arc::clone(&unasked);
@@ -1237,7 +1237,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,
                 endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-                key: Some("sk-the-keepers-own"),
+                key: Some("sk-the-persons-own"),
                 models: &["gemini-main"],
             },
             true,
@@ -1307,7 +1307,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
     assert_eq!(
         unasked.lock().unwrap().len(),
         2,
-        "the host's model is not asked once the keeper linked their own"
+        "the host's model is not asked once the person linked their own"
     );
 
     // The summary holds both: what it held, and what the new messages added.
@@ -1325,7 +1325,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
         );
     }
 
-    // Every call is counted on the agent's day: two of the server's model, two of the keeper's.
+    // Every call is counted on the agent's day: two of the server's model, two of the person's.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let bytes = workspaces
@@ -1515,7 +1515,7 @@ mod watch;
 #[path = "hosted_agent_asks.rs"]
 mod asks;
 
-/// What a turn answered on the workspace's server knows about its agent's keeper, and keeps
+/// What a turn answered on the workspace's server knows about the person its agent acts for, and keeps
 /// for them.
 #[path = "hosted_learning.rs"]
 mod learning;
@@ -1589,8 +1589,8 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
         .await;
     let mut page =
         super::resource_support::open_admitted_peer(&server, &member_page, &host, &workspace).await;
-    let keeper = member.verifying_key().to_bytes();
-    let person = hex::encode(keeper);
+    let acts_for = member.verifying_key().to_bytes();
+    let person = hex::encode(acts_for);
     // The member makes an agent of their own, kept by them.
     make_agent(&page, &workspaces, &workspace, &person, None).await;
 
@@ -1670,7 +1670,7 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         if link
-            .roster_session_device(&server.roster.sessions, workspace_id, SCOUT, &keeper)
+            .roster_session_device(&server.roster.sessions, workspace_id, SCOUT, &acts_for)
             .await
             .is_some()
         {

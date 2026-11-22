@@ -188,7 +188,7 @@ impl ResourceApp for SettingsShell {
 
     const PERSON_RESOURCES: &'static [ui::framework::PersonKind] =
         &[ui::framework::PersonKind::shared::<
-            accounts::person::PersonAccounts,
+            accounts::person::AccountList,
         >()];
 
     /// Settings edits the person's own: each section is a resource of theirs,

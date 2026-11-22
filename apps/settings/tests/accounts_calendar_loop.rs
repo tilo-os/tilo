@@ -16,7 +16,7 @@ fn response(href: &str, props: &str) -> String {
 fn scratch_root(config_root: &std::path::Path) -> Result<(Window, AccountRoot), String> {
     let mut window = Window::new().map_err(|error| error.to_string())?;
     let record = window
-        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
         .ok_or("Settings keeps the workspace's accounts")?;
     Ok((window, AccountRoot::at(config_root).with_person(record)))
 }
@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
         pane.submit_form_for_test();
         assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
         assert!(!pane.form_open());
-        let loaded = calendar::account::AccountStore::load_from_settings_in(root.path());
+        let loaded = calendar::account::CalendarAccounts::from_shared(&account_root.store());
         assert_eq!(loaded.len(), 1);
         let account = &loaded.accounts[0];
         assert_eq!(account.config.username, "login@example.test");
@@ -164,8 +164,12 @@ tilo_test_env::scenario! {
         assert_eq!(account.calendars[0].id, holidays);
         assert_eq!(account.calendars[0].name, "Holidays");
         assert!(account.calendars[0].read_only);
-        let json = std::fs::read_to_string(accounts::store_path_in(root.path())).unwrap();
-        assert!(!json.contains("private-app-password"));
+        assert!(
+            !serde_json::to_string(&account_root.store().all())
+                .unwrap()
+                .contains("private-app-password"),
+            "a sign-in never reaches the workspace's accounts"
+        );
         assert_eq!(
             account_root.store().len(),
             1,
@@ -204,7 +208,7 @@ tilo_test_env::scenario! {
             // Its sign-in is the workspace's vault's entry, which the session releases.
             accounts::email::set_password_item(&mut account.config, Some(ITEM));
             let mut shared = account_root.store();
-            shared.upsert(account.clone());
+            shared.keep(&account).unwrap();
             account_root.save_store(&shared).unwrap();
             let (session, asked) = session("existing-nextcloud-password");
             let mut pane =
@@ -212,7 +216,10 @@ tilo_test_env::scenario! {
             pane.connect_nextcloud_calendars(account.id.as_str())
                 .unwrap();
             assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
-            assert_eq!(account_root.store().get(&account.id), Some(&account));
+            assert_eq!(
+                account_root.store().get(&account.id),
+                Some(account.clone())
+            );
             let href = format!(
                 "http://127.0.0.1:{}/cloud/calendars/opaque-id/personal/",
                 server.port()
@@ -235,13 +242,12 @@ tilo_test_env::scenario! {
                 "calendar setup must not rewrite or copy the canonical sign-in"
             );
             assert!(account_root.vault().is_empty(), "the device's vault keeps nothing");
-            let loaded = calendar::account::AccountStore::load_from_settings_in(root.path());
+            let loaded = calendar::account::CalendarAccounts::from_shared(&account_root.store());
             assert_eq!(loaded.len(), 1);
             assert_eq!(loaded.accounts[0].id, account.id.as_str());
             assert_eq!(loaded.accounts[0].config.display_name, "My cloud");
             assert_eq!(loaded.accounts[0].config.password_item.as_deref(), Some(ITEM));
             assert_eq!(loaded.accounts[0].calendars[0].id, href);
-            loaded.persist_in(root.path()).unwrap();
             let round_trip = account_root.store();
             let round_trip = round_trip.get(&account.id).unwrap();
             assert_eq!(round_trip.config["use_files"], use_files);
@@ -262,9 +268,10 @@ tilo_test_env::scenario! {
             );
             assert!(account_root.vault().is_empty());
             assert!(
-                !std::fs::read_to_string(accounts::store_path_in(root.path()))
+                !serde_json::to_string(&account_root.store().all())
                     .unwrap()
-                    .contains("existing-nextcloud-password")
+                    .contains("existing-nextcloud-password"),
+                "a sign-in never reaches the workspace's accounts"
             );
         }
     }

@@ -454,7 +454,7 @@ impl Fixture {
             listed.push(crate::apps::services::ListedAgent {
                 id: "scribe".into(),
                 name: "Scribe".into(),
-                keeper: String::new(),
+                acts_for: String::new(),
             });
         }
     }

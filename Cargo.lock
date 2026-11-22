@@ -5004,14 +5004,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fake-oauth"
-version = "0.1.0"
-dependencies = [
- "tilo-oauth",
- "workspace-hack",
-]
-
-[[package]]
 name = "fallible-iterator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -68,7 +68,7 @@ store = [
 
 [dependencies]
 browser-continuity-core = { path = "../../browser/browser-continuity-core", optional = true }
-accounts = { path = "../accounts" }
+accounts = { path = "../accounts", features = ["person"] }
 tilo-seal = { path = "../tilo-seal", optional = true }
 tilo-oauth = { path = "../tilo-oauth", default-features = false }
 serde.workspace = true

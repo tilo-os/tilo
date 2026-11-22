@@ -2,14 +2,15 @@
 //!
 //! The session serves its device's enrollment endpoint for as long as it
 //! is up: a machine anywhere that was handed a token dials it, and the session
-//! puts the ask to the person. Every ask is workspace state in the person's
-//! own store ([`ENROLLMENT_KIND`]) before it is put to anyone, so it shows on
-//! all their devices at once and any of them answers it; the device whose
-//! endpoint the machine dialled is the one that carries the answer out.
-//! Nothing is served only while a sheet is up, and no answer is mirrored
-//! between devices: the store is the one place an ask and its answer live.
+//! puts the ask to the person. Every ask is written to a resource of the
+//! person's own workspace ([`ENROLLMENT_KIND`]) before it is put to anyone, so
+//! it shows on all their devices at once and any of them answers it; the
+//! device whose endpoint the machine dialled is the one that carries the answer
+//! out. Nothing is served only while a sheet is up, and no answer is mirrored
+//! between devices: their own workspace is the one place an ask and its answer
+//! live.
 //!
-//! An ask is `request:<ask>` in the store's document, and an answer is
+//! An ask is `request:<ask>` in the resource's document, and an answer is
 //! `answer:<ask>`, written by whichever of the person's devices answered.
 
 use std::collections::BTreeMap;
@@ -23,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use tilo_enrollment::approval::ApprovalOptions;
 use tilo_enrollment::{Decision, Person, WaitingMachine, local_link::Issuer};
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::{DocumentMutation, ENROLLMENT_KIND, PersonalSync};
+use tilo_peer_state::PERSON_RECORDS_APP;
 use tilo_service::{Answer, Question};
 
 use crate::i18n::{t, t_args};
@@ -36,7 +37,11 @@ const ASK_FOR: Duration = Duration::from_secs(600);
 /// How often the ask waits for an answer the person's other devices write.
 const LOOK_EVERY: Duration = Duration::from_millis(50);
 
-/// The kind the entries of the store's document are committed as.
+/// The kind of the person's resource that holds the machines waiting for an answer, one entry
+/// under `request:<ask>`, and the answers their devices gave, under `answer:<ask>`.
+pub(crate) const ENROLLMENT_KIND: &str = "identity.enrollment";
+
+/// The kind the entries of the resource's document are committed as.
 const CHANGE_KIND: &str = "enrollment";
 
 /// One machine asking to join, as the person's store holds it and every
@@ -69,24 +74,31 @@ impl Waiting {
     }
 }
 
-/// What the person's store holds: the machines waiting for an answer, and the
+/// What the person's own workspace holds: the machines waiting for an answer, and the
 /// answers their devices gave.
 pub(crate) struct Held {
     pub waiting: Vec<Waiting>,
     pub answers: BTreeMap<String, bool>,
 }
 
-/// Read the person's store: every ask no device answered yet, and every
+/// The document of the person's own workspace the asks and answers are kept in.
+fn document() -> String {
+    collab_types::person_document_id(ENROLLMENT_KIND)
+}
+
+/// Read the person's own workspace: every ask no device answered yet, and every
 /// answer.
-pub(crate) fn held(personal: &PersonalSync) -> Held {
-    let Some(bytes) = personal.read(|store| store.person_resource(ENROLLMENT_KIND)) else {
+pub(crate) fn held(store: &crate::PersonResources) -> Held {
+    let Some(bytes) = store.document((PERSON_RECORDS_APP, &document())) else {
         return Held {
             waiting: Vec::new(),
             answers: BTreeMap::new(),
         };
     };
     let Ok(doc) = AutoCommit::load(&bytes) else {
-        tracing::warn!("the machines waiting for an answer in the person's store do not read");
+        tracing::warn!(
+            "the machines waiting for an answer in the person's own workspace do not read"
+        );
         return Held {
             waiting: Vec::new(),
             answers: BTreeMap::new(),
@@ -121,31 +133,14 @@ fn text_of(doc: &AutoCommit, key: &str) -> Option<String> {
     value.into_string().ok()
 }
 
-/// Write one entry of the store's document, taking what it already holds.
+/// Write one entry of the resource's document, taking what it already holds, and carry it to
+/// the person's other devices as any workspace's change.
 fn write(
-    personal: &PersonalSync,
-    write: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
-) -> Result<(), String> {
-    personal
-        .publish(|store, key, now| {
-            let held = store.person_resource(ENROLLMENT_KIND);
-            let mut doc = match held.as_deref().map(AutoCommit::load) {
-                Some(Ok(doc)) => doc,
-                Some(Err(error)) => {
-                    return Err(format!("the machines waiting do not read: {error}"));
-                }
-                None => AutoCommit::new(),
-            };
-            let base = doc.get_heads();
-            write(&mut doc)?;
-            let mutation = if held.is_some() {
-                DocumentMutation::Incremental(doc.save_after(&base))
-            } else {
-                DocumentMutation::Snapshot(doc.save())
-            };
-            store.publish_person_resource(ENROLLMENT_KIND, &mutation, key, now)
-        })
-        .map(drop)
+    store: &crate::PersonResources,
+    write: impl Fn(&mut AutoCommit) -> Result<(), String> + Send + Sync + 'static,
+) {
+    let document = document();
+    store.edit_document((PERSON_RECORDS_APP, &document), write);
 }
 
 fn put(doc: &mut AutoCommit, key: &str, value: &str) -> Result<(), String> {
@@ -157,19 +152,26 @@ fn put(doc: &mut AutoCommit, key: &str, value: &str) -> Result<(), String> {
 
 /// Enter `machine` as asking to join: what every one of the person's devices
 /// shows, and what the device that serves its connection waits on.
-pub(crate) fn enter(personal: &PersonalSync, machine: &WaitingMachine) -> Result<(), String> {
+pub(crate) fn enter(
+    store: &crate::PersonResources,
+    machine: &WaitingMachine,
+) -> Result<(), String> {
     let value = serde_json::to_string(&Waiting::of(machine)).map_err(|error| error.to_string())?;
-    write(personal, |doc| {
-        put(doc, &format!("request:{}", machine.ask), &value)
-    })
+    let ask = machine.ask.clone();
+    write(store, move |doc| {
+        put(doc, &format!("request:{ask}"), &value)
+    });
+    Ok(())
 }
 
 /// Answer the machine whose ask is `ask`: `approve` admits it. The answer is
 /// the person's whichever of their devices wrote it; the one serving the
 /// machine carries it out.
-pub(crate) fn answer(personal: &PersonalSync, ask: &str, approve: bool) -> Result<(), String> {
+pub(crate) fn answer(store: &crate::PersonResources, ask: &str, approve: bool) {
     let value = if approve { "approve" } else { "decline" };
-    write(personal, |doc| {
+    let ask = ask.to_owned();
+    write(store, move |doc| {
+        let ask = ask.as_str();
         let request = format!("request:{ask}");
         if text_of(doc, &request).is_none() {
             return Err("this device request is no longer pending".to_owned());
@@ -177,13 +179,13 @@ pub(crate) fn answer(personal: &PersonalSync, ask: &str, approve: bool) -> Resul
         doc.delete(automerge::ROOT, request)
             .map_err(|error| error.to_string())?;
         put(doc, &format!("answer:{ask}"), value)
-    })
+    });
 }
 
 /// The answer the person gave the machine whose ask is `ask`, once any of
 /// their devices gave one.
-fn answered(personal: &PersonalSync, ask: &str) -> Option<Decision> {
-    held(personal).answers.get(ask).map(|approve| {
+fn answered(store: &crate::PersonResources, ask: &str) -> Option<Decision> {
+    held(store).answers.get(ask).map(|approve| {
         if *approve {
             Decision::Approve
         } else {
@@ -192,23 +194,22 @@ fn answered(personal: &PersonalSync, ask: &str) -> Option<Decision> {
     })
 }
 
-/// The person's own devices, as the store holds them, for the endpoint that
-/// answers machines: another device answers an ask from the store, and this
-/// one carries it out here.
+/// The person's own workspace, for the endpoint that answers machines: another device answers
+/// an ask written there, and this one carries it out here.
 pub(crate) struct Asked {
-    personal: PersonalSync,
+    store: crate::PersonResources,
 }
 
 impl Person for Asked {
     fn decide(&mut self, machine: &WaitingMachine) -> anyhow::Result<Decision> {
-        enter(&self.personal, machine).map_err(|error| anyhow::anyhow!(error))?;
-        // The person may answer here or on any other device of theirs: the
-        // store carries whichever comes first.
+        enter(&self.store, machine).map_err(|error| anyhow::anyhow!(error))?;
+        // The person may answer here or on any other device of theirs: their
+        // own workspace carries whichever comes first.
         let Some(deadline) = std::time::Instant::now().checked_add(ASK_FOR) else {
             return Ok(Decision::Decline);
         };
         while std::time::Instant::now() < deadline {
-            if let Some(decision) = answered(&self.personal, &machine.ask) {
+            if let Some(decision) = answered(&self.store, &machine.ask) {
                 return Ok(decision);
             }
             std::thread::sleep(LOOK_EVERY);
@@ -228,10 +229,10 @@ impl LocalLinks {
 }
 
 /// Answer machines on this device's enrollment endpoint for as long as the
-/// session is up, noting each ask in the person's store. `root` and
+/// session is up, noting each ask in the person's own workspace. `root` and
 /// `directory` are the person's identity as this device holds it.
 pub(crate) fn serve(
-    personal: PersonalSync,
+    store: crate::PersonResources,
     root: std::path::PathBuf,
     directory: std::path::PathBuf,
     wake: tilo_service::Wake,
@@ -242,7 +243,7 @@ pub(crate) fn serve(
     let spawned = std::thread::Builder::new()
         .name("tilo-enrollment-serve".into())
         .spawn(move || {
-            let mut asked = Asked { personal };
+            let mut asked = Asked { store };
             let mut options = Vec::new();
             // The machine that installs a server of the person's, and one of
             // their own devices: the same endpoint answers both.
@@ -506,7 +507,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "enrollment_tests.rs"]
-mod store_tests;

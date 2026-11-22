@@ -278,11 +278,11 @@ fn account_or_recipient_cannot_be_substituted_into_a_dropdown_selection() {
         )))
         .expect("fixture endpoint");
     let accounts = app
-        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
+        .shared_workspace::<tilo_messaging::AccountList>(tilo_messaging::AccountList::OWNER)
         .expect("the workspace's accounts");
     assert_eq!(
         accounts.record().route().expect("accounts sync").app_id,
-        tilo_messaging::PersonAccounts::OWNER,
+        tilo_messaging::AccountList::OWNER,
         "Messages reads the accounts record Settings keeps"
     );
     app.settle();
@@ -514,10 +514,10 @@ pub(crate) fn live_messages_with_service_and_scope<T: std::any::Any>(
     let person = "11".repeat(32);
     let mut settings = TestApp::<AccountOwnerFixture>::for_person(&person).expect("metadata owner");
     let account_resource = settings
-        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
+        .shared_workspace::<tilo_messaging::AccountList>(tilo_messaging::AccountList::OWNER)
         .expect("owner account resource");
     account_resource
-        .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
+        .invoke(&tilo_messaging::AccountList::SAVE_ACCOUNT.with((
             "fixture-signal".into(),
             "signal".into(),
             "Personal".into(),
@@ -533,7 +533,7 @@ pub(crate) fn live_messages_with_service_and_scope<T: std::any::Any>(
     }
     .expect("live Messages host");
     let accounts = app
-        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
+        .shared_workspace::<tilo_messaging::AccountList>(tilo_messaging::AccountList::OWNER)
         .expect("read-only accounts");
     assert_eq!(
         accounts.record().route(),
@@ -597,10 +597,10 @@ fn group_fixture(host: std::sync::Arc<GroupHostFixture>) -> TestApp<MessagesShel
     let mut owner =
         TestApp::<AccountOwnerFixture>::for_person(&"11".repeat(32)).expect("group account owner");
     let accounts = owner
-        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
+        .shared_workspace::<tilo_messaging::AccountList>(tilo_messaging::AccountList::OWNER)
         .expect("group account resource");
     accounts
-        .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
+        .invoke(&tilo_messaging::AccountList::SAVE_ACCOUNT.with((
             "fixture-whatsapp".into(),
             "whatsapp".into(),
             "Personal WhatsApp".into(),
@@ -612,7 +612,7 @@ fn group_fixture(host: std::sync::Arc<GroupHostFixture>) -> TestApp<MessagesShel
     let mut app = TestApp::<MessagesShell>::for_person_with_lent(&"11".repeat(32), client)
         .expect("private Messages fixture");
     let linked = app
-        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
+        .shared_workspace::<tilo_messaging::AccountList>(tilo_messaging::AccountList::OWNER)
         .expect("read-only account metadata");
     linked
         .record()

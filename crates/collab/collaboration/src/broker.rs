@@ -3778,7 +3778,7 @@ async fn drive_shovel(
     #[cfg(test)]
     let mut key_timer_rounds = 0_usize;
     let signer: SharedSigner = std::rc::Rc::new(tokio::sync::Mutex::new(signer));
-    let person = PersonalCluster::of(&presentation, &signer).map(std::rc::Rc::new);
+    let person = PersonWorkspace::of(&presentation, &signer).map(std::rc::Rc::new);
     let queue = DocumentQueue::start(signer.clone(), inbound_tx.clone());
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
@@ -4456,7 +4456,7 @@ async fn install_sdk_encryption(
 /// launch workspace's. The identity service lends the proof only to an app
 /// that keeps something of the person's there, so it is asked when a route
 /// there first joins, and never by an app that joins none.
-struct PersonalCluster {
+struct PersonWorkspace {
     workspace: String,
     device_certificate: Vec<u8>,
     signer: SharedSigner,
@@ -4467,7 +4467,7 @@ struct PersonalCluster {
     clippy::future_not_send,
     reason = "the host identity transport is constructed and retained only on the shovel LocalSet"
 )]
-impl PersonalCluster {
+impl PersonWorkspace {
     /// The person's own workspace as `presentation`'s certified identity
     /// names it, signed for by `signer`; `None` for a connection without a
     /// certified identity, or one launched into that workspace.
@@ -4492,7 +4492,7 @@ impl PersonalCluster {
                 return None;
             }
         };
-        let workspace = collab_types::personal_cluster(&root.user_public_key).to_string();
+        let workspace = collab_types::person_workspace(&root.user_public_key).to_string();
         (workspace != launch.workspace_id).then(|| Self {
             workspace,
             device_certificate: launch.device_certificate,
@@ -4600,7 +4600,7 @@ struct SdkJoinContext<'a> {
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
     /// The person's own workspace, when it is not the launch's.
-    person: Option<&'a PersonalCluster>,
+    person: Option<&'a PersonWorkspace>,
     member_handle: Option<&'a str>,
     member_kind: &'a str,
     inbound_tx: &'a InboundBridge,

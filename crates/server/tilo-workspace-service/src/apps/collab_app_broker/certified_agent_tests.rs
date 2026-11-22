@@ -106,7 +106,7 @@ impl Fixture {
             listed.push(crate::apps::services::ListedAgent {
                 id: AGENT.into(),
                 name: "Claude Code".into(),
-                keeper: String::new(),
+                acts_for: String::new(),
             });
         }
     }

@@ -32,8 +32,8 @@ fn live_second_account_refusal_restores_already_published_metadata() {
     let record = root.record_for_test();
     let mut existing = accounts::Account::new("a-cloud", "nextcloud");
     existing.config = serde_json::json!({"kept": true});
-    let mut original = accounts::AccountStore::new();
-    original.upsert(existing.clone());
+    let mut original = accounts::person::AccountList::default();
+    original.keep(&existing).unwrap();
     root.save_store(&original).unwrap();
     let old_secret = accounts::Secret::password("old-credential");
     let mut vault = root.vault();
@@ -55,10 +55,10 @@ fn live_second_account_refusal_restores_already_published_metadata() {
         "{error}"
     );
     assert_eq!(
-        record.get().store().get(&"a-cloud".into()),
+        record.get().get(&"a-cloud".into()),
         original.get(&"a-cloud".into())
     );
-    assert_eq!(record.get().store().len(), 1);
+    assert_eq!(record.get().len(), 1);
     assert_eq!(root.vault().get(&"a-cloud".into()), Some(old_secret));
     assert!(root.vault().get(&"z-mail".into()).is_none());
     assert!(!root.mutation_pending());
@@ -78,7 +78,7 @@ fn live_pair_projection_failure_restores_person_metadata() {
             .unwrap_err();
     assert!(error.contains("could not persist account"), "{error}");
     assert!(
-        record.get().store().is_empty(),
+        record.get().is_empty(),
         "published live metadata must be restored even when projection is still blocked"
     );
     assert!(root.vault().get(&"cloud".into()).is_none());
@@ -151,7 +151,7 @@ fn command(pane: &mut AccountsPane, command: AccountViewCommand) {
 
 fn only_account(root: &AccountRoot, type_id: &str) -> accounts::Account {
     let store = root.store();
-    let list = store.list(&accounts::AccountTypeId::from(type_id));
+    let list = store.of_type(accounts::AccountTypeId::from(type_id).as_str());
     assert_eq!(list.len(), 1, "exactly one {type_id} account");
     list[0].clone()
 }

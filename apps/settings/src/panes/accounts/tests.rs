@@ -30,8 +30,8 @@ fn account_check_returns_its_saved_credential_probe_result() -> Result<(), Strin
     let (_dir, root) = scratch_root();
     let id = accounts::AccountId::from("connection@example.test");
     let account = accounts::Account::new(id.clone(), "email");
-    let mut store = accounts::AccountStore::new();
-    store.upsert(account);
+    let mut store = accounts::person::AccountList::default();
+    store.keep(&account).unwrap();
     root.save_store(&store).map_err(|error| error.to_string())?;
     let mut vault = root.vault();
     vault.put(&id, &accounts::Secret::password("test-only-password"));
@@ -88,10 +88,10 @@ tilo_test_env::scenario! {
     phase selected_browser_sessions_use_device_inventory_not_public_identity_resources;
     {
         let (_scratch, root) = scratch_root();
-        let mut store = accounts::AccountStore::new();
-        store.upsert(accounts::Account::new("selected", browser_sessions::TYPE));
-        store.upsert(accounts::Account::new("other", "email"));
-        store.save_in(&root.path().unwrap()).unwrap();
+        let mut store = accounts::person::AccountList::default();
+        store.keep(&accounts::Account::new("selected", browser_sessions::TYPE)).unwrap();
+        store.keep(&accounts::Account::new("other", "email")).unwrap();
+        root.save_store(&store).unwrap();
         let pane = AccountsPane::from_dir_in(root.clone(), AccountDirectory::default(), false);
         let selections = pane.browser_service_sessions();
         assert_eq!(selections.len(), 1);
@@ -122,8 +122,8 @@ tilo_test_env::scenario! {
                 "use_mail": false,
                 "future_provider_field": {"kept": true}
             });
-            let mut store = accounts::AccountStore::new();
-            store.upsert(original);
+            let mut store = accounts::person::AccountList::default();
+            store.keep(&original).unwrap();
             root.save_store(&store).expect("seed canonical account");
             let mut vault = root.vault();
             vault.put(
@@ -147,7 +147,7 @@ tilo_test_env::scenario! {
             )
             .expect("edit account");
 
-            let saved = root.store().get(&id).cloned().expect("saved account");
+            let saved = root.store().get(&id).expect("saved account");
             assert!(!saved.enabled);
             assert_eq!(saved.tint, 7);
             assert_eq!(saved.config["use_files"], false);
@@ -174,8 +174,8 @@ tilo_test_env::scenario! {
                 "email": id.as_str(), "username": id.as_str(),
                 "imap_host": "imap.example.test", "imap_port": 993
             });
-            let mut store = accounts::AccountStore::new();
-            store.upsert(account);
+            let mut store = accounts::person::AccountList::default();
+            store.keep(&account).unwrap();
             root.save_store(&store).expect("seed account");
             let mut vault = root.vault();
             vault.put(&id, &accounts::Secret::password("old-password"));
@@ -202,8 +202,8 @@ tilo_test_env::scenario! {
     {
         let (dir, root) = scratch_root();
         let id = accounts::AccountId::from("warm@example.test");
-        let mut store = accounts::AccountStore::new();
-        store.upsert(accounts::Account::new(id.clone(), "email"));
+        let mut store = accounts::person::AccountList::default();
+        store.keep(&accounts::Account::new(id.clone(), "email")).unwrap();
         root.save_store(&store).expect("the store is saved");
         let mut vault = root.vault();
         vault.put(&id, &accounts::Secret::password("test-only-password"));
@@ -647,11 +647,11 @@ fn vault_save_failure_preserves_existing_account_metadata() {
     let (_dir, account_root) = scratch_root();
     let root = account_root.path().unwrap();
     let old_id = accounts::AccountId::from("existing@example.test");
-    let mut store = accounts::AccountStore::new();
-    store.upsert(accounts::Account::new(old_id.clone(), "email"));
+    let mut store = accounts::person::AccountList::default();
+    store
+        .keep(&accounts::Account::new(old_id.clone(), "email"))
+        .unwrap();
     account_root.save_store(&store).unwrap();
-    let store_path = accounts::store_path_in(&root);
-    let metadata_before = std::fs::read(&store_path).unwrap();
     let mut vault = accounts::SecretVault::open_in(&root);
     vault.put(&old_id, &accounts::Secret::password("old-password"));
     vault.try_save().unwrap();
@@ -684,7 +684,6 @@ fn vault_save_failure_preserves_existing_account_metadata() {
         std::fs::read(dir.join("vault.enc")).unwrap(),
         ciphertext_before
     );
-    assert_eq!(std::fs::read(&store_path).unwrap(), metadata_before);
     let saved = account_root.store();
     assert_eq!(saved.all().len(), 1);
     assert!(saved.get(&old_id).is_some());
@@ -807,8 +806,10 @@ fn a_stalled_vault_never_holds_the_window() {
             // The workspace's accounts record is the window's: it is opened,
             // seeded and read on the window's thread.
             let root = AccountRoot::scratch_at(config);
-            let mut store = accounts::AccountStore::new();
-            store.upsert(accounts::Account::new(id.clone(), "email"));
+            let mut store = accounts::person::AccountList::default();
+            store
+                .keep(&accounts::Account::new(id.clone(), "email"))
+                .unwrap();
             root.save_store(&store).expect("the store is saved");
             let mut vault = root.vault();
             vault.put(&id, &accounts::Secret::password("test-only-password"));
@@ -878,8 +879,8 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
         ..accounts::email::AccountConfig::default()
     })
     .expect("the config serialises");
-    let mut store = accounts::AccountStore::new();
-    store.upsert(account);
+    let mut store = accounts::person::AccountList::default();
+    store.keep(&account).unwrap();
     root.save_store(&store).expect("the store is saved");
     let dir = AccountDirectory::load_in(&root);
     assert_eq!(

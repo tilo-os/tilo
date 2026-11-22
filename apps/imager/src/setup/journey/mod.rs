@@ -7550,7 +7550,7 @@ mod tests {
         });
         record.keep(&account).unwrap();
         record.project(&config.join("tilo")).unwrap();
-        let metadata = ::accounts::store_path_in(&config.join("tilo"));
+        let metadata = ::accounts::person::staged_path_in(&config.join("tilo"));
         let original = std::fs::read(&metadata).unwrap();
         let roots = SourceRoots {
             home: source.path().to_owned(),

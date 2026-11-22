@@ -16,7 +16,7 @@ fields = [
   { path = "agents", type = { collection = { named = "Agent" } }, stored = "keyed" },
   { path = "agents.*.id", type = "text" },
   { path = "agents.*.name", type = "text", label = true },
-  { path = "agents.*.keeper", type = "text" },
+  { path = "agents.*.acts_for", type = "text" },
   { path = "agents.*.model", type = { option = "text" } },
   { path = "agents.*.mcp_client", type = { option = "text" } },
   { path = "agents.*.bound", type = { list = { named = "Bound" } } },
@@ -173,7 +173,7 @@ name = "Agent"
 fields = [
   { name = "id", type = "text" },
   { name = "name", type = "text" },
-  { name = "keeper", type = "text" },
+  { name = "acts_for", type = "text" },
   { name = "model", type = { option = "text" } },
   { name = "mcp_client", type = { option = "text" } },
   { name = "bound", type = { list = { named = "Bound" } } },

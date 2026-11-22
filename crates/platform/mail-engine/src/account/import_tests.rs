@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn a_pending_import_shows_its_metadata_and_stays_pending_once_mail_keeps_it() {
-    use accounts::person::PersonAccounts;
+    use accounts::person::AccountList;
     let id = AccountId::from("person@example.org");
     let config = AccountConfig {
         display_name: "Imported Reader".into(),
@@ -16,8 +16,8 @@ fn a_pending_import_shows_its_metadata_and_stays_pending_once_mail_keeps_it() {
     // The record keeps the account without a name of its own: Mail saves it.
     let mut stored = StoredAccount::new(id.clone(), accounts::thunderbird::PENDING_TYPE);
     stored.set_config(&config);
-    let mut record = tilo_resource::Replica::<PersonAccounts>::new();
-    record.apply(PersonAccounts::saving(&stored)).unwrap();
+    let mut record = tilo_resource::Replica::<AccountList>::new();
+    record.apply(AccountList::saving(&stored)).unwrap();
     let person = record.state().unwrap();
 
     let native = accounts_of(&person);

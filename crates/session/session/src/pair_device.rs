@@ -333,14 +333,14 @@ impl crate::Shared {
     }
 
     /// Put each machine that asks to join to the person once, and take back the asks that are
-    /// gone: what the person's store holds is what every one of their devices shows, and an ask
-    /// any of them answered leaves them all at once. Each ask is also a question resource while it
+    /// gone: what the person's own workspace holds is what every one of their devices
+    /// shows, and an ask any of them answered leaves them all at once. Each ask is also a question resource while it
     /// waits, so an agent answers the machine through the same sheet as a person does.
     pub(crate) fn follow_enrolling(&self) {
-        let Some(personal) = self.sync.as_ref().and_then(|sync| sync.personal()) else {
+        let Some(store) = self.sync.as_ref().and_then(|sync| sync.person_resources()) else {
             return;
         };
-        let held = crate::enrollment::held(personal.sync());
+        let held = crate::enrollment::held(&store);
         let inline = self.pair_device_open();
         for ask in self.adding.retire(&held.waiting, inline) {
             self.telling().withdraw(&crate::enrollment::tag(&ask));
@@ -369,15 +369,13 @@ impl crate::Shared {
     }
 
     /// The person answered a machine that asked to join: approving admits it. The answer is
-    /// written to their store, and whichever of their devices serves the machine carries it out.
+    /// written to their own workspace, and whichever of their devices serves the machine
+    /// carries it out.
     pub(crate) fn answer_enrolling(&self, ask: &str, approve: bool) {
-        let Some(personal) = self.sync.as_ref().and_then(|sync| sync.personal()) else {
+        let Some(store) = self.sync.as_ref().and_then(|sync| sync.person_resources()) else {
             return;
         };
-        if let Err(error) = crate::enrollment::answer(personal.sync(), ask, approve) {
-            tracing::warn!(%error, "a machine was not answered");
-            return;
-        }
+        crate::enrollment::answer(&store, ask, approve);
         self.telling().withdraw(&crate::enrollment::tag(ask));
     }
 
@@ -421,13 +419,11 @@ impl crate::Shared {
         let place = self.pairing_place();
         if matches!(place, Err(NoLink::Nearby))
             && let Some(engine) = self.engine.as_ref()
-            && let Some(personal) = self.sync.as_ref().and_then(|sync| sync.personal())
+            && let Some(links) = self.sync.as_ref().and_then(|sync| sync.enrollment_links())
         {
-            return self.adding.local(
-                &personal.enrollment_links,
-                engine.identity().device_cert.user_public_key,
-                now_ms,
-            );
+            return self
+                .adding
+                .local(links, engine.identity().device_cert.user_public_key, now_ms);
         }
         self.adding.device(place, now_ms)
     }
@@ -708,14 +704,14 @@ mod tests {
         let idle = tilo_sheets::word("pair-device-waiting-nothing");
         assert!(session.accessible_labels().contains(&idle));
         {
-            let personal = session
+            let store = session
                 .shared
                 .sync
                 .as_ref()
-                .and_then(|sync| sync.personal())
-                .expect("the person's own store");
+                .and_then(|sync| sync.person_resources())
+                .expect("the person's own workspace");
             crate::enrollment::enter(
-                personal.sync(),
+                &store,
                 &tilo_enrollment::waiting::WaitingMachine {
                     ask,
                     device: machine.clone(),
@@ -726,7 +722,7 @@ mod tests {
                     nonce,
                 },
             )
-            .expect("the ask is kept in the person's store");
+            .expect("the ask is kept in the person's own workspace");
         }
         // The person answers the machine through the same question surface an
         // agent uses: the ask is a question while it waits, and answering it

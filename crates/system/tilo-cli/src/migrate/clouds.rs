@@ -75,7 +75,7 @@ pub fn connect(
     cloud_types::set_files_mode(&mut account.config, FilesMode::Import);
     let mut workspace = super::workspace::Held::connect()?;
     let id = migration_sources::vault::persist::<anyhow::Error>(&root, &account, secret)?;
-    let saving = accounts::person::PersonAccounts::saving(&account);
+    let saving = accounts::person::AccountList::saving(&account);
     super::workspace::change_accounts(&mut workspace, (&saving.address(), &saving.arguments))?;
     place.keep(&place.path(source.key, "account.json"), &id.as_str())?;
     Ok(json!({
@@ -283,7 +283,7 @@ pub(super) fn open_with(
 fn open(place: &Place, source: &Source) -> Result<Arc<dyn CloudSource>> {
     let account = account(place, source)?;
     let root = config_root()?;
-    let credential = account_credentials::DriveSignIn::new(credentials(&root), account.id.clone());
+    let credential = account_credentials::DriveSignIn::new(credentials(&root), account.clone());
     open_with(&account, Arc::new(credential))
 }
 

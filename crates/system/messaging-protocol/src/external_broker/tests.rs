@@ -44,7 +44,7 @@ impl ExternalAuthority for Hold {
         if self.revoked.load(Ordering::SeqCst) || current != *requested {
             return Err(SendError::Revoked);
         }
-        let mut accounts = accounts::person::PersonAccounts::default();
+        let mut accounts = accounts::person::AccountList::default();
         accounts
             .keep(&accounts::Account::new(
                 "account",
@@ -422,7 +422,7 @@ fn route_choice(owner: &Owner, route: &Route) -> String {
 
 struct AccountOwnerFixture;
 impl ui::framework::ResourceApp for AccountOwnerFixture {
-    type Resource = tilo_messaging::PersonAccounts;
+    type Resource = tilo_messaging::AccountList;
     const ID: &'static str = "so.tilo.settings";
     const TITLE: &'static str = "Account metadata owner fixture";
     fn view(_cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
@@ -438,10 +438,10 @@ pub(crate) fn project_account_metadata(
     let mut settings =
         ui::framework::testing::TestApp::<AccountOwnerFixture>::for_person(&owner.actor).unwrap();
     let metadata = settings
-        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
+        .shared_workspace::<tilo_messaging::AccountList>(tilo_messaging::AccountList::OWNER)
         .unwrap();
     metadata
-        .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
+        .invoke(&tilo_messaging::AccountList::SAVE_ACCOUNT.with((
             owner.account.clone(),
             route.service.clone(),
             "Personal".into(),
@@ -451,7 +451,7 @@ pub(crate) fn project_account_metadata(
         )))
         .unwrap();
     let accounts = app
-        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
+        .shared_workspace::<tilo_messaging::AccountList>(tilo_messaging::AccountList::OWNER)
         .unwrap();
     accounts
         .record()

@@ -141,7 +141,7 @@ fn stands_from_before(hosted: &Hosted, scope: Asked, words: &str) {
     };
     hosted
         .workspaces
-        .let_always(&hosted.keeper(), allowing)
+        .let_always(&hosted.acts_for(), allowing)
         .map(drop)
         .expect("the server keeps what stood before");
 }

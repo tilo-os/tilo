@@ -87,8 +87,8 @@ impl Hosted {
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let page = Browser::open_at(&server, &browser, &holder, &workspace).await;
-        let keeper = root.verifying_key().to_bytes();
-        let person = hex::encode(keeper);
+        let acts_for = root.verifying_key().to_bytes();
+        let person = hex::encode(acts_for);
         make_agent(&page, &workspaces, &workspace, &person, None).await;
         let catalogue = crate::common::catalogue();
         let governor = workspaces.governor().clone();
@@ -105,7 +105,7 @@ impl Hosted {
                     name: "Google",
                     protocol: ProviderProtocol::OpenAiCompatible,
                     endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-                    key: Some("the-keepers-own-model-key"),
+                    key: Some("the-persons-own-model-key"),
                     models: &["gemini-main", "gemini-pro"],
                 },
                 true,
@@ -127,12 +127,12 @@ impl Hosted {
         }
     }
 
-    fn keeper(&self) -> [u8; 32] {
+    fn acts_for(&self) -> [u8; 32] {
         self.root.verifying_key().to_bytes()
     }
 
     fn person(&self) -> String {
-        hex::encode(self.keeper())
+        hex::encode(self.acts_for())
     }
 
     /// The server stops and starts again: whatever ran its agents is gone, and what works them now
@@ -714,7 +714,7 @@ async fn an_action_that_asks_first_waits_in_the_conversation_and_is_done_once_on
     assert!(
         hosted
             .workspaces
-            .permissions_of(&hosted.keeper())
+            .permissions_of(&hosted.acts_for())
             .permissions
             .is_empty()
     );
@@ -962,10 +962,10 @@ async fn what_the_servers_own_code_asks_reaches_its_carrier_once_with_the_person
         },
         on: None,
     };
-    let (workspace, keeper) = (hosted.workspace.clone(), hosted.keeper());
+    let (workspace, acts_for) = (hosted.workspace.clone(), hosted.acts_for());
     let asking = move |kept: serde_json::Value, always: Option<Asked>| ServerAsk {
         workspace: workspace.clone(),
-        person: keeper,
+        person: acts_for,
         agent: SCOUT.to_owned(),
         conversation: String::new(),
         words: WORDS.to_owned(),
@@ -1021,7 +1021,12 @@ async fn what_the_servers_own_code_asks_reaches_its_carrier_once_with_the_person
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(heard.0.lock().unwrap().is_empty());
     assert!(hosted.question(&id).await.outcome.is_none());
-    assert!(hosted.workspaces.stands(&hosted.keeper(), &scope).is_none());
+    assert!(
+        hosted
+            .workspaces
+            .stands(&hosted.acts_for(), &scope)
+            .is_none()
+    );
 
     // The carrier is there again: it hears the answer once, and what was asked stands.
     hosted.agents.carries(CARRIER, heard.clone());
@@ -1042,7 +1047,12 @@ async fn what_the_servers_own_code_asks_reaches_its_carrier_once_with_the_person
         vec![(first.clone(), Answered::Always)],
         "once, with the person's answer and what the server kept"
     );
-    assert!(hosted.workspaces.stands(&hosted.keeper(), &scope).is_some());
+    assert!(
+        hosted
+            .workspaces
+            .stands(&hosted.acts_for(), &scope)
+            .is_some()
+    );
     let stands = hosted.permissions().await;
     assert_eq!(stands.len(), 1, "{stands:?}");
     assert_eq!(stands[0]["action"]["action"], "start-a-program");

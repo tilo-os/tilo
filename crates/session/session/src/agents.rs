@@ -2,7 +2,7 @@
 //! An agent works in a workspace because Chat's record of the workspace's agents
 //! ([`tilo_app::tilo_workspace_agent`]) names it and names the person who keeps it. That record is
 //! the agent's admission: the session reads it every pass, as the person sitting here, and the
-//! broker admits an agent's session only for the keeper the record names
+//! broker admits an agent's session only for the person the record names
 //! ([`tilo_broker_core::services::AgentRoster`]). Nothing here keeps state of its own beyond the
 //! record this device has open: who works here is the record's.
 //! The MCP server adds a member to that record between two passes, and tells its client it may
@@ -202,7 +202,7 @@ impl Agents {
                 named.push(tilo_broker_core::services::ListedAgent {
                     id: agent.id.0.clone(),
                     name: agent.name.clone(),
-                    keeper: agent.keeper.clone(),
+                    acts_for: agent.acts_for.clone(),
                 });
                 spend.insert(
                     (workspace.clone(), agent.id.0.clone()),
@@ -213,7 +213,7 @@ impl Agents {
                     },
                 );
                 // An MCP agent connects on its own: what the person types goes to the others.
-                if agent.mcp_client.is_none() && agent.keeper == person {
+                if agent.mcp_client.is_none() && agent.acts_for == person {
                     kept.push(Kept {
                         workspace: workspace.clone(),
                         id: agent.id.0.clone(),
@@ -233,7 +233,7 @@ impl Agents {
     }
 
     /// Charge what the runs' agents spent to their day, on each workspace's record of its agents,
-    /// as the person sitting here: a keeper's device counts what the agents it runs spend.
+    /// as the person sitting here: a person's device counts what the agents it runs spend.
     pub(crate) fn charge(
         &self,
         workspaces: &[(String, WorkspacePolicy)],
@@ -335,7 +335,7 @@ impl crate::Shared {
     /// grants its people gave, and the turns the conversations of each give its agents. Who keeps
     /// each workspace's agents is read from the workspace's own record of them, as the broker
     /// admits an agent's session on: an agent works in the turns of the conversations it takes part
-    /// in, and its actions are admitted as its keeper's grants say.
+    /// in, and its actions are admitted as its person's grants say.
     pub(crate) fn feed_agents(&self) {
         // What moved in the workspaces' records, and what this session wrote into them, before
         // anything here reads them.
@@ -430,7 +430,7 @@ impl crate::Shared {
             tilo_broker_core::services::ListedAgent {
                 id: agent.clone(),
                 name: name.clone(),
-                keeper: self.person.clone(),
+                acts_for: self.person.clone(),
             },
         );
         Ok((agent, name))
@@ -514,11 +514,13 @@ mod tests {
             .shared
             .mcp_member(STUDIO, "claude-code")
             .expect("the person's agent member for the client is added");
-        let keeper = roster.keeper(STUDIO, &member);
+        let acts_for = roster.acts_for(STUDIO, &member);
         assert!(
-            keeper.as_deref().is_some_and(|keeper| keeper == PERSON),
+            acts_for
+                .as_deref()
+                .is_some_and(|acts_for| acts_for == PERSON),
             "the broker lists the member {member} as the person's before its client is told it \
-             may join: {keeper:?}"
+             may join: {acts_for:?}"
         );
 
         // The same client again is the same member, found and still listed: no second one.
@@ -538,6 +540,6 @@ mod tests {
         let listed = roster.listed(STUDIO);
         assert_eq!(listed.len(), 1, "one member after the pass: {listed:?}");
         assert_eq!(listed[0].id, member);
-        assert_eq!(listed[0].keeper, PERSON);
+        assert_eq!(listed[0].acts_for, PERSON);
     }
 }

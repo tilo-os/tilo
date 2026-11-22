@@ -279,7 +279,7 @@ impl ResourceApp for MessagesShell {
     const ICON: Option<&'static str> = Some("chat");
 
     const PERSON_RESOURCES: &'static [ui::framework::PersonKind] = &[
-        ui::framework::PersonKind::shared::<tilo_messaging::PersonAccounts>(),
+        ui::framework::PersonKind::shared::<tilo_messaging::AccountList>(),
         ui::framework::PersonKind::shared::<tilo_contact_directory::ContactDirectory>(),
     ];
     fn commands() -> &'static [ui::framework::Command] {

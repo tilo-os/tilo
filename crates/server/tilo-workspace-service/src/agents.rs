@@ -804,7 +804,7 @@ async fn agent_caller(
     agent: &Agent,
     person: [u8; 32],
 ) -> Result<Caller, String> {
-    let root = tilo_action_policy::PersonId::parse(&agent.keeper)
+    let root = tilo_action_policy::PersonId::parse(&agent.acts_for)
         .ok()
         .and_then(|its| its.root())
         .ok_or("the agent belongs to no person")?;
@@ -1279,7 +1279,7 @@ impl ServerAgents {
     /// the device that has it, and a claim stays until it goes unwritten for a minute, so the
     /// device that answered in a conversation answers what is written there next.
     async fn claim(&self, workspace: &str, turn: &Turn) -> Option<Arc<crate::work::Claim>> {
-        let keeper = match tilo_action_policy::PersonId::parse(&turn.agent.keeper) {
+        let keeper = match tilo_action_policy::PersonId::parse(&turn.agent.acts_for) {
             Ok(keeper) => keeper.root(),
             Err(error) => {
                 tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "an agent names no keeper by their root, and nobody answers for it");
@@ -2105,7 +2105,7 @@ pub async fn count_spend(
     day: &str,
     cost: u64,
 ) -> Result<(), String> {
-    let keeper = agent.keeper.clone();
+    let keeper = agent.acts_for.clone();
     let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     let (id, day) = (agent.id.0.clone(), day.to_owned());
     workspaces

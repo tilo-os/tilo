@@ -227,7 +227,8 @@ impl tilo_capture::broker::Answers for DeviceAnswers {
             crate::apps::device_cap(device),
             answer,
             Lifetime::UntilRevoked,
-        )
+        );
+        Ok(())
     }
 }
 

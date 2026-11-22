@@ -1,13 +1,13 @@
 //! The person's answers about the devices of their machines: "Recorder may use
 //! the camera on this laptop, always".
 //!
-//! An answer that outlasts the session is one document of the person's own store
-//! ([`DEVICE_ANSWERS_KIND`]), one entry per device, app and capability, naming
-//! the device it is about. It follows the person to every device of theirs,
-//! keeps its history like any of their documents, and any of their devices may
-//! take it back. It answers only on the device it names: an answer given on
-//! the laptop never opens the phone's camera. An answer for the session stays
-//! in this device's memory, and one for once is never kept.
+//! An answer that outlasts the session is one document of the person's own
+//! workspace ([`DEVICE_ANSWERS_KIND`]), one entry per device, app and
+//! capability, naming the device it is about. It follows the person to every
+//! device of theirs, keeps its history like any of their documents, and any of
+//! their devices may take it back. It answers only on the device it names: an
+//! answer given on the laptop never opens the phone's camera. An answer for the
+//! session stays in this device's memory, and one for once is never kept.
 //!
 //! A workspace never answers here. What it may do is refuse a device to the
 //! apps in it ([`DeviceGrants::refuse_in`]), whatever the person answered.
@@ -17,14 +17,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ReadDoc as _};
-use collab_types::DocumentMutation;
 use collab_types::caps::DeviceCap;
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::{Answer, Lifetime};
 use tilo_lock::MutexRecover as _;
 
-use super::link::PersonalSync;
-use super::{DEVICES_APP, PersonalStore};
+use crate::person_records::PersonDocuments;
+
+/// The app whose documents the person's own records of themselves are: their
+/// devices and everything they answered about them.
+pub const PERSON_RECORDS_APP: &str = "so.tilo.identity";
 
 /// The kind of the person's document that holds their kept device answers.
 pub const DEVICE_ANSWERS_KIND: &str = "identity.device-answers";
@@ -73,9 +75,9 @@ fn document() -> String {
 /// The person's device answers, as one device reads and gives them.
 #[derive(Clone)]
 pub struct DeviceGrants {
-    /// The person's store, where kept answers live, once it is open: until
-    /// then none are kept.
-    store: Arc<OnceLock<PersonalSync>>,
+    /// The person's own workspace, where kept answers live, once this session
+    /// opened it: until then none are kept.
+    store: Arc<OnceLock<Arc<dyn PersonDocuments>>>,
     /// The answers given for this session, by app and capability.
     session: Arc<Mutex<BTreeMap<(String, DeviceCap), Answer>>>,
     /// What the workspaces refuse their apps, as `(workspace, app, device)`.
@@ -88,15 +90,15 @@ pub struct DeviceGrants {
 pub type Refusal = (String, String, DeviceCap);
 
 impl DeviceGrants {
-    /// Answers kept in the person's store `store`.
+    /// Answers kept in the person's own workspace `store`.
     #[must_use]
-    pub fn over(store: PersonalSync) -> Self {
+    pub fn over(store: Arc<dyn PersonDocuments>) -> Self {
         let grants = Self::unkept();
         grants.keep_in(store);
         grants
     }
 
-    /// Answers of a device without the person's store: none outlast the
+    /// Answers of a device without the person's own workspace: none outlast the
     /// session until it is handed one ([`Self::keep_in`]).
     #[must_use]
     pub fn unkept() -> Self {
@@ -108,20 +110,22 @@ impl DeviceGrants {
         }
     }
 
-    /// Keep answers in the person's store `store` from now on, in every clone:
-    /// what a session does once it opened the store. The first store stands.
-    pub fn keep_in(&self, store: PersonalSync) {
+    /// Keep answers in the person's own workspace `store` from now on, in
+    /// every clone: what a session does once it holds the workspace. The first
+    /// store stands.
+    pub fn keep_in(&self, store: Arc<dyn PersonDocuments>) {
         let _ = self.store.set(store);
     }
 
-    /// Ticks whenever the person's store changed, here or on another of their devices.
+    /// Ticks whenever the person's own workspace changed, here or on another of
+    /// their devices.
     #[must_use]
     pub fn changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
-        self.store.get().map(PersonalSync::changes)
+        self.store.get().map(|store| store.changes())
     }
 
-    fn this_device(store: &PersonalStore) -> String {
-        hex::encode(store.device().device_public_key)
+    fn this_device(store: &dyn PersonDocuments) -> String {
+        hex::encode(store.device())
     }
 
     /// The devices the workspaces refuse their apps from now on, replacing what they refused before.
@@ -161,69 +165,55 @@ impl DeviceGrants {
         }
         let store = self.store.get()?;
         let now = Some(tilo_clock::unix_now_ms());
-        store.read(|store| {
-            let key = entry_key(&Self::this_device(store), app, cap);
-            entries(store)
-                .remove(&key)
-                .filter(|kept| kept.lifetime.is_live_at(now))
-                .map(|kept| (kept.answer, kept.lifetime))
-        })
+        let key = entry_key(&Self::this_device(&**store), app, cap);
+        entries(&**store)
+            .remove(&key)
+            .filter(|kept| kept.lifetime.is_live_at(now))
+            .map(|kept| (kept.answer, kept.lifetime))
     }
 
     /// Keep what the person answered for `app` and `cap` on this device for
     /// `lifetime`: nothing for once, this device's memory for the session, the
-    /// person's store for longer.
-    ///
-    /// # Errors
-    /// The person's store refused the write; the answer stands for this session then.
-    pub fn answer(
-        &self,
-        app: &str,
-        cap: DeviceCap,
-        answer: Answer,
-        lifetime: Lifetime,
-    ) -> Result<(), String> {
+    /// person's own workspace for longer.
+    pub fn answer(&self, app: &str, cap: DeviceCap, answer: Answer, lifetime: Lifetime) {
         match lifetime {
-            Lifetime::Once => Ok(()),
+            Lifetime::Once => {}
             Lifetime::Session => {
                 self.session
                     .lock_recover()
                     .insert((app.to_owned(), cap), answer);
-                Ok(())
             }
             Lifetime::Until(_) | Lifetime::UntilRevoked => {
                 let Some(store) = self.store.get() else {
                     self.session
                         .lock_recover()
                         .insert((app.to_owned(), cap), answer);
-                    return Ok(());
+                    return;
                 };
-                let device = store.read(Self::this_device);
                 let kept = DeviceAnswer {
-                    device,
+                    device: Self::this_device(&**store),
                     app: app.to_owned(),
                     cap,
                     answer,
                     lifetime,
                 };
-                let value = serde_json::to_string(&kept).map_err(|error| error.to_string())?;
-                write(store, "answer", |doc| {
-                    doc.put(automerge::ROOT, kept.key(), value)
-                })
+                let Ok(value) = serde_json::to_string(&kept) else {
+                    return;
+                };
+                write(store, move |doc| {
+                    doc.put(automerge::ROOT, kept.key(), value.clone())
+                });
             }
         }
     }
 
     /// Take back what `app` was answered of `cap` on `device` (in hex): kept,
     /// and for this session when it is this device. `false` when there was nothing.
-    ///
-    /// # Errors
-    /// The person's store refused the write; the answer stands then.
-    pub fn revoke(&self, device: &str, app: &str, cap: DeviceCap) -> Result<bool, String> {
+    pub fn revoke(&self, device: &str, app: &str, cap: DeviceCap) -> bool {
         let this = self
             .store
             .get()
-            .is_none_or(|store| store.read(Self::this_device) == device);
+            .is_none_or(|store| Self::this_device(&**store) == device);
         let session = this
             && self
                 .session
@@ -231,27 +221,22 @@ impl DeviceGrants {
                 .remove(&(app.to_owned(), cap))
                 .is_some();
         let Some(store) = self.store.get() else {
-            return Ok(session);
+            return session;
         };
         let key = entry_key(device, app, cap);
-        if !store.read(|store| entries(store).contains_key(&key)) {
-            return Ok(session);
+        if !entries(&**store).contains_key(&key) {
+            return session;
         }
-        write(store, "revoke", |doc| {
-            doc.delete(automerge::ROOT, key.as_str())
-        })?;
-        Ok(true)
+        write(store, move |doc| doc.delete(automerge::ROOT, key.as_str()));
+        true
     }
 
     /// Take back what `app` was answered of `cap` on this device.
-    ///
-    /// # Errors
-    /// The person's store refused the write; the answer stands then.
-    pub fn revoke_here(&self, app: &str, cap: DeviceCap) -> Result<bool, String> {
+    pub fn revoke_here(&self, app: &str, cap: DeviceCap) -> bool {
         let device = self
             .store
             .get()
-            .map(|store| store.read(Self::this_device))
+            .map(|store| Self::this_device(&**store))
             .unwrap_or_default();
         self.revoke(&device, app, cap)
     }
@@ -297,30 +282,28 @@ impl DeviceGrants {
             return Vec::new();
         };
         let now = Some(tilo_clock::unix_now_ms());
-        store.read(|store| {
-            let this = Self::this_device(store);
-            let labels: BTreeMap<String, String> = store
-                .devices()
-                .into_iter()
-                .map(|cert| (hex::encode(cert.device_public_key), cert.device_label))
-                .collect();
-            entries(store)
-                .into_values()
-                .filter(|kept| kept.lifetime.is_live_at(now))
-                .map(|answer| Kept {
-                    device_label: labels.get(&answer.device).cloned().unwrap_or_default(),
-                    this_device: answer.device == this,
-                    answer,
-                })
-                .collect()
-        })
+        let this = Self::this_device(&**store);
+        let labels: BTreeMap<String, String> = store
+            .devices()
+            .into_iter()
+            .map(|cert| (hex::encode(cert.device_public_key), cert.device_label))
+            .collect();
+        entries(&**store)
+            .into_values()
+            .filter(|kept| kept.lifetime.is_live_at(now))
+            .map(|answer| Kept {
+                device_label: labels.get(&answer.device).cloned().unwrap_or_default(),
+                this_device: answer.device == this,
+                answer,
+            })
+            .collect()
     }
 }
 
 /// The kept answers the person's document holds, by entry.
-fn entries(store: &PersonalStore) -> BTreeMap<String, DeviceAnswer> {
+fn entries(store: &dyn PersonDocuments) -> BTreeMap<String, DeviceAnswer> {
     let Some(doc) = store
-        .document(DEVICES_APP, &document())
+        .document(PERSON_RECORDS_APP, &document())
         .and_then(|saved| AutoCommit::load(&saved).ok())
     else {
         return BTreeMap::new();
@@ -337,30 +320,20 @@ fn entries(store: &PersonalStore) -> BTreeMap<String, DeviceAnswer> {
         .collect()
 }
 
-/// Change the person's document through `edit`, named `what` in its history, and
-/// send it to their other devices.
+/// Change the person's document through `edit`, named in its history, and send it to their
+/// other devices.
 fn write(
-    store: &PersonalSync,
-    what: &str,
-    edit: impl FnOnce(&mut AutoCommit) -> Result<(), automerge::AutomergeError>,
-) -> Result<(), String> {
-    use collab_types::CommitNamed as _;
-    let id = document();
-    store
-        .publish(|personal, key, now| {
-            let mut doc = match personal.document(DEVICES_APP, &id) {
-                Some(saved) => AutoCommit::load(&saved).map_err(|error| error.to_string())?,
-                None => AutoCommit::new(),
-            };
-            edit(&mut doc).map_err(|error| error.to_string())?;
-            doc.commit_edit(DEVICE_ANSWERS_KIND, what);
-            personal.publish(
-                DEVICES_APP,
-                &id,
-                &DocumentMutation::Snapshot(doc.save()),
-                key,
-                now,
-            )
-        })
-        .map(drop)
+    store: &Arc<dyn PersonDocuments>,
+    edit: impl Fn(&mut AutoCommit) -> Result<(), automerge::AutomergeError> + Send + Sync + 'static,
+) {
+    store.edit(
+        PERSON_RECORDS_APP,
+        &document(),
+        Box::new(move |doc| {
+            use collab_types::CommitNamed as _;
+            edit(doc).map_err(|error| error.to_string())?;
+            doc.commit_edit(DEVICE_ANSWERS_KIND, "answers");
+            Ok(())
+        }),
+    );
 }

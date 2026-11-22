@@ -150,7 +150,6 @@ broker_services! {
     action_offload: Arc<dyn tilo_actions::offload::ActionOffload>,
     own_device: Arc<dyn OwnDeviceActions>,
     workspace_nodes: Arc<dyn WorkspaceNodeActions>,
-    personal: tilo_peer_state::PersonalSync,
     hosted_workspaces: Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
     resources: Arc<dyn tilo_workspace_service::apps::services::ResourceServices>,
 }

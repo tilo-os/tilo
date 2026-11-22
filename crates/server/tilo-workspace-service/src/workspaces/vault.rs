@@ -420,13 +420,13 @@ pub(crate) enum VaultAt<'a> {
 #[derive(Default)]
 pub(crate) struct TestStores {
     items: std::sync::Mutex<VaultItems>,
-    accounts: std::sync::Mutex<accounts::person::PersonAccounts>,
+    accounts: std::sync::Mutex<accounts::person::AccountList>,
 }
 
 #[cfg(test)]
 impl TestStores {
     /// The workspace's accounts as they are now.
-    pub(crate) fn accounts_now(&self) -> accounts::person::PersonAccounts {
+    pub(crate) fn accounts_now(&self) -> accounts::person::AccountList {
         self.accounts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -535,7 +535,7 @@ impl VaultAt<'_> {
     ///
     /// # Errors
     /// As [`Workspaces::workspace_accounts`].
-    pub(crate) async fn accounts(&self) -> Result<accounts::person::PersonAccounts, String> {
+    pub(crate) async fn accounts(&self) -> Result<accounts::person::AccountList, String> {
         match self {
             Self::Workspace(workspaces, workspace) => {
                 workspaces.workspace_accounts(workspace).await

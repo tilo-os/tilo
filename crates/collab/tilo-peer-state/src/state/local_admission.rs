@@ -446,7 +446,7 @@ impl StatePeer {
             .claims
             .iter()
             .map(|claim| claim.change)
-            .chain(super::personal::change_hashes(&envelope.payload))
+            .chain(super::change_hashes::change_hashes(&envelope.payload))
             .map(automerge::ChangeHash)
             .collect();
         let mut doc = (*document.doc).clone();

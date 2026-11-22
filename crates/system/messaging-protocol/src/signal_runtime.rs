@@ -126,7 +126,7 @@ impl SignalRuntime {
     /// uncertain and cannot be retried, including after process restart.
     pub fn send(
         &mut self,
-        accounts: &accounts::person::PersonAccounts,
+        accounts: &accounts::person::AccountList,
         binding: &LiveBinding,
         route: &Route,
         operation: &str,
@@ -175,7 +175,7 @@ impl SignalRuntime {
     #[cfg(feature = "signal-broker")]
     pub(crate) fn observe_recipient(
         &mut self,
-        accounts: &accounts::person::PersonAccounts,
+        accounts: &accounts::person::AccountList,
         binding: &LiveBinding,
         route: &Route,
         operation: &str,

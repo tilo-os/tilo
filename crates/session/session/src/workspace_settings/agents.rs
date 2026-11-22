@@ -230,7 +230,7 @@ impl Agents {
             .map(|agent| sheet::Agent {
                 key: agent.id.0.clone(),
                 name: agent.name.clone(),
-                status: added_by(names, workspace, record, &agent.keeper),
+                status: added_by(names, workspace, record, &agent.acts_for),
                 spend: spend_line(agent),
                 model: model_line(&config, &agent.id.0, agent.model.as_deref()),
             })
@@ -371,16 +371,16 @@ impl Agents {
         let state = record.get();
         let kept = state.get(&Id::from_raw(agent.to_owned()))?;
         // An entry made by no person's root key, which no device of ours writes, is not shown.
-        MemberId::parsed_person(&kept.keeper)?;
+        MemberId::parsed_person(&kept.acts_for)?;
         let name = kept.name.clone();
-        let status = added_by(names, workspace, record, &kept.keeper);
+        let status = added_by(names, workspace, record, &kept.acts_for);
         // What the turn admits it to, before the answers the person set for its apps: the cap's
         // grants, narrowed by the bound its record keeps.
-        let mut admission = tilo_action_policy::Acting::handed_agent(agent, kept.keeper.as_str())
+        let mut admission = tilo_action_policy::Acting::handed_agent(agent, kept.acts_for.as_str())
             .handed_preset(&workspace.policy.workspace);
         admission.extend(tilo_action_policy::roles::agent_bound(
             agent,
-            &kept.keeper,
+            &kept.acts_for,
             &kept.bound_rules().unwrap_or_default(),
         ));
         let rows = agent_access::agent_access_rows(workspace, agent, &admission, apps);
@@ -733,7 +733,7 @@ impl Agents {
         let state = record.get();
         state
             .active()
-            .find(|agent| agent.keeper == *person && agent.mcp_client.as_deref() == Some(client))
+            .find(|agent| agent.acts_for == *person && agent.mcp_client.as_deref() == Some(client))
             .map(|agent| (agent.id.0.clone(), agent.name.clone()))
     }
 

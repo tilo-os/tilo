@@ -614,7 +614,7 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
     assert_eq!(asked.lock().unwrap().len(), 2, "no step follows a stop");
     assert!(agents.turns(&workspace).await.unwrap().is_empty());
 
-    // A call of the keeper's own model that is under way ends on the stop: this provider never
+    // A call of the person's own model that is under way ends on the stop: this provider never
     // answers, so only the stop ends the turn.
     let theirs = ScriptedProvider::answering([Reply::never()]);
     workspaces.answer_models_with(theirs.clone());
@@ -625,7 +625,7 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,
                 endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-                key: Some("sk-the-keepers-own"),
+                key: Some("sk-the-persons-own"),
                 models: &["gemini-main"],
             },
             true,
@@ -643,7 +643,7 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
     .await;
     let agents = served.approving(&workspace, &[SCOUT]).await;
     agents.look(&workspace).await.unwrap();
-    until("the keeper's model is asked", || theirs.asked().len() == 1).await;
+    until("the person's model is asked", || theirs.asked().len() == 1).await;
     stop_agent(&actions, &workspace, &me, &second)
         .await
         .expect("the person stops their agent's work");

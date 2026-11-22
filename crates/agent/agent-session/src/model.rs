@@ -1,4 +1,4 @@
-//! What carries the model turns of the agents a host runs for their keepers ([`PlanTurns`]),
+//! What carries the model turns of the agents a host runs for the people they act for ([`PlanTurns`]),
 //! holding its credential: its callers see requests and responses only.
 
 use std::time::Instant;

@@ -803,9 +803,6 @@ pub struct ProcessServices {
     /// reaches a workspace, and the broker refuses it rather than let a share
     /// promise access no grant backs.
     pub workspace_nodes: Option<Arc<dyn WorkspaceNodeActions>>,
-    /// The person's own store, which carries the records of their own scope
-    /// to their other devices. Without it those records stay on this device.
-    pub personal: Option<tilo_peer_state::PersonalSync>,
     /// The hosts of the workspaces another device hosts, where the person's
     /// invocations of those workspaces' record actions run. Without it every
     /// action runs here.
@@ -861,7 +858,6 @@ impl ProcessServices {
         "action_offload",
         "own_device",
         "workspace_nodes",
-        "personal",
         "hosted_workspaces",
         "resources",
     ];

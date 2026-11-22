@@ -828,7 +828,7 @@ impl<P: Provider> Flow<P> {
     }
 
     /// Start the accounts the person published and granted earlier.
-    pub(crate) async fn restore(self: Arc<Self>, store: accounts::person::PersonAccounts) {
+    pub(crate) async fn restore(self: Arc<Self>, store: accounts::person::AccountList) {
         let Ok(service) = self.service() else {
             return;
         };

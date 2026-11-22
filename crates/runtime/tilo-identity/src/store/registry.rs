@@ -52,14 +52,14 @@ impl IdentityRegistry {
     /// certificate was issued by, whom the workspace's roster has as a member, or the identity
     /// this login marked active.
     ///
-    /// A personal cluster ([`collab_types::personal_cluster`]) is derived from its person's root
-    /// key, so it names that person by itself.
+    /// The person's own workspace ([`collab_types::person_workspace`]) is derived from their
+    /// root key, so it names that person by itself.
     pub fn for_workspace(
         &self,
         workspace: &str,
         device: Option<&DeviceCert>,
     ) -> Option<IdentityProfile> {
-        self.personal_cluster_identity(workspace)
+        self.person_workspace_identity(workspace)
             .or_else(|| self.person_identity(device))
     }
 
@@ -84,13 +84,13 @@ impl IdentityRegistry {
         self.identities.get(&hex::encode(user_public_key)).cloned()
     }
 
-    /// The identity `workspace` is the personal cluster of, when it is one of this registry's
+    /// The identity `workspace` is the own workspace of, when it is one of this registry's
     /// identities.
-    fn personal_cluster_identity(&self, workspace: &str) -> Option<IdentityProfile> {
+    fn person_workspace_identity(&self, workspace: &str) -> Option<IdentityProfile> {
         self.identities
             .values()
             .find(|profile| {
-                collab_types::personal_cluster(&profile.user_public_key).to_string() == workspace
+                collab_types::person_workspace(&profile.user_public_key).to_string() == workspace
             })
             .cloned()
     }

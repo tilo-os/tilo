@@ -17,8 +17,8 @@ path = "src/lib.rs"
 
 [dependencies]
 automerge.workspace = true
-# The shared multi-account store and encrypted secret vault, for `store`.
-accounts = { path = "../../crates/system/accounts", optional = true }
+# The workspace's accounts record and the encrypted secret vault, for `store`.
+accounts = { path = "../../crates/system/accounts", features = ["person"], optional = true }
 # A fingerprint of what a server holds, so an unchanged event is owed nothing.
 fnv.workspace = true
 jiff.workspace = true
@@ -44,9 +44,9 @@ tilo-dav = { path = "../../crates/system/tilo-dav", default-features = false, op
 workspace-hack = { version = "0.1" }
 
 [features]
-# Keeping an account in the shared store and its secret in the vault: what a
-# device with a window does, and a server that files an account for a person.
-# A device that only applies the resource's verbs links none of it.
+# Reading the workspace's accounts in the calendar's shape, with a password
+# from the vault: what a device with a window does. A device that only applies
+# the resource's verbs links none of it.
 store = ["dep:accounts", "dep:tracing"]
 # The vault's calendar secrets reach their server's sign-in.
 live = ["dep:tilo-dav", "tilo-dav/oauth"]

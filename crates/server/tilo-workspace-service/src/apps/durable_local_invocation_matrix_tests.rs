@@ -130,7 +130,7 @@ mod durable_local_matrix {
     impl Environment {
         /// Moves the environment to its own person's cluster.
         fn rehome_personal(&mut self) {
-            let personal = collab_types::personal_cluster(&self.cert.user_public_key).to_string();
+            let personal = collab_types::person_workspace(&self.cert.user_public_key).to_string();
             self.rehome(&personal);
         }
 

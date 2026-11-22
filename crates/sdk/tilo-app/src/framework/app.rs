@@ -370,7 +370,7 @@ pub trait ResourceApp: 'static {
     ///
     /// ```ignore
     /// const PERSON_RESOURCES: &'static [PersonKind] =
-    ///     &[PersonKind::shared::<accounts::person::PersonAccounts>()];
+    ///     &[PersonKind::shared::<accounts::person::AccountList>()];
     /// ```
     const PERSON_RESOURCES: &'static [super::PersonKind] = &[];
 

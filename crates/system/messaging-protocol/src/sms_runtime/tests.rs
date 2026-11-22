@@ -332,8 +332,8 @@ fn binding() -> LiveBinding {
         state: LinkState::Linked,
     }
 }
-fn accounts() -> accounts::person::PersonAccounts {
-    let mut accounts = accounts::person::PersonAccounts::default();
+fn accounts() -> accounts::person::AccountList {
+    let mut accounts = accounts::person::AccountList::default();
     accounts
         .keep(&accounts::Account::new("fixture-sim", "sms"))
         .unwrap();

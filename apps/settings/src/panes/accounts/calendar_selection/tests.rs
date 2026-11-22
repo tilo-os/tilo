@@ -7,7 +7,7 @@ pub(super) fn reviewed_nextcloud(config: serde_json::Value) -> (tempfile::TempDi
     let mut account = accounts::Account::new("cloud", "nextcloud");
     account.config = config;
     let mut store = account_root.store();
-    store.upsert(account.clone());
+    store.keep(&account).unwrap();
     account_root.save_store(&store).unwrap();
     let secret = accounts::Secret::password("original-private-password");
     let mut vault = account_root.vault();
@@ -92,16 +92,16 @@ tilo_test_env::scenario! {
                     field => account.config[field] = "changed".into(),
                 }
                 if change != "removed" {
-                    store.upsert(account);
+                    store.keep(&account).unwrap();
                 }
                 root.save_store(&store).unwrap();
             }
-            let before = root.store().get(&id).cloned();
+            let before = root.store().get(&id);
             let secret = root.vault().get(&id);
             pane.save_calendar_selection();
             pane.settle_queue();
             assert!(pane.form_error.is_some(), "{change}");
-            assert_eq!(root.store().get(&id), before.as_ref(), "{change}");
+            assert_eq!(root.store().get(&id), before, "{change}");
             assert_eq!(root.vault().get(&id), secret, "{change}");
         }
     }
@@ -112,8 +112,7 @@ tilo_test_env::scenario! {
         let before = pane
             .account_root
             .store()
-            .get(&accounts::AccountId::from("cloud"))
-            .cloned();
+            .get(&accounts::AccountId::from("cloud"));
         pane.cancel_form();
         assert!(
             pane.stage_calendar_choices(vec![tilo_dav::discovery::CalendarCollection {
@@ -128,7 +127,7 @@ tilo_test_env::scenario! {
             pane.account_root
                 .store()
                 .get(&accounts::AccountId::from("cloud")),
-            before.as_ref()
+            before
         );
     }
 }
@@ -153,7 +152,7 @@ fn calendar_review_is_discoverable_and_operable_through_settings_resources() {
     account.display_name = "Cloud".into();
     account.config = serde_json::json!({"id": "cloud", "label": "Cloud", "server_url": format!("http://localhost:{}/dav/", server.port()), "username": "ada"});
     let mut store = account_root.store();
-    store.upsert(account.clone());
+    store.keep(&account).unwrap();
     account_root.save_store(&store).unwrap();
     let mut vault = account_root.vault();
     vault.put(
@@ -252,7 +251,7 @@ fn calendar_review_is_discoverable_and_operable_through_settings_resources() {
         )
         .is_err()
     );
-    assert_eq!(account_root.store().get(&account.id), Some(&account));
+    assert_eq!(account_root.store().get(&account.id), Some(account.clone()));
     app.call_on(&choice, "select-calendar", serde_json::json!({}))
         .unwrap();
     app.call_on(
@@ -262,7 +261,7 @@ fn calendar_review_is_discoverable_and_operable_through_settings_resources() {
     )
     .unwrap();
     let deadline = ui::time::now() + tilo_test_env::hang_bound();
-    while account_root.store().get(&account.id) == Some(&account) {
+    while account_root.store().get(&account.id) == Some(account.clone()) {
         app.settle();
         assert!(
             ui::time::now() < deadline,

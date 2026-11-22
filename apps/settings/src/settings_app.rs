@@ -104,7 +104,7 @@ impl SettingsApp {
     pub fn attach(
         &mut self,
         cx: &ui::framework::ViewCx<crate::resource::Settings>,
-        accounts: Option<ui::framework::WorkspaceResource<accounts::person::PersonAccounts>>,
+        accounts: Option<ui::framework::WorkspaceResource<accounts::person::AccountList>>,
     ) {
         let launcher_admin = crate::take_launcher_provider_admin();
         self.provider_admin = if cx.mode().is_live() {
@@ -141,11 +141,6 @@ impl SettingsApp {
             self.account_root = crate::accounts::AccountRoot::at(root);
         } else if let Some(record) = accounts {
             self.account_root = self.account_root.clone().with_person(record);
-            if self.devices
-                && let Err(error) = self.account_root.project()
-            {
-                tracing::warn!(%error, "the device's account file could not follow the person's accounts");
-            }
         }
         let context = self.area_context();
         self.areas = crate::area::Areas::of(&context);

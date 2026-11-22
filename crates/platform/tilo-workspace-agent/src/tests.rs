@@ -84,7 +84,7 @@ fn an_agent_is_made_with_a_name_who_made_it_and_when() {
     let state = record.state().unwrap();
     let agent = only(&state);
     assert_eq!(agent.name, "Claude");
-    assert_eq!(agent.keeper, ADA, "who made it is recorded");
+    assert_eq!(agent.acts_for, ADA, "who made it is recorded");
     assert_eq!(agent.created_at, 1_700_000_000_000);
     assert_eq!(
         agent.model, None,
@@ -344,7 +344,7 @@ fn stored_agents_read_back_as_they_were() {
     let made_by_grace = state
         .agents
         .iter()
-        .find(|agent| agent.keeper == GRACE)
+        .find(|agent| agent.acts_for == GRACE)
         .map(|agent| agent.id.0.clone())
         .expect("the restored agent");
     let reviewer = state
@@ -470,7 +470,7 @@ fn a_record_of_before_limits_reads_without_one() {
         "agents": [{
             "id": "claude",
             "name": "Claude",
-            "keeper": "ada",
+            "acts_for": "ada",
             "model": "anthropic/sonnet",
             "bound": [],
             "state": "active",
@@ -490,7 +490,7 @@ fn a_record_of_before_instructions_reads_without_one() {
         "agents": [{
             "id": "claude",
             "name": "Claude",
-            "keeper": "ada",
+            "acts_for": "ada",
             "model": "anthropic/sonnet",
             "mcp_client": null,
             "bound": [],
@@ -531,7 +531,7 @@ const GOLDEN: &str = r#"{
     {
       "id": "claude",
       "name": "Claude",
-      "keeper": "ada",
+      "acts_for": "ada",
       "model": "anthropic/sonnet",
       "mcp_client": null,
       "bound": [

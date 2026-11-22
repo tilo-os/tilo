@@ -534,7 +534,7 @@ pub struct FilesState {
     effect_reply: Option<ui::framework::EffectReply>,
     /// The workspace's accounts record, followed, and the revision last read of it.
     person_accounts: Option<(
-        ui::framework::WorkspaceResource<accounts::person::PersonAccounts>,
+        ui::framework::WorkspaceResource<accounts::person::AccountList>,
         Option<u64>,
     )>,
     /// The cloud service's reports of how each synced account stands, followed while live.
@@ -1594,7 +1594,7 @@ impl FilesState {
     /// them, and change as the record does.
     pub(crate) fn follow_person_accounts(
         &mut self,
-        accounts: ui::framework::WorkspaceResource<accounts::person::PersonAccounts>,
+        accounts: ui::framework::WorkspaceResource<accounts::person::AccountList>,
     ) {
         self.person_accounts = Some((accounts, None));
         self.refresh_external_search_catalogs();

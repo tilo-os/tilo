@@ -24,9 +24,9 @@ Encrypted rclone configuration, unreadable data, oversized files and symlink
 escapes are reported rather than called an empty successful scan.
 
 `Connector::new(root)` takes **Tilo's** destination config root, normally
-`target_home/.config/tilo`. It uses the existing canonical `accounts` store and
-sealed vault; credentials never belong in installer resource state, actions,
-status responses or migration manifests.
+`target_home/.config/tilo`. It uses the workspace's accounts record as the
+destination stages it, and the sealed vault; credentials never belong in
+installer resource state, actions, status responses or migration manifests.
 
 - On Unix, selected ordinary rclone Google Drive, OneDrive and Dropbox refresh
   grants are validated with their original installed-app client registration.
@@ -162,8 +162,8 @@ real contacts and events instead of an unused copy below `mail-import`.
 Thunderbird's SQLite local stores are read only from a private temporary copy;
 an unreadable or unsupported sidecar publishes no fake contacts or events.
 
-The backend refuses copied destination config/vault symlinks and malformed
-existing account stores. Parent coordination must keep home copying and account
+The backend refuses copied destination config/vault symlinks and a malformed
+staged accounts record. Parent coordination must keep home copying and account
 writes sequential, and retain its destination directory ownership throughout.
 
 `journey::accounts::Accounts` supplies the account decision pages and private

@@ -323,7 +323,7 @@ impl WorkspaceAgents {
         let mut theirs: Vec<&Agent> = self
             .agents
             .iter()
-            .filter(|agent| agent.is_active() && agent.sub.is_some() && agent.keeper == person)
+            .filter(|agent| agent.is_active() && agent.sub.is_some() && agent.acts_for == person)
             .collect();
         theirs.sort_by_key(|agent| std::cmp::Reverse(agent.created_at));
         theirs.into_iter()
@@ -573,7 +573,7 @@ impl WorkspaceAgents {
         self.agents.push(Agent {
             id: Atom(id),
             name,
-            keeper: person,
+            acts_for: person,
             model,
             mcp_client: None,
             bound: Vec::new(),

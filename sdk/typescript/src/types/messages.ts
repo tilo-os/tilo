@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.messages@710ec2ec69e89f74";
+export const SURFACE = "so.tilo.messages@afef5fd05110757d";
 
 export interface Conversation {
   with: string;
@@ -39,7 +39,7 @@ export interface Message {
   queued: boolean;
 }
 
-export interface PersonAccount {
+export interface ListedAccount {
   type_id: string;
   display_name: string;
   config: unknown;
@@ -226,7 +226,7 @@ export function messages(ws: tilo.Workspace, path: string): Messages {
 
 /** Accounts — `tilo.accounts`. */
 export interface Accounts extends tilo.Resource {
-  accounts: Array<tilo.Entry<PersonAccount>>;
+  accounts: Array<tilo.Entry<ListedAccount>>;
   publishBrowserIdentity(args: {
     root: string;
     origin: string;

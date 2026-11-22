@@ -2420,7 +2420,7 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::account::AccountStore;
+    use crate::account::CalendarAccounts;
 
     fn run<T>(future: impl Future<Output = T>) -> T {
         ui::rt::block_on(future).expect("a test thread may block")
@@ -2445,7 +2445,7 @@ mod tests {
         phase pull_and_sync_tag_events_skip_hidden_and_report_offline;
         {
             {
-                let store = AccountStore::sample();
+                let store = CalendarAccounts::sample();
                 let (account, cal) = store
                     .all_calendars()
                     .find(|(_, c)| c.id == "work/oncall")
@@ -2455,7 +2455,7 @@ mod tests {
                 assert!(res.events.iter().all(|e| e.color == cal.palette()));
             }
             {
-                let store = AccountStore::sample();
+                let store = CalendarAccounts::sample();
                 let (account, cal) = store
                     .all_calendars()
                     .find(|(_, c)| c.id == "work/default")
@@ -2470,7 +2470,7 @@ mod tests {
                 );
             }
             {
-                let store = AccountStore::sample();
+                let store = CalendarAccounts::sample();
                 let accounts: Vec<_> = store
                     .accounts
                     .iter()
@@ -2492,7 +2492,7 @@ mod tests {
                 assert_eq!(outcome, SyncOutcome::Offline);
             }
             {
-                let store = AccountStore::sample();
+                let store = CalendarAccounts::sample();
                 let (account, cal) = store
                     .all_calendars()
                     .find(|(_, c)| c.id == "icloud/personal")
@@ -2512,7 +2512,7 @@ mod tests {
             {
                 use crate::model::Event;
                 use jiff::civil::Date;
-                let store = AccountStore::sample();
+                let store = CalendarAccounts::sample();
                 let (account, cal) = store
                     .all_calendars()
                     .find(|(_, c)| c.id == "work/default")
@@ -2539,7 +2539,7 @@ mod tests {
                 assert!(req.body.contains("Kickoff"));
             }
             {
-                let store = AccountStore::sample();
+                let store = CalendarAccounts::sample();
                 let (account, cal) = store
                     .all_calendars()
                     .find(|(_, c)| c.id == "work/default")
@@ -2554,7 +2554,7 @@ mod tests {
                 assert!(del.url.ends_with(&format!("{uid}.ics")));
             }
             {
-                let store = AccountStore::sample();
+                let store = CalendarAccounts::sample();
                 let (account, cal) = store.all_calendars().next().unwrap();
                 let jobs = vec![RemoveJob {
                     config: account.config.clone(),
@@ -2568,7 +2568,7 @@ mod tests {
                 let _ = jobs;
             }
             {
-                let store = AccountStore::sample();
+                let store = CalendarAccounts::sample();
                 let (account, cal) = store.all_calendars().next().unwrap();
                 let start = jiff::civil::Date::new(2026, 6, 15).unwrap()
                     .at(9, 0, 0, 0);
@@ -2592,7 +2592,7 @@ mod tests {
                 let _ = jobs;
             }
             {
-                let store = AccountStore::sample();
+                let store = CalendarAccounts::sample();
                 let (account, cal) = store.all_calendars().next().unwrap();
                 let event = pull_calendar(&account.config, cal, today())
                     .events

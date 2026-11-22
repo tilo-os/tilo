@@ -140,7 +140,7 @@ fn conversation_of(agent: &Agent) -> String {
     agent.sub.as_ref().map_or_else(
         || {
             MemberId::direct_conversation([
-                MemberId::person(agent.keeper.as_str()),
+                MemberId::person(agent.acts_for.as_str()),
                 MemberId::agent(&agent.id.0),
             ])
         },
@@ -197,13 +197,13 @@ fn lead_turn(
     })?;
     let one_team = [lead, under]
         .iter()
-        .all(|agent| agent.is_active() && agent.keeper == delivery.person)
+        .all(|agent| agent.is_active() && agent.acts_for == delivery.person)
         && roster.started_under(under, &lead.id.0);
     if !one_team {
         return None;
     }
     let job = chat::cause::message_id(
-        &MemberId::person(lead.keeper.as_str()),
+        &MemberId::person(lead.acts_for.as_str()),
         &key_of(&lead.id.0, JOB),
     );
     Some(tilo_action_policy::turn::Turn::new(
@@ -286,13 +286,13 @@ impl Team {
                     .get(&Id::from_raw(id.to_owned()))
                     .map_or_else(|| id.to_owned(), |by| by.name.clone())
             };
-            let person = MemberId::person(agent.keeper.as_str());
+            let person = MemberId::person(agent.acts_for.as_str());
             let mut owe = |by: &str, kind: &'static str, tail: &str, text: &str| {
                 let key = key_of(&agent.id.0, tail);
                 team.expected.insert(
                     chat::cause::message_id(&person, &key).to_string(),
                     Delivery {
-                        person: agent.keeper.clone(),
+                        person: agent.acts_for.clone(),
                         by: by.to_owned(),
                         by_name: named(by),
                         conversation: sub.conversation.clone(),
@@ -359,7 +359,7 @@ impl Team {
                 let told = chat::recall::told(chat, part, None, said_in, id, &me, request);
                 self.notes.push(Turn {
                     agent: agent.clone(),
-                    person: agent.keeper.clone(),
+                    person: agent.acts_for.clone(),
                     conversation: chat::summons::conversation_address(said_in),
                     cause: id.to_string(),
                     request: told.request,
@@ -389,7 +389,7 @@ impl Team {
         let person = message.author.person_id()?;
         let by = roster.agents.iter().find(|agent| {
             agent.is_active()
-                && agent.keeper == person
+                && agent.acts_for == person
                 && conversation_of(agent) == conversation_id(message).as_str()
         })?;
         let job = message.text.trim();
@@ -683,7 +683,7 @@ impl ServerAgents {
     /// sub-agent's own runner say it, and no tool of a turn is asked for it.
     async fn stands(&self, workspace: &str, agent: &Agent, stands: Stands, line: &str) {
         let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let (id, keeper) = (agent.id.0.clone(), agent.keeper.clone());
+        let (id, acts_for) = (agent.id.0.clone(), agent.acts_for.clone());
         let item = tilo_resource::Id::from_raw(id.clone());
         let line = cut(line.trim(), sub::MAX_LINE.saturating_mul(2)).to_owned();
         let written = self
@@ -697,7 +697,7 @@ impl ServerAgents {
                 |doc| {
                     let mut saying =
                         tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_agent_for(&id, &keeper)
+                            .as_agent_for(&id, &acts_for)
                             .in_app(tilo_workspace_agent::OWNER, "Assistant");
                     // A replica stamps what it writes with a fixed day of its own unless told the time.
                     saying.set_now_ms(tilo_clock::unix_now_ms_i64());
@@ -984,7 +984,7 @@ mod tests {
                 at_once: None,
             }),
         )
-        .expect("its keeper lets sub-agents go two deep");
+        .expect("its person lets sub-agents go two deep");
         let mut list = list.as_agent_for("main", "ada");
         list.apply(start("Lead", "Build the feature"))
             .expect("the person's own agent starts a lead");

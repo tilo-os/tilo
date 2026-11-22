@@ -1,5 +1,6 @@
-//! The external-account stores on disk: the contracts this app's External.
-//! Accounts panel writes and Mail, Calendar and the file apps read.
+//! The workspace's accounts as this app keeps them: the record its External
+//! Accounts panel edits and Mail, Calendar and the file apps read, beside this
+//! device's vault of their secrets and its record of their sync health.
 
 use std::path::PathBuf;
 
@@ -14,8 +15,9 @@ pub const ACCOUNTS_ARRIVING: &str =
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountMutationJournal {
-    #[serde(rename = "previous_store")]
-    store: accounts::AccountStore,
+    /// The workspace's accounts as they were, each without its secret.
+    #[serde(rename = "previous_accounts")]
+    accounts: Vec<accounts::Account>,
     #[serde(rename = "previous_statuses")]
     statuses: accounts::AccountSyncStatusStore,
     #[serde(rename = "previous_vault_ciphertext")]
@@ -25,7 +27,7 @@ pub struct AccountMutationJournal {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccountRoot {
     explicit: Option<PathBuf>,
-    person: Option<PersonAccountsResource>,
+    person: Option<AccountListResource>,
     #[cfg(test)]
     vault_hold: VaultHold,
     #[cfg(test)]
@@ -129,21 +131,21 @@ impl VaultOpener {
 }
 
 #[derive(Clone)]
-struct PersonAccountsResource(ui::framework::WorkspaceResource<accounts::person::PersonAccounts>);
+struct AccountListResource(ui::framework::WorkspaceResource<accounts::person::AccountList>);
 
-impl std::fmt::Debug for PersonAccountsResource {
+impl std::fmt::Debug for AccountListResource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("PersonAccounts")
+        f.write_str("AccountList")
     }
 }
 
-impl PartialEq for PersonAccountsResource {
+impl PartialEq for AccountListResource {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
 
-impl Eq for PersonAccountsResource {}
+impl Eq for AccountListResource {}
 
 impl AccountRoot {
     pub fn live() -> Self {
@@ -167,9 +169,9 @@ impl AccountRoot {
     #[must_use]
     pub fn with_person(
         mut self,
-        record: ui::framework::WorkspaceResource<accounts::person::PersonAccounts>,
+        record: ui::framework::WorkspaceResource<accounts::person::AccountList>,
     ) -> Self {
-        self.person = Some(PersonAccountsResource(record));
+        self.person = Some(AccountListResource(record));
         self
     }
 
@@ -180,7 +182,7 @@ impl AccountRoot {
         let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
             .expect("settings opens headlessly");
         let record = app
-            .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+            .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
             .expect("Settings keeps the workspace's accounts");
         let mut root = Self::at(config_root).with_person(record);
         root.window = KeptWindow(Some(std::rc::Rc::new(app)));
@@ -191,8 +193,8 @@ impl AccountRoot {
     #[cfg(test)]
     pub(crate) fn record_for_test(
         &self,
-    ) -> ui::framework::WorkspaceResource<accounts::person::PersonAccounts> {
-        let Some(PersonAccountsResource(record)) = &self.person else {
+    ) -> ui::framework::WorkspaceResource<accounts::person::AccountList> {
+        let Some(AccountListResource(record)) = &self.person else {
             panic!("a scratch root keeps its accounts in a record");
         };
         record.clone()
@@ -222,17 +224,17 @@ impl AccountRoot {
 
     /// The workspace's accounts, as its record holds them: none while the
     /// record has not reached this device.
-    pub fn store(&self) -> accounts::AccountStore {
+    pub fn store(&self) -> accounts::person::AccountList {
         self.person
             .as_ref()
-            .map(|PersonAccountsResource(record)| record.get().store())
+            .map(|AccountListResource(record)| (*record.get()).clone())
             .unwrap_or_default()
     }
 
     pub fn revision(&self) -> Option<u64> {
         self.person
             .as_ref()
-            .map(|PersonAccountsResource(record)| record.revision())
+            .map(|AccountListResource(record)| record.revision())
     }
 
     pub fn publish_browser_identity(
@@ -241,12 +243,12 @@ impl AccountRoot {
         origin: String,
         display_name: String,
     ) -> Result<(), String> {
-        let Some(PersonAccountsResource(record)) = &self.person else {
+        let Some(AccountListResource(record)) = &self.person else {
             return Err("Settings' personal account resource is unavailable".into());
         };
         record
             .invoke(
-                &accounts::person::PersonAccounts::PUBLISH_BROWSER_IDENTITY.with((
+                &accounts::person::AccountList::PUBLISH_BROWSER_IDENTITY.with((
                     root,
                     origin,
                     display_name,
@@ -260,20 +262,15 @@ impl AccountRoot {
         account: String,
         enabled: bool,
     ) -> Result<(), String> {
-        let Some(PersonAccountsResource(record)) = &self.person else {
+        let Some(AccountListResource(record)) = &self.person else {
             return Err("Settings' personal account resource is unavailable".into());
         };
-        let current = record
-            .get()
-            .store()
-            .get(&account.clone().into())
-            .cloned()
-            .ok_or("No such account")?;
+        let current = record.get().account(&account).ok_or("No such account")?;
         if current.type_id.as_str() != accounts::person::TILO_IDENTITY_TYPE {
             return Err("Not a browser identity account".into());
         }
         record
-            .invoke(&accounts::person::PersonAccounts::SAVE_ACCOUNT.with((
+            .invoke(&accounts::person::AccountList::SAVE_ACCOUNT.with((
                 account,
                 current.type_id.as_str().to_owned(),
                 current.display_name,
@@ -285,32 +282,25 @@ impl AccountRoot {
     }
 
     pub fn remove_browser_identity(&self, account: String) -> Result<(), String> {
-        let Some(PersonAccountsResource(record)) = &self.person else {
+        let Some(AccountListResource(record)) = &self.person else {
             return Err("Settings' personal account resource is unavailable".into());
         };
-        let current = record
-            .get()
-            .store()
-            .get(&account.clone().into())
-            .cloned()
-            .ok_or("No such account")?;
+        let current = record.get().account(&account).ok_or("No such account")?;
         if current.type_id.as_str() != accounts::person::TILO_IDENTITY_TYPE {
             return Err("Not a browser identity account".into());
         }
         record
             .invoke(
-                &accounts::person::PersonAccounts::REMOVE_ACCOUNT
+                &accounts::person::AccountList::REMOVE_ACCOUNT
                     .with(ui::tilo_resource::Id::from_raw(account)),
             )
             .map_err(|error| error.to_string())
     }
 
-    /// Add or replace the email account `config` in the person's accounts,
-    /// keyed by its address, and keep this device's file their projection.
-    /// Its secret is sealed apart ([`Self::seal_password`] or the session's
-    /// ownership), never here.
-    /// Save the email account `config`, with the other names and addresses
-    /// it sends as (`identities`, each `Name <address>`).
+    /// Add or replace the email account `config` in the workspace's accounts,
+    /// keyed by its address, with the other names and addresses it sends as
+    /// (`identities`, each `Name <address>`). Its secret is sealed apart
+    /// ([`Self::seal_password`] or the session's ownership), never here.
     pub fn save_email_account(
         &self,
         config: &accounts::email::AccountConfig,
@@ -327,14 +317,13 @@ impl AccountRoot {
         // The vault entry its password is in: the one just kept, or the one it named before.
         let named = password_item.map(str::to_owned).or_else(|| {
             store
-                .get(&id)
-                .and_then(|kept| accounts::email::password_item(&kept.config))
-                .map(str::to_owned)
+                .account(id.as_str())
+                .and_then(|kept| accounts::email::password_item(&kept.config).map(str::to_owned))
         });
         if let Some(item) = named {
             accounts::email::set_password_item(&mut account.config, Some(&item));
         }
-        store.upsert(account);
+        store.keep(&account).map_err(|error| error.to_string())?;
         self.save_store(&store).map_err(|error| error.to_string())
     }
 
@@ -356,49 +345,39 @@ impl AccountRoot {
         credentials.try_save()
     }
 
-    pub fn project(&self) -> std::io::Result<()> {
-        match &self.person {
-            Some(PersonAccountsResource(record)) => {
-                record.get().project_in(&self.require_io()?).map(|_| ())
-            }
-            None => Ok(()),
-        }
-    }
-
     /// Make the workspace's accounts record hold `store`'s accounts: each
     /// one it lacks or holds otherwise saved, each one `store` lacks
     /// removed. Refused while the record has not reached this device: an
     /// account is the workspace's, never this device's alone.
-    pub fn save_store(&self, store: &accounts::AccountStore) -> std::io::Result<()> {
-        let root = self.require_io()?;
-        let Some(PersonAccountsResource(record)) = &self.person else {
+    pub fn save_store(&self, store: &accounts::person::AccountList) -> std::io::Result<()> {
+        let Some(AccountListResource(record)) = &self.person else {
             return Err(std::io::Error::other(ACCOUNTS_ARRIVING));
         };
         let refused =
             |error: ui::tilo_actions::ActionError| std::io::Error::other(error.to_string());
-        let current = record.get().store();
+        let current = record.get();
         for account in current.all() {
-            if store.get(&account.id).is_none() {
+            if store.account(account.id.as_str()).is_none() {
                 record
                     .invoke(
-                        &accounts::person::PersonAccounts::REMOVE_ACCOUNT
+                        &accounts::person::AccountList::REMOVE_ACCOUNT
                             .with(ui::tilo_resource::Id::from_raw(account.id.0.clone())),
                     )
                     .map_err(refused)?;
             }
         }
         for account in store.all() {
-            let mut account = account.clone();
+            let mut account = account;
             if account.config.is_null() {
                 account.config = serde_json::json!({});
             }
-            if current.get(&account.id) != Some(&account) {
+            if current.account(account.id.as_str()).as_ref() != Some(&account) {
                 record
-                    .invoke(&accounts::person::PersonAccounts::saving(&account))
+                    .invoke(&accounts::person::AccountList::saving(&account))
                     .map_err(refused)?;
             }
         }
-        record.get().project_in(&root).map(|_| ())
+        Ok(())
     }
 
     pub fn statuses(&self) -> accounts::AccountSyncStatusStore {
@@ -443,7 +422,7 @@ impl AccountRoot {
     /// interrupted metadata/vault/status mutation can be rolled back.
     pub fn begin_mutation(
         &self,
-        previous_store: &accounts::AccountStore,
+        previous_accounts: &accounts::person::AccountList,
         previous_statuses: &accounts::AccountSyncStatusStore,
     ) -> Result<(), String> {
         self.recover_mutation()?;
@@ -451,7 +430,7 @@ impl AccountRoot {
         let vault_ciphertext =
             read_file(&accounts::vault_dir_in(&root).join("vault.enc")).unwrap_or_default();
         let journal = AccountMutationJournal {
-            store: previous_store.clone(),
+            accounts: previous_accounts.all(),
             statuses: previous_statuses.clone(),
             vault_ciphertext,
         };
@@ -491,7 +470,13 @@ impl AccountRoot {
         };
         let journal: AccountMutationJournal = serde_json::from_slice(&bytes)
             .map_err(|error| format!("account transaction intent is invalid: {error}"))?;
-        self.save_store(&journal.store)
+        let mut previous = accounts::person::AccountList::default();
+        for account in &journal.accounts {
+            previous
+                .keep(account)
+                .map_err(|error| format!("could not recover account metadata: {error}"))?;
+        }
+        self.save_store(&previous)
             .map_err(|error| format!("could not recover account metadata: {error}"))?;
         self.save_statuses(&journal.statuses)
             .map_err(|error| format!("could not recover account sync status: {error}"))?;
@@ -631,9 +616,8 @@ impl AccountDirectory {
             accounts: root
                 .store()
                 .all()
-                .iter()
+                .into_iter()
                 .filter(|account| AccountKind::from_type_id(account.type_id.as_str()).is_some())
-                .cloned()
                 .collect(),
         }
     }
@@ -809,7 +793,7 @@ mod tests {
 
         let mut publisher = TestApp::<crate::resource::SettingsShell>::for_person(&key).unwrap();
         let record = publisher
-            .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+            .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
             .unwrap();
         let directory = tempfile::tempdir().unwrap();
         AccountRoot::at(directory.path())
@@ -845,7 +829,7 @@ mod tests {
 
     #[test]
     fn browser_identity_publication_is_a_settings_owned_personal_resource_action() {
-        use accounts::person::PersonAccounts;
+        use accounts::person::AccountList;
         let root_key = "ab".repeat(32);
         let mut app =
             ui::framework::testing::TestApp::<crate::resource::SettingsShell>::for_person(
@@ -853,7 +837,7 @@ mod tests {
             )
             .unwrap();
         let record = app
-            .shared_workspace::<PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+            .shared_workspace::<AccountList>(accounts::person::ACCOUNTS_OWNER)
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let root = AccountRoot::at(dir.path()).with_person(record.clone());
@@ -942,15 +926,15 @@ mod tests {
         );
     }
 
-    /// In a host the accounts are the workspace's record: saving edits it,
-    /// reading reads it, and this device's file follows as its projection.
+    /// In a host the accounts are the workspace's record: saving edits it and
+    /// reading reads it, on every device.
     #[test]
-    fn in_a_host_the_accounts_are_the_persons_resource_and_the_file_follows() {
-        use accounts::person::PersonAccounts;
+    fn in_a_host_the_accounts_are_the_workspace_record() {
+        use accounts::person::AccountList;
         let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
             .expect("settings opens headlessly");
         let record = app
-            .shared_workspace::<PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+            .shared_workspace::<AccountList>(accounts::person::ACCOUNTS_OWNER)
             .expect("Settings keeps the workspace's accounts");
         assert_eq!(
             record.record().route().expect("the accounts sync").app_id,
@@ -963,21 +947,22 @@ mod tests {
         let mut account = accounts::Account::new("a@x.example", "email");
         account.display_name = "Work".into();
         account.config = serde_json::json!({ "imap_host": "imap.x.example" });
-        let mut store = accounts::AccountStore::new();
-        store.upsert(account.clone());
+        let mut store = AccountList::default();
+        store.keep(&account).unwrap();
         root.save_store(&store).unwrap();
-        assert_eq!(record.get().store().get(&account.id), Some(&account));
-        assert_eq!(root.store().get(&account.id), Some(&account));
         assert_eq!(
-            accounts::AccountStore::load_in(dir.path()).get(&account.id),
-            Some(&account),
-            "the device file is the resource's projection"
+            record.get().account(account.id.as_str()),
+            Some(account.clone())
+        );
+        assert_eq!(
+            root.store().account(account.id.as_str()),
+            Some(account.clone())
         );
 
         store.remove(&account.id);
         root.save_store(&store).unwrap();
-        assert!(record.get().store().is_empty());
-        assert!(accounts::AccountStore::load_in(dir.path()).is_empty());
+        assert!(record.get().is_empty());
+        assert!(root.store().is_empty());
     }
 
     #[cfg(feature = "tilo-os")]
@@ -1022,21 +1007,19 @@ mod tests {
             let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
                 .expect("settings opens headlessly");
             let record = app
-                .shared_workspace::<accounts::person::PersonAccounts>(
-                    accounts::person::ACCOUNTS_OWNER,
-                )
+                .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
                 .expect("Settings keeps the workspace's accounts");
             let dir = tempfile::tempdir().expect("scratch config root");
             let root = AccountRoot::at(dir.path().join("tilo")).with_person(record);
             let id = accounts::AccountId::from(format!("recover-{phase}"));
-            let mut original_store = accounts::AccountStore::new();
+            let mut original_store = accounts::person::AccountList::default();
             let mut account = accounts::Account::new(id.clone(), NEXTCLOUD_TYPE);
             account.display_name = "Recover me".into();
             account.config = serde_json::json!({
                 "id": id.as_str(), "label": "Recover me", "server_url": "https://cloud.example",
                 "username": "ada", "use_files": true, "use_calendar": true, "use_mail": true
             });
-            original_store.upsert(account);
+            original_store.keep(&account).unwrap();
             root.save_store(&original_store).expect("seed metadata");
             let mut vault = root.vault();
             vault.put(&id, &accounts::Secret::password("sealed-secret"));

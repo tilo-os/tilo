@@ -44,10 +44,10 @@ fn an_account_saved_to_the_persons_accounts_shows_in_files_places_live() {
         ui::framework::testing::TestApp::<crate::resource::FileExplorerShell>::for_person(&person())
             .unwrap();
     let kept = settings
-        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
         .unwrap();
     let read = files
-        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
         .expect("Files reads the workspace's accounts");
     assert_eq!(
         read.record().route(),
@@ -60,7 +60,7 @@ fn an_account_saved_to_the_persons_accounts_shows_in_files_places_live() {
     let mut account = accounts::Account::new("work-cloud", remote_accounts::NEXTCLOUD_TYPE);
     account.display_name = "Work cloud".into();
     account.config = serde_json::json!({"server_url": "https://cloud.example", "username": "ada"});
-    kept.invoke(&accounts::person::PersonAccounts::saving(&account))
+    kept.invoke(&accounts::person::AccountList::saving(&account))
         .unwrap();
     read.record()
         .merge_peer_document(kept.record().document().unwrap())
@@ -73,7 +73,7 @@ fn an_account_saved_to_the_persons_accounts_shows_in_files_places_live() {
     );
 
     kept.invoke(
-        &accounts::person::PersonAccounts::REMOVE_ACCOUNT
+        &accounts::person::AccountList::REMOVE_ACCOUNT
             .with(ui::tilo_resource::Id::from_raw("work-cloud")),
     )
     .unwrap();

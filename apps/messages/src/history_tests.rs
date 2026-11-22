@@ -238,10 +238,10 @@ fn add_sms_route(app: &mut TestApp<MessagesShell>) -> String {
     let mut settings = TestApp::<crate::tests::AccountOwnerFixture>::for_person(&"11".repeat(32))
         .expect("original metadata owner");
     let owner = settings
-        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
+        .shared_workspace::<tilo_messaging::AccountList>(tilo_messaging::AccountList::OWNER)
         .expect("accounts owner");
     owner
-        .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
+        .invoke(&tilo_messaging::AccountList::SAVE_ACCOUNT.with((
             "fixture-sms".into(),
             "sms".into(),
             "Personal SIM".into(),
@@ -250,7 +250,7 @@ fn add_sms_route(app: &mut TestApp<MessagesShell>) -> String {
             0,
         )))
         .expect("second service metadata");
-    app.shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
+    app.shared_workspace::<tilo_messaging::AccountList>(tilo_messaging::AccountList::OWNER)
         .expect("read-only accounts")
         .record()
         .merge_peer_document(owner.record().document().expect("owner document"))

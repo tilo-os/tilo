@@ -93,20 +93,13 @@ mod keeping_devices;
 pub use keeping_devices::{
     WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_device_keys_of, keeping_devices_of,
 };
-mod personal;
+mod change_hashes;
 pub(crate) mod seed;
 mod workspace_name;
 mod workspace_settings;
 use held::Held;
 pub use held::{MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS};
 pub use native_publication::NativePublicationCut;
-pub use personal::device_grants::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, Refusal};
-pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, update_person_resource};
-pub use personal::scopes::{device_resource, resource_owner};
-pub use personal::{
-    DEVICE_FACTS, ENROLLMENT_KIND, PeerPersonal, PersonalStore, WIFI_KIND, WORKSPACES_KIND,
-    store_path,
-};
 pub use seed::{seed_workspace, seed_workspace_at, workspace_seed};
 mod compaction_set;
 mod sealed_compaction;

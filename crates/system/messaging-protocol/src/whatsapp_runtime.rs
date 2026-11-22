@@ -22,7 +22,7 @@ pub use incoming::{IncomingContext, IncomingText};
 /// The host must revalidate the contact association and retain its credential
 /// grant while admitting events, just as it does before sending.
 pub struct ReceiptContext<'a> {
-    pub accounts: &'a accounts::person::PersonAccounts,
+    pub accounts: &'a accounts::person::AccountList,
     pub binding: &'a LiveBinding,
     pub source: &'a Arc<Client>,
     pub route: &'a Route,
@@ -69,7 +69,7 @@ impl WhatsappRuntime {
     /// Post-reservation errors never imply that no external write occurred.
     pub async fn send(
         &mut self,
-        accounts: &accounts::person::PersonAccounts,
+        accounts: &accounts::person::AccountList,
         binding: &LiveBinding,
         route: &Route,
         operation: &str,
@@ -272,7 +272,7 @@ mod tests {
         root: tempfile::TempDir,
         binding: LiveBinding,
         runtime: WhatsappRuntime,
-        accounts: accounts::person::PersonAccounts,
+        accounts: accounts::person::AccountList,
         route: Route,
         client: Arc<Client>,
     }
@@ -313,7 +313,7 @@ mod tests {
             state: crate::routing::LinkState::Linked,
         };
         let runtime = WhatsappRuntime::new(owner.clone(), client.clone(), journal).unwrap();
-        let mut accounts = accounts::person::PersonAccounts::default();
+        let mut accounts = accounts::person::AccountList::default();
         accounts
             .keep(&accounts::Account::new("tilo-account", "whatsapp"))
             .unwrap();

@@ -136,10 +136,10 @@ pub async fn assistant_of(
             agent.is_active()
                 && agent.mcp_client.is_none()
                 && tilo_failure::ignored!(
-                    "a keeper that is no person's id is not this person",
-                    tilo_action_policy::PersonId::parse(&agent.keeper).ok()
+                    "a person that is no person's id is not this person",
+                    tilo_action_policy::PersonId::parse(&agent.acts_for).ok()
                 )
-                .and_then(|keeper| keeper.root())
+                .and_then(|acts_for| acts_for.root())
                 .as_ref()
                     == Some(person)
         })
@@ -413,7 +413,7 @@ impl Hosted {
             Ok(said.text())
         });
         // What the provider charged shows on the assistant's record, where
-        // its keeper reads what it spent today.
+        // its person reads what it spent today.
         let cost = cost.load(Ordering::Relaxed);
         if cost > 0
             && let Some(agent) = &assistant

@@ -18,7 +18,7 @@ use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 
 use super::{DeviceAbout, PersonDevice, SpeakerFabricState, UnlockFabricState, WifiCredential};
-use crate::person_resources::PersonResources;
+use crate::PersonResources;
 use crate::platform::fabric::DeviceId;
 
 /// What a device is: its [`DeviceAbout`].

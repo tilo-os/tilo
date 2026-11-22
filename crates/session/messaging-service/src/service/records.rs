@@ -74,7 +74,7 @@ impl CurrentAuthority {
             )
             .map_err(|_| SendError::Unavailable)?;
         let accounts =
-            <accounts::person::PersonAccounts as tilo_resource::Model>::from_json(&accounts)
+            <accounts::person::AccountList as tilo_resource::Model>::from_json(&accounts)
                 .map_err(|_| SendError::Unavailable)?;
         let result = resolve(
             &self.identity.owner,
@@ -93,7 +93,7 @@ fn resolve(
     owner: &Owner,
     scope: &str,
     query: &Query,
-    accounts: accounts::person::PersonAccounts,
+    accounts: accounts::person::AccountList,
     directory: tilo_contact_directory::ContactDirectory,
 ) -> Result<Option<Authorization>, SendError> {
     let service = service_name(owner.service);
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn an_account_the_records_do_not_hold_exactly_is_refused() {
-        let store = accounts::person::PersonAccounts::default();
+        let store = accounts::person::AccountList::default();
         assert_eq!(
             resolve(
                 &owner(),

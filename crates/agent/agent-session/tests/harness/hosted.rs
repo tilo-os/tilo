@@ -84,7 +84,7 @@ impl std::ops::Deref for Hosted {
 
 impl Hosted {
     /// The agents this host runs, each of `agents` of `workspace` approved for every app the
-    /// way the host's own person, their keeper, approves one: asked for from their page and
+    /// way the host's own person, their person, approves one: asked for from their page and
     /// decided on their laptop through the host's approval, and joined under its own key before
     /// this returns. An agent joined already is left as it is.
     pub async fn approving(
@@ -124,11 +124,11 @@ impl Hosted {
         let mut page =
             crate::harness::page::Page::open_at(&self.server, &laptop, &self.host, workspace).await;
         let workspace_id = tilo_server_protocol::WorkspaceId::parse(workspace).unwrap();
-        let keeper = root.verifying_key().to_bytes();
+        let acts_for = root.verifying_key().to_bytes();
         let link = self.server.agent_link();
         let sessions = &self.roster.sessions;
         for agent in agents {
-            let joined = || link.roster_session_device(sessions, workspace_id, agent, &keeper);
+            let joined = || link.roster_session_device(sessions, workspace_id, agent, &acts_for);
             if joined().await.is_some() {
                 continue;
             }
@@ -182,7 +182,7 @@ impl Hosted {
     }
 }
 
-/// What the keeper `root` decides on `pending`, the key `proposal` asks for: the agent's
+/// What the person `root` decides on `pending`, the key `proposal` asks for: the agent's
 /// certificate and the delegation of exactly what was proposed.
 pub fn issue_delegate(
     root: &SigningKey,

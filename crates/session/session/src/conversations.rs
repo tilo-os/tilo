@@ -60,7 +60,7 @@ pub(crate) struct Conversations {
     /// The workspaces' records, as the workspace holds them.
     records: crate::engine_records::EngineRecords,
     /// Where the person's own workspace keeps what their agents learned of them.
-    personal: RefCell<Option<crate::person_resources::PersonResources>>,
+    personal: RefCell<Option<crate::PersonResources>>,
     /// Wakes the session's loop when a change to a record lands.
     wake: ui::WakeScope,
     /// Each workspace's records, opened here and followed change by change.
@@ -119,7 +119,7 @@ impl Conversations {
         )
     }
 
-    pub(crate) fn use_store(&self, store: crate::person_resources::PersonResources) {
+    pub(crate) fn use_store(&self, store: crate::PersonResources) {
         self.personal.replace(Some(store));
     }
 

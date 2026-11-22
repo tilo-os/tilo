@@ -370,7 +370,7 @@ fn the_workspaces_agents_are_offered_to_callers_and_changed_as_the_grants_say() 
             }),
         )
         .unwrap();
-    assert_eq!(agents.get().agents[0].keeper, "grace");
+    assert_eq!(agents.get().agents[0].acts_for, "grace");
     // What the window offers on the agents and on each of them.
     let on_agents = |app: &mut TestApp<KeepingAgentsApp>| -> Vec<String> {
         app.actions()

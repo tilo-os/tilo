@@ -302,44 +302,6 @@ fn collaborating(
         return None;
     }
     let identity = sync::device_identity();
-    // The person's own store is answered on the session's endpoint, so it is opened before that
-    // endpoint binds and handed over with the rest.
-    let mut personal =
-        identity.as_ref().and_then(|identity| {
-            match crate::personal::Personal::open(options, identity) {
-                Ok(personal) => Some(personal),
-                Err(error) => {
-                    tracing::warn!(%error, "this session keeps no store of the person's own");
-                    None
-                }
-            }
-        });
-    // The person's answers about this device's camera, screen and the rest are kept in their own
-    // store, where their other devices see them and can take them back.
-    if let (Some(personal), Some(consents)) = (
-        personal.as_ref(),
-        options
-            .desktop
-            .as_ref()
-            .and_then(|desktop| desktop.consents()),
-    ) {
-        consents.grants().keep_in(personal.sync().clone());
-    }
-    let mut beside = beside;
-    if let Some(personal) = &mut personal {
-        beside.push(personal.protocol());
-        // Machines that ask to join are answered for as long as this session
-        // is up, not only while a sheet is up: each ask is noted in the
-        // person's store first, so all their devices see it.
-        if let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() {
-            personal.enrollment_links = crate::enrollment::serve(
-                personal.sync().clone(),
-                paths.root,
-                paths.dir,
-                options.wake.handle(),
-            );
-        }
-    }
     let own = sync::OwnPresence {
         // Publish a name only when the session has one; viewers supply the unnamed label.
         label: crate::platform::person::session_name(
@@ -381,8 +343,26 @@ fn collaborating(
         service,
     ) {
         Ok(sync) => {
-            if let Some(personal) = personal {
-                sync.attach_personal(personal);
+            // What is the person's alone is kept in their own workspace: the answers they gave
+            // about this device's camera, screen and the rest, and the machines that ask to join,
+            // which every device of theirs shows and any of them answers.
+            if let Some(store) = sync.person_resources() {
+                let store = std::sync::Arc::new(store);
+                if let Some(consents) = options
+                    .desktop
+                    .as_ref()
+                    .and_then(|desktop| desktop.consents())
+                {
+                    consents.grants().keep_in(store.clone());
+                }
+                if let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() {
+                    sync.keep_machine_links(crate::enrollment::serve(
+                        (*store).clone(),
+                        paths.root,
+                        paths.dir,
+                        options.wake.handle(),
+                    ));
+                }
             }
             Some(Rc::new(sync))
         }

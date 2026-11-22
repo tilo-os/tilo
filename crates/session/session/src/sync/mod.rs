@@ -78,8 +78,6 @@ pub(crate) use client::HostOutbox;
 #[cfg(target_os = "linux")]
 pub(crate) use client::ReceivedSurface;
 #[cfg(target_os = "linux")]
-pub(crate) use client::SiblingDials;
-#[cfg(target_os = "linux")]
 pub(crate) use client::found_alone;
 #[cfg(test)]
 pub(crate) use client::serve_alone;

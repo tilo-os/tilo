@@ -22,7 +22,6 @@ pub mod directory;
 pub mod files;
 pub mod held;
 pub mod people;
-pub mod personal;
 pub mod probe;
 pub mod tree;
 pub mod window;

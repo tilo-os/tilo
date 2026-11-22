@@ -6,7 +6,7 @@
 //! Transport implementations stay behind the system messaging broker, which
 //! validates the exact service, account, recipient and device grant again.
 
-pub use accounts::person::{PersonAccount, PersonAccounts};
+pub use accounts::person::{AccountList, ListedAccount};
 
 mod groups;
 mod history;

@@ -70,7 +70,7 @@ pub fn project_browser_accounts(root: &str, origin: &str, bytes: &[u8]) -> Resul
             "account document belongs to another identity or record",
         ));
     }
-    let accounts = accounts::person::PersonAccounts::browser_accounts_from_doc(&doc, root, origin)
+    let accounts = accounts::person::AccountList::browser_accounts_from_doc(&doc, root, origin)
         .map_err(error)?;
     serde_json::to_string(&accounts).map_err(error)
 }

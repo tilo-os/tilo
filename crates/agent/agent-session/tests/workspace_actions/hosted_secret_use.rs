@@ -268,8 +268,8 @@ impl Hosted {
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
-        let keeper = root.verifying_key().to_bytes();
-        let person = hex::encode(keeper);
+        let acts_for = root.verifying_key().to_bytes();
+        let person = hex::encode(acts_for);
         make_agent(&page, &workspaces, &workspace, &person, None).await;
         let catalogue = crate::common::catalogue();
         let governor = workspaces.governor().clone();
@@ -286,7 +286,7 @@ impl Hosted {
                     name: "Google",
                     protocol: ProviderProtocol::OpenAiCompatible,
                     endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
-                    key: Some("the-keepers-own-model-key"),
+                    key: Some("the-persons-own-model-key"),
                     models: &["gemini-main"],
                 },
                 true,

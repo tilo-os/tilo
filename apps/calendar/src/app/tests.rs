@@ -160,7 +160,7 @@ fn demo_fixtures_are_separate_copies_of_one_seed() {
 }
 
 fn waits_for_upload(doc: &AutoCommit, id: Id) -> bool {
-    crate::outbox::uploads(&crate::resource::read_doc(doc), &AccountStore::sample())
+    crate::outbox::uploads(&crate::resource::read_doc(doc), &CalendarAccounts::sample())
         .iter()
         .any(|(item, _)| *item == id)
 }

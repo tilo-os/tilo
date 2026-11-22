@@ -25,7 +25,7 @@ fn a_pending_calendar_vault_read_does_not_block_cancel_or_accept_changed_scope()
                 let mut store = root.store();
                 let mut account = store.get(&id).unwrap().clone();
                 account.config["use_files"] = false.into();
-                store.upsert(account);
+                store.keep(&account).unwrap();
                 root.save_store(&store).unwrap();
             }
             "credential" => {
@@ -35,10 +35,10 @@ fn a_pending_calendar_vault_read_does_not_block_cancel_or_accept_changed_scope()
             }
             other => panic!("no change named {other}"),
         }
-        let before = root.store().get(&id).cloned();
+        let before = root.store().get(&id);
         release.send(()).unwrap();
         pane.settle_queue();
-        assert_eq!(root.store().get(&id), before.as_ref(), "{change}");
+        assert_eq!(root.store().get(&id), before, "{change}");
         assert!(
             root.store()
                 .get(&id)

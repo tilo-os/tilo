@@ -27,7 +27,6 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command},
     sync::{Arc, Mutex},
-    time::SystemTime,
 };
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
@@ -38,7 +37,6 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
 use tilo_peer_state::owner_commit::OwnerCommitService;
-use tilo_peer_state::{PeerPersonal, PersonalSync};
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::apps::{
     collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
@@ -88,12 +86,9 @@ pub struct Daemon {
     /// they use.
     replicas: Option<Arc<take_work::files::Replicas>>,
     _media: profile::MediaHost,
-    /// The person's own documents, opened on their identity root.
-    _personal: PeerPersonal,
-    /// The store open to the person's other devices for as long as this
-    /// runtime runs, and the workspaces' store answered on the same router.
-    _personal_links: tilo_workspace_service::apps::personal::Links,
-    _personal_router: iroh::protocol::Router,
+    /// The endpoint's router, held so the workspace host, the device actions, the work this
+    /// device takes and a ticket's certify call answer for as long as this runtime runs.
+    _endpoint_router: iroh::protocol::Router,
     /// The person's other devices, asked from this runtime's endpoint as this device.
     other_devices: Option<crate::other_devices::OtherDevices>,
     /// The apps installed for this profile: what each publishes, before it runs here.
@@ -227,15 +222,6 @@ fn adopt_login(place: &tilo_device_identity::login::Place, device: &Device) {
 }
 
 impl Daemon {
-    #[cfg(test)]
-    fn personal(&self) -> &PeerPersonal {
-        let Self {
-            _personal: personal,
-            ..
-        } = self;
-        personal
-    }
-
     /// The workspaces this device holds, through its opened workspace service.
     #[must_use]
     pub fn workspaces(&self) -> &tilo_workspace_service::workspaces::Workspaces {
@@ -403,22 +389,20 @@ impl Daemon {
                 actions.clone(),
             )
         });
-        stage("opening the person's store to their other devices");
-        let personal = serve_personally(PersonalServing {
-            root,
-            key: &identity.key,
-            cert: &identity.cert,
-            workspace_id: &workspace_id,
+        stage("serving the device's endpoint");
+        let endpoint_router = serve_device_endpoint(EndpointServing {
             workspaces: &workspaces,
-            channels: Arc::clone(&brokers),
-            fanout: Arc::clone(&fanout),
             take_work,
             actions,
             host: founded.map(|_| workspaces.service().as_ref()),
-        })?;
-        // What the person answers about this device's camera and microphone is kept in their own
-        // store, where their other devices see it and can take it back.
-        apps.device_grants().keep_in(personal.sync.clone());
+        });
+        // What is the person's alone is kept in their own workspace, read and written here on
+        // this daemon's runtime once its service holds it: their devices, and the answers they
+        // gave about this device's camera and microphone, which their other devices see and can
+        // take back.
+        let personal = tilo_workspace_service::workspaces::PersonResources::default();
+        personal.attach(workspaces.copies().clone(), tilo_rt::app().handle(), None);
+        apps.device_grants().keep_in(std::sync::Arc::new(personal));
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
         let identity_broker = identity_service(
@@ -439,7 +423,6 @@ impl Daemon {
                 keys: &workspaces.keys(),
                 creation: Arc::clone(&creation),
                 person: actor.clone(),
-                personal: personal.sync.clone(),
             },
             brokers,
             fanout,
@@ -454,7 +437,6 @@ impl Daemon {
                 key_sessions,
                 &broker,
                 &workspaces,
-                &personal.sync,
                 (&workspace_id, &actor),
                 &policy_origin,
             )?;
@@ -492,9 +474,7 @@ impl Daemon {
             blob_socket: root.join(BLOB_SOCKET),
             replicas,
             _media: media,
-            _personal: personal.sync.store(),
-            _personal_links: personal.links,
-            _personal_router: personal.router,
+            _endpoint_router: endpoint_router,
             login: identity.login,
             tickets,
             key: identity.key.clone(),
@@ -647,8 +627,7 @@ fn take_work_action_service(
     take_work::action_service(root, workspaces, server, Some(Arc::clone(replicas)), None).map(Some)
 }
 
-/// What the broker's services are opened from: the device's workspaces, the apps, and the
-/// person's own store.
+/// What the broker's services are opened from: the device's workspaces and the apps.
 struct BrokerParts<'a> {
     root: &'a Path,
     apps: &'a Arc<apps::Apps>,
@@ -657,7 +636,6 @@ struct BrokerParts<'a> {
     creation: Arc<RecordCreation>,
     /// The person this device acts for.
     person: String,
-    personal: PersonalSync,
 }
 
 /// Start the collaboration broker over this profile's services.
@@ -752,7 +730,6 @@ fn broker_services(
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),
         action_offload,
-        personal: Some(parts.personal),
         ..ProcessServices::default()
     }
 }
@@ -1461,17 +1438,10 @@ impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority f
     }
 }
 
-/// What the person's own store is served with: the profile's state it is kept
-/// in, the device this daemon acts as, and the workspace it runs.
-struct PersonalServing<'a> {
-    root: &'a Path,
-    key: &'a SigningKey,
-    cert: &'a DeviceCert,
-    /// The workspace this runtime runs, by its id.
-    workspace_id: &'a str,
+/// What the runtime's endpoint is served with: the workspaces it keeps, the host its person's
+/// keys reach, the work it takes and a ticket's certify call.
+struct EndpointServing<'a> {
     workspaces: &'a ServiceWorkspaces,
-    channels: Arc<Mutex<BrokerChannels>>,
-    fanout: Arc<FanoutState>,
     /// The device action service this profile answers its server's work on, when it
     /// takes work at all.
     take_work: Option<take_work::TakesWork>,
@@ -1483,93 +1453,39 @@ struct PersonalServing<'a> {
     host: Option<&'a tilo_workspace_service::service::WorkspaceService>,
 }
 
-/// The person's own store, and what serves it to their other devices.
-struct PersonalParts {
-    sync: PersonalSync,
-    links: tilo_workspace_service::apps::personal::Links,
-    /// The endpoint's accept loop, answering the person's store to their
-    /// other devices.
-    router: iroh::protocol::Router,
-}
-
-/// Open the person's own store on the device this daemon acts as, and serve
-/// it to their other devices from the endpoint this runtime runs: the store,
-/// the workspaces this device keeps and, for a member that takes work, its
-/// device action service answer on one router, so neither protocol is answered by a
-/// router the other one dropped.
+/// Serve what this runtime answers on the endpoint its workspaces run, from one router: the
+/// workspaces this device keeps, its host, the work it takes and a ticket's certify call. An
+/// endpoint's protocols are fixed once bound, so everything it answers is accepted here.
 ///
 /// # Errors
 ///
-/// The store kept beside the profile's state is not this device's to open, or
-/// the workspaces this device keeps cannot be served.
-fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
-    let PersonalServing {
-        root,
-        key,
-        cert,
-        workspace_id,
+/// The workspaces this device keeps cannot be served.
+fn serve_device_endpoint(serving: EndpointServing<'_>) -> iroh::protocol::Router {
+    let EndpointServing {
         workspaces,
-        channels,
-        fanout,
         take_work,
         actions,
         host,
     } = serving;
-    let person = cert.user_public_key;
-    let state = root.join("state");
-    let sync = PersonalSync::new(
-        tilo_workspace_service::apps::personal::open(
-            &state,
-            person,
-            cert.clone(),
-            SystemTime::now(),
-        )
-        .map_err(io::Error::other)?,
-        key.clone(),
-    );
     let runtime = tilo_rt::app().handle();
-    let router = {
-        let _entered = runtime.enter();
-        let mut router = iroh::protocol::Router::builder(workspaces.endpoint())
-            .accept(tilo_peer_state::PERSONAL_ALPN, sync.clone());
-        // The workspace host answers the person's keys as every host does. Every device answers
-        // the device actions once, on `actions`; a member that takes its server's work answers
-        // that work's terminals beside it.
-        for (alpn, handler) in host
-            .map(tilo_workspace_service::service::WorkspaceService::protocols)
-            .into_iter()
-            .flatten()
-            .filter(|(alpn, _)| alpn != tilo_peer_state::actions::ACTIONS_ALPN)
-        {
-            router = router.accept(alpn, handler);
-        }
-        if let Some((alpn, handler)) = take_work.map(take_work::TakesWork::terminals) {
-            router = router.accept(alpn, handler);
-        }
-        router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, actions);
-        router.spawn()
-    };
-    // The person's device fleet is filed under the identity this computer holds for them, when
-    // it holds one; a login alone files it under their root.
-    let filed = tilo_identity::store::identity_for_workspace(workspace_id)
-        .ok()
+    let _entered = runtime.enter();
+    let mut router = iroh::protocol::Router::builder(workspaces.endpoint());
+    // The workspace host answers the person's keys as every host does. Every device answers
+    // the device actions once, on `actions`; a member that takes its server's work answers
+    // that work's terminals beside it.
+    for (alpn, handler) in host
+        .map(tilo_workspace_service::service::WorkspaceService::protocols)
+        .into_iter()
         .flatten()
-        .filter(|identity| identity.user_public_key == person)
-        .map_or_else(|| hex::encode(person), |identity| identity.id);
-    let links = tilo_workspace_service::apps::personal::Links::serve(
-        runtime,
-        workspaces.endpoint(),
-        sync.clone(),
-        &tilo_workspace_service::apps::personal::Person::of(filed, person),
-        &state,
-        channels,
-        fanout,
-    );
-    Ok(PersonalParts {
-        sync,
-        links,
-        router,
-    })
+        .filter(|(alpn, _)| alpn != tilo_peer_state::actions::ACTIONS_ALPN)
+    {
+        router = router.accept(alpn, handler);
+    }
+    if let Some((alpn, handler)) = take_work.map(take_work::TakesWork::terminals) {
+        router = router.accept(alpn, handler);
+    }
+    router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, actions);
+    router.spawn()
 }
 
 /// The person's other devices, asked over the action frame from `workspaces`' endpoint as this
@@ -1763,7 +1679,6 @@ fn serve_key_sessions(
     key_sessions: &crate::key_sessions::KeySessions,
     broker: &BrokerHandle,
     workspaces: &Arc<ServiceWorkspaces>,
-    personal: &PersonalSync,
     (workspace, actor): (&str, &str),
     policy_origin: &tilo_workspace_service::apps::policy_clock::PolicyOrigin,
 ) -> io::Result<()> {
@@ -1771,7 +1686,10 @@ fn serve_key_sessions(
         .app_action_broker()
         .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?;
     key_sessions.serve(
-        Arc::new(PersonalDevices::new(personal.clone())),
+        Arc::new(PersonalDevices::new(
+            workspaces.copies().clone(),
+            workspaces.device_cert(),
+        )),
         Arc::new(host_runs::HostRuns {
             provider: RuntimeActionProvider {
                 broker,

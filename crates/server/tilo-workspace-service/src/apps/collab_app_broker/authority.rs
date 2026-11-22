@@ -106,45 +106,6 @@ pub(super) fn workspace_control_role_allowed(role: collab_types::Role) -> bool {
 }
 
 impl AppBrokerState {
-    /// Keep a record of the person's own scope in their store as well as
-    /// here, so it reaches their other devices: the store admits it as this
-    /// device's own write, on the cluster the record's route names.
-    ///
-    /// Nothing about the workspace joins or their rosters is involved — a
-    /// record of that scope has no workspace — and a record of any other
-    /// route is none of the store's.
-    pub(crate) fn keep_personally(
-        &self,
-        route: &CrdtRoute,
-        envelope: &SignedOp,
-    ) -> Result<(), BrokerError> {
-        let Some(personal) = self.personal_route(route) else {
-            return Ok(());
-        };
-        personal
-            .admit_local(&route.app_id, &route.document_id, envelope.clone())
-            .map(|_| ())
-            .map_err(|error| {
-                BrokerError::failed(format!(
-                    "send: the person's own store did not keep the record: {error}"
-                ))
-            })
-    }
-
-    /// The person's own store, when `route` is one of the records of their own scope: the store is
-    /// where such a record is durable, and carries it to their other devices, so no workspace's
-    /// owner holds it. `None` for any other route.
-    pub(crate) fn personal_route(
-        &self,
-        route: &CrdtRoute,
-    ) -> Option<&tilo_peer_state::PersonalSync> {
-        let personal = self.services.personal.as_ref()?;
-        (personal.read(tilo_peer_state::PersonalStore::store_key) == route.cluster_id)
-            .then_some(personal)
-    }
-}
-
-impl AppBrokerState {
     /// The hosts of the workspaces this device takes part in but does not
     /// host, as the session gave them.
     pub(crate) fn hosted_workspaces(

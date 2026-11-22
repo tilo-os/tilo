@@ -7,7 +7,7 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "A workspace's agents: one record Chat keeps, holding each agent's name, keeper and model"
+description = "A workspace's agents: one record Chat keeps, holding each agent's name, the person it acts for, and model"
 
 [dependencies]
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }

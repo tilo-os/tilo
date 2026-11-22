@@ -45,7 +45,7 @@ pub enum SendError {
 }
 
 pub struct SendContext<'a, J> {
-    pub accounts: &'a accounts::person::PersonAccounts,
+    pub accounts: &'a accounts::person::AccountList,
     pub expected_owner: &'a crate::journal::Owner,
     pub live_binding: &'a crate::routing::LiveBinding,
     pub journal: &'a mut J,
@@ -541,7 +541,7 @@ mod tests {
                 secret_vault::VaultKey::from_slice(&[7; 32]).unwrap(),
             )
             .unwrap();
-            let mut accounts = accounts::person::PersonAccounts::default();
+            let mut accounts = accounts::person::AccountList::default();
             let mut account = accounts::Account::new("account-a", "signal");
             account.enabled = true;
             accounts.keep(&account).unwrap();

@@ -17,7 +17,7 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
     {
         let mut app = CalendarApp::new_demo();
         app.sample_accounts = false; // exercise the real (threaded) branch
-        app.accounts = AccountStore::sample();
+        app.accounts = CalendarAccounts::sample();
         let mut state = demo_document(&app);
         app.start_sync(&mut Edits::lend(&mut state))
             .expect("a calendar that reads is synchronized");
@@ -33,7 +33,7 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
     {
         let mut app = CalendarApp::new_demo();
         app.sample_accounts = false;
-        app.accounts = AccountStore::default();
+        app.accounts = CalendarAccounts::default();
         let mut state = demo_document(&app);
         app.start_sync(&mut Edits::lend(&mut state))
             .expect("a calendar that reads is synchronized");
@@ -316,7 +316,7 @@ tilo_test_env::scenario! {
         );
 
         app.sample_accounts = false;
-        app.accounts = AccountStore::sample();
+        app.accounts = CalendarAccounts::sample();
         let refusal = app
             .start_sync(&mut Edits::lend(&mut state))
             .expect_err("no pull starts from a calendar that does not read");

@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use accounts::person::PersonAccounts;
+use accounts::person::AccountList;
 use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_account_probe::AccountTester as _;
@@ -206,24 +206,24 @@ impl Members {
     /// The workspace's accounts, made by the owner's device holding `account`: what Settings
     /// writes when the owner adds it.
     async fn keep_account(&self, account: &accounts::Account) {
-        let document = collab_types::workspace_document_id(PersonAccounts::KIND);
+        let document = collab_types::workspace_document_id(AccountList::KIND);
         let id = collab_types::document::DocumentId::parse(&document).unwrap();
         let mut doc = automerge::AutoCommit::new();
         collaboration::resource::genesis(
             &mut doc,
             &collab_types::document::DocumentCheckout::new(
                 id,
-                collab_types::document::ResourceType::new(PersonAccounts::KIND),
+                collab_types::document::ResourceType::new(AccountList::KIND),
             ),
             &self.workspace,
-            |doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
+            |doc| AccountList::initialize(doc).map_err(|error| error.to_string()),
         )
         .unwrap();
         let saved = {
-            let mut replica = Replica::<PersonAccounts>::from_doc(doc)
+            let mut replica = Replica::<AccountList>::from_doc(doc)
                 .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
             replica
-                .apply_confirmed(PersonAccounts::saving(account))
+                .apply_confirmed(AccountList::saving(account))
                 .unwrap();
             replica.save()
         };

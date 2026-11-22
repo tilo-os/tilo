@@ -31,7 +31,7 @@ fn local_prefs_and_accounts_persist_to_disk() {
         let mut window = ui::framework::testing::TestApp::<settings::SettingsShell>::new()
             .expect("settings opens headlessly");
         let record = window
-            .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+            .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
             .expect("Settings keeps the workspace's accounts");
         let account_root = AccountRoot::at(&config_root).with_person(record);
 
@@ -74,12 +74,11 @@ fn local_prefs_and_accounts_persist_to_disk() {
             Some("s3cret-pw".to_string()),
             "the password was sealed in the vault, keyed by account id"
         );
-        // …and never leaked into the plaintext account store on disk.
-        let store_json = std::fs::read_to_string(accounts::store_path_in(&config_root))
-            .expect("the shared store was written");
+        // …and never reached the workspace's accounts record.
+        let store_json = serde_json::to_string(&account_root.store().all()).unwrap();
         assert!(
             !store_json.contains("s3cret-pw"),
-            "the password must not appear in the plaintext store JSON"
+            "the password must not appear in the workspace's accounts"
         );
         account_root
             .sync_reporter(account_id.clone())

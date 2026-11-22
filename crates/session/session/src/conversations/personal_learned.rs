@@ -22,7 +22,7 @@ fn open(bytes: &[u8]) -> Result<Replica<Learned>, String> {
 }
 
 /// Merge `bytes` into the document `(CHAT_OWNER, id)` of the person's own workspace.
-fn keep(store: &crate::person_resources::PersonResources, id: &DocumentId, bytes: Vec<u8>) {
+fn keep(store: &crate::PersonResources, id: &DocumentId, bytes: Vec<u8>) {
     store.edit_document((CHAT_OWNER, id.as_str()), move |document| {
         let mut source = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
         tilo_automerge::ApplyIncoming::merge_incoming(document, &mut source)
@@ -31,18 +31,14 @@ fn keep(store: &crate::person_resources::PersonResources, id: &DocumentId, bytes
     });
 }
 
-pub(super) fn restore(
-    store: &crate::person_resources::PersonResources,
-    id: &DocumentId,
-    earlier: Vec<u8>,
-) {
+pub(super) fn restore(store: &crate::PersonResources, id: &DocumentId, earlier: Vec<u8>) {
     if store.document((CHAT_OWNER, id.as_str())).is_none() {
         keep(store, id, earlier);
     }
 }
 
 pub(super) fn change(
-    store: &crate::person_resources::PersonResources,
+    store: &crate::PersonResources,
     id: &DocumentId,
     agent: &str,
     earlier: Option<&[u8]>,

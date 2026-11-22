@@ -111,7 +111,7 @@ fn an_agent_starts_a_sub_agent_with_its_job_its_role_and_its_kind_of_work() {
         .expect("its name makes its id, so its starter can name it at once");
     assert_eq!(made.name, "Usage drop: investigate");
     assert_eq!(
-        made.keeper, ADA,
+        made.acts_for, ADA,
         "it works for the person its starter works for"
     );
     assert_eq!(made.state, AgentState::Active);
@@ -345,7 +345,7 @@ fn a_sub_agent_starts_its_own_only_as_deep_as_the_person_allows() {
     let worker = state.get(&id("worker")).unwrap();
     let sub = worker.sub.as_ref().unwrap();
     assert_eq!((sub.depth, sub.started_by.as_str()), (2, "lead"));
-    assert_eq!(worker.keeper, ADA);
+    assert_eq!(worker.acts_for, ADA);
     assert_eq!(
         state.root_of(worker).id.0,
         MAIN,
@@ -689,7 +689,7 @@ pub(super) fn kept(name: &str, started_by: &str, at: i64, stands: Stands) -> Age
     Agent {
         id: tilo_resource::Atom(name.to_owned()),
         name: name.to_owned(),
-        keeper: ADA.to_owned(),
+        acts_for: ADA.to_owned(),
         created_at: at,
         sub: Some(Sub {
             started_by: started_by.to_owned(),
@@ -713,7 +713,7 @@ fn the_oldest_that_ended_makes_room_once_the_record_is_full() {
     let main = Agent {
         id: tilo_resource::Atom(MAIN.to_owned()),
         name: "Assistant".to_owned(),
-        keeper: ADA.to_owned(),
+        acts_for: ADA.to_owned(),
         ..Agent::default()
     };
     let full = |stands: fn(usize) -> Stands| {
@@ -812,7 +812,7 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
         serde_json::json!({
             "id": "find-the-deck",
             "name": "Find the deck",
-            "keeper": ADA,
+            "acts_for": ADA,
             "model": null,
             "mcp_client": null,
             "bound": [],
@@ -848,7 +848,7 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
         "agents": [{
             "id": "claude",
             "name": "Claude",
-            "keeper": "ada",
+            "acts_for": "ada",
             "model": null,
             "mcp_client": null,
             "bound": [],

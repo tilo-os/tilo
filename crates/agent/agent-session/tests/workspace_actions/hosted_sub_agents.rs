@@ -434,7 +434,7 @@ async fn a_sub_agent_works_in_a_conversation_of_its_own_and_reads_what_its_chain
     .await;
     let started = stands_as(&workspaces, &workspace, "find-the-deck", Stands::Working).await;
     let sub = started.sub.clone().unwrap();
-    assert_eq!(started.keeper, person, "it works for the same person");
+    assert_eq!(started.acts_for, person, "it works for the same person");
     assert_eq!(
         (
             sub.started_by.as_str(),
@@ -890,7 +890,7 @@ async fn its_person_asks_for_a_sub_agent_and_the_server_starts_it() {
     assert_eq!(
         (
             started.name.as_str(),
-            started.keeper.as_str(),
+            started.acts_for.as_str(),
             sub.started_by.as_str(),
             sub.job.as_str(),
             sub.kind.as_str()
@@ -948,7 +948,7 @@ async fn its_person_asks_for_a_sub_agent_and_the_server_starts_it() {
     .expect_err("outside a turn a sub-agent's name asks nobody");
     assert!(refused.contains("may not invoke"), "{refused}");
     // What the server writes for a sub-agent it writes on the turn it worked, with the bound its
-    // keeper set: an ask made that way is taken, and starts nothing either.
+    // person set: an ask made that way is taken, and starts nothing either.
     let beside = outside.on_turn(
         tilo_action_policy::turn::Turn::new(
             chat::summons::conversation_address(&own),

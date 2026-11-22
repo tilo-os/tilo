@@ -278,7 +278,7 @@ async fn the_main_agents_own_turn_starts_reads_notes_and_stops_its_sub_agents() 
     let sub = started.sub.clone().unwrap();
     assert_eq!(
         (
-            started.keeper.as_str(),
+            started.acts_for.as_str(),
             sub.started_by.as_str(),
             sub.depth,
             sub.role.as_str(),

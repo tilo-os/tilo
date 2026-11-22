@@ -31,12 +31,6 @@ mod direct_held_writes;
 mod direct_lost_history;
 #[path = "direct_two_devices.rs"]
 mod direct_two_devices;
-#[path = "personal_link_admission.rs"]
-mod personal_link_admission;
-#[path = "personal_three_devices.rs"]
-mod personal_three_devices;
-#[path = "personal_two_devices.rs"]
-mod personal_two_devices;
 #[path = "renewed_enrollment.rs"]
 mod renewed_enrollment;
 #[path = "renewed_membership.rs"]

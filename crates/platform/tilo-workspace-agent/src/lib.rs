@@ -191,9 +191,10 @@ pub struct Agent {
     /// Its name, as people read it and search finds it.
     #[model(label)]
     pub name: String,
-    /// The member who made it, or for whom an agent started it. It is no owner: the agent is
-    /// the workspace's, and the workspace's grants alone decide who changes it.
-    pub keeper: String,
+    /// The person the agent acts for: the member who made it, or for whom an agent started it.
+    /// It is no owner: the agent is the workspace's, and the workspace's grants alone decide
+    /// who changes it.
+    pub acts_for: String,
     /// The model it plans with as `provider/model`, the workspace's choice; `None` follows
     /// the workspace's default.
     pub model: Option<String>,
@@ -360,7 +361,7 @@ impl WorkspaceAgents {
             )));
         }
         let name = clean_name(&name)?;
-        let keeper = author(cx)?;
+        let acts_for = author(cx)?;
         let id = match id.as_deref().map(str::trim) {
             None | Some("") => cx.id().to_string(),
             Some(id) => {
@@ -382,7 +383,7 @@ impl WorkspaceAgents {
         self.agents.push(Agent {
             id: Atom(id),
             name,
-            keeper,
+            acts_for,
             model,
             mcp_client,
             bound: Vec::new(),
@@ -690,7 +691,7 @@ impl WorkspaceAgents {
             sub::check(agent)?;
             check_id(&agent.id.0)?;
             check_name(&agent.name)?;
-            person(&agent.keeper)?;
+            person(&agent.acts_for)?;
             if let Some(model) = &agent.model {
                 check_model(model)?;
             }

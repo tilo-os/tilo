@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use accounts::person::{ACCOUNTS_OWNER, PersonAccounts};
+use accounts::person::{ACCOUNTS_OWNER, AccountList};
 use accounts::sign_ins::{self, Answer, Ask, Client};
 use tilo_actions::remote::Caller;
 use tilo_resource::{Replica, Resource as _};
@@ -110,15 +110,15 @@ fn accounts_keeping(account: &accounts::Account) -> automerge::AutoCommit {
         &mut doc,
         &collab_types::document::DocumentCheckout::new(
             collab_types::document::DocumentId::parse(&document).unwrap(),
-            collab_types::document::ResourceType::new(PersonAccounts::KIND),
+            collab_types::document::ResourceType::new(AccountList::KIND),
         ),
         WORKSPACE,
-        |doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
+        |doc| AccountList::initialize(doc).map_err(|error| error.to_string()),
     )
     .unwrap();
-    let mut replica = Replica::<PersonAccounts>::from_doc(doc).in_app(ACCOUNTS_OWNER, "Settings");
+    let mut replica = Replica::<AccountList>::from_doc(doc).in_app(ACCOUNTS_OWNER, "Settings");
     replica
-        .apply_confirmed(PersonAccounts::saving(account))
+        .apply_confirmed(AccountList::saving(account))
         .unwrap();
     automerge::AutoCommit::load(&replica.save()).unwrap()
 }
@@ -159,7 +159,7 @@ fn a_held_ask_is_answered_once_the_workspace_keeps_a_file_account() {
         WORKSPACE,
         (ACCOUNTS_OWNER, &accounts_document()),
         accounts_keeping(&account),
-        &|doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
+        &|doc| AccountList::initialize(doc).map_err(|error| error.to_string()),
     );
     let held = std::cell::RefCell::new(None);
     served.device.until(|| {
@@ -222,7 +222,7 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
         WORKSPACE,
         (ACCOUNTS_OWNER, &accounts_document()),
         accounts_keeping(&account),
-        &|doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
+        &|doc| AccountList::initialize(doc).map_err(|error| error.to_string()),
     );
     let (session, connector) = std::os::unix::net::UnixStream::pair().unwrap();
     let (workspaces, changes) = (served.device.workspaces(), served.device.changes());
@@ -368,7 +368,7 @@ fn a_connector_is_told_an_account_added_while_it_waits() {
         WORKSPACE,
         (ACCOUNTS_OWNER, &accounts_document()),
         accounts_keeping(&account),
-        &|doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
+        &|doc| AccountList::initialize(doc).map_err(|error| error.to_string()),
     );
     let held = std::cell::RefCell::new(None);
     served.device.until(|| {

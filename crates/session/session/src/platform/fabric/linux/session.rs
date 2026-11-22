@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::person_resources::PersonResources;
+use crate::PersonResources;
 use iroh::EndpointId;
 use settings_store::continuity_privacy::ContinuityCapability;
 use tilo_lock::MutexRecover as _;
@@ -425,7 +425,7 @@ impl FabricLink for SessionFabric {
             None => PersonDevices::default(),
         };
         let live = self.live.lock_recover();
-        // This device is the person's whether or not their store reached it yet.
+        // This device is the person's whether or not their own workspace reached it yet.
         if !kept.contains(live.local()) {
             kept.insert(super::PersonDevice::new(
                 live.local().clone(),

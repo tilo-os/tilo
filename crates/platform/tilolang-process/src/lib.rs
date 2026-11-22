@@ -65,7 +65,7 @@ pub fn route_of(
     person: &str,
 ) -> collaboration::RouteSpec {
     if meta.uses_personal_profile()
-        && let Some(profile) = collab_types::personal_cluster_of(person)
+        && let Some(profile) = collab_types::person_workspace_of(person)
     {
         let kind = format!("tl.{}", meta.app);
         let id = collab_types::person_document_for_workspace(&kind, workspace);
@@ -707,7 +707,7 @@ impl TilolangProcess {
         let identity =
             identity.ok_or_else(|| AdmitError::Join("no identity connection".to_owned()))?;
         if bundle.meta.uses_personal_profile()
-            && collab_types::personal_cluster_of(&request.person).is_none()
+            && collab_types::person_workspace_of(&request.person).is_none()
         {
             return Err(AdmitError::Join(
                 "this app needs the person's certified profile".into(),
@@ -1136,7 +1136,7 @@ view saved_views(v: Views) {
         let document = route.document.as_deref().unwrap();
         assert_eq!(
             route.cluster_id,
-            collab_types::personal_cluster_of(&ada).unwrap()
+            collab_types::person_workspace_of(&ada).unwrap()
         );
         assert_ne!(route.cluster_id, a);
         assert_eq!(collab_types::person_document_context(document), Some(a));

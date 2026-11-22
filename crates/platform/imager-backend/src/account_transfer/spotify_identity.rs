@@ -244,7 +244,7 @@ music_streaming = ["streaming", "user-read-private"]
                 let (endpoint, api) = profile_server(vec![original.clone(), other, original]);
                 let connector = connector(&root, endpoint, &issuer);
                 let first = finish(&connector, first_playback).unwrap();
-                let metadata = std::fs::read(accounts::store_path_in(&root)).unwrap();
+                let metadata = std::fs::read(accounts::person::staged_path_in(&root)).unwrap();
                 let secret = std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).unwrap();
                 assert_eq!(
                     finish(&connector, !first_playback),
@@ -252,7 +252,7 @@ music_streaming = ["streaming", "user-read-private"]
                 );
                 api.join().unwrap();
                 assert_eq!(
-                    std::fs::read(accounts::store_path_in(&root)).unwrap(),
+                    std::fs::read(accounts::person::staged_path_in(&root)).unwrap(),
                     metadata
                 );
                 assert_eq!(

@@ -173,14 +173,14 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
     let profile = temp.path().join("profile");
     let mut app = TestApp::<crate::SettingsShell>::open_data_dir(&profile).unwrap();
     let person = app
-        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
         .unwrap();
     let root = crate::accounts::AccountRoot::at(&profile).with_person(person);
     let mut original = accounts::Account::new("existing", "caldav");
     original.display_name = "Existing owner label".into();
     original.config = serde_json::json!({"owner_extension": "preserve-me"});
     let mut store = root.store();
-    store.upsert(original.clone());
+    store.keep(&original).unwrap();
     root.save_store(&store).unwrap();
     app.flush().unwrap();
     crate::effects::show_pane(&mut app, crate::categories::Category::ExternalAccounts);
@@ -192,17 +192,16 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
     app.settle();
     let stored = root.store();
     assert_eq!(
-        app.shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        app.shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
             .unwrap()
             .get()
-            .store()
             .len(),
         2,
         "personal account resource includes the import"
     );
     assert_eq!(stored.len(), 2);
-    assert_eq!(stored.get(&original.id), Some(&original));
-    assert!(stored.list(&"email".into()).is_empty());
+    assert_eq!(stored.get(&original.id), Some(original.clone()));
+    assert!(stored.of_type("email").is_empty());
     let pending = stored.get(&"example@outlook.de".into()).unwrap();
     let config = pending
         .config_as::<accounts::email::AccountConfig>()
@@ -217,28 +216,27 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
     crate::effects::show_pane(&mut reopened, crate::categories::Category::ExternalAccounts);
     assert_eq!(
         reopened
-            .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+            .shared_workspace::<accounts::person::AccountList>(accounts::person::ACCOUNTS_OWNER)
             .unwrap()
             .get()
-            .store()
             .len(),
         2,
         "reopened personal resource retains the import"
     );
-    assert_eq!(root.store().get(&pending.id), Some(pending));
+    assert_eq!(root.store().get(&pending.id), Some(pending.clone()));
     assert!(
         inspect(&mut reopened)["accounts"]
             .as_array()
             .unwrap()
             .is_empty()
     );
-    assert_eq!(root.store().get(&original.id), Some(&original));
+    assert_eq!(root.store().get(&original.id), Some(original.clone()));
     discover(&mut reopened, &prefs);
     activate(&mut reopened, "settings.accounts.import.account3:id3.oauth");
     activate(&mut reopened, "settings.accounts.import.commit");
     reopened.flush().unwrap();
     reopened.settle();
     assert_eq!(root.store().len(), stored.len());
-    assert_eq!(root.store().get(&pending.id), Some(pending));
-    assert_eq!(root.store().get(&original.id), Some(&original));
+    assert_eq!(root.store().get(&pending.id), Some(pending.clone()));
+    assert_eq!(root.store().get(&original.id), Some(original.clone()));
 }

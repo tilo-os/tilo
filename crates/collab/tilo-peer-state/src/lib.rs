@@ -12,6 +12,7 @@
 )]
 mod before_own_removal;
 pub use before_own_removal::kept_message;
+mod device_answers;
 mod frames;
 pub mod governance;
 #[cfg(not(target_arch = "wasm32"))]
@@ -22,6 +23,7 @@ pub mod join_transport;
 mod kept_states;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 pub mod loopback;
+mod person_records;
 /// The workspace invitation and join contract (`tilo-workspace-join`).
 pub use tilo_workspace_join as join;
 // The wire message admission speaks; owned by `neighbour-wire`.
@@ -68,34 +70,33 @@ pub mod store;
 pub mod workspace;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
+/// The person's answers about the devices of their machines, kept in their own workspace.
+pub use device_answers::{
+    DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, PERSON_RECORDS_APP, Refusal,
+};
+/// The person's own workspace, as a part of a session reads and writes its documents.
+pub use person_records::{DocumentEdit, PersonDocuments};
 pub use state::ChangeRefused;
 pub use state::DocumentKeysBasis;
 /// A state of a workspace's governance, kept to ask which heads it holds.
 pub use state::GovernanceHeads;
 pub use state::mail_send_lease;
-/// The person's own documents between their devices, with no host in between.
 pub use state::{
-    AdmittedFrame, PERSONAL_ALPN, PersonalSync, device_resource, resource_owner, store_path,
-    update_person_resource,
+    CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, DONE_KEY, DelegateInactive,
+    DocumentRow, Done, GovernedAccess, GovernedAgent, GovernedDelegateRow, HELD_COPIES_KEY,
+    HeldCopy, HeldDocument, HolderCopy, InstalledApp, InstalledBot, KeptDocument, LEASES_KEY,
+    Lease, LeaseClaim, MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS, Member,
+    MemberId, MemberList, MembershipError, MergedDocument, Missing, NativePublicationCut,
+    NotAdmitted, OpenedDocument, OpenedHistory, OpenedWrite, PeerDocumentCapture,
+    PeerDocumentReadError, PeerGovernance, PeerGovernanceMut, PeerMediaGovernance,
+    PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication, PeerPublicationMut,
+    PeerWorkspace, PeerWorkspaceMut, ReceiveOutcome, RequestedBot, Reseal, RowError, SCHEDULES_KEY,
+    SealCheckpoint, SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason,
+    UnmergedWrite, WORKSPACE_KEEPING_DEVICES_KEY, WaitingForUpdate, committed_document_revision,
+    decide_with_surfaces, default_surfaces, holder_role, keeping_devices_of, peer_handle,
+    seed_workspace, seed_workspace_at, trigger_mark, unranked, workspace_grants_of,
+    workspace_host_actor, workspace_seed,
 };
-pub use state::{
-    CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, DEVICE_FACTS, DONE_KEY,
-    DelegateInactive, DocumentRow, Done, ENROLLMENT_KIND, GovernedAccess, GovernedAgent,
-    GovernedDelegateRow, HELD_COPIES_KEY, HeldCopy, HeldDocument, HolderCopy, InstalledApp,
-    InstalledBot, KeptDocument, LEASES_KEY, Lease, LeaseClaim, MAX_HELD_BYTES,
-    MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS, Member, MemberId, MemberList,
-    MembershipError, MergedDocument, Missing, NativePublicationCut, NotAdmitted, OpenedDocument,
-    OpenedHistory, OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance,
-    PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut,
-    PeerPersonal, PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
-    PersonalStore, ReceiveOutcome, RequestedBot, Reseal, RowError, SCHEDULES_KEY, SealCheckpoint,
-    SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
-    WIFI_KIND, WORKSPACE_KEEPING_DEVICES_KEY, WORKSPACES_KIND, WaitingForUpdate,
-    committed_document_revision, decide_with_surfaces, default_surfaces, holder_role,
-    keeping_devices_of, peer_handle, seed_workspace, seed_workspace_at, trigger_mark, unranked,
-    workspace_grants_of, workspace_host_actor, workspace_seed,
-};
-pub use state::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, Refusal};
 /// The durable layout a replica's state is written in ([`StatePeer::durable`]).
 pub use state::{DURABLE_VERSION, kept_before_own_removal};
 pub use state::{changes_since, saved_whole};

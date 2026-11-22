@@ -178,6 +178,11 @@ mod governed_grants_tests;
 #[cfg(test)]
 mod naming_tests;
 pub mod person_workspace;
+// The person's own workspace's resources, as a part of a session reads and writes them.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod person_resources;
+#[cfg(not(target_arch = "wasm32"))]
+pub use person_resources::{Holds, PersonResources};
 // The person's region and formats and their zone: what a view rendered here for them shows
 // dates in.
 #[cfg(not(target_arch = "wasm32"))]
@@ -1984,7 +1989,7 @@ impl Workspaces {
     /// Every person `workspace`'s governance has, by person (hex root), with the
     /// workspace's governance generation: its owner among them, also where the owner is
     /// this host's own person. What the server decides who acts here by, an agent through
-    /// its keeper, never what [`Self::membership`] shows a person: that leaves the
+    /// the person it acts for, never what [`Self::membership`] shows a person: that leaves the
     /// server's own account out.
     ///
     /// # Errors

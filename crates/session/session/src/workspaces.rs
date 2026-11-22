@@ -877,7 +877,7 @@ impl Personal {
     ///
     /// Cheap when neither the workspace nor the list moved since the last call, which every pass
     /// makes.
-    pub(crate) fn sync_store(&mut self, store: &crate::person_resources::PersonResources) -> bool {
+    pub(crate) fn sync_store(&mut self, store: &crate::PersonResources) -> bool {
         let revision = *store.changes().borrow();
         let heads = self.directory.heads();
         if self

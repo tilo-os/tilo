@@ -958,7 +958,7 @@ async fn what_a_person_tells_an_agent_is_found_by_them_and_their_own_turns_alone
     }
     let only_chat = Agent {
         id: ui::tilo_resource::Atom(SCOUT.into()),
-        keeper: person_of(&served.ada),
+        acts_for: person_of(&served.ada),
         bound: vec![
             reading(format!("workspace:{workspace}"), "deny"),
             reading(chat_in(&workspace), "allow"),

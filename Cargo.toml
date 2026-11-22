@@ -286,7 +286,6 @@ members = [
     "crates/dev/collab-probe",
     "crates/dev/copy-lint",
     "crates/dev/fake-discord",
-    "crates/dev/fake-oauth",
     "crates/dev/fake-model-providers",
     "crates/dev/projector-stand-in",
     "crates/dev/nested-session-bus",

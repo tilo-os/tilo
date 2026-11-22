@@ -15,7 +15,6 @@
 )]
 
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
@@ -27,7 +26,6 @@ use tilo_actions::remote::{
     ReceiptStatus,
 };
 use tilo_desktop_model::WorkspaceId;
-use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_runtime::key_sessions::{KeySessions, SessionHost, Sessions};
 use tilo_runtime::personal_devices::PersonalDevices;
 use tilo_session_client::PeerConfig;
@@ -267,12 +265,6 @@ async fn device_host(root: &SigningKey) -> Box_ {
         .unwrap(),
     );
     let made = host.workspaces().create("Shell").await.unwrap();
-    let store = PersonalStore::open(
-        root.verifying_key().to_bytes(),
-        cert.clone(),
-        SystemTime::now(),
-    )
-    .unwrap();
     let runs = Arc::new(DeviceRuns {
         workspace: made.workspace.clone(),
         broker: Broker {
@@ -282,7 +274,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
         opened: Mutex::default(),
     });
     key_sessions.serve(
-        Arc::new(PersonalDevices::new(PersonalSync::new(store, key))),
+        Arc::new(PersonalDevices::new(host.workspaces().clone(), &cert)),
         Arc::clone(&runs) as Arc<dyn Sessions>,
     );
     let router = host

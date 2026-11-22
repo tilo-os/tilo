@@ -441,7 +441,9 @@ fn sealed_thunderbird_mail_imports_whole_and_merges_again_without_loss() {
         account.config["source_provenance"]["mail_client"],
         "thunderbird"
     );
-    let metadata = std::fs::read_to_string(accounts::store_path_in(&root)).unwrap();
+    let metadata =
+        String::from_utf8_lossy(&std::fs::read(accounts::person::staged_path_in(&root)).unwrap())
+            .into_owned();
     assert!(!metadata.contains("password"));
     assert!(!metadata.contains("launch_a_program"));
 
@@ -685,7 +687,7 @@ fn an_import_that_cannot_merge_publishes_nothing_and_a_retry_completes_it() {
         .to_owned();
 
     let target = tempfile::tempdir().unwrap();
-    let store = accounts::store_path_in(&target.path().join(".config/tilo"));
+    let store = accounts::person::staged_path_in(&target.path().join(".config/tilo"));
     let corrupt = target.path().join(&local_file);
     write(&corrupt, b"{not json");
     assert!(

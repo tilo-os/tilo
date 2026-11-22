@@ -484,7 +484,7 @@ mod tests {
     fn kept_by(keeper: &str) -> Agent {
         Agent {
             id: tilo_resource::Atom("scout".to_owned()),
-            keeper: keeper.to_owned(),
+            acts_for: keeper.to_owned(),
             ..Agent::default()
         }
     }

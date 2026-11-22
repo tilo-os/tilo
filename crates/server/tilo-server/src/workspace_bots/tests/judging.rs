@@ -13,14 +13,14 @@ pub(super) const ASSISTANT: &str = "assistant";
 /// What the test's program asks its person's model.
 const QUESTION: &str = "Is this the first working day of the month?";
 
-/// `keeper` keeps an assistant in `workspace`, as their own device makes one:
+/// `person` keeps an assistant in `workspace`, as their own device makes one:
 /// an agent in the workspace's record of its agents, with the most it may
 /// spend in a day.
 pub(super) async fn keeps_an_assistant(
     workspaces: &Workspaces,
     workspace: &str,
     cert: &DeviceCert,
-    keeper: &str,
+    acts_for: &str,
     limit_micros: Option<u64>,
 ) {
     use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
@@ -28,7 +28,7 @@ pub(super) async fn keeps_an_assistant(
     // The record as their device writes it, made before anything is waited
     // for.
     let bytes = {
-        let mut made = tilo_resource::Replica::<WorkspaceAgents>::new().as_author(keeper);
+        let mut made = tilo_resource::Replica::<WorkspaceAgents>::new().as_author(acts_for);
         made.apply(
             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                 name: tilo_resource::NonBlank::parse("Assistant").unwrap(),

@@ -1,7 +1,7 @@
 //! Mail's shape of the workspace's accounts.
 //!
 //! Account management lives in Settings, not in Mail, which only consumes the account list to
-//! fetch and send. The accounts are the workspace's one record ([`PersonAccounts`], kind
+//! fetch and send. The accounts are the workspace's one record ([`AccountList`], kind
 //! `tilo.accounts`), which every member and device of the workspace reads as its policy allows;
 //! no secret is in it.
 //!
@@ -11,7 +11,7 @@
 //! read here: the session releases it from the workspace's vault to whoever signs in
 //! (`accounts::sign_ins`).
 
-use accounts::person::PersonAccounts;
+use accounts::person::AccountList;
 use accounts::{Account as StoredAccount, AccountId};
 use serde::{Deserialize, Serialize};
 use tilo_resource::{Id, Invoke};
@@ -95,7 +95,7 @@ struct StoredConfig {
 /// ones an import from another mail program is still bringing in, in the record's order, each
 /// without a password.
 #[must_use]
-pub fn accounts_of(record: &PersonAccounts) -> Vec<Account> {
+pub fn accounts_of(record: &AccountList) -> Vec<Account> {
     accounts_from(&record.all())
 }
 
@@ -118,13 +118,13 @@ pub fn accounts_from(stored: &[StoredAccount]) -> Vec<Account> {
 #[must_use]
 pub fn edits_for(
     accounts: &[Account],
-    record: &PersonAccounts,
-) -> (Vec<Invoke<PersonAccounts>>, Vec<AccountId>) {
+    record: &AccountList,
+) -> (Vec<Invoke<AccountList>>, Vec<AccountId>) {
     let mut edits = Vec::new();
     let mut removed = Vec::new();
     for stale in record.of_type(TYPE_ID) {
         if !accounts.iter().any(|a| a.id == stale.id.as_str()) {
-            edits.push(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw(stale.id.0.clone())));
+            edits.push(AccountList::REMOVE_ACCOUNT.with(Id::from_raw(stale.id.0.clone())));
             removed.push(stale.id.clone());
         }
     }
@@ -140,7 +140,7 @@ pub fn edits_for(
             accounts::email::set_password_item(&mut stored.config, Some(item));
         }
         if kept.as_ref() != Some(&stored) {
-            edits.push(PersonAccounts::saving(&stored));
+            edits.push(AccountList::saving(&stored));
         }
     }
     (edits, removed)
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn a_mail_account_from_the_workspaces_accounts_reads_back_without_a_password() {
-        use accounts::person::PersonAccounts;
+        use accounts::person::AccountList;
         let config = AccountConfig {
             display_name: "Work".into(),
             email: "me@work.example".into(),
@@ -160,9 +160,9 @@ mod tests {
             ..AccountConfig::default()
         };
         let account = Account::new(config);
-        let mut replica = tilo_resource::Replica::<PersonAccounts>::new();
+        let mut replica = tilo_resource::Replica::<AccountList>::new();
         replica
-            .apply(PersonAccounts::saving(&account.to_stored()))
+            .apply(AccountList::saving(&account.to_stored()))
             .unwrap();
         let person = replica.state().unwrap();
         let shown = accounts_of(&person);

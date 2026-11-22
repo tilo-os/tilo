@@ -379,9 +379,12 @@ fn sdk_apps_join_the_daemon_and_publish_to_mcp() {
         return;
     };
     let session = Daemon::start_reporting(&root, &mut |_| {}).unwrap();
-    // Just started on a new profile, with nothing written yet: the host holds
-    // the person's own documents store.
-    holds_the_persons_own_documents_store(&session);
+    // Just started on a new profile, with nothing written yet: the host acts as
+    // the person this computer holds, in the workspace it founded for them.
+    let identity = tilo_identity::store::identity_for_workspace(session.workspace())
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.actor(), identity.person_id());
     // Durable collaboration history and the invocation journal live in the
     // profile.
     assert!(root.join(COLLABORATION_HISTORY).is_dir());
@@ -712,31 +715,6 @@ fn listed_workspace() -> String {
     let path = kept.next().expect("a workspace founded here");
     assert!(kept.next().is_none(), "one person founds here");
     std::fs::read_to_string(path).unwrap().trim().to_owned()
-}
-
-/// A running host holds the person's own documents store: asserted on the
-/// host a test starts first on its new profile, before anything is written.
-fn holds_the_persons_own_documents_store(session: &Daemon) {
-    let identity = tilo_identity::store::identity_for_workspace(session.workspace())
-        .unwrap()
-        .unwrap();
-    // The daemon acts as the person this computer holds, in the workspace it founded for them.
-    assert_eq!(session.actor(), identity.person_id());
-    let personal = session.personal();
-    // The store opens on the identity the profile acts as, so every device of
-    // this person finds the same documents without naming a workspace.
-    assert_eq!(
-        personal.read(tilo_peer_state::PersonalStore::root),
-        identity.user_public_key
-    );
-    // Its key is the cluster every record of the person's own is routed
-    // under: what an app's own record names, and the only thing two devices
-    // of theirs need agree on.
-    assert_eq!(
-        personal.store_key(),
-        collab_types::personal_cluster(&identity.user_public_key).to_string()
-    );
-    assert!(personal.rows().is_empty(), "nothing is written yet");
 }
 
 fn consent(

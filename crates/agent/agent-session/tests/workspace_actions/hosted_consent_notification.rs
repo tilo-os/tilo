@@ -180,8 +180,8 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
     let person = ada.verifying_key().to_bytes();
 
     let page = Browser::open_at(&served, &browser, &server_device, &workspace).await;
-    let keeper = hex::encode(person);
-    make_agent(&page, &workspaces, &workspace, &keeper, None).await;
+    let acts_for = hex::encode(person);
+    make_agent(&page, &workspaces, &workspace, &acts_for, None).await;
     let governor = workspaces.governor().clone();
     workspaces
         .prepare_application(&workspace, &governor, &crate::common::catalogue(), CHAT, "")
@@ -232,7 +232,7 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
             .await,
     );
     assert_eq!(open.agent, AGENT);
-    assert_eq!(open.person, keeper);
+    assert_eq!(open.person, acts_for);
     assert_eq!(open.reason, "You asked me to read your mail.");
     assert!(proved.lock().unwrap().is_empty(), "nothing signed in yet");
     assert_eq!(workspaces.open_use_asks(&workspace), vec![open.clone()]);
@@ -243,7 +243,7 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
 
     // The question is put to them where the turn works, as its tools do.
     let conversation =
-        chat::Chat::direct_id([MemberId::person(keeper.clone()), MemberId::agent(AGENT)]);
+        chat::Chat::direct_id([MemberId::person(acts_for.clone()), MemberId::agent(AGENT)]);
     let service = WorkspaceActionProvider::new(actions.clone(), workspace_id);
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: CHAT.into(),

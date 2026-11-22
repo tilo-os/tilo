@@ -191,8 +191,6 @@ mod part_view;
 mod people;
 #[path = "person_workspace.rs"]
 mod person_workspace;
-#[path = "personal_store.rs"]
-mod personal_store;
 #[path = "placed_apps.rs"]
 mod placed_apps;
 #[path = "portal_link.rs"]

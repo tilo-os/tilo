@@ -331,13 +331,13 @@ struct Assistants {
     workspaces: WeakWorkspaces,
 }
 
-/// The person who keeps `agent`, by their root.
-fn keeper_of(agent: &Agent) -> Option<[u8; 32]> {
+/// The person `agent` acts for, by their root.
+fn person_of(agent: &Agent) -> Option<[u8; 32]> {
     tilo_failure::ignored!(
-        "an agent kept by nobody's person has no keeper to tell",
-        tilo_action_policy::PersonId::parse(&agent.keeper).ok()
+        "an agent kept by nobody's person has nobody to tell",
+        tilo_action_policy::PersonId::parse(&agent.acts_for).ok()
     )
-    .and_then(|keeper| keeper.root())
+    .and_then(|acts_for| acts_for.root())
 }
 
 /// The agents `workspace` keeps, or none where its record does not read.
@@ -362,7 +362,7 @@ fn counted_on<'a>(
     person: &[u8; 32],
     told_by: Option<&str>,
 ) -> Option<&'a Agent> {
-    let kept = |agent: &&Agent| agent.is_active() && keeper_of(agent) == Some(*person);
+    let kept = |agent: &&Agent| agent.is_active() && person_of(agent) == Some(*person);
     told_by
         .and_then(|id| agents.iter().filter(kept).find(|agent| agent.id.0 == id))
         .or_else(|| {

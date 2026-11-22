@@ -1,23 +1,14 @@
-//! Where a person's own records live: their personal store's cluster, and the
-//! ids of the records it holds.
+//! Where a record lives: the id of a person's record of a kind, of a chunk of it, and of a
+//! record that remembers the workspace its contents refer to.
 //!
-//! What is a person's own rather than a workspace's — their devices and their
-//! keys, the settings that are theirs everywhere, and the few records an app
-//! keeps of them alone (what the keyboard learned of their typing, the
-//! signature they sign with) — is kept in their personal store
-//! (`tilo_peer_state::PersonalStore`), which every device of theirs holds and
-//! no one else reaches. Everything else, their accounts, contacts and
-//! browsing among it, is the workspace's
-//! ([`crate::WORKSPACE_DOCUMENTS`]). The store needs only one thing agreed on in advance:
-//! the cluster its documents are routed under. That cluster is derived from
-//! the person's root public key alone, so two of their devices agree on where
-//! a document lives without naming each other, and an app's route for one of
-//! those records names the same cluster the store carries it on.
+//! A record's id is derived, never assigned: the same on every device, so two devices agree on
+//! where a document lives without naming each other. A workspace's document of a kind has the
+//! same id ([`crate::workspace_document::workspace_document_id`]).
 //!
-//! Nothing is joined to open it: the store admits a write when the device that
-//! signed it holds a certificate the root signed, and the root's signature
-//! says who may write. There is no roster to consult and no id anyone is
-//! admitted into.
+//! [`personal_cluster`] is the cluster the retained store's records are routed under: a copy of
+//! a person's records a remote install left on its disk, read once at start-up and written by
+//! nothing. A record kept now is a resource of the workspace that keeps it, on that
+//! workspace's own cluster.
 
 use sha2::{Digest as _, Sha256};
 
@@ -25,9 +16,9 @@ use sha2::{Digest as _, Sha256};
 /// another hash of the same key.
 const DOMAIN: &[u8] = b"tilo-personal-store-v1\0";
 
-/// The cluster of the personal store of the person whose root public key is
-/// `root`: a version-8 uuid every device of that person derives alike,
-/// without asking anyone.
+/// The cluster the retained store's records of the person whose root public key is `root` are
+/// routed under: a version-8 uuid every device of that person derives alike, without asking
+/// anyone.
 #[must_use]
 pub fn personal_cluster(root: &[u8; 32]) -> uuid::Uuid {
     let digest = Sha256::new()
@@ -41,16 +32,14 @@ pub fn personal_cluster(root: &[u8; 32]) -> uuid::Uuid {
     uuid::Builder::from_custom_bytes(bytes).into_uuid()
 }
 
-/// Whether `cluster` is the personal store's of the person whose root public
-/// key is `root`.
+/// Whether `cluster` is the retained store's of the person whose root public key is `root`.
 #[must_use]
 pub fn is_personal_cluster(root: &[u8; 32], cluster: &uuid::Uuid) -> bool {
     personal_cluster(root) == *cluster
 }
 
-/// The personal store's cluster of the person a
-/// [`Actor::Person`](crate::Actor) id names (the lowercase hex of
-/// their root public key); `None` for anything else.
+/// The retained store's cluster of the person a [`Actor::Person`](crate::Actor) id names (the
+/// lowercase hex of their root public key); `None` for anything else.
 #[must_use]
 pub fn personal_cluster_of(person: &str) -> Option<uuid::Uuid> {
     let mut key = [0u8; 32];
@@ -173,10 +162,9 @@ mod tests {
             }
         }
 
-        phase a_person_has_one_store_every_device_derives_and_nobody_else_shares;
-        // Every device of a person derives one cluster for their store, nobody
-        // else's derives it, and it is not the workspace their records used to
-        // be kept under.
+        phase a_person_has_one_retained_cluster_every_device_derives_and_nobody_else_shares;
+        // Every device of a person derives one cluster for their retained store, and nobody
+        // else's derives it.
         {
             let ada = [7u8; 32];
             let bob = [8u8; 32];
@@ -189,7 +177,7 @@ mod tests {
             assert_ne!(
                 cluster,
                 personal_cluster(&bob),
-                "another person has another store"
+                "another person has another retained store"
             );
             assert!(!cluster.is_nil());
             assert_eq!(cluster.get_version_num(), 8);

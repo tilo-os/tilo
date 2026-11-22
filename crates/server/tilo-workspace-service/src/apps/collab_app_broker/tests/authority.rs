@@ -96,7 +96,8 @@ async fn network_wake_rpc_keeps_host_queries_outside_the_settings_sandbox() {
             ProcessServices { wifi_continuity: Some(service.clone()), ..Default::default() },
             Some(71), None,
         );
-        fixture.route = CrdtRoute::app(WIFI_CONTINUITY_APP_ID, collab_types::personal_cluster(&[0; 32]).to_string());
+        fixture.route =
+            CrdtRoute::app(WIFI_CONTINUITY_APP_ID, collab_types::person_workspace(&[0; 32]).to_string());
         let client = fixture.invocation_channel();
         let command = runtime_collab::WifiContinuityCommand::NetworkWake {
             profile_uuid: "11111111-1111-4111-8111-111111111111".into(), enabled: Some(true),
@@ -924,16 +925,16 @@ fn certified_document_send_uses_live_route_role_and_typed_snapshot() {
     );
 }
 
-/// The personal cluster is admitted from the joiner's own root alone, with no
+/// The person's own workspace is admitted from the joiner's own root alone, with no
 /// workspace in the tree, and its documents reach the other local
 /// connections on the record and the peer publisher. Nobody else's root
 /// enters it, and nobody enters another person's workspace.
 #[test]
-fn personal_cluster_admits_only_its_own_roots_devices_as_owner() {
+fn the_persons_workspace_admits_only_its_own_roots_devices_as_owner() {
     let root = SigningKey::from_bytes(&[26; 32]);
     let device = SigningKey::from_bytes(&[27; 32]);
     let stranger = SigningKey::from_bytes(&[28; 32]);
-    let own_workspace = collab_types::personal_cluster(&root.verifying_key().to_bytes());
+    let own_workspace = collab_types::person_workspace(&root.verifying_key().to_bytes());
     let route = CrdtRoute::record("so.tilo.tube", own_workspace.to_string(), "watch-history");
     let membership = WorkspaceTree::default().shared();
     let own_device = VerifiedJoinIdentity {
@@ -943,7 +944,7 @@ fn personal_cluster_admits_only_its_own_roots_devices_as_owner() {
     };
 
     let admitted = admit_verified_join(&membership.read(), &route, own_device.clone())
-        .expect("the root's own device joins its personal cluster");
+        .expect("the root's own device joins their own workspace");
     assert_eq!(admitted.role, CapRole::Owner);
     assert_eq!(
         admitted.actor_key,
@@ -961,7 +962,7 @@ fn personal_cluster_admits_only_its_own_roots_devices_as_owner() {
             ..own_device
         },
     )
-    .expect("the root's foreign device joins its personal cluster");
+    .expect("the root's foreign device joins their own workspace");
     let governs = foreign
         .with_authority(None, &route.cluster_id, |access| {
             access
@@ -977,11 +978,11 @@ fn personal_cluster_admits_only_its_own_roots_devices_as_owner() {
     assert_eq!(
         governs,
         Answer::Deny,
-        "a foreign device keeps the foreign-device bound in the personal cluster too"
+        "a foreign device keeps the foreign-device bound in the person's own workspace too"
     );
     let strangers_workspace = CrdtRoute::record(
         "so.tilo.tube",
-        collab_types::personal_cluster(&stranger.verifying_key().to_bytes()).to_string(),
+        collab_types::person_workspace(&stranger.verifying_key().to_bytes()).to_string(),
         "watch-history",
     );
     assert!(
@@ -1006,7 +1007,7 @@ fn personal_cluster_admits_only_its_own_roots_devices_as_owner() {
     let mut other_window = state.subscribe_ops(&route.channel_key(), 2);
     let current = state
         .revalidate_admission(&route, &admitted)
-        .expect("the personal cluster stays admitted without a workspace");
+        .expect("the own workspace stays admitted without a workspace");
     assert_eq!(current.role, CapRole::Owner);
 
     let mut op = SignedOp::new_unsigned(

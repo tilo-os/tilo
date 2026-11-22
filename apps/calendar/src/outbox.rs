@@ -5,14 +5,14 @@ use std::rc::Rc;
 
 use ui::framework::{EffectAnswer, EffectCx, Effected, ResourceEnv};
 
-use crate::account::AccountStore;
+use crate::account::CalendarAccounts;
 use crate::caldav::{self, MutationResult, RemoveJob, UploadJob};
 use crate::model::{Calendar, Id, RemoteCopy};
 use crate::resource::{RemoteAt, calendar, fingerprint};
 
-pub(crate) type DeviceAccounts = Rc<RefCell<AccountStore>>;
+pub(crate) type DeviceAccounts = Rc<RefCell<CalendarAccounts>>;
 
-fn holds(accounts: &AccountStore, id: &str) -> bool {
+fn holds(accounts: &CalendarAccounts, id: &str) -> bool {
     accounts
         .all_calendars()
         .any(|(_, calendar)| calendar.id == id)
@@ -20,7 +20,7 @@ fn holds(accounts: &AccountStore, id: &str) -> bool {
 
 fn upload_job(
     state: &Calendar,
-    accounts: &AccountStore,
+    accounts: &CalendarAccounts,
     event: Id,
     calendar_id: &str,
 ) -> Option<UploadJob> {
@@ -47,7 +47,7 @@ fn upload_job(
 }
 
 #[cfg(test)]
-pub(crate) fn uploads(state: &Calendar, accounts: &AccountStore) -> Vec<(Id, UploadJob)> {
+pub(crate) fn uploads(state: &Calendar, accounts: &CalendarAccounts) -> Vec<(Id, UploadJob)> {
     state
         .uploads
         .pending()
@@ -59,7 +59,7 @@ pub(crate) fn uploads(state: &Calendar, accounts: &AccountStore) -> Vec<(Id, Upl
 }
 
 #[cfg(test)]
-pub(crate) fn deletes(state: &Calendar, accounts: &AccountStore) -> Vec<(Id, RemoveJob)> {
+pub(crate) fn deletes(state: &Calendar, accounts: &CalendarAccounts) -> Vec<(Id, RemoveJob)> {
     state
         .deletes
         .pending()

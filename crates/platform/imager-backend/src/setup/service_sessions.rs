@@ -3,7 +3,7 @@
 #[cfg(target_os = "linux")]
 pub mod source;
 use super::account_transfer::{Connector, PasswordSealedAccounts};
-use accounts::person::PersonAccounts;
+use accounts::person::AccountList;
 use accounts::{Account, AccountId, SecretVault};
 #[cfg(all(target_os = "linux", feature = "installation"))]
 use browser_continuity::sessions::OriginStorage;
@@ -199,7 +199,7 @@ impl PreparedSessions {
             }
         }
         let stage = private_stage()?;
-        let mut record = PersonAccounts::default();
+        let mut record = AccountList::default();
         let mut vault = SecretVault::open_in(stage.path());
         let mut selected = Vec::new();
         for (_, (mut session, cookie_digest)) in material {
@@ -236,7 +236,7 @@ impl PreparedSessions {
             selected.push(chosen);
         }
         vault.try_save().map_err(|_| invalid())?;
-        record.project_in(stage.path()).map_err(|_| invalid())?;
+        record.stage_in(stage.path()).map_err(|_| invalid())?;
         Ok(Self {
             stage,
             identity,

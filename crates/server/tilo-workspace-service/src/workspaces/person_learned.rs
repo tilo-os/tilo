@@ -190,12 +190,12 @@ impl Workspaces {
         change: impl FnOnce(&mut Replica<Learned>) -> Result<R, String>,
     ) -> Result<R, String> {
         let path = self.learned_at(workspace)?;
-        let keeper = hex::encode(person);
+        let acts_for = hex::encode(person);
         let one_at_a_time = CHANGING.lock_recover();
         let resource = opened(read(&path)?)?;
         let mut resource = match by {
-            Some(agent) => resource.as_agent_for(agent, &keeper),
-            None => resource.as_author(&keeper),
+            Some(agent) => resource.as_agent_for(agent, &acts_for),
+            None => resource.as_author(&acts_for),
         }
         .in_app(CHAT.0, CHAT.1);
         resource.set_now_ms(tilo_clock::unix_now_ms_i64());

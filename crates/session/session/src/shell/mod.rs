@@ -140,9 +140,9 @@ pub(crate) struct Shell {
     /// The services' revision the platform readings were last read at: they are read again only
     /// when it moved.
     services_seen: Option<u64>,
-    /// The person's store's revision the shell's resources were last published at, and their
-    /// documents' heads then: an unchanged pair is neither read from their store nor published to
-    /// it, which is what every pass runs.
+    /// Their own workspace's revision the shell's resources were last written at, and their
+    /// documents' heads then: an unchanged pair is neither read from their workspace nor
+    /// written to it, which is what every pass runs.
     record_synced: std::cell::RefCell<Option<(u64, ShellHeads)>>,
     /// The theme the person's appearance settings make: every part draws in it, and a part made for
     /// a display plugged in later starts in it.
@@ -751,19 +751,18 @@ impl Shell {
     }
 
     /// Carry the shell's resources to the person's other devices and take in what theirs hold:
-    /// they are the person's, on the cluster their own store derives from their root, so their
-    /// store (`personal`) carries each of the shell's documents exactly as it carries every app's
-    /// own record of theirs. What this device arranged since the last pass is published there;
-    /// what another of their devices arranged is merged here, so the shell this session draws is
-    /// the one they have everywhere.
+    /// they are the person's, in their own workspace (`store`), which carries each of the shell's
+    /// documents exactly as it carries every app's own record of theirs. What this device arranged
+    /// since the last pass is written there; what another of their devices arranged is merged
+    /// here, so the shell this session draws is the one they have everywhere.
     ///
     /// Cheap when nothing moved, which is what every pass runs.
-    pub(crate) fn sync_resource(&self, personal: &tilo_peer_state::PersonalSync) {
+    pub(crate) fn sync_resource(&self, store: &crate::PersonResources) {
         let app = self.app.as_str();
-        // The store's revision, which moves when it takes a write from any of the person's
+        // The workspace's revision, which moves when it takes a write from any of the person's
         // devices, and the documents' own heads: an unchanged pair means neither this device's
-        // shell nor their store moved since the last look, so nothing is read or published.
-        let revision = *personal.changes().borrow();
+        // shell nor their workspace moved since the last look, so nothing is read or written.
+        let revision = *store.changes().borrow();
         let own = self.record_kept.heads();
         if self
             .record_synced
@@ -773,54 +772,41 @@ impl Shell {
         {
             return;
         }
-        // The documents their store holds that this device has none of yet: a shell arranged on
-        // another device, which this one has not drawn.
+        // The documents their workspace holds that this device has none of yet: a shell arranged
+        // on another device, which this one has not drawn.
         let prefix = format!("{}/", self.record_kept.id());
         let mut docs: std::collections::BTreeSet<String> =
             own.iter().map(|(doc, _)| doc.clone()).collect();
         docs.extend(
-            personal
-                .read(tilo_peer_state::PersonalStore::rows)
+            store
+                .documents(app)
                 .into_iter()
-                .filter(|row| row.app_id == app)
-                .filter_map(|row| row.document_id.strip_prefix(&prefix).map(str::to_owned)),
+                .filter_map(|id| id.strip_prefix(&prefix).map(str::to_owned)),
         );
         for doc in &docs {
             let id = format!("{prefix}{doc}");
             // What another device of theirs wrote since the last look is taken in first, so what
-            // this device publishes next carries it rather than opening a rival branch.
-            let theirs = personal.read(|store| store.document(app, &id));
+            // this device writes next carries it rather than opening a rival branch.
+            let theirs = store.document((app, &id));
             if let Some(bytes) = &theirs {
                 self.record_kept.take_in(doc, bytes);
             }
             let Some(whole) = self.record_kept.save(doc) else {
                 continue;
             };
-            // What is published, if anything: the whole document when their store holds none of
-            // it yet, else only what moved since the copy it holds.
-            let mutation = match theirs
-                .as_deref()
-                .and_then(|bytes| automerge::AutoCommit::load(bytes).ok())
-            {
-                None => Some(collab_types::DocumentMutation::Snapshot(whole)),
-                Some(mut held) => {
-                    let base = held.get_heads();
-                    self.record_kept
-                        .since(doc, &base)
-                        .filter(|delta| !delta.is_empty())
-                        .map(collab_types::DocumentMutation::Incremental)
-                }
-            };
-            if let Some(mutation) = mutation
-                && let Err(error) =
-                    personal.publish(|store, key, now| store.publish(app, &id, &mutation, key, now))
-            {
-                tracing::warn!(%error, "the shell's resources did not reach the person's other devices");
-            }
+            // What this device arranged of the document, merged into what their workspace holds
+            // of it: the ops it already has leave nothing pending, and nothing is written.
+            store.edit_document((app, &id), move |document| {
+                let mut source =
+                    automerge::AutoCommit::load(&whole).map_err(|error| error.to_string())?;
+                tilo_automerge::ApplyIncoming::merge_incoming(document, &mut source)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            });
         }
-        // What was read and published is what the next pass finds unchanged: its own heads, with
-        // the store's revision they were published at.
-        let revision = *personal.changes().borrow();
+        // What was read and written is what the next pass finds unchanged: its own heads, with
+        // the workspace's revision they were written at.
+        let revision = *store.changes().borrow();
         *self.record_synced.borrow_mut() = Some((revision, self.record_kept.heads()));
     }
 
@@ -1523,8 +1509,10 @@ impl crate::Session {
     /// session freely.
     fn follow_shell_record(shell: &Shell, shared: &crate::Shared) {
         let notices = &shared.notifications;
-        let personal = shared.sync.as_ref().and_then(|sync| sync.personal());
-        let personal = personal.as_deref().map(crate::personal::Personal::sync);
+        let store = shared
+            .sync
+            .as_ref()
+            .and_then(|sync| sync.person_resources());
         // A record this device kept and this build did not open is said, once: the shell drew the
         // shell's defaults, and the person is told where their own shell's choices still are rather
         // than finding them silently reset.
@@ -1533,10 +1521,11 @@ impl crate::Session {
                 .borrow()
                 .tell(&crate::notices::record_not_opened_notice(&reason));
         }
-        // The shell's resources is the person's on every device of theirs: what they arranged here reaches
-        // their others through their own store, and what they arranged there reaches this session.
-        if let Some(personal) = personal {
-            shell.sync_resource(personal);
+        // The shell's resources are the person's on every device of theirs: what they arranged here
+        // reaches their others through their own workspace, and what they arranged there reaches
+        // this session.
+        if let Some(store) = store {
+            shell.sync_resource(&store);
         }
     }
 

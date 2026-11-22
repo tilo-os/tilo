@@ -328,9 +328,7 @@ pub mod parts;
 mod pass;
 pub mod people;
 #[cfg(target_os = "linux")]
-mod person_resources;
-#[cfg(target_os = "linux")]
-mod personal;
+pub(crate) use tilo_workspace_service::workspaces::PersonResources;
 #[cfg(target_os = "linux")]
 pub mod portal_link;
 #[cfg(target_os = "linux")]

@@ -7,11 +7,10 @@
 //! the shell's own, in the directory the launcher binds into every app as `TILO_PERSON_DIR`,
 //! which writes each change as the shell's parts make it.
 //!
-//! Between the person's devices they travel on the person's own cluster: their store
-//! (`crate::personal::Personal`, the `PersonalSync` the session already runs for their own
-//! records) carries each of the shell's documents, exactly as it carries every app's person
-//! record — what this device writes is published there, and what another of their devices wrote
-//! is merged here (`Shell::sync_resource`).
+//! Between the person's devices they travel in their own workspace
+//! ([`crate::PersonResources`]), which carries each of the shell's documents exactly as it
+//! carries every app's own record of theirs — what this device writes is written there, and what
+//! another of their devices wrote is merged here (`Shell::sync_resource`).
 //!
 //! A store this build cannot read is never written over: the session keeps the shell's resources
 //! in memory for that session alone and says so (`ShellRecord::take_refusal`), so a person is
@@ -124,13 +123,6 @@ impl ShellRecord {
     #[must_use]
     pub(crate) fn save(&self, doc: &str) -> Option<Vec<u8>> {
         self.port.save(doc)
-    }
-
-    /// The changes of the document `doc` past `heads` — what the person's store already holds —
-    /// as the incremental frame that carries the rest to their other devices.
-    #[must_use]
-    pub(crate) fn since(&self, doc: &str, heads: &[ChangeHash]) -> Option<Vec<u8>> {
-        self.port.save_after(doc, heads)
     }
 
     /// Take in `theirs`, what another of the person's devices holds of the document `doc`, so
