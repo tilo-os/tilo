@@ -755,6 +755,20 @@ impl Prompt {
         }
     }
 
+    /// Wait until the prompt has the terminal again. A command's program runs with the terminal
+    /// cooked, so keys typed before the prompt takes it back are read by the terminal's own line
+    /// discipline (^R reprints, ^W erases) instead of by the prompt.
+    fn wait_terminal_back(&self) {
+        let asked = std::time::Instant::now();
+        while !raw(&self.slave) {
+            assert!(
+                asked.elapsed() < std::time::Duration::from_secs(20),
+                "the prompt never took the terminal back"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     /// Wait until the shell printed `text` on its standard output.
     fn wait_out(&self, text: &str) {
         let asked = std::time::Instant::now();
@@ -810,7 +824,10 @@ tilo_test_env::scenario! {
         assert_eq!(ush_shell::Host::columns(&p.host), 100, "as wide as the pty");
         p.type_keys("cho hi\x01e\x05 there\r");
         p.wait_out("hi there");
+        p.wait_terminal_back();
         p.type_keys("echo first second\x1bb\x1bb\x1bdthird\r");
+        p.wait_out("third second");
+        p.wait_terminal_back();
         p.type_keys("echo one two\x17three\r");
         let (runs, printed) = p.exit();
         assert_eq!(
@@ -826,8 +843,10 @@ tilo_test_env::scenario! {
         let p = prompt(&["echo newest", "echo older", "echo oldest"]);
         p.type_keys("\x1b[A\x1b[A\r");
         p.wait_out("older\n");
+        p.wait_terminal_back();
         p.type_keys("\x12oldest\r");
         p.wait_out("oldest\n");
+        p.wait_terminal_back();
         p.type_keys("cat notes/pl\t\r");
         p.wait_out("plan\n");
         let asked = p.asked.lock().unwrap().clone();
