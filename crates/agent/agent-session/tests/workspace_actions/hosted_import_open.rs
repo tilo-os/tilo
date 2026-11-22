@@ -176,11 +176,11 @@ async fn opening_tasks_after_an_import_costs_what_opening_it_empty_did() {
     }
 
     // The next import opens Tasks again, now that it holds every issue, and
-    // then the app it lands mail in.
+    // then the app it lands people in.
     let (_, again) = key.act(&base, "tasks", "open", &json!({})).await;
     took.push(("tasks#open again".to_owned(), again));
-    let (_, mail) = key.act(&base, "mail", "open", &json!({})).await;
-    took.push(("mail#open".to_owned(), mail));
+    let (_, contacts) = key.act(&base, "contacts", "open", &json!({})).await;
+    took.push(("contacts#open".to_owned(), contacts));
 
     println!("the import's calls took {took:?}");
     let slow: Vec<_> = took
