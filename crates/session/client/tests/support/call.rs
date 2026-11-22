@@ -8,10 +8,8 @@
     reason = "each voice test binary uses a different subset of these fixtures"
 )]
 
-use chat::projection::ChatProjection as _;
 use std::time::SystemTime;
 
-use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
@@ -31,7 +29,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use crate::support::{Device, TestHost, enrol, start_workspace_host_relaying, wait_for};
 use collab_types::WorkspaceId;
 
-pub const CHAT: &str = "so.tilo.chat";
+pub const CHAT: &str = tilo_peer_state::workspace::media::CHAT_APP;
 pub const BOTH: Directions = Directions {
     publish: true,
     subscribe: true,
@@ -265,14 +263,8 @@ pub async fn create_voice_channel(
         }
     })
     .await;
-    let mut chat = AutoCommit::new();
-    chat::demo::start(&mut chat, &hex::encode(device.cert.user_public_key)).unwrap();
-    let voice = chat::projection::read(&chat)
-        .channel_rows()
-        .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
-        .expect("a workspace's chat opens with a voice channel")
-        .id;
+    let voice = "voice".to_owned();
+    let mut chat = tilo_peer_state::workspace::media::voice_chat(&voice, "Voice");
     let message = peer
         .publication_mut()
         .publish_incremental(

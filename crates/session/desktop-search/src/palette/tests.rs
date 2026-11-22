@@ -563,7 +563,7 @@ tilo_test_env::scenario! {
 }
 
 /// Someone is here: the empty palette leads with them and the call
-/// they could join, and choosing that row joins it.
+/// they could join, and choosing that row opens it in Chat.
 #[test]
 fn the_empty_palette_leads_with_who_is_here() {
     use crate::providers::happening::{CallHere, Happening, PersonHere, WorkspaceHere};
@@ -605,7 +605,7 @@ fn the_empty_palette_leads_with_who_is_here() {
         .iter()
         .find(|entry| entry.label == "Call")
         .expect("the call to join");
-    assert_eq!(call.outcome.as_deref(), Some("Join"));
+    assert_eq!(call.outcome.as_deref(), Some("Open"));
     let at = entries
         .iter()
         .position(|entry| entry.id == call.id)
@@ -614,10 +614,10 @@ fn the_empty_palette_leads_with_who_is_here() {
     search.palette_mut().activate_selected();
     assert!(search.observe(), "choosing a row closes search");
     let Some(Target::Invoke(invoke)) = search.take_choice() else {
-        panic!("the call is joined by asking Chat");
+        panic!("the call is opened by asking Chat");
     };
-    assert_eq!(invoke.app, "so.tilo.chat");
-    assert_eq!(invoke.address.action.as_str(), "join-call");
+    assert_eq!(invoke.app, ui::apps::CHAT);
+    assert_eq!(invoke.address.action.as_str(), crate::model::OPEN_ACTION);
 }
 
 /// Tasks' one-line "New task", as the session publishes the app's actions: `title` is the

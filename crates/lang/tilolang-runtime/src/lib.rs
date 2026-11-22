@@ -94,7 +94,7 @@ pub use meta::Meta;
 pub use project::ProjectOptions;
 pub use render::ViewTarget;
 pub use run::{Journal, JournalEntry, Pending, Resolution, RunOutcome, Suggestion};
-pub use runtime::{BlockOutput, MemorySink, Reading, Runtime, SettleReport};
+pub use runtime::{BlockOutput, CallMember, MemorySink, Reading, Runtime, SettleReport};
 pub use settle::{AgentBlock, InvocationEntry};
 pub use space::Space;
 pub use store::{
@@ -103,7 +103,7 @@ pub use store::{
 };
 pub use value::{ActionRef, CollRef, EnumValue, RecordInit, RefValue, ResourceRef, Value};
 pub use view::{BindTarget, Binding, Patch, UiNode};
-pub use view_instance::{EditOutcome, UndoAsk, ViewEvent, ViewInstance};
+pub use view_instance::{CallStep, EditOutcome, UndoAsk, ViewEvent, ViewInstance};
 pub use view_state::StateKey;
 pub use words::{LoadedCatalogues, SourceWords, Words, WordsRole};
 pub use written::WrittenViewInfo;

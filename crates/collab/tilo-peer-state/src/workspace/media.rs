@@ -14,6 +14,9 @@ use tilo_user_identity::canonical::{canonical_bytes, from_canonical_bytes};
 
 pub(crate) mod basis;
 pub(crate) mod binding;
+pub use binding::{CHAT_APP, VOICE_CHANNEL_KIND, VOICE_CHANNEL_TYPE};
+#[cfg(any(test, feature = "test-support"))]
+pub use binding::{CONVERSATIONS, put_voice_channel, voice_chat};
 pub(crate) mod fingerprint;
 pub(crate) mod read;
 
@@ -778,7 +781,7 @@ mod workspace_media_tests {
                 [7; 32],
                 CallV1 {
                     binding: ChatCallBindingV1 {
-                        app_id: "so.tilo.chat".into(),
+                        app_id: CHAT_APP.into(),
                         document_id: String::new(),
                         channel_id: "voice".into(),
                         channel_object: "1@01".into(),
@@ -1093,7 +1096,7 @@ mod workspace_media_tests {
         phase excessive_wire_string_lengths_are_capacity_before_text_allocation;
         {
             let fields = [
-                ("so.tilo.chat", 64usize),
+                (CHAT_APP, 64usize),
                 ("", 1024),
                 ("voice", 128),
                 ("1@01", 256),

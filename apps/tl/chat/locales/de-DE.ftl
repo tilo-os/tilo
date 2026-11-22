@@ -263,6 +263,31 @@ d-6uysx57s-m = M
 
 d-6uysx57s-name = Name
 
+d-xr347kui = Sprachkanal
+    .doc = Ein Ort, um live zu sprechen: Wer beitritt, ist im Anruf des Systems, mit allen, die sonst beigetreten sind.
+    .noun = { $count ->
+        [one] Sprachkanal
+       *[other] Sprachkanäle
+    }
+
+d-olqjezxu = Name
+
+d-egiu6ag4 = Neuer Sprachkanal
+    .doc = Fügt der Seitenleiste einen Sprachkanal hinzu.
+    .w-voice = Sprache
+
+d-egiu6ag4-name = Name
+
+d-bjtbjfox = Neuer Sprachkanal
+    .doc = Fügt einer Kategorie einen Sprachkanal hinzu.
+    .w-voice = Sprache
+
+d-bjtbjfox-name = Name
+
+d-qnkkcusk = Sprachkanal
+
+d-lkjppscz = Sprachkanalübersicht
+
 d-tz5yw5dt = Von
     .doc = Wer ihn im früheren Chat geschrieben hat, so wie jene App die Person nannte, für eine von dort übernommene Nachricht: die eigene Historie nennt, wer sie übernommen hat, und wann.
 

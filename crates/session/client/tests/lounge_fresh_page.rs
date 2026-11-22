@@ -35,7 +35,6 @@
     reason = "a rehearsal fixture: a failed step is the answer, and it says which check failed"
 )]
 
-use chat::projection::ChatProjection as _;
 use std::io::{BufRead, BufReader, Write as _};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
@@ -59,7 +58,10 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 const DESKTOP_APP: &str = "so.tilo.browser-desktop";
 const DESKTOP_DOCUMENT: &str = "desktop";
 /// Chat's app.
-const CHAT_APP: &str = "so.tilo.chat";
+const CHAT_APP: &str = tilo_peer_state::workspace::media::CHAT_APP;
+/// The type ids of Chat's text channel and message, as its items record them.
+const CHAT_TEXT_CHANNEL: &str = "q7llygsa";
+const CHAT_MESSAGE: &str = "hk2t6bvk";
 
 /// The Lounge image's own entrypoint in this checkout: found from the crate's own sources, which
 /// the run built from, then from the test binary's place. A build whose `target/` sits outside the
@@ -467,9 +469,10 @@ async fn fresh_page(lounge: &Lounge, who: &Person, invitation: &[u8]) -> Link {
     page
 }
 
-/// The messages of `channel` in the page's Chat, read through Chat's own
-/// model over the record and message parts the page's replica holds.
-fn chat_messages(page: &Link, workspace: &str, channel: &str) -> Vec<chat::model::Message> {
+/// The messages of `channel` in the page's Chat: the items of Chat's record placed in that
+/// channel whose type is Chat's message, as the window lists them.
+fn chat_messages(page: &Link, workspace: &str, channel: &str) -> usize {
+    use automerge::ReadDoc as _;
     let record = DocumentRoute {
         app_id: CHAT_APP.to_owned(),
         cluster_id: workspace.to_owned(),
@@ -477,37 +480,48 @@ fn chat_messages(page: &Link, workspace: &str, channel: &str) -> Vec<chat::model
     };
     let Some(chat_doc) = crate::support::resource_of(page, &record) else {
         println!("the page holds none of Chat's record");
-        return Vec::new();
+        return 0;
     };
-    let state = chat::projection::read(&chat_doc);
-    println!(
-        "the page's Chat record: {} channel(s) {:?}",
-        state.channels.len(),
-        state
-            .channels
-            .ids()
-            .map(|id| id.as_str().to_owned())
-            .collect::<Vec<_>>()
-    );
-    let mut parts = Vec::new();
-    for index in 0..8u64 {
-        let part = DocumentRoute {
-            app_id: CHAT_APP.to_owned(),
-            cluster_id: workspace.to_owned(),
-            document: chat::parts::part(index).route().to_owned(),
-        };
-        let Some(document) = crate::support::resource_of(page, &part) else {
+    let map = |parent: &automerge::ObjId, key: &str| match chat_doc.get(parent, key) {
+        Ok(Some((automerge::Value::Object(automerge::ObjType::Map), object))) => Some(object),
+        _ => None,
+    };
+    let text = |parent: &automerge::ObjId, key: &str| match chat_doc.get(parent, key) {
+        Ok(Some((automerge::Value::Scalar(value), _))) => value.as_str().map(str::to_owned),
+        _ => None,
+    };
+    let Some(app) = map(&automerge::ROOT, "tl").and_then(|records| map(&records, CHAT_APP)) else {
+        println!("the page's Chat record holds no conversations");
+        return 0;
+    };
+    let mut messages = 0usize;
+    let mut channels = Vec::new();
+    for resource in chat_doc.keys(&app).collect::<Vec<_>>() {
+        let Some(items) = map(&app, &resource).and_then(|held| map(&held, "$items")) else {
             continue;
         };
-        if let Ok(held) =
-            tilo_app::tilo_resource::Reader::<chat::parts::ChatMessages>::read(&document)
-        {
-            parts.push((index, std::rc::Rc::clone(held.state())));
+        for id in chat_doc.keys(&items).collect::<Vec<_>>() {
+            let Some(item) = map(&items, &id) else {
+                continue;
+            };
+            let placed_in = text(&item, "$at")
+                .and_then(|at| serde_json::from_str::<serde_json::Value>(&at).ok())
+                .and_then(|at| {
+                    at.get("in")
+                        .and_then(|parent| parent.as_str().map(str::to_owned))
+                });
+            match text(&item, "$type").as_deref() {
+                Some(CHAT_TEXT_CHANNEL) => channels.push(id),
+                Some(CHAT_MESSAGE) if placed_in.as_deref() == Some(channel) => messages += 1,
+                _ => {}
+            }
         }
     }
-    println!("the page holds {} of Chat's message part(s)", parts.len());
-    let messages = chat::messages::Messages::new(parts);
-    state.message_rows(&messages, channel)
+    println!(
+        "the page's Chat record: {} channel(s) {channels:?}",
+        channels.len()
+    );
+    messages
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -572,29 +586,17 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     }
     println!("CHECK record keys: ready for Chat and the shared desktop");
 
-    // 2. Chat's history: its record and message parts open, and the messages
-    // read through Chat's own model, as the window shows them.
-    // Chat's record and its message part, read once both are in the page's
-    // replica.
-    let part = DocumentRoute {
-        app_id: CHAT_APP.to_owned(),
-        cluster_id: lounge.workspace.clone(),
-        document: chat::parts::part(0).route().to_owned(),
-    };
+    // 2. Chat's history: its record opens, and its messages read as the window lists them, once
+    // the record is in the page's replica.
     let started = std::time::Instant::now();
     let wait = tokio::time::Instant::now() + Duration::from_secs(300);
-    while !(crate::support::resource_of(&page, &chat).is_some()
-        && crate::support::resource_of(&page, &part).is_some())
-        && tokio::time::Instant::now() < wait
+    while crate::support::resource_of(&page, &chat).is_none() && tokio::time::Instant::now() < wait
     {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     println!("the page read Chat's record after {:?}", started.elapsed());
     let history = chat_messages(&page, &lounge.workspace, "c_general");
-    println!(
-        "CHECK chat history: {} message(s) in #general",
-        history.len()
-    );
+    println!("CHECK chat history: {history} message(s) in #general");
 
     // 3. The layout: the members' windows, as the shared desktop record holds
     // them, read through the desktop model the window draws.

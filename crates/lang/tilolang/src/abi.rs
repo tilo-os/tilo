@@ -246,6 +246,12 @@ imports! {
     ArgAt = "arg_at" ([H, H, I32] -> [H]);
     Actions = "actions" ([H, H] -> [H]);
     Lenses = "lenses" ([H] -> [H]);
+    // `call_members(r)`: who is in the system's call held on the resource `r` now, as its call
+    // service hears it.
+    CallMembers = "call_members" ([H] -> [H]);
+    // `join_call(r)` and its kin: the system's call held on `r` joined, left, or one of the
+    // person's own switches in it (by name) turned on or off.
+    ActCall = "act_call" ([H, H, I32] -> [H]);
     Delivery = "delivery" ([H] -> [H]);
     WorkspaceMembers = "workspace_members" ([] -> [H]);
     Viewer = "viewer" ([] -> [H]);

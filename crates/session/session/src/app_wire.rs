@@ -371,8 +371,8 @@ pub struct Sealed {
 /// its agents.
 pub struct Hosted {
     pub live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
-    /// The calls this session's apps join: the service an app's
-    /// `join-call` reaches.
+    /// The calls this session's apps join: the service a view's call steps
+    /// reach.
     pub native_media: Option<tilo_native_media::NativeMediaService>,
     pub content: Option<std::sync::Arc<AppContentIndex>>,
     /// The records' content in that index, read from the records themselves:
@@ -1548,7 +1548,7 @@ impl AppWire {
                 .and_then(|broker| {
                     crate::calls::channel_name(
                         &broker.surfaces(),
-                        (&call.workspace, &call.app, &call.record),
+                        (&call.workspace, &call.app),
                         &call.channel,
                     )
                 })

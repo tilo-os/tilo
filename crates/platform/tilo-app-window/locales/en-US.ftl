@@ -121,6 +121,25 @@ tilolang-thread-replies = { $count ->
 tilolang-make = Make
 tilolang-from = From
 tilolang-linked = Made from this
+# A call held on a resource (a voice channel): the person's own controls, and what each person
+# in it does.
+tilolang-call-join = Join
+tilolang-call-leave = Leave
+tilolang-call-mute = Mute
+tilolang-call-unmute = Unmute
+tilolang-call-deafen = Deafen
+tilolang-call-undeafen = Undeafen
+tilolang-call-camera-on = Turn camera on
+tilolang-call-camera-off = Turn camera off
+tilolang-call-screen-on = Share screen
+tilolang-call-screen-off = Stop sharing
+tilolang-call-empty = No one is here
+tilolang-call-empty-message = Join to talk; whoever joins next hears you.
+tilolang-call-speaking = Talking
+tilolang-call-muted = Muted
+tilolang-call-deafened = Deafened
+tilolang-call-on-camera = Camera
+tilolang-call-sharing = Sharing screen
 
 app-activate-window = Show this window
 app-activate-window-description = Bring this app's window to the front.

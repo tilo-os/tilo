@@ -732,7 +732,7 @@ impl Workspaces {
         else {
             return Err("no one moderates the calls of a workspace without a governor here".into());
         };
-        if app_id != "so.tilo.chat"
+        if app_id != media::CHAT_APP
             || document_id.len() > MAX_CARRIED_NAME
             || channel_id.is_empty()
             || channel_id.len() > MAX_CARRIED_NAME
@@ -1258,7 +1258,7 @@ mod tests {
             [3; 32],
             media::CallV1 {
                 binding: media::ChatCallBindingV1 {
-                    app_id: "so.tilo.chat".into(),
+                    app_id: media::CHAT_APP.into(),
                     document_id: String::new(),
                     channel_id: "voice".into(),
                     channel_object: "voice".into(),

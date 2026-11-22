@@ -231,6 +231,8 @@ imports! {
     (ArgAt, "arg_at", "iii", "i"),
     (Actions, "actions", "ii", "i"),
     (Lenses, "lenses", "i", "i"),
+    (CallMembers, "call_members", "i", "i"),
+    (ActCall, "act_call", "iii", "i"),
     (Delivery, "delivery", "i", "i"),
     (WorkspaceMembers, "workspace_members", "", "i"),
     (Viewer, "viewer", "", "i"),

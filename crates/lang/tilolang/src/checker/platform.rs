@@ -286,6 +286,69 @@ impl Checker<'_> {
         Ex::host(Imp::Lenses, vec![r], Ty::List(Box::new(host_ty("Lens"))))
     }
 
+    /// `call_members(r)`: who is in the system's call held on `r` now, the person looking among
+    /// them while this device is in it. It is the call service's presence, never stored: a view
+    /// that read it runs again when someone joins, leaves, talks or mutes.
+    pub(super) fn builtin_call_members(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("call_members", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(
+            Imp::CallMembers,
+            vec![r],
+            Ty::List(Box::new(host_ty("CallMember"))),
+        )
+    }
+
+    /// The person's own steps in the system's call held on a resource, each an action a control
+    /// runs: `join_call(r)` joins it (leaving any other call this device is in), `leave_call(r)`
+    /// leaves it, and `mute_call(r, on)`, `deafen_call(r, on)`, `camera_call(r, on)` and
+    /// `screen_call(r, on)` turn one of their switches in it on or off. The call is the system's:
+    /// the microphone, camera and screen are asked for through its permission prompts, and who
+    /// may speak or hear in it is the workspace's to say.
+    pub(super) fn builtin_call(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Ex {
+        let switch = name.strip_suffix("_call").unwrap_or(name);
+        let takes_switch = !matches!(switch, "join" | "leave");
+        let usage = if takes_switch {
+            format!("`{name}` takes the resource and whether it is on: `{name}(r, true)`")
+        } else {
+            format!("`{name}` takes one resource: `{name}(r)`")
+        };
+        let (target, on) = match (args, takes_switch) {
+            ([r], false) => (r, None),
+            ([r, on], true) => (r, Some(on)),
+            _ => {
+                self.err("E022", span, usage);
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+        };
+        if args.iter().any(|a| a.name.is_some()) {
+            self.err("E022", span, usage);
+        }
+        let r = self.expr(&target.value, None);
+        match &r.ty {
+            Ty::Record(_) => {}
+            Ty::Error => return Ex::error(),
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    target.value.span,
+                    format!("`{name}` takes a resource, a value of a record type; this is {t}"),
+                );
+                return Ex::error();
+            }
+        }
+        let on = match on {
+            Some(on) => self.expr_as(&on.value, &Ty::Bool),
+            None => Ex::new(Ek::I32(i32::from(switch == "join")), Ty::Bool),
+        };
+        Ex::host(Imp::ActCall, vec![r, Ex::str(switch), on], Ty::Action)
+    }
+
     /// The collection `c` holds and the type of its items, which a fact about a conversation reads.
     fn conversation_of(&mut self, what: &str, c: &Ex, span: Span) -> Option<(String, TypeKey)> {
         let Ty::Record(key) = &c.ty else {

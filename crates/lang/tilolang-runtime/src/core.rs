@@ -176,6 +176,9 @@ pub struct Core {
     pub embeds: RefCell<crate::embed::EmbedState>,
     /// The view state of every view, and the platform's own readings.
     pub view_states: RefCell<crate::view_state::ViewStates>,
+    /// Whether a view read who is in a call (`call_members(r)`): the host follows the system's
+    /// calls only for an app that shows them.
+    pub calls_read: std::cell::Cell<bool>,
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. Read
     /// once per outermost invocation; until the host sets one, it is the epoch.
     pub clock: RefCell<Option<Box<dyn Fn() -> String>>>,
@@ -353,6 +356,7 @@ impl Core {
             catalogues: RefCell::new(Vec::new()),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
+            calls_read: std::cell::Cell::new(false),
             clock: RefCell::new(None),
             zone: RefCell::new(None),
             week_start: RefCell::new(None),
@@ -489,6 +493,10 @@ impl Core {
 }
 
 impl Core {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the table of which handler takes each import: one arm per group"
+    )]
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::Delivery;
         match imp {
@@ -543,10 +551,12 @@ impl Core {
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt
             | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
-            | UiActions | UiAction | ActChoose | ActSave => self.ui_import(imp, a),
-            EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
-            | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
-            | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
+            | UiActions | UiAction | ActChoose | ActSave | ActCall => self.ui_import(imp, a),
+            EventValue | EventPart | Actions | Lenses | CallMembers | Delivery | MetaOf
+            | Versions | Links | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps
+            | VersionEnd | FieldChanged | Phrase | Word | EntryParts | Viewer => {
+                self.platform_import(imp, a)
+            }
             WorkspaceMembers | Members | MayRead | Speakers | ActorKind | ActorRole => {
                 self.members_import(imp, a)
             }

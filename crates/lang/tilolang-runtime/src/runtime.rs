@@ -21,6 +21,24 @@ use crate::value::{ActionRef, ResourceRef, Value};
 use crate::view_instance::ViewInstance;
 use tilolang::{BlockKind, Compiled, CompiledBlock};
 
+/// Someone in the system's call held on a resource, as `call_members(r)` reads them
+/// (`host.CallMember`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is one of the call's own switches a view shows: talking, muted, deafened, camera, screen"
+)]
+pub struct CallMember {
+    pub who: Actor,
+    /// Whether it is the person looking, from this device.
+    pub mine: bool,
+    pub speaking: bool,
+    pub muted: bool,
+    pub deafened: bool,
+    pub camera: bool,
+    pub screen: bool,
+}
+
 /// What settling the outbox did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SettleReport {
@@ -1196,6 +1214,40 @@ impl Runtime {
                         Value::Actor(who.clone()),
                         Value::Bool(*composing),
                         Value::Bool(*mine),
+                    ])
+                })
+                .collect(),
+        );
+        let mut states = self.core.view_states.borrow_mut();
+        if states.get(&key) != Some(&value) {
+            states.set(key, value);
+        }
+    }
+
+    /// Who is in the system's call held on the resource whose own id is `place` (an item's id,
+    /// or a document's for a resource that is no item; [`crate::platform::call_place`]), as the
+    /// call service last said: what `call_members(r)` reads. A view that read it runs again when
+    /// someone joins, leaves, talks or mutes.
+    /// Whether a view read who is in a call: the host follows the system's calls from then on.
+    #[must_use]
+    pub fn reads_calls(&self) -> bool {
+        self.core.calls_read.get()
+    }
+
+    pub fn set_call(&self, place: &str, members: &[CallMember]) {
+        let key = crate::platform::call_key(place);
+        let value = Value::List(
+            members
+                .iter()
+                .map(|m| {
+                    Value::Tuple(vec![
+                        Value::Actor(m.who.clone()),
+                        Value::Bool(m.mine),
+                        Value::Bool(m.speaking),
+                        Value::Bool(m.muted),
+                        Value::Bool(m.deafened),
+                        Value::Bool(m.camera),
+                        Value::Bool(m.screen),
                     ])
                 })
                 .collect(),

@@ -22,6 +22,7 @@
 //! `<storage>/<package>/indexes` the indexes its instances read the document through, one per
 //! document, shared by every window of it.
 
+pub mod call;
 pub mod files;
 pub mod hosted;
 mod mail_recovery;

@@ -194,6 +194,9 @@ impl Checker<'_> {
             "agent" => return self.builtin_agent(args, span),
             "actions" => return self.builtin_actions(args, span),
             "lenses" => return self.builtin_lenses(args, span),
+            "call_members" => return self.builtin_call_members(args, span),
+            "join_call" | "leave_call" | "mute_call" | "deafen_call" | "camera_call"
+            | "screen_call" => return self.builtin_call(name, args, span),
             "delivery" => return self.builtin_delivery(args, span),
             "members" => return self.builtin_members(args, span),
             "speakers" => return self.builtin_speakers(args, span),

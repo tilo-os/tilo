@@ -13,7 +13,7 @@ use crate::owner_commit::OwnerCommitRequest;
 use crate::{
     SeedDocument, SeedState, StatePeer, TransportOrigin, join, seed_workspace, workspace::media,
 };
-use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
+use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::{collections::BTreeMap, time::SystemTime};
@@ -31,7 +31,8 @@ pub(crate) fn document_on_disk(path: &std::path::Path) -> Vec<(std::path::PathBu
 }
 
 pub const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-pub use tilo_app_id::apps::CHAT as APP;
+/// The app of the record the fixtures write: Chat, whose voice channel a call binds.
+pub use crate::workspace::media::CHAT_APP as APP;
 
 /// Where `certificate`'s device keeps a workspace it founds on itself:
 /// `workspace`'s own host, reached at `endpoint`, signed by the device.
@@ -342,14 +343,7 @@ fn seeded(now: SystemTime) -> Seeded {
         now,
     )
     .unwrap();
-    let mut chat = AutoCommit::new();
-    let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
-    let channel = {
-        let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
-        chat.put_object(&entry, "v", ObjType::Map).unwrap()
-    };
-    chat.put(&channel, "kind", "voice").unwrap();
-    chat.put(&channel, "workspace", "home").unwrap();
+    let mut chat = media::voice_chat("voice", "Lounge");
     collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
     peer.install_seed(
         SeedState {

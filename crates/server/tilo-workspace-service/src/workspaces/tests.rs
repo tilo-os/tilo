@@ -1035,8 +1035,6 @@ async fn governor_authors_a_workspace_record_no_factory_makes() {
     reason = "one authoring pass: granted, written, read back through the native view and the voice binding"
 )]
 async fn governor_application_authoring_preserves_native_view_and_voice_binding() {
-    use chat::projection::ChatProjection as _;
-
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -1126,15 +1124,10 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
             "so.tilo.chat",
             "",
             |doc| {
-                chat::demo::start(doc, "author").map_err(|error| error.to_string())?;
+                tilo_peer_state::workspace::media::put_voice_channel(doc, "standup", "Standup");
                 doc.put(ROOT, "preserved_native_marker", true)
                     .map_err(|error| error.to_string())?;
-                Ok(chat::projection::read(doc)
-                    .channel_rows()
-                    .into_iter()
-                    .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
-                    .unwrap()
-                    .id)
+                Ok("standup".to_owned())
             },
         )
         .await
