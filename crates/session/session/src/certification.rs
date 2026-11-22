@@ -644,20 +644,27 @@ mod tests {
             waiting.until_ms,
         );
 
-        // The phone opens it: it names the person and the host, and the phone asks there.
+        // The phone asks the host the link names over the device link, and shows the code.
         let phone = ed25519_dalek::SigningKey::from_bytes(&[0x64; 32]);
         let link = tilo_server_client::login::PairingLink::parse(&shown.link).unwrap();
         assert_eq!(link.user_public_key, person);
         assert_eq!(link.host_origin, origin);
+        let at = tilo_server_client::ServerAddress::at(server.node_addr());
         let (code_shown, code) = std::sync::mpsc::channel();
         let redeemed = runtime.spawn({
             let phone = phone.clone();
             async move {
-                let client = tilo_workspace_directory::client().unwrap();
-                let at = tilo_server_client::https::Origin::new(&client, &link.host_origin);
-                tilo_enrollment::requester::sign_in(&at, &link, "phone", "Phone", &phone, |code| {
-                    let _ = code_shown.send(code.to_owned());
-                })
+                let invite = link.invite.unwrap_or([0; 16]);
+                tilo_enrollment::requester::certify(
+                    &at,
+                    link.user_public_key,
+                    "Phone",
+                    invite,
+                    &phone,
+                    |code| {
+                        let _ = code_shown.send(code.to_owned());
+                    },
+                )
                 .await
             }
         });
@@ -673,17 +680,14 @@ mod tests {
         );
 
         // The phone is the person's device now.
-        let signed_in = runtime
+        let (cert, _server_cert, _label) = runtime
             .block_on(async { tokio::time::timeout(Duration::from_secs(60), redeemed).await })
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(signed_in.cert.user_public_key, person);
-        assert_eq!(
-            signed_in.cert.device_public_key,
-            phone.verifying_key().to_bytes()
-        );
-        tilo_user_identity::verify_device_cert(&signed_in.cert).unwrap();
+        assert_eq!(cert.user_public_key, person);
+        assert_eq!(cert.device_public_key, phone.verifying_key().to_bytes());
+        tilo_user_identity::verify_device_cert(&cert).unwrap();
         assert!(
             asking(laptop.as_ref())
                 .iter()

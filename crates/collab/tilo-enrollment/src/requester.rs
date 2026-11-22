@@ -18,12 +18,6 @@ use tilo_user_identity::{
     DeviceCapabilities, DeviceCert,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
-use tilo_server_client::{
-    HttpClient, https,
-    login::{Entry, PairingLink, SignIn, site_entry},
-};
-
 /// Ask the server at `server` to certify the device behind `signer` as one of
 /// `user_public_key`'s devices, labeled `label`, answering the pairing invite
 /// `invite` ([0; 16] when none). `on_pending` receives the pairing code to
@@ -95,69 +89,4 @@ async fn signed_request(
     unsigned
         .with_signature(signature)
         .map_err(|error| CertifyError::Request(error.to_string()))
-}
-
-/// Ask `link`'s server to have the person's root certify `signer`'s device as
-/// the agent `agent` on the computer labeled `label`. `on_pending` receives
-/// the pairing code to show while the person's other device answers.
-///
-/// A computer gets its server address from the origin in the link. A page
-/// already has the published address and calls [`certify`] directly.
-///
-/// # Errors
-///
-/// The person declined, nobody answered in time ([`CertifyError::Expired`]),
-/// the server was not reached or refused, or what it issued is not a certificate
-/// for this device.
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn sign_in(
-    client: &dyn HttpClient,
-    link: &PairingLink,
-    agent: &str,
-    label: &str,
-    signer: &dyn DeviceSigner,
-    on_pending: impl FnOnce(&str),
-) -> Result<SignIn, CertifyError> {
-    let info = https::server_info(client).await?;
-    let server = match &info.address {
-        Some(address) => ServerAddress::published(address),
-        None => {
-            return Err(CertifyError::Denied(
-                "This workspace's server takes no device connections, so no computer can sign in to it."
-                    .to_owned(),
-            ));
-        }
-    };
-    let invite = link.invite.unwrap_or([0; 16]);
-    let (cert, server_cert, label) = certify(
-        &server,
-        link.user_public_key,
-        label,
-        invite,
-        signer,
-        on_pending,
-    )
-    .await?;
-    Ok(SignIn {
-        link: link.clone(),
-        agent: agent.to_owned(),
-        label,
-        server,
-        cert,
-        server_cert,
-    })
-}
-
-/// The entry of the site at `site` to its workspace on the server at
-/// `host_origin`, as its `entry.json` names it. A computer reads a site's
-/// `entry.json` through its own HTTPS client; a page's entry names its entry.
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn entry_at(site: &https::Origin, host_origin: &str) -> Option<Entry> {
-    let (status, body) = site.get("/entry.json").await.ok()?;
-    if status != 200 {
-        return None;
-    }
-    let entry: serde_json::Value = serde_json::from_slice(&body).ok()?;
-    let (_, path) = site_entry(&entry, host_origin)?;
-    Some(Entry { path })
 }

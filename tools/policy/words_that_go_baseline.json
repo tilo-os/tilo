@@ -1533,7 +1533,6 @@
    "home_peer_toml",
    "home_peers",
    "home_peers_json",
-   "home_server",
    "home_server_removal_runs_on_the_host",
    "home_server_removal_runs_on_the_host_with_its_own_identity_directory",
    "home_server_row",
@@ -1944,8 +1943,6 @@
   "names": [
    "CEREMONY",
    "Ceremony",
-   "a_certification_ceremony",
-   "a_renewal_ceremony",
    "ceremony",
    "ceremony_minted_record_signs_for_its_own_recorded_public_key",
    "certification_ceremony",
@@ -4181,14 +4178,11 @@
    "NotKeyHolder",
    "SET_APPETITE",
    "a_bounded_appetite_retires_the_oldest_and_keeps_a_checkpoint",
-   "a_device_a_key_holder_does_not_hold_the_key_for_certifies_after_the_person_approves",
    "a_device_admitted_through_a_key_holder_that_is_not_the_owner_is_answered_its_role",
-   "a_device_holding_no_key_pairs_a_device_its_key_holder_approved",
    "a_fire_time_one_key_holder_answered_is_where_the_next_one_carries_on",
    "a_key_holder_answers_as_every_build_expects_and_an_introducer_with_its_certificate",
    "a_key_holder_behind_a_compaction_takes_it_only_when_it_holds_all_the_key_holder_holds",
    "a_key_holder_opens_history_and_a_current_checkpoint",
-   "a_key_holder_renews_a_joined_devices_lapsed_certificate_without_asking_anyone",
    "a_key_holder_taking_the_lease_over_answers_where_the_previous_one_stopped",
    "a_key_holder_that_cannot_tell_who_holds_the_keys_removes_no_one",
    "a_member_s_further_device_is_answered_by_any_key_holder",
@@ -4219,7 +4213,6 @@
    "the_key_holder_seals_a_record_and_it_stays_sealed",
    "the_key_holder_seals_a_record_held_in_the_clear_from_its_next_write_on",
    "the_key_holder_writes_a_new_records_genesis_sealed",
-   "the_only_key_holder_declining_ends_it",
    "wrong_slot_unknown_key_and_non_key_holders_are_refused"
   ],
   "lines": 0
@@ -4238,6 +4231,6 @@
    "HttpTransport",
    "http_transport"
   ],
-  "lines": 1796
+  "lines": 1476
  }
 }

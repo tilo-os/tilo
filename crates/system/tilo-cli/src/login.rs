@@ -24,10 +24,8 @@ use tilo_device_identity::login::{
     CERTIFY, CertifyAnswer, CertifyInput, PROVIDER, RESOURCE, Reached, SCOPE, TICKET_LIFETIME_NS,
     Ticket,
 };
-use tilo_enrollment::requester::entry_at;
 use tilo_server_client::CertifyError;
 use tilo_server_client::LinkError;
-use tilo_server_client::https::Origin;
 use tilo_server_client::login::{PairingLink, SignIn};
 use tilo_session_client::Outbox as _;
 use tilo_session_client::device::Device as Entered;
@@ -295,34 +293,19 @@ pub(crate) fn runtime() -> Result<tokio::runtime::Runtime> {
 }
 
 /// Enter the workspace `device` names, as that device, its session running on what the device's
-/// own service `lent` it where it runs one.
+/// own service `lent` it where it runs one: over the device link, dialled at the address the
+/// login keeps, its server's certificate pinned, and nothing asked of a web origin.
 pub(crate) async fn connect(
     key: &SigningKey,
     device: &Device,
     lent: Option<tilo_session_client::Lent>,
 ) -> Result<Entered> {
-    if let Some(address) = &device.server_address {
-        return connect_over_iroh(key, device, address, lent).await;
-    }
-    let link = PairingLink::parse(&format!(
-        "{}#/@{}/w/{}?pair={}",
-        device.site,
-        host_of(&device.host_origin),
-        device.workspace,
-        device.user()
-    ))
-    .map_err(|error| anyhow!(error))?;
-    let host = server_of(device).await?;
-    let signed = SignIn {
-        link,
-        agent: device.agent.clone(),
-        label: device.label().to_owned(),
-        server: host,
-        cert: device.cert.clone(),
-        server_cert: device.server_cert.clone(),
-    };
-    let entry = entry_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
-    Ok(Entered::enter_lent(entry.as_ref(), &signed, Arc::new(key.clone()), lent).await?)
+    let address = device
+        .server_address
+        .as_ref()
+        .ok_or_else(|| anyhow!(LOGIN_ENDED))?;
+    let signed = signed_over_iroh(device, address)?;
+    Ok(Entered::enter_lent(None, &signed, Arc::new(key.clone()), lent).await?)
 }
 
 /// Where the server `device` reaches is dialed: at the address its login names.
@@ -336,18 +319,6 @@ pub(crate) async fn server_of(device: &Device) -> Result<tilo_server_client::Ser
         .as_ref()
         .map(tilo_server_client::ServerAddress::published)
         .ok_or_else(|| anyhow!(LOGIN_ENDED))
-}
-
-/// [`connect`] to a server its invitation named over iroh: dialed at its signed address, with
-/// nothing asked of a web origin it may not have.
-async fn connect_over_iroh(
-    key: &SigningKey,
-    device: &Device,
-    address: &ServerAddress,
-    lent: Option<tilo_session_client::Lent>,
-) -> Result<Entered> {
-    let signed = signed_over_iroh(device, address)?;
-    Ok(Entered::enter_lent(None, &signed, Arc::new(key.clone()), lent).await?)
 }
 
 /// `device` signed in at the server dialed over iroh at `address`.
