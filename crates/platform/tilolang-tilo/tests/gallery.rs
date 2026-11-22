@@ -167,3 +167,74 @@ fn a_store_with_nothing_in_it_shows_every_group_filled() {
     }
     let _ = &mut replica;
 }
+
+/// The store the workspace keeps every app's resources in decides a change against the app's
+/// surface: the gallery's root is created there as a change of its own, and the store admits it.
+/// The gallery's surface describes its record by the fields it lists, and its `$create` writes
+/// that record; a surface read without its own record refused every app's first change.
+#[test]
+fn the_gallery_s_surface_admits_the_root_its_host_creates() {
+    use std::collections::BTreeMap;
+
+    use tilo_resource_store::{Cell, Proposal, Received, Resource, Schema, Stamp, Store};
+
+    let (_, packages) = Replica::new("ada", Workspace::new(), &[(GALLERY, "")]);
+    let meta = &packages[0].meta;
+    let mut there = Store::new();
+    for surface in tilolang_tilo::surface::package_surfaces(meta, &tilolang_runtime::SourceWords) {
+        there.declare(Schema::from_surface(&surface));
+    }
+    let kind = tilolang_tilo::meta::MetaExt::resource_type(meta);
+    // A field its record holds, by the id a document stores it under.
+    let field = there
+        .schema()
+        .get(&kind)
+        .and_then(|ty| ty.fields.first())
+        .map(|field| field.name.clone())
+        .expect("the gallery's record declares its fields");
+    let making = Stamp {
+        verb: tilolang_runtime::store::CREATE_ACTION.to_owned(),
+        invoker: "ada".to_owned(),
+        invocation: "i1".to_owned(),
+        membership: vec!["m1".to_owned()],
+        ..Stamp::default()
+    };
+    let written = Store::new()
+        .put(
+            &kind,
+            "g",
+            Resource {
+                readers: "*".to_owned(),
+                parent: None,
+                order: None,
+                fields: BTreeMap::from([(
+                    field,
+                    Cell::One(tilo_resource_store::Value::from("Gallery")),
+                )]),
+            },
+            &making,
+        )
+        .expect("the making is a change");
+    let mut refused = Vec::new();
+    for write in &written {
+        refused.extend(
+            there
+                .receive(
+                    &write.doc,
+                    &write.readers,
+                    vec![Received {
+                        change: write.change.clone(),
+                        author: [7; 32],
+                    }],
+                    &|_: &Proposal<'_>| true,
+                )
+                .expect("the store takes the change"),
+        );
+    }
+    assert!(
+        refused.is_empty(),
+        "the gallery's root is created: {refused:?}"
+    );
+    let all = |_: &str| true;
+    assert!(there.get(&kind, "g", &all).is_some(), "the root stands");
+}

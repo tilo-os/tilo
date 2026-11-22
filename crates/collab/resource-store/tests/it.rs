@@ -700,6 +700,87 @@ fn tracker_surface() -> tilo_actions::surface::Surface {
     }))
 }
 
+/// A tilolang package's surface, as `package_surfaces` writes one: its record is described by
+/// the fields it lists, under the ids a document stores them by, and `types` names its enums
+/// only. The record is the surface's own kind, and no `types` entry names it.
+fn tilolang_surface() -> tilo_actions::surface::Surface {
+    toml_like(serde_json::json!({
+        "kind": "tl.so.tilo.lang.gallery.Gallery",
+        "label": "Gallery",
+        "version": 1,
+        "verbs": [
+            {"id": "$create", "kind": "undoable"},
+            {"id": "edit-text", "kind": "undoable"},
+        ],
+        "fields": [
+            {"path": "bmdkc22s", "owner": "gallery", "title": "name", "type": "text"},
+            {"path": "5fbblehc", "owner": "gallery", "title": "backlog_items",
+             "stored": "collection",
+             "type": {"collection": {"resource": "tl.so.tilo.lang.gallery.Item"}}},
+            {"path": "5fbblehc.*.y5gdkqew", "owner": "item", "title": "title", "type": "text"},
+        ],
+        "types": [
+            {"name": "Urgency", "cases": [{"name": "none"}, {"name": "low"}]},
+        ],
+    }))
+}
+
+/// The surface of a tilolang package's item type, as `package_surfaces` writes one: `$create`
+/// and a title a document keeps under its name.
+fn tilolang_item_surface() -> tilo_actions::surface::Surface {
+    toml_like(serde_json::json!({
+        "kind": "tl.so.tilo.lang.gallery.Item",
+        "label": "Item",
+        "version": 1,
+        "verbs": [
+            {"id": "$create", "kind": "undoable"},
+        ],
+        "fields": [
+            {"path": "y5gdkqew", "owner": "item", "title": "title", "type": "text"},
+        ],
+    }))
+}
+
+/// A surface that names no type of its own kind still declares the record it describes: the store
+/// knows the kind its resources are, the fields they hold, and what each verb writes of them.
+#[test]
+fn a_surface_describes_its_own_record_and_what_its_verbs_write() {
+    let schema = Schema::from_surface(&tilolang_surface());
+    let kind = "tl.so.tilo.lang.gallery.Gallery";
+    let gallery = schema
+        .get(kind)
+        .expect("the surface's own record is declared");
+    let fields: Vec<&str> = gallery
+        .fields
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect();
+    assert_eq!(
+        fields,
+        ["name"],
+        "its scalar fields, by the names a document keeps them under"
+    );
+    assert_eq!(
+        gallery.nested,
+        [(
+            "backlog_items".to_owned(),
+            "tl.so.tilo.lang.gallery.Item".to_owned()
+        )],
+        "the kinds it nests"
+    );
+    for verb in ["$create", "edit-text"] {
+        let writes = schema.verb(verb).expect("the verb is declared");
+        let own = writes
+            .writes
+            .get(kind)
+            .unwrap_or_else(|| panic!("{verb} writes the surface's own kind: {writes:?}"));
+        assert!(
+            own.fields.contains("name"),
+            "{verb} writes its fields: {own:?}"
+        );
+    }
+}
+
 #[test]
 fn a_verb_writes_what_its_type_holds_and_the_units_it_declares() {
     use tilo_resource_store::FIELD_EDIT;
@@ -1704,6 +1785,72 @@ mod store {
             there.index().get(ISSUE, "a").unwrap().scalar("state"),
             Value::from("open")
         );
+    }
+
+    /// What an item stands in is the platform's field on the item, which no declared type has:
+    /// the store admits it beside the fields the type does declare.
+    #[test]
+    fn a_change_writes_the_platform_field_no_type_declares() {
+        let mut there = Store::new();
+        there.declare(Schema::from_surface(&super::tilolang_surface()));
+        there.declare(Schema::from_surface(&super::tilolang_item_surface()));
+        let anyone = |_: &Proposal<'_>| true;
+        let item = Resource {
+            readers: MEMBERS.to_owned(),
+            parent: Some("g".to_owned()),
+            order: Some("a".to_owned()),
+            fields: BTreeMap::from([
+                ("$in".to_owned(), Cell::One("backlog_items".into())),
+                ("title".to_owned(), Cell::One("Dawn".into())),
+            ]),
+        };
+        let made = Store::new()
+            .put(
+                "tl.so.tilo.lang.gallery.Item",
+                "i",
+                item,
+                &stamp("$create", "i2"),
+            )
+            .unwrap();
+        assert_eq!(deliver(&made, &mut there, &anyone), []);
+        let all = |_: &str| true;
+        assert!(
+            there
+                .get("tl.so.tilo.lang.gallery.Item", "i", &all)
+                .is_some()
+        );
+    }
+
+    /// A package's root is made by the host as a change of its own, against the package's
+    /// surface: the store admits it, since the surface declares the record and that `$create`
+    /// writes it. A surface read without its own record refused every app's first change.
+    #[test]
+    fn a_package_creates_its_root_under_its_surface() {
+        let mut there = Store::new();
+        there.declare(Schema::from_surface(&super::tilolang_surface()));
+        let anyone = |_: &Proposal<'_>| true;
+        let mut fields = BTreeMap::new();
+        fields.insert("name".to_owned(), Cell::One("Gallery".into()));
+        let root = Resource {
+            readers: MEMBERS.to_owned(),
+            parent: None,
+            order: None,
+            fields,
+        };
+        let made = Store::new()
+            .put(
+                "tl.so.tilo.lang.gallery.Gallery",
+                "g",
+                root,
+                &stamp("$create", "i1"),
+            )
+            .unwrap();
+        assert_eq!(deliver(&made, &mut there, &anyone), []);
+        let all = |_: &str| true;
+        let held = there
+            .get("tl.so.tilo.lang.gallery.Gallery", "g", &all)
+            .expect("the root stands");
+        assert_eq!(held.scalar("name"), Value::from("Gallery"));
     }
 
     #[test]

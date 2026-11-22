@@ -295,6 +295,11 @@ pub(crate) fn declared(
         }
     }
     for (id, field, value) in writes {
+        // The platform's own fields, which no declared type has: what a resource stands in, and
+        // the times and fields a version reflects (`$created`, `$updated`, `$changed.<field>`).
+        if field.starts_with('$') {
+            continue;
+        }
         let Some(kind) = touched
             .resources
             .get(id)
@@ -343,6 +348,7 @@ pub(crate) fn within_verb(
         if let Some(field) = touch
             .fields
             .iter()
+            .filter(|field| !field.starts_with('$'))
             .find(|field| !writes.fields.contains(*field))
         {
             return Err(format!("`{}` writes no `{kind}.{field}`", verb.name));
