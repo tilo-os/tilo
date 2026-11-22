@@ -241,6 +241,10 @@ pub struct InstanceRequest {
     /// where the session holds no policy for the workspace; the broker decides either way.
     #[serde(with = "policy_text")]
     pub access: Option<MemberAccess>,
+    /// The device the session runs on, by its public key in lowercase hex: what signs for the
+    /// person at the window, which an action's `invoker.device()` reads. `None` on a device
+    /// with no identity yet, where reading it traps.
+    pub device: Option<String>,
 }
 
 /// The descriptors one instance arrives with.
@@ -628,6 +632,7 @@ mod tests {
                 ),
                 "ada",
             )),
+            device: Some("ab".repeat(32)),
         }
     }
 

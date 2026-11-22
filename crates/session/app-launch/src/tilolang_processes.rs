@@ -231,6 +231,8 @@ pub struct Instance {
     /// The person's formats and language, as the session resolved them: what the instance writes
     /// its dates and clocks in, and the language its window reads every word in.
     pub locale: runtime_portal::process_link::Locale,
+    /// This device, by its public key in lowercase hex ([`InstanceRequest::device`]).
+    pub device: Option<String>,
 }
 
 /// How a process is started: the command for one on `runtime` and `app_runtime`, keeping `storage`
@@ -450,6 +452,7 @@ impl Processes {
                 std::collections::BTreeMap::new()
             },
             access: instance.access,
+            device: instance.device,
         };
         let fds = InstanceFds {
             broker: instance.collaboration,

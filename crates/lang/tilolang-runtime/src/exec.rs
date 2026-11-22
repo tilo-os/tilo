@@ -1856,6 +1856,24 @@ impl Core {
         Ok(())
     }
 
+    /// `invoker.device()`: the device that signed for the invoker, the one the host admitted
+    /// the invocation from, else this runtime's own. Where an action is presented, the person
+    /// looking is at this device; while the host decides an invocation it admitted from another
+    /// device (its requirement, read before it runs), it is that device.
+    fn invoker_device(&self) -> HResult<Option<Wasm>> {
+        if !matches!(
+            &self.frames.borrow().top()?.kind,
+            FrameKind::Action(_) | FrameKind::View(_)
+        ) {
+            return trap("invoker is only available in actions");
+        }
+        let from = self.invoked_from.borrow().clone();
+        let Some(device) = from.or_else(|| self.device.borrow().clone()) else {
+            return trap("this runtime runs on no device, so its invoker has none");
+        };
+        self.ret_h(Value::Text(device.to_string()))
+    }
+
     /// `made_from`: what the invocation is made from, the invocation a scenario pushed, else the
     /// run's.
     fn made_from(&self) -> HResult<Option<Wasm>> {
@@ -2734,6 +2752,7 @@ impl Core {
                 drop(frames);
                 self.ret_h(who)
             }
+            Imp::InvokerDevice => self.invoker_device(),
             Imp::MadeFrom => self.made_from(),
             Imp::PersonNamed | Imp::AgentNamed => {
                 let name = self.text(a.h(0)?)?;

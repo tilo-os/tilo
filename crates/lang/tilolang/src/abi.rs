@@ -156,6 +156,7 @@ imports! {
     ResourceRef = "resource_ref" ([H] -> [H]);
 
     Invoker = "invoker" ([] -> [H]);
+    InvokerDevice = "invoker_device" ([] -> [H]);
     MadeFrom = "made_from" ([] -> [H]);
     ActorEq = "actor_eq" ([H, H] -> [I32]);
     ActorName = "actor_name" ([H] -> [H]);

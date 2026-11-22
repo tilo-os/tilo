@@ -176,6 +176,10 @@ impl Port for LocalPort {
                 }
             };
         }
+        // A store of a device of its own is in no workspace, whose devices could hold a lease.
+        if matches!(command, Command::Leases) {
+            return Ok(Reply::Content(Some(serde_json::json!({ "leases": {} }))));
+        }
         wire::read(&self.store.borrow(), &command, &|_| true)
             .ok_or_else(|| "the store answered no read".to_owned())
     }

@@ -31,29 +31,32 @@ use Imp::{
     FileZip, FilterLit, Filters, Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp,
     FloatFloor, FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef,
     Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop,
-    InvocationPush, Invoke, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep,
-    Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
-    ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI,
-    MadeFrom, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
-    MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
-    MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase,
-    Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
-    RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
-    RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
-    ResTextSet, ResourceRef, RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew,
-    RichPart, RichRelinked, RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, Single,
-    SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps,
-    StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
-    StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
-    StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
-    TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
-    UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
-    UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer,
-    WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText,
-    Withdraw, Word, WorkspaceMembers,
+    InvocationPush, Invoke, Invoker, InvokerDevice, IsError, IsSome, JsonDecode, JsonEncode,
+    JsonParse, Keep, Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf,
+    ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey,
+    ListSumF, ListSumI, MadeFrom, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut,
+    MapPutValue, MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me,
+    Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt,
+    PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
+    RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH,
+    RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF,
+    ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty, RichFromMarkdown,
+    RichMarkdown, RichNew, RichPart, RichRelinked, RichTime, RowOpen, RunChanges, SeenBy, SetAdd,
+    SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading,
+    StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin,
+    StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt,
+    StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse,
+    TimeShift, TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
+    TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode,
+    UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+    VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
+    WebStatus, WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
+
+/// Where the host answers the workspace's own state ([`Core::workspace_reading`]).
+pub type WorkspaceReading = Rc<dyn Fn() -> Result<Json, String>>;
 
 pub fn trap<T>(msg: impl Into<String>) -> HResult<T> {
     Err(HostFail::Trap(msg.into()))
@@ -147,6 +150,19 @@ pub struct Core {
     /// whose code makes the request. Until the host sets one, every request answers with a
     /// failure saying the host reaches no services.
     pub web: RefCell<Option<Box<dyn crate::web::WebTransport>>>,
+    /// The device this runtime runs on, by its public key in lowercase hex
+    /// (`Runtime::set_device`): what `invoker.device()` reads for an invocation made here, and
+    /// where a view's requirement is read. `None` until the host names it.
+    pub device: RefCell<Option<Rc<str>>>,
+    /// The device the invocation running now was signed by, while the host runs one it admitted
+    /// from another device (`Runtime::invoked_from`); `None` for one made on [`Self::device`].
+    pub invoked_from: RefCell<Option<Rc<str>>>,
+    /// Where the workspace's own state (`workspace.leases`, [`tilolang::workspace`]) is read
+    /// from (`Runtime::set_workspace_reading`): the host asks the workspace document at each
+    /// read, because which device holds a lease can change at any moment and a reading kept
+    /// from before would let the device that lost it act. `None` until the host answers it; a
+    /// read then waits for a reading as any other app's does.
+    pub workspace_reading: RefCell<Option<WorkspaceReading>>,
     /// The device's files (`Runtime::set_blobs`): the content store a file's bytes are kept in,
     /// and the chooser the person picks with. Until the host sets one, it holds no files.
     pub blobs: RefCell<Option<Box<dyn crate::blob::BlobHost>>>,
@@ -341,6 +357,9 @@ impl Core {
             authority,
             models: RefCell::new(None),
             web: RefCell::new(None),
+            device: RefCell::new(None),
+            invoked_from: RefCell::new(None),
+            workspace_reading: RefCell::new(None),
             blobs: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
@@ -383,6 +402,13 @@ impl Core {
             tilolang::host_meta(),
         )?;
         core.registry.borrow_mut().add(host)?;
+        // The workspace's own state, which every module reads as `workspace.<field>`: an app
+        // whose code runs nowhere, whose one resource the host reads for it.
+        let workspace = crate::registry::Package::foreign(
+            crate::ids::ModuleHash("workspace".to_owned()),
+            tilolang::workspace::meta().clone(),
+        )?;
+        core.registry.borrow_mut().add(workspace)?;
         Ok(core)
     }
 
@@ -438,6 +464,34 @@ impl Host for Core {
 impl Core {
     /// Take `json` as the reading of `target`, a resource of another app: the views that read it
     /// run again. Whether it differs from the reading held.
+    /// Read the workspace's own state afresh when `target` is its resource and the host
+    /// answers it ([`Self::workspace_reading`]): what a field read of it reads next is the
+    /// workspace document as it stands now. A record inside it (a lease) is read from the
+    /// reading this took, so one expression sees one state.
+    ///
+    /// # Errors
+    ///
+    /// Why the host could not read the workspace document.
+    pub(crate) fn refresh_workspace(
+        &self,
+        target: &crate::value::ResourceRef,
+    ) -> Result<(), String> {
+        if !crate::foreign::is_workspace(target) {
+            return Ok(());
+        }
+        let Some(read) = self.workspace_reading.borrow().clone() else {
+            return Ok(());
+        };
+        let json = read()?;
+        if !json.is_object() {
+            return Err(format!(
+                "the host read the workspace's state as {json}, not an object of its fields"
+            ));
+        }
+        self.take_reading(target, json);
+        Ok(())
+    }
+
     pub(crate) fn take_reading(&self, target: &crate::value::ResourceRef, json: Json) -> bool {
         let mut foreign = self.foreign.borrow_mut();
         let first = foreign.generation(target) == 0;
@@ -536,8 +590,8 @@ impl Core {
                 self.resource_import(imp, a)
             }
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
-            | OutsideAt | Withdraw | ModelCall | Notify | Invoker | MadeFrom | ActorEq
-            | ActorName | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed
+            | OutsideAt | Withdraw | ModelCall | Notify | Invoker | InvokerDevice | MadeFrom
+            | ActorEq | ActorName | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed
             | InvocationPush | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
             | WebText | BytesLength => self.web_import(imp, a),

@@ -140,6 +140,7 @@ imports! {
     (ResourceRef, "resource_ref", "i", "i"),
 
     (Invoker, "invoker", "", "i"),
+    (InvokerDevice, "invoker_device", "", "i"),
     (MadeFrom, "made_from", "", "i"),
     (ActorEq, "actor_eq", "ii", "i"),
     (ActorName, "actor_name", "i", "i"),

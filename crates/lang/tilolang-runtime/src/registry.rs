@@ -430,11 +430,26 @@ impl Registry {
         {
             return Ok(id);
         }
-        let hits: Vec<TypeId> = self
+        // The types the host provides every module (`host.Invocation`, the workspace's own
+        // state) are named by their app: a name an app declares too is that app's.
+        let system = |p: &&Rc<Package>| {
+            p.meta.app == tilolang::HOST_APP || p.meta.app == tilolang::workspace::APP
+        };
+        let named = |p: &Rc<Package>| p.type_by_name(name).map(|t| t.id.clone());
+        let mut hits: Vec<TypeId> = self
             .packages
             .values()
-            .filter_map(|p| p.type_by_name(name).map(|t| t.id.clone()))
+            .filter(|p| !system(p))
+            .filter_map(named)
             .collect();
+        if hits.is_empty() {
+            hits = self
+                .packages
+                .values()
+                .filter(system)
+                .filter_map(named)
+                .collect();
+        }
         match hits.as_slice() {
             [one] => Ok(one.clone()),
             [] => Err(format!("no loaded package declares a type `{name}`")),

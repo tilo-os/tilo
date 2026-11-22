@@ -893,6 +893,54 @@ tilo_test_env::scenario! {
         assert!(local.is_empty(), "{local:#?}");
     }
 
+    phase every_other_workspace_field_is_a_field_of_the_workspace_resource;
+    {
+        // `workspace.leases` is a field of the `tilo.workspace` root, which every package reads
+        // without a `use`: a lease's holder reads as an optional text, beside the host's
+        // members and viewer, which read as they did.
+        let (m, _) = lower(
+            "type Ask {\n    text: Text\n}\nfn holder(key: Text) -> Option<Text> {\n    workspace.leases.get(key)?.device\n}\nfn keys() -> List<Text> {\n    workspace.leases.keys()\n}\naction answer(a: Ask) {\n    require invoker.device() == workspace.leases.get(\"ask/{a.id()}\")?.device \"Only the device holding the ask answers it\"\n    a.text = \"answered\"\n}\nfn everyone() -> Int {\n    workspace.members.len()\n}\nview mine(a: Ask) {\n    text(\"{workspace.me.name()} {workspace.leases.keys().len()}\")\n}",
+        );
+        let holder = func(&m, "holder");
+        let mut root = None;
+        visit(holder, &mut |e| {
+            if let Ek::Host(Imp::RefLit, args) = &e.kind {
+                root = Some((
+                    args.iter().map(|a| text(a).map(str::to_owned)).collect::<Vec<_>>(),
+                    e.ty.clone(),
+                ));
+            }
+        });
+        let (args, ty) = root.expect("the workspace's root is read by reference");
+        assert_eq!(args.first().cloned().flatten().as_deref(), Some(crate::workspace::APP));
+        assert!(
+            matches!(&ty, Ty::Record(key) if key.app == crate::workspace::APP && key.name == crate::workspace::ROOT_TYPE),
+            "{ty:?}"
+        );
+        assert_eq!(
+            returned(holder).ty,
+            Ty::Option(Box::new(Ty::Text)),
+            "a lease's holder is an optional text"
+        );
+        let host = host_imports(holder);
+        assert!(
+            !host.contains(&Imp::WorkspaceMembers) && !host.contains(&Imp::Viewer),
+            "a lease is no host field: {host:?}"
+        );
+        assert!(host_imports(func(&m, "everyone")).contains(&Imp::WorkspaceMembers));
+        assert!(host_imports(func(&m, "mine")).contains(&Imp::Viewer));
+        let unknown = diagnostics("fn f() -> Int {\n    workspace.people.len()\n}");
+        let [unknown] = unknown.as_slice() else {
+            panic!("one diagnostic: {unknown:#?}");
+        };
+        assert_eq!(unknown.code, "E021");
+        assert!(
+            unknown.message.contains("members, me, leases"),
+            "the fields named are the host's and the resource's: {}",
+            unknown.message
+        );
+    }
+
     phase linked_and_made_from_are_read_from_the_log;
     {
         let (m, _) = lower(

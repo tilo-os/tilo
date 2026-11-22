@@ -908,7 +908,11 @@ fn agent_env(app: &str, host: &PackageMeta, visible: &[PackageMeta]) -> Env {
     };
     env.add_import("host", host);
     env.add_toolkit();
-    for m in visible.iter().filter(|m| m.app != crate::host::HOST_APP) {
+    env.add_workspace();
+    for m in visible
+        .iter()
+        .filter(|m| m.app != crate::host::HOST_APP && m.app != crate::workspace::APP)
+    {
         let alias = default_alias(&m.app);
         let alias = if env.imports.iter().any(|i| i.alias == alias) {
             m.app.clone()

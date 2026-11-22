@@ -413,6 +413,7 @@ impl Core {
         // A resource of an app this runtime does not run has no record here: what it shows is
         // its reading, as the session published it.
         if crate::foreign::is_foreign(target) {
+            self.refresh_workspace(target)?;
             let registry = self.registry.borrow();
             return self
                 .foreign
@@ -1048,7 +1049,10 @@ impl Core {
         // (`Runtime::set_reader`), an app it runs no code of too: a resource of such an app is
         // the store's, of its declared type, and not one read from a reading the session
         // publishes, which reaches no task.
-        let held = pkg.foreign && self.reader.borrow().is_some();
+        // The workspace's own state is no app's records: its host reads it for every runtime.
+        let held = pkg.foreign
+            && self.reader.borrow().is_some()
+            && pkg.meta.app != tilolang::workspace::APP;
         let ty = if held { info.id.clone() } else { ty };
         // A named root of an app this runtime does not run is the resource the session
         // publishes it as: `device.sound` reads the reading of `sound`. Any other resource of

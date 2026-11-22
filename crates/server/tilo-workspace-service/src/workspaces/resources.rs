@@ -949,6 +949,10 @@ impl Workspaces {
         use tilo_resource_store::wire::{Command, Reply, read};
         let may_read = may_read(hex::encode(device.cert.user_public_key));
         let mut governed = state.lock().await;
+        if matches!(command, Command::Leases) {
+            let now = super::system_time(tilo_clock::unix_now_ns());
+            return Ok(Reply::Content(Some(leases_reading(&governed.peer(), now))));
+        }
         let store = governed.store_with_surfaces(&self.inner.host.surfaces);
         let answer = match command {
             Command::Versions { kind, id } if store.get(kind, id, &may_read).is_some() => {
@@ -1220,8 +1224,34 @@ fn stamp_resource_invoker(command: &mut tilo_resource_store::wire::Command, invo
         | Command::Position { .. }
         | Command::PageAt { .. }
         | Command::Contents { .. }
-        | Command::Fields { .. } => {}
+        | Command::Fields { .. }
+        | Command::Leases => {}
     }
+}
+
+/// The leases whose claim stands at `now` in the workspace `peer` holds, as
+/// [`tilo_resource_store::wire::Command::Leases`] answers them: each by its id, naming the
+/// device that holds it by its public key in lowercase hex, the way `invoker.device()` names
+/// the device that signed an invocation. A lease whose claims have all lapsed names no device,
+/// so it is left out.
+#[cfg(feature = "apps")]
+pub(crate) fn leases_reading(
+    peer: &tilo_peer_state::StatePeer,
+    now: std::time::SystemTime,
+) -> serde_json::Value {
+    let leases: serde_json::Map<String, serde_json::Value> = peer
+        .workspace()
+        .leases(now)
+        .into_iter()
+        .filter_map(|lease| {
+            let holder = lease.holder?;
+            Some((
+                lease.id,
+                serde_json::json!({ "device": hex::encode(holder.device) }),
+            ))
+        })
+        .collect();
+    serde_json::json!({ "leases": leases })
 }
 
 /// Whether the reader set `readers` names `reader`: `*` names everyone.

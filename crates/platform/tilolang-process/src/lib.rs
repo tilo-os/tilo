@@ -774,6 +774,7 @@ impl TilolangProcess {
                 language: request.language,
                 access: request.access,
                 shows: request.shows,
+                device: request.device,
                 ..Spec::new(
                     request.app,
                     request.workspace,
