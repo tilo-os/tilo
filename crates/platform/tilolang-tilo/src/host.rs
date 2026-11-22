@@ -172,9 +172,6 @@ pub(crate) struct HostInner {
     packages: RefCell<Vec<Rc<Package>>>,
     /// Suggestions an agent's code raised on the API, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
-    /// The resource the last action planned for the person at the window returned, with the
-    /// action: what a window opens after its primary action made it.
-    produced: RefCell<Option<(String, ResourceRef)>>,
     /// The resource each action returned when its plan last happened, by the action: what its
     /// invocation answers. Publishing a surface plans every action, so one place for the last
     /// would answer one action with another's resource; each is kept by its action and taken
@@ -815,14 +812,6 @@ impl HostInner {
                 .map_err(|error| error.to_string())?;
                 self.returned_by(request.action_id, &outcome);
                 match outcome {
-                    InvokeOutcome::Done(Value::Ref(made))
-                        if request.caller.is_none_or(|caller| !caller.agent) =>
-                    {
-                        *self.produced.borrow_mut() = Some((
-                            request.action_id.to_owned(),
-                            std::rc::Rc::unwrap_or_clone(made.target),
-                        ));
-                    }
                     InvokeOutcome::Done(_) => {}
                     // An action that needs a person's approval is not refused: it is recorded as
                     // a suggested invocation, the answer an agent gets and a person decides.
@@ -1045,7 +1034,6 @@ impl Host {
             viewer,
             packages: RefCell::new(Vec::new()),
             suspended: RefCell::default(),
-            produced: RefCell::default(),
             returned: RefCell::default(),
             triggers,
             asking,
