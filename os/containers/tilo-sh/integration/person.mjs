@@ -43,12 +43,16 @@
 //                   waits for the next question, keeps the person's view of it
 //                   as NAME-asked.png, presses Allow once or Deny on the sheet,
 //                   and keeps NAME-answered.png once the sheet is gone; a line
-//                   of {name, answer, sheet, askedMs, answeredMs} is appended
-//                   to OUT_DIR/answers.jsonl. `pair WORKSPACE` makes a pairing
-//                   link into that workspace on the host this page is in, the
-//                   device that follows it approved here as an agent's link
-//                   is, and appends {pair: {workspace, link, invite,
-//                   expiresAt}}. `done` (or the FIFO's end) ends it.
+//                   of {name, answer, page, sheet, askedMs, answeredMs} is
+//                   appended to OUT_DIR/answers.jsonl. A question a page was
+//                   held at also carries `page`: the page it leaves from, what
+//                   it does, the method, where it goes and the picture of the
+//                   filled page, as the sheet's own element carries them.
+//                   `pair WORKSPACE` makes a pairing link into that workspace
+//                   on the host this page is in, the device that follows it
+//                   approved here as an agent's link is, and appends {pair:
+//                   {workspace, link, invite, expiresAt}}. `done` (or the
+//                   FIFO's end) ends it.
 //   --pair-link LINK
 //                   this browser is the device that follows LINK: it pairs to
 //                   the person the link names, holding none of their root, and
@@ -608,13 +612,35 @@ const clickNode = async node => {
   return true;
 };
 
+// What the question sheet names of the page it leaves, as the sheet's own
+// element carries it where a person and an assistive reader meet it: the page
+// it leaves from, what it does, the method and where it goes, and the picture
+// of the filled page. Read from the element the page draws, never built here.
+const departure = async () => {
+  const said = await tab.evaluate(`(() => {
+    const sheet = document.querySelector('[data-tilo-question]');
+    if (!sheet) return '';
+    const data = sheet.dataset;
+    return JSON.stringify({
+      page: data.questionPage ?? '',
+      kind: data.questionKind ?? '',
+      method: data.questionMethod ?? '',
+      destination: data.questionDestination ?? '',
+      picture: data.questionPicture ?? '',
+    });
+  })()`).catch(() => '');
+  if (!said) return undefined;
+  try { return JSON.parse(said); } catch { return undefined; }
+};
+
 if (answerFifo) {
   // The report now: the caller reads it while the person stays.
   console.log(JSON.stringify(report));
   reported = true;
   // Back on the site, where the page holding their root answers what their
-  // agents' hosts ask them (entry-page.mjs, answerAgentQuestions). A browser
-  // paired to them stays where it is, in the workspace the pairing put it in.
+  // agents' hosts ask them: the sheet the workspace's page draws over its app
+  // (`crates/server/tilo-server/src/web/question_sheet.rs`). A browser paired
+  // to them stays where it is, in the workspace the pairing put it in.
   if (pairLink) {
     console.error('ok: the paired browser is in its workspace, answering the person\'s questions there');
   } else {
@@ -652,6 +678,7 @@ if (answerFifo) {
     const askedMs = Date.now() - waiting;
     // The sheet as the person reads it, before they answer.
     await sleep(400);
+    const page = await departure();
     const sheet = await text();
     const asked = await tab.screenshot().catch(() => null);
     if (asked) writeFileSync(join(out, `${name}-asked.png`), asked);
@@ -669,7 +696,7 @@ if (answerFifo) {
     await sleep(600);
     const after = await tab.screenshot().catch(() => null);
     if (after) writeFileSync(join(out, `${name}-answered.png`), after);
-    appendFileSync(join(out, 'answers.jsonl'), `${JSON.stringify({name, answer, sheet, askedMs, answeredMs})}\n`);
+    appendFileSync(join(out, 'answers.jsonl'), `${JSON.stringify({name, answer, ...(page ? {page} : {}), sheet, askedMs, answeredMs})}\n`);
     console.error(`ok: the person saw the question for ${name} after ${askedMs} ms and pressed ${answer}`);
   }
 }

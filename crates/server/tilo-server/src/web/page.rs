@@ -20,7 +20,8 @@ use std::time::Duration;
 use tilo_actions::remote::Caller;
 use tilo_server_client::frame::{read_frame_or_eof, write_frame};
 use tilo_server_protocol::page::{
-    MAX_PAGE_FRAME_BYTES, PageAddress, PageAnswer, PageAsk, PageRefusal,
+    MAX_PAGE_FRAME_BYTES, PageAddress, PageAnswer, PageAsk, PagePatch, PageRefusal,
+    QUESTION_PATCH_ID,
 };
 use tilo_server_protocol::web::LINK_PAGE_PATH;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -73,9 +74,14 @@ pub(crate) async fn serve_web(protocol: &ServerProtocol, session: tilo_net::webt
     };
     let workspaces = protocol.admin.get().cloned();
     let person = crate::service::local_caller(&device.cert);
+    // A device of the person answers what their hosts ask them on the page;
+    // an agent's, or a stand-in's, is no device of theirs and answers
+    // nothing for them, as on a native session's sheet.
+    let answers = device.cert.capabilities.agent.is_none() && !device.cert.capabilities.stand_in;
     serve_pages(
         pages,
         &person,
+        answers,
         |workspace_id, app| readiness(workspaces.as_deref(), workspace_id, app),
         recv,
         send,
@@ -86,11 +92,17 @@ pub(crate) async fn serve_web(protocol: &ServerProtocol, session: tilo_net::webt
 
 /// Answer what a page asks on its stream until it closes: the person of
 /// `person` opens pages and acts on the one open, and an open page hears what
-/// others changed on it. `ready` says whether a workspace's documents are
+/// others changed on it. `answers` says whether this device answers their
+/// questions on the page; `ready` says whether a workspace's documents are
 /// readable here ([`readiness`]).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one page loop read top to bottom: its asks, its questions and what others changed"
+)]
 pub(crate) async fn serve_pages<R, W, F, Fut>(
     pages: &dyn AppPages,
     person: &Caller,
+    answers: bool,
     ready: F,
     mut recv: R,
     mut send: W,
@@ -111,6 +123,9 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
         }
     });
     let mut open: Option<(WorkspaceId, u64)> = None;
+    // The question sheet the open page draws, as last sent: a question that
+    // comes or goes patches it in place.
+    let mut sheet: Option<String> = None;
     let mut follow = tokio::time::interval(FOLLOW_EVERY);
     follow.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -127,8 +142,18 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                         let opened = open_page(pages, person, &ready, address, &mut send).await;
                         if let Ok((workspace_id, page, _)) = &opened {
                             open = Some((*workspace_id, *page));
+                            pages.opened(*workspace_id, *page, person);
+                            sheet = answers.then(|| pages.question_sheet(*workspace_id, *page));
                         }
                         match opened {
+                            // A device of the person has the questions their
+                            // hosts ask them drawn over the app's page.
+                            Ok((workspace_id, page, PageAnswer::Shown { title, css, mut body }))
+                                if answers =>
+                            {
+                                body.push_str(&pages.question_sheet(workspace_id, page));
+                                PageAnswer::Shown { title, css, body }
+                            }
                             Ok((_, _, answer)) => answer,
                             Err(refusal) => {
                                 tracing::debug!(?refusal, "a page was refused");
@@ -137,6 +162,32 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                         }
                     }
                     PageAsk::Act { id, target, action } => match open {
+                        Some((workspace_id, page)) if id == QUESTION_PATCH_ID && answers => {
+                            // The person answered the question the page draws
+                            // over the app: their answer runs the held call,
+                            // and the sheet shows what waits next.
+                            let asked = target.as_deref().unwrap_or_default();
+                            match pages.answer_question(workspace_id, page, asked) {
+                                Some(pending) => match pending.await {
+                                    Some(Ok(patches)) => {
+                                        sheet = Some(pages.question_sheet(workspace_id, page));
+                                        PageAnswer::Patched(patches)
+                                    }
+                                    Some(Err(refusal)) => PageAnswer::Refused(refusal),
+                                    None => PageAnswer::Refused(PageRefusal::Unavailable(
+                                        "the question was dropped".to_owned(),
+                                    )),
+                                },
+                                None => PageAnswer::Refused(PageRefusal::Unavailable(
+                                    "no question is waiting".to_owned(),
+                                )),
+                            }
+                        }
+                        Some(_) if id == QUESTION_PATCH_ID => PageAnswer::Refused(
+                            PageRefusal::Unavailable(
+                                "this device answers no questions".to_owned(),
+                            ),
+                        ),
                         Some((workspace_id, page)) => patched(
                             pages.act(workspace_id, page, Some((id, target, action))).await,
                         ),
@@ -148,17 +199,29 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
             }
             _ = follow.tick(), if open.is_some() => {
                 let Some((workspace_id, page)) = open else { continue };
-                match pages.act(workspace_id, page, None).await {
-                    Some(Ok(patches)) if patches.is_empty() => continue,
-                    Some(Ok(patches)) => PageAnswer::Changed(patches),
-                    // A pass the page did not ask for answers nothing: the
-                    // page's own asks keep their order, and the next pass
-                    // answers what changed. A page that left hears it on its
-                    // own next ask.
-                    answered => {
-                        tracing::debug!(?answered, "a page's pass was not answered");
-                        continue;
+                let drawn = answers.then(|| pages.question_sheet(workspace_id, page));
+                match drawn {
+                    // A question came or went: the sheet is patched where it
+                    // stands over the app.
+                    Some(drawn) if sheet.as_deref() != Some(drawn.as_str()) => {
+                        sheet = Some(drawn.clone());
+                        PageAnswer::Changed(vec![PagePatch {
+                            id: QUESTION_PATCH_ID,
+                            html: drawn,
+                        }])
                     }
+                    _ => match pages.act(workspace_id, page, None).await {
+                        Some(Ok(patches)) if patches.is_empty() => continue,
+                        Some(Ok(patches)) => PageAnswer::Changed(patches),
+                        // A pass the page did not ask for answers nothing: the
+                        // page's own asks keep their order, and the next pass
+                        // answers what changed. A page that left hears it on its
+                        // own next ask.
+                        answered => {
+                            tracing::debug!(?answered, "a page's pass was not answered");
+                            continue;
+                        }
+                    },
                 }
             }
         };
@@ -224,6 +287,27 @@ async fn write<W: AsyncWrite + Unpin>(send: &mut W, answer: &PageAnswer) -> std:
     write_frame(send, &bytes).await
 }
 
+/// The question sheet a page draws over its app: the card a person answers in,
+/// in the theme's colours, over the app's content.
+const SHEET_CSS: &str = "\
+.tilo-question-sheet{position:fixed;inset:0;display:grid;place-items:center;z-index:20;\
+background:color-mix(in srgb,var(--tilo-ground,#000) 55%,transparent)}\
+.tilo-question-sheet[hidden]{display:none}\
+.tilo-question-card{max-width:32rem;margin:1rem;padding:1.25rem 1.5rem;border-radius:var(--tilo-radius,12px);\
+background:var(--tilo-overlay,#1b1c20);color:var(--tilo-text,#f4f4f5);\
+box-shadow:0 1rem 3rem rgba(0,0,0,.4)}\
+.tilo-question-card h2{margin:0 0 .5rem;font-size:1.1rem;font-weight:600}\
+.tilo-question-heading{margin:0 0 .5rem;font-weight:500;opacity:.85}\
+.tilo-question-detail{margin:0 0 .75rem}\
+.tilo-question-facts{display:grid;grid-template-columns:auto 1fr;gap:.25rem .75rem;margin:0 0 .75rem}\
+.tilo-question-facts dt{opacity:.7}\
+.tilo-question-facts dd{margin:0;overflow-wrap:anywhere}\
+.tilo-question-caution{margin:0 0 .75rem;opacity:.75}\
+.tilo-question-actions{display:flex;gap:.5rem;justify-content:flex-end}\
+.tilo-question-actions button{font:inherit;padding:.45rem .9rem;border-radius:calc(var(--tilo-radius,12px)/1.5);\
+border:1px solid color-mix(in srgb,currentColor 25%,transparent);background:transparent;color:inherit;cursor:pointer}\
+.tilo-question-actions button:last-child{background:var(--tilo-accent,#5b6cff);color:var(--tilo-on-accent,#fff);border-color:transparent}";
+
 /// What a page's address answers: [`document`], kept by no cache, since the
 /// script in it is this server's.
 pub(super) fn answer(
@@ -272,8 +356,9 @@ pub(super) fn document(
     // `</` never closes the script early: JSON escapes it.
     let config = config.to_string().replace("</", "<\\/");
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{app}</title><style id=\"tilo-theme\">:root{{color-scheme:light dark}}html,body{{margin:0;height:100%}}body{{font-family:system-ui,-apple-system,\"Segoe UI\",sans-serif}}#tilo-page[data-state]{{display:grid;place-items:center;height:100dvh;color:GrayText}}#tilo-page[data-working]{{cursor:progress}}#tilo-page[data-working]::before{{content:\"\";position:fixed;inset:0 0 auto;height:2px;z-index:9;background:var(--tilo-accent,Highlight);animation:tilo-working 1s ease-in-out infinite alternate}}@keyframes tilo-working{{from{{opacity:.15}}to{{opacity:.7}}}}#tilo-sign-in{{position:fixed;inset:auto 16px 16px;z-index:20;align-items:center;gap:12px;padding:12px 16px;border-radius:12px;background:Canvas;color:CanvasText;box-shadow:0 8px 30px rgb(0 0 0 / .25)}}#tilo-sign-in:not([hidden]){{display:flex}}#tilo-sign-in p{{margin:0;flex:1}}#tilo-sign-in button{{font:inherit;padding:6px 14px;border-radius:8px;border:1px solid ButtonBorder;background:ButtonFace;color:ButtonText;cursor:pointer}}#tilo-sign-in button:hover{{background:Highlight;color:HighlightText}}</style><style id=\"tilo-page-css\"></style></head><body><div id=\"tilo-page\" data-state=\"opening\"></div><script type=\"application/json\" id=\"tilo-page-config\">{config}</script><script type=\"module\">{SCRIPT}</script></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{app}</title><style id=\"tilo-theme\">:root{{color-scheme:light dark}}html,body{{margin:0;height:100%}}body{{font-family:system-ui,-apple-system,\"Segoe UI\",sans-serif}}#tilo-page[data-state]{{display:grid;place-items:center;height:100dvh;color:GrayText}}#tilo-page[data-working]{{cursor:progress}}#tilo-page[data-working]::before{{content:\"\";position:fixed;inset:0 0 auto;height:2px;z-index:9;background:var(--tilo-accent,Highlight);animation:tilo-working 1s ease-in-out infinite alternate}}@keyframes tilo-working{{from{{opacity:.15}}to{{opacity:.7}}}}#tilo-sign-in{{position:fixed;inset:auto 16px 16px;z-index:20;align-items:center;gap:12px;padding:12px 16px;border-radius:12px;background:Canvas;color:CanvasText;box-shadow:0 8px 30px rgb(0 0 0 / .25)}}#tilo-sign-in:not([hidden]){{display:flex}}#tilo-sign-in p{{margin:0;flex:1}}#tilo-sign-in button{{font:inherit;padding:6px 14px;border-radius:8px;border:1px solid ButtonBorder;background:ButtonFace;color:ButtonText;cursor:pointer}}#tilo-sign-in button:hover{{background:Highlight;color:HighlightText}}</style><style id=\"tilo-page-css\"></style><style id=\"tilo-sheet-css\">{sheet_css}</style></head><body><div id=\"tilo-page\" data-state=\"opening\"></div><script type=\"application/json\" id=\"tilo-page-config\">{config}</script><script type=\"module\">{SCRIPT}</script></body></html>",
         app = ui_title(&address.app),
+        sheet_css = SHEET_CSS,
     )
 }
 

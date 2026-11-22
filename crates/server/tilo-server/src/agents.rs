@@ -69,7 +69,7 @@ use crate::certification::CertificationProtocol;
 use crate::daemon::{Server, ServerError, ServerIdentity};
 use crate::peer::AgentRegistry;
 use tilo_content::WorkspaceStores;
-use tilo_lock::RwLockRecover as _;
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 /// How long an agent's approval request waits for an approver.
 const APPROVAL_WAIT_NS: u64 = 10 * 60 * 1_000_000_000;
@@ -586,8 +586,45 @@ struct WorkspaceActionsServer {
 }
 
 /// The workspaces' apps as web pages, each held by the action service as the
-/// member who opened it ([`WorkspaceActions::open_page`]).
-struct ActionPages(WorkspaceActions);
+/// member who opened it ([`WorkspaceActions::open_page`]), and the sheet the
+/// page draws over the app when one of their agents' hosts asks them
+/// something.
+struct ActionPages {
+    actions: WorkspaceActions,
+    /// The host's pending questions: known once the server has started, and
+    /// a page is opened only after.
+    certification: Arc<std::sync::OnceLock<CertificationProtocol>>,
+    /// The person each open page belongs to: the questions a page draws over
+    /// its app are theirs, and so is the answer their sheet sends.
+    people: Arc<std::sync::Mutex<std::collections::HashMap<u64, [u8; 32]>>>,
+}
+
+impl ActionPages {
+    fn new(actions: WorkspaceActions) -> Self {
+        Self {
+            actions,
+            certification: Arc::default(),
+            people: Arc::default(),
+        }
+    }
+
+    /// The questions waiting for the person whose page `page` is, as the sheet
+    /// the page draws.
+    fn sheet_for(&self, page: u64) -> String {
+        let questions = self
+            .people
+            .lock_recover()
+            .get(&page)
+            .copied()
+            .and_then(|person| {
+                self.certification
+                    .get()
+                    .map(|certification| certification.pending_for(&person))
+            })
+            .unwrap_or_default();
+        crate::web::question_sheet::sheet_html(&questions)
+    }
+}
 
 impl crate::app_serving::AppPages for ActionPages {
     fn open(
@@ -598,7 +635,7 @@ impl crate::app_serving::AppPages for ActionPages {
     ) -> Pending<
         Result<tilo_server_protocol::page::OpenedPage, tilo_server_protocol::page::PageRefusal>,
     > {
-        self.0.open_page(workspace_id, caller, address)
+        self.actions.open_page(workspace_id, caller, address)
     }
 
     fn act(
@@ -609,11 +646,59 @@ impl crate::app_serving::AppPages for ActionPages {
     ) -> Pending<
         Result<Vec<tilo_server_protocol::page::PagePatch>, tilo_server_protocol::page::PageRefusal>,
     > {
-        self.0.act_on_page(workspace_id, page, act)
+        self.actions.act_on_page(workspace_id, page, act)
     }
 
     fn close(&self, workspace_id: WorkspaceId, page: u64) {
-        self.0.close_page(workspace_id, page);
+        self.people.lock_recover().remove(&page);
+        self.actions.close_page(workspace_id, page);
+    }
+
+    fn opened(&self, _workspace_id: WorkspaceId, page: u64, person: &Caller) {
+        if let Some(person) = person.user_public_key().copied() {
+            self.people.lock_recover().insert(page, person);
+        }
+    }
+
+    fn question_sheet(&self, _workspace_id: WorkspaceId, page: u64) -> String {
+        self.sheet_for(page)
+    }
+
+    fn answer_question(
+        &self,
+        _workspace_id: WorkspaceId,
+        page: u64,
+        target: &str,
+    ) -> Option<
+        Pending<
+            Result<
+                Vec<tilo_server_protocol::page::PagePatch>,
+                tilo_server_protocol::page::PageRefusal,
+            >,
+        >,
+    > {
+        use tilo_server_protocol::page::{PagePatch, PageRefusal, QUESTION_PATCH_ID};
+        let (id, word) = tilo_server_protocol::page::parse_question_target(target)?;
+        let answer = crate::web::question_sheet::answer_of(word)?;
+        let person = *self.people.lock_recover().get(&page)?;
+        let answered = self.certification.get()?.answer_for(&person, id, answer);
+        Some(Pending::ready(match answered {
+            Ok(()) => {
+                // The answered question leaves the sheet now, though the
+                // host may still list it until its waiting call is woke.
+                let mut waiting = self
+                    .certification
+                    .get()
+                    .map(|certification| certification.pending_for(&person))
+                    .unwrap_or_default();
+                waiting.retain(|question| question.id != id);
+                Ok(vec![PagePatch {
+                    id: QUESTION_PATCH_ID,
+                    html: crate::web::question_sheet::sheet_html(&waiting),
+                }])
+            }
+            Err(reason) => Err(PageRefusal::Unavailable(reason)),
+        }))
     }
 }
 
@@ -1968,7 +2053,7 @@ async fn start_app_server(
     let action_server = Arc::new(WorkspaceActionsServer {
         supervisor: agents.as_ref().map(|agents| agents.supervisor().clone()),
         roster: sessions.clone().map(RosterProvisioning::new),
-        pages: ActionPages(actions.clone()),
+        pages: ActionPages::new(actions.clone()),
         actions,
         stores: content,
         browsers: options.browsers.clone(),
@@ -1977,6 +2062,12 @@ async fn start_app_server(
     });
     let web_entry = cfg.web_entry.clone();
     let server = Server::start_with_app_serving(cfg, identity, Some(action_server.clone())).await?;
+    // The pages draw the questions their people's hosts ask them: the
+    // questions are the server's own, known now.
+    let _ = action_server
+        .pages
+        .certification
+        .set(server.web_context().certification.clone());
     attach_resources(
         &action_server.actions,
         &server,

@@ -165,22 +165,7 @@ impl QuestionSheet for SessionSheet {
             kind: KIND.to_owned(),
             app_id: None,
             label: question.agent_label.clone(),
-            details: serde_json::to_value(AgentQuestion {
-                agent: question.agent_label.clone(),
-                title: question.title.clone(),
-                action: question.action_label.clone(),
-                resource: question.resource_label.clone(),
-                arguments: question.arguments.clone(),
-                risk: question.risk.clone(),
-                kind: question.kind.clone(),
-                undoable: question.undoable,
-                workspace: question.workspace.clone(),
-                page: question.page_origin(),
-                picture: question.page.as_ref().and_then(|page| page.picture.clone()),
-                ask: question.ask.as_ref().map(sheet_ask),
-                allow_always: question.allow_always,
-            })
-            .unwrap_or_default(),
+            details: serde_json::to_value(AgentQuestion::of(question)).unwrap_or_default(),
         });
         let answered = self.answered.clone();
         let allow_always = question.allow_always;

@@ -190,6 +190,34 @@ pub trait AppPages: Send + Sync {
 
     /// Let go of `page`: its person closed it.
     fn close(&self, workspace_id: WorkspaceId, page: u64);
+
+    /// `page` was opened for `person`: what the sheet the page draws over its
+    /// app is put to, and whose answer it carries. Nothing by default.
+    fn opened(&self, workspace_id: WorkspaceId, page: u64, person: &Caller) {
+        let _ = (workspace_id, page, person);
+    }
+
+    /// The questions the page's person is asked, as the sheet the page draws
+    /// over its app: HTML, or empty while nothing waits for their answer. A
+    /// page holding their identity shows them the questions their agents' hosts
+    /// put to them, in the same words a native session's sheet does.
+    fn question_sheet(&self, workspace_id: WorkspaceId, page: u64) -> String {
+        let _ = (workspace_id, page);
+        String::new()
+    }
+
+    /// Answer the question `target` names on `page`, allowed or denied as the
+    /// target says. `None` when the target names no question: the act is the
+    /// app's own.
+    fn answer_question(
+        &self,
+        workspace_id: WorkspaceId,
+        page: u64,
+        target: &str,
+    ) -> Option<Pending<Result<Vec<PagePatch>, PageRefusal>>> {
+        let _ = (workspace_id, page, target);
+        None
+    }
 }
 
 /// Where a frame is served instead of on the host it was addressed to

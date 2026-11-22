@@ -979,6 +979,33 @@ impl CertificationProtocol {
         ApproverReply::Decided
     }
 
+    /// Every question still waiting for `person`'s answer, for a page of
+    /// theirs to draw in the sheet's words: the same list their approving
+    /// devices read over an approver session.
+    #[must_use]
+    pub fn pending_for(&self, person: &[u8; 32]) -> Vec<PendingConfirmation> {
+        self.questions(person, unix_now_ns())
+    }
+
+    /// Answer question `id` for `person`, as a device of theirs proved on the
+    /// session the page asked over: the answer runs the call held there once,
+    /// or refuses it. `Err` says why it was not taken.
+    ///
+    /// # Errors
+    /// No such question waits for them, or it takes no such answer.
+    pub fn answer_for(
+        &self,
+        person: &[u8; 32],
+        id: [u8; 32],
+        answer: ConfirmationAnswer,
+    ) -> Result<(), String> {
+        match self.answer(person, id, answer, unix_now_ns()) {
+            ApproverReply::Decided => Ok(()),
+            ApproverReply::Refused { reason } => Err(reason),
+            _ => Err("the question was not answered".into()),
+        }
+    }
+
     /// Answer `request` from an approver of `approver`'s root, who decides
     /// only requests naming that root.
     fn decide(&self, request: ApproverRequest, now_ns: u64, approver: &[u8; 32]) -> ApproverReply {

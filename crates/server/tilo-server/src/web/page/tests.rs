@@ -174,7 +174,7 @@ async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
         app: "notes".into(),
         show: Some("notes:page:a".into()),
     };
-    let serving = serve_pages(&pages, &person, |_, _| async { Ok(true) }, recv, send);
+    let serving = serve_pages(&pages, &person, true, |_, _| async { Ok(true) }, recv, send);
     let browsing = async {
         ask(&mut browser, &PageAsk::Open(address)).await;
         // Its keys were on their way: it is told so, then shown.
@@ -208,6 +208,109 @@ async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
     assert_eq!(*pages.closed.lock().unwrap(), vec![1], "the page is let go");
 }
 
+/// Pages that draw a question sheet over the app, and take the person's
+/// answer on it: what a page holding their identity shows.
+#[derive(Default)]
+struct Asking {
+    asked: Mutex<Vec<String>>,
+}
+
+/// The sheet the asking page draws: a question's method and its Allow.
+fn sheet() -> String {
+    let target = tilo_server_protocol::page::question_target([7; 32], "allow-once");
+    format!(
+        "<div data-p=\"{id}\" data-question-method=\"POST\"><button data-a=\"activate\" data-t=\"{target}\">Allow once</button></div>",
+        id = tilo_server_protocol::page::QUESTION_PATCH_ID,
+    )
+}
+
+impl AppPages for Asking {
+    fn open(
+        &self,
+        _: WorkspaceId,
+        _: &Caller,
+        _: PageAddress,
+    ) -> Pending<Result<OpenedPage, PageRefusal>> {
+        Pending::ready(Ok(OpenedPage {
+            page: 1,
+            title: "Notes".into(),
+            css: String::new(),
+            body: "<div data-p=\"0\"></div>".into(),
+        }))
+    }
+
+    fn act(
+        &self,
+        _: WorkspaceId,
+        _: u64,
+        _: Option<(u32, Option<String>, PageAction)>,
+    ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
+        Pending::ready(Ok(Vec::new()))
+    }
+
+    fn close(&self, _: WorkspaceId, _: u64) {}
+
+    fn question_sheet(&self, _: WorkspaceId, _: u64) -> String {
+        sheet()
+    }
+
+    fn answer_question(
+        &self,
+        _: WorkspaceId,
+        page: u64,
+        target: &str,
+    ) -> Option<Pending<Result<Vec<PagePatch>, PageRefusal>>> {
+        self.asked.lock().unwrap().push(target.to_owned());
+        Some(Pending::ready(Ok(vec![PagePatch {
+            id: tilo_server_protocol::page::QUESTION_PATCH_ID,
+            html: format!("<div data-p=\"{page}\" hidden></div>"),
+        }])))
+    }
+}
+
+#[tokio::test]
+async fn a_questions_answer_on_the_sheet_runs_it_and_patches_the_sheet() {
+    let pages = Asking::default();
+    let person = Caller::authenticated([1; 32], [2; 32]);
+    let (mut browser, served) = tokio::io::duplex(1 << 16);
+    let (recv, send) = tokio::io::split(served);
+    let target = tilo_server_protocol::page::question_target([7; 32], "allow-once");
+    let serving = serve_pages(&pages, &person, true, |_, _| async { Ok(true) }, recv, send);
+    let browsing = async {
+        ask(
+            &mut browser,
+            &PageAsk::Open(PageAddress {
+                workspace: WORKSPACE.into(),
+                app: "notes".into(),
+                show: None,
+            }),
+        )
+        .await;
+        assert!(matches!(answer(&mut browser).await, PageAnswer::Loading));
+        let PageAnswer::Shown { body, .. } = answer(&mut browser).await else {
+            panic!("the page is shown");
+        };
+        assert!(body.contains("data-question-method=\"POST\""), "{body}");
+        ask(
+            &mut browser,
+            &PageAsk::Act {
+                id: tilo_server_protocol::page::QUESTION_PATCH_ID,
+                target: Some(target.clone()),
+                action: PageAction::Activate,
+            },
+        )
+        .await;
+        assert!(matches!(
+            answer(&mut browser).await,
+            PageAnswer::Patched(patches)
+                if patches.len() == 1 && patches[0].html.contains("hidden")
+        ));
+        drop(browser);
+    };
+    tokio::join!(serving, browsing);
+    assert_eq!(*pages.asked.lock().unwrap(), vec![target]);
+}
+
 #[tokio::test]
 async fn a_workspace_only_stored_here_is_refused_and_opens_nothing() {
     let pages = Echo::default();
@@ -222,6 +325,7 @@ async fn a_workspace_only_stored_here_is_refused_and_opens_nothing() {
     let serving = serve_pages(
         &pages,
         &person,
+        true,
         |_, _| async { Err(PageRefusal::StoredCopy) },
         recv,
         send,
