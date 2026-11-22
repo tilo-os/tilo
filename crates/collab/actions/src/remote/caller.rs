@@ -361,25 +361,6 @@ impl Caller {
         self
     }
 
-    /// The agent the person's own device handed this caller to ([`Self::delegated_to`]), as the
-    /// device answering it keeps that agent: its member `agent_id` there, in its agent session
-    /// `session`. Still that person's agent, for them, as narrow as before; changes nothing for a
-    /// caller no device handed to an agent.
-    #[must_use]
-    pub fn handed_as(mut self, agent_id: impl Into<String>, session: impl Into<String>) -> Self {
-        if !(self.session_delegated && self.acting.is_agent()) {
-            return self;
-        }
-        let Some(person) = self.acting.acted_for_person().map(str::to_owned) else {
-            return self;
-        };
-        let foreign = self.acting.foreign_device;
-        self.acting = Acting::handed_agent(agent_id, person)
-            .on_foreign_device(foreign)
-            .in_session(session);
-        self
-    }
-
     /// An agent caller working on `request`, the words of the person that
     /// started its session (their message, what they sent it): its first line,
     /// trimmed and bounded, labels the session ([`Self::agent_session`]). A

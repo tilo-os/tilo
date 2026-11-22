@@ -51,7 +51,7 @@ const NOTES_APP: &str = "so.tilo.notes";
 const NOTEBOOK: &str = "notes.notebook";
 
 /// Notes' surface, as its package names it: the person's notebook; `open`, which reaches outside
-/// it; and `archive`, which only those who govern the workspace may take.
+/// it; and `archive`, which moderates it.
 const NOTES_SURFACE: &[u8] = b"format = 2\n\n[[resources]]\nkind = \"notes.notebook\"\nlabel = \"Notebook\"\nversion = 1\nperson = true\n\n[[resources.verbs]]\nid = \"open\"\nkind = \"outside\"\n\n[[resources.verbs]]\nid = \"archive\"\nkind = \"undoable\"\n";
 
 /// What a step's question to the person is read as on the sheet.
@@ -106,7 +106,7 @@ impl ThisComputer {
         let key = persist::load_device_key(&paths).expect("this device's key");
         let cert =
             persist::read_device_cert(&paths.device_cert).expect("this device's certificate");
-        let record = tilo_identity_client::resolve_active_identity(&identity_dir)
+        let record = tilo_identity::store::resolve_active_identity(&identity_dir)
             .expect("this identity's record");
         let root = tilo_identity::store::load_from_path(record)
             .expect("the person's root signs on this box");
@@ -259,9 +259,17 @@ impl ShellWithNotes {
                 notes(&app_wire, &workspace, (&key, &cert), &published, &took);
             });
         }
-        crate::common::wait_for(&mut session, "Notes publishes its notebook", |_| {
-            ready.try_recv().ok()
-        });
+        crate::common::wait_for(
+            &mut session,
+            "Notes publishes its notebook",
+            |_| match ready.try_recv() {
+                Ok(()) => Some(()),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    panic!("Notes stopped before it published")
+                }
+            },
+        );
 
         let laptop = computer.laptop();
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -504,11 +512,11 @@ fn notes(
     });
 }
 
-/// Notes' actions on its notebook: `open`, which reaches outside it, and `archive`, which only
-/// those who govern the workspace may take.
+/// Notes' actions on its notebook: `open`, which reaches outside it, and `archive`, a change to its
+/// moderation, which an agent's grants never allow.
 fn actions() -> [runtime_collab::ExportedAction; 2] {
     use runtime_collab::{ExportedAction, ExportedInput};
-    use tilo_actions::{ActionContract, ActionKind, OperationKind, RiskLevel};
+    use tilo_actions::{ActionContract, ActionKind, OperationKind};
     let action = |id: &str, label: &str, contract: ActionContract| ExportedAction {
         resource: NOTEBOOK.into(),
         semantic_identity: None,
@@ -541,7 +549,7 @@ fn actions() -> [runtime_collab::ExportedAction; 2] {
             "Archive",
             ActionContract {
                 kind: ActionKind::Undoable,
-                risk: RiskLevel::Privileged,
+                field: Some(tilo_action_policy::roles::MODERATION_FIELD.into()),
                 ..ActionContract::default()
             },
         ),
@@ -691,7 +699,7 @@ fn an_agent_from_another_device_is_held_to_its_grants_and_its_person_asked_here(
         &agent,
         tool(1, "tilo_do", &json!({"path": "notes/Notebook#archive"})),
     );
-    assert!(said(&archived).0, "an agent governs nothing: {archived}");
+    assert!(said(&archived).0, "an agent moderates nothing: {archived}");
     assert!(shell.asked().is_empty(), "nobody is asked");
     assert!(shell.taken.try_recv().is_err(), "nothing was archived");
 

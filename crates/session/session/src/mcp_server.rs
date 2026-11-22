@@ -564,13 +564,52 @@ impl Loop {
                     workspace: ask.workspace.clone(),
                     agent: agent.clone(),
                     person: person.to_owned(),
-                    name,
+                    name: name.clone(),
                 };
                 let program = tilo_mcp::session_api::proposed_agent_id(&ask.client);
                 self.sessions
                     .admit(&session, &consent, &program, &workspace_name);
+                // It acts as an agent of this login's MCP server does: through the broker as its
+                // own agent session, whose steps its grants decide.
+                let admitted = Admitted {
+                    workspace: &ask.workspace,
+                    person,
+                    agent: &agent,
+                    session: &session,
+                    name: &name,
+                };
+                let connection = match self
+                    .broker
+                    .as_ref()
+                    .map(|broker| connect(broker, &admitted))
+                {
+                    Some(Err(why)) => {
+                        self.sessions.left(&session);
+                        return Err(format!("{}: {why}", word("mcp-server-not-started")));
+                    }
+                    Some(Ok(connection)) => connection,
+                    None => None,
+                };
+                if connection.is_some() {
+                    self.sessions.certified(&session);
+                }
+                let host = Host::new(self.broker.clone(), Arc::clone(&self.services))
+                    .with_session_actions(self.services.actions())
+                    .in_agent_session(&self.sessions, session.clone(), &self.wake)
+                    .with_agent(connection);
+                let caller = tilo_actions::remote::Caller::local_person(person)
+                    .in_workspace(ask.workspace.clone())
+                    .delegated_to(agent.clone())
+                    .in_new_execution()
+                    .named(&name)
+                    .in_agent_session(session.as_str());
                 tracing::info!(client = %ask.client, device = %ask.origin.name, workspace = %ask.workspace, %agent, "MCP server: an agent from another of the person's devices works here");
-                Ok((session, agent))
+                Ok(crate::device_agents::Handed {
+                    session,
+                    agent,
+                    caller,
+                    host: Arc::new(host),
+                })
             })();
             ask.answer.complete(admitted);
         }
@@ -2453,7 +2492,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         // each of its requests.
         tracing::info!(pid, device = %forward.device, "MCP server: a client asks to work on another device");
         match devices {
-            Some(devices) => devices.forward(stream, &forward, session.person()),
+            Some(devices) => devices.other_devices().serve_forward(stream, &forward),
             None => tilo_mcp::devices::refuse_forward(
                 stream,
                 "this desktop reaches none of your other devices".into(),
@@ -2585,8 +2624,9 @@ fn serve_admitted(
         },
         tilo_mcp::session_api::Beside {
             tasks: Some(tasks as Arc<dyn tilo_mcp::TaskHosts>),
-            devices: devices
-                .map(|devices| Arc::new(devices) as Arc<dyn tilo_mcp::devices::DeviceDirectory>),
+            devices: devices.map(|devices| {
+                Arc::new(devices.other_devices()) as Arc<dyn tilo_mcp::devices::DeviceDirectory>
+            }),
         },
         |hello, connected| {
             let consent = ask(

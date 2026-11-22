@@ -30,9 +30,10 @@ use tilo_peer_state::actions::{
 use tilo_power_mgmt::InhibitToken;
 use tilo_power_mgmt::inhibit::INHIBIT_SUSPEND;
 use tilo_runtime::offload::{ActionServicePeers, offer_offload, own_offering};
+use tilo_runtime::other_devices::{OtherDevices, Whereabouts};
 use tilo_server_protocol::{Whose, WorkSetting};
 
-use crate::device_agents::HandedAgents;
+use crate::device_agents::{HandedAgents, Host};
 use crate::engine::Engine;
 use neighbour_wire::offer::{Answer, Query};
 
@@ -40,6 +41,27 @@ use neighbour_wire::offer::{Answer, Query};
 /// through it.
 #[derive(Clone)]
 pub(crate) struct DeviceActions(Arc<Inner>);
+
+/// The workspaces whose devices this session heard of, and which of them it reaches now.
+impl Whereabouts for DeviceActions {
+    fn workspaces(&self) -> Vec<String> {
+        self.0.here.lock_recover().keys().cloned().collect()
+    }
+
+    fn reachable(&self, workspace: &str, device: [u8; 32]) -> bool {
+        Self::reachable(self, workspace, device)
+    }
+
+    /// The address this session was told, else the endpoint's own discovery of its key.
+    fn addr(&self, id: EndpointId) -> EndpointAddr {
+        self.0
+            .addresses
+            .lock_recover()
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| EndpointAddr::new(id))
+    }
+}
 
 struct Inner {
     action_service: ActionService,
@@ -113,36 +135,15 @@ impl DeviceActions {
         handed
     }
 
-    /// The runtime this device asks on.
-    pub(crate) fn runtime(&self) -> &tokio::runtime::Handle {
-        &self.0.runtime
-    }
-
-    /// The person this device is, and its own key.
-    pub(crate) fn whose(&self) -> ([u8; 32], [u8; 32]) {
-        self.0.whose
-    }
-
-    /// The workspaces whose devices this session heard of.
-    pub(crate) fn workspaces_here(&self) -> Vec<String> {
-        self.0.here.lock_recover().keys().cloned().collect()
-    }
-
-    /// The device `key` asked as `agent`, which this device's person handed what it asks to, in
-    /// `workspace`.
-    pub(crate) fn remote_for_agent(
-        &self,
-        key: [u8; 32],
-        workspace: &str,
-        agent: neighbour_wire::actions::HandedAgent,
-    ) -> Result<RemoteDevice, String> {
-        let id = EndpointId::from_bytes(&key).map_err(|_| "that is not a device key".to_owned())?;
-        Ok(self.0.action_service.remote_for_agent(
-            &self.0.endpoint,
-            &self.addr(id),
-            workspace,
-            agent,
-        ))
+    /// The person's other devices, as an agent of this login works on one of them.
+    pub(crate) fn other_devices(&self) -> OtherDevices {
+        OtherDevices::new(
+            self.0.action_service.clone(),
+            self.0.endpoint.clone(),
+            self.0.runtime.clone(),
+            self.0.whose,
+            Arc::new(self.clone()),
+        )
     }
 
     /// The action service the collaboration endpoint serves.
@@ -223,15 +224,9 @@ impl DeviceActions {
         offer_offload(media, Arc::new(peers))
     }
 
-    /// Where `id` of the person's devices is reached: the address this session was told, else the
-    /// endpoint's own discovery of its key.
+    /// Where `id` of the person's devices is reached.
     fn addr(&self, id: EndpointId) -> EndpointAddr {
-        self.0
-            .addresses
-            .lock_recover()
-            .get(&id)
-            .cloned()
-            .unwrap_or_else(|| EndpointAddr::new(id))
+        Whereabouts::addr(self, id)
     }
 
     /// The device an app's action is for, with where it is reached.
@@ -406,16 +401,20 @@ impl DeviceDispatch {
 }
 
 impl DeviceDispatch {
-    /// Run `act` as `caller` works here: an agent another of the person's devices handed its
-    /// requests to as that agent's session here ([`crate::device_agents`]), refused where this
-    /// session works with no such agents; anyone else as they are.
+    /// Run `act` on what answers `caller` here, as whom: an agent another of the person's devices
+    /// handed its requests to as that agent's session here, through the broker connection its
+    /// session has ([`crate::device_agents`]), refused where this session works with no such
+    /// agents; anyone else as they are, through the broker.
     fn through<T: Send + 'static>(
         &self,
         caller: &Caller,
-        act: impl FnOnce(&Caller) -> Pending<Result<T, ActionCallError>> + Send + 'static,
+        act: impl FnOnce(&Host, &Caller) -> Pending<Result<T, ActionCallError>> + Send + 'static,
     ) -> Pending<Result<T, ActionCallError>> {
         if !crate::device_agents::handed(caller) {
-            return act(caller);
+            return match self.provider() {
+                Ok(provider) => act(&provider, caller),
+                Err(error) => Pending::ready(Err(error)),
+            };
         }
         let handed = self.0.handed.lock_recover().clone();
         match handed {
@@ -424,31 +423,13 @@ impl DeviceDispatch {
         }
     }
 
-    /// `caller` as it works here already, for a read that does not wait ([`Self::through`]).
-    fn known(&self, caller: &Caller) -> Caller {
-        match self.0.handed.lock_recover().as_ref() {
-            Some(handed) if crate::device_agents::handed(caller) => handed.known(caller),
-            _ => caller.clone(),
+    /// What answers `caller` here already, as whom, for a read that does not wait
+    /// ([`Self::through`]): nothing for a handed agent whose session does not work here yet.
+    fn known(&self, caller: &Caller) -> Option<(Caller, Host)> {
+        if !crate::device_agents::handed(caller) {
+            return Some((caller.clone(), self.provider().ok()?));
         }
-    }
-
-    fn invoke_as(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.note_remote_use(caller);
-        if request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER {
-            let governance = self.0.governance.lock_recover().clone();
-            return match governance {
-                Some(governance) => governance.invoke(caller, request),
-                None => Pending::ready(Err(ActionCallError::UnknownAction)),
-            };
-        }
-        match self.provider() {
-            Ok(provider) => provider.invoke(caller, request),
-            Err(error) => Pending::ready(Err(error)),
-        }
+        self.0.handed.lock_recover().as_ref()?.known(caller)
     }
 }
 
@@ -458,11 +439,7 @@ impl ActionProvider for DeviceDispatch {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        let provider = self.provider();
-        self.through(caller, move |caller| match provider {
-            Ok(provider) => provider.query(caller, query),
-            Err(error) => Pending::ready(Err(error)),
-        })
+        self.through(caller, move |host, caller| host.query(caller, query))
     }
 
     fn invoke(
@@ -470,29 +447,34 @@ impl ActionProvider for DeviceDispatch {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let this = self.clone();
-        self.through(caller, move |caller| this.invoke_as(caller, request))
+        self.note_remote_use(caller);
+        if request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+            && !crate::device_agents::handed(caller)
+        {
+            let governance = self.0.governance.lock_recover().clone();
+            return match governance {
+                Some(governance) => governance.invoke(caller, request),
+                None => Pending::ready(Err(ActionCallError::UnknownAction)),
+            };
+        }
+        self.through(caller, move |host, caller| host.invoke(caller, request))
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        let caller = self.known(caller);
+        let (caller, host) = self.known(caller)?;
         let governance = self.0.governance.lock_recover().clone();
-        self.provider()
-            .ok()
-            .and_then(|provider| provider.observe(&caller, id))
+        host.observe(&caller, id)
             .or_else(|| governance?.observe(&caller, id))
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        self.provider().ok()?.next_change(&self.known(caller), id)
+        let (caller, host) = self.known(caller)?;
+        host.next_change(&caller, id)
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        let (provider, id) = (self.provider(), *id);
-        self.through(caller, move |caller| match provider {
-            Ok(provider) => provider.cancel(caller, &id),
-            Err(error) => Pending::ready(Err(error)),
-        })
+        let id = *id;
+        self.through(caller, move |host, caller| host.cancel(caller, &id))
     }
 
     fn confirm(
@@ -500,11 +482,8 @@ impl ActionProvider for DeviceDispatch {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        let (provider, request) = (self.provider(), request.clone());
-        self.through(caller, move |caller| match provider {
-            Ok(provider) => provider.confirm(caller, &request),
-            Err(error) => Pending::ready(Err(error)),
-        })
+        let request = request.clone();
+        self.through(caller, move |host, caller| host.confirm(caller, &request))
     }
 }
 

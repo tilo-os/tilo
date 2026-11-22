@@ -19151,26 +19151,7 @@ dependencies = [
 name = "tilo-device-mcp"
 version = "0.1.0"
 dependencies = [
- "collab-types",
- "ed25519-dalek 3.0.0",
- "hex",
- "iroh",
- "postcard",
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-delivery-protocol",
- "tilo-lock",
- "tilo-mcp",
- "tilo-peer-state",
- "tilo-server-session",
- "tilo-session-actions",
- "tilo-session-client",
- "tilo-test-env",
  "tilo-user-identity",
- "tokio",
- "tracing",
- "uuid",
  "workspace-hack",
 ]
 
@@ -21607,6 +21588,7 @@ dependencies = [
  "tilo-device-mcp",
  "tilo-dialogs",
  "tilo-endpoint-reachability",
+ "tilo-failure",
  "tilo-files",
  "tilo-fs",
  "tilo-host-search",

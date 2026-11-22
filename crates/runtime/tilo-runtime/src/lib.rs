@@ -18,11 +18,11 @@ mod apps;
 pub mod cli;
 mod daemon;
 pub mod device;
-#[cfg(target_os = "macos")]
 mod i18n;
 pub mod key_sessions;
 pub mod offload;
 mod os_search;
+pub mod other_devices;
 pub mod personal_devices;
 pub mod profile;
 pub mod unix;
@@ -113,10 +113,9 @@ pub trait RuntimeServices: Sized {
         None
     }
 
-    /// The MCP servers of the person's other devices, as this host reaches
-    /// them from its own endpoint: what a `--connect --device` client is
-    /// carried to. `None` for a host that reaches none.
-    fn other_devices(&self) -> Option<std::sync::Arc<tilo_device_mcp::OtherDevices>> {
+    /// The person's other devices, as this host asks them from its own endpoint: where a
+    /// `--connect --device` client works. `None` for a host that reaches none.
+    fn other_devices(&self) -> Option<other_devices::OtherDevices> {
         None
     }
 }

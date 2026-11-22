@@ -829,6 +829,18 @@ impl ActionService {
                     result,
                 })
             }
+            // An agent the person's device handed its requests to asks its person here, where its
+            // session is, as an agent of this device does; a device itself confirms nothing here.
+            RemoteActionMessage::Confirm {
+                correlation,
+                request,
+            } if caller.is_session_delegated() && caller.acting().is_agent() => {
+                let result = await_answer(dispatcher.confirm(caller, request)).await;
+                Some(RemoteActionMessage::ConfirmResponse {
+                    correlation: *correlation,
+                    result: result.map(Box::new),
+                })
+            }
             // A request this device does not answer is said so, never left
             // for the caller to wait on.
             other if other.is_request() => tilo_actions::remote::refuse(
@@ -1580,6 +1592,28 @@ impl ActionProvider for RemoteDevice {
             RemoteActionMessage::Cancel { invocation: *id },
             |answer| match answer {
                 RemoteActionMessage::CancelResponse { result, .. } => result,
+                _ => Err(unexpected()),
+            },
+        )
+    }
+
+    /// The person put `request` to on the device, where an agent this device handed its requests
+    /// to works: that device asks them as it asks about any of its agents' steps.
+    fn confirm(
+        &self,
+        _caller: &Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionCallError>,
+    > {
+        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
+        self.ask(
+            RemoteActionMessage::Confirm {
+                correlation,
+                request: Box::new(request.clone()),
+            },
+            |answer| match answer {
+                RemoteActionMessage::ConfirmResponse { result, .. } => result.map(|answer| *answer),
                 _ => Err(unexpected()),
             },
         )

@@ -15,10 +15,6 @@ remote-use-hold = Fernzugriff von einem anderen deiner Geräte
 
 device-agents-not-accepted = Dieses Gerät nimmt keine Agenten von deinen anderen Geräten an. Schalte in seinen Einstellungen unter Geräte „Agenten von meinen anderen Geräten annehmen“ ein.
 device-agent-stopped = Du hast diesen Agenten auf diesem Gerät gestoppt.
-device-agents-no-device = Hier ist keines deiner anderen Geräte bekannt.
-device-agents-unknown-device = Keines deiner Geräte hier heißt { $device }. Deine Geräte hier: { $devices }.
-device-agents-name-workspace = { $device } ist hier in mehr als einem deiner Arbeitsbereiche. Nenne einen mit --workspace.
-device-agents-not-connected = gerade nicht mit diesem Gerät verbunden
 
 storage-app-name = Speicher
 storage-volume-home = deine Dateien

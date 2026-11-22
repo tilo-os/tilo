@@ -1,14 +1,16 @@
 //! The runtime's Fluent catalogue: the words it shows or exports itself
-//! (the device consent prompt), resolved in the
+//! (the device consent prompt, why an agent does not reach another device), resolved in the
 //! person's locale, `en-US` where a translation lacks a message.
 
-use ui::i18n::{ArgValue, EmbeddedCatalog};
+#[cfg(target_os = "macos")]
+use ui::i18n::ArgValue;
 
 ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 
 /// The arguments of a message about `app` and `device`: each catalogue
 /// selects its own sentence on the device, since a spliced-in noun does not
 /// agree with the words around it in every language.
+#[cfg(target_os = "macos")]
 pub(crate) fn device_args(
     app: &str,
     device: tilo_capture::DeviceKind,
@@ -21,6 +23,7 @@ pub(crate) fn device_args(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
     use super::*;
 
     #[test]
@@ -42,6 +45,11 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_device_is_named_in_the_consent_prompt() {
         let camera = t_args(
             "device-consent-question",
             &device_args("Video", tilo_capture::DeviceKind::Camera),
@@ -54,11 +62,14 @@ mod tests {
         assert_eq!(microphone, "Video may not use the microphone");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn german_names_each_device_with_its_own_article() {
-        let catalog =
-            EmbeddedCatalog::new("de-DE", &[("de-DE", include_str!("../locales/de-DE.ftl"))])
-                .with_pinned_locale("de-DE");
+        let catalog = ui::i18n::EmbeddedCatalog::new(
+            "de-DE",
+            &[("de-DE", include_str!("../locales/de-DE.ftl"))],
+        )
+        .with_pinned_locale("de-DE");
         let ask = |device| catalog.t_args("device-consent-question", &device_args("Video", device));
         assert!(
             ask(tilo_capture::DeviceKind::Camera).ends_with("die Kamera verwenden?"),
