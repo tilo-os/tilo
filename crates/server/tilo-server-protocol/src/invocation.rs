@@ -8,6 +8,16 @@
 //! a peer reading the change checks it there ([`verify_recorded`]). What the envelope proves, and what it does
 //! not, is in docs/security/README.md ("Signed invocations").
 
+// A page signs through its own key, a JavaScript object bound to its one thread, so the futures
+// that await a signature never move to another thread.
+#![cfg_attr(
+    target_family = "wasm",
+    allow(
+        clippy::future_not_send,
+        reason = "a page's signer is a JavaScript object and its signing futures run on the page's one thread"
+    )
+)]
+
 use collab_types::signer::DeviceSigner;
 use tilo_actions::remote::signed_invocation::{
     INVOCATION_SIGNATURE_TOLERANCE_NS, InvocationStatement, MAX_SIGNER_CERT_BYTES,
