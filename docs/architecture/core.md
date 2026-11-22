@@ -148,9 +148,11 @@ reads an app's own fields. Which eligible device takes a turn is decided in
 one function, `tilo_workspace_service::work::takes_turn`: an eligible device
 claims the ask with an ordinary change, the earliest claim wins, and a claim
 that writes nothing for a minute may be taken over. A lease is workspace state
-every device reads, published as the read-only resource
-`workspace/leases/<key>`, whose `device` is the device that holds the claim now. A
-require reads it like any record, and sees the device that signed an
+every device reads. The host declares `workspace` as one read-only resource with a tilolang
+schema, and its `leases` are keyed by the record they are about (`ask/<the ask's id>`); a
+lease's `device` is the device whose claim stands now. A
+require reads it like any record (`workspace.leases.get(...)`), and `workspace.members` and
+`workspace.me` move onto the same resource, so the host fields under `workspace.` go. A require sees the device that signed an
 invocation as `invoker.device`; the refusal notice's require is that the two match. Everything a turn writes
 is a member write for the agent, signed by the device that runs it.
 
@@ -847,7 +849,7 @@ waits on, if anything.
 |---|---|---|---|
 | Devices, identity | `tilo-enroll` and `tilo-approve` (first boot still enrols with a token), `tilo-device-admin`, `threshold-identity`, `https::server_info`, the browser root and `device-key.mjs` (2 person stores left: `tilo_identity::store` and the browser's) | `server_info` alone (one `TILO_API_HOST` names the host); then one push: `tilo device add` and `tilo login` as daemon actions, first boot and onboarding's existing-identity card on tickets, the imager's pairing call gone, `tilo-enroll`, `tilo-approve` and the browser store deleted. The boot key is an ordinary device certificate since 3ec9b6ef0b1 | One identity |
 | Sync | host retained store (`store/`, `persistence.rs`, `compaction.rs`, `tilo-server-store`), delta and co-edit envelopes, the file path's tail (the Files daemon's keys from the identity service; `kept_documents`, which goes because a mount write is durable once it is in the device's one store; `runtime-fs` blobs and `content-device`, after apps read content through the broker; `DISCOVERY_ALPN` at the next peer-version bump), broker overlap, `settings-store` document layer, `app-state` `FsStore` | one store −40k (waits on the company move's OK), the file path's tail; one file path landed in c4f20cecac1 (−15.1k) | One engine |
-| tilolang store | the redb pager outside resource-store; open, switch and scroll above their bars after the move (465, 108 and 43 ms against 289, 60 and 25) | the costs first, then the pager into resource-store; the store move landed in e39e9557706 (−49.7k) | tilolang onto the resource store |
+| tilolang store | the redb pager outside resource-store; open, switch and scroll above their bars after the move (465, 108 and 43 ms against 289, 60 and 25); the host fields under `workspace.` (`workspace_field`, `Imp::WorkspaceMembers`) beside the `workspace` resource | the costs first, then the pager into resource-store; `workspace.members` and `me` onto the `workspace` resource with the host fields deleted, right after the lease read lands; the store move landed in e39e9557706 (−49.7k) | tilolang onto the resource store |
 | App framework | Rust Chat (71k), Rust Tasks (13.5k), `apps/tilolang` (21k), 65 `*-model` crates, `tilo-view`, `tilo-app` `framework/` (64k) after the ports, the Rust shell, the toolkit's second action path, `PreparedIdentity` in the imager (an identity prepared on the install media) and the in-Tilo imager app; the standalone writer and the installer stay programs that run before Tilo exists and write no identity; a capture before the wipe goes to a folder on the new encrypted disk, which `tilo migrate` reads after login | Chat deletion −145k on one branch, Tasks with Notes on the web −14k, shell context menu | Delete Rust Chat; Rust apps to tilolang; cleanup |
 | Agents | `coding_agents` (4k) and every Claude-specific path, the other agent engines | C −6k | Agent engines |
 | Workspace | `PersonalStore`, `AccountStore` and the `accounts` crate, the second workspace list, the person document of `settings-store`, governor role, `Membership`/`WorkspaceRuntime` | `one-workspace-stores` −11.8k | one workspace |
