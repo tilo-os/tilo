@@ -42,10 +42,12 @@ impl Default for ShortcutPrefs {
 }
 
 impl ShortcutPrefs {
-    /// The section holding `config`.
+    /// The section holding `config`, keeping only what a person changed
+    /// ([`ShortcutConfig::stored`]); reading it puts those over the current
+    /// defaults.
     #[must_use]
     pub fn of(config: &ShortcutConfig) -> Self {
-        let stored = serde_json::to_value(config).unwrap_or_default();
+        let stored = serde_json::to_value(config.stored()).unwrap_or_default();
         Self {
             bindings: Stored(
                 stored
@@ -247,7 +249,17 @@ mod tests {
             )
             .unwrap();
         let stored = serde_json::to_value(ShortcutPrefs::of(&config)).unwrap();
+        assert_eq!(
+            stored["bindings"],
+            serde_json::json!({"open_terminal": {"modifiers": ["Super"], "key": "return"}}),
+            "the section keeps only the chord the person changed"
+        );
         let read = ShortcutConfig::from_section(stored.as_object().unwrap().clone());
         assert_eq!(read, config);
+        assert_eq!(
+            ShortcutPrefs::of(&ShortcutConfig::default()).bindings,
+            Stored(serde_json::json!({})),
+            "a person who changed nothing stores no chord"
+        );
     }
 }
