@@ -67,8 +67,8 @@ enum Command {
         #[arg(long, default_value_t = 60)]
         wait: u64,
     },
-    /// Make this machine's device key if it has none, and print it with its
-    /// enrolment, as one JSON line.
+    /// Make this machine's device key if it has none, and print it with the certificate a
+    /// `tilo login` left for it, as one JSON line.
     Key {
         #[arg(long)]
         identity_root: PathBuf,
@@ -79,14 +79,6 @@ enum Command {
     Relay {
         #[arg(long, default_value = "0.0.0.0:3340")]
         listen: std::net::SocketAddr,
-    },
-    /// Install the certificate the person's root issued for this machine's
-    /// key (`tilo-enroll certify --capability admin`).
-    InstallCert {
-        #[arg(long)]
-        identity_root: PathBuf,
-        #[arg(long)]
-        cert: PathBuf,
     },
 }
 
@@ -199,11 +191,6 @@ fn main() -> ExitCode {
         }
         Command::Key { identity_root } => key_json(&identity_root).map(|value| println!("{value}")),
         Command::Relay { listen } => runtime().and_then(|runtime| runtime.block_on(relay(listen))),
-        Command::InstallCert {
-            identity_root,
-            cert,
-        } => identity::install_cert(&identity_root, &cert)
-            .and_then(|_| key_json(&identity_root).map(|value| println!("{value}"))),
         Command::Dial {
             identity_root,
             endpoint,

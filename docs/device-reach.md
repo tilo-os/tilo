@@ -85,9 +85,10 @@ An IP address is only a hint.
   the QUIC connection's two endpoint ids. The device admits only a device of
   its own identity whose certificate grants `can_administer_devices` and that
   is not revoked, bridges the session to a fresh `tilo-vmd rpc`, and logs each
-  session and request to its journal. A developer's machine is certified for
-  this with `tilo-enroll certify --capability admin` on the device that holds
-  the identity, which also lists it among the person's devices, where Settings
+  session and request to its journal. A developer's machine joins as one of
+  the person's devices with a ticket: `tilo device add --capability admin` on
+  the device that holds the identity prints it, and `tilo login` there spends
+  it, which also lists the machine among the person's devices, where Settings
   can remove it (`tilo device vm enrol-admin`).
 
 ## Updating what it runs

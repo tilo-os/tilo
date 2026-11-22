@@ -1,12 +1,11 @@
-//! Enrolling this machine as one of the owner's devices, so it may administer
+//! Joining this machine as one of the owner's devices, so it may administer
 //! their devices over the peer network (`vm enrol-admin`). The identity lives
-//! beside the registry ([`config::admin_identity_root`]): a device key the owner
-//! certifies with `tilo-enroll certify --capability admin`, which also lists the
-//! machine in the owner's fleet.
+//! beside the registry ([`config::admin_identity_root`]): `tilo device add
+//! --capability admin` on a device that holds the owner's identity prints the
+//! ticket, and `tilo login` here joins this machine with it.
 
 use std::path::Path;
 
-use base64::Engine as _;
 use serde_json::json;
 
 use super::{App, Outcome};
@@ -26,30 +25,20 @@ fn default_label() -> String {
     format!("{host} (tilo-vm)")
 }
 
-/// The `tilo-enroll certify` line the owner's device runs for `device` over
-/// SSH, printing the certificate as base64. As the identity's owner its
-/// active identity record signs (in their session, which reaches its secret
-/// store) and its fleet lists the new device; as root only a root key file
-/// in /var/lib/tilo can sign.
-pub fn certify_line(device: &str, label: &str, as_root: bool) -> String {
-    let certify = if as_root {
-        "tilo-enroll certify --identity-root /var/lib/tilo"
-    } else {
-        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus tilo-enroll certify --identity-dir \"$HOME/.config/tilo/identity\""
-    };
-    format!(
-        "f=$(mktemp) && {certify} --device {} --label {} --capability admin --out \"$f\" && base64 -w0 \"$f\"; s=$?; rm -f \"$f\"; exit $s",
-        crate::vmbuild::sh_quote(device),
-        crate::vmbuild::sh_quote(label)
-    )
+/// The `tilo device add --capability admin` line an owner device runs for this
+/// machine, printing the ticket as one JSON line and returning without waiting
+/// for the login that spends it. As root the identity is the system's.
+pub fn add_line(as_root: bool) -> String {
+    let mut line = String::from("tilo device add --capability admin --json --no-wait");
+    if as_root {
+        line =
+            format!("TILO_IDENTITY_ROOT=/var/lib/tilo XDG_STATE_HOME=/var/lib/tilo/state {line}");
+    }
+    line
 }
 
-pub fn certify_by_hand(device: &str, label: &str) -> String {
-    format!(
-        "tilo-enroll certify --identity-dir ~/.config/tilo/identity --device {} --label {} --capability admin --out admin.cert",
-        crate::vmbuild::sh_quote(device),
-        crate::vmbuild::sh_quote(label)
-    )
+pub fn add_by_hand() -> String {
+    "tilo device add --capability admin".to_owned()
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -72,7 +61,7 @@ impl App {
         let output = self.runner.output(&line).map_err(|error| match error {
             CliError::ToolMissing { .. } => CliError::ToolMissing {
                 tool: "tilo-device-admin".into(),
-                purpose: "enrol this machine and reach devices beyond this network; build it beside tilo-vm (cargo build --release -p tilo-device-admin, then copy target/release/tilo-device-admin next to tilo-vm), or name it in TILO_DEVICE_ADMIN".into(),
+                purpose: "join this machine and reach devices beyond this network; build it beside tilo-vm (cargo build --release -p tilo-device-admin, then copy target/release/tilo-device-admin next to tilo-vm), or name it in TILO_DEVICE_ADMIN".into(),
             },
             other => other,
         })?;
@@ -88,31 +77,20 @@ impl App {
         })
     }
 
-    pub(super) fn vm_enrol_admin(
-        &mut self,
-        via: Option<&str>,
-        cert: Option<&Path>,
-        label: Option<String>,
-    ) -> Result<Outcome, CliError> {
+    pub(super) fn vm_enrol_admin(&mut self, via: Option<&str>) -> Result<Outcome, CliError> {
         let key = self.admin_tool(&["key"])?;
         let device = key.device.clone();
-        let label = label.unwrap_or_else(default_label);
         let root = config::admin_identity_root(&self.registry_path);
-        let installed = if let Some(cert) = cert {
-            Some(self.install_admin_cert(cert)?)
-        } else if let Some(via) = via {
-            let path = self.certify_via(via, &device, &label, &root)?;
-            Some(self.install_admin_cert(&path)?)
-        } else {
-            None
-        };
-        let state = installed.unwrap_or(key);
+        if let Some(via) = via {
+            self.join_via(via, &root)?;
+        }
+        let state = self.admin_tool(&["key"])?;
         let enrolled = state.administrator;
         let data = json!({
             "device": device,
             "identity_root": root,
             "identity": state.identity,
-            "label": state.label,
+            "label": state.label.clone().or_else(|| Some(default_label())),
             "enrolled": enrolled,
         });
         if enrolled {
@@ -127,61 +105,65 @@ impl App {
             ]));
         }
         let text = format!(
-            "this machine's device key is {device} ({}), not enrolled yet. Enrol it from the device that holds the owner's identity:\n  tilo-vm vm enrol-admin --via <device>\nor have the owner run this there, as themselves, and hand you admin.cert:\n  {}\nthen: tilo-vm vm enrol-admin --cert admin.cert",
+            "this machine's device key is {device} ({}), not one of the owner's devices yet. On a device that holds their identity, run:\n  {}\nIt prints a ticket; on this machine, run:\n  TILO_IDENTITY_ROOT={} XDG_STATE_HOME={} tilo login <ticket>",
             root.display(),
-            certify_by_hand(&device, &label),
+            add_by_hand(),
+            root.display(),
+            root.join("state").display(),
         );
         Ok(Outcome::new(text, data).next(&[
             "tilo-vm vm enrol-admin --via <device>",
-            "tilo-vm vm enrol-admin --cert <file>",
+            "tilo-vm guide devices",
         ]))
     }
 
-    fn install_admin_cert(&mut self, cert: &Path) -> Result<Enrolment, CliError> {
-        let cert = cert.display().to_string();
-        self.admin_tool(&["install-cert", "--cert", &cert])
-    }
-
-    fn certify_via(
-        &mut self,
-        via: &str,
-        device: &str,
-        label: &str,
-        root: &Path,
-    ) -> Result<std::path::PathBuf, CliError> {
+    /// The ticket `via` prints for this machine, spent on this one: `tilo
+    /// device add --capability admin` over SSH on the device that holds the
+    /// owner's identity, then `tilo login` here, keeping the login with the
+    /// admin identity.
+    fn join_via(&mut self, via: &str, root: &Path) -> Result<(), CliError> {
         let vm = self.resolve_vm(Some(via))?;
         if vm.entry.hypervisor != DEVICE {
             return Err(CliError::InvalidInput(format!(
-                "--via {via}: a VM does not hold the owner's identity; name the device where they approve new devices (vm add --ssh <owner>@<address>)"
+                "--via {via}: a VM does not hold the owner's identity; name the device where they add new devices (vm add --ssh <owner>@<address>)"
             )));
         }
         let endpoint = self.endpoint(&vm)?;
         let as_root = endpoint.user == "root";
         let mut line = remote::ssh_transport(&endpoint, vm.entry.key.as_deref(), false);
-        line.args.push(certify_line(device, label, as_root));
+        line.args.push(add_line(as_root));
         let output = self.runner.output(&line)?;
         if !output.success {
-            let said = output.stderr.trim();
             return Err(CliError::NotEnrolledAdmin {
-                detail: format!(
-                    "{via} did not certify this machine{}: {said}",
-                    if as_root {
-                        " (as root it signs only with a root key file; log in as the identity's owner instead)"
-                    } else {
-                        ""
-                    }
-                ),
+                detail: format!("{via} printed no ticket: {}", output.stderr.trim()),
             });
         }
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(output.stdout.trim())
-            .map_err(|error| CliError::NotEnrolledAdmin {
-                detail: format!("{via} answered with no certificate ({error})"),
+        let issued: Ticket = serde_json::from_str(output.stdout.lines().next().unwrap_or_default())
+            .map_err(|_| CliError::NotEnrolledAdmin {
+                detail: format!("{via} printed no ticket: {}", output.stdout.trim()),
             })?;
-        let path = root.join("admin.cert");
-        std::fs::write(&path, bytes).map_err(CliError::io(format!("write {}", path.display())))?;
-        Ok(path)
+        let mut login = CommandLine::new("tilo", &["login", &issued.ticket]);
+        login
+            .env
+            .push(("TILO_IDENTITY_ROOT".into(), root.display().to_string()));
+        login.env.push((
+            "XDG_STATE_HOME".into(),
+            root.join("state").display().to_string(),
+        ));
+        let joined = self.runner.output(&login)?;
+        if !joined.success {
+            return Err(CliError::NotEnrolledAdmin {
+                detail: format!("this machine did not log in: {}", joined.stderr.trim()),
+            });
+        }
+        Ok(())
     }
+}
+
+/// What `tilo device add --json --no-wait` prints.
+#[derive(serde::Deserialize)]
+struct Ticket {
+    ticket: String,
 }
 
 #[cfg(test)]
@@ -189,27 +171,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_certify_line_signs_as_the_identitys_owner() {
-        let owner = certify_line("ab12", "work (tilo-vm)", false);
+    fn the_add_line_prints_the_ticket_without_waiting() {
+        let owner = add_line(false);
+        assert_eq!(owner, "tilo device add --capability admin --json --no-wait");
+        let root = add_line(true);
         assert!(
-            owner.starts_with("f=$(mktemp) && DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus tilo-enroll certify --identity-dir \"$HOME/.config/tilo/identity\""),
-            "{owner}"
-        );
-        assert!(
-            owner.contains("--device ab12 --label 'work (tilo-vm)' --capability admin"),
-            "{owner}"
-        );
-        assert!(owner.ends_with("rm -f \"$f\"; exit $s"), "{owner}");
-        let root = certify_line("ab12", "w", true);
-        assert!(
-            root.contains("tilo-enroll certify --identity-root /var/lib/tilo --device"),
+            root.starts_with("TILO_IDENTITY_ROOT=/var/lib/tilo XDG_STATE_HOME=/var/lib/tilo/state tilo device add"),
             "{root}"
-        );
-        assert!(!root.contains("DBUS"), "{root}");
-        let by_hand = certify_by_hand("ab12", "w");
-        assert!(
-            by_hand.ends_with("--capability admin --out admin.cert"),
-            "{by_hand}"
         );
     }
 }

@@ -1,8 +1,8 @@
 //! The keys and certificates each side of the route uses. Both sides keep the Tilo identity layout
 //! ([`IdentityPaths`]): a device under `/var/lib/tilo`, a developer's machine under its own
-//! directory. A developer's machine enrols as one of the person's devices like any other: its
-//! device key certified by the person's root with
-//! [`DeviceCapabilities::administrator`](tilo_user_identity::DeviceCapabilities::administrator).
+//! directory. A developer's machine joins as one of the person's devices like any other: the
+//! ticket `tilo device add --capability admin` printed, logged in with `tilo login`, leaves its
+//! certifying certificate with its device key.
 
 use std::path::Path;
 
@@ -39,7 +39,7 @@ pub struct Identity {
 
 impl Identity {
     /// Read the identity under `root`. A device key is required; the certificate is optional until
-    /// the device is enrolled.
+    /// the device joins with a ticket.
     ///
     /// The certificate's signature is not checked here: the other side checks it on every session.
     pub fn load(root: &Path) -> anyhow::Result<Self> {
@@ -86,23 +86,6 @@ pub fn ensure_key(root: &Path) -> anyhow::Result<[u8; 32]> {
     Ok(key.verifying_key().to_bytes())
 }
 
-/// Install a root-signed certificate for the dialing machine's key: it must name this machine's
-/// key, verify, and grant administration.
-pub fn install_cert(root: &Path, cert_path: &Path) -> anyhow::Result<DeviceCert> {
-    let paths = IdentityPaths::under(root);
-    let cert = persist::read_device_cert(cert_path)
-        .with_context(|| format!("read the device certificate {}", cert_path.display()))?;
-    if !cert.capabilities.can_administer_devices {
-        bail!(
-            "{} does not grant administration; certify this machine with `--capability admin`",
-            cert_path.display()
-        );
-    }
-    tilo_device_identity::install_device_cert(&paths, &cert, tilo_clock::unix_now_ns())
-        .with_context(|| format!("install the device certificate {}", cert_path.display()))?;
-    Ok(cert)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,55 +113,32 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_dialing_machine_keeps_an_administration_identity_of_its_own;
 
-        phase a_dialing_machine_enrols_with_an_administration_certificate;
-        // A dialing machine makes its key once, installs only a certificate for
-        // that key that grants administration, and loads it back.
+        phase the_login_left_certificate_is_the_one_read_back;
+        // A dialing machine makes its key once, and reads back the certificate the
+        // login left with it, which must name that key.
         {
             let dir = tempfile::tempdir().unwrap();
             let device = ensure_key(dir.path()).unwrap();
             assert_eq!(ensure_key(dir.path()).unwrap(), device);
+            let paths = IdentityPaths::under(dir.path());
             let root = SigningKey::from_bytes(&[21; 32]);
-            let write = |name: &str, cert: &DeviceCert| {
-                let path = dir.path().join(name);
-                persist::write_device_cert(&path, cert).unwrap();
-                path
-            };
-
-            let member = write(
-                "member.cert",
-                &certify(&root, device, DeviceCapabilities::member()),
-            );
-            let error = install_cert(dir.path(), &member).unwrap_err().to_string();
-            assert!(error.contains("--capability admin"), "{error}");
-            let other = write(
-                "other.cert",
-                &certify(&root, [9; 32], DeviceCapabilities::administrator()),
-            );
-            assert!(install_cert(dir.path(), &other).is_err());
-            assert!(Identity::load(dir.path()).unwrap().cert.is_none());
-
             let admin = certify(&root, device, DeviceCapabilities::administrator());
-            let path = write("admin.cert", &admin);
-            assert_eq!(install_cert(dir.path(), &path).unwrap(), admin);
+            persist::write_device_cert(&paths.device_cert, &admin).unwrap();
             let identity = Identity::load(dir.path()).unwrap();
             assert_eq!(identity.cert.as_ref(), Some(&admin));
             assert_eq!(identity.device_id(), device);
             assert!(identity.revocations().unwrap().is_empty());
-            assert_eq!(
-                persist::read_device_cert(
-                    &identity.paths.device_cert_for_user(&admin.user_public_key)
-                )
-                .unwrap(),
-                admin
-            );
 
-            let other_root = SigningKey::from_bytes(&[23; 32]);
-            let reassigned = write(
-                "reassigned.cert",
-                &certify(&other_root, device, DeviceCapabilities::administrator()),
-            );
-            assert!(install_cert(dir.path(), &reassigned).is_err());
-            assert_eq!(Identity::load(dir.path()).unwrap().cert, Some(admin));
+            persist::write_device_cert(
+                &paths.device_cert,
+                &certify(&root, [9; 32], DeviceCapabilities::administrator()),
+            )
+            .unwrap();
+            let error = Identity::load(dir.path())
+                .err()
+                .expect("a certificate for another device key is refused")
+                .to_string();
+            assert!(error.contains("certifies another device key"), "{error}");
         }
 
         phase the_admin_endpoint_is_not_the_device_endpoint;

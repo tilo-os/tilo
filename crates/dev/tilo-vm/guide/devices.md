@@ -315,24 +315,25 @@ protocol there as `tilo-device-admin/1` (`tilo-device-admin.service`, also
 while it sits at its login screen), never a shell.
 
 ```sh
-tilo-vm vm enrol-admin --via yoga   # once: yoga holds your identity and certifies this machine
+tilo-vm vm enrol-admin --via yoga   # once: yoga holds your identity and prints this machine's ticket
 tilo-vm vm status board             # on board's LAN once: records its route over the peer network
 tilo-vm vm status board             # anywhere: "reached over the peer network: relay https://..."
 ```
 
-**This machine enrols as one of the owner's devices.** The device admits
-only a device of its owner's identity whose root-signed certificate grants
+**This machine joins as one of the owner's devices.** The device admits
+only a device of its owner's identity whose certificate grants
 administration, and that the owner has not removed. `vm enrol-admin` makes
-this machine's device key (beside `vms.toml`, in `admin-identity/`) and has
-the owner's root certify it with `tilo-enroll certify --capability admin`.
-With `--via <device>` tilo-vm runs that over SSH on the device where the
-owner approves new devices, as the account it logs in with, which must own
-the identity (register it as the owner: `vm add --ssh <owner>@<address>`).
-Without `--via` it prints the key and the command for the owner to run, and
-`--cert <file>` installs what they hand back. The certificate lists this
-machine among the owner's devices, so Settings shows it and removing it
-there ends its access. tilo-vm needs `tilo-device-admin` beside it (or in
-`TILO_DEVICE_ADMIN`): `cargo build --release -p tilo-device-admin` and copy
+this machine's device key (beside `vms.toml`, in `admin-identity/`), and
+joins it the way any computer does: on the device where the owner adds new
+devices, `tilo device add --capability admin` prints a one-use ticket, and
+`tilo login` here spends it. With `--via <device>` tilo-vm runs both over
+SSH on the device where the owner adds new devices, as the account it logs
+in with, which must own the identity (register it as the owner: `vm add
+--ssh <owner>@<address>`). Without `--via` it prints the key and the two
+commands. The certificate lists this machine among the owner's devices, so
+Settings shows it and removing it there ends its access. tilo-vm needs
+`tilo-device-admin` beside it (or in `TILO_DEVICE_ADMIN`), and the `tilo`
+command here: `cargo build --release -p tilo-device-admin` and copy
 it next to `tilo-vm`.
 
 **The route is recorded like the address.** `vm add` and `vm status` record

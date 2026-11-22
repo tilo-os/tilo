@@ -76,11 +76,12 @@ fn person_here() -> Result<(SigningKey, Device, crate::identity::Person)> {
 }
 
 /// `tilo device add`: print a ticket, wait for a computer to log in with it, and say which one
-/// it was.
+/// it was. With `no_wait`, print only the ticket: this computer's daemon keeps serving it while
+/// it lasts.
 ///
 /// # Errors
 /// This computer cannot add devices, or no computer came before the ticket ran out.
-pub fn add(json: bool, adding: Adding) -> Result<ExitCode> {
+pub fn add(json: bool, adding: Adding, no_wait: bool) -> Result<ExitCode> {
     login::trust_test_certificates()?;
     crate::identity::convert_earlier()?;
     let login_place = login::Place::here(crate::identity::paths())?;
@@ -127,6 +128,9 @@ pub fn add(json: bool, adding: Adding) -> Result<ExitCode> {
                 }
             );
         }
+        if no_wait {
+            return Ok::<Option<DeviceCert>, anyhow::Error>(None);
+        }
         let done = client
             .act(
                 &workspace,
@@ -155,8 +159,11 @@ pub fn add(json: bool, adding: Adding) -> Result<ExitCode> {
             }
             Err(error) => eprintln!("Your other devices list it once it enters: {error}"),
         }
-        Ok::<DeviceCert, anyhow::Error>(cert)
+        Ok::<Option<DeviceCert>, anyhow::Error>(Some(cert))
     })?;
+    let Some(cert) = cert else {
+        return Ok(ExitCode::SUCCESS);
+    };
     let key_hex = hex::encode(cert.device_public_key);
     if json {
         println!(

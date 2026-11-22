@@ -499,6 +499,10 @@ enum DeviceCmd {
         /// Print the ticket and the device's certificate as JSON lines.
         #[arg(long)]
         json: bool,
+        /// Print the ticket and return: the daemon keeps serving it while it lasts, for a
+        /// provisioner that hands it on rather than waiting for the computer itself.
+        #[arg(long)]
+        no_wait: bool,
     },
     /// Your devices, as your workspaces know them.
     Ls {
@@ -1520,7 +1524,11 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         DeviceCmd::Health { gpu: _, json } => health::run_gpu(json),
-        DeviceCmd::Add { capability, json } => device::add(json, capability),
+        DeviceCmd::Add {
+            capability,
+            json,
+            no_wait,
+        } => device::add(json, capability, no_wait),
         DeviceCmd::Ls { json } => device::list(json),
         DeviceCmd::Revoke {
             device: which,

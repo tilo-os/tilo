@@ -954,20 +954,14 @@ pub enum VmCommand {
         #[arg(long)]
         off: bool,
     },
-    /// Enrol this machine as one of the owner's devices, so tilo-vm reaches their devices over the peer network when they are not on this network.
+    /// Join this machine as one of the owner's devices, so tilo-vm reaches their devices over the peer network when they are not on this network.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm enrol-admin --via yoga   # yoga holds the owner's identity: it certifies this machine over SSH\n  tilo-vm vm enrol-admin              # this machine's key, and how to certify it by hand\n  tilo-vm vm enrol-admin --cert admin.cert\n\nBeyond the LAN, tilo-vm dials a device's device-admin route over the peer\nnetwork (hole-punched, relayed when it must be) once SSH and the device's\nname do not answer. The device admits only a device of its owner's identity\nwhose certificate grants administration, so this machine enrols once, like\nany other device: the owner's root certifies its key with `tilo-enroll\ncertify --capability admin`, on the device where they approve new devices,\nwhich also lists it among their devices (Settings can remove it). With --via\ntilo-vm runs that over SSH as the account it logs in with; that account must\nown the identity (an owner-account device: vm add --ssh <owner>@...).\nNeeds tilo-device-admin beside tilo-vm. Details: tilo-vm guide devices."
+        after_help = "Examples:\n  tilo-vm vm enrol-admin --via yoga   # yoga holds the owner's identity: it prints the ticket this machine logs in with\n  tilo-vm vm enrol-admin              # this machine's key, and the two commands that join it\n\nBeyond the LAN, tilo-vm dials a device's device-admin route over the peer\nnetwork (hole-punched, relayed when it must be) once SSH and the device's\nname do not answer. The device admits only a device of its owner's identity\nwhose certificate grants administration, so this machine joins once, like\nany other device: on the device where the owner adds new devices,\n`tilo device add --capability admin` prints a one-use ticket, and `tilo login`\nhere spends it. That also lists the machine among their devices (Settings\ncan remove it). With --via tilo-vm runs both over SSH on the device it logs in\nwith; that account must own the identity (an owner-account device: vm add\n--ssh <owner>@...). Needs tilo-device-admin beside tilo-vm, and the tilo\ncommand here. Details: tilo-vm guide devices."
     )]
     EnrolAdmin {
-        /// A registered device that holds the owner's identity: it certifies this machine over SSH.
-        #[arg(long, conflicts_with = "cert")]
+        /// A registered device that holds the owner's identity: it prints the ticket this machine logs in with.
+        #[arg(long)]
         via: Option<String>,
-        /// A certificate the owner made for this machine's key (tilo-enroll certify --capability admin).
-        #[arg(long)]
-        cert: Option<std::path::PathBuf>,
-        /// This machine's name in the owner's device list (default: its hostname).
-        #[arg(long)]
-        label: Option<String>,
     },
     /// Boot the VM and wait until SSH answers.
     #[command(after_help = "Examples:\n  tilo-vm vm start")]

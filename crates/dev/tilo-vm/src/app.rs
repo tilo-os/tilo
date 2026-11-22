@@ -1450,9 +1450,7 @@ impl App {
                 enabled,
             } => self.vm_network_wake(name.as_deref(), &profile, enabled),
             VmCommand::Awake { name, hold, off } => self.vm_awake(name.as_deref(), hold, off),
-            VmCommand::EnrolAdmin { via, cert, label } => {
-                self.vm_enrol_admin(via.as_deref(), cert.as_deref(), label)
-            }
+            VmCommand::EnrolAdmin { via } => self.vm_enrol_admin(via.as_deref()),
             VmCommand::Restart { name } => self.vm_restart(name.as_deref()),
             VmCommand::Stop { name, force } => self.vm_stop(name.as_deref(), force),
             VmCommand::Rm { name, force } => {
