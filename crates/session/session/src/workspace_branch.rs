@@ -1551,13 +1551,13 @@ mod tests {
         let (from, to) = ids();
         let owner = identity();
         let member = certified_identity(0x32);
-        let member_cert = &member.device_cert;
+        let certificate = &member.device_cert;
         let now = tilo_clock::wall();
         let mut peer = seeded_branch_peer(FROM, &owner, now);
         let signer = owner.signer.as_ref();
         peer.governance_mut()
             .declare_member(
-                member_cert.user_public_key,
+                certificate.user_public_key,
                 Role::Viewer,
                 false,
                 None,
@@ -1566,7 +1566,7 @@ mod tests {
             )
             .unwrap();
         peer.governance_mut()
-            .admit_member_device(member_cert, signer, now)
+            .admit_member_device(certificate, signer, now)
             .unwrap();
 
         let app = "so.tilo.tube";

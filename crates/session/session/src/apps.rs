@@ -691,9 +691,9 @@ impl Apps {
         };
         // An app whose types hold an outside service's resources reaches its connector, which
         // holds the network and ownership the host has none of.
-        let origin = match tilo_app_launch::tilolang_processes::origin_of(app) {
-            Ok(None) => None,
-            Ok(Some(origin)) => {
+        let origin = match tilo_app_launch::tilolang_processes::origin_of(app)? {
+            None => None,
+            Some(origin) => {
                 let Some(connectors) = connectors else {
                     return Err("no connector can start here".to_owned());
                 };
@@ -703,7 +703,6 @@ impl Apps {
                 })?;
                 Some(connection)
             }
-            Err(error) => return Err(error),
         };
         // The device's content store, opened and scoped exactly as the launcher scopes a launched
         // app's: the files a person chooses and the pictures the document holds are kept there,
