@@ -17,13 +17,13 @@ use std::rc::{Rc, Weak};
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
-use ui_core::arriving::{ArrivalWriter, Arriving, Source};
+use ui_core::arriving::{Arriving, Source};
 use ui_core::history_mode::HistoryOwner;
 use ui_core::permissions::{LivePermissions, PermissionScope, TreePath};
 use ui_core::resource::StoredResource;
 use ui_core::resource::workspace::WorkspaceResources;
 use ui_core::wake::WakeHandle;
-use ui_core::workspace_sync::WorkspaceUnreachable;
+use ui_core::workspace_sync::RecordNotHere;
 
 use super::live::Live;
 use super::resources::{Held, ResourceApi};
@@ -959,6 +959,10 @@ pub(crate) enum Unopened {
 /// it opened.
 type AskAgain = Rc<dyn Fn(&WorkspaceState) -> bool>;
 
+/// A document on its way ([`WorkspaceState::unopened`]): what had arrived in its stores when it
+/// was asked for, how to ask for it again, and its type's name.
+type OnItsWay = (u64, AskAgain, fn() -> String);
+
 struct PublishedWorkspaceResource {
     api: Rc<dyn ResourceApi>,
     readable: Box<dyn Fn() -> bool>,
@@ -978,8 +982,9 @@ pub(crate) struct WorkspaceState {
     /// arrived in their stores then ([`Self::arrivals`]): each is tried again once something
     /// arrives, not on every draw that asks for it. With each, how to ask for it once more:
     /// the window's refresh does when something arrived ([`Self::open_arrived`]), since a
-    /// declaration asks once and a view only when it is built.
-    unopened: RefCell<HashMap<OpenKey, (u64, AskAgain)>>,
+    /// declaration asks once and a view only when it is built. With each, its type's name, as a
+    /// window that waits for it too long says ([`Self::end_unanswered`]).
+    unopened: RefCell<HashMap<OpenKey, OnItsWay>>,
     owners: RefCell<Vec<HistoryOwner>>,
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
     /// What this app keeps for its whole workspace, as its window offers it to callers from
@@ -995,20 +1000,61 @@ pub(crate) struct WorkspaceState {
     /// The parts to build again: what they asked for has opened since they were built.
     arrived: RefCell<Vec<Weak<()>>>,
     /// What the window's view waits for before it is built: the documents its app declared
-    /// that were on its way when the window opened, answered once every one of them opened
-    /// ([`Self::declared_arriving`]).
+    /// that were on its way when the window opened, answered once every one of them opened,
+    /// or ended unanswered ([`Self::declared_arriving`]).
     awaited: RefCell<Vec<Awaited>>,
     /// Since when each record asked for has not opened, why not the last time it was asked
     /// for, and whether that was said ([`Self::waiting_since`]).
     waiting: RefCell<HashMap<OpenKey, (ui_core::time::Instant, Unopened, bool)>>,
 }
 
-/// How long a record a window asked for goes unopened before the log says so.
+/// How long a record a window asked for goes unopened before the log says so, and a window
+/// that waits for it, the workspace's holdings settled, says it has not arrived
+/// ([`WorkspaceState::end_unanswered`]).
 const LONG_WAIT: ui_core::time::Duration = ui_core::time::Duration::from_secs(15);
 
-/// The documents a window's view waits for, and how to tell it they all opened
-/// ([`WorkspaceState::declared_arriving`]).
-type Awaited = (Vec<OpenKey>, ArrivalWriter<(), WorkspaceUnreachable>);
+/// What a window's view waits for before it is built ([`WorkspaceState::declared_arriving`]).
+struct Awaited {
+    /// The documents it waits for.
+    keys: Vec<OpenKey>,
+    /// What the view shows meanwhile: answered once they all opened.
+    arriving: Arriving<(), RecordNotHere>,
+    /// Since when it waits with the workspace's holdings settled.
+    since: ui_core::time::Instant,
+    /// Whether it ended unanswered: the person's retry asks again from when it is pending
+    /// once more.
+    ended: bool,
+    /// Whether the person asked again: it then waits its bound out, also for holders that
+    /// could not be reached, as the shell dials them again meanwhile.
+    asked_again: bool,
+}
+
+/// Where the workspace's holdings stand, for a window's declared wait
+/// ([`WorkspaceState::end_unanswered`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Holdings {
+    /// On their way: what the window waits for may come with them.
+    Arriving,
+    /// Here: what is still on its way comes from a device that holds it.
+    Here,
+    /// Not coming: the workspace's holders cannot be reached, or it is unavailable.
+    Unreachable,
+}
+
+impl Holdings {
+    fn now() -> Self {
+        use ui_core::arriving::Arrival;
+        use ui_core::workspace_sync::WorkspaceSyncState;
+        match ui_core::workspace_sync::holdings().get() {
+            Arrival::Pending { .. } => Self::Arriving,
+            Arrival::Failed(_) => Self::Unreachable,
+            Arrival::Ready(()) => match ui_core::workspace_sync::current() {
+                Some(sync) if sync.state == WorkspaceSyncState::Unreachable => Self::Unreachable,
+                _ => Self::Here,
+            },
+        }
+    }
+}
 
 /// A part of a view being built ([`WorkspaceState::building`]), until this is dropped.
 pub(crate) struct Building(Rc<WorkspaceState>);
@@ -1051,21 +1097,123 @@ impl WorkspaceState {
     /// right after its app's declarations opened what they keep, and shows its view once this
     /// is answered: a view built once reads a declared document once, and one built while the
     /// document was on its way would go on reading that the workspace has none.
-    pub(crate) fn declared_arriving(&self) -> Option<Arriving<(), WorkspaceUnreachable>> {
+    ///
+    /// It ends like the workspace's holdings do: once those cannot arrive, or once no device that
+    /// holds a document answered within [`LONG_WAIT`], the window says what it waits for and
+    /// offers to go on without it, the view reading it as missing, or to ask again
+    /// ([`Self::end_unanswered`]).
+    pub(crate) fn declared_arriving(&self) -> Option<Arriving<(), RecordNotHere>> {
         let keys: Vec<OpenKey> = self.unopened.borrow().keys().cloned().collect();
         if keys.is_empty() {
             return None;
         }
-        let arriving = Arriving::pending(Source::Remote);
-        self.awaited.borrow_mut().push((keys, arriving.writer()));
+        let arriving = Arriving::pending(Source::Remote)
+            .on_retry(|arriving| {
+                // The shell dials the workspace's holders again; the window's next refresh
+                // asks for each document once more.
+                ui_core::workspace_sync::retry();
+                arriving.writer().pending(Source::Remote);
+            })
+            .on_continue_without(|arriving| arriving.writer().ready(()));
+        self.awaited.borrow_mut().push(Awaited {
+            keys,
+            arriving: arriving.clone(),
+            since: ui_core::time::now(),
+            ended: false,
+            asked_again: false,
+        });
         Some(arriving)
+    }
+
+    /// When a declared wait ends unanswered unless what it waits for opens first
+    /// ([`Self::end_unanswered`]): what wakes a window that nothing else wakes meanwhile.
+    pub(crate) fn gives_up_at(&self) -> Option<ui_core::time::Instant> {
+        self.awaited
+            .borrow()
+            .iter()
+            .filter(|wait| wait.arriving.with(ui_core::arriving::Arrival::is_pending))
+            .filter_map(|wait| wait.since.checked_add(LONG_WAIT))
+            .min()
+    }
+
+    /// End each declared wait that can no longer be answered: the workspace's holdings cannot
+    /// arrive, or no device that holds what it waits for answered within [`LONG_WAIT`] of them
+    /// settling. The window then says what it waits for, and offers to go on without it
+    /// ([`Self::declared_arriving`]). A wait the person went on from is let go; one they asked
+    /// again for waits anew, each of its documents asked for once more.
+    fn end_unanswered(&self) {
+        if self.awaited.borrow().is_empty() {
+            return;
+        }
+        let now = ui_core::time::now();
+        let holdings = Holdings::now();
+        let mut asked_again = Vec::new();
+        let mut ended = Vec::new();
+        {
+            let mut awaited = self.awaited.borrow_mut();
+            awaited.retain(|wait| wait.arriving.with(|arrival| arrival.ready().is_none()));
+            for wait in awaited.iter_mut() {
+                if !wait.arriving.with(ui_core::arriving::Arrival::is_pending) {
+                    continue;
+                }
+                if wait.ended {
+                    wait.ended = false;
+                    wait.asked_again = true;
+                    wait.since = now;
+                    asked_again.extend(wait.keys.iter().cloned());
+                }
+                let waited_out = now.saturating_duration_since(wait.since) >= LONG_WAIT;
+                let ends = match holdings {
+                    Holdings::Arriving => {
+                        wait.since = now;
+                        false
+                    }
+                    Holdings::Unreachable => !wait.asked_again || waited_out,
+                    Holdings::Here => waited_out,
+                };
+                if ends {
+                    wait.ended = true;
+                    ended.push((wait.keys.clone(), wait.arriving.writer()));
+                }
+            }
+        }
+        for (keys, writer) in ended {
+            writer.fail(self.not_here(&keys));
+        }
+        let again: Vec<AskAgain> = {
+            let unopened = self.unopened.borrow();
+            asked_again
+                .iter()
+                .filter_map(|key| unopened.get(key).map(|(_, again, _)| Rc::clone(again)))
+                .collect()
+        };
+        for again in again {
+            again(self);
+        }
+    }
+
+    /// What a window that waited too long for `keys` says it waits for: the first of them still
+    /// on its way, by its type's name, and the app that keeps it when that is the window's own.
+    fn not_here(&self, keys: &[OpenKey]) -> RecordNotHere {
+        let unopened = self.unopened.borrow();
+        let waited = keys
+            .iter()
+            .find_map(|key| unopened.get(key).map(|(_, _, name)| (key, name)));
+        let (owner, record) = match waited {
+            Some((key, name)) => (key.0, name()),
+            None => (self.app_id, self.app_title.to_owned()),
+        };
+        RecordNotHere {
+            record,
+            keeper: (owner == self.app_id).then(|| self.app_title.to_owned()),
+        }
     }
 
     /// The document `key` arrived but could not be read, which is logged: the view waiting for
     /// it is built without it rather than waiting for good.
     fn no_longer_awaited(&self, key: &OpenKey) {
-        for (keys, _) in self.awaited.borrow_mut().iter_mut() {
-            keys.retain(|waited| waited != key);
+        for wait in self.awaited.borrow_mut().iter_mut() {
+            wait.keys.retain(|waited| waited != key);
         }
         self.answer_awaited();
     }
@@ -1096,13 +1244,15 @@ impl WorkspaceState {
         }
     }
 
-    /// Answer each wait whose documents all opened ([`Self::declared_arriving`]).
+    /// Answer each wait whose documents all opened ([`Self::declared_arriving`]), also one that
+    /// ended unanswered; one the person went on from without them is let go as it is: its view
+    /// is built, and builds again the parts that read what opened.
     fn answer_awaited(&self) {
         let unopened = self.unopened.borrow();
-        self.awaited.borrow_mut().retain(|(keys, writer)| {
-            let waiting = keys.iter().any(|key| unopened.contains_key(key));
-            if !waiting {
-                writer.ready(());
+        self.awaited.borrow_mut().retain(|wait| {
+            let waiting = wait.keys.iter().any(|key| unopened.contains_key(key));
+            if !waiting && wait.arriving.with(|arrival| arrival.ready().is_none()) {
+                wait.arriving.writer().ready(());
             }
             waiting
         });
@@ -1264,7 +1414,7 @@ impl WorkspaceState {
             .unopened
             .borrow()
             .get(&key)
-            .is_some_and(|(seen, _)| *seen == arrived)
+            .is_some_and(|(seen, _, _)| *seen == arrived)
         {
             self.asked_while_building(&key);
             return None;
@@ -1287,7 +1437,9 @@ impl WorkspaceState {
                 let again = Self::asking_again::<P>(owner, id);
                 self.asked_while_building(&key);
                 self.waiting_since(&key, Unopened::Arriving);
-                self.unopened.borrow_mut().insert(key, (arrived, again));
+                self.unopened
+                    .borrow_mut()
+                    .insert(key, (arrived, again, P::label));
                 None
             }
             Err(Unopened::InUse) => {
@@ -1298,7 +1450,7 @@ impl WorkspaceState {
                 self.waiting_since(&key, Unopened::InUse);
                 self.unopened
                     .borrow_mut()
-                    .insert(key, (arrived.wrapping_add(1), again));
+                    .insert(key, (arrived.wrapping_add(1), again, P::label));
                 if let Some(window) = &self.wake {
                     window.wake();
                 }
@@ -1332,6 +1484,7 @@ impl WorkspaceState {
     /// refreshed, and whoever holds it asks for this when it told the view what arrived.
     pub(crate) fn open_arrived(&self) -> bool {
         self.say_long_waits();
+        self.end_unanswered();
         let due: Vec<AskAgain> = {
             let unopened = self.unopened.borrow();
             if unopened.is_empty() {
@@ -1339,8 +1492,8 @@ impl WorkspaceState {
             }
             unopened
                 .iter()
-                .filter(|((owner, _, _), (seen, _))| self.arrivals(owner) != *seen)
-                .map(|(_, (_, again))| Rc::clone(again))
+                .filter(|((owner, _, _), (seen, _, _))| self.arrivals(owner) != *seen)
+                .map(|(_, (_, again, _))| Rc::clone(again))
                 .collect()
         };
         let opened = due.iter().fold(false, |opened, again| again(self) | opened);

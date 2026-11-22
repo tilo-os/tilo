@@ -58,6 +58,9 @@ pub(crate) trait RootModel:
     fn needs_redraw(&self) -> bool;
     /// The window's save status the root says in the window's bar.
     fn save_indicator(&self) -> &crate::framework::saves::SaveIndicator;
+    /// When the window stops waiting for the documents its app declared, unless they open
+    /// first: nothing else wakes a window whose workspace sends nothing meanwhile.
+    fn gives_up_at(&self) -> Option<ui_core::time::Instant>;
     /// The save status, for a test to move its clock.
     #[cfg(test)]
     fn save_indicator_mut(&mut self) -> &mut crate::framework::saves::SaveIndicator;
@@ -334,13 +337,16 @@ impl Decorator for RootWidget {
         self.0.view().has_transient_feedback()
     }
 
-    // The save status's deadline is the sync's; the view serves its own.
+    // The save status's deadline is the sync's, and so is the end of the window's wait for
+    // its declared documents; the view serves its own.
     fn serve_deadline(&mut self, now: ui_core::time::Instant) -> bool {
         if self
             .0
             .save_indicator()
             .next_wake_deadline()
-            .is_some_and(|due| due <= now)
+            .into_iter()
+            .chain(self.0.gives_up_at())
+            .any(|due| due <= now)
         {
             return true;
         }
@@ -348,11 +354,13 @@ impl Decorator for RootWidget {
     }
 
     fn next_wake_deadline(&self) -> Option<ui_core::time::Instant> {
-        let view = self.0.view().next_wake_deadline();
-        match (view, self.0.save_indicator().next_wake_deadline()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        self.0
+            .view()
+            .next_wake_deadline()
+            .into_iter()
+            .chain(self.0.save_indicator().next_wake_deadline())
+            .chain(self.0.gives_up_at())
+            .min()
     }
 
     fn handle_event(

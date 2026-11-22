@@ -139,7 +139,13 @@ impl ResourceApp for ReadsOnce {
             Some(bookmarks) => pages(&bookmarks).join(", "),
             None => "the bookmarks are not here".to_owned(),
         };
-        Box::new(Column::new().push(Box::new(Text::new(&said))))
+        // A field the person types into once the view stands.
+        let note = TextInput::from_state(&LocalState::new(String::new())).with_id("note");
+        Box::new(
+            Column::new()
+                .push(Box::new(Text::new(&said)))
+                .push(Box::new(note)),
+        )
     }
 }
 
@@ -219,5 +225,72 @@ fn a_window_shows_the_workspaces_record_empty_once_the_workspace_holds_none() {
     assert!(
         says(&mut app, "nothing bookmarked"),
         "the workspace holds none: the window shows its bookmarks, empty"
+    );
+}
+
+/// A window whose record no device that holds it ever answers for does not wait for good: once
+/// the wait's bound passed, it says what it waits for, in the person's words, and offers to go
+/// on without it. Going on shows the view with the record read as missing, and what the person
+/// types reaches it.
+#[test]
+fn a_window_whose_record_never_arrives_says_so_and_goes_on_without_it() {
+    let mut app = TestApp::<ReadsOnce>::awaiting_the_workspace(
+        tilo_app::framework::headless::TEST_WORKSPACE,
+        BROWSER,
+    )
+    .unwrap();
+    app.frame();
+    let waiting = "Bookmarks from Browser hasn\u{2019}t reached this device yet.";
+    assert!(
+        !says(&mut app, waiting),
+        "a moment in, the window still waits"
+    );
+
+    // Seconds after the window opened, on the test's clock.
+    let opened = tilo_app::time::now();
+    let after = |seconds: u64| {
+        opened
+            .checked_add(tilo_app::time::Duration::from_secs(seconds))
+            .expect("a time")
+    };
+    tilo_app::time::testing::with_monotonic_time(after(16), || {
+        for _ in 0..4 {
+            app.frame();
+        }
+    });
+    assert!(
+        says(&mut app, waiting),
+        "past the bound, the window says what it waits for: {:?}",
+        app.texts()
+    );
+    assert!(
+        !says(&mut app, "the bookmarks are not here"),
+        "the view is not built yet"
+    );
+
+    // The person reads the page a moment, then goes on; the clock moves on with them.
+    tilo_app::time::testing::with_monotonic_time(after(17), || {
+        app.harness()
+            .click_named("arriving.without")
+            .expect("the window offers to go on without the bookmarks");
+    });
+    for seconds in 18..22 {
+        tilo_app::time::testing::with_monotonic_time(after(seconds), || app.frame());
+    }
+    assert!(
+        says(&mut app, "the bookmarks are not here"),
+        "going on, the view reads the bookmarks as missing: {:?}",
+        app.texts()
+    );
+    assert!(!says(&mut app, waiting), "and no longer says it waits");
+
+    tilo_app::time::testing::with_monotonic_time(after(22), || {
+        app.harness().click_named("note").expect("the view's field");
+        app.harness().type_text("hello");
+        app.frame();
+    });
+    assert!(
+        says(&mut app, "hello"),
+        "what the person types reaches the view, not held"
     );
 }

@@ -1029,16 +1029,19 @@ pub(crate) fn build_root<A: ResourceApp>(
     root
 }
 
-/// Something of the workspace a window waits for.
+/// The workspace's holdings, as a window waits for them.
 type WorkspaceArrival =
     ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>;
+
+/// The documents a window's app declared, as the window waits for them.
+type DeclaredArrival = ui_core::arriving::Arriving<(), ui_core::workspace_sync::RecordNotHere>;
 
 /// The window's view, once what it waits for arrived: the workspace's holdings and the
 /// documents the app's declarations opened.
 fn arrived_content<A: ResourceApp>(
     cx: &mut ViewCx<A::Resource>,
     holdings: Option<WorkspaceArrival>,
-    declared: Option<WorkspaceArrival>,
+    declared: Option<DeclaredArrival>,
 ) -> Element {
     match (holdings, declared) {
         (Some(holdings), declared) if workspace_pending(&holdings) => {

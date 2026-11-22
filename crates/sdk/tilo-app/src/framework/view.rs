@@ -15,7 +15,6 @@ use ui_core::i18n::LabelKey;
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::widget::{ArrivingView, SkeletonShape};
 use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
-use ui_core::workspace_sync::WorkspaceUnreachable;
 
 use super::controls::{ActionControl, Actions};
 use super::dispatch::{Dispatcher, Submit};
@@ -47,8 +46,8 @@ fn arrived_part(build: Box<ScopedPart>) -> Element {
 
 /// The window's view once the workspace's holdings arrived, the page they
 /// reserve until then.
-fn workspace_arrival(
-    holdings: &Arriving<(), WorkspaceUnreachable>,
+fn workspace_arrival<E: std::fmt::Display + 'static>(
+    holdings: &Arriving<(), E>,
     part: Rc<ScopedPart>,
 ) -> Element {
     let view = ArrivingView::new(holdings, move |()| {
@@ -771,12 +770,13 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     }
 
     /// [`Self::arriving`] for the window's workspace: its whole view, a
-    /// page, once the workspace's holdings arrived. Only `part`'s scope
+    /// page, once the workspace's holdings arrived, or the documents its app
+    /// declared that were on their way. Only `part`'s scope
     /// depends on the app; the arrival around it is built once, in the
     /// runtime.
-    pub(crate) fn arriving_workspace(
+    pub(crate) fn arriving_workspace<E: std::fmt::Display + 'static>(
         &self,
-        holdings: &Arriving<(), WorkspaceUnreachable>,
+        holdings: &Arriving<(), E>,
         part: impl Fn(&mut ViewCx<R, T>) -> Element + 'static,
     ) -> Element {
         let scope = self.part_scope();

@@ -184,6 +184,32 @@ impl std::fmt::Display for WorkspaceUnreachable {
     }
 }
 
+/// A record a window's view waits for that has not reached this device: no device that holds it
+/// answered in time, or the workspace's holders cannot be reached. Said by the record's name and
+/// the app that keeps it, in the reader's words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordNotHere {
+    /// The record's type, as a person names it ("Accounts").
+    pub record: String,
+    /// The title of the app that keeps it, when the window knows it.
+    pub keeper: Option<String>,
+}
+
+impl std::fmt::Display for RecordNotHere {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut args = fluent::FluentArgs::new();
+        args.set("record", self.record.clone());
+        let key = match &self.keeper {
+            Some(keeper) => {
+                args.set("app", keeper.clone());
+                "workspace-record-not-here"
+            }
+            None => "workspace-record-not-here-unnamed",
+        };
+        f.write_str(&crate::i18n::I18nManager::lookup(key, Some(&args)))
+    }
+}
+
 thread_local! {
     static TOLD: RefCell<Option<Told>> = const { RefCell::new(None) };
     static SHELL: Cell<bool> = const { Cell::new(false) };

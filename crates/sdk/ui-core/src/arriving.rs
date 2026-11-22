@@ -346,6 +346,9 @@ pub struct Arriving<T, E = String> {
     task: LatestTask<Arrival<T, E>>,
     began: Arc<Mutex<Instant>>,
     retry: Arc<Mutex<Option<Retry<T, E>>>>,
+    /// What the reader can do without the answer, once the read failed
+    /// ([`Self::on_continue_without`]).
+    without: Arc<Mutex<Option<Retry<T, E>>>>,
 }
 
 impl<T, E> Clone for Arriving<T, E> {
@@ -354,6 +357,7 @@ impl<T, E> Clone for Arriving<T, E> {
             task: self.task.clone(),
             began: Arc::clone(&self.began),
             retry: Arc::clone(&self.retry),
+            without: Arc::clone(&self.without),
         }
     }
 }
@@ -370,6 +374,7 @@ impl<T, E> Arriving<T, E> {
             task: LatestTask::new(initial),
             began: Arc::new(Mutex::new(crate::time::now())),
             retry: Arc::new(Mutex::new(None)),
+            without: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -470,6 +475,29 @@ impl<T, E> Arriving<T, E> {
     #[must_use]
     pub fn on_retry(self, retry: impl Fn(&Self) + Send + Sync + 'static) -> Self {
         *self.retry.lock_recover() = Some(Arc::new(retry));
+        self
+    }
+
+    /// Whether, once the read failed, the reader may go on without its answer
+    /// ([`Self::on_continue_without`]).
+    #[must_use]
+    pub fn can_continue_without(&self) -> bool {
+        self.without.lock_recover().is_some()
+    }
+
+    /// Go on without the answer, after the read failed.
+    pub fn continue_without(&self) {
+        let without = self.without.lock_recover().clone();
+        if let Some(without) = without {
+            without(self);
+        }
+    }
+
+    /// What the reader can do without the answer once the read failed: `without` answers the read
+    /// with what stands for a missing answer, so what waited for it goes on, reading it as missing.
+    #[must_use]
+    pub fn on_continue_without(self, without: impl Fn(&Self) + Send + Sync + 'static) -> Self {
+        *self.without.lock_recover() = Some(Arc::new(without));
         self
     }
 

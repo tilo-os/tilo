@@ -1466,6 +1466,10 @@ impl RootModel for ResourceRoot {
             || self.save.needs_redraw(ui_core::time::now())
     }
 
+    fn gives_up_at(&self) -> Option<ui_core::time::Instant> {
+        self.storage.gives_up_at()
+    }
+
     fn save_indicator(&self) -> &super::saves::SaveIndicator {
         &self.save
     }

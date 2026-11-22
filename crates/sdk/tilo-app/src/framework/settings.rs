@@ -821,9 +821,14 @@ impl ViewStorage {
     /// are still on their way ([`super::workspace::WorkspaceState::declared_arriving`]).
     pub(crate) fn declared_arriving(
         &self,
-    ) -> Option<ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>>
-    {
+    ) -> Option<ui_core::arriving::Arriving<(), ui_core::workspace_sync::RecordNotHere>> {
         self.workspace.as_ref()?.declared_arriving()
+    }
+
+    /// When the window's declared wait ends unanswered, unless what it waits for opens first
+    /// ([`super::workspace::WorkspaceState::gives_up_at`]).
+    pub(crate) fn gives_up_at(&self) -> Option<ui_core::time::Instant> {
+        self.workspace.as_ref()?.gives_up_at()
     }
 
     /// The part of a view kept alive by `part` is being built, until what this returns is
