@@ -92,11 +92,13 @@ process.on('unhandledRejection', async error => { check(false, 'the run went on'
 
 // What the page showed at its first frame with its markup in: the step the
 // first screen opened on and what it drew, at the first animation frame
-// after the page's body is parsed past the screen (the page can paint no
-// sooner), before any module of the page has run.
+// after the page's body is parsed past the screen and the paint the entry
+// makes of it (its status line is the marker), before any module of the page
+// has run. The page the entry hands over has its own element where the
+// screen was.
 const FIRST_FRAME = `(() => {
   const look = () => {
-    if (!document.getElementById('surface')) { requestAnimationFrame(look); return; }
+    if (!document.getElementById('bar') && !document.getElementById('tilo-page')) { requestAnimationFrame(look); return; }
     const text = id => document.getElementById(id)?.textContent ?? null;
     const expired = document.querySelector('.fr-expired');
     globalThis.__firstFrame = {step: document.documentElement.dataset.firstScreen ?? null, offer: text('first-screen-offer'),
