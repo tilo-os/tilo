@@ -67,7 +67,7 @@ async fn progress_native_connection(
                 workspace: workspace.route.cluster_id.clone(),
             })),
             approved_checks: Some(probe),
-            ..Default::default()
+            ..workspace.membership.services()
         },
     );
     assert!(
@@ -800,7 +800,7 @@ async fn approved_check_native_target_requires_live_launcher_connection() {
             None, None,
             ProcessServices {
                     launcher: Some(Arc::new(ExactFixtureLaunch { pid: std::process::id(), app: workspace.route.app_id.clone(), workspace: workspace.route.cluster_id.clone() })),
-                ..Default::default()
+                ..workspace.membership.services()
             },
         );
         assert!(state.certificate_authority.set(workspace.authority.clone()).is_ok());
