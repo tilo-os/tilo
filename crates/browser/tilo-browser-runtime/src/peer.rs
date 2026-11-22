@@ -1069,8 +1069,10 @@ impl PairingHost {
 
     /// The new devices waiting here for the member root the page holds
     /// (`root`) to pair them: `[{digest, pairingCode, label, device, invite,
-    /// requestedAtMs}]` JSON, keys, digest and invite as hex (`invite` null
-    /// for a request no invite asked for).
+    /// requestedAtMs, signIn, capability}]` JSON, keys, digest and invite as hex
+    /// (`invite` null for a request no invite asked for). `signIn` is set for a
+    /// tab a page's sign-in ticket expects, and `capability` then says what
+    /// certifying it makes it (`null` for any other device).
     ///
     /// # Errors
     /// The host was not reached, or turned the root away.
@@ -1091,6 +1093,10 @@ impl PairingHost {
                         "invite": (entry.request.invite != [0; 16])
                             .then(|| hex::encode(entry.request.invite)),
                         "requestedAtMs": entry.requested_at_ns / 1_000_000,
+                        "signIn": entry.sign_in,
+                        "capability": entry
+                            .sign_in
+                            .then(tilo_device_identity::login::tab_capability),
                     })
                 })
                 .collect(),

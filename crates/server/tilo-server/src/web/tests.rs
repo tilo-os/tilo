@@ -1596,10 +1596,6 @@ fn another_origin_a_server_is_reached_under_is_an_origin_beside_its_public_one()
 /// A page asks its host for the ticket its agent works with, follows it, and gets a ticket for
 /// each direction it asks in: what the ticket routes answer, and what they refuse.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server serves the routes until it shuts down at the end"
-)]
 async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
     use tilo_device_identity::login::Direction;
 

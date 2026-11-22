@@ -1147,7 +1147,7 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
             .address
             .as_ref()
             .and_then(|address| address.web.as_ref());
-        return page::answer(&address, link);
+        return page::answer(&address, link, web.server_info.origin.as_deref());
     }
     let origin = request.headers().get(header::ORIGIN).cloned();
     let public = public_directory_route(request.uri().path());

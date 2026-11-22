@@ -229,8 +229,12 @@ async fn write<W: AsyncWrite + Unpin>(send: &mut W, answer: &PageAnswer) -> std:
 pub(super) fn answer(
     address: &PageAddress,
     link: Option<&tilo_server_protocol::web::WebLink>,
+    peer: Option<&str>,
 ) -> hyper::Response<super::Body> {
-    let mut response = super::reply(hyper::StatusCode::OK, document(address, link).into_bytes());
+    let mut response = super::reply(
+        hyper::StatusCode::OK,
+        document(address, link, peer).into_bytes(),
+    );
     let headers = response.headers_mut();
     headers.insert(
         hyper::header::CONTENT_TYPE,
@@ -250,6 +254,7 @@ pub(super) fn answer(
 pub(super) fn document(
     address: &PageAddress,
     link: Option<&tilo_server_protocol::web::WebLink>,
+    peer: Option<&str>,
 ) -> String {
     let link = link.map(|link| {
         serde_json::json!({
@@ -260,13 +265,14 @@ pub(super) fn document(
     });
     let config = serde_json::json!({
         "link": link,
+        "peer": peer,
         "protocol": tilo_server_protocol::auth::PEER_PROTOCOL_VERSION,
         "address": address,
     });
     // `</` never closes the script early: JSON escapes it.
     let config = config.to_string().replace("</", "<\\/");
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{app}</title><style id=\"tilo-theme\">:root{{color-scheme:light dark}}html,body{{margin:0;height:100%}}body{{font-family:system-ui,-apple-system,\"Segoe UI\",sans-serif}}#tilo-page[data-state]{{display:grid;place-items:center;height:100dvh;color:GrayText}}#tilo-page[data-working]{{cursor:progress}}#tilo-page[data-working]::before{{content:\"\";position:fixed;inset:0 0 auto;height:2px;z-index:9;background:var(--tilo-accent,Highlight);animation:tilo-working 1s ease-in-out infinite alternate}}@keyframes tilo-working{{from{{opacity:.15}}to{{opacity:.7}}}}</style><style id=\"tilo-page-css\"></style></head><body><div id=\"tilo-page\" data-state=\"opening\"></div><script type=\"application/json\" id=\"tilo-page-config\">{config}</script><script type=\"module\">{SCRIPT}</script></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{app}</title><style id=\"tilo-theme\">:root{{color-scheme:light dark}}html,body{{margin:0;height:100%}}body{{font-family:system-ui,-apple-system,\"Segoe UI\",sans-serif}}#tilo-page[data-state]{{display:grid;place-items:center;height:100dvh;color:GrayText}}#tilo-page[data-working]{{cursor:progress}}#tilo-page[data-working]::before{{content:\"\";position:fixed;inset:0 0 auto;height:2px;z-index:9;background:var(--tilo-accent,Highlight);animation:tilo-working 1s ease-in-out infinite alternate}}@keyframes tilo-working{{from{{opacity:.15}}to{{opacity:.7}}}}#tilo-sign-in{{position:fixed;inset:auto 16px 16px;z-index:20;align-items:center;gap:12px;padding:12px 16px;border-radius:12px;background:Canvas;color:CanvasText;box-shadow:0 8px 30px rgb(0 0 0 / .25)}}#tilo-sign-in:not([hidden]){{display:flex}}#tilo-sign-in p{{margin:0;flex:1}}#tilo-sign-in button{{font:inherit;padding:6px 14px;border-radius:8px;border:1px solid ButtonBorder;background:ButtonFace;color:ButtonText;cursor:pointer}}#tilo-sign-in button:hover{{background:Highlight;color:HighlightText}}</style><style id=\"tilo-page-css\"></style></head><body><div id=\"tilo-page\" data-state=\"opening\"></div><script type=\"application/json\" id=\"tilo-page-config\">{config}</script><script type=\"module\">{SCRIPT}</script></body></html>",
         app = ui_title(&address.app),
     )
 }

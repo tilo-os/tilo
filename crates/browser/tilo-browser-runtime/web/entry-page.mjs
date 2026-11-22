@@ -1334,7 +1334,7 @@ function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
   const ours = saved => saved?.person === identity.userPublicKey && saved?.host === host;
   const make = () => makeCode().catch(error => { throw hostNamed(error, host); });
   const makeCode = async () => {
-    const own = workspace ? {id: workspace, name: null} : await setupOwnWorkspace();
+    const own = workspace ? {id: workspace, name: null} : await setupPersonWorkspace();
     const made = await tickets.create({workspace: own.id, name: own.name});
     return {...made, saved: {...made.saved, person: identity.userPublicKey, host}};
   };
@@ -1424,14 +1424,14 @@ async function signInWorkspace(peer, {origin, home = null}) {
  * is in where the host keeps none. Waits for the tab to be let in.
  */
 async function setupWorkspace() {
-  return (await setupOwnWorkspace()).id;
+  return (await setupPersonWorkspace()).id;
 }
 
 /**
  * The person's own workspace on the host this tab is let into, as the host answers it:
  * `{id, name}`. Waits for the tab to be let in.
  */
-async function setupOwnWorkspace() {
+async function setupPersonWorkspace() {
   const peer = await setupPeer();
   if (!peer?.workspace) throw Object.assign(new Error('this tab is not in its workspace yet'), {code: 'not-let-in'});
   const own = await askOwnWorkspace(peer);

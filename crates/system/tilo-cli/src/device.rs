@@ -330,7 +330,8 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         let _ = answer;
         println!(
             "This computer does not hold your identity, so it handed the signing on: approve \
-             \"{label}\" on the device that does, in your Tilo, and the browser is signed in."
+             \"{label}\" on a device that does, in your Tilo or in a tab of yours, and the browser \
+             is signed in."
         );
     }
     Ok(ExitCode::SUCCESS)

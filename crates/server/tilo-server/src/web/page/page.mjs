@@ -292,6 +292,26 @@ async function session(config, device) {
   };
 }
 
+// ---- This browser's person ----
+// The site's own modules are served above the page's address (`<entry>w/<workspace>`), under the
+// version directory `version.json` names: the person's root lives there (`identity.mjs`), which
+// is what approves a browser waiting to be signed in. A page pressed before it is in waits on it.
+let identityLoading = null;
+function identityModule() {
+  identityLoading ??= (async () => {
+    const at = location.pathname.indexOf('/w/');
+    const base = new URL(at < 0 ? '/' : location.pathname.slice(0, at + 1), location.href);
+    const response = await fetch(new URL('version.json', base), {cache: 'no-store'});
+    if (!response.ok) throw new Error(`the site answered ${response.status}`);
+    const {version} = await response.json();
+    return import(new URL(`v/${version}/identity.mjs`, base).href);
+  })().catch(error => {
+    identityLoading = null;
+    throw error;
+  });
+  return identityLoading;
+}
+
 // ---- The page ----
 
 function start() {
@@ -299,6 +319,9 @@ function start() {
   const page = document.getElementById('tilo-page');
   const style = document.getElementById('tilo-page-css');
   const base = `/w/${config.address.workspace}` + (config.address.app ? `/${config.address.app}` : '');
+  // Where this host's own routes are reached over HTTP: its public origin, which the page asks
+  // who its person is (the site's modules) and what waits for them to approve.
+  const peer = typeof config.peer === 'string' && config.peer ? config.peer : null;
   // The workspace this page is, as the entry that handed the browser over
   // named it: an address carries no name.
   let workspaceName = null;
@@ -692,6 +715,102 @@ function start() {
     restoring = true;
     ask({open: addressOf()});
   });
+
+  // ---- A browser of the person's waiting to be signed in ----
+  // A tab that holds no root shows a ticket, and the person runs `tilo device add` with it on a
+  // device of theirs. That device may hold no root either: it hands the signing on, and this
+  // page, which holds the person's root, is where it happens. The page lists what waits for its
+  // person (`identity.mjs`'s `signInsWaiting`, the host's `devices#pending` list) and asks about
+  // one: the device's name and what certifying it makes it. The root signs, the host answers the
+  // tab's request, and the tab is signed in. A request the host does not mark as a sign-in is a
+  // device pairing, which is the person's own Tilo's to ask about, not this page's.
+  let signInAsked = null;
+  let personHeld = null;
+  let personAbsent = false;
+  const signInsAnswered = new Set();
+  const signInBar = () => {
+    let bar = document.getElementById('tilo-sign-in');
+    if (bar) return bar;
+    bar = document.createElement('div');
+    bar.id = 'tilo-sign-in';
+    bar.hidden = true;
+    bar.setAttribute('role', 'alertdialog');
+    bar.innerHTML = '<p></p><button type="button" id="tilo-sign-in-allow" data-sign-in-answer="allow">Sign in</button>'
+      + '<button type="button" id="tilo-sign-in-deny" data-sign-in-answer="deny">Not now</button>';
+    bar.addEventListener('click', event => {
+      const answer = event.target.closest('[data-sign-in-answer]');
+      if (!answer) return;
+      event.preventDefault();
+      answerSignInShown(answer.dataset.signInAnswer === 'allow');
+    });
+    document.body.append(bar);
+    return bar;
+  };
+  const showSignIn = request => {
+    signInAsked = request;
+    const bar = signInBar();
+    bar.dataset.signIn = request.label;
+    bar.querySelector('p').textContent =
+      `Sign “${request.label}” in? It becomes one of your devices: ${request.capability}.`;
+    for (const button of bar.querySelectorAll('button')) button.hidden = false;
+    bar.hidden = false;
+  };
+  const hideSignIn = () => {
+    signInAsked = null;
+    const bar = document.getElementById('tilo-sign-in');
+    if (!bar) return;
+    bar.hidden = true;
+    delete bar.dataset.signIn;
+  };
+  const answerSignInShown = async approved => {
+    const request = signInAsked;
+    if (!request) return;
+    signInsAnswered.add(request.digest);
+    const bar = document.getElementById('tilo-sign-in');
+    // The bar says how it ended in place of the answer, then goes.
+    for (const button of bar?.querySelectorAll('button') ?? []) button.hidden = true;
+    try {
+      const id = await identityModule();
+      const host = await id.approvalHost(peer);
+      await id.answerSignIn(host, personHeld, request.digest, approved);
+      signInAsked = null;
+      if (bar) {
+        bar.querySelector('p').textContent = approved
+          ? `“${request.label}” is signed in.`
+          : `“${request.label}” was not signed in.`;
+        setTimeout(hideSignIn, 4000);
+      }
+    } catch (error) {
+      // Answered nowhere: the next look asks again.
+      signInsAnswered.delete(request.digest);
+      if (bar) {
+        for (const button of bar.querySelectorAll('button')) button.hidden = false;
+        bar.querySelector('p').textContent = 'That did not work. Try again.';
+      }
+      console.warn('sign-in: answering the waiting browser', error);
+    }
+  };
+  const lookForSignIns = async () => {
+    if (!peer || signInAsked || personAbsent) return;
+    try {
+      const id = await identityModule();
+      if (!personHeld) {
+        // Opening the person reads the runtime; a browser that keeps nobody stops here, cheaply.
+        if (!(await id.keptIdentity().catch(() => null))?.rootPublicKey) { personAbsent = true; return; }
+        personHeld = await id.browserIdentity({create: false}).catch(() => null);
+        if (!personHeld) return;
+      }
+      const host = await id.approvalHost(peer);
+      const waiting = await id.signInsWaiting(host, personHeld).catch(() => []);
+      const next = waiting.find(request => !signInsAnswered.has(request.digest));
+      if (next) showSignIn(next);
+    } catch (error) {
+      // The host not reached, its modules not in: the next look tries again.
+      console.warn('sign-in: the browsers waiting', error);
+    }
+  };
+  lookForSignIns();
+  setInterval(lookForSignIns, 2000);
 
   const connect = async () => {
     if (!config.link || !globalThis.WebTransport) { say('refused', 'This browser cannot open this page.'); return; }

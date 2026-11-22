@@ -159,6 +159,10 @@ pub struct PendingCertification {
     pub pairing_code: String,
     /// When the host received the request, Unix-epoch nanoseconds.
     pub requested_at_ns: u64,
+    /// Signing in: the request is a tab's, one a page's sign-in ticket here expects,
+    /// and the certificate that answers it signs that tab in.
+    #[serde(default)]
+    pub sign_in: bool,
 }
 
 /// An approver's answer to one request.

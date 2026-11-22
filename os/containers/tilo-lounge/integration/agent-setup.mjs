@@ -556,6 +556,24 @@ const approved = await tilo(signIn.kind === 'device add'
   : ['login', signIn.code, ...(signIn.site ? ['--site', signIn.site] : [])]);
 report.approve = approved;
 if (approved.code !== 0) await fail(`tilo login did not approve the tab (${approved.code}): ${approved.stderr}${approved.stdout}`);
+// The person's root stays in the tab that set it up, so the computer that ran `tilo device add`
+// holds none: it hands the signing on, and the first tab, which holds the root, asks about the
+// browser it would sign in and approves it.
+if (signIn.kind === 'device add') {
+  if (!/handed the signing on/.test(approved.stdout)) {
+    await fail(`tilo device add did not hand the signing on from a computer with no root: ${approved.stdout}${approved.stderr}`);
+  }
+  const askedAbout = await until(first, `(() => {
+    const bar = document.getElementById('tilo-sign-in');
+    return bar && !bar.hidden ? bar.innerText.trim() : '';
+  })()`, 'the first tab asking about the browser signing in', stepLimit(8));
+  report.signInAsked = askedAbout;
+  if (!/becomes one of your devices/.test(askedAbout)) {
+    await fail(`the first tab's ask names no device of the person's: ${askedAbout}`);
+  }
+  await click(first, 'tilo-sign-in-allow');
+  mark('the first tab approved the browser signing in');
+}
 // The person asked their agent to sign them in on this tab, so the tab asks
 // them nothing about whose device it becomes: that card, which warns of a
 // link someone else made, is for a link handed to a device.

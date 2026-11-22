@@ -287,6 +287,56 @@ export async function certifyDevice(options) {
 }
 
 /**
+ * The host at `origin`, as this page pairs its person's devices through it: the runtime's
+ * `PairingHost` over the address the host answers `hostInfo` with, kept for the page. A page
+ * that lists what waits there, and answers one, proves it holds the person's root by signing
+ * with it; the host checks.
+ *
+ * # Errors
+ * The host was not reached, or names no endpoint to pair through.
+ */
+let approvalHosts;
+export async function approvalHost(origin, {fetch: fetcher} = {}) {
+  approvalHosts ??= new Map();
+  const kept = approvalHosts.get(origin);
+  if (kept) return kept;
+  const made = (async () => {
+    const runtime = await pageRuntime();
+    const post = async (path, body) => {
+      const response = await (fetcher ?? ((...args) => globalThis.fetch(...args)))(new URL(path, origin).href, {
+        method: 'POST', body, credentials: 'omit', cache: 'no-store', redirect: 'error',
+      });
+      return {status: response.status, body: new Uint8Array(await response.arrayBuffer())};
+    };
+    const info = JSON.parse(await runtime.hostInfo(post));
+    if (!info?.address) throw new IdentityError('no-endpoint', 'This host names no address to pair through.');
+    return new runtime.PairingHost(JSON.stringify(info.address));
+  })();
+  approvalHosts.set(origin, made);
+  made.catch(() => { if (approvalHosts.get(origin) === made) approvalHosts.delete(origin); });
+  return made;
+}
+
+/**
+ * The devices waiting at `host` that sign a browser in: those the host marks `signIn`, since a
+ * tab's request is told from a device pairing by the ticket's direction and never guessed from
+ * its shape. Each is `{digest, label, device, capability}` (`PairingHost.pending`).
+ */
+export async function signInsWaiting(host, root) {
+  const pending = JSON.parse(await host.pending(root));
+  return pending.filter(request => request?.signIn === true);
+}
+
+/**
+ * Approve (`approved`) or turn away the sign-in `digest` with `root`, the person's root: the host
+ * answers the tab's certification request with the certificate it makes, and the tab is signed
+ * in. Resolves the certificate, or null when turned away.
+ */
+export async function answerSignIn(host, root, digest, approved) {
+  return host.answer(root, digest, approved);
+}
+
+/**
  * Hand a node waiting for its certificate (`tilo-server run
  * --install-token-file`) the certificate `certifyDevice` issued for it, at
  * its HTTPS `origin`, with the install token it was provisioned with, and

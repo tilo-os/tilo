@@ -225,7 +225,9 @@ a desktop or a server. A tab has no endpoint, so the page's host serves its
 ticket and the tab signs the approval. A tab that holds no root signs in the
 other way round: its ticket names the tab's pending request, and the person runs
 `tilo device add <ticket>` on a device that is logged in, and the person's root certifies the tab
-like any other device. `tilo login` is always this computer logging in. There is no site lookup. `/v1` REST is only an edge
+like any other device. A computer that holds no root hands the signing on: the person's tab that
+holds their root, or any of their logged-in devices, sees the request among `devices#pending` and
+answers it. `tilo login` is always this computer logging in. There is no site lookup. `/v1` REST is only an edge
 for callers outside Tilo.
 
 ### Where work runs

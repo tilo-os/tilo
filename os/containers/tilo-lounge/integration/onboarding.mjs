@@ -749,6 +749,25 @@ try {
     : ['login', signIn.code, ...(signIn.site ? ['--site', signIn.site] : [])]);
   report.signInLogin = claimed;
   if (claimed.code !== 0) await fail(`tilo login of the sign-in code failed (${claimed.code}): ${claimed.stderr}${claimed.stdout}`);
+  // The person's root stays in the tab that set it up, so the computer that ran `tilo device add`
+  // holds none: it hands the signing on to the person's devices, and the first tab, which does
+  // hold their root, asks about the browser it would sign in — naming the device and what
+  // certifying it makes it — and approves it.
+  if (signIn.kind === 'device add') {
+    if (!/handed the signing on/.test(claimed.stdout)) {
+      await fail(`tilo device add did not hand the signing on from a computer with no root: ${claimed.stdout}${claimed.stderr}`);
+    }
+    const askedAbout = await until(stranger.tab, `(() => {
+      const bar = document.getElementById('tilo-sign-in');
+      return bar && !bar.hidden ? bar.innerText.trim() : '';
+    })()`, 'the first tab asking about the browser signing in', stepLimit(8));
+    report.signInAsked = askedAbout;
+    if (!/becomes one of your devices/.test(askedAbout)) {
+      await fail(`the first tab's ask names no device of the person's: ${askedAbout}`);
+    }
+    await pressId(stranger.tab, 'tilo-sign-in-allow');
+    mark('the first tab approved the browser signing in');
+  }
   // The person asked their agent to sign them in on this tab, so the tab asks
   // them nothing about whose device it becomes: that card, which warns of a
   // link someone else made, is for a link handed to a device.

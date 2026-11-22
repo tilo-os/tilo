@@ -654,6 +654,17 @@ impl CertificationProtocol {
         );
         let digest = request.digest().map_err(|error| error.to_string())?;
         let pairing_code = request.pairing_code().map_err(|error| error.to_string())?;
+        // Signing in: the request is one a page's sign-in ticket here expects, told by the
+        // ticket's own direction rather than from the request's shape. The devices that
+        // approve it list it as such.
+        #[cfg(feature = "web")]
+        let sign_in = request.invite != [0; 16]
+            && self
+                .codes
+                .get()
+                .is_some_and(|codes| codes.expects(&request, now_ns));
+        #[cfg(not(feature = "web"))]
+        let sign_in = false;
         let mut pending = self.lock();
         pending.retain(|_, entry| entry.entry.request.expires_at_ns > now_ns);
         if pending.contains_key(&digest) {
@@ -671,6 +682,7 @@ impl CertificationProtocol {
                     request_digest: digest,
                     pairing_code: pairing_code.clone(),
                     requested_at_ns: now_ns,
+                    sign_in,
                 },
                 answer,
                 label,
@@ -1681,5 +1693,65 @@ mod confirmation_tests {
             "Claude Code on laptop 2",
             "the host names two devices set up alike apart"
         );
+    }
+
+    /// A page's sign-in tickets expect one invite: the request that names it is listed for the
+    /// approving devices as signing a tab in, and a device pairing is not — told by the ticket's
+    /// direction, never guessed from a request.
+    #[cfg(feature = "web")]
+    #[test]
+    fn only_a_request_a_sign_in_ticket_expects_is_listed_as_signing_in() {
+        struct Expects([u8; 16]);
+
+        impl crate::certification::TabRequests for Expects {
+            fn expects(&self, request: &CertificationRequest, _now_ns: u64) -> bool {
+                request.invite == self.0
+            }
+        }
+
+        let protocol = protocol();
+        let invite = [31; 16];
+        protocol.set_tab_requests(Arc::new(Expects(invite)));
+        let now = unix_now_ns();
+        let request = |device: &ed25519_dalek::SigningKey, invite: [u8; 16], nonce: [u8; 16]| {
+            CertificationRequest {
+                version: tilo_user_identity::CERTIFICATION_SCHEMA_VERSION,
+                user_public_key: protocol.identity.user_public_key,
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "Browser".into(),
+                requested: DeviceCapabilities::member(),
+                nonce,
+                invite,
+                issued_at_ns: now,
+                expires_at_ns: now.checked_add(60_000_000_000).unwrap(),
+                signature: [0; 64],
+            }
+            .sign(device)
+            .unwrap()
+        };
+        let tab = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
+        let paired = ed25519_dalek::SigningKey::from_bytes(&[33; 32]);
+        protocol
+            .enqueue(request(&tab, invite, [1; 16]), now)
+            .unwrap();
+        protocol
+            .enqueue(request(&paired, [2; 16], [2; 16]), now)
+            .unwrap();
+        let ApproverReply::Pending(listed) = protocol.decide(
+            ApproverRequest::ListPending,
+            now,
+            &protocol.identity.user_public_key,
+        ) else {
+            panic!("a list");
+        };
+        let sign_in_of = |device: &ed25519_dalek::SigningKey| {
+            listed
+                .iter()
+                .find(|entry| entry.request.device_public_key == device.verifying_key().to_bytes())
+                .map(|entry| entry.sign_in)
+                .expect("listed")
+        };
+        assert!(sign_in_of(&tab), "the request a sign-in ticket expects");
+        assert!(!sign_in_of(&paired), "a device pairing signs no tab in");
     }
 }

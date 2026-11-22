@@ -5,8 +5,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  fetchProfile, fitDisplayName, hex, IdentityError, installNodeCertificate, MAX_DISPLAY_NAME_BYTES,
-  nodeInstallInfo, publishProfile, unhex,
+  answerSignIn, fetchProfile, fitDisplayName, hex, IdentityError, installNodeCertificate, MAX_DISPLAY_NAME_BYTES,
+  nodeInstallInfo, publishProfile, signInsWaiting, unhex,
 } from './identity.mjs';
 
 /** What resolved a promise: its value, or the error it refused with. */
@@ -156,4 +156,21 @@ test('a node is asked what it runs, and only a session its own key vouches for i
   await nodeInstallInfo({origin: 'https://node.example', devicePublicKey: node, installToken: 't', fetch: asked});
   assert.equal(asked.requests[0].init.method, 'GET');
   assert.equal(asked.requests[0].init.headers['x-tilo-install-token'], 't');
+});
+
+test('a page asks about the browsers waiting to sign in, and answers only those, never a device pairing', async () => {
+  const root = {userPublicKey: 'ab'.repeat(32), signed: [], async sign() { return new Uint8Array(64); }};
+  const requests = [
+    {digest: 'aa', label: 'Laptop', signIn: false, capability: null},
+    {digest: 'bb', label: 'Firefox on Linux', signIn: true, capability: 'a browser of yours, for 30 days'},
+  ];
+  const answers = [];
+  const host = {
+    pending: async signer => { assert.equal(signer, root); return JSON.stringify(requests); },
+    answer: async (signer, digest, approved) => { assert.equal(signer, root); answers.push([digest, approved]); return null; },
+  };
+  assert.deepEqual(await signInsWaiting(host, root), [requests[1]],
+    'a device pairing is the person’s own Tilo’s to ask about, not this page’s');
+  await answerSignIn(host, root, 'bb', true);
+  assert.deepEqual(answers, [['bb', true]]);
 });

@@ -1222,6 +1222,7 @@ mod tests {
             pairing_code: code.into(),
             request,
             requested_at_ns: 0,
+            sign_in: false,
         }
     }
 
