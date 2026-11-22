@@ -186,6 +186,33 @@ const RETIRED: [(Option<&str>, &str); 3] = [
 ];
 
 impl ServerConfig {
+    /// A host keeping its state at `state_root`, on its computer's loopback: what a test starts.
+    pub fn loopback(state_root: PathBuf) -> Self {
+        Self {
+            state_root,
+            ..Self::default()
+        }
+        .on_loopback()
+    }
+
+    /// This host on its computer's loopback, at the port it asked for: what a test starts.
+    #[must_use]
+    pub fn on_loopback(self) -> Self {
+        let iroh_listen =
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, self.iroh_listen.port()));
+        Self {
+            iroh_listen,
+            ..self
+        }
+    }
+
+    /// Whether the host asks its router for a port (`UPnP`, PCP, NAT-PMP), which is how
+    /// devices reach a host at home without the relay. A host on loopback is reached from no
+    /// router, so it asks none, and sends no probe for one.
+    pub fn asks_router_for_port(&self) -> bool {
+        !self.iroh_listen.ip().is_loopback()
+    }
+
     /// Read a config file from disk.
     ///
     /// # Errors
@@ -243,6 +270,8 @@ mod tests {
             assert_eq!(cfg.identity_root, PathBuf::from("/var/lib/tilo"));
             assert_eq!(cfg.state_root, PathBuf::from("/var/lib/tilo-server"));
             assert_eq!(cfg.iroh_listen.port(), 0);
+            assert!(cfg.asks_router_for_port());
+            assert!(!cfg.clone().on_loopback().asks_router_for_port());
             assert_eq!(cfg.work, WorkSetting::own_person());
             assert!(cfg.services.workspace_replication);
             assert!(cfg.services.inbound_server);

@@ -51,10 +51,7 @@ async fn extra_protocol_and_server_share_one_endpoint() {
         .unwrap();
     let endpoint_addr = endpoint.addr();
     let server = Server::start_on_endpoint_with_protocols(
-        ServerConfig {
-            state_root: state.path().to_path_buf(),
-            ..ServerConfig::default()
-        },
+        ServerConfig::loopback(state.path().to_path_buf()),
         tilo_server::daemon::ServerIdentity {
             user_public_key: user.user_pk,
             device_signing_key: host.sk,

@@ -2320,7 +2320,8 @@ mod tests {
                 state_root: dir.join("server"),
                 identity_root: dir.join("identity"),
                 ..Default::default()
-            },
+            }
+            .on_loopback(),
             ServerIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host,
@@ -2351,7 +2352,8 @@ mod tests {
                 state_root: server_state.to_path_buf(),
                 identity_root: state.join("identity"),
                 ..Default::default()
-            },
+            }
+            .on_loopback(),
             identity,
         )
         .await

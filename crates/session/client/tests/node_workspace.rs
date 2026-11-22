@@ -256,10 +256,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     // It starts as `tilo-server run` then does: the person's host, on the
     // identity it was installed with.
     let server = Server::start(
-        ServerConfig {
-            state_root: state.clone(),
-            ..ServerConfig::default()
-        },
+        ServerConfig::loopback(state.clone()),
         ServerIdentity {
             user_public_key: persist::read_public_key(&paths.user_pubkey).unwrap(),
             device_signing_key: persist::read_device_key(&paths.device_privkey).unwrap(),

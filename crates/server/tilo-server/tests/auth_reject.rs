@@ -81,10 +81,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
 
         let tmp = tempfile::tempdir().unwrap();
         let state_root = tmp.path().to_path_buf();
-        let cfg = tilo_server::ServerConfig {
-            state_root: state_root.clone(),
-            ..Default::default()
-        };
+        let cfg = tilo_server::ServerConfig::loopback(state_root.clone());
         let identity = tilo_server::daemon::ServerIdentity {
             user_public_key: user.user_pk,
             device_signing_key: server_dev.sk.clone(),
@@ -128,10 +125,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         let device_key = device.device_pubkey();
         let state = tempfile::tempdir().unwrap();
         let server = crate::common::start_server(
-            tilo_server::ServerConfig {
-                state_root: state.path().to_path_buf(),
-                ..Default::default()
-            },
+            tilo_server::ServerConfig::loopback(state.path().to_path_buf()),
             tilo_server::daemon::ServerIdentity {
                 user_public_key: user.user_pk,
                 device_signing_key: server_dev.sk,
@@ -189,10 +183,7 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
     let device_key = device.device_pubkey();
     let state = tempfile::tempdir().unwrap();
     let server = crate::common::start_server(
-        tilo_server::ServerConfig {
-            state_root: state.path().to_path_buf(),
-            ..Default::default()
-        },
+        tilo_server::ServerConfig::loopback(state.path().to_path_buf()),
         tilo_server::daemon::ServerIdentity {
             user_public_key: user.user_pk,
             device_signing_key: server_dev.sk,

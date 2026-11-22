@@ -165,11 +165,9 @@ impl Site {
             let server = tilo_server::daemon::Server::start_with_relay_mode(
                 tilo_server::ServerConfig {
                     state_root: state.path().join("host"),
-                    // Devices of this machine find the site on loopback, as they do on a person's
-                    // own network.
-                    iroh_listen: "127.0.0.1:0".parse().expect("a loopback address"),
                     ..tilo_server::ServerConfig::default()
-                },
+                }
+                .on_loopback(),
                 tilo_server::daemon::ServerIdentity {
                     user_public_key: owner.public,
                     device_signing_key: host_key.clone(),

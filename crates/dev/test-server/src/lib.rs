@@ -177,7 +177,8 @@ impl Running {
                                 identity_root: host_root.join("identity"),
                                 packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
                                 ..tilo_server::ServerConfig::default()
-                            },
+                            }
+                            .on_loopback(),
                             tilo_server::daemon::ServerIdentity {
                                 user_public_key,
                                 device_signing_key: host_key.clone(),

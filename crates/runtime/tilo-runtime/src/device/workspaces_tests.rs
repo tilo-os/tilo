@@ -108,10 +108,7 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig {
-            state_root: state.path().join("server"),
-            ..Default::default()
-        },
+        tilo_server::ServerConfig::loopback(state.path().join("server")),
         tilo_server::daemon::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,

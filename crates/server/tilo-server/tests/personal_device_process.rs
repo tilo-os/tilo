@@ -173,10 +173,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     let state = tempfile::tempdir().unwrap();
     let home_cert = signed_cert(&root, &home, "Home peer", DeviceCapabilities::member());
     let server = crate::common::start_server(
-        ServerConfig {
-            state_root: state.path().to_path_buf(),
-            ..ServerConfig::default()
-        },
+        ServerConfig::loopback(state.path().to_path_buf()),
         ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: home.clone(),

@@ -44,10 +44,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let b = user.enrol("new-phone", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
         let server = crate::common::start_server(
-            ServerConfig {
-                state_root: state.path().to_path_buf(),
-                ..ServerConfig::default()
-            },
+            ServerConfig::loopback(state.path().to_path_buf()),
             tilo_server::daemon::ServerIdentity {
                 user_public_key: user.user_pk,
                 device_signing_key: server_dev.sk,
@@ -155,10 +152,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let (a_key, b_key) = (a.device_pubkey(), b.device_pubkey());
         let state = tempfile::tempdir().unwrap();
         let server = crate::common::start_server(
-            ServerConfig {
-                state_root: state.path().to_path_buf(),
-                ..ServerConfig::default()
-            },
+            ServerConfig::loopback(state.path().to_path_buf()),
             tilo_server::daemon::ServerIdentity {
                 user_public_key: user.user_pk,
                 device_signing_key: server_dev.sk,

@@ -1337,7 +1337,8 @@ mod tests {
                 state_root: tilo_server_protocol::metrics::workspace_server_root(state),
                 identity_root: state.join("identity"),
                 ..Default::default()
-            },
+            }
+            .on_loopback(),
             ServerIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host,

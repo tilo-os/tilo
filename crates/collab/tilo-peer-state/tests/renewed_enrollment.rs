@@ -86,10 +86,7 @@ impl Admitted {
         // has here, which the device dials directly. A host with a public relay names only that
         // relay, which this test's device would reach over the internet or not at all.
         let server = Server::start_with_relay_mode(
-            ServerConfig {
-                state_root: state.path().to_path_buf(),
-                ..ServerConfig::default()
-            },
+            ServerConfig::loopback(state.path().to_path_buf()),
             tilo_server::daemon::ServerIdentity {
                 user_public_key: alice.verifying_key().to_bytes(),
                 device_signing_key: host_key.clone(),

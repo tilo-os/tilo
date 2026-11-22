@@ -75,7 +75,8 @@ async fn server_at(
         ServerConfig {
             state_root: state.path().into(),
             ..config
-        },
+        }
+        .on_loopback(),
         identity,
         iroh::RelayMode::Disabled,
     )

@@ -40,10 +40,7 @@ fn browser_request(user: [u8; 32], device: &SigningKey) -> CertificationRequest 
 async fn start_server(user: &TestUser, revocations: RevocationList) -> (Server, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
     let host = user.enrol("home-server", DeviceCapabilities::member());
-    let cfg = tilo_server::ServerConfig {
-        state_root: tmp.path().to_path_buf(),
-        ..Default::default()
-    };
+    let cfg = tilo_server::ServerConfig::loopback(tmp.path().to_path_buf());
     let server = crate::common::start_server(
         cfg,
         ServerIdentity {

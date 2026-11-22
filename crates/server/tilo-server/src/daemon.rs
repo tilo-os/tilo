@@ -1306,12 +1306,7 @@ async fn bind_endpoint(
         None => Endpoint::builder(presets::N0),
     };
     let builder = builder.transport_config(tilo_server_client::host::transport());
-    // A host bound to its own loopback is reachable from no router, so the
-    // portmapper's UPnP probe and name lookups would open a port nothing could
-    // use: it stays off there. Every other host — every address, or one on a
-    // network — keeps it, because that port is how other devices reach without
-    // the relay.
-    let builder = if cfg.iroh_listen.ip().is_loopback() {
+    let builder = if cfg.asks_router_for_port() {
         builder
     } else {
         builder.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
@@ -1804,7 +1799,8 @@ mod tests {
                     state_root: state.path().to_path_buf(),
                     services: crate::mesh::ServiceCapabilities::personal_server(),
                     ..ServerConfig::default()
-                },
+                }
+                .on_loopback(),
                 identity(DeviceCapabilities::member()),
             )
             .await
@@ -1869,7 +1865,8 @@ mod tests {
                     // tests' hosts do: nothing here reaches number 0.
                     packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
                     ..ServerConfig::default()
-                },
+                }
+                .on_loopback(),
                 ServerIdentity {
                     user_public_key: user.public_key,
                     device_signing_key: host_key,
@@ -1889,7 +1886,8 @@ mod tests {
                     state_root: primary_state.path().to_path_buf(),
                     services: crate::mesh::ServiceCapabilities::personal_server(),
                     ..ServerConfig::default()
-                },
+                }
+                .on_loopback(),
                 ServerIdentity {
                     user_public_key: user.public_key,
                     device_signing_key: admin_key,

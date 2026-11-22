@@ -571,10 +571,7 @@ mod tests {
             .await
             .unwrap();
         let server = tilo_server::daemon::Server::start_with_relay_mode(
-            tilo_server::ServerConfig {
-                state_root: state.join("host"),
-                ..tilo_server::ServerConfig::default()
-            },
+            tilo_server::ServerConfig::loopback(state.join("host")),
             tilo_server::daemon::ServerIdentity {
                 user_public_key: person,
                 device_signing_key: host_key,

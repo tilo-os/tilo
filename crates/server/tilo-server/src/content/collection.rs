@@ -464,7 +464,8 @@ mod tests {
                 state_root: state.join("server"),
                 identity_root: state.join("identity"),
                 ..Default::default()
-            },
+            }
+            .on_loopback(),
             crate::daemon::ServerIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host,
