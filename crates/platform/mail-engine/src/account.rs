@@ -127,14 +127,6 @@ impl AccountStore {
         Self::from_shared(shared, Some(vault))
     }
 
-    pub fn without_secrets(shared: &SharedStore) -> Self {
-        Self::from_shared(shared, None)
-    }
-
-    pub fn load_without_secrets_in(config_root: &Path) -> Self {
-        Self::without_secrets(&SharedStore::load_in(config_root))
-    }
-
     fn from_shared(shared: &SharedStore, vault: Option<&AccountCredentials>) -> Self {
         let ty = AccountTypeId::from(TYPE_ID);
         let accounts: Vec<Account> = shared
@@ -247,34 +239,6 @@ impl AccountStore {
             }
         }
         (edits, removed)
-    }
-
-    pub fn keep_secrets_in(
-        &self,
-        config_root: &Path,
-        removed: &[AccountId],
-    ) -> std::io::Result<()> {
-        let mut vault = AccountCredentials::open_in(config_root).map_err(std::io::Error::other)?;
-        for id in removed {
-            vault.remove(id);
-        }
-        for acct in &self.accounts {
-            if acct.config.import_pending {
-                continue;
-            }
-            let id = AccountId::from(acct.id.clone());
-            if acct.config.password.is_empty() {
-                if acct.config.auth != crate::model::AuthMethod::OAuth {
-                    vault.remove(&id);
-                }
-            } else {
-                vault.put_for(
-                    &acct.to_stored(),
-                    &accounts::Secret::password(acct.config.password.clone()),
-                );
-            }
-        }
-        vault.try_save().map_err(std::io::Error::other)
     }
 
     pub fn is_empty(&self) -> bool {
