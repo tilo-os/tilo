@@ -206,6 +206,16 @@ impl Core {
         Ok(said)
     }
 
+    /// Whether `who` reads `target`: the answer `members(r)` gives for them, and none for an
+    /// actor who is no member, an automation or an app among them (`std.may_read`).
+    pub(crate) fn may_read(&self, who: &Actor, target: &ResourceRef) -> bool {
+        let list = self.read_members();
+        let reads = self.members.borrow().reads.clone();
+        list.iter().any(|member| {
+            who.member_id() == Some(&member.id) && member_reads(reads.as_deref(), member, target)
+        })
+    }
+
     pub(crate) fn members_import(
         &self,
         imp: crate::abi::Imp,
@@ -231,13 +241,7 @@ impl Core {
             Imp::MayRead => {
                 let who = self.actor_arg(a.h(0)?)?;
                 let target = self.ref_arg(a.h(1)?)?;
-                let list = self.read_members();
-                let reads = self.members.borrow().reads.clone();
-                let may = list.iter().any(|member| {
-                    who.member_id() == Some(&member.id)
-                        && member_reads(reads.as_deref(), member, &target.target)
-                });
-                crate::core::ret_i32(i32::from(may))
+                crate::core::ret_i32(i32::from(self.may_read(&who, &target.target)))
             }
             Imp::Speakers => {
                 let max = usize::try_from(a.long(1)?).unwrap_or(0);

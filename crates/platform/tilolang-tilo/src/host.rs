@@ -1487,12 +1487,6 @@ impl Host {
         crate::asks::run(self, &self.inner.asking)
     }
 
-    /// How the host tells whether an agent may read a resource: an ask made from a mention copies
-    /// the text only for an agent that may read the item it is in. Without one, no agent may.
-    pub fn set_read_check(&self, check: impl Fn(&Actor, &ResourceRef) -> bool + 'static) {
-        self.inner.asking.set_read_check(Box::new(check));
-    }
-
     /// The actions the runtime committed under a ticket of `first` or later.
     #[must_use]
     pub fn take_committed_from(&self, first: u64) -> Vec<Committed> {

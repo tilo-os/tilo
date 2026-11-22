@@ -2,14 +2,16 @@
 //! any app's resource, asks that agent about the item the text is in, through the agent
 //! package's own actions (`so.tilo.lang.agent`). No app writes code for it.
 //!
-//! An ask is named by the item and the mention ([`Ask::mention`]): the item's text mentioning an
-//! agent makes one ask however often it is edited, undone or redone. When the mention goes while
-//! the ask still waits, it is withdrawn; when it comes back, a withdrawn ask is asked again.
+//! An ask is named by the item and the mention (an `Ask`'s `mention`): the item's text
+//! mentioning an agent makes one ask however often it is edited, undone or redone. When the
+//! mention goes while the ask still waits, it is withdrawn; when it comes back, a withdrawn ask
+//! is asked again.
 //!
 //! The device of the person who wrote the item's last change acts, as that person: who asked is
 //! who wrote the mention, and another member's device that receives the change makes nothing.
-//! What was asked is copied into the ask only when the agent may read the item
-//! ([`Host::set_read_check`]); otherwise the ask holds nothing of it.
+//! What was asked is copied into the ask only when the agent may read the item, as
+//! `std.may_read` answers it ([`tilolang_runtime::Runtime::may_read`]); otherwise it is asked
+//! with nothing said, which the package keeps as an ask the agent cannot read.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,15 +27,11 @@ use crate::store::Watch;
 /// The package asks are made in.
 pub const AGENT_APP: &str = "so.tilo.lang.agent";
 
-/// Whether `agent` may read the resource `at`: what decides whether an ask copies the text.
-pub type ReadCheck = dyn Fn(&Actor, &ResourceRef) -> bool;
-
 /// What the asks from mentions follow of the store.
 pub(crate) struct Asking {
     moved: Watch,
     /// Whether asks are being made now: the asks' own writes move the store again.
     busy: std::cell::Cell<bool>,
-    read: std::cell::RefCell<Option<Box<ReadCheck>>>,
 }
 
 impl Asking {
@@ -41,20 +39,7 @@ impl Asking {
         Self {
             moved,
             busy: std::cell::Cell::new(false),
-            read: std::cell::RefCell::new(None),
         }
-    }
-
-    pub(crate) fn set_read_check(&self, check: Box<ReadCheck>) {
-        *self.read.borrow_mut() = Some(check);
-    }
-
-    /// Whether `agent` may read `at`; nobody may where the host was told no way to check.
-    fn may_read(&self, agent: &Actor, at: &ResourceRef) -> bool {
-        self.read
-            .borrow()
-            .as_ref()
-            .is_some_and(|check| check(agent, at))
     }
 }
 
@@ -90,7 +75,7 @@ pub(crate) fn run(host: &Host, asking: &Asking) -> usize {
     asking.busy.set(true);
     let mut invoked: usize = 0;
     for (resource, fields) in items {
-        invoked = invoked.saturating_add(item(host, asking, &agent.meta, &resource, &fields));
+        invoked = invoked.saturating_add(item(host, &agent.meta, &resource, &fields));
     }
     asking.busy.set(false);
     invoked
@@ -99,7 +84,6 @@ pub(crate) fn run(host: &Host, asking: &Asking) -> usize {
 /// [`run`] for the item `resource`, whose `fields` moved.
 fn item(
     host: &Host,
-    asking: &Asking,
     agent: &Meta,
     resource: &str,
     fields: &BTreeSet<String>,
@@ -157,7 +141,7 @@ fn item(
                     return invoked;
                 };
                 // Nothing of the text goes to an agent that may not read where it was written.
-                let said = if asking.may_read(who, &at) {
+                let said = if host.runtime().may_read(who, &at) {
                     said.clone()
                 } else {
                     RichValue::default()

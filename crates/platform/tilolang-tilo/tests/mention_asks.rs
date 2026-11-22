@@ -41,12 +41,25 @@ fn helper() -> MemberId {
     MemberId::agent("helper")
 }
 
-/// Ada's workspace with Notes, Chat and the agents' asks; the helper agent may read everything
-/// unless `reads` says otherwise.
+/// Ada's workspace with Notes, Chat and the agents' asks, the helper agent a member of it: it
+/// reads everything when `reads`, and nothing otherwise, as the workspace's grants say.
 fn workspace(reads: bool) -> Replica {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, NOTES, CHAT, AGENT]);
     ada.host.set_clock(|| "2026-11-21T09:00:00Z".to_owned());
-    ada.host.set_read_check(move |_, _| reads);
+    let grants: std::rc::Rc<tilolang_runtime::members::Reads> =
+        std::rc::Rc::new(move |who: &Actor, _: &ResourceRef| {
+            reads || who.member_id().is_some_and(|member| !member.is_agent())
+        });
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person(
+                "ada",
+                tilo_action_policy::Role::Owner,
+            ),
+            tilolang_runtime::members::Member::agent("helper"),
+        ],
+        Some(grants),
+    );
     ada.commit();
     ada
 }

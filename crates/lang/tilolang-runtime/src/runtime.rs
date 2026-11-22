@@ -1391,6 +1391,13 @@ impl Runtime {
         self.core.set_members(members, reads);
     }
 
+    /// Whether `who` may read the resource `at`, by the members and reads the host gave
+    /// ([`Self::set_members`]): what `std.may_read(who, r)` answers.
+    #[must_use]
+    pub fn may_read(&self, who: &Actor, at: &ResourceRef) -> bool {
+        self.core.may_read(who, at)
+    }
+
     /// Where settled outside effects go.
     pub fn set_sink(&self, sink: impl OutsideSink + 'static) {
         *self.core.sink.borrow_mut() = Some(Box::new(sink));
