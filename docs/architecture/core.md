@@ -154,6 +154,19 @@ An agent sandbox on tilo.sh is one workspace. Whether that workspace also
 has a machine for terminal commands, Browser tabs, or Linux and Windows apps
 is what the customer pays for.
 
+There is one agent runtime: the Tilo agent. It works on a workspace's files
+and Terminal through the same actions the CLI, MCP and SDKs call, signs in
+to outside services from the workspace vault, and uses the model provider
+chosen in the workspace's AI settings. Tilo has no code for any particular
+outside agent. Claude Code, Codex, `t` and the rest are ordinary commands
+in a workspace's Terminal, run by a person or by the Tilo agent. A model
+provider (Anthropic, OpenAI, a local model) is one entry in AI settings,
+not a code path of its own.
+
+The proof that this works is our own development: in the company workspace,
+the Tilo agent takes a small change to the tilo repo from a chat message,
+checks it with `t`, commits it and pushes it.
+
 ### Calls
 
 A call is an address, a typed input and who acts. It is admitted the same
@@ -512,6 +525,7 @@ The copies:
 | `tilo-app` `framework/` (`ResourceApp`, `Dispatcher<R>`, `ViewCx`, `ResourceSurface`) after the Rust apps port | ~62,000 |
 | The Rust apps, each replaced by its tilolang port in the same push | ~900k of 1.28M; the rest becomes engine crates |
 | The Rust shell, replaced by `apps/tl/shell` | ~140,000 |
+| `tilo-server` `coding_agents` (a Claude Code harness) and every other path written for one outside agent (`claude`/`anthropic` outside the model-provider entry), once the Tilo agent does their job | ~4,000 plus what the sweep finds |
 
 This is the largest piece by far. A port lands together with the deletion of
 the Rust app, after a side-by-side walk of the first hour of use, and gaps
