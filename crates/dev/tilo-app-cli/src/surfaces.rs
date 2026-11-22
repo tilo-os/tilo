@@ -177,7 +177,7 @@ pub(crate) fn run_surfaces(args: SurfacesArgs) -> Result<Value> {
             kept.push(file);
             continue;
         }
-        let report = tilo_app_cli::surface::report_of(app, Some(executable))
+        let report = tilo_app_cli::surface::report_of(app, executable)
             .with_context(|| format!("reading {}'s surface", app.display()))?;
         if let Some(view) = &report.view {
             // Its read actions are missing from a report whose view did not

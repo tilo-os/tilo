@@ -31,13 +31,12 @@
 //! next built or changed.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::Duration;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, bail, ensure};
 use serde_json::Value;
 
 use crate::contract::{ContractFinding, ContractReport, Level};
@@ -278,23 +277,151 @@ fn read_capped(pipe: impl std::io::Read) -> (Vec<u8>, bool) {
     (bytes, over)
 }
 
-/// Run the app's binary for its surface report: `executable` when it is
-/// already built, else `cargo run` (whose wait covers the build too).
-pub fn report_of(app_dir: &Path, executable: Option<&Path>) -> Result<SurfaceReport> {
-    let (mut command, wait) = if let Some(executable) = executable {
-        (ProcessCommand::new(executable), REPORT_WAIT)
-    } else {
-        let program = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-        let mut cargo = ProcessCommand::new(program);
-        cargo
-            .args(["run", "--quiet", "--manifest-path"])
-            .arg(app_dir.join("Cargo.toml"))
-            .arg("--");
-        (cargo, BUILD_WAIT)
-    };
-    command.current_dir(app_dir).arg(FLAG);
+/// The app's binary, run for its [`FLAG`] report with no network: in a network
+/// namespace of its own, so a lookup or a connection fails at once instead of
+/// waiting on one that will never be answered.
+fn report_command(app_dir: &Path, executable: &Path) -> Result<ProcessCommand> {
+    without_network()?;
+    let mut command = ProcessCommand::new(executable);
+    command.arg(FLAG).current_dir(app_dir);
+    Ok(with_network_namespace(&command))
+}
+
+/// Wrap `command` so it starts in a network namespace of its own: `unshare`
+/// with a user namespace mapping this process's ids, as the launcher starts an
+/// app it granted no network. Nothing else about the process changes.
+#[cfg(target_os = "linux")]
+fn with_network_namespace(command: &ProcessCommand) -> ProcessCommand {
+    let (uid, gid) = (
+        rustix::process::getuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    let mut wrapped = ProcessCommand::new("unshare");
+    wrapped
+        .arg("--user")
+        .arg(format!("--map-user={uid}"))
+        .arg(format!("--map-group={gid}"))
+        .arg("--net")
+        .arg("--")
+        .arg(command.get_program())
+        .args(command.get_args());
+    if let Some(dir) = command.get_current_dir() {
+        wrapped.current_dir(dir);
+    }
+    wrapped
+}
+
+/// A platform with no namespace to give: the report is what the code publishes
+/// either way, and only Linux asks for it with none.
+#[cfg(not(target_os = "linux"))]
+fn with_network_namespace(command: &ProcessCommand) -> ProcessCommand {
+    command.clone()
+}
+
+/// Whether this machine gives a command a network namespace of its own, asked
+/// once. A machine that cannot is a machine that would read a report without
+/// the no-network it is promised, and that is a refusal, not a quiet run.
+#[cfg(target_os = "linux")]
+fn without_network() -> Result<()> {
+    static ASKED: std::sync::OnceLock<std::result::Result<(), String>> = std::sync::OnceLock::new();
+    let answer = ASKED.get_or_init(|| {
+        let command = with_network_namespace(&ProcessCommand::new("true"));
+        match run_bounded(
+            command,
+            Duration::from_secs(60),
+            "the empty network namespace a surface report is read in",
+        ) {
+            Ok(answer) if answer.status.success() => Ok(()),
+            Ok(answer) => Err(format!("`unshare` failed with {}", answer.status)),
+            Err(error) => Err(format!("{error:#}")),
+        }
+    });
+    answer.clone().map_err(anyhow::Error::msg)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn without_network() -> Result<()> {
+    Ok(())
+}
+
+/// Build the app at `app_dir` and answer its executable, so its report can be
+/// read in the namespace [`report_command`] gives it rather than through a
+/// `cargo run` that would put the build itself there with it.
+fn build_app(app_dir: &Path) -> Result<PathBuf> {
+    let (package, binary) = app_binary(app_dir)?;
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut build = ProcessCommand::new(cargo);
+    build
+        .current_dir(app_dir)
+        .arg("build")
+        .arg("--package")
+        .arg(&package)
+        .arg("--message-format=json-render-diagnostics");
+    let doing = format!("the build of {}", app_dir.display());
+    let answer = run_bounded(build, BUILD_WAIT, &doing)?;
+    ensure!(
+        answer.status.success(),
+        "{doing} failed with {}",
+        answer.status
+    );
+    for line in String::from_utf8_lossy(&answer.stdout).lines().rev() {
+        let Ok(message) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if message.get("reason").and_then(Value::as_str) != Some("compiler-artifact") {
+            continue;
+        }
+        let named = message
+            .get("target")
+            .and_then(|target| target.get("name"))
+            .and_then(Value::as_str)
+            .is_some_and(|name| name == binary);
+        if let Some(executable) = message.get("executable").and_then(Value::as_str)
+            && named
+        {
+            return Ok(PathBuf::from(executable));
+        }
+    }
+    bail!("{doing} made no executable named {binary:?}")
+}
+
+/// What a build of `app_dir` makes: its package and its binary.
+fn app_binary(app_dir: &Path) -> Result<(String, String)> {
+    let manifest_path = app_dir.join("Cargo.toml");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?
+        .parse::<toml::Table>()
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let package = manifest
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .with_context(|| format!("{} has no [package] table", manifest_path.display()))?;
+    let name = package
+        .get("name")
+        .and_then(toml::Value::as_str)
+        .with_context(|| format!("{} has no package name", manifest_path.display()))?;
+    let bins = manifest
+        .get("bin")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|binary| binary.get("name").and_then(toml::Value::as_str))
+        .collect::<Vec<_>>();
+    let binary = package
+        .get("default-run")
+        .and_then(toml::Value::as_str)
+        .or(match bins.as_slice() {
+            [binary] => Some(*binary),
+            _ => None,
+        })
+        .unwrap_or(name);
+    Ok((name.to_owned(), binary.to_owned()))
+}
+
+/// Run the app's binary for its surface report.
+pub fn report_of(app_dir: &Path, executable: &Path) -> Result<SurfaceReport> {
     let doing = format!("{}'s surface report", app_dir.display());
-    let answer = run_bounded(command, wait, &doing)?;
+    let answer = run_bounded(report_command(app_dir, executable)?, REPORT_WAIT, &doing)?;
     if !answer.status.success() {
         bail!("{doing} failed with {}", answer.status);
     }
@@ -307,9 +434,7 @@ pub fn report_of(app_dir: &Path, executable: Option<&Path>) -> Result<SurfaceRep
 pub fn keep_report(app: &Path, executable: &Path, dir: &Path) -> Result<PathBuf> {
     let name = app.file_name().unwrap_or_default().to_string_lossy();
     let doing = format!("{}'s surface report", app.display());
-    let mut command = ProcessCommand::new(executable);
-    command.arg(FLAG).current_dir(app);
-    let answer = run_bounded(command, REPORT_WAIT, &doing)?;
+    let answer = run_bounded(report_command(app, executable)?, REPORT_WAIT, &doing)?;
     if !answer.status.success() {
         bail!("{doing} failed with {}", answer.status);
     }
@@ -1169,7 +1294,8 @@ pub fn write_app(start: &Path, saved: Option<&Path>) -> Result<(PathBuf, Surface
         )?
     } else {
         ensure_framework_app(&app_dir)?;
-        report_of(&app_dir, None)?
+        let executable = build_app(&app_dir)?;
+        report_of(&app_dir, &executable)?
     };
     ensure_view_built(&report, &app_dir)?;
     let path = write(&app_dir, &report.resources)?;
@@ -1324,6 +1450,13 @@ pub fn check_app(
     if !is_framework_app(&app_dir) {
         return Ok(None);
     }
+    let built;
+    let executable = if let Some(executable) = executable {
+        executable
+    } else {
+        built = build_app(&app_dir)?;
+        &built
+    };
     let report = report_of(&app_dir, executable)?;
     check_report(&app_dir, &report, level).map(Some)
 }

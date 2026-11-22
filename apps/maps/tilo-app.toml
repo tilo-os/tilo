@@ -114,11 +114,6 @@ label = "Clear transit routes"
 operation = "document"
 [[offers]]
 resource = "maps.workspace"
-action = "locate"
-label = "Use my location"
-kind = "read"
-[[offers]]
-resource = "maps.workspace"
 action = "toggle-traffic"
 label = "Show traffic"
 kind = "read"

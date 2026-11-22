@@ -121,6 +121,12 @@ operation = "document"
 keywords = ["remembered forms", "site memory", "clear forms"]
 [[offers]]
 resource = "browser.application"
+action = "bookmark-page"
+label = "Bookmark this page"
+operation = "document"
+keywords = ["bookmark", "favourite", "favorite", "save page"]
+[[offers]]
+resource = "browser.application"
 action = "show-page"
 label = "Show current page"
 kind = "read"
@@ -207,11 +213,6 @@ action = "pointer-page"
 label = "Move pointer"
 kind = "outside"
 asks = "steps"
-[[offers]]
-resource = "browser.page"
-action = "bookmark-personal-page"
-label = "Bookmark this page"
-kind = "outside"
 [[offers]]
 resource = "browser.page"
 action = "read-remembered-forms"

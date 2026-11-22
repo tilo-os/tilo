@@ -152,42 +152,6 @@ label = "Inspect field"
 kind = "read"
 [[offers]]
 resource = "terminal.session"
-action = "send"
-label = "Send text"
-kind = "outside"
-confirm = true
-asks = "text"
-keywords = ["type text", "enter command"]
-[[offers]]
-resource = "terminal.session"
-action = "interrupt"
-label = "Interrupt process"
-kind = "outside"
-confirm = true
-keywords = ["stop", "cancel", "kill process", "ctrl c"]
-[[offers]]
-resource = "terminal.session"
-action = "clear"
-label = "Clear screen"
-kind = "outside"
-confirm = true
-keywords = ["cls", "clear terminal", "reset screen"]
-[[offers]]
-resource = "terminal.session"
-action = "paste"
-label = "Paste"
-kind = "outside"
-confirm = true
-asks = "text"
-[[offers]]
-resource = "terminal.session"
-action = "paste-primary"
-label = "Paste selection"
-kind = "outside"
-confirm = true
-asks = "text"
-[[offers]]
-resource = "terminal.session"
 action = "open-in"
 label = "Open in…"
 kind = "outside"
@@ -220,3 +184,8 @@ action = "select-all"
 label = "Select all output"
 kind = "read"
 confirm = true
+[[offers]]
+resource = "terminal.session"
+action = "history-top"
+label = "Show oldest output"
+kind = "read"

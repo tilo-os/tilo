@@ -732,10 +732,13 @@ heavy = true
 # binary prints what it publishes. The catalogue generator then reads each
 # tilolang package of `apps/tl` through `tilolang describe --fleet`, so the
 # fleet knows a tilolang app as fully as a native one, and fails when the
-# generated catalogue is stale or two apps claim one id.
+# generated catalogue is stale or two apps claim one id. Each binary is run in a
+# network namespace of its own (`isolation`), so a report cannot wait on a
+# network: what it publishes is what its code holds.
 [[check]]
 name = "app-surfaces"
 egress = { to = ["code.tilo.so:443"], pinned = true }
+isolation = "nested"
 run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\n"
 fix = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces --write\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\"\n"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }

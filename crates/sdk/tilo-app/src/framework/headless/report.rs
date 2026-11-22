@@ -6,6 +6,7 @@
 use std::rc::Rc;
 
 use tilo_resource::Resource;
+use ui_core::application::Capture;
 use ui_core::headless::FrameHarness;
 use ui_core::permissions::Role;
 
@@ -97,7 +98,12 @@ fn report_surface(
                 arguments: &[],
                 file: None,
                 handoff: None,
-                capture: None,
+                // The report is what the code publishes, so the view is built as a
+                // capture: its scene comes from the app's fixtures, and nothing it
+                // starts — a worker, a fetch, a clock — reaches outside the process.
+                // A surface is written from source, not from what a window that sits
+                // in a workspace happens to open.
+                capture: Some((Capture::new(None), (opening.shot_viewport)(None))),
             },
             None,
             &mut |_| {},

@@ -101,11 +101,6 @@ operation = "document"
 asks = "name"
 [[offers]]
 resource = "chat.workspace"
-action = "import-previous-drafts"
-label = "Import earlier channel drafts"
-confirm = true
-[[offers]]
-resource = "chat.workspace"
 action = "open-agent"
 label = "Open agent conversation"
 kind = "read"
