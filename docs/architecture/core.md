@@ -399,7 +399,9 @@ used.
   the `active` selection, and the profiles derived from them. Nothing else
   indexes them. The browser keeps its wrapped root in IndexedDB, in the same
   record format.
-- **One recovery format**: the 24 words.
+- **One recovery format**: the 24 words. No server keeps a copy of the root,
+  wrapped by a passkey or otherwise; a new browser is added with a ticket from
+  any of the person's devices, or restored from the words.
 - **One sign-in proof**, `SignInProof`. The greeter, the web page, the API
   and `tilo login` all prove the same thing (a current device of this
   identity) and differ only in how the person approves it.
