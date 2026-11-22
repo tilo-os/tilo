@@ -161,21 +161,22 @@ mod woke {
 
     /// Rechecks: one per [`super::AUTHORITY_RECHECK`], and the first wait's probe.
     pub(super) static RECHECKS: AtomicUsize = AtomicUsize::new(0);
-    /// Whether the last SIGTERM followed a ring rather than a timer.
-    pub(super) static TERMED_ON_RING: AtomicBool = AtomicBool::new(false);
+    /// Whether a wait that began with the cancellation already in ran to its timer: the ring
+    /// did not wake it.
+    pub(super) static CANCEL_WAITED_OUT: AtomicBool = AtomicBool::new(false);
 
     pub(super) fn recheck() {
         RECHECKS.fetch_add(1, Ordering::AcqRel);
     }
 
-    pub(super) fn termed(rang: bool) {
-        TERMED_ON_RING.store(rang, Ordering::Release);
+    pub(super) fn waited(cancelled_before: bool, rang: bool) {
+        CANCEL_WAITED_OUT.fetch_or(cancelled_before && !rang, Ordering::AcqRel);
     }
 }
 #[cfg(not(test))]
 mod woke {
     pub(super) fn recheck() {}
-    pub(super) fn termed(_: bool) {}
+    pub(super) fn waited(_: bool, _: bool) {}
 }
 #[derive(Default)]
 struct CancelState {
@@ -1116,6 +1117,7 @@ impl EnrolledProcessObserver for NamespaceOwner {
                 // Killed: nothing is left to do but observe the exit.
                 Some(_) => (None, None),
             };
+            let cancelled_before = ring.is_some() && self.cancellation.is_cancelled();
             let woken_by_ring =
                 match bounded_command::wait_child_or(&mut owned.child, ring, deadline)? {
                     bounded_command::Wakeup::Exited(status) => {
@@ -1138,6 +1140,7 @@ impl EnrolledProcessObserver for NamespaceOwner {
                     }
                     bounded_command::Wakeup::Deadline => false,
                 };
+            woke::waited(cancelled_before, woken_by_ring);
             let now = Instant::now();
             if stopping.is_none() && now >= recheck {
                 woke::recheck();
@@ -1157,7 +1160,6 @@ impl EnrolledProcessObserver for NamespaceOwner {
                 && self.target_projection.as_ref().is_none_or(TargetProjectionAdmission::begin_exposure_stop)
             {
                 owned.signal(libc::SIGTERM)?;
-                woke::termed(woken_by_ring);
                 stopping = Some(
                     now.checked_add(STOP_GRACE)
                         .ok_or(io::ErrorKind::InvalidData)?,
@@ -1665,8 +1667,9 @@ mod tests {
         let termed = running.root.path().join("termed");
         tilo_test_env::wait_until("the cancellation to reach the provider", || termed.exists());
         running.worker.take().unwrap().join().unwrap().unwrap();
+        // Seen in the pass under way, or rung awake: never slept out to a timer.
         assert!(
-            woke::TERMED_ON_RING.load(Ordering::Acquire),
+            !woke::CANCEL_WAITED_OUT.load(Ordering::Acquire),
             "the cancellation waited for a recheck to reach the provider"
         );
 
@@ -1677,10 +1680,6 @@ mod tests {
         let rechecks = woke::RECHECKS
             .load(Ordering::Acquire)
             .saturating_sub(before);
-        assert!(
-            !woke::TERMED_ON_RING.load(Ordering::Acquire),
-            "a revocation rang nothing, yet the supervisor stopped on a ring"
-        );
         // The recheck under way when it was revoked, and the one after it.
         assert!(
             rechecks <= 2,
