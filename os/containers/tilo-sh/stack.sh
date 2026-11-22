@@ -1535,14 +1535,17 @@ build_programs() {
     from=$repo/target/$builder_stage/programs
   else
     say "building the programs ($cargo build --profile $profile; only what changed compiles)"
-    # The stand-in mail server is an example, built apart: an example brings its package's
-    # dev-dependencies, whose features Cargo turns on for every package in the same build, and the
-    # server built with its test-only features loads fixture fonts its app workers cannot.
+    # Three builds, as the images build them: Cargo turns on every feature any package of a
+    # build asks of a shared crate for all of them. The server and its worker apart from the
+    # rest, or the server would link the desktop libraries the daemon needs and the Lounge image
+    # does not carry; the stand-in mail server, an example, apart too, since it brings its
+    # package's dev-dependencies, and a server built with test-only features loads fixture fonts
+    # its app workers cannot.
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
-      -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
-      "${oauth_programs[@]}" \
-      --bin tilo-server --bin tilo-server-admin --bin discord-worker --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime \
-      --bin tilolang-process >&2 \
+      -p tilo-server -p discord-worker --bin tilo-server --bin tilo-server-admin --bin discord-worker >&2 \
+      && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
+        -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
+        --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime --bin tilolang-process >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
         -p tilo-account-probe --example mail_stand_in >&2) \
       || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
@@ -1737,8 +1740,9 @@ bundle_whole() {
 from_t() { [[ -z ${TILO_SH_PROGRAMS:-} && $build == t ]]; }
 t_fetched=$native/t
 
-# t_build WHAT CHECK…: one t run of the CHECKs for this checkout, and what the
-# run made (every check's outputs, its needs' too) fetched into $t_fetched.
+# t_build WHAT CHECK…: one t run of the CHECKs for this checkout, and what
+# each CHECK made fetched into $t_fetched: `t outputs` gives one check's own
+# outputs alone, so each named check is fetched.
 # A checkout with no changes is built as its commit (--rev): git's files,
 # never ones edited while the build runs. One with changes is built as t
 # finds it when the run starts, which is when t takes its copy.
@@ -1755,11 +1759,14 @@ t_build() {
     || die "t could not build $what (run $run; t log CHECK says why)"
   say "$what built on t ($((SECONDS - began))s)"
   began=$SECONDS
-  local log=$state/logs/t-outputs-${1//\//-}.log
   mkdir -p "$t_fetched" "$state/logs"
-  (cd "$repo" && t outputs "$1" --run "$run" --to "$t_fetched" > "$log" 2>&1) \
-    || { tail -5 "$log" >&2; die "t could not give run $run's outputs ($log)"; }
-  say "$what fetched: $(grep -cv ' (unchanged)$' "$log") files new or changed, $(grep -c ' (unchanged)$' "$log") kept ($((SECONDS - began))s)"
+  local check log
+  for check in "$@"; do
+    log=$state/logs/t-outputs-${check//\//-}.log
+    (cd "$repo" && t outputs "$check" --run "$run" --to "$t_fetched" > "$log" 2>&1) \
+      || { tail -5 "$log" >&2; die "t could not give run $run's outputs of $check ($log)"; }
+    say "$check fetched: $(grep -cv ' (unchanged)$' "$log") files new or changed, $(grep -c ' (unchanged)$' "$log") kept ($((SECONDS - began))s)"
+  done
 }
 
 # The bundle as its build.json lists it: t's fetch keeps files an earlier
