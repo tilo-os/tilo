@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 /// Where the app's directory appears inside the sandbox.
 pub const SANDBOX_APP_DIR: &str = "/run/tilo/app";
 
+/// Where a measured app writes its startup timeline inside the sandbox: its state directory, the
+/// one place under [`SANDBOX_APP_DIR`] the launcher lets a startup trace land.
+pub const SANDBOX_STARTUP_TIMELINE: &str = "/run/tilo/app/.local/state/startup-timeline.json";
+
 /// Env var naming [`SANDBOX_APP_DIR`], so an app can be explicit about "the directory the system gave
 /// me" rather than inferring it from `HOME`.
 pub const APP_DIR_ENV: &str = "TILO_APP_DIR";

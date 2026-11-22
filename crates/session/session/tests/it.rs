@@ -251,6 +251,8 @@ mod shell_themes;
 mod shortcut_effects;
 #[path = "shortcut_guide.rs"]
 mod shortcut_guide;
+#[path = "startup_timeline.rs"]
+mod startup_timeline;
 #[path = "strips_tabs.rs"]
 mod strips_tabs;
 #[path = "style_packages.rs"]
