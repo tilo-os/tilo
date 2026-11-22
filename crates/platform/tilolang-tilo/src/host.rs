@@ -182,6 +182,8 @@ pub(crate) struct HostInner {
     returned: RefCell<HashMap<String, ResourceRef>>,
     /// When the packages' triggers next have something to run.
     triggers: crate::triggers::Schedule,
+    /// What the asks made from mentions of agents follow ([`crate::asks`]).
+    asking: crate::asks::Asking,
     /// Whether the next plan is the run of an invocation the document applies next
     /// ([`Host::carrying_out`]): what it writes stays, as the change the document commits.
     carried: Cell<bool>,
@@ -1034,6 +1036,7 @@ impl Host {
         runtime.set_clock(system_time);
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         let triggers = crate::triggers::Schedule::new(store.watch());
+        let asking = crate::asks::Asking::new(store.watch());
         let inner = Rc::new(HostInner {
             handle,
             runtime,
@@ -1045,6 +1048,7 @@ impl Host {
             produced: RefCell::default(),
             returned: RefCell::default(),
             triggers,
+            asking,
             carried: Cell::new(false),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
@@ -1457,7 +1461,9 @@ impl Host {
     /// [`TiloStore::sync`]. A chunk the replica does not hold is taken in too: how a replica
     /// that was sent them all opens.
     pub fn sync(&self, record: &crate::chunk::Chunks) -> bool {
-        self.inner.store.sync(record)
+        let moved = self.inner.store.sync(record);
+        self.ask_from_mentions();
+        moved
     }
 
     /// Hold the document's chunks from here on, the one copy of each; see [`TiloStore::adopt`].
@@ -1468,7 +1474,23 @@ impl Host {
     /// Bring the runtime's view of a document kept as one document up to date; see
     /// [`TiloStore::sync_from`].
     pub fn sync_from(&self, record: &tilo_resource::Doc) -> bool {
-        self.inner.store.sync_from(record)
+        let moved = self.inner.store.sync_from(record);
+        self.ask_from_mentions();
+        moved
+    }
+
+    /// Ask the agents the rich text written here since the last call mentions, and withdraw or ask
+    /// again where a mention went or came back ([`crate::asks`]): the asks are this device's
+    /// person's actions, committed as the runtime commits any ([`Self::take_committed`]). Returns
+    /// how many it invoked. Taking in the document's changes runs it.
+    pub fn ask_from_mentions(&self) -> usize {
+        crate::asks::run(self, &self.inner.asking)
+    }
+
+    /// How the host tells whether an agent may read a resource: an ask made from a mention copies
+    /// the text only for an agent that may read the item it is in. Without one, no agent may.
+    pub fn set_read_check(&self, check: impl Fn(&Actor, &ResourceRef) -> bool + 'static) {
+        self.inner.asking.set_read_check(Box::new(check));
     }
 
     /// The actions the runtime committed under a ticket of `first` or later.

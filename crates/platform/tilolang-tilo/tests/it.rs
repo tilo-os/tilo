@@ -48,6 +48,8 @@ mod links;
 mod make_from;
 mod marks;
 mod may_read;
+#[cfg(feature = "document")]
+mod mention_asks;
 mod migrations;
 mod naming;
 mod native_chat;
