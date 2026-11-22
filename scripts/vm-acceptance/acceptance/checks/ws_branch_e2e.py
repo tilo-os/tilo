@@ -33,7 +33,6 @@ import uuid
 
 from .. import core, session_unit
 from ..core import CheckFailed, Unobservable, check, expect
-from ..sheets import press
 from ..vm import VmError, wait_until
 from . import agents_e2e as ae
 
@@ -67,10 +66,11 @@ BRANCH_ENTRY = "Branch workspace"
 WORKSPACE_BRANCH = "workspace.branch"
 BRANCH_IDS = (WORKSPACE_BRANCH, "branch-workspace", "workspace-branch")
 CHAT = "so.tilo.chat"
-# The channel every workspace's chat starts with (apps/chat record.rs CHAT_CHANNEL).
-CHAT_CHANNEL = "c_chat"
-# Chat's composer, as the person's assistive technology names it (chat en-US.ftl chat-composer).
-COMPOSER = "Message composer"
+# Where Chat keeps its documents: the id its package was first published under (apps/tl/chat
+# app.tl `previously:`).
+CHAT_DOCUMENTS = "so.tilo.lang.chat"
+# The channel the person says something in (apps/tl/chat app.tl `new_channel`).
+CHAT_CHANNEL = "e2e"
 # An app's own data in a workspace, on this device (launcher appdir.rs).
 WORKSPACE_DATA = ".local/share/tilo-workspaces"
 
@@ -799,7 +799,7 @@ def chat_rows(ctx, operation: str) -> list[dict]:
 
 def chat_dir(ctx, ws: dict) -> bool:
     """Whether this device keeps Chat's data for `ws` (an app's data in a workspace)."""
-    out = ctx.vm.exec(f'[ -d "$HOME/{WORKSPACE_DATA}/{ws["id"]}/{CHAT}" ] && echo E2E-YES || echo E2E-NO',
+    out = ctx.vm.exec(f'[ -d "$HOME/{WORKSPACE_DATA}/{ws["id"]}/{CHAT_DOCUMENTS}" ] && echo E2E-YES || echo E2E-NO',
                       check=False)
     return "E2E-YES" in out
 
@@ -859,115 +859,21 @@ def holds(heard: dict) -> bool:
 
 
 def post_chat(ctx, ws: dict, text: str) -> None:
-    """The person says `text` in `ws`'s chat, in its first channel, through Chat's own post."""
+    """The person says `text` in `ws`'s chat through Chat's own actions: a channel of its own
+    (`new_channel`, Chat's first action, offered before any channel exists), then `send` there."""
     ae.select_workspace(ctx, ws)
     open_by_id(ctx, CHAT)
-    rows = wait_until(lambda: chat_rows(ctx, "post") or None, 10, interval=1.0)
-    if rows:
-        ae.invoke(ctx, rows[0]["provider"], rows[0]["id"], {"channel": CHAT_CHANNEL, "text": text},
-                  confirmed=True, name="chat-post")
-        return
-    # Chat offers a person no post of its own until the channel holds a message: they write in the
-    # channel's composer and press Enter.
-    # Chat draws its own window, in software on a box without a GPU: its first frame, and the
-    # composer in it, can take a minute and more.
-    if not wait_until(lambda: any(t.get("name") == COMPOSER for t in ctx.vm.targets()) or None, TERMINAL_S,
-                      interval=2.0):
-        said = ctx.vm.exec(
-            f"sed 's/\\x1b\\[[0-9;]*m//g' \"{core.SESSION_LOG}\" | grep -ai 'chat' "
-            "| grep -avE 'FRAME-LIFECYCLE|paint-stats' | tail -n 40 | cut -c1-300; "
-            "journalctl --user --no-pager -n 400 2>/dev/null | grep -ai 'chat' | tail -n 40 | cut -c1-300", check=False)
-        gpu = ctx.vm.root_exec("journalctl --no-pager -o cat | sed 's/\\x1b\\[[0-9;]*m//g' | grep -a 'so.tilo.chat' "
-                               "| grep -aiE 'gpu|vulkan|icd|adapter|render|device_select|egl' | tail -n 12 | cut -c1-400",
-                               timeout=180, check=False)
-        crash = ctx.vm.root_exec("journalctl -k --no-pager | grep -ai 'segfault\\|trap\\|general protection' | tail -n 8; "
-                                 "coredumpctl --no-pager list 2>&1 | tail -n 5; "
-                                 "coredumpctl --no-pager info 2>&1 | grep -aE '^ +#|Signal|Executable|Command' | head -n 60",
-                                 timeout=180, check=False)
-        # The kernel names a crashed library by its object in the image's store: which file it is.
-        objects = sorted(set(re.findall(r" in ([0-9a-f]{64,128})\[([0-9a-f]+),", crash)))
-        for digest, offset in objects[:3]:
-            # Its object, wherever the image's store keeps it, and the file it is; then the function
-            # at the crashed offset of its code segment, and what it links.
-            crash += "\n" + ctx.vm.root_exec(
-                f"o=$(find / \\( -path /proc -o -path /sys -o -path /dev -o -path /run/user \\) -prune -o "
-                f"-name '*{digest[8:40]}*' -print 2>/dev/null | head -1); "
-                f"[ -n \"$o\" ] || o=$(timeout 120 find /run/user -xdev -name '*{digest[8:40]}*' -print 2>/dev/null "
-                "| head -1); "
-                "echo \"object $o\"; [ -n \"$o\" ] || exit 0; file -L \"$o\" | cut -c1-300; "
-                "readelf -dW \"$o\" 2>/dev/null | grep -aE 'SONAME|NEEDED' | head -n 12; n=$(stat -c %s \"$o\"); "
-                "find /usr /opt -xdev -type f -size ${n}c 2>/dev/null | while read -r f; do "
-                "cmp -s \"$f\" \"$o\" && echo \"crashed in $f\"; done; "
-                "seg=$(readelf -lW \"$o\" | awk '$1==\"LOAD\" && $0 ~ / R E / {print $3; exit}'); "
-                f"at=$(printf '0x%x' $(( (${{seg:-0}} & ~0xfff) + 0x{offset} ))); echo \"at $at\"; "
-                "addr2line -f -C -e \"$o\" \"$at\" 2>&1 | head -n 4; "
-                "nm -D -C --defined-only \"$o\" 2>/dev/null | sort | awk -v at=\"$at\" "
-                "'{ if (strtonum(\"0x\" $1) <= strtonum(at)) last=$0 } END { print \"nearest \" last }'; true",
-                timeout=600, check=False)
-            # The kernel names a composefs object by its fs-verity digest: the image's ELF files
-            # whose digest it is.
-            crash += "\n" + ctx.vm.root_exec(
-                "python3 -I - <<'PY'\n" + VERITY_SCAN.replace("DIGEST", digest) + "\nPY", timeout=600, check=False)
-        # Which processes the crashed threads were: the units started around the first crash.
-        first = re.search(r"^(\w+ +\d+ [\d:]+) \S+ kernel: native-render-p", crash, re.M)
-        if first:
-            crash += "\n" + ctx.vm.root_exec(
-                f"t=$(date -d {shlex.quote(first.group(1))} +%s); journalctl --no-pager -o short-precise "
-                "--since @$((t-20)) --until @$((t+2)) 2>/dev/null | grep -aE 'Started app-|launch|segfault|core' "
-                "| tail -n 30 | cut -c1-300", timeout=120, check=False)
-        running = package_servicees(ctx, CHAT) + "\n== the crashed drawing threads' processes\n" + crashed_threads(ctx)
-        # The session started with the launcher keeping its apps' own output (run.py's drop-in), so
-        # Chat says itself why it shows nothing.
-        evidence = chat_evidence(ctx, ctx.facts.get("wsb:since", 0))
-        # The report prints a data file's last 4 KiB: the evidence goes last.
-        said = crash + "\n" + running + "\n" + said + "\n" + evidence
-        ctx.write("WB01-chat-said.txt", said)
-        raise Unobservable(f"Chat in {ws.get('name')} shows no {COMPOSER!r} and offers no post; {evidence}; it offers "
-                           f"{offered(ctx, CHAT)}; Chat's crash: {crash[-3000:]}; "
-                           f"its processes: {running[-3000:]}; its drawing: {gpu[-2500:]}; "
+    made = wait_until(lambda: chat_rows(ctx, "new_channel") or None, 30, interval=1.0)
+    if not made:
+        raise Unobservable(f"Chat in {ws.get('name')} offers no new_channel; it offers {offered(ctx, CHAT)}; "
                            f"{app_evidence(ctx, CHAT)}; {session_told(ctx)}")
-    press(ctx, COMPOSER)
-    ctx.vm.input("type", text)
-    ctx.vm.key("Return")
-
-
-# Finds the files under the image's library directories whose fs-verity SHA-512 digest (the name
-# composefs gives their object, and the kernel's crash line) is DIGEST.
-VERITY_SCAN = r"""
-import hashlib, os, subprocess
-want = "DIGEST"
-def verity(path):
-    data = open(path, "rb").read()
-    size, block = len(data), 4096
-    level = [hashlib.sha512(data[i:i + block].ljust(block, b"\0")).digest()
-             for i in range(0, max(size, 1), block)] if size else []
-    while len(level) > 1:
-        joined = b"".join(level)
-        level = [hashlib.sha512(joined[i:i + block].ljust(block, b"\0")).digest()
-                 for i in range(0, len(joined), block)]
-    root = level[0] if level else b""
-    desc = bytes([1, 2, 12, 0]) + bytes(4) + size.to_bytes(8, "little") + root.ljust(64, b"\0") + bytes(32 + 144)
-    return hashlib.sha512(desc).hexdigest()
-found = 0
-for top in ("/usr/lib/tilo-runtime", "/usr/lib64", "/usr/lib", "/usr/libexec", "/var/lib/tilo", "/opt", "/home",
-            "/var/home"):
-    for base, dirs, files in os.walk(top):
-        for name in files:
-            path = os.path.join(base, name)
-            try:
-                if os.path.islink(path) or not 4096 <= os.path.getsize(path) <= 8 << 20:
-                    continue
-                with open(path, "rb") as f:
-                    if f.read(4) != b"\x7fELF":
-                        continue
-                if verity(path) == want:
-                    found += 1
-                    print("crashed in", path)
-                    print(subprocess.run(["readelf", "-dW", path], capture_output=True, text=True).stdout[-800:])
-            except OSError:
-                pass
-print("verity scan:", found, "file(s) match")
-"""
+    ae.invoke(ctx, made[0]["provider"], made[0]["id"], {"name": CHAT_CHANNEL}, confirmed=True,
+              name="chat-new-channel")
+    sends = wait_until(lambda: chat_rows(ctx, "send") or None, 30, interval=1.0)
+    if not sends:
+        raise Unobservable(f"Chat in {ws.get('name')} offers no send once its channel is made; it offers "
+                           f"{offered(ctx, CHAT)}; {app_evidence(ctx, CHAT)}")
+    ae.invoke(ctx, sends[0]["provider"], sends[0]["id"], {"body": text}, confirmed=True, name="chat-send")
 
 
 TASKS_LOG = "/var/tmp/e2e-drawing-threads.log"
@@ -1147,30 +1053,6 @@ def watch_chat(ctx, seconds: int = 1800) -> None:
         timeout=30, check=False)
 
 
-def scope_events(ctx) -> str:
-    """What [`watch_chat`] saw come and go: each scope and process of Chat and Notes, when, and
-    how long it lived."""
-    return ctx.vm.root_exec(f"tail -n 80 {CHAT_PS} 2>/dev/null; tail -n 3 /var/tmp/e2e-scope-watch.err 2>/dev/null",
-                            timeout=60, check=False)
-
-
-def scope_detail(ctx, app: str, lines: int = 40) -> str:
-    """What [`watch_chat`] saw `app`'s processes doing: the snapshots taken in `app`'s own scopes
-    (picked by the scope each snapshot names, not by a mention of the app in a file name)."""
-    return ctx.vm.root_exec(
-        f"awk '/^== /{{keep = index($0, \"app-tilo-{app}-\") > 0}} keep' {CHAT_DETAIL} 2>/dev/null "
-        f"| tail -n {lines} | cut -c1-500", timeout=60, check=False)
-
-
-def chat_processes(ctx) -> str:
-    """[`scope_events`], then what Chat's processes were doing, then Notes' first for comparison;
-    each also kept in a data file of its own (WB01-chat-scope-*.txt) so none is cut for another."""
-    events, chat, notes = scope_events(ctx), scope_detail(ctx, CHAT), scope_detail(ctx, ae.NOTES, 12)
-    ctx.write("WB01-chat-scope-events.txt", events)
-    ctx.write("WB01-chat-scope-detail.txt", chat + "\n== Notes, whose window comes\n" + notes)
-    return f"{events.strip()[-1500:]}\n== what Chat's processes were doing\n{chat.strip()[-1500:]}"
-
-
 # What the session logs of an app that did not open and a branch that is not complete: Chat's
 # launches, the launch refusals, an app that ended, and each part a branch missed.
 TOLD = (r"so\.tilo\.chat|not complete|could not open|launch was refused|launch did not start|"
@@ -1259,72 +1141,6 @@ def debug_switch(ctx) -> str:
         return ctx.vm.root_exec(session_unit.environment_state(ctx.vm.account), timeout=60)
     except VmError as exc:
         return f"(could not read it: {exc})"
-
-
-# What the session unit's journal says of one launch of Chat, by kind: every process the session
-# starts writes there, which the session's own log files (the compositor's output) do not cover.
-JOURNAL_KINDS = {
-    "launches": r"application launch requested|application launcher spawned|application toplevel mapped|"
-                r"application first frame|launch timing retired|running process opens the window|"
-                r"window link is closed|raised the window|asked for without a window",
-    "ends": r"an app closed|an app stopped|could not open|launch was refused|launch did not start|"
-            r"an app this session did not start|no notice for the app|app_output|\\[app so\\.tilo\\.chat",
-    "scopes": r"app-tilo-so\\.tilo\\.chat-",
-}
-
-
-def chat_journal(ctx, kind: str, lines: int = 24) -> str:
-    """The lines of `kind` ([`JOURNAL_KINDS`]) the box's journal holds of Chat, cut short so a
-    data file's last 4 KiB in the report holds the most recent of them."""
-    noise = "COLLAB-JOIN|PROBE join_channel|FRAME-LIFECYCLE|paint-stats|HEAP-MILESTONE"
-    app = r"so\\.tilo\\.chat" if kind != "scopes" else "."
-    return ctx.vm.root_exec(
-        "journalctl --no-pager -o short-precise -b 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' "
-        f"| grep -aE '{app}' | grep -aE '{JOURNAL_KINDS[kind]}' | grep -avE '{noise}' "
-        "| sed -E 's/^[A-Z][a-z]{2} [0-9]+ //; s/ ip-[^ ]+ / /' "
-        f"| tail -n {lines} | cut -c1-170", timeout=180, check=False)
-
-
-def chat_scope_units(ctx) -> str:
-    """What the account user's systemd still knows of each Chat scope: its state, result and when it
-    came and went (systemd does not sample, so a scope shorter than the watcher's pass is here)."""
-    return ctx.vm.exec(
-        "for u in $(systemctl --user list-units --all --plain --no-legend 'app-tilo-so.tilo.chat-*' 2>/dev/null "
-        "| awk '{print $1}'); do systemctl --user show \"$u\" -p Id -p ActiveState -p SubState -p Result "
-        "-p ActiveEnterTimestamp -p InactiveEnterTimestamp 2>&1 | tr '\\n' ' '; echo; done | cut -c1-300 | tail -n 20",
-        timeout=120, check=False)
-
-
-def chat_journals(ctx, label: str) -> str:
-    """[`chat_journal`] of each kind, each in a data file of its own (`<label>-chat-journal-<kind>.txt`)
-    so none is cut for another; returns the launches and ends, for a failure's message."""
-    said = {kind: chat_journal(ctx, kind) for kind in JOURNAL_KINDS}
-    said["scopes"] = said["scopes"] + "\n== what systemd still knows of them\n" + chat_scope_units(ctx)
-    for kind, text in said.items():
-        ctx.write(f"{label}-chat-journal-{kind}.txt", text or "(nothing)")
-    return (f"Chat's launches: {said['launches'].strip()[-1200:] or '(none)'}; "
-            f"its ends: {said['ends'].strip()[-1200:] or '(none)'}")
-
-
-def chat_evidence(ctx, since: int) -> str:
-    """Everything this box says of Chat that ended without a window, each part kept short so all
-    of it reaches the report: whether the session runs with the launcher's debug output, Chat's
-    own output (that debug log), what the session said of launching it, the core dumps."""
-    def part(title: str, text: str, keep: int = 1500) -> str:
-        return f"== {title}\n{(text or '(nothing)').strip()[-keep:]}"
-    chat_journals(ctx, "WB01")
-    return "\n".join([
-        part("the session's debug switch", ctx.facts.get("wsb:debug-switch", "(not set up)") + "\nnow: "
-             + debug_switch(ctx), 900),
-        part("Chat's own output", ctx.vm.root_exec(
-            "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
-            "-path '*so.tilo.chat*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
-            "tail -c 3000 \"$f\"; done", timeout=300, check=False), 3000),
-        part("the session of Chat's launches", session_log(ctx, TOLD, 30), 3000),
-        part("Chat's processes as they came and went", chat_processes(ctx), 3200),
-        part("core dumps", ctx.vm.root_exec("coredumpctl --no-pager list 2>&1 | tail -n 5", timeout=60,
-                                            check=False), 600),
-    ])
 
 
 def app_output(ctx, ws: dict, app: str) -> str:

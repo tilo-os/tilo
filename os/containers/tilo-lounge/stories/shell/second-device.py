@@ -18,7 +18,7 @@ from real_apps import BUILD  # noqa: E402
 SHELL = "so.tilo.session"
 SHOW_PAIR_DEVICE = "session:invite\u001fshow-pair-device"
 SESSION = BUILD / "bin/tilo-session"
-APPS = "chat tasks file-explorer settings activity"
+APPS = "tasks file-explorer settings activity"
 
 
 def steps(story: Story) -> None:

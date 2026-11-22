@@ -23,16 +23,13 @@ fn member_value(person: &str) -> String {
 const CAI: &str = "u-cai";
 const NOTE: &str = "tab:00000000000000a1";
 const NOTES: &str = "so.tilo.notes";
-const CHAT: &str = "so.tilo.chat";
 const WORKSPACE: &str = "6d1c1f36-0000-4000-8000-000000000001";
 
-const SCRIBE: &str = "scribe";
 
 fn name(member: &ui::MemberId) -> String {
     match member.id() {
         ADA => "Ada".into(),
         BEA => "Bea".into(),
-        SCRIBE if member.is_agent() => "Scribe".into(),
         _ => ui::presence::unnamed_label(member),
     }
 }
@@ -327,24 +324,6 @@ tilo_test_env::scenario! {
         assert_eq!(mentions.take_chosen(), vec![place]);
         assert!(mentions.take_chosen().is_empty(), "a place is opened once");
     }
-
-    phase a_message_in_a_chat_part_opens_the_message_in_the_chat;
-    {
-        chat_part_mention(&|part, span| {
-            let value = part.put_object(span, "value", ObjType::Map).unwrap();
-            part.put(&value, "$variant", "str").unwrap();
-            part.put(&value, "$field/str/0", member_value(BEA)).unwrap();
-        });
-    }
-
-    phase a_mark_value_of_the_older_flat_layout_still_names_its_person;
-    {
-        chat_part_mention(&|part, span| {
-            let value = part.put_object(span, "value", ObjType::Map).unwrap();
-            part.put(&value, "$variant", "str").unwrap();
-            part.put(&value, "0", member_value(BEA)).unwrap();
-        });
-    }
 }
 
 tilo_test_env::scenario! {
@@ -440,10 +419,8 @@ tilo_test_env::scenario! {
             &Look {
                 app: NOTES,
                 record: NOTE,
-                place: NOTE,
                 kind: "notes.notebook",
                 doc: &written,
-                tree: None,
                 quiet: false,
                 read: &reading_nothing,
                 shown: &|_, _| false,
@@ -453,215 +430,6 @@ tilo_test_env::scenario! {
         );
         assert_eq!(told.show.len(), 1);
         assert!(held.knows(NOTES, NOTE));
-    }
-}
-
-/// Chat's surface as this test names it: its own record's kind first, then its parts'.
-const CHAT_SURFACE: &[u8] = b"format = 2\n\n[[resources]]\nkind = \"chat.workspace\"\nlabel = \"Chat\"\nversion = 1\n\n[[resources]]\nkind = \"chat.messages\"\nlabel = \"Messages\"\nversion = 1\n";
-
-/// Post message `id` by Ada in #general into `part`, a paragraph whose mark span names Bea, its
-/// value written by `write_value`.
-fn post(
-    part: &mut AutoCommit,
-    id: &str,
-    text: &str,
-    write_value: &dyn Fn(&mut AutoCommit, &ObjId),
-) {
-    say(
-        part,
-        id,
-        (&ui::MemberId::person(ADA), "c_general"),
-        text,
-        Some(write_value),
-    );
-}
-
-/// What writes a mention's mark value into its span.
-type WriteValue<'a> = &'a dyn Fn(&mut AutoCommit, &ObjId);
-
-/// Post message `id` by `author` in the conversation `to` into `part`: a paragraph, whose mark
-/// span names Bea where `write_value` writes its value.
-fn say(
-    part: &mut AutoCommit,
-    id: &str,
-    (author, to): (&ui::MemberId, &str),
-    text: &str,
-    write_value: Option<WriteValue<'_>>,
-) {
-    let messages = match part.get(ROOT, "messages").unwrap() {
-        Some((_, messages)) => messages,
-        None => part.put_object(ROOT, "messages", ObjType::Map).unwrap(),
-    };
-    let entry = part.put_object(&messages, id, ObjType::Map).unwrap();
-    let message = part.put_object(&entry, "v", ObjType::Map).unwrap();
-    part.put(&message, "author", serde_json::to_string(author).unwrap())
-        .unwrap();
-    part.put(&message, "channel", to).unwrap();
-    let body = part.put_object(&message, "body", ObjType::List).unwrap();
-    let block = part.insert_object(&body, 0, ObjType::Map).unwrap();
-    part.put(&block, "text", text).unwrap();
-    if let Some(write_value) = write_value {
-        let marks = part.put_object(&block, "marks", ObjType::List).unwrap();
-        let span = part.insert_object(&marks, 0, ObjType::Map).unwrap();
-        part.put(&span, "start", 0_i64).unwrap();
-        part.put(&span, "end", 4_i64).unwrap();
-        part.put(&span, "name", MARK).unwrap();
-        write_value(part, &span);
-    }
-    part.commit();
-}
-
-/// Chat as it keeps a workspace: its own record, which names no kind, with its conversations, and a
-/// part of the chain of messages derived from it. Each message that mentions Bea is one notice,
-/// opening that message in the chat's own record as a search hit on it does.
-fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
-    ui::app_surface::register_package(CHAT, CHAT_SURFACE);
-    let mut chat = AutoCommit::new();
-    let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
-    let entry = chat
-        .put_object(&channels, "c_general", ObjType::Map)
-        .unwrap();
-    let channel = chat.put_object(&entry, "v", ObjType::Map).unwrap();
-    chat.put(&channel, "name", "general").unwrap();
-    chat.commit();
-
-    let part_id = DocumentId::derived("messages", &DocumentId::workspace_default()).part(0);
-    let part_route = part_id.as_str().to_owned();
-    let mut part = AutoCommit::new();
-    ui::resource::init(
-        &mut part,
-        &part_id,
-        &ResourceType::new("chat.messages"),
-        "workspace",
-    );
-    post(&mut part, "m1", "@Bea can you look?", write_value);
-
-    let device = Device::holding(&[(CHAT, "", &chat), (CHAT, &part_route, &part)]);
-    let shown = Rc::new(Shown::default());
-    let mentions = device.role(&shown);
-    mentions.step();
-    let opens = |id: &str| Place {
-        app: CHAT.into(),
-        record: String::new(),
-        resource: "chat.workspace".into(),
-        anchor: format!("chat.workspace/messages/{id}"),
-    };
-    {
-        let up = shown.up.borrow();
-        assert_eq!(up.len(), 1, "{up:?}");
-        let notice = up.values().next().unwrap();
-        assert_eq!(notice.title, "Ada mentioned you in #general");
-        assert_eq!(notice.body, "@Bea can you look?");
-        assert_eq!(notice.place, Some(opens("m1")));
-    }
-
-    // A second message in the same part is news of its own: its place is its message.
-    post(&mut part, "m2", "@Bea and this one", write_value);
-    device.writes(CHAT, &part_route, &mut part);
-    look_again(&mentions);
-    let up = shown.up.borrow();
-    let mut places: Vec<Place> = up
-        .values()
-        .filter_map(|notice| notice.place.clone())
-        .collect();
-    places.sort();
-    assert_eq!(places, vec![opens("m1"), opens("m2")], "{up:?}");
-}
-
-/// Bea's conversation with her agent Scribe, by id.
-fn with_scribe() -> String {
-    ui::MemberId::direct_conversation([ui::MemberId::person(BEA), ui::MemberId::agent(SCRIBE)])
-}
-
-/// Chat's messages on Bea's device, and what her mentions over them told her.
-struct Talk {
-    shown: Rc<Shown>,
-    device: Device,
-    route: String,
-    part: AutoCommit,
-    mentions: Mentions,
-}
-
-/// What Bea is told of `said` (id, author, words) in her conversation with Scribe, while a window
-/// on screen shows what `on_screen` takes (app, item).
-fn bea_and_scribe(said: &[(&str, ui::MemberId, &str)], on_screen: OnScreen) -> Talk {
-    ui::app_surface::register_package(CHAT, CHAT_SURFACE);
-    let part_id = DocumentId::derived("messages", &DocumentId::workspace_default()).part(0);
-    let mut part = AutoCommit::new();
-    ui::resource::init(
-        &mut part,
-        &part_id,
-        &ResourceType::new("chat.messages"),
-        "workspace",
-    );
-    for (id, author, text) in said {
-        say(&mut part, id, (author, &with_scribe()), text, None);
-    }
-    let route = part_id.as_str().to_owned();
-    let device = Device::holding(&[(CHAT, "", &AutoCommit::new()), (CHAT, &route, &part)]);
-    let shown = Rc::new(Shown::default());
-    let mentions = device.role_seeing(BEA, &shown, on_screen);
-    mentions.step();
-    Talk {
-        shown,
-        device,
-        route,
-        part,
-        mentions,
-    }
-}
-
-tilo_test_env::scenario! {
-    fn a_direct_message_tells_only_the_others_and_only_where_they_do_not_see_it;
-
-    phase the_persons_own_message_to_their_agent_tells_them_nothing;
-    // Bea asks her agent something: she wrote it, on whichever of her devices, so none tells her.
-    {
-        let asked = [("m1", ui::MemberId::person(BEA), "Rename the task")];
-        let shown = bea_and_scribe(&asked, nothing_shown()).shown;
-        assert!(shown.up.borrow().is_empty(), "{:?}", shown.up.borrow());
-    }
-
-    phase the_agents_answer_is_told_under_its_own_name;
-    // Her agent's answer is news for her, named as the workspace names the agent: never a guest.
-    {
-        let answered = [("m2", ui::MemberId::agent(SCRIBE), "Renamed it")];
-        let shown = bea_and_scribe(&answered, nothing_shown()).shown;
-        let up = shown.up.borrow();
-        assert_eq!(up.len(), 1, "{up:?}");
-        assert_eq!(up.values().next().unwrap().title, "Scribe wrote to you");
-    }
-
-    phase an_answer_in_the_conversation_on_screen_tells_nothing;
-    // The conversation stands open in a window she sees: the answer is before her and no notice
-    // covers it, nor comes once she looks away. A message in a conversation she does not see is
-    // told.
-    {
-        let seeing = Rc::new(std::cell::Cell::new(true));
-        let on_screen = {
-            let seeing = Rc::clone(&seeing);
-            // The window shows the conversation as Chat's item.
-            let open = format!("/{}", with_scribe());
-            Rc::new(move |app: &str, item: &str| {
-                seeing.get() && app == CHAT && item.starts_with("chat.workspace/") && item.ends_with(&open)
-            })
-        };
-        let answered = [("m3", ui::MemberId::agent(SCRIBE), "Working")];
-        let Talk { shown, device, route, mut part, mentions } =
-            bea_and_scribe(&answered, on_screen);
-        assert!(shown.up.borrow().is_empty(), "{:?}", shown.up.borrow());
-
-        seeing.set(false);
-        let scribe = ui::MemberId::agent(SCRIBE);
-        say(&mut part, "m3", (&scribe, &with_scribe()), "Renamed it", None);
-        let ada = ui::MemberId::person(ADA);
-        let with_ada = ui::MemberId::direct_conversation([ui::MemberId::person(BEA), ada.clone()]);
-        say(&mut part, "m4", (&ada, &with_ada), "Lunch?", None);
-        device.writes(CHAT, &route, &mut part);
-        look_again(&mentions);
-        let up = shown.up.borrow();
-        let titles: Vec<&str> = up.values().map(|notice| notice.title.as_str()).collect();
-        assert_eq!(titles, ["Ada wrote to you"], "{up:?}");
     }
 }
 

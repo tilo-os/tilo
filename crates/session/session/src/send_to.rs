@@ -9,6 +9,8 @@
 //! the agents a send names is the workspace's governance and Chat's record of its agents, both of
 //! which only the session holds, so it happens here first, so the message never goes to an agent
 //! the workspace does not list.
+//! The person's own send from a box opens where it landed: the message Chat answers with, through
+//! the layout's `open`, which brings the conversation forward where it stands.
 //! A box opened with the one place a report goes on it is the same send with that place on it: it
 //! is filed there as the channel's report ([`crate::feedback`]), one action of the person's own,
 //! and nothing opens over the window it is about.
@@ -125,8 +127,8 @@ pub(crate) struct Sends {
 }
 
 /// What Chat answered each send, by its number: one answer for each conversation it went to,
-/// the message landed or why it did not.
-type Settled = std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<(), String>)>>>;
+/// the message that landed (when the answer names it) or why it did not.
+type Settled = std::sync::Arc<std::sync::Mutex<Vec<(u64, Result<Option<String>, String>)>>>;
 
 /// A send handed to Chat, waiting for its answers: whom to tell.
 struct Flying {
@@ -136,6 +138,11 @@ struct Flying {
     waiting: usize,
     /// Why it did not land in one of them, the first that said so.
     refused: Option<String>,
+    /// Whether it opens where it landed once it did: a send from the person's own box, never an
+    /// ask from the canvas (its turn stands where they asked) nor a report.
+    opens: bool,
+    /// The first message it landed as, which opens.
+    landed: Option<String>,
     answer: tilo_actions::remote::Completer<Result<tilo_actions::ActionOutput, ApiError>>,
 }
 
@@ -339,18 +346,26 @@ impl Shared {
             sent.drain(..over);
             drop(sent);
             self.sends.moved.set(true);
+            let by_person = sending.by.as_ref().is_none_or(|by| by.acting.is_person());
             let flying = Flying {
-                by_person: sending.by.as_ref().is_none_or(|by| by.acting.is_person()),
+                by_person,
                 waiting: 0,
                 refused: None,
+                opens: false,
+                landed: None,
                 answer: sending.answer,
             };
             match started {
-                Ok(waiting) => {
-                    self.sends
-                        .flying
-                        .borrow_mut()
-                        .insert(number, Flying { waiting, ..flying });
+                Ok((waiting, message)) => {
+                    let opens = message && by_person && sending.asked.is_none();
+                    self.sends.flying.borrow_mut().insert(
+                        number,
+                        Flying {
+                            waiting,
+                            opens,
+                            ..flying
+                        },
+                    );
                 }
                 Err(reason) => self.settle_send(number, flying, Err(reason)),
             }
@@ -367,8 +382,15 @@ impl Shared {
                 continue;
             };
             waiting.waiting = waiting.waiting.saturating_sub(1);
-            if let Err(reason) = outcome {
-                waiting.refused.get_or_insert(reason);
+            match outcome {
+                Ok(landed) => {
+                    if waiting.landed.is_none() {
+                        waiting.landed = landed;
+                    }
+                }
+                Err(reason) => {
+                    waiting.refused.get_or_insert(reason);
+                }
             }
             if waiting.waiting > 0 {
                 continue;
@@ -387,8 +409,18 @@ impl Shared {
     /// why: the box that sent it closed as it was sent, and nothing opened where it stood.
     fn settle_send(&self, number: u64, flying: Flying, outcome: Result<(), String>) {
         let Flying {
-            by_person, answer, ..
+            by_person,
+            answer,
+            opens,
+            landed,
+            ..
         } = flying;
+        if outcome.is_ok()
+            && opens
+            && let Some(message) = landed
+        {
+            self.open_landed(&message);
+        }
         if let Err(reason) = &outcome {
             let mut sent = self.sends.sent.borrow_mut();
             let sent = sent.iter_mut().find(|sent| sent.number == number);
@@ -417,6 +449,21 @@ impl Shared {
             Err(reason) => Err(ApiError::Failed(reason)),
             Ok(()) => Ok(tilo_actions::ActionOutput::default()),
         });
+    }
+
+    /// Open `message`, where a send of the person's own landed, through the layout's `open`: the
+    /// conversation it is in comes forward where it stands.
+    fn open_landed(&self, message: &str) {
+        let mut arguments = Map::new();
+        arguments.insert("resource".into(), message.into());
+        let address = ActionAddress::new(tilo_session_core::layout::RESOURCE, "open");
+        if let Err(error) = self.published.invoke(
+            &address,
+            &arguments,
+            &mut tilo_session_core::surfaces::Look::none(),
+        ) {
+            tracing::warn!(%error, %message, "where a send landed did not open");
+        }
     }
 
     /// Read whom a message can go to again when the search's index moved, for the next reading of
@@ -466,6 +513,9 @@ impl Shared {
     /// # Errors
     /// The workspace is not open here, an agent could not be made or admitted,
     /// or the action could not be handed to Chat.
+    ///
+    /// Answers how many actions it handed Chat, and whether the send is a message (a report is
+    /// not).
     fn send_to(
         &self,
         by: Option<&tilo_actions::ActionInvoker>,
@@ -474,16 +524,16 @@ impl Shared {
         attached: &[tilo_reference::Attached],
         text: &str,
         asked: Option<u64>,
-    ) -> Result<usize, String> {
+    ) -> Result<(usize, bool), String> {
         let text = text.trim();
         if text.is_empty() && attached.is_empty() {
             return Err("a message needs words or something to carry".into());
         }
-        let (workspace, targets) = match addressed(self.feedback.as_ref(), workspace, to)? {
+        let (workspace, targets, message) = match addressed(self.feedback.as_ref(), workspace, to)? {
             Addressed::Message { workspace, to } => {
                 let resolved = self.recipients_of(&workspace, &to, &agent_name(attached))?;
                 let targets = send_targets(&workspace, &resolved, attached, text)?;
-                (workspace, targets)
+                (workspace, targets, true)
             }
             // A report is read where it lands, not floated over the window it was written over: it
             // is filed in the channel and nothing opens.
@@ -502,6 +552,7 @@ impl Shared {
                 (
                     destination.workspace.clone(),
                     vec![report_target(&destination, &report)?],
+                    false,
                 )
             }
         };
@@ -516,14 +567,14 @@ impl Shared {
                     &workspace,
                     target,
                     Box::new(move |answer| {
+                        // The message is what the action made: the first resource it answers.
+                        let message = answer
+                            .as_ref()
+                            .ok()
+                            .and_then(|answer| answer.resources.first())
+                            .cloned();
                         if let Some((asked, posted)) = posted {
-                            // The message is what the action made: the first resource it answers.
-                            let message = answer
-                                .as_ref()
-                                .ok()
-                                .and_then(|answer| answer.resources.first())
-                                .cloned();
-                            match message {
+                            match message.clone() {
                                 Some(message) => {
                                     if let Ok(mut posted) = posted.lock() {
                                         posted.insert(asked, message);
@@ -538,14 +589,14 @@ impl Shared {
                             }
                         }
                         if let Ok(mut settled) = settled.lock() {
-                            settled.push((number, answer.map(drop)));
+                            settled.push((number, answer.map(|_| message)));
                         }
                         wake();
                     }),
                 )
                 .map_err(|error| error.to_string())?;
         }
-        Ok(sent)
+        Ok((sent, message))
     }
 
     /// Who a message goes to, as the names a box holds: an agent named as a

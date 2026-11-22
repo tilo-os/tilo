@@ -42,7 +42,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO / "scripts/headless-examples"))
 
-from real_apps import APPS, Failed, Session, prepare, until  # noqa: E402,F401
+from real_apps import APPS, Failed, Session, prepare, tl_packages, until  # noqa: E402,F401
 
 BUDGETS = json.loads((HERE.parent / "budgets.json").read_text())
 # How often a running shell is filmed. A snapshot of a software-rendered shell takes a while of
@@ -92,16 +92,19 @@ class Person:
             prepare(self.state, apps=apps)
             self.prepared = True
 
-    def start(self, *, apps: str = APPS, fresh: bool = True, env: dict | None = None) -> dict:
-        """Open this person's Tilo: their session starts and answers with a frame. Answers
+    def start(self, *, apps: str = APPS, tl: tuple[str, ...] = (), fresh: bool = True,
+              env: dict | None = None) -> dict:
+        """Open this person's Tilo, with the tilolang apps `tl` (directories under apps/tl)
+        installed beside `apps`: their session starts and answers with a frame. Answers
         `{"tookMs": …}`, the session's own time from its start until it answered, which is what a
         person waits for; `launcherMs` is the whole start, with what the development launcher
         installs and checks before the session runs, which no person's computer does."""
         self.prepare(apps)
+        tapps = tl_packages(self.state, self.state.parent / "tl", list(tl)) if tl else []
         began = time.monotonic()
         self.starts += 1
         tag = self.key if self.starts == 1 else f"{self.key}-{self.starts}"
-        self.session.start(apps=apps, fresh=fresh, out=self.logs, tag=tag, env=env)
+        self.session.start(apps=apps, fresh=fresh, out=self.logs, tag=tag, env=env, tapps=tapps)
         launcher = (time.monotonic() - began) * 1000
         said = self.state / "logs/ready.log"
 

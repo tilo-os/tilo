@@ -37,6 +37,8 @@ import uuid
 URL = os.environ.get("TILO_API_URL", "")
 KEY = os.environ.get("TILO_API_KEY", "")
 WORKSPACE = "Upgrade check"
+# The channel the data is said in: Chat's, by the name it is made with.
+CHAT_CHANNEL = "chat/upgrade"
 
 
 def call(method: str, path: str, body=None, raw: bytes | None = None, tries: int = 60):
@@ -139,13 +141,11 @@ def workspace_id(name: str) -> str | None:
 def fill() -> dict:
     made = call("POST", "/v1/workspaces", {"name": WORKSPACE})
     workspace = made.get("id") or workspace_id(WORKSPACE)
-    channel = next(
-        (path.rsplit("/", 1)[-1] for path in rows(workspace, "chat") if "/c_" in path), "c_chat"
-    )
-    channel = channel if channel.startswith("c_") else "c_chat"
+    # A channel of Chat's own (apps/tl/chat app.tl `new_channel`), and messages sent in it.
+    act(workspace, "chat#new_channel", name=CHAT_CHANNEL.rsplit("/", 1)[-1])
     messages = ["Before the upgrade: hello", "A second message, with a link https://example.org"]
     for text in messages:
-        act(workspace, "chat/Messages#post", channel=channel, text=text)
+        act(workspace, f"{CHAT_CHANNEL}#send", body=text)
     tasks = ["Carry the data forward", "A second task"]
     act(workspace, "tasks/Issues#create", title=tasks[0], body="Written before the upgrade")
     act(workspace, "tasks/Issues#create", title=tasks[1], status="in-progress")
@@ -200,7 +200,7 @@ def fill() -> dict:
         for message in fetched])
     return {
         "workspace": WORKSPACE,
-        "chat/Messages": messages,
+        CHAT_CHANNEL: messages,
         "tasks": [f"tasks/{title}" for title in tasks],
         "notes": ["notes/Upgrade note"],
         "files": ["docs/plan-before-upgrade.txt"],
@@ -221,9 +221,13 @@ def check(expected: dict) -> list[str]:
     if workspace is None:
         return [f"the workspace {expected['workspace']!r} is gone"]
     missing = []
-    for path in ("chat/Messages", "mail/Messages", "calendar/Calendar"):
+    for path in ("mail/Messages", "calendar/Calendar"):
         held = children(workspace, path)
         missing += [f"{path}: {name!r}" for name in expected[path] if name not in held]
+    # A channel's messages are its items, each read with what it says.
+    said = json.dumps(call("GET", f"/v1/workspaces/{workspace}/resources/{quoted(CHAT_CHANNEL)}"))
+    missing += [f"{CHAT_CHANNEL}: {text!r}" for text in expected[CHAT_CHANNEL]
+                if json.dumps(text)[1:-1] not in said]
     for app in ("tasks", "notes", "files", "contacts"):
         held = " ".join(rows(workspace, app)).replace("\\/", "/")
         missing += [f"{app}: {name!r}" for name in expected[app] if name not in held]
