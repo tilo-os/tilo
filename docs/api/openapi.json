@@ -25693,6 +25693,28 @@
         "required": [],
         "description": "Stops a turn that is working; what the agent did until then stays."
       },
+      "tl.so.tilo.lang.agent.Ask.claim.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "device",
+          "at"
+        ],
+        "description": "The agent takes the turn of `a` on `device` at `at`. When several devices took it, the\nearliest claim wins and a tie goes to the lowest device key; the others leave it."
+      },
+      "tl.so.tilo.lang.agent.Ask.answer.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The agent starts its reply to `a`, the ask's next attempt."
+      },
       "tl.so.tilo.lang.agent.Step.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -25783,6 +25805,93 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.lang.agent.Reply.say.Arguments": {
+        "type": "object",
+        "properties": {
+          "more": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "more"
+        ],
+        "description": "The agent writes `more` at the end of its answer."
+      },
+      "tl.so.tilo.lang.agent.Reply.step.Arguments": {
+        "type": "object",
+        "properties": {
+          "called": {
+            "type": "string"
+          },
+          "answered": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "failed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "called",
+          "answered"
+        ],
+        "description": "The agent called `called` on the way, and it answered `answered`."
+      },
+      "tl.so.tilo.lang.agent.Reply.finish.Arguments": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "choice_labels": {
+              "cannot_read": "The agent may not read what it was asked about, so nothing of it was copied here",
+              "done": "The agent answered",
+              "failed": "The turn ended without an answer; its reply says why",
+              "stopped": "A person stopped the turn while it worked",
+              "waiting": "Asked, and no device has taken the turn yet",
+              "withdrawn": "The asker took it back, or removed the mention that asked, before a device took it",
+              "working": "A device took the turn and the agent is working on it"
+            },
+            "enum": [
+              "waiting",
+              "working",
+              "done",
+              "failed",
+              "stopped",
+              "withdrawn",
+              "cannot_read"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "description": "The agent's turn ended as `state`: done, failed, or stopped when a person stopped it."
+      },
+      "tl.so.tilo.lang.agent.Reply.supersede.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Another device's answer to the same ask stands instead of `r`."
       },
       "tl.so.tilo.lang.agent.Agents.$create.Arguments": {
         "type": "object",
@@ -38734,6 +38843,18 @@
     },
     {
       "app": "so.tilo.lang.agent",
+      "resource": "tl.so.tilo.lang.agent.Ask",
+      "action": "claim",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.claim.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.agent",
+      "resource": "tl.so.tilo.lang.agent.Ask",
+      "action": "answer",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.answer.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.agent",
       "resource": "tl.so.tilo.lang.agent.Step",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Step.$create.Arguments"
@@ -38767,6 +38888,30 @@
       "resource": "tl.so.tilo.lang.agent.Reply",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.agent",
+      "resource": "tl.so.tilo.lang.agent.Reply",
+      "action": "say",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.say.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.agent",
+      "resource": "tl.so.tilo.lang.agent.Reply",
+      "action": "step",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.step.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.agent",
+      "resource": "tl.so.tilo.lang.agent.Reply",
+      "action": "finish",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.finish.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.agent",
+      "resource": "tl.so.tilo.lang.agent.Reply",
+      "action": "supersede",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.supersede.Arguments"
     },
     {
       "app": "so.tilo.lang.agent",
