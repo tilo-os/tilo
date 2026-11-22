@@ -417,14 +417,36 @@ fn refuse_a_missing_press(
     Ok(())
 }
 
-/// The views no layout showed a node of: a view its window draws off a call or from the system's
-/// own surfaces (a row view, a proposal view) is not one.
+/// The views no layout showed a node of: a view its window draws off a call, or the system draws
+/// for its kind (the default view of a resource, a row of a list, a place on the canvas), is not
+/// one.
 fn unreached_views(apps: &[App], shown: &[Shown]) -> Vec<Unreached> {
     let drawn: Shown = shown.iter().flatten().cloned().collect();
     let called: BTreeSet<(String, String)> = apps
         .iter()
-        .flat_map(|held| held.sources.called())
-        .map(|(app, view)| (app.to_owned(), view.to_owned()))
+        .flat_map(|held| {
+            // A view a package declares as what its kind opens — `default view v for T`, `row view
+            // v for T`, `place view v for T` — is called by the system itself, so nothing has to
+            // name it.
+            let declared = held
+                .meta
+                .default_views
+                .iter()
+                .chain(&held.meta.row_views)
+                .chain(&held.meta.place_views)
+                .filter_map(|declared| {
+                    let view = held
+                        .meta
+                        .views
+                        .iter()
+                        .find(|view| view.id == declared.view)?;
+                    Some((held.meta.app.clone(), view.name.clone()))
+                });
+            held.sources
+                .called()
+                .map(|(app, view)| (app.to_owned(), view.to_owned()))
+                .chain(declared)
+        })
         .collect();
     let mut out = Vec::new();
     for held in apps {

@@ -336,8 +336,9 @@ fn a_board_list_draws_every_card_it_has_room_for_and_a_layout_costs_no_more_work
 
 /// A view another app's page draws is laid out there, so it is reached for the package that defines
 /// it though none of that package's own windows shows it; a row view of a type inside a collection
-/// of a union and a type's place view are opened where the system draws them; and a view nothing
-/// calls is named as one to delete, apart from a view a view calls that no scenario reaches.
+/// of a union and a type's place view are opened where the system draws them; a type's default
+/// view is drawn by the system for the type even where no layout shows it, so it is a screen no
+/// scenario reached rather than one to delete; and a view nothing calls is named as one to delete.
 #[test]
 fn a_view_another_app_draws_and_the_views_the_system_draws_are_reached_while_a_dead_view_is_named()
 {
@@ -357,9 +358,10 @@ fn a_view_another_app_draws_and_the_views_the_system_draws_are_reached_while_a_d
         unreached,
         [
             ("layoutdrawn › behind", true),
-            ("layoutdrawn › orphan", false)
+            ("layoutdrawn › orphan", false),
+            ("layoutdrawn › tag_page", true)
         ],
-        "the row another app draws and the note's row are reached, and the two no layout \
+        "the row another app draws and the note's row are reached, and the ones no layout \
          shows say which they are:\n{}",
         layout_check::render(&report)
     );
@@ -372,8 +374,8 @@ fn a_view_another_app_draws_and_the_views_the_system_draws_are_reached_while_a_d
     );
     assert!(
         rendered.contains(
-            "note: no scenario reaches layoutdrawn › behind: a view calls it, so a scenario must \
-             reach the view that draws it"
+            "note: no scenario reaches layoutdrawn › behind, layoutdrawn › tag_page: a view calls \
+             each, so a scenario must reach the view that draws them"
         ),
         "{rendered}"
     );
