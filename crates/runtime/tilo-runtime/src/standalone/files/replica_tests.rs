@@ -737,12 +737,14 @@ const WIPED_TEST: &str = "standalone::files::replica::tests::\
 /// The invitation the member redeems, in its own process, each time it starts.
 const MEMBER_INVITATION: &str = "TILO_REPLICA_TEST_MEMBER_INVITATION";
 
-/// Empties the disk of the device whose process runs under `root`, as a VM
-/// host moved to a new disk finds it: its profile, with every workspace it
-/// held, and its home, with every folder. What is left is its identity and the
-/// device settings that name the relay the test reaches.
-/// Whether a FUSE mount is still up at `at`.
+/// Whether a FUSE mount is still up at `at`: listed, or left by a daemon that is gone and not
+/// unmounted yet, which answers "not connected".
 fn mounted_at(at: &Path) -> bool {
+    if std::fs::symlink_metadata(at)
+        .is_err_and(|error| error.raw_os_error() == Some(libc::ENOTCONN))
+    {
+        return true;
+    }
     let Ok(mounts) = std::fs::read_to_string("/proc/self/mounts") else {
         return false;
     };
@@ -756,6 +758,24 @@ fn mounted_at(at: &Path) -> bool {
     })
 }
 
+/// A member killed the hard way leaves its mount to the guardian: wait for it to go before
+/// wiping, since a folder still mounted there cannot be removed (ENOTCONN).
+fn wait_for_unmount(folder: &Path) {
+    let cleared = std::time::Instant::now();
+    while mounted_at(folder) {
+        assert!(
+            cleared.elapsed() <= Duration::from_secs(30),
+            "the stopped member's mount at {} never went",
+            folder.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Empties the disk of the device whose process runs under `root`, as a VM
+/// host moved to a new disk finds it: its profile, with every workspace it
+/// held, and its home, with every folder. What is left is its identity and the
+/// device settings that name the relay the test reaches.
 fn wipe_all_but_identity(root: &Path) {
     let environment = root.join("environment");
     for gone in [
@@ -942,17 +962,7 @@ fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
     let _ = first.wait();
     eprintln!("the server kept the tree after {:?}", started.elapsed());
 
-    // A member killed the hard way leaves its mount to the guardian: wait for it to go before
-    // wiping, since a folder still mounted there cannot be removed (ENOTCONN).
-    let cleared = std::time::Instant::now();
-    while mounted_at(&folder) {
-        assert!(
-            cleared.elapsed() <= Duration::from_secs(30),
-            "the stopped member's mount at {} never went",
-            folder.display()
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    wait_for_unmount(&folder);
 
     // The member's disk is wiped; it starts again with its identity alone and
     // takes part in the workspace again.
