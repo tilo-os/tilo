@@ -22,7 +22,6 @@ sources = [
     "crates/collab/neighbour-wire/src/lib.rs",
     "crates/collab/collab-types/src/own_resource.rs",
     "crates/collab/neighbour-wire/src/actions.rs",
-    "crates/collab/neighbour-wire/src/offer.rs",
     "crates/collab/neighbour-wire/src/colorimetry.rs",
     "crates/collab/neighbour-wire/src/hdr_metadata.rs",
     "crates/collab/actions/src/document_sync.rs",
@@ -50,7 +49,7 @@ sources = [
     "crates/collab/collab-types/src/peer.rs",
     "crates/collab/collab-types/src/presence/shell.rs",
 ]
-roots = ["Hello", "HelloAck", "HelloAck2", "HelloRefused", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "ActionServiceFrame", "crates/collab/neighbour-wire/src/offer.rs:Answer"]
+roots = ["Hello", "HelloAck", "HelloAck2", "HelloRefused", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "ActionServiceFrame", "crates/collab/neighbour-wire/src/placement.rs:Answer"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
