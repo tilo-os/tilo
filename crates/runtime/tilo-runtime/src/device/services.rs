@@ -1380,6 +1380,12 @@ pub(super) fn hold_files(
 }
 
 impl Daemon {
+    /// Told each time this device starts holding a workspace as a member: what a computer that
+    /// just logged in waits on before anything is admitted to its workspace.
+    pub(crate) fn entered(&self) -> Arc<tokio::sync::Notify> {
+        self.workspaces.entered()
+    }
+
     /// Where the files of the workspaces whose work this device takes are held.
     #[cfg(test)]
     pub(crate) fn replicas(&self) -> Option<&Arc<take_work::files::Replicas>> {

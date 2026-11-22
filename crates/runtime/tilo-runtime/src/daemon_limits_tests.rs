@@ -39,10 +39,12 @@ fn endpoint() -> (tempfile::TempDir, PathBuf, HeldHost) {
             pid: std::process::id(),
             workspace: "workspace".into(),
         },
-        search: Arc::new(tilo_os_search::OsSearch::new(
-            Arc::new(host.clone()),
-            tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),
-        )),
+        search: Arc::new(std::sync::OnceLock::from(Arc::new(
+            tilo_os_search::OsSearch::new(
+                Arc::new(host.clone()),
+                tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),
+            ),
+        ))),
         media: None,
         other_devices: None,
     };

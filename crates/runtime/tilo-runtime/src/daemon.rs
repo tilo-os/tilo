@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -753,11 +753,12 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
     } else {
         Daemon::start_reporting(profile, &mut stage)?
     });
-    let search = crate::os_search::start(
-        session.action_provider()?,
-        session.workspace(),
-        session.actor(),
-    )?;
+    // A computer that just logged in takes its workspace in while the device is held (below):
+    // nothing is admitted to the workspace before then. The endpoint admits each connection as
+    // it comes, and host search starts once the workspace is here, rather than the daemon ending
+    // before it could take the workspace in.
+    let search = Arc::new(OnceLock::new());
+    search_once_held(&session, &search)?;
     let path = profile.join("native.sock");
     // The daemon already holds the device's lock. Only that owner may remove a stale
     // endpoint, and a second daemon cannot reach this point.
@@ -771,7 +772,7 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
         workspace: session.workspace().to_owned(),
     };
     let endpoint = Endpoint {
-        session_factory: session.mcp_session_factory(session.workspace())?,
+        session_factory: admitted_per_connection(&session),
         status,
         search,
         media: session.media(),
@@ -799,12 +800,80 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
 struct Endpoint<H> {
     session_factory: tilo_mcp::SessionFactory<H>,
     status: Status,
-    /// Opens the host search results another process was handed.
-    search: Arc<tilo_os_search::OsSearch>,
+    /// Opens the host search results another process was handed, once host search started.
+    search: Arc<OnceLock<Arc<tilo_os_search::OsSearch>>>,
     /// Where answers read the content actions produced.
     media: Option<Arc<dyn tilo_mcp::MediaReader>>,
     /// The person's other devices, as this runtime asks them.
     other_devices: Option<crate::other_devices::OtherDevices>,
+}
+
+/// The sessions of the native endpoint, each admitted to `session`'s workspace when its
+/// connection comes: a connection before the workspace reached this computer is told why it is
+/// not served, and one after it is served.
+fn admitted_per_connection(
+    session: &Arc<Daemon>,
+) -> tilo_mcp::SessionFactory<<Daemon as RuntimeServices>::ActionProvider> {
+    let session = Arc::downgrade(session);
+    let made: OnceLock<tilo_mcp::SessionFactory<_>> = OnceLock::new();
+    Arc::new(move || {
+        if let Some(factory) = made.get() {
+            return factory();
+        }
+        let daemon = session
+            .upgrade()
+            .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+        let factory = daemon.mcp_session_factory(daemon.workspace())?;
+        made.get_or_init(|| factory)()
+    })
+}
+
+/// Start host search over `session`'s workspace into `search` once the workspace can be admitted
+/// to: at once on a computer that holds it, and when it arrives on one that just logged in.
+fn search_once_held(
+    session: &Arc<Daemon>,
+    search: &Arc<OnceLock<Arc<tilo_os_search::OsSearch>>>,
+) -> io::Result<()> {
+    let entered = session.entered();
+    let (session, search) = (Arc::downgrade(session), Arc::clone(search));
+    let runtime = tilo_rt::try_app()
+        .map_err(io::Error::other)?
+        .handle()
+        .clone();
+    std::thread::Builder::new()
+        .name("tilo-os-search".into())
+        .spawn(move || {
+            let mut said = false;
+            loop {
+                // Armed before the look, so a workspace held between the two is not missed.
+                let mut held = std::pin::pin!(entered.notified());
+                held.as_mut().enable();
+                let Some(daemon) = session.upgrade() else {
+                    return;
+                };
+                match daemon.action_provider() {
+                    Ok(host) => {
+                        match crate::os_search::start(host, daemon.workspace(), daemon.actor()) {
+                            Ok(started) => {
+                                let _ = search.set(started);
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "host search does not search this computer's workspace");
+                            }
+                        }
+                        return;
+                    }
+                    Err(error) if !said => {
+                        said = true;
+                        tracing::warn!(%error, "host search starts once this computer holds its workspace");
+                    }
+                    Err(_) => {}
+                }
+                drop(daemon);
+                runtime.block_on(held);
+            }
+        })?;
+    Ok(())
 }
 
 /// The longest first line a native connection is read for before it is
@@ -928,7 +997,7 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     input: impl Read + Send + 'static,
     server: &Arc<McpServer<H>>,
     status: &Status,
-    search: &tilo_os_search::OsSearch,
+    search: &OnceLock<Arc<tilo_os_search::OsSearch>>,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -947,9 +1016,12 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
             Some("activate") => {
                 Box::pin(async move { Ok(Some(answer_activate(server, &value).await)) })
             }
-            Some(tilo_host_search::OPEN) => {
-                Box::pin(async move { Ok(Some(answer_open(search, &value).await)) })
-            }
+            Some(tilo_host_search::OPEN) => Box::pin(async move {
+                Ok(Some(match search.get() {
+                    Some(search) => answer_open(search, &value).await,
+                    None => json!({"error": SEARCH_NOT_STARTED}),
+                }))
+            }),
             _ => return mcp_answer(server, value),
         })
     };
@@ -977,6 +1049,10 @@ async fn answer_activate<H: tilo_actions::remote::ActionProvider + Send + Sync +
         _ => json!({"error": "activation needs an application identity"}),
     }
 }
+
+/// What a host search result chosen before host search started is answered.
+const SEARCH_NOT_STARTED: &str =
+    "host search starts once this computer holds its workspace; nothing it found is open yet";
 
 /// A native open request's answer: a host search result another process of
 /// this runtime was handed (a Spotlight click reaches the bundle's app),

@@ -136,7 +136,7 @@ tilo_test_env::scenario! {
                             pid: 1,
                             workspace: "workspace".into(),
                         },
-                        &search,
+                        &std::sync::OnceLock::from(std::sync::Arc::clone(&search)),
                     )
                     .unwrap();
                 }
@@ -189,7 +189,7 @@ tilo_test_env::scenario! {
                         pid: 1,
                         workspace: "workspace".into(),
                     },
-                    &search,
+                    &std::sync::OnceLock::from(std::sync::Arc::clone(&search)),
                 )
             })
         };

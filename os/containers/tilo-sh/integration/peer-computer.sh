@@ -110,6 +110,13 @@ log_in_and_show() {
     as_computer "$tilo" status >&2 || true
     return 1
   }
+  # Both computers mount their folders from their daemon's first start: a daemon that ended
+  # says why on a line of its own in its log, and one started again after it is the fault. A
+  # second daemon that found the device kept by the first ends too, and is no fault.
+  local ended
+  ended=$(cat "$scratch"/state/tilo/device/*.log "$scratch"/person/state/tilo/device/*.log \
+    2>/dev/null | grep '^tilo-runtime: ' | grep -vc 'another daemon keeps it' || true)
+  ((ended == 0)) || { say "a daemon ended $ended times before the folder showed"; return 1; }
 }
 # Unmount whatever the scratch homes still have mounted.
 unmount_scratch() {
