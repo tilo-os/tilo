@@ -159,7 +159,11 @@ open the record an ask is about is not eligible to take its turn.
 A sub-agent or coding agent that an agent starts acts as its starter's
 approved key, narrowed to its own conversation: a grant only narrows what
 its giver holds. Any device of the person an agent acts for may approve
-that agent. A turn that has no approved caller writes its refusal into the
+that agent. An agent acts for exactly one person. What the workspace shares is its
+definition (instructions, model, skills): another member who wants it starts
+an agent of their own from that definition and approves it, and that agent
+has its own member key. A member's ask of an agent that acts for someone else
+gets the refusal notice below, never a turn as the other person's key. A turn that has no approved caller writes its refusal into the
 conversation, with the reason, and ends. It is written as the device that took
 the turn, whose grant is that one notice on that one ask. A handed node
 for a sub-agent is decided together with its signer and only narrows it.
