@@ -866,6 +866,15 @@ impl crate::Shared {
         }
         let earlier = tilo_action_policy::earlier::held();
         for record in records {
+            // What the service reads and does is decided by the person's access in the workspace,
+            // as a window of the app is.
+            if let Some(apps) = &self.launch {
+                let (apps, workspace, app) =
+                    (Rc::clone(apps), workspace.clone(), record.app.clone());
+                *record.access.borrow_mut() = Some(Box::new(move || {
+                    tilo_app_launch::authority::access(&apps.workspace_named(&workspace), &app)
+                }));
+            }
             let under = earlier.documents_under(&record.app);
             self.records
                 .keep_document(&workspace, (under, &record.id), record.document);

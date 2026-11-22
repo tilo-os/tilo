@@ -372,7 +372,16 @@ pub struct WorkspaceDocument {
     pub id: String,
     /// The document the service runs over: the one the session keeps in the workspace.
     pub document: std::rc::Rc<std::cell::RefCell<tilo_resource::Doc>>,
+    /// Where the session hands the service the person's access in that workspace as it keeps the
+    /// document there: what the service's reads and actions are decided by from then on.
+    pub access: WorkspaceAccess,
 }
+
+/// The person's access in the workspace a service's document is kept in, as the session reads it
+/// when the service asks: none until the session keeps the document in a workspace.
+pub type WorkspaceAccess = std::rc::Rc<
+    std::cell::RefCell<Option<Box<dyn Fn() -> Option<tilo_actions::policy::MemberAccess>>>>,
+>;
 
 /// `resource` offering every action of the vocabulary `E`.
 pub use tilo_resource::offer;

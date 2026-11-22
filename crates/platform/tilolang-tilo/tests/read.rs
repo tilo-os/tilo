@@ -3,7 +3,6 @@
 //! items' fields or by what they were made from, read from the index however large the
 //! collection; and never more than the reader's grants let them read, whichever way they ask.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -226,8 +225,6 @@ fn a_page_of_ten_thousand_is_read_from_the_index() {
 /// the ask; and a secret post with its own ask and reply.
 struct Chain {
     service: ResourceService,
-    /// The access the session's host decides by: none until a test gives one.
-    access: Rc<RefCell<Option<MemberAccess>>>,
     meta: Meta,
     board: ResourceRef,
     post: ResourceRef,
@@ -239,13 +236,13 @@ struct Chain {
 }
 
 fn chain() -> Chain {
-    // The session keeps the board in a host of its own, deciding by the access the session hands
-    // it, as it hands a window's instance the person's.
-    let access = Rc::new(RefCell::new(None));
+    // The session keeps the board in a host of its own, deciding by the person's access in the
+    // workspace the session keeps the board in, as a seeded app's host is made.
+    let access = tilo_service::WorkspaceAccess::default();
     let source = Rc::clone(&access);
     let (mut ada, packages) =
         Replica::following("ada", AutoCommit::new(), &[(SOURCE, "")], move || {
-            source.borrow().clone()
+            source.borrow().as_ref().and_then(|access| access())
         });
     let meta = packages[0].meta.clone();
     let board = ada.host.root_of(APP).unwrap();
@@ -304,8 +301,7 @@ fn chain() -> Chain {
     ));
     ada.commit_as("ada");
     Chain {
-        service: ada.into_service("ada"),
-        access,
+        service: ResourceService::of_app(APP, ada.host, "ada", access),
         meta,
         board,
         post,
@@ -393,7 +389,7 @@ fn every_item_says_who_made_it_when_and_from_what() {
 }
 
 /// Ada's workspace, where Cy views and may read neither the secret post nor the ask made from
-/// it: the access the session hands its host.
+/// it, handed to the service as the session hands it the workspace its board is kept in.
 fn deny_cy(chain: &Chain) {
     let node = |ty: &str, at: &ResourceRef| {
         TreePath::workspace(WORKSPACE)
@@ -416,7 +412,9 @@ fn deny_cy(chain: &Chain) {
             Grantee::person("ada"),
         ));
     }
-    *chain.access.borrow_mut() = Some(MemberAccess::person(policy, "ada"));
+    let access = MemberAccess::person(policy, "ada");
+    let kept = chain.service.workspace_document().unwrap();
+    *kept.access.borrow_mut() = Some(Box::new(move || Some(access.clone())));
 }
 
 #[test]
