@@ -29,6 +29,15 @@
  *   tab sessions, and makes a new one (a new device of the same person) only
  *   when every slot with a key is held by another tab.
  *
+ * This one store also holds the person the browser is, when a tab holds one:
+ * the root in exactly the identity store's record format (`personRecord`,
+ * `rootOfPerson`), so the root a tab founds and the root a computer keeps are
+ * the same record, and a computer imports it. That is `tilo_identity::store`'s
+ * `IdentityRecord` (`crates/runtime/tilo-identity/src/store/`): a single-device
+ * identity whose `secret_bytes` is the root's 32-byte seed. Beside it live the
+ * two things that travel, not the root: the envelope that opens it elsewhere
+ * and the revocations its root signed.
+ *
  * Storage is `{get(key), put(key, value), delete(key)}`; `idbStorage()`
  * provides it over IndexedDB with strict durability.
  */
@@ -420,4 +429,96 @@ export function idbStorage({indexedDB = globalThis.indexedDB, name = 'tilo-devic
     put: (key, value) => run('readwrite', s => s.put(value, key)),
     delete: key => run('readwrite', s => s.delete(key)),
   };
+}
+
+/** Where the person this browser is is kept, in the same store as the tab's
+ * device key. An older page kept its person under `identity`, another store's
+ * name: that is not read, so a tab with only it starts as a fresh one. */
+export const PERSON_KEY = 'person';
+/** The envelope that opens the person's root elsewhere, and the revocations
+ * its root signed: what travels, not the root, kept beside it. */
+const PERSON_ENVELOPE_KEY = 'person/envelope';
+const PERSON_REVOCATIONS_KEY = 'person/revocations';
+/** The colour the identity store gives a person who chose none
+ * (`tilo_identity::store`'s `DEFAULT_AVATAR_COLOR`). */
+export const DEFAULT_AVATAR_COLOR = [128, 128, 128];
+
+/**
+ * The root `seed` and `publicKey` (32 bytes each) as the identity store's
+ * `IdentityRecord`: a single-device identity whose `secret_bytes` is the seed,
+ * with the person's presentation. Writing it and parsing it back is what
+ * `tilo_identity::store` reads and writes for a computer, so a root the tab
+ * founds and a root a computer imports are the same record.
+ */
+export function personRecord({
+  seed, publicKey, displayName = '', avatarColor = DEFAULT_AVATAR_COLOR, photo,
+  createdAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+}) {
+  if (seed?.length !== 32 || publicKey?.length !== 32) throw new TypeError('a root is a 32-byte seed and public key');
+  return {
+    ...(photo ? {profile_photo: photo} : {}),
+    display_name: String(displayName ?? '').trim(),
+    avatar_color: [...avatarColor],
+    threshold_identity: {
+      single_device: true,
+      group_public_key: [...publicKey],
+      threshold: 1,
+      total_shares: 1,
+      share_index: 1,
+      secret_bytes: [...seed],
+    },
+    created_at: createdAt,
+    schema_version: 1,
+  };
+}
+
+/** The root an `IdentityRecord` keeps: `{seed, publicKey}`, 32 bytes each. */
+export function rootOfPerson(record) {
+  const identity = record?.threshold_identity;
+  if (!identity?.single_device
+    || !Array.isArray(identity.secret_bytes) || identity.secret_bytes.length !== 32
+    || !Array.isArray(identity.group_public_key) || identity.group_public_key.length !== 32) {
+    throw new DeviceKeyError('person-corrupt', 'This browser keeps no single-device root');
+  }
+  return {seed: Uint8Array.from(identity.secret_bytes), publicKey: Uint8Array.from(identity.group_public_key)};
+}
+
+const readJson = async (storage, key) => {
+  const text = await storage.get(key);
+  return text === undefined || text === null ? null : JSON.parse(text);
+};
+const writeJson = async (storage, key, value) => {
+  if (value === undefined || value === null) await storage.delete(key);
+  else await storage.put(key, JSON.stringify(value));
+};
+
+/** What this browser keeps of the person, or `null`: `{record, envelope,
+ * revocations}`, the record as the identity store's `IdentityRecord` (parsed
+ * back from its JSON), the envelope that opens it elsewhere (or `null`), and
+ * the revocations its root signed. */
+export async function readPerson(storage) {
+  const record = await readJson(storage, PERSON_KEY);
+  if (!record) return null;
+  return {
+    record,
+    envelope: await readJson(storage, PERSON_ENVELOPE_KEY),
+    revocations: (await readJson(storage, PERSON_REVOCATIONS_KEY)) ?? [],
+  };
+}
+
+/** Keep the person: `record` the identity store's `IdentityRecord`, `envelope`
+ * what opens it elsewhere, `revocations` the entries its root signed. The
+ * record goes as its JSON text, so what the page keeps is the bytes a computer
+ * reads. */
+export async function writePerson(storage, {record, envelope, revocations} = {}) {
+  await storage.put(PERSON_KEY, JSON.stringify(record));
+  await writeJson(storage, PERSON_ENVELOPE_KEY, envelope);
+  await writeJson(storage, PERSON_REVOCATIONS_KEY, revocations?.length ? revocations : undefined);
+}
+
+/** Forget the person this browser keeps. */
+export async function deletePerson(storage) {
+  await storage.delete(PERSON_KEY);
+  await storage.delete(PERSON_ENVELOPE_KEY);
+  await storage.delete(PERSON_REVOCATIONS_KEY);
 }

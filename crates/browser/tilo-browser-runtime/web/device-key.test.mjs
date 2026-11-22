@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {openDeviceKey, idbStorage, DeviceKeyError, MAX_SLOTS} from './device-key.mjs';
+import {readFileSync} from 'node:fs';
+import {
+  openDeviceKey, idbStorage, DeviceKeyError, MAX_SLOTS, DEFAULT_AVATAR_COLOR,
+  personRecord, rootOfPerson, readPerson, writePerson, deletePerson, PERSON_KEY,
+} from './device-key.mjs';
 import {fakeLocks} from './testing/fake-storage.mjs';
 
 /** A tab's `sessionStorage`: its own, kept across its reloads. */
@@ -455,4 +459,44 @@ test('a tab asks a page loaded before a site’s update whether it holds the key
   leave();
   await held;
   await duplicate.close();
+});
+
+test("a person root is kept in the same store as the tab's device key, as the identity store's record", async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  const deviceKey = await openDeviceKey({profile: 'p', storage, ...tab(locks, 'tab-1')});
+  const seed = new Uint8Array(32).fill(7);
+  const envelope = {version: 1, root_public_key: 'ab', wraps: []};
+  const revocations = [{device_public_key: 'cd'}];
+  await writePerson(storage, {
+    record: personRecord({seed, publicKey: deviceKey.publicKey, displayName: ' Ada ', createdAt: '2026-01-02T03:04:05Z'}),
+    envelope,
+    revocations,
+  });
+  // One store holds both: the tab's device key and the person's root.
+  assert.ok(storage.rows.has('device-key:p'), "the tab's key");
+  assert.ok(storage.rows.has(PERSON_KEY), 'the person, in the one store');
+  const kept = await readPerson(storage);
+  assert.equal(kept.record.display_name, 'Ada', 'a name is kept as the record fits it');
+  assert.deepEqual(kept.record.avatar_color, DEFAULT_AVATAR_COLOR);
+  assert.deepEqual(kept.envelope, envelope);
+  assert.deepEqual(kept.revocations, revocations);
+  assert.deepEqual(rootOfPerson(kept.record), {seed, publicKey: deviceKey.publicKey});
+  await deletePerson(storage);
+  assert.equal(await readPerson(storage), null);
+  await deviceKey.close();
+});
+
+test('a root this page writes and a root a computer keeps are the same record', () => {
+  const fixture = readFileSync(new URL('../../../runtime/tilo-identity/tests/fixtures/identity-record.json', import.meta.url), 'utf8');
+  const record = JSON.parse(fixture);
+  // The page reads the record a computer keeps: its root is the seed and public key inside.
+  const {seed, publicKey} = rootOfPerson(record);
+  assert.deepEqual(seed, Uint8Array.from(record.threshold_identity.secret_bytes));
+  assert.deepEqual(publicKey, Uint8Array.from(record.threshold_identity.group_public_key));
+  // And writes it back byte for byte, so a tab's root and a computer's are one record.
+  const written = JSON.stringify(personRecord({
+    seed, publicKey, displayName: record.display_name, avatarColor: record.avatar_color, createdAt: record.created_at,
+  }), null, 2);
+  assert.equal(written.trimEnd(), fixture.trimEnd());
 });
