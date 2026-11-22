@@ -7,7 +7,8 @@
 //!
 //! The compact form signs its full sibling's hash as `snapshot_hash_hex`, which is the snapshot's
 //! identity in the chain and in client checkpoints, so a client may switch between the forms without
-//! tripping a rollback or fork check. Both carry [`crate::PACKAGE_FORMAT_VERSION`] in `protocol`.
+//! tripping a rollback or fork check. Both carry one of [`crate::READABLE_CATALOGUE_FORMATS`] in
+//! `protocol`.
 
 use std::collections::HashSet;
 
@@ -538,6 +539,34 @@ mod tests {
         let (mut compact, indexes) = compact_snapshot(&full).unwrap();
         sign_compact_snapshot(&mut compact, owner).unwrap();
         (full, compact, indexes)
+    }
+
+    #[test]
+    fn a_compact_catalogue_on_a_registry_that_has_not_published_since_still_reads() {
+        let owner = SigningKey::from_bytes(&[8; 32]);
+        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+        let (full, mut compact, indexes) = compact(&owner);
+        compact.protocol = 2;
+        compact.signature_hex = hex::encode(
+            owner
+                .sign(&compact_signing_message(&compact).unwrap())
+                .to_bytes(),
+        );
+        verify_compact_snapshot(&compact, &owner_hex, 15).unwrap();
+
+        // The version index the snapshot commits to was published at that format too.
+        let mut index: serde_json::Value = serde_json::from_slice(&indexes[0].bytes).unwrap();
+        index["protocol"] = 2.into();
+        let bytes = serde_json::to_vec(&index).unwrap();
+        let mut committed = compact.entries[0].clone();
+        committed.version_index = VersionIndexRef {
+            blake3_hex: blake3::hash(&bytes).to_hex().to_string(),
+            size_bytes: bytes.len() as u64,
+        };
+        assert_eq!(
+            verify_version_index(&committed, &bytes).unwrap(),
+            full.entries[0]
+        );
     }
 
     #[test]
