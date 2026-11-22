@@ -105,7 +105,6 @@ pub mod media_model;
 #[cfg(target_os = "linux")]
 mod native_root;
 pub mod original_admission;
-pub mod pairing;
 #[path = "setup/prepared_identity.rs"]
 pub mod prepared_identity;
 pub mod prepared_media;

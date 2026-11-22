@@ -3047,14 +3047,7 @@ mod tests {
 
     #[test]
     fn enrolled_desktop_delivers_and_imports_into_the_same_private_host_tree() {
-        let (ownership, mut pairing) = super::super::pairing::certified_fixture();
-        let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-        while pairing.busy() {
-            assert!(std::time::Instant::now() < deadline);
-            pairing.poll();
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let identity = pairing.prepared().unwrap();
+        let (ownership, identity) = crate::setup::test_support::enrolled_identity();
         let root = ownership.path().canonicalize().unwrap();
         let source = identity
             .ownership_directory()
@@ -3198,14 +3191,7 @@ mod tests {
             tilo_test_env::root_identity(),
             "publishing an enrolled system writes what only root may"
         );
-        let (ownership, mut pairing) = super::super::pairing::certified_fixture();
-        let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-        while pairing.busy() {
-            assert!(std::time::Instant::now() < deadline);
-            pairing.poll();
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let identity = pairing.prepared().unwrap();
+        let (ownership, identity) = crate::setup::test_support::enrolled_identity();
         let device = identity.enrolled_device_public_key().unwrap();
         let root = ownership.path().canonicalize().unwrap();
         let source = identity

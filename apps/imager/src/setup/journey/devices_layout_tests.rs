@@ -108,24 +108,15 @@ fn names_retain_form_anchors_and_mid_string_caret() {
 #[test]
 #[cfg(target_os = "linux")]
 fn approved_name_explains_why_it_cannot_be_edited() {
-    let (_ownership, mut pairing) = pairing::certified_fixture();
-    let deadline = tilo_test_env::hang_deadline();
-    while pairing.busy() {
-        assert!(std::time::Instant::now() < deadline);
-        pairing.poll();
-        std::thread::yield_now();
-    }
-    assert!(pairing.ready());
-    let approved = pairing.prepared().unwrap();
-    let label = approved.enrolled_device_label().unwrap().to_owned();
+    let (_ownership, identity) = crate::setup::test_support::enrolled_identity();
+    let label = identity.enrolled_device_label().unwrap().to_owned();
     let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
+        preview.personal.adopt(identity).unwrap();
         preview.journey.page = Page::Devices;
         preview.journey.identity = Some(Identity::Existing);
-        preview.journey.transfer = Some("device".into());
         preview.journey.device_name = label.clone();
-        preview.pairing = pairing;
         preview.dirty = true;
     })
     .unwrap();
@@ -149,7 +140,7 @@ fn approved_name_explains_why_it_cannot_be_edited() {
                 .unwrap()
                 .name
                 .as_deref(),
-            Some(t("installer-pairing-label-locked").as_str())
+            Some(t("installer-device-name-set-by-identity").as_str())
         );
     })
     .unwrap();

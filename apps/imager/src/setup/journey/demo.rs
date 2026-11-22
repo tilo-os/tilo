@@ -190,7 +190,6 @@ mod tests {
                 InstallerPreviewEffect::CheckBelongings,
                 InstallerPreviewEffect::CheckStorage,
                 InstallerPreviewEffect::FindWindowsRoots,
-                InstallerPreviewEffect::StartExistingDevicePairing,
                 InstallerPreviewEffect::ChoosePreviewAvatar,
                 InstallerPreviewEffect::SelectPreviewAvatar {
                     source_file: AbsolutePath::new(file).unwrap(),

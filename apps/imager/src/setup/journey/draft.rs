@@ -24,8 +24,21 @@ pub(super) enum DestinationChoice {
 pub(super) enum IdentityKind {
     New,
     Backup,
-    Enrolled,
+    /// Kept in its place for the drafts older builds wrote. It reads as an
+    /// identity carried from another of the person's devices, which is what
+    /// the backup route carries now.
+    #[serde(rename = "enrolled")]
+    RetiredEnrolled,
     CurrentDevice,
+}
+impl IdentityKind {
+    /// The directory a preparation of this kind keeps its identity in.
+    fn identity_directory_name(self) -> &'static str {
+        match self {
+            Self::RetiredEnrolled => "identities",
+            Self::New | Self::Backup | Self::CurrentDevice => "identity",
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -276,7 +289,7 @@ impl Pointer {
             (_, None, None, None)
             | (IdentityKind::New | IdentityKind::Backup, Some(_), None, None) => Ok(()),
             (
-                IdentityKind::Enrolled | IdentityKind::CurrentDevice,
+                IdentityKind::CurrentDevice | IdentityKind::RetiredEnrolled,
                 Some(_),
                 Some(_),
                 Some(name),
@@ -470,12 +483,7 @@ impl DraftStore {
         let directory = prepared.ownership_directory();
         let operation = directory.parent().ok_or_else(invalid)?;
         if operation.parent() != Some(self.root.as_path())
-            || directory.file_name()
-                != Some(OsStr::new(if kind == IdentityKind::Enrolled {
-                    "identities"
-                } else {
-                    "identity"
-                }))
+            || directory.file_name() != Some(OsStr::new(kind.identity_directory_name()))
         {
             return Err(invalid());
         }
@@ -562,14 +570,10 @@ impl DraftStore {
         choices.validate()?;
         let mut record = self.read()?.ok_or_else(invalid)?;
         let pointer = record.preparation.as_ref().ok_or_else(invalid)?;
-        let expected_directory =
-            self.root
-                .join(&pointer.operation)
-                .join(if pointer.kind == IdentityKind::Enrolled {
-                    "identities"
-                } else {
-                    "identity"
-                });
+        let expected_directory = self
+            .root
+            .join(&pointer.operation)
+            .join(pointer.kind.identity_directory_name());
         prepared.metadata()?;
         if prepared.ownership_directory() != expected_directory
             || Some(prepared.public_key()) != pointer.root_key
@@ -602,11 +606,7 @@ impl PendingDraft {
     }
     pub(super) fn identity_directory(&self) -> PathBuf {
         self.operation_directory()
-            .join(if self.pointer.kind == IdentityKind::Enrolled {
-                "identities"
-            } else {
-                "identity"
-            })
+            .join(self.pointer.kind.identity_directory_name())
     }
     pub(super) fn recover_created_new(&self) -> io::Result<Arc<PreparedIdentity>> {
         if self.kind() != IdentityKind::New || self.pointer.root_key.is_some() {
@@ -711,21 +711,18 @@ impl ReadyDraft {
                     .as_ref()
                     .ok_or_else(invalid)?,
             )?,
-            IdentityKind::Enrolled => {
-                let record = self.pending.identity_directory().join(
+            IdentityKind::RetiredEnrolled => PreparedIdentity::resume_enrolled(
+                &self.pending.operation_directory(),
+                &self.pending.identity_directory().join(
                     self.pending
                         .pointer
                         .record_name
                         .as_ref()
                         .ok_or_else(invalid)?,
-                );
-                PreparedIdentity::resume_enrolled(
-                    &self.pending.operation_directory(),
-                    &record,
-                    expected,
-                    self.pending.pointer.device_key.ok_or_else(invalid)?,
-                )?
-            }
+                ),
+                expected,
+                self.pending.pointer.device_key.ok_or_else(invalid)?,
+            )?,
         };
         Ok(Arc::new(identity))
     }

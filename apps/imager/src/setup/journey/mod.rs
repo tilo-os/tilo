@@ -35,7 +35,6 @@ mod model;
 mod native_ownership;
 #[cfg(all(test, unix))]
 mod other_device_tests;
-mod pairing;
 #[cfg(test)]
 mod password_validation_tests;
 pub(in crate::setup) mod personal;
@@ -211,26 +210,16 @@ pub enum InstallerPreviewEffect {
         #[param(secret, "Backup passphrase")]
         value: String,
     },
-    /// Ask a nearby Tilo device to approve this named future device.
-    #[effect(kind = "outside", returns)]
-    StartExistingDevicePairing,
-    #[effect(kind = "outside", returns)]
-    #[effect(label = "installer-pairing-cancel")]
-    CancelExistingDevicePairing,
     /// Choose an option on this page.
     #[effect(kind = "outside", returns)]
     ChoosePreview {
-        #[param(
-            "Choice: computer, another, desktop; migrate, fresh; new, existing; device, backup"
-        )]
+        #[param("Choice: computer, another, desktop; migrate, fresh; new, existing; backup")]
         choice: String,
     },
     /// Choose an option on this page and continue to the next page.
     #[effect(kind = "outside", returns)]
     ChooseAndContinuePreview {
-        #[param(
-            "Choice: computer, another, desktop; migrate, fresh; new, existing; device, backup"
-        )]
+        #[param("Choice: computer, another, desktop; migrate, fresh; new, existing; backup")]
         choice: String,
     },
     /// Set your display name.
@@ -740,7 +729,6 @@ pub struct InstallerPreview {
     checkpoint_failed: bool,
     account_continue: bool,
     existing_identity: existing_identity::ExistingIdentity,
-    pairing: pairing::Pairing,
     personal_continue: Option<Page>,
     account_answer: serde_json::Value,
     live: bool,
@@ -817,7 +805,6 @@ impl Default for InstallerPreview {
             checkpoint_failed: false,
             account_continue: false,
             existing_identity: existing_identity::ExistingIdentity::default(),
-            pairing: pairing::Pairing::default(),
             personal_continue: None,
             account_answer: serde_json::Value::Null,
             live: false,
@@ -887,14 +874,11 @@ impl InstallerPreview {
         self.portable_source.choosing()
     }
     fn existing_identity_active(&self) -> bool {
-        self.existing_identity.active() || self.pairing.busy()
+        self.existing_identity.active()
     }
 
     fn personal_busy(&self) -> bool {
-        self.media_preparation.busy()
-            || self.pairing.busy()
-            || self.personal.busy()
-            || self.existing_identity.busy()
+        self.media_preparation.busy() || self.personal.busy() || self.existing_identity.busy()
     }
     fn guided_host_available(&self) -> bool {
         !self.live || self.capabilities.prepared_installation
@@ -1170,16 +1154,7 @@ impl InstallerPreview {
             "choose-existing-identity-backup"
             | "select-existing-identity-backup"
             | "set-existing-identity-password" => page == Page::Connect && self.live,
-            "start-existing-device-pairing" => {
-                page == Page::Connect
-                    && self.live
-                    && self.journey.transfer.as_deref() == Some("device")
-            }
-            "set-preview-device-name" => {
-                page == Page::Devices
-                    || page == Page::Machine
-                    || (page == Page::Connect && self.journey.transfer.as_deref() == Some("device"))
-            }
+            "set-preview-device-name" => page == Page::Devices || page == Page::Machine,
             "set-target-identity-field"
             | "set-target-architecture"
             | "choose-target-hardware-report"
@@ -1425,7 +1400,6 @@ impl InstallerPreview {
             && !matches!(
                 effect,
                 InstallerPreviewEffect::ReadPreview
-                    | InstallerPreviewEffect::CancelExistingDevicePairing
                     | InstallerPreviewEffect::CancelMediaPreparation
             )
         {
@@ -1958,21 +1932,6 @@ impl InstallerPreview {
                 );
                 return Ok(());
             }
-            InstallerPreviewEffect::StartExistingDevicePairing
-                if self.live
-                    && page == Page::Connect
-                    && self.journey.transfer.as_deref() == Some("device") =>
-            {
-                if !self.identity_route_available("device") {
-                    return Err("installer-identity-route-unavailable");
-                }
-                self.pairing.start(&self.journey.device_name)?;
-            }
-            InstallerPreviewEffect::CancelExistingDevicePairing if self.live => {
-                if imager_backend::pairing::Pairing::supported() {
-                    self.pairing.cancel()?;
-                }
-            }
             InstallerPreviewEffect::ChooseExistingIdentityBackup
                 if page == Page::Connect && self.live =>
             {
@@ -2060,7 +2019,6 @@ impl InstallerPreview {
                     self.restart.retire_for_choice()?;
                     self.personal.reset_preparation()?;
                     self.existing_identity = existing_identity::ExistingIdentity::default();
-                    self.pairing = pairing::Pairing::default();
                     self.avatar = None;
                 }
             }
@@ -2209,12 +2167,6 @@ impl InstallerPreview {
                             )
                         {
                             self.advance_journey()?;
-                        } else if self.journey.transfer.as_deref() == Some("device") {
-                            if self.pairing.ready() {
-                                self.advance_journey()?;
-                            } else {
-                                self.pairing.start(&self.journey.device_name)?;
-                            }
                         } else if self.journey.transfer.as_deref() == Some("current") {
                             self.existing_identity.use_current()?;
                         } else if self.existing_identity.selected() {
@@ -2814,15 +2766,6 @@ impl InstallerPreview {
                         return Ok(());
                     }
                 }
-                if self.live
-                    && page == Page::Connect
-                    && self.journey.transfer.as_deref() == Some("device")
-                    && !self.pairing.ready()
-                {
-                    self.journey.transfer = None;
-                    self.dirty = true;
-                    return Ok(());
-                }
                 if page == Page::Belongings && !choices_edit {
                     self.portable_source.invalidate();
                 }
@@ -2943,10 +2886,7 @@ impl InstallerPreview {
                 return Ok(());
             }
             InstallerPreviewEffect::SetPreviewDeviceName { value }
-                if page == Page::Devices
-                    || page == Page::Machine
-                    || (page == Page::Connect
-                        && self.journey.transfer.as_deref() == Some("device")) =>
+                if page == Page::Devices || page == Page::Machine =>
             {
                 if self.device_label_locked() {
                     return Err(self.device_label_locked_message());
@@ -4154,13 +4094,11 @@ impl InstallerPreview {
             self.prepare_desktop()?;
             return Ok(());
         }
-        if resumed.kind == draft::IdentityKind::Enrolled {
-            self.pairing = pairing::Pairing::resume(resumed.prepared.clone())
-                .map_err(|_| "installer-restart-unavailable")?;
-        }
         if matches!(
             resumed.kind,
-            draft::IdentityKind::Backup | draft::IdentityKind::CurrentDevice
+            draft::IdentityKind::Backup
+                | draft::IdentityKind::RetiredEnrolled
+                | draft::IdentityKind::CurrentDevice
         ) {
             self.existing_identity =
                 existing_identity::ExistingIdentity::resume(resumed.prepared.clone());
@@ -4192,7 +4130,6 @@ impl InstallerPreview {
     fn retire_preparation(&mut self) {
         self.personal = personal::Personal::default();
         self.existing_identity = existing_identity::ExistingIdentity::default();
-        self.pairing = pairing::Pairing::default();
         self.journey = Journey::new(String::new());
         self.journey.device_name = t("installer-preview-device-default");
         self.avatar = None;
@@ -4447,24 +4384,6 @@ impl InstallerPreview {
         }
         let personal_changed = self.personal.poll();
         let existing_changed = self.existing_identity.poll();
-        let pairing_changed = self.pairing.poll();
-        if pairing_changed
-            && self.journey.identity == Some(Identity::Existing)
-            && self.journey.transfer.as_deref() == Some("device")
-            && self.pairing.ready()
-            && let Some(prepared) = self.pairing.prepared()
-        {
-            if let Ok(metadata) = prepared.metadata() {
-                self.journey.name = metadata.display_name;
-            }
-            if let Err(error) = self.personal.adopt_for_journey(
-                prepared,
-                self.draft_choices(),
-                draft::IdentityKind::Enrolled,
-            ) {
-                self.error = Some(error);
-            }
-        }
 
         if existing_changed && self.existing_identity.ready() {
             if let Some(prepared) = self.existing_identity.prepared() {
@@ -4563,8 +4482,7 @@ impl InstallerPreview {
             || promotion_changed
             || accounts_changed
             || personal_changed
-            || existing_changed
-            || pairing_changed;
+            || existing_changed;
         let commands = std::mem::take(&mut *self.commands.borrow_mut());
         let changed = compatibility_changed
             || target_changed
@@ -4584,7 +4502,6 @@ impl InstallerPreview {
             || accounts_changed
             || personal_changed
             || existing_changed
-            || pairing_changed
             || !commands.is_empty();
         for command in commands {
             let submitted = matches!(
@@ -4703,20 +4620,9 @@ impl InstallerPreview {
     }
 
     fn device_label_locked(&self) -> bool {
-        if self.journey.identity == Some(Identity::Existing)
-            && self.journey.transfer.as_deref() == Some("device")
-            && self.pairing.locked_label()
-        {
-            return true;
-        }
-        if self
-            .personal
+        self.personal
             .prepared_handle()
             .is_some_and(|prepared| prepared.enrolled_device_label().is_some())
-        {
-            return true;
-        }
-        false
     }
 
     fn device_label_locked_message(&self) -> &'static str {
@@ -4727,7 +4633,7 @@ impl InstallerPreview {
         {
             return "installer-current-device-name-locked";
         }
-        "installer-pairing-label-locked"
+        "installer-device-name-set-by-identity"
     }
 
     fn review_device_row(&self) -> ListRow {
@@ -4863,7 +4769,6 @@ impl InstallerPreview {
             return true;
         }
         match route {
-            "device" => cfg!(target_os = "linux"),
             "backup" => cfg!(unix),
             "current" => {
                 cfg!(target_os = "linux") && self.journey.destination == Some(Destination::Desktop)
@@ -4916,8 +4821,6 @@ impl InstallerPreview {
             && self.journey.plan.os() == machine::Os::TiloServer
         {
             t("installer-preview-fresh-server-body")
-        } else if key == "device" && self.live && !cfg!(target_os = "linux") {
-            t("installer-pairing-helper-unavailable")
         } else {
             t(&format!("installer-preview-{key}-body"))
         };
@@ -4937,7 +4840,7 @@ impl InstallerPreview {
         let icon = match key {
             "computer" | "purpose-computer" | "purpose-server" | "os" | "server" => Icon::Monitor,
             "another" => Icon::Usb,
-            "desktop" | "device" | "current" => Icon::MonitorSmartphone,
+            "desktop" | "current" => Icon::MonitorSmartphone,
             "migrate" => Icon::Folder,
             "fresh" => Icon::Sparkles,
             "new" => Icon::User,
@@ -5220,7 +5123,6 @@ impl InstallerPreview {
             status["prepared_identity"] = self.personal.projection();
             status["existing_identity"] = self.existing_identity.projection();
         }
-        status["pairing"] = self.pairing.projection();
         {
             status["account_checkpoint"] = serde_json::json!({
                 "saving": self.checkpoint_pending.is_some(),
@@ -6234,155 +6136,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn approved_pairing_then_new_identity_releases_only_branch_guards_and_preserves_ownership() {
-        let (ownership, pairing) = pairing::certified_fixture();
-        let state_root = ownership.path().canonicalize().unwrap();
-        let root = pairing.fixture_operation_directory();
-        let original_certificate =
-            std::fs::read(root.join("future-device/device/cert.bin")).unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-        env.set("XDG_STATE_HOME", &state_root);
-        let mut app = fixture();
-        choose(&mut app, "computer");
-        choose(&mut app, "fresh");
-        choose(&mut app, "existing");
-        app.with_widget::<InstallerPreview, _>(|preview| preview.live = true)
-            .unwrap();
-        app.effect(&InstallerPreviewEffect::ChoosePreview {
-            choice: "device".into(),
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::SetPreviewDeviceName {
-            value: "Approved future computer".into(),
-        })
-        .unwrap();
-        app.with_widget::<InstallerPreview, _>(|preview| preview.pairing = pairing)
-            .unwrap();
-        let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-        loop {
-            app.with_widget::<InstallerPreview, _>(|preview| preview.drain())
-                .unwrap();
-            if status(&mut app)["pairing"]["state"] == "ready" {
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        wait_for_personal(&mut app);
-        let approved = status(&mut app)["prepared_identity"]["public_key"].clone();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        password(&mut app);
-        assert_eq!(status(&mut app)["page"], "devices");
-        assert!(
-            app.effect(&InstallerPreviewEffect::SetPreviewDeviceName {
-                value: "Unapproved rename".into()
-            })
-            .is_err()
-        );
-        app.settle();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            assert!(preview.device_label_locked());
-            assert!(visual_tests::control(preview, "installer.device-name").is_none());
-            let approved_name =
-                visual_tests::control(preview, "installer.devices.approved-name").unwrap();
-            assert_eq!(
-                approved_name.accessibility().unwrap().name.as_deref(),
-                Some("Approved future computer")
-            );
-            let explanation =
-                visual_tests::control(preview, "installer.devices.name-locked").unwrap();
-            assert_eq!(
-                explanation.accessibility().unwrap().name.as_deref(),
-                Some(t("installer-pairing-label-locked").as_str())
-            );
-            let mut enrolled_review = preview.journey.clone();
-            enrolled_review.page = Page::Review;
-            preview.journey = enrolled_review;
-            preview.dirty = true;
-        })
-        .unwrap();
-        assert!(
-            app.effect(&InstallerPreviewEffect::EditPreview {
-                section: "devices".into()
-            })
-            .is_err()
-        );
-        assert_eq!(status(&mut app)["page"], "review");
-        app.settle();
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            let row = visual_tests::control(preview, "installer.review.devices").unwrap();
-            assert!(row.accessibility().unwrap().state.disabled);
-            preview.journey.page = Page::Devices;
-            preview.dirty = true;
-        })
-        .unwrap();
-        for _ in 0..2 {
-            app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        }
-        assert_eq!(status(&mut app)["page"], "identity");
-        choose(&mut app, "new");
-        assert_eq!(status(&mut app)["pairing"]["state"], "unconnected");
-        app.effect(&InstallerPreviewEffect::SetPreviewName {
-            value: "New identity".into(),
-        })
-        .unwrap();
-        wait_for_restart_idle(&mut app);
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        password(&mut app);
-        let state = wait_for_personal(&mut app);
-        assert_eq!(state["page"], "devices");
-        assert_ne!(state["prepared_identity"]["public_key"], approved);
-        app.effect(&InstallerPreviewEffect::SetPreviewDeviceName {
-            value: "My new computer".into(),
-        })
-        .unwrap();
-        assert_eq!(status(&mut app)["device_name"], "My new computer");
-        assert_eq!(
-            std::fs::read(root.join("future-device/device/cert.bin")).unwrap(),
-            original_certificate
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn existing_device_pairing_name_step_uses_public_actions_and_can_return_to_methods() {
-        let mut app = fixture();
-        choose(&mut app, "computer");
-        choose(&mut app, "fresh");
-        choose(&mut app, "existing");
-        app.with_widget::<InstallerPreview, _>(|preview| preview.live = true)
-            .unwrap();
-        app.effect(&InstallerPreviewEffect::ChoosePreview {
-            choice: "device".into(),
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::SetPreviewDeviceName {
-            value: String::new(),
-        })
-        .unwrap();
-        assert!(
-            app.effect(&InstallerPreviewEffect::StartExistingDevicePairing)
-                .is_err()
-        );
-        assert_eq!(status(&mut app)["pairing"]["state"], "unconnected");
-        assert_eq!(status(&mut app)["page"], "connect");
-        assert!(
-            app.effect(&InstallerPreviewEffect::SetPreviewDeviceName {
-                value: "é".repeat(33)
-            })
-            .is_err()
-        );
-        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        assert_eq!(status(&mut app)["page"], "connect");
-        assert!(status(&mut app)["transfer"].is_null());
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn belongings_edit_cancel_retains_source_ownership_and_persisted_consent() {
@@ -7203,23 +6956,7 @@ mod tests {
             .unwrap();
         let accounts_before = status(&mut app)["accounts"].clone();
         app.effect(&InstallerPreviewEffect::ChoosePreview {
-            choice: "device".into(),
-        })
-        .unwrap();
-        let intended_name = status(&mut app)["device_name"].as_str().unwrap().to_owned();
-        app.effect(&InstallerPreviewEffect::SetPreviewDeviceName {
-            value: String::new(),
-        })
-        .unwrap();
-        assert!(
-            app.effect(&InstallerPreviewEffect::ContinuePreview)
-                .is_err()
-        );
-        assert_eq!(status(&mut app)["pairing"]["state"], "unconnected");
-        assert_eq!(status(&mut app)["device_name"], "");
-        assert_eq!(status(&mut app)["page"], "connect");
-        app.effect(&InstallerPreviewEffect::SetPreviewDeviceName {
-            value: intended_name,
+            choice: "backup".into(),
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::SelectExistingIdentityBackup {
@@ -10546,7 +10283,7 @@ mod tests {
                 choose(&mut app, if migrate { "migrate" } else { "fresh" });
                 choose(&mut app, "existing");
                 assert_eq!(status(&mut app)["page"], "connect");
-                choose(&mut app, "device");
+                choose(&mut app, "backup");
                 password(&mut app);
                 app.effect(&InstallerPreviewEffect::ContinuePreview)
                     .unwrap();
@@ -10585,10 +10322,6 @@ mod tests {
                 for migrate in [false, true] {
                     preview.journey.destination = Some(destination);
                     preview.journey.migrate = Some(migrate);
-                    assert_eq!(
-                        preview.identity_route_available("device"),
-                        cfg!(target_os = "linux")
-                    );
                     assert_eq!(preview.identity_route_available("backup"), cfg!(unix));
                     assert_eq!(
                         preview.identity_route_available("current"),
@@ -10596,7 +10329,6 @@ mod tests {
                     );
                     assert!(!preview.identity_route_available("unknown"));
                     assert!(preview.personal.prepared_handle().is_none());
-                    assert!(!preview.pairing.started());
                     assert!(preview.journey.transfer.is_none());
                 }
             }
@@ -10930,7 +10662,7 @@ mod tests {
             .unwrap();
         }
 
-        phase desktop_identity_routes_admit_device_without_pairing_and_keep_backup;
+        phase desktop_connect_offers_backup_and_current_only;
         {
             let mut app = fixture();
             app.with_widget::<InstallerPreview, _>(|preview| {
@@ -10944,22 +10676,9 @@ mod tests {
             .unwrap();
             assert_eq!(status(&mut app)["page"], "connect");
             let inspection = app.harness().inspection_json().unwrap();
-            assert!(inspection.contains("installer.choice.device"));
+            assert!(!inspection.contains("installer.choice.device"));
             assert!(inspection.contains("installer.choice.backup"));
             assert!(inspection.contains("installer.choice.current"));
-            app.effect(&InstallerPreviewEffect::ChoosePreview {
-                choice: "device".into(),
-            })
-            .unwrap();
-            app.with_widget::<InstallerPreview, _>(|preview| {
-                assert!(!preview.pairing.started());
-                assert_eq!(preview.journey.transfer.as_deref(), Some("device"));
-                assert!(preview.personal.prepared_handle().is_none());
-                assert!(preview.identity_route_available("backup"));
-                assert!(preview.identity_route_available("device"));
-            })
-            .unwrap();
-            assert_eq!(status(&mut app)["page"], "connect");
             app.effect(&InstallerPreviewEffect::ChoosePreview {
                 choice: "backup".into(),
             })
@@ -10967,6 +10686,7 @@ mod tests {
             app.with_widget::<InstallerPreview, _>(|preview| {
                 assert_eq!(preview.journey.transfer.as_deref(), Some("backup"));
                 assert!(!preview.existing_identity.selected());
+                assert!(preview.personal.prepared_handle().is_none());
             })
             .unwrap();
             assert_eq!(status(&mut app)["page"], "connect");
@@ -11656,36 +11376,17 @@ mod tests {
                 .unwrap();
             assert_eq!(status(&mut route)["page"], "connect");
             let route_inspection = route.harness().inspection_json().unwrap();
-            for id in [
-                "installer.choice.current",
-                "installer.choice.backup",
-                "installer.choice.device",
-            ] {
+            for id in ["installer.choice.current", "installer.choice.backup"] {
                 assert!(route_inspection.contains(id), "semantic route exposes {id}");
                 assert!(capture_inspection.contains(id), "capture exposes {id}");
             }
+            assert!(!route_inspection.contains("installer.choice.device"));
+            assert!(!capture_inspection.contains("installer.choice.device"));
             route
                 .with_widget::<InstallerPreview, _>(|preview| {
                     assert!(preview.personal.prepared_handle().is_none());
-                    assert!(!preview.pairing.started());
                     assert!(preview.journey.transfer.is_none());
                     assert_eq!(preview.journey.migrate, Some(migration == "migrate"));
-                })
-                .unwrap();
-            route
-                .effect(&InstallerPreviewEffect::ChoosePreview {
-                    choice: "device".into(),
-                })
-                .unwrap();
-            route
-                .with_widget::<InstallerPreview, _>(|preview| {
-                    assert_eq!(preview.journey.transfer.as_deref(), Some("device"));
-                    assert_eq!(preview.journey.page, Page::Connect);
-                    assert_eq!(preview.journey.destination, Some(Destination::Desktop));
-                    assert_eq!(preview.journey.identity, Some(Identity::Existing));
-                    assert_eq!(preview.journey.migrate, Some(migration == "migrate"));
-                    assert!(preview.personal.prepared_handle().is_none());
-                    assert!(!preview.pairing.started());
                 })
                 .unwrap();
         }
@@ -11696,7 +11397,6 @@ mod tests {
                 assert_eq!(preview.journey.identity, Some(Identity::Existing));
                 assert_eq!(preview.journey.page, Page::Connect);
                 assert!(preview.personal.prepared_handle().is_none());
-                assert!(!preview.pairing.started());
                 assert!(preview.journey.transfer.is_none());
             })
             .unwrap();

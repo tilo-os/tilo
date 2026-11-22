@@ -18,11 +18,6 @@ impl InstallerPreview {
         } else {
             TextRole::LargeTitle
         };
-        let choosing_pair_name = imager_backend::pairing::Pairing::supported()
-            && self.live
-            && j.page == Page::Connect
-            && j.transfer.as_deref() == Some("device")
-            && !self.pairing.started();
         let mounted_step = self.live
             && j.page == Page::Belongings
             && j.destination == Some(Destination::Another)
@@ -35,8 +30,6 @@ impl InstallerPreview {
             t("installer-mounted-home-permission-heading")
         } else if self.unlocking_preparation() {
             t("installer-restart-unlock-heading")
-        } else if choosing_pair_name {
-            t("installer-pairing-name-heading")
         } else if j.page == Page::Accounts {
             self.accounts.heading()
         } else if j.page == Page::Devices && j.destination == Some(Destination::Another) {
@@ -79,12 +72,6 @@ impl InstallerPreview {
         } else {
             t(&format!("installer-preview-{key}-intro"))
         };
-        let intro =
-            if self.live && j.page == Page::Connect && j.transfer.as_deref() == Some("device") {
-                self.pairing.intro()
-            } else {
-                intro
-            };
         let heading = Text::new(&heading)
             .with_id("installer.heading")
             .with_align(ui::ParagraphAlign::Start)
@@ -218,34 +205,6 @@ impl InstallerPreview {
                 }
             }
             Page::Connect => {
-                if self.live
-                    && self.journey.transfer.as_deref() == Some("device")
-                    && self.identity_route_available("device")
-                {
-                    if !self.pairing.started() {
-                        body = body.push(Box::new(self.field(
-                            "device-name",
-                            &j.device_name,
-                            TextInputKind::Name,
-                        )));
-                    }
-                    let commands = self.commands.clone();
-                    let cancel_commands = self.commands.clone();
-                    body = body.push(self.pairing.view(
-                        Rc::new(move || {
-                            commands
-                                .borrow_mut()
-                                .push(InstallerPreviewEffect::StartExistingDevicePairing)
-                        }),
-                        Rc::new(move || {
-                            cancel_commands
-                                .borrow_mut()
-                                .push(InstallerPreviewEffect::CancelExistingDevicePairing)
-                        }),
-                    ));
-                    return body;
-                }
-
                 if self.live && self.journey.transfer.as_deref() == Some("backup") {
                     let commands = self.commands.clone();
                     let submits = self.commands.clone();
@@ -268,18 +227,12 @@ impl InstallerPreview {
                         self.choice("current", j.transfer.as_deref() == Some("current")),
                     ));
                 }
-                if self.identity_route_available("device") {
-                    body = body.push(Box::new(
-                        self.choice("device", j.transfer.as_deref() == Some("device")),
-                    ));
-                }
                 if self.identity_route_available("backup") {
                     body = body.push(Box::new(
                         self.choice("backup", j.transfer.as_deref() == Some("backup")),
                     ));
                 }
-                if !self.identity_route_available("device")
-                    && !self.identity_route_available("backup")
+                if !self.identity_route_available("backup")
                     && !self.identity_route_available("current")
                 {
                     body = body.push(Box::new(Text::new(&t(
@@ -1628,11 +1581,6 @@ impl InstallerPreview {
             && !(self.live
                 && self.journey.page == Page::Connect
                 && matches!(self.journey.transfer.as_deref(), Some("backup" | "current")));
-        let chooses_path = chooses_path
-            && !(self.live
-                && self.journey.page == Page::Connect
-                && self.journey.transfer.as_deref() == Some("device")
-                && self.pairing.ready());
         let accounts_waiting = self.journey.page == Page::Accounts && !self.accounts.can_continue();
         let mounted_step = self.live
             && self.journey.page == Page::Belongings

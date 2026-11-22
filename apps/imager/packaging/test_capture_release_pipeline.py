@@ -225,7 +225,6 @@ class NativePlatformArchive(unittest.TestCase):
                 roles[role] = {'path': str(path), 'sha256': 'a' * 64}
             host = root / 'host'
             host.write_bytes(b'host')
-            (root / 'tilo-enroll').write_bytes(b'canonical enrollment helper')
             qualifier = SimpleNamespace(BINDINGS={
                 'prepared_helper': '/usr/libexec/tilo-prepared-setup',
                 'credential_helper': '/usr/libexec/tilo-account-credential',
@@ -247,7 +246,6 @@ class NativePlatformArchive(unittest.TestCase):
             with tarfile.open(output) as archive:
                 for name, value in (
                     ('usr/bin/tilo-imager', b'host'),
-                    ('usr/bin/tilo-enroll', b'canonical enrollment helper'),
                     ('usr/libexec/tilo-prepared-setup', b'prepared_helper'),
                     ('usr/libexec/tilo-account-credential', b'credential_helper'),
                     ('usr/libexec/tilo-firstboot-home-seeds', b'home_seeds'),
@@ -257,7 +255,6 @@ class NativePlatformArchive(unittest.TestCase):
                     self.assertEqual((member.uid, member.gid), (0, 0))
                     self.assertEqual(archive.extractfile(member).read(), value)
                 self.assertEqual(archive.getmember('usr/libexec/tilo-prepared-setup').mode, 0o755)
-                self.assertEqual(archive.getmember('usr/bin/tilo-enroll').mode, 0o755)
 
 
 class StageCheck(unittest.TestCase):
