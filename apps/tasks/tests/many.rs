@@ -383,6 +383,7 @@ fn each_list_of_new_issues_costs_the_same_however_many_came_before() {
     const LISTS: usize = 7;
     let mut app = open();
     let mut lists = Vec::with_capacity(LISTS);
+    let mut sections = Vec::with_capacity(LISTS);
     for list in 0..LISTS {
         let issues: Vec<Value> = (list * LIST..(list + 1) * LIST)
             .map(|at| {
@@ -399,17 +400,24 @@ fn each_list_of_new_issues_costs_the_same_however_many_came_before() {
                 .expect("the issues are made");
         });
         let took = began.elapsed();
-        let bodies = observed
-            .iter()
-            .find(|sample| sample.phase == "rich_text.read.parts")
-            .map_or(0, |sample| sample.calls);
-        lists.push((took, bodies));
+        let calls = |phase: &str| {
+            observed
+                .iter()
+                .find(|sample| sample.phase == phase)
+                .map_or(0, |sample| sample.calls)
+        };
+        lists.push((took, calls("rich_text.read.written")));
+        sections.push(calls("rich_text.read.parts"));
     }
     assert_eq!(held(&app).len(), LIST * LISTS);
     let read: Vec<usize> = lists.iter().map(|(_, bodies)| *bodies).collect();
     assert!(
         read.iter().all(|bodies| *bodies == LIST),
         "each list reads back its own {LIST} bodies, no more: {read:?}"
+    );
+    assert!(
+        sections.iter().all(|sections| *sections == 0),
+        "no list reads a body section by section from the document: {sections:?}"
     );
     // The first list also opens the part; the median of three steadies a busy machine.
     let median = |lists: &[(std::time::Duration, usize)]| {
