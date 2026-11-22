@@ -919,6 +919,7 @@ fn a_window_whose_held_tab_left_still_describes_its_controls() {
                 identity: None,
                 rect: [4.0, 6.0, 44.0, 24.0],
                 actions: vec![TargetAction::Activate],
+                level: None,
             }],
             instance: None,
         },

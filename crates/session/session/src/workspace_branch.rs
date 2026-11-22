@@ -1630,7 +1630,7 @@ mod tests {
                 assert_eq!(ui::resource::workspace_scope(&doc).as_deref(), Some(TO));
                 if &copied_route == route {
                     let written = admit_private_branch_record(device, (&app, route), &bytes, now);
-                    assert_eq!(written.own, Some(owned(device)));
+                    assert_eq!(written.own, Some(private_for(device)));
                 }
                 contents.insert((app, copied_route), body(&doc));
             }
