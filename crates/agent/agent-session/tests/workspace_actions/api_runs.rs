@@ -396,8 +396,12 @@ async fn every_run_listed() {
     let (beside_status, beside_refused) = others
         .get(&format!("/v1/workspaces/{ws}/invocations/{}", ids[0]))
         .await;
-    let (members_status, members_refused) =
-        others.get(&format!("/v1/workspaces/{ws}/members")).await;
+    let (members_status, members_refused) = others
+        .post(
+            &format!("/v1/workspaces/{ws}/resources/workspace/members/actions/list"),
+            &json!({}),
+        )
+        .await;
     assert_eq!(
         (status, &refused["error"]["code"]),
         (beside_status, &beside_refused["error"]["code"]),

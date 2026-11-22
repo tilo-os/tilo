@@ -134,7 +134,7 @@ async fn what_an_agent_changes_through_the_api_opens_on_the_workspaces_layout() 
     // run opened.
     let invited = backend
         .tilo_do(
-            json!({"path": "workspace/members#invite", "workspace": workspace,
+            json!({"path": "workspace/invitations#invite", "workspace": workspace,
                         "args": {"role": "editor"}}),
         )
         .await;

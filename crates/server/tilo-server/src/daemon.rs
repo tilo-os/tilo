@@ -597,6 +597,10 @@ impl Server {
         if let (Some(workspace_keys), Some(governed)) = (&workspace_keys, &governed) {
             workspace_keys.attach(governed);
         }
+        // The links its invitations hand over open the server's web entry.
+        if let (Some(entry), Some(governed)) = (&cfg.web_entry, &governed) {
+            let _ = governed.invite_at(entry);
+        }
         let workspaces = sessions.workspaces.clone();
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();

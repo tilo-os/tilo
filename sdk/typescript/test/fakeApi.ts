@@ -120,7 +120,6 @@ export class FakeApi {
   members: Answer[] = [
     { person: "cd".repeat(32), name: "Rosa Ortiz", role: "editor", administrator: false },
   ];
-  invitations: Answer[] = [];
   /** The branches made, by the idempotency key each was asked with. */
   branches = new Map<string, Answer>();
   /** Whether the person answered a workspace's ask to run commands
@@ -351,23 +350,6 @@ export class FakeApi {
         }
         return this.json({ path, link: linkTo(path) });
       }
-      case "members": {
-        if (tail.length === 0) {
-          return this.json({ workspace, members: this.members, invitations: this.invitations });
-        }
-        const invited = JSON.parse(call.body || "{}") as Answer;
-        const invitation: Answer = {
-          workspace,
-          invite: "ab".repeat(32),
-          role: invited.role,
-          link: "https://tilo.sh/i/AAAAAAAAAAAAAAAA#key",
-          expires_at_ns: 7,
-        };
-        if (invited.email !== undefined) {
-          Object.assign(invitation, { email: invited.email, sent: false, next: "send the link yourself" });
-        }
-        return this.json(invitation, 201);
-      }
       case "programs": {
         const asked = JSON.parse(call.body || "{}") as Answer;
         if (asked.program === "boom") {
@@ -499,6 +481,19 @@ export class FakeApi {
         resources: [path],
         link: linkTo(path),
       });
+    }
+    if (whole === "workspace/members#list") {
+      return this.json({ status: "ok", invocation, path: whole, result: this.members });
+    }
+    if (whole === "workspace/invitations#invite") {
+      const result: Answer = {
+        workspace: WORKSPACE_ID,
+        invite: "ab".repeat(32),
+        role: args.role,
+        link: `https://tilo.sh/#/w/${WORKSPACE_ID}?invite=AAAA`,
+        expires_at_ns: 7,
+      };
+      return this.json({ status: "ok", invocation, path: whole, result });
     }
     if (path === TODO && !["append-paragraph", "field-edit", "ask"].includes(action)) {
       return this.refuse("unknown_action", 404, `no action ${action} of ${path}`);

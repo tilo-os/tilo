@@ -14,7 +14,7 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, Confirmation,
     InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
-    WORKSPACE_GOVERNANCE_PROVIDER,
+    WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_operation,
 };
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::JoinReply;
@@ -149,7 +149,7 @@ pub(super) async fn governed(
 }
 
 /// The verbs `caller` is offered on the workspace `workspace_id` carries.
-async fn offered(
+pub(super) async fn offered(
     host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     caller: &Caller,
@@ -180,9 +180,19 @@ async fn offered(
         }
         rows.push(row);
     }
-    rows.into_iter()
-        .filter_map(|row| row.action.map(|action| action.address.action))
-        .collect()
+    // Each by the operation a grant names, whichever child publishes it.
+    let mut offered = rows
+        .into_iter()
+        .filter_map(|row| row.action)
+        .map(|action| {
+            workspace_governance_operation(&action.address).map_or_else(
+                || action.address.action.clone(),
+                |(_, granted)| granted.to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    offered.sort_by_key(|verb| VERBS.iter().position(|row| row.id == verb));
+    offered
 }
 
 /// `request` by `caller`: what it produced, or why not.

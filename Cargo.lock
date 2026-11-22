@@ -17704,7 +17704,6 @@ dependencies = [
  "tilo-session-client",
  "tilo-test-env",
  "tilo-user-identity",
- "tilo-workspace-directory",
  "tokio",
  "tracing",
  "tracing-subscriber",

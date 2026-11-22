@@ -126,13 +126,18 @@ describe("reading a workspace", () => {
     const members = await workspace.members.list();
     expect(members.map((member) => member.name)).toEqual(["Rosa Ortiz"]);
     expect(members[0]?.role).toBe("editor");
-    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/members`);
+    expect(api.last()?.path).toBe(
+      `/v1/workspaces/${WORKSPACE_ID}/resources/workspace/members/actions/list`,
+    );
 
     const invitation = await workspace.members.invite({ role: "editor", email: "rosa@example.com" });
     expect(invitation.link.startsWith("https://")).toBe(true);
     expect(invitation.email).toBe("rosa@example.com");
     expect(invitation.sent).toBe(false);
-    expect(api.last()?.body).toBe('{"role":"editor","email":"rosa@example.com"}');
+    expect(api.last()?.path).toBe(
+      `/v1/workspaces/${WORKSPACE_ID}/resources/workspace/invitations/actions/invite`,
+    );
+    expect(api.last()?.body).toBe('{"role":"editor","invitee_name":"rosa@example.com"}');
   });
 });
 

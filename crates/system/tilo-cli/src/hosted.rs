@@ -1528,114 +1528,169 @@ async fn get_content(
     })
 }
 
-/// `tilo workspace people … -w <workspace>`: the workspace's people, and inviting one
-/// more.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one match over the people commands, each a few lines"
-)]
+/// `tilo workspace people … -w <workspace>`: the workspace's people, its invitations and its
+/// wait list, as the workspace's own `workspace/members`, `workspace/invitations` and
+/// `workspace/waiting` actions.
 fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
         let workspace = client.workspace_id(workspace).await?;
-        match cmd {
-            PeopleCmd::Ls => {
-                let listed = client
-                    .get(&format!("/v1/workspaces/{workspace}/members"))
+        let act = |path: &'static str, action: &'static str, args: Value| {
+            let (client, workspace) = (&client, &workspace);
+            async move {
+                let answer = client
+                    .act(workspace, path, action, &args, &format!("{path}#{action}"))
                     .await?;
-                Ok(show(reach.json, &listed, &lines::members(&listed)))
+                anyhow::Ok(answer.get("result").cloned().unwrap_or_default())
+            }
+        };
+        let (answer, said) = match cmd {
+            PeopleCmd::Ls => {
+                let members = act("workspace/members", "list", json!({})).await?;
+                let invitations = act("workspace/invitations", "list", json!({})).await?;
+                let listed = json!({"members": members, "invitations": invitations});
+                let said = people_text(&listed);
+                (listed, said)
             }
             PeopleCmd::Invite {
                 role,
                 email,
                 waiting,
             } => {
-                let mut body = serde_json::json!({"role": role});
-                if let Some(fields) = body.as_object_mut() {
-                    if let Some(email) = email {
-                        fields.insert("email".into(), Value::String(email));
+                let mut args = json!({"role": role});
+                if let Some(fields) = args.as_object_mut() {
+                    if let Some(email) = &email {
+                        fields.insert("invitee_name".into(), Value::String(email.clone()));
                     }
                     if let Some(waiting) = waiting {
-                        fields.insert("waiting".into(), Value::String(waiting));
+                        fields.insert("wait_list_entry".into(), Value::String(waiting));
                     }
                 }
-                let invited = client
-                    .post(
-                        &format!("/v1/workspaces/{workspace}/members/invitations"),
-                        &body,
-                    )
-                    .await?;
+                let invited = act("workspace/invitations", "invite", args).await?;
                 let mut said = text(&invited, "link").to_owned();
                 if let Some(next) = invited.get("next").and_then(Value::as_str) {
                     let _ = write!(said, "\n{next}");
+                } else if let (Some(email), None) = (email, invited.get("sent")) {
+                    let _ = write!(said, "\nTilo sends no email: give {email} this link");
                 }
-                Ok(show(reach.json, &invited, &said))
-            }
-            PeopleCmd::Role { key, role } => {
-                let moved = client
-                    .put(
-                        &format!(
-                            "/v1/workspaces/{workspace}/members/{}/role",
-                            api::encode_path(&key)
-                        ),
-                        &serde_json::json!({ "role": role }),
-                    )
-                    .await?;
-                Ok(show(reach.json, &moved, &lines::members(&moved)))
-            }
-            PeopleCmd::Revoke { invite } => {
-                let left = client
-                    .delete(&format!(
-                        "/v1/workspaces/{workspace}/members/invitations/{}",
-                        api::encode_path(&invite)
-                    ))
-                    .await?;
-                Ok(show(reach.json, &left, &lines::members(&left)))
-            }
-            PeopleCmd::Rm { key } => {
-                let left = client
-                    .delete(&format!(
-                        "/v1/workspaces/{workspace}/members/{}",
-                        api::encode_path(&key)
-                    ))
-                    .await?;
-                Ok(show(reach.json, &left, &lines::members(&left)))
+                (invited, said)
             }
             PeopleCmd::Add { key, role, name } => {
-                let mut body = serde_json::json!({"person": key, "role": role});
-                if let (Some(fields), Some(name)) = (body.as_object_mut(), name) {
+                let mut args = json!({"person": key, "role": role});
+                if let (Some(fields), Some(name)) = (args.as_object_mut(), name) {
                     fields.insert("name".into(), Value::String(name));
                 }
-                let added = client
-                    .post(&format!("/v1/workspaces/{workspace}/members"), &body)
-                    .await?;
-                Ok(show(reach.json, &added, &lines::members(&added)))
+                let listed = act("workspace/members", "add", args).await?;
+                let said = people_text(&listed);
+                (listed, said)
             }
-            PeopleCmd::WaitList => {
-                let listed = client
-                    .get(&format!("/v1/workspaces/{workspace}/members/wait-list"))
-                    .await?;
-                Ok(show(reach.json, &listed, &lines::wait_list(&listed)))
+            PeopleCmd::Role { key, role } => {
+                let args = json!({"person": key, "role": role});
+                let listed = act("workspace/members", "role", args).await?;
+                let said = people_text(&listed);
+                (listed, said)
             }
-            PeopleCmd::Unlist { entry } => {
-                let listed = client
-                    .delete(&format!(
-                        "/v1/workspaces/{workspace}/members/wait-list/{entry}"
-                    ))
-                    .await?;
-                Ok(show(reach.json, &listed, &lines::wait_list(&listed)))
+            PeopleCmd::Rm { key } => {
+                let listed = act("workspace/members", "remove", json!({"person": key})).await?;
+                let said = people_text(&listed);
+                (listed, said)
+            }
+            PeopleCmd::Revoke { invite } => {
+                let args = json!({ "invite": invite });
+                let answer = act("workspace/invitations", "cancel", args).await?;
+                (answer, format!("revoked {invite}: its link lets nobody in"))
             }
             PeopleCmd::Name { name } => {
-                let named = client
-                    .post(
-                        &format!("/v1/workspaces/{workspace}/members/name"),
-                        &serde_json::json!({"name": name}),
-                    )
-                    .await?;
-                Ok(show(reach.json, &named, &lines::members(&named)))
+                let answer = act("workspace/members", "name", json!({ "name": name })).await?;
+                (answer, format!("the workspace calls you {name}"))
             }
-        }
+            PeopleCmd::WaitList => {
+                let listed = act("workspace/waiting", "list", json!({})).await?;
+                let said = waiting_text(&listed);
+                (listed, said)
+            }
+            PeopleCmd::Unlist { entry } => {
+                let args = json!({ "entry": entry });
+                let listed = act("workspace/waiting", "unlist", args).await?;
+                let said = waiting_text(&listed);
+                (listed, said)
+            }
+        };
+        Ok(show(reach.json, &answer, &said))
     })
+}
+
+/// A workspace's people and its open invitations as a person reads them: one line each, a
+/// person by the one place they hold and their key, an invitation by what redeeming it makes
+/// and its id.
+fn people_text(listed: &Value) -> String {
+    let rows = |name: &str| {
+        listed
+            .get(name)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let place = |row: &Value| {
+        Some(text(row, "place"))
+            .filter(|place| !place.is_empty())
+            .unwrap_or_else(|| text(row, "role"))
+            .to_owned()
+    };
+    let members = rows("members");
+    let mut said = String::from("members:");
+    for member in &members {
+        let _ = write!(said, "\n  {} — {}", text(member, "name"), place(member));
+        if let Some(key) = member.pointer("/member/person").and_then(Value::as_str) {
+            let _ = write!(said, "  {key}");
+        }
+    }
+    if members.is_empty() {
+        said.push_str("\n  nobody yet");
+    }
+    let invitations = rows("invitations");
+    if invitations.is_empty() {
+        said.push_str("\ninvitations: none open");
+        return said;
+    }
+    said.push_str("\ninvitations:");
+    for invitation in &invitations {
+        let _ = write!(said, "\n  {} invitation", place(invitation));
+        let named = text(invitation, "invitee_name");
+        if !named.is_empty() {
+            let _ = write!(said, " for {named}");
+        }
+        let _ = write!(said, ", {}", text(invitation, "invite"));
+    }
+    said
+}
+
+/// A workspace's wait list as a person reads it: each address with its entry, and whether it
+/// was invited.
+fn waiting_text(listed: &Value) -> String {
+    let entries = listed
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if entries.is_empty() {
+        return "the wait list is empty".to_owned();
+    }
+    let mut said = String::from("wait list:");
+    for entry in &entries {
+        let invited = if entry.get("invited_at_ns").is_some_and(|at| !at.is_null()) {
+            ", invited"
+        } else {
+            ""
+        };
+        let _ = write!(
+            said,
+            "\n  {}{invited} — {}",
+            text(entry, "contact"),
+            text(entry, "entry")
+        );
+    }
+    said
 }
 
 /// `tilo workspace servers … -w <workspace>`: the servers keeping the
@@ -2625,11 +2680,13 @@ mod tests {
             assert_eq!(invitation.method, "POST");
             assert_eq!(
                 invitation.target,
-                format!("/v1/workspaces/{WORKSPACE}/members/invitations")
+                format!(
+                    "/v1/workspaces/{WORKSPACE}/resources/workspace/invitations/actions/invite"
+                )
             );
             assert_eq!(
                 serde_json::from_slice::<Value>(&invitation.body).unwrap(),
-                json!({"role": "administrator", "email": "ops@example.com"})
+                json!({"role": "administrator", "invitee_name": "ops@example.com"})
             );
 
             // Someone in is moved by their key, and removed by it.
@@ -2644,22 +2701,26 @@ mod tests {
             );
             let moved = api_server.drain_requests();
             let moved = moved.last().expect("the move");
-            assert_eq!(moved.method, "PUT");
+            assert_eq!(moved.method, "POST");
             assert_eq!(
                 moved.target,
-                format!("/v1/workspaces/{WORKSPACE}/members/{ada}/role")
+                format!("/v1/workspaces/{WORKSPACE}/resources/workspace/members/actions/role")
             );
             assert_eq!(
                 serde_json::from_slice::<Value>(&moved.body).unwrap(),
-                json!({"role": "editor"})
+                json!({"person": ada, "role": "editor"})
             );
             members(reach, "applicant-jane-doe", PeopleCmd::Rm { key: ada.clone() });
             let removed = api_server.drain_requests();
             let removed = removed.last().expect("the removal");
-            assert_eq!(removed.method, "DELETE");
+            assert_eq!(removed.method, "POST");
             assert_eq!(
                 removed.target,
-                format!("/v1/workspaces/{WORKSPACE}/members/{ada}")
+                format!("/v1/workspaces/{WORKSPACE}/resources/workspace/members/actions/remove")
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&removed.body).unwrap(),
+                json!({ "person": ada })
             );
 
             // A workspace is named again with `PUT …/name`.

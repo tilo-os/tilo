@@ -216,13 +216,30 @@ pub const WORKSPACE_APPS: &str = "apps";
 /// The mail accounts a workspace keeps on its server, under its governance
 /// root (`workspace/mail-accounts`): `tilo.accounts`'s, reached by path.
 pub const WORKSPACE_MAIL_ACCOUNTS: &str = "mail-accounts";
+/// The people in a workspace, under its governance root (`workspace/members`).
+pub const WORKSPACE_MEMBERS: &str = "members";
+/// The invitations a workspace has open, under its governance root
+/// (`workspace/invitations`).
+pub const WORKSPACE_INVITATIONS: &str = "invitations";
+/// The addresses left at a workspace's entry while it takes people by
+/// invitation, under its governance root (`workspace/waiting`).
+pub const WORKSPACE_WAITING: &str = "waiting";
 
 /// Where a workspace's governance tree publishes the actions it grants by
 /// another name: the operation a grant and a policy name it by, the resource
 /// under the root it is on (none for the root itself) and its id there, as a
 /// person names it. An operation not listed is published on the root under its
 /// own name.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 11] = [
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 20] = [
+    ("member.list", Some(WORKSPACE_MEMBERS), "list"),
+    ("member.add", Some(WORKSPACE_MEMBERS), "add"),
+    ("member.name", Some(WORKSPACE_MEMBERS), "name"),
+    ("invite", Some(WORKSPACE_INVITATIONS), "invite"),
+    ("invitation.list", Some(WORKSPACE_INVITATIONS), "list"),
+    ("invitation.cancel", Some(WORKSPACE_INVITATIONS), "cancel"),
+    ("wait-list.list", Some(WORKSPACE_WAITING), "list"),
+    ("wait-list.remove", Some(WORKSPACE_WAITING), "unlist"),
+    ("wait-list.mail", Some(WORKSPACE_WAITING), "mail"),
     ("server.list", Some(WORKSPACE_SERVERS), "list"),
     ("server.add", Some(WORKSPACE_SERVERS), "add"),
     ("server.remove", Some(WORKSPACE_SERVERS), "remove"),

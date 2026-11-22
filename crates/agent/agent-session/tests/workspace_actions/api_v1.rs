@@ -493,7 +493,6 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
         &tilo_api::Config {
             issuer: ISSUER.into(),
             web_entry: on_server.web_entry.clone(),
-            invite_entry: None,
             hosts: vec![on_server.server.clone()],
         },
         tilo_api::store::Store::in_memory(),
@@ -703,7 +702,6 @@ async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
         &tilo_api::Config {
             issuer: ISSUER.into(),
             web_entry: on_server.web_entry.clone(),
-            invite_entry: None,
             hosts: vec![on_server.server.clone()],
         },
         tilo_api::store::Store::in_memory(),
@@ -1069,7 +1067,10 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
     // `tilo workspace people ls`: reading who is in asks nobody.
     let listed = holder
         .command()
-        .get(&format!("/v1/workspaces/{workspace}/members"))
+        .post(
+            &format!("/v1/workspaces/{workspace}/resources/workspace/members/actions/list"),
+            &json!({}),
+        )
         .await
         .expect("the agent lists the workspace's people");
     let ada_key = hex::encode(holder.laptop.cert.user_public_key);
@@ -1092,7 +1093,8 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
     assert_eq!(questions(), 0, "reading asks nobody");
 
     // Inviting someone asks Ada first: allowed, the link comes back.
-    let invitations = format!("/v1/workspaces/{workspace}/members/invitations");
+    let invitations =
+        format!("/v1/workspaces/{workspace}/resources/workspace/invitations/actions/invite");
     let invite = json!({"role": "editor"});
     let invited = holder
         .command()
@@ -1511,7 +1513,6 @@ async fn a_call_reaches_the_server_that_keeps_the_workspace_when_another_answers
             &tilo_api::Config {
                 issuer: ISSUER.into(),
                 web_entry: hers.web_entry.clone(),
-                invite_entry: None,
                 hosts: vec![near, far],
             },
             tilo_api::store::Store::in_memory(),
@@ -1555,7 +1556,6 @@ async fn a_key_works_at_every_api_server() {
         &tilo_api::Config {
             issuer: ISSUER.into(),
             web_entry: served.web_entry.clone(),
-            invite_entry: None,
             hosts: vec![served.server.clone()],
         },
         tilo_api::store::Store::in_memory(),
@@ -1601,7 +1601,6 @@ async fn a_call_is_served_after_the_host_it_used_goes_away() {
             &tilo_api::Config {
                 issuer: ISSUER.into(),
                 web_entry: restarted.web_entry.clone(),
-                invite_entry: None,
                 hosts: vec![used, restarted.server.clone()],
             },
             tilo_api::store::Store::in_memory(),
@@ -1630,7 +1629,6 @@ async fn no_host_that_can_read_the_workspace_is_a_typed_refusal() {
         &tilo_api::Config {
             issuer: ISSUER.into(),
             web_entry: on_server.web_entry.clone(),
-            invite_entry: None,
             // Nothing serves at this address: no server is online for the key.
             hosts: vec!["http://127.0.0.1:9".into()],
         },

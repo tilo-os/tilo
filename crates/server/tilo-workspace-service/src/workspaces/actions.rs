@@ -59,10 +59,11 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
-    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_SERVERS, mcp_server,
-    person_accounts, person_asking, person_connections, person_formats, person_models,
-    person_telling, person_vault, server_account, workspace_governance_address,
-    workspace_governance_operation, workspace_governance_resource,
+    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
+    WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, mcp_server, person_accounts,
+    person_asking, person_connections, person_formats, person_models, person_telling, person_vault,
+    server_account, workspace_governance_address, workspace_governance_operation,
+    workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -88,7 +89,7 @@ mod mail;
 #[cfg(not(target_arch = "wasm32"))]
 mod model_asks;
 mod server;
-use invocation_states::{answered_within, failed, still_running, succeeded};
+use invocation_states::{answered_within, ended, failed, still_running, succeeded};
 #[cfg(not(target_arch = "wasm32"))]
 mod telling;
 
@@ -864,6 +865,9 @@ impl Verb {
         let label = match child {
             Some(WORKSPACE_SERVERS) => "Servers",
             Some(WORKSPACE_APPS) => "Apps",
+            Some(WORKSPACE_MEMBERS) => "People",
+            Some(WORKSPACE_INVITATIONS) => "Invitations",
+            Some(WORKSPACE_WAITING) => "Waiting to be invited",
             Some(other) => other,
             None => name,
         };
@@ -872,15 +876,34 @@ impl Verb {
             row.parent_resource.clone_from(&root);
         }
         if let Some(action) = row.action.as_mut() {
+            // Reading what the tree holds (`tilo_read workspace/members`) lists it.
+            if child.is_some() && address.action == "list" && self.kind == ActionKind::Read {
+                action
+                    .contract
+                    .tags
+                    .push(tilo_actions::DOCUMENT_READ_TAG.to_owned());
+            }
             action.address = address;
         }
         row
     }
 }
 
-/// `rows` of a workspace's governance tree, its root saying it holds what
-/// is offered under it.
-fn governance_tree(mut rows: Vec<CatalogueRow>) -> Vec<CatalogueRow> {
+/// `rows` of a workspace's governance tree, the workspace named `name`, its
+/// root saying it holds what is offered under it: listed on its own when it
+/// offers nothing itself, so what is under it is found by browsing.
+fn governance_tree(mut rows: Vec<CatalogueRow>, name: &str) -> Vec<CatalogueRow> {
+    let under = rows
+        .iter()
+        .find(|row| !row.parent_resource.is_empty())
+        .cloned();
+    if let Some(mut root) = under.filter(|_| rows.iter().all(|row| !row.parent_resource.is_empty()))
+    {
+        root.resource.id = std::mem::take(&mut root.parent_resource);
+        name.clone_into(&mut root.resource.label);
+        root.action = None;
+        rows.insert(0, root);
+    }
     let holds = rows.iter().any(|row| !row.parent_resource.is_empty());
     for row in &mut rows {
         if row.parent_resource.is_empty() {
@@ -1401,6 +1424,7 @@ impl Workspaces {
                     rows.extend(server::rows(&workspace));
                 }
                 let id = workspace.workspace().to_owned();
+                let name = workspace.name();
                 drop(workspace);
                 // The workspace's mail accounts, as its policy on its mail
                 // lets the caller ask them.
@@ -1409,7 +1433,7 @@ impl Workspaces {
                     self.mail_account_rows((Some(workspace_id), caller, certificate), &id)
                         .await,
                 );
-                offer.add(GOVERNANCE, &id, governance_tree(rows));
+                offer.add(GOVERNANCE, &id, governance_tree(rows, &name));
             } else if let Some((governed, _device)) = operating {
                 // An agent of the person's asks what they ask of their
                 // servers: the workspace's governance is not theirs.
@@ -2066,12 +2090,8 @@ impl Workspaces {
             .collect())
     }
 
-    /// Inviting, and what inviting covers: the invitations.
-    async fn governance_invitations(
-        &self,
-        action: &str,
-        call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionCallError> {
+    /// An invitation, answered with the link that hands it over.
+    async fn invite_answered(&self, call: GovernanceCall<'_>) -> Result<Value, ActionCallError> {
         let GovernanceCall {
             workspace,
             device,
@@ -2079,47 +2099,83 @@ impl Workspaces {
             args,
         } = call;
         let now = tilo_clock::unix_now_ns();
-        match action {
-            governance::INVITE => {
-                let expires_at_ns = now.saturating_add(invitation_lifetime(args)?);
-                let place = args.place_at("role")?;
-                let wait_list_entry = args.key("wait_list_entry")?;
-                let (role, makes_administrator) = place.invited_as();
-                let request = IssueInvitationRequest {
-                    request_id,
-                    role,
-                    recipient_user_public_key: args.key("recipient")?,
-                    invitee_name: args.text("invitee_name")?.map(str::to_owned),
-                    expires_at_ns,
-                    inviter_name: args.text("inviter_name")?.map(str::to_owned),
-                };
-                let issued = if place == super::MemberPlace::Owner {
-                    self.issue_owner_invitation(workspace, device, request, wait_list_entry)
-                        .await
-                } else {
-                    self.issue_for(
-                        workspace,
-                        device,
-                        request,
-                        makes_administrator,
-                        wait_list_entry,
-                    )
-                    .await
-                }
-                .map_err(|error| refused(&error))?;
-                let native_link = tilo_peer_state::join_transport::retained_invitation_link(
-                    &issued.signed_invitation,
-                    now,
+        let expires_at_ns = now.saturating_add(invitation_lifetime(args)?);
+        let place = args.place_at("role")?;
+        let wait_list_entry = args.key("wait_list_entry")?;
+        let (role, makes_administrator) = place.invited_as();
+        let request = IssueInvitationRequest {
+            request_id,
+            role,
+            recipient_user_public_key: args.key("recipient")?,
+            invitee_name: args.text("invitee_name")?.map(str::to_owned),
+            expires_at_ns,
+            inviter_name: args.text("inviter_name")?.map(str::to_owned),
+        };
+        let issued = if place == super::MemberPlace::Owner {
+            self.issue_owner_invitation(workspace, device, request, wait_list_entry)
+                .await
+        } else {
+            self.issue_for(
+                workspace,
+                device,
+                request,
+                makes_administrator,
+                wait_list_entry,
+            )
+            .await
+        }
+        .map_err(|error| refused(&error))?;
+        let native_link = tilo_peer_state::join_transport::retained_invitation_link(
+            &issued.signed_invitation,
+            now,
+        );
+        let link = self.invitation_link(workspace, &issued.signed_invitation);
+        let mut answered = json!({
+            "workspace": workspace,
+            "invite": hex::encode(issued.invite_id),
+            "invitation": hex::encode(&issued.signed_invitation),
+            "link": link,
+            "native_link": native_link,
+            "role": args.required_text("role")?,
+            "administrator": makes_administrator,
+            "owner": place == super::MemberPlace::Owner,
+            "expires_at_ns": expires_at_ns,
+        });
+        // An invitation for an address on the wait list is mailed to it where the
+        // entry sends mail; where it sends none, the link is handed over.
+        if let (Some(entry), Some(fields)) = (wait_list_entry, answered.as_object_mut()) {
+            let mailed = self
+                .mail_invite(workspace, device, entry, link.clone(), now)
+                .await;
+            fields.insert("sent".into(), json!(mailed.is_ok()));
+            if let Err(error) = mailed {
+                fields.insert(
+                    "next".into(),
+                    json!(format!(
+                        "the invitation was not mailed ({error}): hand the link over yourself"
+                    )),
                 );
-                Ok(json!({
-                    "invite": hex::encode(issued.invite_id),
-                    "invitation": hex::encode(issued.signed_invitation),
-                    "native_link": native_link,
-                    "administrator": makes_administrator,
-                    "owner": place == super::MemberPlace::Owner,
-                    "expires_at_ns": expires_at_ns,
-                }))
             }
+        }
+        Ok(answered)
+    }
+
+    /// Inviting, and what inviting covers: the invitations.
+    async fn governance_invitations(
+        &self,
+        action: &str,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionCallError> {
+        if action == governance::INVITE {
+            return self.invite_answered(call).await;
+        }
+        let GovernanceCall {
+            workspace,
+            device,
+            request_id,
+            args,
+        } = call;
+        match action {
             INVITATIONS => {
                 let pending = self
                     .pending(workspace, device)
@@ -2822,7 +2878,7 @@ impl ActionProvider for InWorkspace {
                 Box::pin(workspaces.invoke(workspace_id, &caller, certificate.as_ref(), &request))
                     .await
             }));
-            let ran = match answered_within(&mut work, wait, &asking).await {
+            let (ran, asked) = match answered_within(&mut work, wait, &asking).await {
                 Ok(ran) => ran,
                 Err(asked) => {
                     let receipt = still_running(&host, invocation, work, asked);
@@ -2834,26 +2890,7 @@ impl ActionProvider for InWorkspace {
                     return Ok(receipt);
                 }
             };
-            match ran {
-                Ok(Ok(value)) => {
-                    let state = succeeded(invocation, value);
-                    let receipt = state.receipt();
-                    host.log().complete(&invocation, state);
-                    Ok(receipt)
-                }
-                // Refused before anything changed, or answered from the
-                // workspace's request records on a retry: nothing to remember.
-                Ok(Err(error)) => {
-                    host.log().abandon(&invocation);
-                    Err(error)
-                }
-                Err(stopped) => {
-                    host.log().abandon(&invocation);
-                    Err(ActionCallError::Unavailable {
-                        reason: format!("the host's operation stopped: {stopped}"),
-                    })
-                }
-            }
+            ended(&host, invocation, ran, asked)
         })
     }
 

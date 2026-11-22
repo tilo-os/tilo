@@ -365,13 +365,13 @@ tilo workspace rm applicant-jane-doe   # when the customer leaves
 Making, branching and deleting workspaces and minting keys are the account's
 (`POST /v1/workspaces`, `POST /v1/workspaces/<workspace>/branches`, `DELETE /v1/workspaces/<workspace>`,
 `POST /v1/keys`), inviting is the
-workspace's own (`POST /v1/workspaces/<workspace>/members/invitations`), and everything in a
+workspace's own (`workspace/invitations#invite`), and everything in a
 workspace is a resource under `/v1/workspaces/<workspace>/resources/...`. A minted key is a
 certificate your key signed, narrower than it: the
 hosts and the runtime check it like any other device of yours, and it ends when your key is revoked
 ([design](../architecture/workspace-api.md)).
 
 Every one of these is also an MCP call an agent makes (`account/workspaces#create`,
-`account/workspaces#branch`, `account/keys#mint`, `workspace/members#invite`), answered typed: one API, two ways to say it
+`account/workspaces#branch`, `account/keys#mint`, `workspace/invitations#invite`), answered typed: one API, two ways to say it
 ([`api.md`](api.md)). A file's bytes go up in one request before an app takes the reference
 ([files](../tilo-sh/files.md)).

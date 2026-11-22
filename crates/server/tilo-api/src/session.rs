@@ -406,8 +406,8 @@ impl Session {
     }
 
     /// Answer `request` in `workspace`'s session, showing the person what a
-    /// tool call did beside the agent. The workspace's people
-    /// (`workspace/members`) are answered here ([`members`]).
+    /// tool call did beside the agent. The changes to who is in it a key's
+    /// own device signs are made here ([`members`]).
     async fn serve(&self, workspace: &str, request: Value) -> Reply {
         self.serve_in(workspace, None, request).await
     }
@@ -435,7 +435,7 @@ impl Session {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             if members::addresses(tool, arguments) {
-                let answered = self.members(workspace, tool, arguments, structured).await;
+                let answered = self.members(workspace, arguments, structured).await;
                 return Reply::one(result(&id, &answered));
             }
             if unattended::addresses(tool, arguments) {
@@ -776,7 +776,7 @@ impl Session {
         // that keeps one answers them itself.
         if !self.on_device(workspace, program).await && matches!(self.reach, Reach::Forwarded(_)) {
             if members::addresses(tool, &arguments) {
-                return structured(&self.members(workspace, tool, &arguments, true).await);
+                return structured(&self.members(workspace, &arguments, true).await);
             }
             if unattended::addresses(tool, &arguments) {
                 return structured(&self.unattended(workspace, tool, &arguments, true).await);
@@ -926,13 +926,10 @@ is the confirmation, so delete only what you were asked to). Every other call ac
 named by id in its `workspace` argument. To give another agent one workspace and nothing else \
 (one workspace per customer), `tilo_do {path: \"account/keys#mint\", args: {workspace}}` answers \
 an `mcp_url` and a `token` for it; revoking this key ends every key it minted. \
-To bring another person in (a reviewer, say), `tilo_do {path: \"workspace/members#invite\", \
-args: {role, email?}, workspace}` answers a `link` that signs them in and lands them there as \
-`role` (viewer, commenter, editor or administrator); `workspace/members#list` names who is in it, and \
-`workspace/members#name {name}` sets how it names the key's own person, which is what their \
-invitations say. \
 `tilo_ls workspace` (with `workspace`) lists the workspace's governance beside its apps, as any \
-path lists: the servers keeping it (`workspace/servers`), the versions of apps and the bots it \
+path lists: its people (`workspace/members`), its open invitations (`workspace/invitations`, whose \
+`invite {role}` answers the `link` that brings a person in), its wait list (`workspace/waiting`), \
+the servers keeping it (`workspace/servers`), the versions of apps and the bots it \
 uses (`workspace/apps`) and its mail accounts (`workspace/mail-accounts`). \
 A command an agent runs in a workspace's Linux machine (`terminal#run`) asks the person each \
 time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}` asks them once \

@@ -441,70 +441,12 @@ pub struct View {
     pub picture: Option<String>,
 }
 
-/// The workspace's people, each with their role, and the invitations still
-/// open.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Members(pub Map<String, Value>);
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewInvitation {
-    /// `viewer`, `commenter`, `editor`, `administrator` or `owner`.
-    pub role: String,
-    /// The address the invitation names; no mail is sent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
-    /// The address on the wait list it is for (its `entry`): mailed to it
-    /// where the workspace's entry sends mail, and it leaves the list once
-    /// someone joins with it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub waiting: Option<String>,
-}
-
-/// A person the workspace holds by their key from now on.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewMember {
-    /// Their user public key, 64 hex characters.
-    pub person: String,
-    /// `viewer`, `commenter`, `editor`, `moderator`, `administrator` or
-    /// `owner`; never more than yours to give. A member already is moved
-    /// there.
-    pub role: String,
-    /// How the workspace names them until they name themselves.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
-/// The addresses left at the workspace's entry while it takes people by
-/// invitation, oldest first, and whether the entry mails invitations.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WaitList(pub Map<String, Value>);
-
 /// What the workspace is called from now on, by every list and device of it.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceName {
     /// 1 to 80 characters.
     pub name: String,
 }
-
-/// Where a member of the workspace is held from now on.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct MemberRole {
-    /// `viewer`, `commenter`, `editor`, `moderator`, `administrator` or
-    /// `owner`; never more than yours to give.
-    pub role: String,
-}
-
-/// How the key's person goes by in the workspace from now on.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewName {
-    /// The name the workspace's member list and the invitations they make
-    /// show for them.
-    pub name: String,
-}
-
-/// A link that signs the person in and lands them in the workspace.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Invitation(pub Map<String, Value>);
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Program {
@@ -710,14 +652,7 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         SearchHits,
         Link,
         View,
-        Members,
-        NewInvitation,
-        NewMember,
-        WaitList,
-        Invitation,
-        NewName,
         WorkspaceName,
-        MemberRole,
         Program,
         ProgramAnswer,
         Uploaded,

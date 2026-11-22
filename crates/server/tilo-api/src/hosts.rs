@@ -63,18 +63,6 @@ impl Hosts {
         self.relays.first()
     }
 
-    /// The first configured one's name and origin: what a link that admits
-    /// into it names.
-    #[must_use]
-    pub fn first_named(&self) -> (Option<String>, Option<String>) {
-        self.relays.first().map_or((None, None), |first| {
-            (
-                Some(first.name().to_owned()),
-                Some(first.origin().to_owned()),
-            )
-        })
-    }
-
     /// A session with the host that serves `key`'s workspace best right now:
     /// every host that answers and lists a workspace for the key is a
     /// candidate (every one that answers, while none lists any), and the one

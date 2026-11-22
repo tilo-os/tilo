@@ -21,7 +21,7 @@ use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use super::super::tests::{admit, caller, governed, request, settled};
+use super::super::tests::{admit, caller, governed, offered, request, settled};
 use super::super::{ADD_MEMBER, ServiceWorkspaceActions};
 use crate::workspaces::tests::{governor, signed_pre_admission, test_host};
 use crate::workspaces::{AsksPeople, PersonAnswer, PreAdmitRequest, Workspaces};
@@ -152,19 +152,7 @@ async fn an_agent_governs_as_its_grants_answer_and_asks_its_person_by_default() 
         "{refused:?}"
     );
     assert_eq!(declining.asked().len(), 1, "refused, nobody is asked");
-    let query = tilo_actions::remote::CatalogueQuery {
-        provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
-        max_results: 100,
-        ..Default::default()
-    };
-    let offered = settled(actions.in_workspace(workspace_id).query(&agent, query))
-        .await
-        .unwrap();
-    let verbs: Vec<_> = offered
-        .rows
-        .into_iter()
-        .filter_map(|row| row.action.map(|action| action.address.action))
-        .collect();
+    let verbs = offered(&actions, workspace_id, &agent).await;
     assert!(!verbs.iter().any(|verb| verb == ADD_MEMBER), "{verbs:?}");
     assert!(
         verbs.iter().any(|verb| verb == super::super::MEMBERS),

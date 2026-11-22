@@ -127,29 +127,28 @@ export class Members {
     } = {},
   ): Promise<Invitation> {
     const endpoint = await this.workspace.endpoint();
-    const json: Record<string, unknown> = { role: options.role ?? "viewer" };
+    const args: Record<string, unknown> = { role: options.role ?? "viewer" };
     if (options.email !== undefined) {
-      json.email = options.email;
+      args.invitee_name = options.email;
     }
-    return invitationOf(
-      await endpoint.answer("POST", routes.invitations(endpoint.id), { json }),
-    );
+    const invited = await endpoint.action("workspace/invitations#invite", args);
+    const invitation = invitationOf((invited ?? {}) as Record<string, unknown>);
+    // Tilo sends no mail to an address it names: the link is handed over.
+    if (options.email === undefined) {
+      return invitation;
+    }
+    const next =
+      invitation.next ?? `Tilo sends no email: give the person this link to send to ${options.email}`;
+    return { ...invitation, email: options.email, next };
   }
 
   /** The members of the workspace, each with their role. */
   async list(): Promise<Member[]> {
-    const listed = await this.#listed();
-    return listed.members
+    const endpoint = await this.workspace.endpoint();
+    const listed = await endpoint.action("workspace/members#list");
+    return (Array.isArray(listed) ? listed : [])
       .filter((row) => row !== null && typeof row === "object")
       .map((row) => memberOf(row as Record<string, unknown>));
-  }
-
-  async #listed(): Promise<{ members: unknown[] }> {
-    const endpoint = await this.workspace.endpoint();
-    const answer = await endpoint.answer("GET", routes.members(endpoint.id), {
-      idempotent: false,
-    });
-    return { members: Array.isArray(answer.members) ? answer.members : [] };
   }
 }
 

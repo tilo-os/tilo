@@ -193,7 +193,7 @@ packet relay's URL) has the server start no packet relay of its own and be
 reached through that one, its iroh endpoint on every address, so people on
 other networks join it with an invitation over iroh while nothing of the
 stack is on the web. Its invitation links then carry the server's signed
-address themselves (under https://tilo.sh, or TILO_SH_INVITE_ENTRY), and
+address themselves, and
 \`tilo login '<link>'\` joins with one from anywhere. The state keeps it for
 \`restart server\` and \`restart api\`; an empty value goes back to the stack's
 own relay.
@@ -848,14 +848,6 @@ api_env() {
     "TILO_API_WEB_ENTRY=$site_origin" \
     "TILO_API_HOST=$server_origin" \
     "TILO_API_STATE=$api_state/api.json"
-  # An invitation's link carries itself under the page whoever follows it
-  # opens: this stack's own site, or tilo.sh's when the stack is reached
-  # through another packet relay and its own page opens nowhere else.
-  if [[ -n $(cat "$state/reached-through" 2>/dev/null || true) ]]; then
-    printf '%s\n' "TILO_API_INVITE_ENTRY=${TILO_SH_INVITE_ENTRY:-https://tilo.sh}"
-  else
-    printf '%s\n' "TILO_API_INVITE_ENTRY=$site_origin"
-  fi
 }
 
 # The web entry's environment: apps/tilo-web/deployment.yaml. INFO is what

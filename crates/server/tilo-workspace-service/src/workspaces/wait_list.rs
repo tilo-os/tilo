@@ -597,6 +597,48 @@ pub(super) struct EntrySettings {
     /// What the entry says about the wait list
     /// ([`super::Workspaces::offer_wait_list`]).
     pub(super) wait_list: std::sync::OnceLock<tilo_server_protocol::directory::EntryWaitList>,
+    /// The page an invitation's link opens ([`super::Workspaces::invite_at`]).
+    pub(super) invitations: std::sync::OnceLock<String>,
+}
+
+/// The page an invitation's link opens when the server names none of its own.
+const PUBLIC_INVITE_ENTRY: &str = "https://tilo.sh/";
+
+/// Whether a computer other than this one can open `site`: not one named on this computer or its
+/// network alone (`localhost`, `*.localhost`, a single label, a `.local` or `.internal` name, a
+/// loopback, private, link-local or unspecified address).
+fn reached_from_elsewhere(site: &str) -> bool {
+    let rest = site.split_once("://").map_or(site, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if let Some(bracketed) = host.strip_prefix('[') {
+        let address = bracketed.split(']').next().unwrap_or_default();
+        let address = tilo_failure::ignored!(
+            "a bracketed host that is no IPv6 address is reached from nowhere",
+            address.parse::<std::net::Ipv6Addr>()
+        );
+        return address.is_ok_and(|address| {
+            !(address.is_loopback()
+                || address.is_unspecified()
+                || address.is_unique_local()
+                || address.is_unicast_link_local())
+        });
+    }
+    let name = host.split(':').next().unwrap_or_default();
+    if let Ok(address) = tilo_failure::ignored!(
+        "a host that is no IPv4 address is a name, read below",
+        name.parse::<std::net::Ipv4Addr>()
+    ) {
+        return !(address.is_loopback()
+            || address.is_private()
+            || address.is_link_local()
+            || address.is_unspecified());
+    }
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    let last = name.rsplit('.').next().unwrap_or_default();
+    name.contains('.') && !matches!(last, "localhost" | "local" | "internal")
 }
 
 impl super::Workspaces {
@@ -629,6 +671,36 @@ impl super::Workspaces {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         self.inner.entry.mail.set((entry.to_owned(), sender)).ok()?;
         Some(receiver)
+    }
+
+    /// The page whoever follows an invitation's link opens, as whoever runs the server set its
+    /// web entry: the link carries the signed invitation after its `#`, the server's own
+    /// addresses in it, so the page dials the server with nothing asked of any site. Without
+    /// one, or with one only this computer or its network reaches (`http://tilo.localhost`, a
+    /// private address), tilo.sh's page opens it: a link pasted into a message must open
+    /// wherever it is followed. `false` once called before.
+    pub fn invite_at(&self, entry: &str) -> bool {
+        let entry = format!("{}/", entry.trim_end_matches('/'));
+        let entry = if reached_from_elsewhere(&entry) {
+            entry
+        } else {
+            PUBLIC_INVITE_ENTRY.to_owned()
+        };
+        self.inner.entry.invitations.set(entry).is_ok()
+    }
+
+    /// The link that brings whoever follows it into `workspace` with `invitation` (its signed
+    /// bytes): the invitation's own text after the workspace's route on the page
+    /// [`Self::invite_at`] names.
+    pub(super) fn invitation_link(&self, workspace: &str, invitation: &[u8]) -> String {
+        let entry = self
+            .inner
+            .entry
+            .invitations
+            .get()
+            .map_or(PUBLIC_INVITE_ENTRY, String::as_str);
+        let text = tilo_peer_state::join::encode_invitation_text(invitation);
+        format!("{entry}#/w/{workspace}?invite={text}")
     }
 
     /// The page the workspace's entry mails from, when it mails at all: a link
@@ -677,6 +749,30 @@ mod tests {
     use tilo_files::native::migration::assert_golden_bytes;
 
     const HOUR: u64 = 3600 * 1_000_000_000;
+
+    #[test]
+    fn an_invitation_link_opens_only_where_another_computer_reaches_it() {
+        for site in [
+            "https://tilo.example",
+            "https://tilo.example:8443/",
+            "http://203.0.113.7/",
+            "http://[2001:db8::1]:80/",
+        ] {
+            assert!(reached_from_elsewhere(site), "{site}");
+        }
+        for site in [
+            "http://tilo.localhost",
+            "http://localhost:3000/",
+            "http://printer.local/",
+            "http://intranet/",
+            "http://127.0.0.1:8080",
+            "http://192.168.1.4/",
+            "http://[::1]:80/",
+            "http://[fd00::1]/",
+        ] {
+            assert!(!reached_from_elsewhere(site), "{site}");
+        }
+    }
 
     /// The wait list file this build writes: an address confirmed beside the
     /// mail sent to it and the invitation sent for it, and an address whose

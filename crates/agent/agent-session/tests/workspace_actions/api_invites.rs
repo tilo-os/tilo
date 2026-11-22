@@ -1,6 +1,6 @@
 //! A backend's key brings another person into a customer's workspace through
-//! the action API: `workspace/members#invite` answers the link a person's layout
-//! hands over, the person follows it on a page of their own and is in as
+//! the action API: `workspace/invitations#invite` answers the link a person's
+//! layout hands over, the person follows it on a page of their own and is in as
 //! the role, and a key they approve themselves reaches the workspace as them.
 //! Neither a key minted for the workspace nor the invited person's key
 //! invites anyone.
@@ -42,33 +42,39 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     let workspace = made["workspace"]["id"].as_str().unwrap().to_owned();
     let here = Some(workspace.as_str());
 
-    // It invites as an Editor at most; with an address, the action API says it
-    // mailed nothing and hands the link over.
-    let above = members(
+    // It invites to one of the workspace's places, and names whom an invitation is for: the
+    // workspace's open invitations say so.
+    let nowhere = members(
         &mut backend,
         here,
-        "workspace/members#invite",
-        json!({"role": "moderator"}),
+        "workspace/invitations#invite",
+        json!({"role": "superuser"}),
     )
     .await;
-    assert_eq!(above["status"], "failed", "{above}");
+    assert_eq!(nowhere["status"], "failed", "{nowhere}");
     let invited = members(
         &mut backend,
         here,
-        "workspace/members#invite",
-        json!({"role": "editor", "email": "rosa@example.com"}),
+        "workspace/invitations#invite",
+        json!({"role": "editor", "invitee_name": "rosa@example.com"}),
     )
     .await;
     assert_eq!(invited["status"], "ok", "{invited}");
     let invited = &invited["result"];
-    assert_eq!(invited["sent"], false, "{invited}");
-    assert_eq!(invited["email"], "rosa@example.com", "{invited}");
+    assert_eq!(invited["role"], "editor", "{invited}");
+    assert_eq!(invited["workspace"], workspace.as_str(), "{invited}");
     let link = invited["link"].as_str().unwrap().to_owned();
-    // The test's site is reached only from this computer, so it shelves nothing: the link
-    // carries the signed invitation itself, which opens wherever it is followed.
+    // The link carries the signed invitation itself, which opens wherever it is followed.
     assert!(
         link.contains('#') && link.contains("invite="),
         "a link that carries its invitation: {link}"
+    );
+    let open = members(&mut backend, here, "workspace/invitations#list", json!({})).await;
+    assert!(
+        open["result"].as_array().is_some_and(|open| open
+            .iter()
+            .any(|one| one["invitee_name"] == "rosa@example.com" && one["role"] == "editor")),
+        "{open}"
     );
 
     // Ada's own page follows an invitation too, as a person's layout joins the
@@ -76,7 +82,7 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     let theirs = members(
         &mut backend,
         here,
-        "workspace/members#invite",
+        "workspace/invitations#invite",
         json!({"role": "editor"}),
     )
     .await;
@@ -91,7 +97,7 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     assert_eq!(joined["workspace"], workspace.as_str(), "{joined}");
     assert_eq!(joined["role"], "editor", "{joined}");
     let listed = members(&mut backend, here, "workspace/members#list", json!({})).await;
-    let rows = listed["result"]["members"].as_array().unwrap().clone();
+    let rows = listed["result"].as_array().unwrap().clone();
     assert_eq!(rows.len(), 2, "the two people, and no one else: {listed}");
     let ada_hex = hex::encode(ada.verifying_key().to_bytes());
     let rosa_hex = hex::encode(rosa.verifying_key().to_bytes());
@@ -161,7 +167,7 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     let by_rosa = members(
         &mut reviewer,
         None,
-        "workspace/members#invite",
+        "workspace/invitations#invite",
         json!({"role": "viewer"}),
     )
     .await;
@@ -184,13 +190,13 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     let by_agent = members(
         &mut agent,
         None,
-        "workspace/members#invite",
+        "workspace/invitations#invite",
         json!({"role": "viewer"}),
     )
     .await;
     assert_eq!(by_agent["status"], "ok", "{by_agent}");
     let after = members(&mut backend, here, "workspace/members#list", json!({})).await;
-    let after = after["result"]["members"].as_array().unwrap().clone();
+    let after = after["result"].as_array().unwrap().clone();
     assert_eq!(
         after.len(),
         2,
@@ -310,13 +316,7 @@ async fn an_owners_key_adds_an_administrator_by_key_whose_key_brings_people_in()
     assert_eq!(hal_row["owner"], false, "{by_grace}");
 
     // The wait list reads, empty: this workspace's entry keeps none.
-    let waiting = members(
-        &mut grace_mcp,
-        here,
-        "workspace/members#wait-list",
-        json!({}),
-    )
-    .await;
+    let waiting = members(&mut grace_mcp, here, "workspace/waiting#list", json!({})).await;
     assert_eq!(waiting["status"], "ok", "{waiting}");
     assert_eq!(waiting["result"]["entries"], json!([]), "{waiting}");
 

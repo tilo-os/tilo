@@ -188,8 +188,8 @@ mod tests {
         let request = invocation(
             RemoteActionTarget {
                 provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
-                address: ActionAddress::new(
-                    tilo_actions::remote::workspace_governance_resource(created.workspace.as_str()),
+                address: tilo_actions::remote::workspace_governance_address(
+                    created.workspace.as_str(),
                     tilo_action_policy::roles::governance::INVITE,
                 ),
             },

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import dataclasses
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
@@ -90,12 +91,21 @@ class Members:
         return self.workspace.client.handoff(self._invite(role, email))
 
     async def _invite(self, role: str, email: str | None) -> Invitation:
-        body: dict[str, Any] = {"role": role}
+        args: dict[str, Any] = {"role": role}
         if email is not None:
-            body["email"] = email
+            args["invitee_name"] = email
         endpoint = await self.workspace._endpoint()
-        result = await endpoint.json("POST", endpoint.path("members", "invitations"), json=body)
-        return Invitation.of(result)
+        result = await endpoint.act("workspace/invitations#invite", args)
+        invitation = Invitation.of(result if isinstance(result, Mapping) else {})
+        if email is None:
+            return invitation
+        # Tilo sends no mail to an address it names: the link is handed over.
+        return dataclasses.replace(
+            invitation,
+            email=email,
+            next=invitation.next
+            or f"Tilo sends no email: give the person this link to send to {email}",
+        )
 
     def list(self) -> Any:
         """The `Member`s of the workspace, each with their role."""
@@ -103,9 +113,10 @@ class Members:
 
     async def _list(self) -> builtins.list[Member]:
         endpoint = await self.workspace._endpoint()
-        result = await endpoint.json("GET", endpoint.path("members"))
-        rows = result.get("members")
-        return [Member.of(row) for row in rows or [] if isinstance(row, Mapping)]
+        rows = await endpoint.act("workspace/members#list", {})
+        if not isinstance(rows, builtins.list):
+            return []
+        return [Member.of(row) for row in rows if isinstance(row, Mapping)]
 
 
 class InvocationOpening:

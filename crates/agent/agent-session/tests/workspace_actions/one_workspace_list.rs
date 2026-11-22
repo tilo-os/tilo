@@ -200,7 +200,7 @@ async fn a_computer_and_a_key_share_the_persons_workspace_list() {
     let invited = mac
         .command()
         .post(
-            &format!("/v1/workspaces/{letters}/members/invitations"),
+            &format!("/v1/workspaces/{letters}/resources/workspace/invitations/actions/invite"),
             &json!({"role": "editor"}),
         )
         .await

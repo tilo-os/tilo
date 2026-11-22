@@ -523,11 +523,11 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
 }
 
 /// `request` when it is a tool call on the person's account (`account/…`:
-/// their workspaces and keys) or a workspace's people
-/// (`workspace/members#…`), which Tilo's API answers as for any key of
-/// theirs, with the people's calls in the workspace this computer entered
-/// unless they name another; any other request back, for the workspace's own
-/// projection.
+/// their workspaces and keys) or a change to who is in a workspace this
+/// computer's device signs (`workspace/members#add`, `#role`, `#remove`),
+/// which Tilo's API answers as for any key of theirs, the changes in the
+/// workspace this computer entered unless they name another; any other request
+/// back, for the workspace's own projection.
 fn account_or_people<E: Enter>(
     mut request: Value,
     connection: &Connection<E>,
@@ -541,8 +541,10 @@ fn account_or_people<E: Enter>(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let account = path.split(['/', '#']).next() == Some("account");
-    let people = path.split('#').next() == Some("workspace/members")
-        || path.starts_with("workspace/members/");
+    let people = matches!(
+        path,
+        "workspace/members#add" | "workspace/members#role" | "workspace/members#remove"
+    );
     if !account && !people {
         return Err(request);
     }

@@ -256,7 +256,6 @@ impl Direct {
             &Config {
                 issuer: host.to_owned(),
                 web_entry: site.to_owned(),
-                invite_entry: None,
                 hosts: vec![host.to_owned()],
             },
             Store::in_memory(),
@@ -316,9 +315,10 @@ impl Direct {
     }
 
     /// Answer one MCP request (a `tools/call`) as the API's MCP endpoint
-    /// answers it, on this key's own session for the API's calls: its answer. What
-    /// a person's account and a workspace's people do (`account/…`,
-    /// `workspace/members#…`) is answered here as for any key of theirs.
+    /// answers it, on this key's own session for the API's calls: its answer. What a
+    /// person's account does (`account/…`) and the changes to who is in a workspace
+    /// their device signs (`workspace/members#add`, `#role`, `#remove`) are answered
+    /// here as for any key of theirs.
     ///
     /// # Errors
     /// The key cannot act now, or the call was not answered.
@@ -468,89 +468,10 @@ async fn next_data(body: &mut Option<Body>) -> Option<Bytes> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Answer, AnswerBody, Direct, KeyFile};
+    use super::{Answer, AnswerBody, Direct};
     use http_body_util::{BodyExt as _, StreamBody};
     use hyper::body::{Bytes, Frame};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
-
-    /// A site's shelf: an invitation left on it is kept, and anything else
-    /// is not the shelf's.
-    async fn shelf_site() -> String {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                let mut request = [0u8; 8192];
-                let read = stream.read(&mut request).await.unwrap_or_default();
-                let kept = String::from_utf8_lossy(&request[..read]).starts_with("POST /i/");
-                let status = if kept {
-                    "204 No Content"
-                } else {
-                    "404 Not Found"
-                };
-                let _ = stream
-                    .write_all(
-                        format!(
-                            "HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-                        )
-                        .as_bytes(),
-                    )
-                    .await;
-            }
-        });
-        origin
-    }
-
-    /// The key file a device's login makes knows the site it logged in with,
-    /// so a link it asks the host for is built on that site — the one the
-    /// person's page builds its invitations on — and never on the server the
-    /// key reaches.
-    #[tokio::test]
-    async fn a_link_a_key_asks_for_is_built_on_its_site() {
-        crate::session::members::tests::local_site_stands_for_public();
-        let site = shelf_site().await;
-        let (person, _) = UserIdentity::generate("Ada", 1);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let now = tilo_clock::unix_now_ns();
-        let mut cert = DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Ada's laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: now.saturating_sub(60_000_000_000),
-            expires_at_ns: Some(now.saturating_add(30 * 24 * 3600 * 1_000_000_000)),
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
-        // A server no test listens on: a link built on it would be one nothing
-        // can open, so the site's own address is what says the site was used.
-        let server = "http://127.0.0.1:9";
-        let direct = Direct::new(&KeyFile::new(
-            server,
-            Some(&site),
-            "Ada's laptop",
-            &key,
-            &cert,
-        ))
-        .unwrap();
-
-        let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
-        let link = direct
-            .server
-            .invitation_link(workspace, b"signed", now.saturating_add(600_000_000_000))
-            .await;
-        assert!(
-            link.starts_with(&format!("{site}/i/")),
-            "the link is built on the site the device logged in with: {link}"
-        );
-        assert!(!link.contains(server), "{link}");
-        assert!(
-            link.contains('#'),
-            "the key it opens with is in the fragment: {link}"
-        );
-    }
 
     /// A desktop holding one workspace, whose actions are the app it publishes, and the
     /// workspaces it was entered for.

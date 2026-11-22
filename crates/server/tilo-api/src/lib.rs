@@ -91,13 +91,6 @@ pub struct Config {
     /// is a candidate, and the call goes to the one that serves it best
     /// ([`hosts::Hosts`]); an API server keeps no workspace of its own.
     pub hosts: Vec<String>,
-    /// The page an invitation's link points at when the workspace's server
-    /// is reached only over iroh (`https://tilo.sh`): the link then carries
-    /// the signed invitation, the server's own address in it, after its `#`,
-    /// so whoever follows it dials the server with nothing asked of the
-    /// server's site. Without it, an invitation is kept on the site's shelf, unless no other
-    /// computer reaches that site: its link then carries the invitation under tilo.sh's page.
-    pub invite_entry: Option<String>,
 }
 
 /// What a sign-in in progress is for.
@@ -242,7 +235,6 @@ impl Server {
         let config = Config {
             issuer: origin.clone(),
             web_entry: origin,
-            invite_entry: None,
             hosts: Vec::new(),
         };
         Self::serving(&config, Store::in_memory(), Some(here))
@@ -282,7 +274,6 @@ impl Server {
                     .map(|host| host.trim_end_matches('/').to_owned())
                     .collect(),
                 web_entry,
-                invite_entry: config.invite_entry.clone(),
             },
             sign_in_entry,
             store,
