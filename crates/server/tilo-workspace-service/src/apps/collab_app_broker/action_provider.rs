@@ -293,7 +293,9 @@ fn descriptor(action: &PublishedAction) -> ActionDescriptor {
 /// lists it while the app is closed. Its contract is what the signed
 /// manifest says; once the app runs, its own published action admits the
 /// invocation.
-fn app_open_descriptor(app: &crate::apps::services::LaunchableApplication) -> ActionDescriptor {
+pub(super) fn app_open_descriptor(
+    app: &crate::apps::services::LaunchableApplication,
+) -> ActionDescriptor {
     let display_name = &app.display_name;
     let (resource_kind, description) = if app.unconfined {
         (
@@ -1172,17 +1174,11 @@ impl AppBrokerState {
             let first = rows.len();
             let workspace_id = workspace.id().to_string();
             let mut live_apps = std::collections::HashSet::new();
-            // The apps with a window here: one running only without a window
-            // is still opened, which gives that instance its window.
-            let mut windowed_apps = std::collections::HashSet::new();
             for surface in surfaces
                 .iter()
                 .filter(|surface| surface.live && surface.route.cluster_id == workspace_id)
             {
                 live_apps.insert(surface.app_id.clone());
-                if !self.publishers.is_windowless(surface.peer_id) {
-                    windowed_apps.insert(surface.app_id.clone());
-                }
                 providers.push(CatalogueProvider {
                     provider: surface.peer_id.to_string(),
                     app_id: surface.app_id.clone(),
@@ -1384,10 +1380,11 @@ impl AppBrokerState {
                 // application is told only that one's.
                 let names_unopened =
                     caller.acting().is_agent() && caller.device_public_key().is_none();
+                // A running app is offered to open as well: opening it brings its window
+                // forward, or gives an instance running without one its window.
                 for app in applications
                     .iter()
                     .filter(|app| scope.wants_app(&app.package_id))
-                    .filter(|app| !windowed_apps.contains(&app.package_id))
                 {
                     if policy.may_in(
                         &workspace,
@@ -3288,8 +3285,9 @@ mod app_close_tests {
             });
             let (state, caller, _) = broker(Arc::clone(&launcher), false);
             assert_eq!(app_actions(&state, &caller), ["open"]);
+            // A running app is opened again (its window comes forward) and closed.
             let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
-            assert_eq!(app_actions(&state, &caller), ["close"]);
+            assert_eq!(app_actions(&state, &caller), ["open", "close"]);
 
             let request = close_request(&workspace);
             let job = invoke_close(&state, &caller, &request).unwrap();
@@ -3304,7 +3302,7 @@ mod app_close_tests {
 
             let unsupported = Arc::new(Launcher::default());
             let (state, caller, workspace) = broker(unsupported, true);
-            assert!(app_actions(&state, &caller).is_empty());
+            assert_eq!(app_actions(&state, &caller), ["open"]);
             assert!(invoke_close(&state, &caller, &close_request(&workspace)).is_err());
         }
 

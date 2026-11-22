@@ -804,3 +804,50 @@ fn chat_opens_on_a_device_alone_in_a_workspace_it_made_and_in_its_branch() {
     laptop.open("so.tilo.chat");
     laptop.wait_for_window("so.tilo.chat");
 }
+
+/// A running app is still offered to open, and opening it brings its window forward: what an
+/// agent listing the workspace's actions finds is what the person's own launch does.
+#[test]
+fn a_running_apps_open_is_listed_and_brings_its_window_forward() {
+    let ada = Person::new("Ada");
+    let mut laptop = ada.device("Ada's laptop");
+    laptop.install_chat();
+    laptop.start();
+    tilo_test_env::wait_for("the laptop showing a workspace", || laptop.showing());
+    laptop.open("so.tilo.chat");
+    laptop.wait_for_window("so.tilo.chat");
+    let _other = laptop.window("so.tilo.notes", "In front");
+    let chat_rows = |laptop: &Device| -> Vec<serde_json::Value> {
+        laptop.ask(&serde_json::json!({"op": "windows"}))["answer"]["windows"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter(|row| row["app_id"] == "so.tilo.chat")
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    tilo_test_env::wait_for("the other window in front of Chat", || {
+        chat_rows(&laptop)
+            .iter()
+            .all(|row| row["active"] == false)
+            .then_some(())
+    });
+
+    // Chat runs, and its open is listed all the same.
+    let open = laptop.open_target("so.tilo.chat");
+    let opened = laptop.act_wait(&open, &serde_json::json!({}));
+    assert!(opened.get("err").is_none(), "Chat's open: {opened}");
+    tilo_test_env::wait_for("Chat's window in front", || {
+        chat_rows(&laptop)
+            .iter()
+            .any(|row| row["active"] == true)
+            .then_some(())
+    });
+    assert_eq!(
+        chat_rows(&laptop).len(),
+        1,
+        "the open brought the one window forward and started no second"
+    );
+}

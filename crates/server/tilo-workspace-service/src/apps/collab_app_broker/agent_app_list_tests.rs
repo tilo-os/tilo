@@ -315,10 +315,9 @@ tilo_test_env::scenario! {
         assert!(why.contains("not attached"), "{why}");
     }
 
-    phase an_app_running_without_a_window_is_still_offered_to_open;
-    // An app running only without a window (started for an action that shows
-    // nothing) is still opened: its open gives that instance its window. One
-    // with a window is not offered to open again.
+    phase a_running_app_is_still_offered_to_open;
+    // A running app is opened as a person opens it: its open brings its window forward. An agent listing what it may do finds
+    // the same open the person has.
     {
         let workspace = workspace();
         let workspace_id = workspace.id().to_string();
@@ -336,14 +335,18 @@ tilo_test_env::scenario! {
                         .is_some_and(|action| action.address.action == APPLICATION_OPEN_ACTION)
                 })
         };
-        assert!(!opens(&state), "a window of it is up");
-        state
-            .publishers
-            .windowless
-            .lock()
-            .expect("windowless")
-            .insert(9);
-        assert!(opens(&state), "it runs with no window");
+        assert!(opens(&state), "a window of it is up");
+        let agent = turn_caller("scribe", "owner", &workspace_id);
+        let agent_opens = installed(&state, &agent, &workspace_id)
+            .expect("the agent reaches it")
+            .rows
+            .iter()
+            .any(|row| {
+                row.action
+                    .as_ref()
+                    .is_some_and(|action| action.address.action == APPLICATION_OPEN_ACTION)
+            });
+        assert!(agent_opens, "the agent is offered the open the person is");
     }
 
     phase an_agent_naming_an_action_by_its_app_hears_whose_it_is;
