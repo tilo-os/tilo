@@ -405,9 +405,9 @@ impl Processes {
         self.hand_over_showing(instance, shows)
     }
 
-    /// Start an instance of an app in its tilolang host as a page: the host lays its window out
-    /// itself and writes it as a page for the one who looks at it, asked for on `instance.patch`,
-    /// which is the page's connection here (`tilo_server_protocol::page_window`).
+    /// Show a viewer's page of an app from its tilolang process: the process lays its view out
+    /// itself and writes it as a page for the one who looks at it, asked for on `patch`, which
+    /// is the page's connection here (`tilo_server_protocol::page_window`).
     ///
     /// # Errors
     /// As [`Self::hand_over_now`].

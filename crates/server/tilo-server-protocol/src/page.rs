@@ -19,9 +19,10 @@ pub const PAGE_PREFIX: &str = "/w/";
 /// The most bytes one message on a page's stream carries.
 pub const MAX_PAGE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
-/// What a page's address names: the workspace (its id), the app (the last
-/// part of its id, `notes` for `so.tilo.notes`) and what it shows first. An
-/// address naming no app is the workspace's front page, which lists them.
+/// What a page's address names: the workspace (its id), the app (an app the
+/// workspace installed by its id, `so.tilo.notes`; one built into the server by
+/// the last part of its id, `settings`) and what it shows first. An address
+/// naming no app is the workspace's front page, which lists them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageAddress {
     pub workspace: String,
@@ -46,7 +47,9 @@ impl PageAddress {
             part.bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         };
-        (plain(workspace) && plain(app)).then(|| Self {
+        // An app is named by its id (`so.tilo.notes`): parts joined by dots, none of them empty.
+        let id = app.is_empty() || app.split('.').all(|part| !part.is_empty() && plain(part));
+        (plain(workspace) && id).then(|| Self {
             workspace: workspace.to_owned(),
             app: app.to_owned(),
             show,
@@ -227,6 +230,17 @@ mod tests {
                 show: None,
             })
         );
+        // An app the workspace installed is named by its id.
+        assert_eq!(
+            PageAddress::parse("/w/ws/so.tilo.notes"),
+            Some(PageAddress {
+                workspace: "ws".into(),
+                app: "so.tilo.notes".into(),
+                show: None,
+            })
+        );
+        assert_eq!(PageAddress::parse("/w/ws/so..notes"), None);
+        assert_eq!(PageAddress::parse("/w/ws/.notes"), None);
         assert_eq!(PageAddress::parse("/w/"), None);
         assert_eq!(PageAddress::parse("/w/../notes"), None);
         assert_eq!(PageAddress::parse("/w/a b/notes"), None);

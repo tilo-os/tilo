@@ -1,5 +1,5 @@
-//! A page: the instance draws into a window laid out in its own process, beside it, and the device
-//! that started it asks for that window as a page on a connection of its own. What the person does
+//! A viewer's page: the app's code draws into a window laid out in its own process, beside it, and
+//! the device that started it asks for that window as a page on a connection of its own. What the person does
 //! on the page acts on the window as their click or their typing does there.
 
 use std::os::unix::net::UnixStream;
@@ -44,41 +44,37 @@ fn notes_page(host: &mut TilolangProcess) -> UnixStream {
     theirs
 }
 
-/// `ask` asked of the page on `device`, and the host's answer once its loop took it.
+/// `ask` asked of the page on `device`, and the host's answer: its next turn takes it.
 fn ask(host: &mut TilolangProcess, device: &mut UnixStream, ask: &Ask) -> Answer {
     page_window::write(device, ask).unwrap();
-    let began = std::time::Instant::now();
-    device.set_nonblocking(true).unwrap();
-    loop {
-        host.turn();
-        let mut peek = [0; 1];
-        if device.peek(&mut peek).is_ok() {
-            break;
-        }
-        assert!(began.elapsed() < SETTLE_LIMIT, "the page did not answer");
-    }
-    device.set_nonblocking(false).unwrap();
+    // The host answers what was asked before its turn, in that turn.
+    host.turn();
     page_window::read(device).unwrap()
 }
 
-/// The number the page gives the element `label` names, in the HTML `html`.
+/// The number the page gives the innermost element that `label` names, by its accessible name or
+/// its text, in the HTML `html`.
 fn numbered(html: &str, label: &str) -> Option<u32> {
-    let at = html.find(&format!("aria-label=\"{label}\""))?;
-    let start = html[..at].rfind('<')?;
-    let tag = &html[start..html[at..].find('>')? + at];
-    let number = tag.split("data-p=\"").nth(1)?.split('"').next()?;
+    let at = html
+        .find(&format!("aria-label=\"{label}\""))
+        .or_else(|| html.find(&format!(">{label}<")))?;
+    let tag = html[..at].rfind("data-p=\"")?;
+    let number = html[tag..].split('"').nth(1)?;
     number.parse().ok()
 }
 
 #[test]
-fn a_page_shows_the_instances_window_and_acts_on_it_as_the_person_did() {
+fn a_page_shows_the_apps_view_and_acts_on_it_as_the_person_did() {
     let mut host = TilolangProcess::new(None, wake());
     let mut device = notes_page(&mut host);
     let Answer::Shown { css, body } = ask(&mut host, &mut device, &Ask::Show { show: None }) else {
         panic!("the page was not shown");
     };
     assert!(css.contains("--tilo-ground"), "the theme's colours: {css}");
-    let new_note = numbered(&body, "New note").unwrap_or_else(|| panic!("no New note in {body}"));
+    let new_note = numbered(&body, "New note").unwrap_or_else(|| {
+        let at = body.find("New").unwrap_or_default();
+        panic!("no New note in {}", &body[at.saturating_sub(1500)..])
+    });
     assert!(!body.contains("<textarea"), "no note is open yet: {body}");
 
     // The person presses New note: the note opens, its title taking the caret.
@@ -103,7 +99,7 @@ fn a_page_shows_the_instances_window_and_acts_on_it_as_the_person_did() {
         Answer::Patched(Vec::new())
     );
 
-    // The page closes: its instance ends as a closed window's does.
+    // The page closes: it ends as a closed window's does.
     drop(device);
     host.turn();
     assert_eq!(host.instances().count(), 0);
