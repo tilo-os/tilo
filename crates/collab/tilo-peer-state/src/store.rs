@@ -20,13 +20,16 @@
 //! ([`Store::keep_channel`]). A device that links later joins each channel's
 //! group from them.
 //!
-//! Retention has three sources and no others: a frame's author retiring its
-//! own earlier frames by publishing a checkpoint ([`Store::retain`]), the
-//! appetite the store was opened with ([`Appetite`]), and the compaction an
-//! operator asks for ([`Store::compact`]). Nothing is retired because it
-//! looks old, and compaction never retires a frame a device that told the
-//! store what it holds ([`Store::holds`]) still lacks, nor a lineage's newest
-//! checkpoint, which a device that holds none of it starts from.
+//! Retention has three sources and no others: a checkpoint retiring the
+//! frames it supersedes ([`Store::retain`]), the appetite the store was
+//! opened with ([`Appetite`]), and the compaction an operator asks for
+//! ([`Store::compact`]). A checkpoint supersedes its author's writes up to its
+//! own sequence number and, when it is a sealed compaction, the other
+//! authors' writes of the record it names in the clear. Nothing else is retired
+//! because it looks old, and compaction never retires a frame a device that
+//! told the store what it holds ([`Store::holds`]) still lacks, nor a
+//! lineage's newest checkpoint, which a device that holds none of it starts
+//! from.
 
 use crate::join::WorkspaceId;
 pub use crate::retained::{Frame, Lineage, Refusal};
@@ -613,10 +616,11 @@ impl Store {
     }
 
     /// Keep `frame` for `workspace`, unless the store holds that frame of
-    /// its lineage already. A checkpoint the author published retires the
-    /// author's earlier frames of the same lineage, and the appetite retires
-    /// what it must. Returns once the frame is synced, with the frames
-    /// written beside it.
+    /// its lineage already. A checkpoint retires the frames it supersedes:
+    /// its author's writes up to its own sequence number, and the other
+    /// authors' writes of the record its sealed compaction names in the
+    /// clear. The appetite retires what it must. Returns once the frame is
+    /// synced, with the frames written beside it.
     ///
     /// # Errors
     ///
@@ -749,9 +753,23 @@ impl Store {
             }
             return Err(error.into());
         }
+        // Read before the frame joins the index: a sealed compaction is
+        // numbered at the last write it folds, so that write shares the
+        // checkpoint's sequence number and is only reached this way.
+        let superseded = if frame.retention == ContentRetention::Checkpoint {
+            superseded_entries(&held, workspace, frame)
+        } else {
+            Vec::new()
+        };
         add(&mut held, workspace, frame.lineage, entry);
         if frame.retention == ContentRetention::Checkpoint {
-            let retired = retire_before(&self.root, workspace, frame.lineage, frame.seq, &mut held);
+            // A sealed compaction names, in the clear, each author and the
+            // highest write it folds, and its author signs that list. Retire
+            // those on the record: a newcomer is sent the checkpoint already
+            // carrying their state, not those writes as well. A frame no
+            // signed coverage names stays, since losing a write costs more
+            // than keeping one.
+            let retired = retire_covered(&self.root, workspace, &superseded, &mut held);
             tracing::debug!(
                 %retired.frames,
                 %retired.bytes,
@@ -1736,6 +1754,69 @@ fn newest_checkpoint(entries: &[Entry]) -> Option<u64> {
         .max()
 }
 
+/// What `frame`'s checkpoint signs it supersedes: each author with the
+/// highest sequence number it covers, read from the checkpoint's cleartext
+/// payload without opening it. Empty for a frame that is no sealed
+/// compaction, which supersedes only its own author's earlier frames.
+fn superseded_by(frame: &Frame) -> Vec<([u8; 32], u64)> {
+    let NeighbourMsg::AppDocument { envelope, .. } = &frame.message else {
+        return Vec::new();
+    };
+    collab_types::SealedCompaction::parse(envelope).map_or_else(
+        |_| Vec::new(),
+        |compaction| {
+            compaction
+                .covers
+                .iter()
+                .map(|(author, seq)| (*author.as_bytes(), *seq))
+                .collect()
+        },
+    )
+}
+
+/// The frames `frame`, a checkpoint, supersedes as the index holds them
+/// before it joins it: the writes each author it names reached, or its own
+/// earlier frames when it names none.
+fn superseded_entries(
+    held: &Held,
+    workspace: WorkspaceId,
+    frame: &Frame,
+) -> Vec<(Lineage, u64, [u8; 8])> {
+    fn on_line(
+        stored: &Workspace,
+        lineage: Lineage,
+        covered: impl Fn(u64) -> bool,
+    ) -> Vec<(Lineage, u64, [u8; 8])> {
+        stored
+            .lineages
+            .get(&lineage)
+            .map_or_else(Vec::new, |entries| {
+                entries
+                    .iter()
+                    .filter(|entry| covered(entry.seq))
+                    .map(|entry| (lineage, entry.seq, entry.check))
+                    .collect()
+            })
+    }
+    let Some(stored) = held.workspaces.get(&workspace) else {
+        return Vec::new();
+    };
+    let covers = superseded_by(frame);
+    if covers.is_empty() {
+        return on_line(stored, frame.lineage, |seq| seq < frame.seq);
+    }
+    covers
+        .into_iter()
+        .flat_map(|(author, through)| {
+            let lineage = Lineage {
+                record: frame.lineage.record,
+                author,
+            };
+            on_line(stored, lineage, |seq| seq <= through)
+        })
+        .collect()
+}
+
 /// The directories inside `dir`, sorted, or none when it does not exist.
 fn directories(dir: &Path) -> io::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
@@ -1831,6 +1912,36 @@ fn retire_before(
             continue;
         };
         if let Err(error) = retire(root, workspace, lineage, entry, held, &mut retired) {
+            tracing::warn!(%error, "a covered frame could not be retired");
+        }
+    }
+    retired
+}
+
+/// Retire each frame in `covered`, read again before each: writing a segment
+/// again moves the records still in it.
+fn retire_covered(
+    root: &Path,
+    workspace: WorkspaceId,
+    covered: &[(Lineage, u64, [u8; 8])],
+    held: &mut Held,
+) -> Retired {
+    let mut retired = Retired::default();
+    for (lineage, seq, check) in covered {
+        let Some(entry) = held
+            .workspaces
+            .get(&workspace)
+            .and_then(|stored| stored.lineages.get(lineage))
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry.seq == *seq && entry.check == *check)
+                    .copied()
+            })
+        else {
+            continue;
+        };
+        if let Err(error) = retire(root, workspace, *lineage, entry, held, &mut retired) {
             tracing::warn!(%error, "a covered frame could not be retired");
         }
     }
@@ -2048,7 +2159,8 @@ mod tests {
 
     use super::*;
     use collab_types::{
-        ArtifactId, AttestationId, Ed25519PublicKey, EncryptionMetadata, OpKind, SignedOp, sign_op,
+        ArtifactId, AttestationId, Ed25519PublicKey, EncryptionMetadata, OpKind, SealedCompaction,
+        SignedOp, sign_op,
     };
     use ed25519_dalek::SigningKey;
     use neighbour_wire::peer_handle;
@@ -2084,6 +2196,45 @@ mod tests {
             seq,
         );
         op.encryption = Some(EncryptionMetadata::content_key(1, retention));
+        sign_op(&mut op, key).unwrap();
+        let message = NeighbourMsg::AppDocument {
+            peer: peer_handle(&key.verifying_key().to_bytes()),
+            app_id: APP.into(),
+            cluster_id: CLUSTER.into(),
+            document_id: RECORD.into(),
+            envelope: Box::new(op),
+            readers: None,
+        };
+        Frame::of(&message).unwrap()
+    }
+
+    /// A sealed compaction by `key` at `seq` that names `superseded`, with a
+    /// ciphertext a store never opens.
+    fn compaction(key: &SigningKey, seq: u64, superseded: &[Frame]) -> Frame {
+        let ops: Vec<SignedOp> = superseded
+            .iter()
+            .map(|frame| match &frame.message {
+                NeighbourMsg::AppDocument { envelope, .. } => (**envelope).clone(),
+                other => panic!("a frame is a document write, not {other:?}"),
+            })
+            .collect();
+        let payload = SealedCompaction::new(&ops, vec![seq as u8; 32])
+            .unwrap()
+            .encode()
+            .unwrap();
+        let mut op = SignedOp::new_unsigned(
+            payload,
+            ArtifactId::new(),
+            Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+            AttestationId::new(),
+            OpKind::Compaction,
+            at(seq),
+            seq,
+        );
+        op.encryption = Some(EncryptionMetadata::content_key(
+            1,
+            ContentRetention::Checkpoint,
+        ));
         sign_op(&mut op, key).unwrap();
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(&key.verifying_key().to_bytes()),
@@ -2241,7 +2392,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_store_retires_only_what_a_checkpoint_a_bound_or_a_time_covers;
 
-        phase a_checkpoint_retires_only_its_own_lineage;
+        phase a_checkpoint_that_names_no_author_retires_only_its_own_line;
         {
             let (_dir, store) = open();
             let author = device(2);
@@ -2281,6 +2432,50 @@ mod tests {
                 seqs,
                 vec![3, 1, 4],
                 "the baseline first, then the changes in the order they were written"
+            );
+        }
+
+        phase a_sealed_compaction_retires_the_frames_it_names_of_every_author;
+        {
+            let (_dir, store) = open();
+            let author = device(2);
+            let other = device(3);
+            let unnamed = device(4);
+            let own = [
+                frame(&author, 1, ContentRetention::Delta),
+                frame(&author, 2, ContentRetention::Delta),
+            ];
+            let theirs = [
+                frame(&other, 1, ContentRetention::Delta),
+                frame(&other, 2, ContentRetention::Delta),
+                frame(&other, 3, ContentRetention::Delta),
+            ];
+            let untouched = frame(&unnamed, 1, ContentRetention::Delta);
+            for frame in own.iter().chain(&theirs).chain([&untouched]) {
+                store.retain(workspace(), frame).unwrap();
+            }
+            // A sealed compaction is numbered at the last write it folds, so
+            // it shares that write's sequence number on its author's line.
+            let compaction = compaction(
+                &author,
+                2,
+                &[own[0].clone(), own[1].clone(), theirs[0].clone(), theirs[1].clone()],
+            );
+            store.retain(workspace(), &compaction).unwrap();
+
+            let stands = store.stands(workspace());
+            assert_eq!(stands.len(), 3, "one line per author still standing");
+            assert!(
+                stands.contains(&(cursor(compaction.lineage, 2), 2)),
+                "the compaction stands in place of the last write it folds"
+            );
+            assert!(
+                stands.contains(&(cursor(theirs[2].lineage, 3), 3)),
+                "a named author's write after the floor stays"
+            );
+            assert!(
+                stands.contains(&(cursor(untouched.lineage, 1), 1)),
+                "an author the compaction does not name keeps its writes"
             );
         }
 

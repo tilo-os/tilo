@@ -1690,72 +1690,9 @@ async fn a_page_reads_a_part_only_the_link_kept() {
     server.shutdown().await;
 }
 
-/// The member's page lets a change go, unsigned and unsent, and sends its next change, built on
-/// it, to the server: the hole a page left in a record before its writes waited for the record.
-/// Answers the write it sent, once the server retains it.
-async fn page_leaves_a_hole(lounge: &Lounge, client: &crate::ServerClient) -> SignedOp {
-    lounge.member.lets_go(|doc| {
-        doc.put(ROOT, "early", "let go").unwrap();
-        doc.commit_edit("fixture", "early");
-    });
-    let ((), stuck) = lounge.member.seal(&lounge.workspace, |doc| {
-        doc.put(ROOT, "after", "built on it").unwrap();
-        doc.commit_edit("fixture", "after");
-    });
-    send_sealed(client, lounge.workspace_id, &lounge.member_key, &stuck);
-    let NeighbourMsg::AppDocument { envelope, .. } = stuck else {
-        panic!("a document write")
-    };
-    tilo_test_env::within("the server retains the stuck write", async {
-        while !retained_writes(&lounge.server, lounge.workspace_id, RESOURCE)
-            .await
-            .iter()
-            .any(|op| op.signature == envelope.signature)
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await;
-    // As a reader is refused it: the record a newcomer is sent waits for a change no device
-    // will ever send.
-    let held = retained_writes(&lounge.server, lounge.workspace_id, RESOURCE).await;
-    assert!(
-        !newcomer_opens(&lounge.member, &held)
-            .get_missing_deps(&[])
-            .is_empty(),
-        "a newcomer is sent a record that waits for the change the page let go"
-    );
-    *envelope
-}
-
-/// Wait until what a newcomer is sent of [`RESOURCE`] holds neither `stuck` nor anything that waits
-/// for a change it lacks, and reads `title`: the record whole without the stuck write.
-async fn newcomer_reads_whole_without(lounge: &Lounge, stuck: &SignedOp, wanted: &str) {
-    tilo_test_env::within("the server folds the stuck write away", async {
-        loop {
-            let held = retained_writes(&lounge.server, lounge.workspace_id, RESOURCE).await;
-            let mut read = automerge::AutoCommit::new();
-            let opens = held
-                .iter()
-                .all(|op| lounge.member.try_open_into(op, &mut read).is_ok());
-            if opens
-                && !held.iter().any(|op| op.signature == stuck.signature)
-                && read.get_missing_deps(&[]).is_empty()
-                && title(&read.save()).as_deref() == Some(wanted)
-            {
-                assert!(read.get(ROOT, "after").unwrap().is_none());
-                assert!(read.get(ROOT, "early").unwrap().is_none());
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
-}
-
-/// A server's store already holds such a stuck write from a run before writes waited for their
-/// record, and nothing the record's writers do brings it a fold: the server folds it away as it
-/// starts, and a newcomer reads the record whole.
+/// A device keeps a member's write in its store, and the workspace's copy never follows it
+/// because the device stops first: the write reaches the copy when the device starts again,
+/// from the store alone, and a newcomer reads the record whole with it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_store_holding_a_stuck_write_is_repaired_when_its_server_starts() {
     let dir = tempfile::tempdir().unwrap();
@@ -1772,7 +1709,7 @@ async fn a_store_holding_a_stuck_write_is_repaired_when_its_server_starts() {
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
-    let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let (member_key, _member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
     workspaces
         .author_workspace_document(&workspace, &cert, (APP, RESOURCE), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
@@ -1781,62 +1718,44 @@ async fn a_store_holding_a_stuck_write_is_repaired_when_its_server_starts() {
         .unwrap();
     let member =
         SealingMember::join(&workspaces, &workspace, (APP, RESOURCE), member_key.clone()).await;
-    let client = Box::pin(subscribed_member(
-        &server,
-        &member_key,
-        member_cert.clone(),
-        workspace_id,
-    ))
-    .await;
-    let lounge = Lounge {
-        _dir: dir,
-        server,
-        workspaces,
-        workspace,
-        workspace_id,
-        governor: cert,
-        governor_key: key,
-        member_key,
-        member_cert,
-        member,
+    let ((), stuck) = member.seal(&workspace, |doc| {
+        doc.put(ROOT, "title", "from its store").unwrap();
+        doc.commit_edit("fixture", "title");
+    });
+    let NeighbourMsg::AppDocument { envelope, .. } = &stuck else {
+        panic!("a document write")
     };
-    let stuck = page_leaves_a_hole(&lounge, &client).await;
-    drop(client);
-    let Lounge {
-        _dir: dir,
-        server,
-        workspaces,
-        workspace,
-        workspace_id,
-        governor,
-        governor_key,
-        member_key,
-        member_cert,
-        member,
-    } = lounge;
+    let envelope = envelope.signature;
+    let documents = server.workspace_documents();
     drop(workspaces);
     server.shutdown().await;
+    // Kept at the device's store, while its copy is not running to follow it.
+    documents
+        .carry(
+            workspace_id,
+            member_key.verifying_key().to_bytes(),
+            &crate::workspace_documents::HostCommit {
+                body: postcard::to_stdvec(&stuck).unwrap(),
+            },
+        )
+        .unwrap();
 
+    // The device starts again on the same store: its copy reads the write, and a newcomer
+    // opening what the store serves reads the record whole with it.
     let server =
-        crate::workspaces::fixtures::test_host_holding(dir.path(), &governor_key, &governor, keys)
-            .await;
+        crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
     let workspaces = server.workspaces().clone();
-    let lounge = Lounge {
-        _dir: dir,
-        server,
-        workspaces,
-        workspace,
-        workspace_id,
-        governor,
-        governor_key,
-        member_key,
-        member_cert,
-        member,
-    };
-    newcomer_reads_whole_without(&lounge, &stuck, "Welcome").await;
-    let Lounge {
-        workspaces, server, ..
-    } = lounge;
+    follows(&workspaces, &workspace, "from its store").await;
+    let held = retained_writes(&server, workspace_id, RESOURCE).await;
+    assert!(
+        held.iter().any(|op| op.signature == envelope),
+        "the store still keeps the write it gave the copy"
+    );
+    assert_eq!(
+        newcomer_reads(&member, &held).as_deref(),
+        Some("from its store"),
+        "a newcomer reads the record whole with the write"
+    );
     drop(workspaces);
     server.shutdown().await;
 }

@@ -449,13 +449,6 @@ impl SealingMember {
         page
     }
 
-    /// `change` made to the member's replica and let go, never signed or sent: what a page that
-    /// held a record's keys before the record itself did with a change it wrote in that moment,
-    /// before its writes waited for their record. Its next write builds on it.
-    pub fn lets_go<R>(&self, change: impl FnOnce(&mut automerge::AutoCommit) -> R) -> R {
-        change(&mut self.document.lock().unwrap())
-    }
-
     /// The member's next write of the record, `change` made to its replica,
     /// sealed and signed as its page publishes it.
     pub fn seal<R>(
