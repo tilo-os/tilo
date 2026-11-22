@@ -30,9 +30,8 @@ fn without_join_log(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
 }
 
 /// Version 7 to 8: the journal beside the entry carries ownership's lists of writes apart from the
-/// workspace's fields. The entry itself reads as it was; the journal an earlier build appended
-/// beside it is folded in under that build's rules before this step
-/// ([`crate::owner::journal::earlier`]).
+/// workspace's fields. The entry itself reads as it was; a journal an earlier build wrote beside
+/// it is refused, as this build reads only the one it appends.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "a step takes the bytes it brings up, as every step of a format does"

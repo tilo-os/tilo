@@ -114,20 +114,17 @@ impl Journaled {
             };
             let log = journal_name(*workspace, *snapshot_revision);
             let mut whole = true;
-            // A snapshot of an earlier version takes the journal its build appended under that
-            // build's rules, and the next publication writes a snapshot rather than append to it.
+            // A snapshot of an earlier version comes up, and a journal beside it
+            // of that version is refused: this build reads only the journal it
+            // appends, and the next publication writes a snapshot rather than
+            // append to one of another layout.
             if stored.version < WORKSPACE_VERSION {
-                if let Some(entries) = parts.read_part(&log)? {
-                    written.insert(log.clone());
-                    let (bytes, last) =
-                        journal::earlier::fold(stored.version, snapshot.clone(), &entries)
-                            .map_err(|error| {
-                                format!("{workspace}'s journal does not read: {error}")
-                            })?;
-                    stored = serde_json::from_slice(&bytes).map_err(|error| {
-                        format!("{workspace}'s snapshot does not read: {error}")
-                    })?;
-                    revision = revision.max(last.unwrap_or(0));
+                if parts.read_part(&log)?.is_some() {
+                    return Err(format!(
+                        "{workspace}'s journal is a version {} one, and this build reads a \
+                         version {WORKSPACE_VERSION} one",
+                        stored.version
+                    ));
                 }
                 stored.version = WORKSPACE_VERSION;
                 whole = false;

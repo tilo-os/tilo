@@ -25,8 +25,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-pub(super) mod earlier;
-
 /// One run of the new bytes: a range of the old ones, or bytes of its own.
 #[derive(Debug, Serialize, Deserialize)]
 enum Op {
