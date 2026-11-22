@@ -7,7 +7,6 @@
 //! away stops dialing as it is closed: a device enters anew under the same key, and a server keeps
 //! one connection per key, so a session left dialing would cut the new one off.
 
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -134,7 +133,7 @@ async fn a_session_closed_while_its_server_is_away_stops_dialing_at_once() {
 
 /// How soon after its server is back a session is served again when the dial it made while the
 /// server was away reached something that never answered it: that dial gives up within the
-/// handshake's deadline (twenty seconds), and the next comes within a capped, jittered backoff.
+/// handshake's deadline (twelve seconds), and the next comes within a capped, jittered backoff.
 const BACK_AFTER_UNANSWERED: Duration = Duration::from_secs(35);
 
 /// How long a session may take to give up a connection whose server went without a word: the

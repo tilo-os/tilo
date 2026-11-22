@@ -40,8 +40,12 @@ const CONNECT_BACKOFF: Duration = Duration::from_millis(500);
 const CONNECT_BACKOFF_MAX: Duration = Duration::from_secs(5);
 
 /// How long a session's handshake may take once its connection is up, when it enters no
-/// workspace through an entry: the server gives a hello ten seconds, and answers it at once.
-const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(20);
+/// workspace through an entry: the host gives a hello ten seconds and answers it at once, so a
+/// round trip more covers everything a host that is there can take. A dial that hears nothing in
+/// that time reaches something that no longer answers — a path a packet relay keeps open to a
+/// host that is gone — and every further second is one the session's next dial does not have:
+/// its own backoff redials within seconds of a host that is back.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(12);
 
 /// The dialer a session reaches its host through, and this device's
 /// statement that its endpoint speaks for it, kept for reconnects.
