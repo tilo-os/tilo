@@ -42,6 +42,9 @@ impl ActionPalette {
 
     /// Replace the rows the host searched. The first is selected.
     pub fn set_entries(&mut self, entries: Vec<CommandEntry>) {
+        // Rows of their own replace any kept for an earlier query, and come in at full strength.
+        self.stale = false;
+        self.stale_dim = crate::motion::CrossFade::new(false);
         self.host_rows = Some(entries);
         self.planned_host_rows();
         self.set_cursor(0);
@@ -224,6 +227,19 @@ impl ActionPalette {
     pub fn set_searching(&mut self, searching: bool) {
         self.searching = searching;
         self.sync_empty_state();
+    }
+
+    /// Whether the rows shown answer an earlier query than the one typed: a host keeps them while the
+    /// typed query is still being answered, so the card does not collapse between keys, and they are
+    /// drawn dimmed until rows of the typed query replace them ([`Self::set_entries`]).
+    pub fn set_stale(&mut self, stale: bool) {
+        self.stale = stale;
+    }
+
+    /// Whether the rows shown are kept from an earlier query ([`Self::set_stale`]).
+    #[must_use]
+    pub fn is_stale(&self) -> bool {
+        self.stale
     }
 
     /// The host alone opens and closes this palette over its rows: the keyboard's focus leaving
@@ -845,8 +861,12 @@ impl ActionPalette {
             self.results
                 .draw_empty(scene, transform, text_renderer, theme);
         } else {
+            let dimmed = self.begin_stale_dim(scene, transform, theme);
             self.results
                 .draw_list(scene, transform, text_renderer, theme);
+            if dimmed {
+                scene.pop_layer();
+            }
         }
         text_renderer.set_text_scale(renderer_scale);
     }

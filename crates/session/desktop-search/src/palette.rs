@@ -288,6 +288,9 @@ pub struct DesktopSearch {
     /// row they chose.
     auto_selected: Option<String>,
     shown_query: Option<String>,
+    /// The query the sources were last asked: a search begins once per query, while the rows of
+    /// an earlier query can stay shown until it has rows of its own ([`Self::render`]).
+    asked_query: Option<String>,
     /// The query an Enter was pressed on before its rows were in: its top row is chosen once the
     /// search has answered it.
     enter_waiting: Option<String>,
@@ -512,6 +515,7 @@ impl DesktopSearch {
             everything: false,
             auto_selected: None,
             shown_query: None,
+            asked_query: None,
             enter_waiting: None,
             shown_kinds: Vec::new(),
             catalogue: false,
@@ -571,6 +575,7 @@ impl DesktopSearch {
         self.sources = Some(Sources::new(data));
         self.choice = None;
         self.shown_query = None;
+        self.asked_query = None;
         self.shown_rows.clear();
         self.shown_kinds.clear();
         self.stream = None;
@@ -816,8 +821,8 @@ impl DesktopSearch {
         };
         let answered = sources.poll();
         let query = self.palette.query().to_owned();
-        if answered || self.shown_query.as_deref() != Some(query.as_str()) {
-            if self.shown_query.is_some() && self.shown_query.as_deref() != Some(query.as_str()) {
+        if answered || self.asked_query.as_deref() != Some(query.as_str()) {
+            if self.asked_query.is_some() && self.asked_query.as_deref() != Some(query.as_str()) {
                 // "Show all" belongs to the search it was asked in.
                 self.expanded.clear();
                 self.everything = false;
@@ -828,6 +833,15 @@ impl DesktopSearch {
         // The sources that still owe an answer: the rest of this search's
         // rows, as far as this frame's share of time reaches.
         if self.resume() {
+            self.render(&query);
+            return true;
+        }
+        // Rows of an earlier query kept while the typed one was answered: every source has
+        // answered it now, with no row, so the card says nothing matched.
+        if self.shown_query.as_deref() != Some(query.as_str())
+            && !self.answering()
+            && !self.waiting()
+        {
             self.render(&query);
             return true;
         }
@@ -846,7 +860,10 @@ impl DesktopSearch {
         // is — the workspace host's answer is waited for only so long ([`Self::waiting`]) — it
         // stops saying so here, because no answer will come to redraw it: without this the card
         // read "Searching…" for as long as it stood, over a search that had ended.
-        if self.palette.is_searching() && !self.searching_for(self.rows.is_empty()) {
+        if self.palette.is_searching()
+            && self.shown_query.as_deref() == Some(query.as_str())
+            && !self.searching_for(self.rows.is_empty())
+        {
             self.palette.set_searching(false);
             return true;
         }
@@ -860,6 +877,7 @@ impl DesktopSearch {
             return;
         };
         self.stream = Some(stream);
+        self.asked_query = Some(query.to_owned());
         self.render(query);
     }
 
@@ -962,7 +980,7 @@ impl DesktopSearch {
         // while one is picked: narrowing the rows must never take away the
         // chip that would widen them again.
         let found = stream.groups();
-        self.palette.set_host_facets(kind_facets(&found));
+        let facets = kind_facets(&found);
         let picked = self.palette.picked_filters().to_vec();
         self.shown_kinds.clone_from(&picked);
         let mut groups = narrowed(self.arranged(query, found), &picked);
@@ -983,6 +1001,24 @@ impl DesktopSearch {
         let mut rows = Vec::new();
         let mut more_rows = Vec::new();
         let entries = self.fitted(groups, browsing, &mut rows, &mut more_rows);
+        // A key typed while the rows of the query before it are shown: the new query's sources are
+        // still answering and none has a row yet. The card keeps the rows it shows, dimmed as
+        // stale, rather than collapsing to "Searching…" and growing again a moment later; the
+        // first rows of the typed query, or every source answering with none, replace them. An
+        // Enter meanwhile waits for the typed query's rows (`take_waiting_enter`).
+        let stale = rows.is_empty()
+            && !self.rows.is_empty()
+            && self
+                .shown_query
+                .as_deref()
+                .is_some_and(|shown| shown != query)
+            && (pending || self.waiting() || self.answering());
+        if stale {
+            self.palette.set_stale(true);
+            self.palette.set_searching(true);
+            return;
+        }
+        self.palette.set_host_facets(facets);
         // A source that answered re-ranks the same query, and the plan of the
         // frame it starts in is not the query's answer yet: the sources after
         // the one that answered have not been asked, and a card not yet given
@@ -1674,6 +1710,7 @@ impl DesktopSearch {
         self.kept_choice = None;
         self.refusal = None;
         self.shown_query = None;
+        self.asked_query = None;
         self.enter_waiting = None;
     }
 }
