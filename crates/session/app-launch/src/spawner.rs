@@ -525,7 +525,8 @@ impl Spawner {
             // Nothing the app writes ever reaches the session's own streams.
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let diagnostics = diagnostics_file(planned, &mut command);
+        let diagnostics = diagnostics_file(planned);
+        measure_startup(&mut command);
         let output = Arc::new(AppOutput::new(planned.app.clone(), diagnostics));
         let hold = match link {
             Some(_) => match launcher::launch_hold::install(&mut command) {
@@ -1562,31 +1563,29 @@ impl App {
 }
 
 /// The file an app's own diagnostics go to when the session's shell names a directory for them
-/// (`TILO_APP_STDERR_DIR`), with the app told where to write its startup timeline.
-fn diagnostics_file(planned: &Planned, command: &mut Command) -> Option<std::fs::File> {
-    // Where an app's own diagnostics go when the session's shell names a
-    // directory for them (`TILO_APP_STDERR_DIR`): a headless acceptance
-    // reads them there, and the log keeps them too.
-    std::env::var_os("TILO_APP_STDERR_DIR").and_then(|dir| {
-        let path = std::path::Path::new(&dir).join(format!("{}.log", planned.app));
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(file) = std::fs::File::create(&path) {
-            // The app's own startup timeline, one file per app: which of
-            // its steps (loader, fonts, records, first layout) the open
-            // was spent in, and the launcher's marks before it. It is
-            // written inside the app's own directory, the one place the
-            // sandbox lets it write; a measured session reads it from
-            // there. An app started any other way writes none.
-            command.env(
-                "TILO_STARTUP_METRICS_PATH",
-                launcher::appdir::SANDBOX_STARTUP_TIMELINE,
-            );
-            return Some(file);
-        }
-        None
-    })
+/// (`TILO_APP_STDERR_DIR`): a headless acceptance reads them there, and the log keeps them too.
+fn diagnostics_file(planned: &Planned) -> Option<std::fs::File> {
+    let dir = std::env::var_os("TILO_APP_STDERR_DIR")?;
+    let path = std::path::Path::new(&dir).join(format!("{}.log", planned.app));
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::File::create(&path).ok()
+}
+
+/// Tell the app `command` starts to write its startup timeline, when this session measures its
+/// launches ([`tilo_startup_metrics::STARTUP_TIMELINE_ENV`]): which of its steps (the launcher's,
+/// the sandbox's, loading, fonts, records, first layout) an open was spent in. It is written inside
+/// the app's own directory, the one place the sandbox lets it write, and its summary line reaches
+/// the session's log with the app's stderr; a measured session reads either. A session that does
+/// not measure costs its apps no timeline.
+fn measure_startup(command: &mut Command) {
+    if tilo_startup_metrics::session_measures_launches() {
+        command.env(
+            "TILO_STARTUP_METRICS_PATH",
+            launcher::appdir::SANDBOX_STARTUP_TIMELINE,
+        );
+    }
 }
 
 /// How `child` ended: its exit status, or the signal that killed it, with

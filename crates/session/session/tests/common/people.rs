@@ -1459,6 +1459,8 @@ impl Device {
                 ),
             )
             .env("TILO_APP_STDERR_DIR", &logs)
+            // Every launch writes its startup timeline, which the open-budget test reads.
+            .env(tilo_startup_metrics::STARTUP_TIMELINE_ENV, "1")
             // The tests of this process mount the trees this device's session serves, so the
             // session records this process as the Files endpoint the login's unit would be.
             .env("TILO_FILES_ENDPOINT_PID", std::process::id().to_string())

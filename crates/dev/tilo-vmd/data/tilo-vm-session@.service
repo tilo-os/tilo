@@ -35,6 +35,8 @@ Environment=LIBSEAT_BACKEND=logind
 # tilo-control reaches the session here (the compositor's dev-overrides
 # feature reads TILO_TEST_CONTROL).
 Environment=TILO_TEST_CONTROL=/run/tilo-vm/%i/control.sock
+# Every app the session starts writes its startup timeline, which the VM checks read.
+Environment=TILO_STARTUP_TIMELINE=1
 # An account's throwaway identity joins no public site: this file names none and
 # replaces both the image's and the host's community.toml.
 Environment=TILO_COMMUNITY_CONFIG=/usr/share/tilo/tilo-vm-community.toml

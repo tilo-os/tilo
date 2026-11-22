@@ -27,10 +27,13 @@ PROBE = ("for f in " + " ".join(f'"{log}"' for log in LOGS) + "; do "
          "[ -f \"$f\" ] && grep -a -E 'stderr\\] (APP-STARTUP|HISTORY-OPEN|tilo-gpu: window adapter) ' "
          "\"$f\"; done; true")
 
-# Run like PROBE: the compositor's line for each Tilo app it spawned this session, which
-# tells a session that launched no Tilo app from one whose apps logged no startup line.
+# Run like PROBE: the session's launch timing line for each Tilo app it started this session
+# (`tilo_startup_metrics::launch_spawned`, the line the session's app-open budget test reads),
+# which tells a session that launched no Tilo app from one whose apps logged no startup line.
 TILO_SPAWNS = ("for f in " + " ".join(f'"{log}"' for log in LOGS) + "; do "
-               "[ -f \"$f\" ] && grep -a -E 'app-spawn: package=so\\.tilo\\.' \"$f\"; done; true")
+               "[ -f \"$f\" ] && sed 's/\\x1b\\[[0-9;]*m//g' \"$f\" "
+               "| grep -a -E 'package_id=so\\.tilo\\.[^ ]* .*application launcher spawned'; "
+               "done; true")
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 STARTUP = re.compile(r"\[app (?P<pkg>\S+) stderr\] APP-STARTUP app=(?P<app>\S+) "
