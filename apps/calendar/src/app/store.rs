@@ -433,6 +433,7 @@ fn invitation(
 pub(crate) fn window(cx: &ViewCx<Calendar>, mut app: CalendarApp) -> Element {
     app.live = Some(cx.live().clone());
     app.state().live = Some(cx.live().clone());
+    app.session = cx.session();
     if let Some(now) = cx.fixture::<ShotNow>() {
         app.pin_now(now.0);
     }

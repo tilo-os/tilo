@@ -3039,6 +3039,15 @@ impl AccountsPane {
             let id = account.id.clone();
             let typed = draft.password.clone();
             let original_account = self.account_root.store().get(&id).cloned();
+            // An edit that types no password signs in with the entry the account names in the
+            // workspace's vault: the session releases it for the calendars to be found, and
+            // this device's vault keeps nothing of it.
+            let releasing = (kind == AccountKind::CalDav && typed.trim().is_empty())
+                .then(|| accounts::email::password_item(&account.config).map(str::to_owned))
+                .flatten();
+            if let Some(item) = releasing {
+                return self.probe_with_named_entry(round, item, original_account, draft, account);
+            }
             let kept = original_account.clone();
             let asked = account.clone();
             self.run_in_queue(move |_| {
@@ -3068,6 +3077,67 @@ impl AccountsPane {
                 )
             });
         }
+    }
+
+    /// Sign in to `account` with `item`, the entry its settings name in the workspace's vault,
+    /// released on a worker, and find its calendars: what a save that types no password does.
+    /// This device's vault keeps nothing of it.
+    fn probe_with_named_entry(
+        &mut self,
+        round: u64,
+        item: String,
+        original_account: Option<accounts::Account>,
+        draft: AccountDraft,
+        account: accounts::Account,
+    ) {
+        use ui::collaboration::browser_service_sessions::{
+            BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
+        };
+        let asked = self
+            .session_secrets
+            .as_ref()
+            .ok_or_else(|| t("accounts-no-session"))
+            .and_then(|client| {
+                client.request(Command::ReleaseAccountSecret { item: item.clone() }, None)
+            });
+        let pending = match asked {
+            Ok(pending) => pending,
+            Err(error) => {
+                self.form_saving = false;
+                self.form_error = Some(error);
+                self.changed = true;
+                return;
+            }
+        };
+        self.run_in_queue(move |_| {
+            Step::vault(
+                move |_| pending.wait(),
+                move |pane, reply| {
+                    if round == pane.form_round {
+                        pane.form_saving = false;
+                        let secret = match reply {
+                            Ok(Reply::AccountSecret {
+                                item: released,
+                                secret,
+                            }) if released == item => {
+                                Ok(accounts::Secret::password(secret.as_str()))
+                            }
+                            Ok(_) => Err("The session answered something else".to_owned()),
+                            Err(error) => Err(error),
+                        };
+                        match secret {
+                            Ok(secret) => {
+                                pane.calendar_baseline = Some((original_account, None));
+                                pane.start_form_probe(draft, account, secret);
+                            }
+                            Err(error) => pane.form_error = Some(error),
+                        }
+                        pane.changed = true;
+                    }
+                    Step::Done
+                },
+            )
+        });
     }
 
     fn start_form_probe(
@@ -3574,11 +3644,17 @@ fn account_trailing(files: Option<Button>, menu: Option<RowMenu>) -> Option<El> 
 #[cfg(test)]
 mod tests;
 
-/// Whether a password typed for `account` is kept in the workspace's vault: an email account's,
-/// and a file account's that signs in with one (`WebDAV`, Nextcloud).
+/// Whether a password typed for `account` is kept in the workspace's vault: an email account's, a
+/// calendar account's, and a file account's that signs in with one (`WebDAV`, Nextcloud).
 fn keeps_password_in_vault(account: &accounts::Account) -> bool {
     use accounts::cloud_types::{NEXTCLOUD, WEBDAV};
-    [accounts::email::TYPE_ID, NEXTCLOUD, WEBDAV].contains(&account.type_id.as_str())
+    [
+        accounts::email::TYPE_ID,
+        crate::accounts::CALDAV_TYPE,
+        NEXTCLOUD,
+        WEBDAV,
+    ]
+    .contains(&account.type_id.as_str())
 }
 
 /// The request that keeps `password` as `account`'s, bound to the servers its settings name.

@@ -32,30 +32,6 @@ pub(crate) fn same_origin_url(base: &url::Url, href: &str) -> Result<url::Url, S
     Ok(target)
 }
 
-#[cfg(feature = "live")]
-pub fn discover_calendars(
-    service: &tilo_dav::oauth::Service,
-    account: &accounts::Account,
-    config: &CalDavConfig,
-    google: bool,
-) -> Result<Vec<RemoteCalendar>, String> {
-    service
-        .discover(&account.id, &config.server_url, &config.username, google)
-        .map(|collections| {
-            collections
-                .into_iter()
-                .enumerate()
-                .map(|(index, collection)| RemoteCalendar {
-                    id: collection.href,
-                    name: collection.name,
-                    color: (index % 8) as u8,
-                    visible: true,
-                    read_only: collection.read_only,
-                })
-                .collect()
-        })
-}
-
 /// Enable only confirmed collections on the original account. The caller saves
 /// the canonical store; Files settings, account ID/type and vault remain intact.
 /// `discovered` must be the result of discovery, not user-entered collection URLs.

@@ -1,16 +1,12 @@
 # Account credential storage
 
-Calendar uses the canonical accounts inventory and `accounts::AccountCredentials`
-for encrypted account secrets. The facade deliberately retains the existing
-account-ID keys so accounts configured in Settings remain interoperable;
-opening it does not request interactive service-credential consent.
+Calendar uses the canonical accounts inventory. A calendar account's password is the
+workspace's: Settings keeps it in the workspace's vault, and the account names that
+entry (`passwordItem`). The app asks the session for it on the window's own route when
+it signs in, and holds it in memory only.
 
-Normal loading and persistence use protected default ownership. Explicit `_in`
-boundaries select a recovery/test config root, never a fallback from failed protected
-ownership. `AccountStore::try_load` and `try_load_in` return ownership errors.
-Compatibility loaders report only a sanitized error and return an empty result.
-Persistence propagates open/save errors before publishing account metadata.
+`accounts::AccountCredentials` is not opened for a calendar's password. Its remaining
+use here is the OAuth token store the CalDAV transport refreshes a grant with.
 
-Passwords stay in memory and encrypted ownership, never account JSON, shared CRDT
-state, debug output, or logs.
-Direct `SecretVault` use is limited to legacy-compatibility test fixtures.
+Passwords stay in memory, never account JSON, shared CRDT state, debug output, logs or
+this device's own stores.

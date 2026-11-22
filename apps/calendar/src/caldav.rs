@@ -982,6 +982,7 @@ mod live {
                 server_url,
                 username: "user".into(),
                 password: "secret".into(),
+                password_item: None,
                 oauth_account_id: None,
             }
         }

@@ -269,6 +269,9 @@ pub struct CalendarApp {
     sync_rx: Option<std::sync::mpsc::Receiver<SyncWorkerResult>>,
     store: store::Shared,
     live: Option<ui::framework::Live<Calendar>>,
+    /// The window's own route to the session, where it runs in one: what it asks for the password
+    /// of the calendar account it signs in to.
+    session: Option<ui::collaboration::browser_service_sessions::Client>,
     presented: Option<(u64, u64)>,
     notifier: Option<std::sync::Arc<dyn ui::notify::Notifier>>,
     activations: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -397,6 +400,7 @@ impl CalendarApp {
             sync_rx: None,
             store: std::rc::Rc::new(std::cell::RefCell::new(store)),
             live: None,
+            session: None,
             presented: None,
             notifier: None,
             activations: std::sync::Arc::default(),
@@ -582,7 +586,7 @@ impl CalendarApp {
             return Ok(());
         }
         let current = self.synchronizable(doc.doc())?;
-        let inputs: Vec<_> = self
+        let mut inputs: Vec<_> = self
             .accounts
             .accounts
             .iter()
@@ -627,6 +631,29 @@ impl CalendarApp {
         let (tx, rx) = ui::wake::waking_channel();
         let today = self.today;
         let config_root = self.config_root.clone();
+        // A calendar's password is the workspace's vault's: ask the session for the entry each
+        // account names, on the window's own route, and sign in with what it releases. An account
+        // whose password the session withholds sends nothing to its server, and the session's
+        // words say why.
+        let mut released = Vec::new();
+        let mut refusals = Vec::new();
+        if let Some(session) = &self.session {
+            for (index, account) in self.accounts.accounts.iter().enumerate() {
+                let Some(item) = account.config.password_item.as_deref() else {
+                    continue;
+                };
+                if !account.config.password.is_empty() {
+                    continue;
+                }
+                let command = ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand::ReleaseAccountSecret {
+                    item: item.to_owned(),
+                };
+                match session.another().request(command, None) {
+                    Ok(pending) => released.push((index, pending)),
+                    Err(error) => refusals.push((index, error)),
+                }
+            }
+        }
         for id in &sync_account_ids {
             if let Some(root) = &config_root
                 && let Err(error) =
@@ -636,10 +663,42 @@ impl CalendarApp {
             }
         }
         drop(runtime.spawn(async move {
+            let mut refusals = refusals;
+            let released = ui::rt::app()
+                .spawn_blocking(move || {
+                    released
+                        .into_iter()
+                        .map(|(index, pending)| (index, pending.wait()))
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .unwrap_or_default();
+            for (index, reply) in released {
+                use ui::collaboration::browser_service_sessions::BrowserServiceSessionReply as Reply;
+                match reply {
+                    Ok(Reply::AccountSecret { secret, .. }) => {
+                        if let Some(input) = inputs.get_mut(index) {
+                            input.0.password = secret.to_string();
+                        }
+                    }
+                    Ok(_) => refusals.push((index, "The session answered something else".to_owned())),
+                    Err(error) => refusals.push((index, error)),
+                }
+            }
             let mut result = caldav::SyncResult::default();
             let mut synced_calendars = 0;
             let mut first_failure = None;
-            for (id, input) in sync_account_ids.iter().zip(inputs.iter()) {
+            for (index, (id, input)) in sync_account_ids.iter().zip(inputs.iter()).enumerate() {
+                if let Some((_, reason)) = refusals.iter().find(|(refused, _)| *refused == index) {
+                    first_failure.get_or_insert_with(|| reason.clone());
+                    if let Some(root) = &config_root
+                        && let Err(error) =
+                            accounts::AccountSyncReporter::in_root(id.clone(), root).failed()
+                    {
+                        tracing::warn!(%error, account = id, "calendar: could not persist sync result");
+                    }
+                    continue;
+                }
                 let (mut account_result, account_outcome) = caldav::sync_all_with_checkpoints(
                     std::slice::from_ref(input),
                     today,
@@ -2010,37 +2069,9 @@ impl CalendarApp {
         if person.accounts.is_empty() {
             return;
         }
-        let mut credentials = self
-            .config_root
-            .as_deref()
-            .map(accounts::AccountCredentials::open_in)
-            .and_then(|opened| {
-                opened
-                    .inspect_err(|error| {
-                        tracing::error!(%error, "calendar account credentials could not be opened");
-                    })
-                    .ok()
-            });
-        // The Calendar keeps calendar accounts and asks for their secrets
-        // to sign in: one kept with no servers on it is bound to the
-        // servers its account names now, and joined to no other from then
-        // on. Where that cannot be kept, nothing is joined.
-        let store = person.store();
-        let own = store.all().iter().filter(|account| {
-            account.type_id.as_str() == crate::account::TYPE_ID
-                || account
-                    .config
-                    .get("use_calendar")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true)
-        });
-        if let Some(kept) = &mut credentials
-            && let Err(error) = kept.bind_first(own)
-        {
-            tracing::error!(%error, "calendar account credentials could not be bound to their servers");
-            credentials = None;
-        }
-        let adopted = AccountStore::from_shared(&store, credentials.as_ref());
+        // A calendar's password is the workspace's vault's: the account names the entry, and the
+        // app asks the session for it when it signs in. This device keeps none.
+        let adopted = AccountStore::from_shared(&person.store());
         if adopted != self.configured {
             self.configured = adopted;
             self.show_accounts();

@@ -1,12 +1,10 @@
-//! Keeping an account in the shared store and its secret in the vault, and
-//! reading them back: what a device with a window does.
+//! Keeping an account in the shared store, and reading it back: what a device
+//! with a window does. A calendar's password is the workspace's vault's, not
+//! this device's: the app asks the session for it when it signs in.
 
 use std::path::Path;
 
-use accounts::{
-    Account as StoredAccount, AccountCredentials, AccountId, AccountStore as SharedStore,
-    AccountTypeId,
-};
+use accounts::{Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId};
 use serde::{Deserialize, Serialize};
 
 use super::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar, TYPE_ID};
@@ -46,7 +44,7 @@ impl CalendarAccount {
         self.to_stored()
     }
 
-    fn from_stored(stored: &StoredAccount, vault: Option<&AccountCredentials>) -> Option<Self> {
+    fn from_stored(stored: &StoredAccount) -> Option<Self> {
         let payload: StoredConfig = stored
             .config
             .get("calendar")
@@ -56,18 +54,9 @@ impl CalendarAccount {
         if config.display_name.is_empty() {
             config.display_name.clone_from(&stored.display_name);
         }
-        if let Some(secret) = vault.and_then(|vault| vault.get_for(stored)) {
-            #[cfg(feature = "live")]
-            {
-                config.password = tilo_dav::oauth::calendar_password(&secret);
-            }
-            #[cfg(not(feature = "live"))]
-            {
-                if secret.token.is_none() {
-                    config.password = secret.password;
-                }
-            }
-        }
+        // The entry of the workspace's vault this account's password is in, as Settings names it.
+        // The app asks the session for it when it signs in, and this device keeps none.
+        config.password_item = accounts::email::password_item(&stored.config).map(str::to_owned);
         if stored
             .config
             .get("calendar_provider")
@@ -75,7 +64,6 @@ impl CalendarAccount {
             == Some("google")
         {
             config.oauth_account_id = Some(stored.id.to_string());
-            config.password.clear();
         }
         let mut account = Self {
             id: stored.id.to_string(),
@@ -92,24 +80,20 @@ impl CalendarAccount {
 impl AccountStore {
     pub fn load_from_settings_in(config_root: &Path) -> Self {
         Self::try_load_in(config_root).unwrap_or_else(|_| {
-            tracing::error!("calendar account credentials could not be opened");
+            tracing::error!("calendar accounts could not be opened");
             Self::default()
         })
     }
 
     pub fn try_load_in(config_root: &Path) -> Result<Self, String> {
-        let credentials = AccountCredentials::open_in(config_root)?;
-        Ok(Self::from_shared(
-            &SharedStore::load_in(config_root),
-            Some(&credentials),
-        ))
+        Ok(Self::from_shared(&SharedStore::load_in(config_root)))
     }
 
-    pub fn from_store(shared: &SharedStore, vault: &AccountCredentials) -> Self {
-        Self::from_shared(shared, Some(vault))
+    pub fn from_store(shared: &SharedStore) -> Self {
+        Self::from_shared(shared)
     }
 
-    pub fn from_shared(shared: &SharedStore, vault: Option<&AccountCredentials>) -> Self {
+    pub fn from_shared(shared: &SharedStore) -> Self {
         let ty = AccountTypeId::from(TYPE_ID);
         let accounts = shared
             .list(&ty)
@@ -123,32 +107,20 @@ impl AccountStore {
                     && stored.type_id.as_str() != TYPE_ID
             }))
             .filter(|stored| stored.enabled)
-            .filter_map(|stored| CalendarAccount::from_stored(stored, vault))
+            .filter_map(CalendarAccount::from_stored)
             .collect();
         Self { accounts }
     }
 
-    /// Write these accounts into the shared store and vault under `config_root`, preserving unrelated
+    /// Write these accounts into the shared store under `config_root`, preserving unrelated
     /// accounts. For a Nextcloud projection only calendar preferences change; its type, services and
-    /// sign-in stay.
+    /// sign-in stay. No credential is written: a calendar's password is the workspace's vault's.
     ///
     /// # Errors
     ///
     /// When the shared account store cannot be saved to `config_root`.
     pub fn persist_in(&self, config_root: &Path) -> std::io::Result<()> {
-        self.persist_with_vault(
-            config_root,
-            AccountCredentials::open_in(config_root).map_err(std::io::Error::other)?,
-        )
-    }
-
-    fn persist_with_vault(
-        &self,
-        config_root: &Path,
-        mut vault: AccountCredentials,
-    ) -> std::io::Result<()> {
         let mut shared = SharedStore::load_in(config_root);
-        let mut vault_changed = false;
         for acct in &self.accounts {
             let id = AccountId::from(acct.id.clone());
             if let Some(source) = shared.get(&id).filter(|source| {
@@ -173,18 +145,6 @@ impl AccountStore {
                 continue;
             }
             shared.upsert(acct.to_stored());
-            vault_changed = true;
-            if acct.config.password.is_empty() {
-                vault.remove(&id);
-            } else {
-                vault.put_for(
-                    &acct.to_stored(),
-                    &accounts::Secret::password(acct.config.password.clone()),
-                );
-            }
-        }
-        if vault_changed {
-            vault.try_save().map_err(std::io::Error::other)?;
         }
         shared.save_in(config_root)
     }
@@ -196,8 +156,8 @@ mod tests {
     use accounts::SecretVault;
 
     tilo_test_env::scenario! {
-        /// The account store: what it writes, what it refuses to publish and what it reads back.
-        fn account_credentials_stay_in_the_vault_and_the_store_round_trips;
+        /// The account store: what it writes and what it reads back. No password is in it.
+        fn a_calendar_accounts_password_stays_out_of_the_store;
 
         phase account_credentials_are_never_serialized_or_debugged;
         {
@@ -213,54 +173,7 @@ mod tests {
             assert!(!format!("{config:?}").contains("private-calendar-password"));
         }
 
-        phase damaged_credentials_prevent_publishing_account_changes;
-        {
-            let root = temp_root();
-            let store = AccountStore::sample();
-            store.persist_in(&root).unwrap();
-            let before = std::fs::read(accounts::store_path_in(&root)).unwrap();
-            std::fs::write(accounts::vault_dir_in(&root).join("vault.enc"), b"damaged").unwrap();
-            let mut changed = store;
-            changed.accounts[0].config.display_name = "Must not publish".into();
-            assert!(changed.persist_in(&root).is_err());
-            assert_eq!(
-                std::fs::read(accounts::store_path_in(&root)).unwrap(),
-                before
-            );
-            std::fs::remove_dir_all(root).unwrap();
-        }
-
-        phase legacy_account_credentials_load_and_damaged_ownership_is_reported;
-        {
-            let root = temp_root();
-            let id = AccountId::from("legacy@example.test");
-            let mut shared = SharedStore::new();
-            let mut account = CalendarAccount::new(cfg("Legacy", "legacy@example.test"));
-            account.id = id.to_string();
-            shared.upsert(account.to_stored());
-            shared.save_in(&root).unwrap();
-            let mut vault = SecretVault::open_in(&root);
-            vault.put(&id, &accounts::Secret::password("legacy-fixture-password"));
-            vault.try_save().unwrap();
-
-            let loaded = AccountStore::try_load_in(&root).unwrap();
-            assert_eq!(
-                loaded.accounts[0].config.password,
-                "legacy-fixture-password"
-            );
-            let metadata = std::fs::read(accounts::store_path_in(&root)).unwrap();
-            let vault_path = accounts::vault_dir_in(&root).join("vault.enc");
-            std::fs::write(&vault_path, b"damaged").unwrap();
-            assert!(AccountStore::try_load_in(&root).is_err());
-            assert_eq!(std::fs::read(&vault_path).unwrap(), b"damaged");
-            assert_eq!(
-                std::fs::read(accounts::store_path_in(&root)).unwrap(),
-                metadata
-            );
-            std::fs::remove_dir_all(root).unwrap();
-        }
-
-        phase account_store_round_trips_accounts_visibility_and_vaulted_secrets;
+        phase account_store_round_trips_accounts_and_visibility;
         {
             {
                 let root = temp_root();
@@ -343,8 +256,8 @@ mod tests {
 
                 let back = AccountStore::load_from_settings_in(&root);
                 assert_eq!(
-                    back.accounts[0].config.password, "hunter2",
-                    "password rehydrates from the vault"
+                    back.accounts[0].config.password, "",
+                    "a calendar's password is the workspace's vault's, never this device's"
                 );
                 std::fs::remove_dir_all(&root).ok();
             }
@@ -418,49 +331,6 @@ mod tests {
             assert!(read.accounts[0].read_only && read.accounts[0].calendars[0].read_only);
             std::fs::remove_dir_all(&root).ok();
         }
-    }
-
-    /// A password is typed for the server its account names then. However
-    /// the account comes to name another server, the password is joined to
-    /// it no more: the next sync would send it there.
-    #[test]
-    fn a_password_typed_for_one_server_is_not_joined_to_an_account_that_names_another() {
-        let root = temp_root();
-        let mut typed = cfg("Work", "me@example.test");
-        typed.server_url = "https://caldav.example/dav/me/".into();
-        typed.password = "typed-for-caldav-example".into();
-        let mut store = AccountStore::new();
-        store.upsert(CalendarAccount::new(typed));
-        store.persist_in(&root).unwrap();
-        let joined = |address: &str| {
-            let mut shared = SharedStore::load_in(&root);
-            let mut account = shared.all()[0].clone();
-            account.config["server_url"] = address.into();
-            shared.upsert(account);
-            let vault = AccountCredentials::open_in(&root).unwrap();
-            AccountStore::from_store(&shared, &vault).accounts[0]
-                .config
-                .password
-                .clone()
-        };
-        assert_eq!(
-            joined("https://caldav.example/calendars/"),
-            "typed-for-caldav-example",
-            "another path on its server is still its server"
-        );
-        for elsewhere in [
-            "https://dav.elsewhere.example/dav/me/",
-            "https://caldav.example:8443/dav/me/",
-            "http://caldav.example/dav/me/",
-        ] {
-            assert_eq!(
-                joined(elsewhere),
-                "",
-                "the password typed for https://caldav.example was joined to an account at \
-                 {elsewhere}"
-            );
-        }
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn cfg(name: &str, user: &str) -> CalDavConfig {
