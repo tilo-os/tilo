@@ -149,6 +149,10 @@ pub(crate) const MOVE_SERVER: &str = "server.move";
 /// How many copies the workspace wants kept: key holders, which hold its
 /// keys and take its work, and stores, which keep its ciphertext.
 pub(crate) const SET_COPIES: &str = "copies.set";
+/// How much of the content the workspace's records name this server keeps
+/// none of yet: what is still only on its members' devices, so a device that
+/// held the last copy is switched off only once it says none.
+pub(crate) const CONTENT_HELD: &str = "content.held";
 /// What checks choosing the workspace's servers: its owners', which no grant
 /// of its governance gives ([`Workspaces::chooses_servers`]).
 const CHOOSES_SERVERS: &str = "choose-servers";
@@ -220,7 +224,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 27] = [
+const VERBS: [Verb; 28] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -311,6 +315,13 @@ const VERBS: [Verb; 27] = [
         check: CHOOSES_SERVERS,
         kind: roles::GOVERNANCE_KIND,
         params: copies_params,
+    },
+    Verb {
+        id: CONTENT_HELD,
+        label: "Count the content still only on members' devices",
+        check: CHOOSES_SERVERS,
+        kind: ActionKind::Read,
+        params: Vec::new,
     },
     Verb {
         id: NAME,
@@ -1805,6 +1816,7 @@ impl Workspaces {
                 self.governance_invitations(action, call).await
             }
             ADD_MEMBER => self.governance_add_member(call).await,
+            CONTENT_HELD => Ok(self.content_held(call.workspace).await),
             SERVERS | ADD_SERVER | REMOVE_SERVER | MOVE_SERVER | SET_COPIES => {
                 self.governance_hosts(action, call).await
             }
@@ -2266,6 +2278,18 @@ impl Workspaces {
             fields.insert("confirmed".into(), json!(confirmed));
         }
         Ok(answered)
+    }
+
+    /// How many blobs of the content `workspace`'s records name this server
+    /// keeps none of yet (`lacking`), among how many its records name
+    /// (`named`). A record still waiting for the keys that open it counts as
+    /// one blob lacked: what it names is not known here yet.
+    async fn content_held(&self, workspace: &str) -> Value {
+        let lacking = self
+            .content_lacking(workspace, true, &std::collections::BTreeSet::new())
+            .await;
+        let named = self.content_named(workspace).await;
+        json!({ "workspace": workspace, "lacking": lacking, "named": named })
     }
 
     /// The workspace's wait list, taking an address off it, and mailing an

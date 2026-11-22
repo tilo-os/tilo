@@ -222,12 +222,13 @@ pub const WORKSPACE_MAIL_ACCOUNTS: &str = "mail-accounts";
 /// under the root it is on (none for the root itself) and its id there, as a
 /// person names it. An operation not listed is published on the root under its
 /// own name.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 10] = [
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 11] = [
     ("server.list", Some(WORKSPACE_SERVERS), "list"),
     ("server.add", Some(WORKSPACE_SERVERS), "add"),
     ("server.remove", Some(WORKSPACE_SERVERS), "remove"),
     ("server.move", Some(WORKSPACE_SERVERS), "move"),
     ("copies.set", Some(WORKSPACE_SERVERS), "copies"),
+    ("content.held", Some(WORKSPACE_SERVERS), "content"),
     ("install-app", Some(WORKSPACE_APPS), "install-app"),
     ("uninstall-app", Some(WORKSPACE_APPS), "uninstall-app"),
     ("upload-app-file", Some(WORKSPACE_APPS), "upload-app-file"),

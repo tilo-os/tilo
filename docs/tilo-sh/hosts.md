@@ -76,11 +76,16 @@ tilo workspace servers ls -w Tilo                       # the servers keeping it
 tilo workspace servers remove https://tilo.sh -w Tilo   # tilo.sh lets it go
 tilo workspace servers move https://old.example.com https://tilo.sh -w Tilo
                                                         # tilo.sh keeps it, then the old one lets it go
+tilo workspace servers content -w Tilo                  # how much content is still only on members' devices
 ```
 
-The same is `workspace/servers#add {origin}`, `#list`, `#remove {server}` and `#move {server, origin}`
-for an agent over MCP, and `POST /v1/workspaces/{workspace}/resources/workspace/servers/actions/{action}`
-over HTTP, as every action of the workspace's published tree. Only the workspace's owners choose its
+A server fetches the files and attachments the workspace's records name from its members' devices while
+they are on. Before you switch off the last device that holds a copy (a laptop you moved the workspace
+from, say), `tilo workspace servers content` says whether the server keeps all of it.
+
+The same is `workspace/servers#add {origin}`, `#list`, `#remove {server}`, `#move {server, origin}` and
+`#content` for an agent over MCP, and
+`POST /v1/workspaces/{workspace}/resources/workspace/servers/actions/{action}` over HTTP, as every action of the workspace's published tree. Only the workspace's owners choose its
 servers, from a device of theirs or a key they created reaching all their workspaces. A move that the new
 server refuses leaves the workspace where it was.
 

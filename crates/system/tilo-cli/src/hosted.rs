@@ -102,6 +102,13 @@ pub enum KeysCmd {
 pub enum ServersCmd {
     /// The servers keeping the workspace (-w): the one asked first.
     Ls,
+    /// Whether the server asked keeps all the content the workspace's
+    /// records name (-w), or how much is still only on its members' devices.
+    #[command(after_help = "Example:\n  tilo workspace servers content -w Tilo\n\n\
+                      Before you switch off the last device that holds a copy of the workspace \
+                      (a laptop, say), this says 0: the server keeps every file and attachment, \
+                      and fetches what it lacks from the members' devices while they are on.")]
+    Content,
     /// Have the server whose site is ORIGIN keep the workspace (-w) as well.
     #[command(
         after_help = "Example:\n  tilo workspace servers add https://tilo.sh -w Tilo\n\n\
@@ -1640,6 +1647,7 @@ fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
         let workspace = client.workspace_id(workspace).await?;
         let (action, args) = match cmd {
             ServersCmd::Ls => ("list", json!({})),
+            ServersCmd::Content => ("content", json!({})),
             ServersCmd::Add { origin } => ("add", json!({ "origin": origin })),
             ServersCmd::Remove { server } => ("remove", json!({ "server": server })),
             ServersCmd::Move { from, to } => ("move", json!({ "server": from, "origin": to })),
@@ -1654,8 +1662,28 @@ fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
             )
             .await?;
         let listed = answer.get("result").cloned().unwrap_or_default();
-        Ok(show(reach.json, &answer, &servers_text(&listed)))
+        let said = if action == "content" {
+            content_text(&listed)
+        } else {
+            servers_text(&listed)
+        };
+        Ok(show(reach.json, &answer, &said))
     })
+}
+
+/// How much of a workspace's content its server keeps, as a person reads it.
+fn content_text(held: &Value) -> String {
+    match held.get("lacking").and_then(Value::as_u64) {
+        Some(0) => "All of the workspace's files and attachments are on its server.".to_owned(),
+        Some(1) => "1 piece of the workspace's content is still only on its members' devices: \
+                    keep one of them on until the server has fetched it."
+            .to_owned(),
+        Some(lacking) => format!(
+            "{lacking} pieces of the workspace's content are still only on its members' \
+             devices: keep one of them on until the server has fetched them."
+        ),
+        None => "The server did not say how much of the workspace's content it keeps.".to_owned(),
+    }
 }
 
 /// The servers keeping a workspace as a person reads them: each by its
