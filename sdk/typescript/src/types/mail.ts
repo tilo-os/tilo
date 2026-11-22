@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@41f24949edf6452e";
+export const SURFACE = "so.tilo.mail@7a6c0cd1ad5b7840";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -298,6 +298,8 @@ export interface Message extends tilo.Resource {
   ubfcf6ep: boolean;  // unread
   vxxb4sqr: boolean;  // flagged
   xlejsz5j: string;  // mailbox
+  hgysjvfy: string;  // original
+  wuefabwr: string;  // parts
   /** Answers one message of the conversation, to whoever wrote it, quoting it. */
   reply_to(): Promise<Draft>;
   /** Answers one message of the conversation, to everyone it went to but the person answering. */
@@ -390,6 +392,22 @@ export interface Mail extends tilo.Resource {
     body: string;
     calendar_ics: string;
   }): Promise<Draft>;
+  /** Takes in a message that reached the workspace from outside its accounts' servers: one moved in from another mail program (`tilo migrate`), or handed over through the API. It is kept with the mail held outside the accounts, in the conversation it belongs to (`conversation`, the Message-ID the conversation began with) and the folder it was in, read or not. `from` is the sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the content reference of the message as it was sent, less its large parts: `parts` says where each of those stands in it and which pieces of content it is in, one JSON text each (`{'at': 120, 'size': 4096, 'pieces': ['tilo.content:…']}`). `attachments` names the files it carries. A message already held under its Message-ID is answered as it is, so delivering it again keeps it once. */
+  deliver_message(args: {
+    from: string;
+    subject?: string;
+    body?: string;
+    folder?: string;
+    read?: boolean;
+    to?: string;
+    cc?: string;
+    date?: string;
+    conversation?: string;
+    message_id?: string;
+    original?: string;
+    parts?: string[];
+    attachments?: string[];
+  }): Promise<Message>;
   /** Renames one of the workspace's labels, all the conversations that carry it with it. */
   rename_label(args: {
     l: Label;
@@ -413,7 +431,7 @@ export interface Mail extends tilo.Resource {
 
 /** The actions `Mail` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MAIL_ACTIONS = ["set_hold", "set_holdMany", "recover_previous", "new_draft", "prepare_calendar_invitation", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany"] as const;
+export const MAIL_ACTIONS = ["set_hold", "set_holdMany", "recover_previous", "new_draft", "prepare_calendar_invitation", "deliver_message", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany"] as const;
 
 /** The `tl.so.tilo.mail.Mail` kind at `path`. */
 export function mail(ws: tilo.Workspace, path: string): Mail {

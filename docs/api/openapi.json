@@ -3340,7 +3340,8 @@
         "required": [
           "id",
           "name"
-        ]
+        ],
+        "description": "A workspace as the account lists it: what `/v1` answers, and what an MCP\nclient and the desktop read of the person's workspaces."
       },
       "WorkspaceList": {
         "type": "object",
@@ -32218,7 +32219,9 @@
               "message_id",
               "references",
               "attachments",
-              "mailbox"
+              "mailbox",
+              "original",
+              "parts"
             ],
             "type": "string"
           },
@@ -32527,6 +32530,61 @@
           "calendar_ics"
         ],
         "description": "Starts a message inviting `to` to an event, its invitation (`calendar_ics`, iCalendar) carried\nbeside what it says: what Calendar hands Mail for each guest it invites. Nothing is sent; the\nperson reads it, and sends it."
+      },
+      "tl.so.tilo.mail.Mail.deliver_message.Arguments": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "read": {
+            "type": "boolean"
+          },
+          "to": {
+            "type": "string"
+          },
+          "cc": {
+            "type": "string"
+          },
+          "date": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "conversation": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "original": {
+            "type": "string"
+          },
+          "parts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "from"
+        ],
+        "description": "Takes in a message that reached the workspace from outside its accounts' servers: one moved\nin from another mail program (`tilo migrate`), or handed over through the API. It is kept\nwith the mail held outside the accounts, in the conversation it belongs to (`conversation`,\nthe Message-ID the conversation began with) and the folder it was in, read or not. `from` is\nthe sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the\ncontent reference of the message as it was sent, less its large parts: `parts` says where\neach of those stands in it and which pieces of content it is in, one JSON text each\n(`{\"at\": 120, \"size\": 4096, \"pieces\": [\"tilo.content:…\"]}`). `attachments` names the\nfiles it carries. A message already held under its Message-ID is answered as it is, so\ndelivering it again keeps it once."
       },
       "tl.so.tilo.mail.Mail.rename_label.Arguments": {
         "type": "object",
@@ -43441,6 +43499,12 @@
       "resource": "tl.so.tilo.mail.Mail",
       "action": "prepare_calendar_invitation",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.prepare_calendar_invitation.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
+      "action": "deliver_message",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.deliver_message.Arguments"
     },
     {
       "app": "so.tilo.mail",

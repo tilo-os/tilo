@@ -141,7 +141,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -197,7 +197,7 @@ class Account(Resource):
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -207,7 +207,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -382,13 +382,13 @@ class Thread(Resource):
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -426,6 +426,8 @@ class Message(Resource):
     ubfcf6ep: bool  # unread
     vxxb4sqr: bool  # flagged
     xlejsz5j: str  # mailbox
+    hgysjvfy: str  # original
+    wuefabwr: str  # parts
 
     def reply_to(self) -> Draft:
         """Answers one message of the conversation, to whoever wrote it, quoting it."""
@@ -446,7 +448,7 @@ class Message(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
     m2g6zrle: str  # from
     hd3o4gkq: str  # to
     cwukhrvn: str  # cc
@@ -495,7 +497,7 @@ class Draft(Resource):
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -560,6 +562,51 @@ class Mail(Resource):
         """Starts a message inviting `to` to an event, its invitation (`calendar_ics`, iCalendar) carried beside what it says: what Calendar hands Mail for each guest it invites. Nothing is sent; the person reads it, and sends it."""
         return self.action("prepare_calendar_invitation", to=to, subject=subject, body=body, calendar_ics=calendar_ics)
 
+    def deliver_message(self,
+        *,
+        from_: str,
+        subject: str | None = None,
+        body: str | None = None,
+        folder: str | None = None,
+        read: bool | None = None,
+        to: str | None = None,
+        cc: str | None = None,
+        date: str | None = None,
+        conversation: str | None = None,
+        message_id: str | None = None,
+        original: str | None = None,
+        parts: list[str] | None = None,
+        attachments: list[str] | None = None,
+    ) -> Message:
+        """Takes in a message that reached the workspace from outside its accounts' servers: one moved in from another mail program (`tilo migrate`), or handed over through the API. It is kept with the mail held outside the accounts, in the conversation it belongs to (`conversation`, the Message-ID the conversation began with) and the folder it was in, read or not. `from` is the sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the content reference of the message as it was sent, less its large parts: `parts` says where each of those stands in it and which pieces of content it is in, one JSON text each (`{'at': 120, 'size': 4096, 'pieces': ['tilo.content:…']}`). `attachments` names the files it carries. A message already held under its Message-ID is answered as it is, so delivering it again keeps it once."""
+        args: dict[str, Any] = {}
+        args["from"] = from_
+        if subject is not None:
+            args["subject"] = subject
+        if body is not None:
+            args["body"] = body
+        if folder is not None:
+            args["folder"] = folder
+        if read is not None:
+            args["read"] = read
+        if to is not None:
+            args["to"] = to
+        if cc is not None:
+            args["cc"] = cc
+        if date is not None:
+            args["date"] = date
+        if conversation is not None:
+            args["conversation"] = conversation
+        if message_id is not None:
+            args["message_id"] = message_id
+        if original is not None:
+            args["original"] = original
+        if parts is not None:
+            args["parts"] = parts
+        if attachments is not None:
+            args["attachments"] = attachments
+        return self.action("deliver_message", **args)
+
     def rename_label(self,
         *,
         l: Label,
@@ -590,10 +637,10 @@ class Mail(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_hold", "set_hold_many", "recover_previous", "new_draft", "prepare_calendar_invitation", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many"})
+    __actions__ = frozenset({"set_hold", "set_hold_many", "recover_previous", "new_draft", "prepare_calendar_invitation", "deliver_message", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many"})
 
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
 
