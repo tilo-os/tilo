@@ -14,6 +14,9 @@ fn preview() -> InstallerPreview {
         linux: true,
         ..Default::default()
     };
+    // These phases model the Linux route; a Windows host runs the Windows
+    // preparation route, whose own tests cover it.
+    preview.windows.enabled = false;
     preview.capabilities.prepared_installation = true;
     preview.journey.destination = Some(Destination::Another);
     preview

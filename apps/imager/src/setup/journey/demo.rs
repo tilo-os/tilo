@@ -171,6 +171,17 @@ mod tests {
         phase demo_refuses_external_effects_at_the_semantic_api;
         {
             let mut app = TestApp::<ImagerShell>::launched(&["--demo"]).unwrap();
+            // Paths the demo never opens, written the way the host names an
+            // absolute one: the demo refuses them before anything looks.
+            let (file, home, device) = if cfg!(windows) {
+                (
+                    r"C:\Windows\win.ini",
+                    r"C:\Users",
+                    r"\\.\PhysicalDrive0",
+                )
+            } else {
+                ("/etc/passwd", "/home", "/dev/sda")
+            };
             for effect in [
                 InstallerPreviewEffect::PrepareUsb,
                 InstallerPreviewEffect::PrepareDirectInstallation,
@@ -182,13 +193,13 @@ mod tests {
                 InstallerPreviewEffect::StartExistingDevicePairing,
                 InstallerPreviewEffect::ChoosePreviewAvatar,
                 InstallerPreviewEffect::SelectPreviewAvatar {
-                    source_file: AbsolutePath::new("/etc/passwd").unwrap(),
+                    source_file: AbsolutePath::new(file).unwrap(),
                 },
                 InstallerPreviewEffect::SelectMigrationHome {
-                    source: AbsolutePath::new("/home").unwrap(),
+                    source: AbsolutePath::new(home).unwrap(),
                 },
                 InstallerPreviewEffect::ExportPreparedIdentity {
-                    destination: AbsolutePath::new("/dev/sda").unwrap(),
+                    destination: AbsolutePath::new(device).unwrap(),
                 },
             ] {
                 assert!(!admits(&effect));

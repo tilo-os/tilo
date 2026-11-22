@@ -32,6 +32,9 @@ fn preview() -> App {
     // screen is still reached through the production action route, not a page fixture.
     app.with_widget::<InstallerPreview, _>(|view| {
         view.live = false;
+        // The Linux route these tests walk; a Windows host runs the Windows
+        // preparation route instead.
+        view.windows.enabled = false;
         view.restart = restart_controller::Restart::default();
         view.storage.stage();
     })

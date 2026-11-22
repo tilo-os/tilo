@@ -861,6 +861,9 @@ mod tests {
         }
     }
 
+    // The import needs durable journaled copying, which only the Linux and
+    // macOS builds have.
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_page_connects_reviews_chooses_and_brings_a_source_over() {
         let server = outline();

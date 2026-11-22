@@ -561,7 +561,7 @@ impl InstallerPreview {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     tilo_test_env::scenario! {

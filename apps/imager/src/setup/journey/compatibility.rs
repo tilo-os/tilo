@@ -73,6 +73,18 @@ mod tests {
     use super::super::InstallerPreviewEffect;
     use super::*;
 
+    /// A preview of the Linux route these phases model; a Windows host takes
+    /// the Windows preparation route instead, which its own tests cover.
+    fn linux_preview() -> InstallerPreview {
+        let mut preview = InstallerPreview {
+            live: true,
+            linux: true,
+            ..Default::default()
+        };
+        preview.windows.enabled = false;
+        preview
+    }
+
     tilo_test_env::scenario! {
         fn the_full_os_check_runs_only_where_it_decides_something;
 
@@ -80,11 +92,7 @@ mod tests {
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(crate::setup::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
-            let mut preview = InstallerPreview {
-                live: true,
-                linux: true,
-                ..Default::default()
-            };
+            let mut preview = linux_preview();
             preview.capabilities.prepared_installation = true;
             preview.journey.destination = Some(Destination::Computer);
             preview
@@ -98,11 +106,7 @@ mod tests {
             assert!(preview.direct.prepared_belongings.is_none());
             assert!(!preview.direct.active);
 
-            let mut another = InstallerPreview {
-                live: true,
-                linux: true,
-                ..Default::default()
-            };
+            let mut another = linux_preview();
             another.capabilities.prepared_installation = true;
             another.journey.destination = Some(Destination::Another);
             another
@@ -118,11 +122,7 @@ mod tests {
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(crate::setup::internal_install_flow::RUNTIME_ALLOW_VAR, "0");
-            let mut preview = InstallerPreview {
-                live: true,
-                linux: true,
-                ..Default::default()
-            };
+            let mut preview = linux_preview();
             preview.capabilities.prepared_installation = true;
             preview.journey.destination = Some(Destination::Computer);
             preview
@@ -138,11 +138,7 @@ mod tests {
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(crate::setup::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
-            let mut preview = InstallerPreview {
-                live: true,
-                linux: true,
-                ..Default::default()
-            };
+            let mut preview = linux_preview();
             preview.capabilities.prepared_installation = true;
             preview.storage.stage();
             preview.journey.destination = Some(Destination::Computer);
@@ -156,11 +152,7 @@ mod tests {
 
         phase full_os_check_back_keeps_destination_and_history_without_preparing_identity;
         {
-            let mut preview = InstallerPreview {
-                live: true,
-                linux: true,
-                ..Default::default()
-            };
+            let mut preview = linux_preview();
             preview.journey.destination = Some(Destination::Computer);
             let history = preview.journey.history.clone();
             preview.compatibility.result = Some(ui::LocalState::new(None));
@@ -180,11 +172,7 @@ mod tests {
 
         phase full_os_check_display_facts_enter_the_normal_migration_flow;
         {
-            let mut preview = InstallerPreview {
-                live: true,
-                linux: true,
-                ..Default::default()
-            };
+            let mut preview = linux_preview();
             preview.journey.destination = Some(Destination::Computer);
             let mut storage = super::super::storage::Storage::default();
             storage.stage();

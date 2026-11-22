@@ -464,7 +464,14 @@ mod tests {
                     ("home_files".to_owned(), serde_json::json!([])),
                 ])
             };
-            for (image, psk) in [("disk.raw", "/a/psk.txt"), ("/a/disk.raw", "psk.txt")] {
+            // An absolute path is rooted for the host's path syntax: a drive on
+            // Windows, the filesystem root elsewhere.
+            let (image, psk) = if cfg!(windows) {
+                (r"C:\a\disk.raw", r"C:\a\psk.txt")
+            } else {
+                ("/a/disk.raw", "/a/psk.txt")
+            };
+            for (image, psk) in [(image, "psk.txt"), ("disk.raw", psk)] {
                 let error =
                     ImagerEffect::decode("customize-image", &arguments(image, psk)).unwrap_err();
                 assert!(
@@ -477,8 +484,7 @@ mod tests {
                 );
             }
             assert!(
-                ImagerEffect::decode("customize-image", &arguments("/a/disk.raw", "/a/psk.txt"))
-                    .is_ok()
+                ImagerEffect::decode("customize-image", &arguments(image, psk)).is_ok()
             );
         }
 
@@ -930,10 +936,17 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "write")
                 .unwrap();
-            assert!(
-                !write.contract.availability.is_available(),
-                "no privileged writer in tests"
-            );
+            if cfg!(feature = "host-media-writer") {
+                assert!(
+                    write.contract.availability.is_available(),
+                    "this build ships its host's media writer"
+                );
+            } else {
+                assert!(
+                    !write.contract.availability.is_available(),
+                    "no privileged writer in tests"
+                );
+            }
             assert!(matches!(
                 app.call_on(
                     "imager.target:demo-sandisk-ultra",

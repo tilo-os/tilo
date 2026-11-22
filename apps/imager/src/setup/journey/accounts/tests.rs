@@ -491,6 +491,9 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
         accounts,
         ..Default::default()
     };
+    // This fixture models the Linux route: a Windows host prepares its data
+    // through the Windows route instead.
+    installer.windows.enabled = false;
     // USB preparation is admitted only after the final review, even when
     // this account-focused fixture deliberately has no storage backend.
     installer.journey.page = super::super::model::Page::Review;
@@ -827,6 +830,7 @@ tilo_test_env::scenario! {
                 live: true,
                 ..InstallerPreview::default()
             };
+            preview.windows.enabled = false;
             preview.journey.page = Page::Accounts;
             preview.accounts.opener = browser.clone();
             let choice = |step: &str, selection: Option<String>| InstallerPreviewEffect::AccountStep {

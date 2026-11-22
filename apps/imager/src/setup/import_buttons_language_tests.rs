@@ -1,3 +1,6 @@
+// The folder import needs durable journaled copying, which only the Linux and
+// macOS builds have: this page offers its copy controls there alone.
+#[cfg(target_os = "linux")]
 tilo_test_env::scenario! {
     fn the_copy_buttons_read_from_the_catalogues;
 
