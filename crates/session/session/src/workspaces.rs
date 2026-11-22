@@ -400,7 +400,8 @@ impl Personal {
     }
 
     /// Whether `workspace` is the person's own, which holds what is theirs alone (their devices,
-    /// their settings, this list): the shell never shows it, nor counts it as one to work in.
+    /// their settings, this list). This device holds it, but the shell never counts it as one to
+    /// work in; the list never names it.
     fn is_own(&self, workspace: WorkspaceId) -> bool {
         workspace.to_string()
             == tilo_server_protocol::servers::person_workspace_id(
@@ -414,12 +415,12 @@ impl Personal {
         self.seed
     }
 
-    /// Whether the person's list names a workspace of theirs besides `except` and their own:
-    /// one this device or another of theirs made, or one a host of theirs lists.
+    /// Whether the person's list names a workspace of theirs besides `except`: one this device or
+    /// another of theirs made, or one a host of theirs lists.
     fn names_besides(&self, except: WorkspaceId) -> bool {
         entries_of(&self.directory)
             .iter()
-            .any(|(workspace, _)| *workspace != except && !self.is_own(*workspace))
+            .any(|(workspace, _)| *workspace != except)
     }
 
     /// Settle the workspace the shell started with ([`Self::seed`]) once what the person has is
@@ -719,8 +720,7 @@ impl Personal {
         handle: &DesktopHandle,
         unknown_here: &dyn Fn(WorkspaceId) -> bool,
     ) -> Adoption {
-        let mut entries = entries_of(&self.directory);
-        entries.retain(|(workspace, _)| !self.is_own(*workspace));
+        let entries = entries_of(&self.directory);
         let mut adoption = Adoption::default();
         let present: Vec<WorkspaceId> =
             handle.read(|tree| tree.workspaces.iter().map(Workspace::id).collect());
@@ -963,9 +963,6 @@ impl Personal {
             .collect();
         let mut moved = false;
         for (workspace, entry) in listed {
-            if self.is_own(workspace) {
-                continue;
-            }
             let host = entry.host.host.writes_for();
             let Ok(hint) = postcard::to_allocvec(&entry.host) else {
                 continue;
