@@ -1833,20 +1833,20 @@ tilo_test_env::scenario! {
             "the chip shows nobody"
         );
 
-        // The picks fold into one step of the task's history, the way one person's changes made in
-        // a row do, and the step reads with what its last change did. The page itself draws the
-        // assignee as a chip, with no label beside it.
+        // The picks fold into one step of the task's history with its making, the way one person's
+        // changes made in a row do, and a step that made the task says so whatever followed it.
+        // The page itself draws the assignee as a chip, with no label beside it.
         let shown = texts(page.tree());
         assert!(
-            shown.join(" ").contains("You unassigned it"),
-            "clearing the assignee last, the step says so: {shown:?}"
+            shown.join(" ").contains("You created it"),
+            "the step that made the task leads with its making: {shown:?}"
+        );
+        assert!(
+            !shown.join(" ").contains("You unassigned it"),
+            "the picks after the making stand under it, not in its lead: {shown:?}"
         );
         pick_the_assignee(&ada, &mut page, &key, &pick("ben"));
         let shown = texts(page.tree());
-        assert!(
-            shown.join(" ").contains("You assigned it to"),
-            "assigned last, the step says that instead: {shown:?}"
-        );
         assert!(
             !shown.iter().any(|text| text == "Assignee"),
             "the assignee is a chip, not a labelled field: {shown:?}"

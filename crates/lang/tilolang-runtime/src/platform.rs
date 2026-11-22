@@ -805,7 +805,11 @@ impl Core {
             .borrow()
             .written(of, &specs, (since.unwrap_or(&v.change), &v.change))
             .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-        // Each field it wrote, with what it held before and after as its type shows it.
+        // Each field it wrote, with what it held before and after as its type shows it. The field
+        // a record is named by reads, while empty, as every surface names the record then: the
+        // words its type gives it while untitled, as the field's placeholder stands, dimmed.
+        let named = info.name_field().map(|field| field.id.as_str());
+        let untitled = self.untitled_words(of);
         let mut held: Vec<(&crate::registry::FieldInfo, Value, Value)> =
             Vec::with_capacity(written.len());
         for (id, before, after) in written {
@@ -816,6 +820,15 @@ impl Core {
                 let value = self
                     .field_value(of, field, held, None)
                     .map_err(crate::engine::HostFail::Trap)?;
+                if named == Some(field.id.as_str())
+                    && matches!(&value, Value::Text(text) if text.trim().is_empty())
+                {
+                    return Ok(Value::Tuple(vec![
+                        Value::text("placeholder"),
+                        Value::Text(untitled.clone()),
+                        Value::none(),
+                    ]));
+                }
                 self.change_shown(&field.ty, &value, viewer)
             };
             held.push((field, side(before)?, side(after)?));
@@ -2100,6 +2113,25 @@ impl Core {
             return Ok(self.word_args(&key, &[], untitled));
         }
         Ok(sentence(&ty.name))
+    }
+
+    /// What a record of `of`'s type is called while its title is empty: the words its type
+    /// declares for it (`(untitled: "Untitled")`), else its type's name, as [`Self::title_of`]
+    /// names it.
+    fn untitled_words(&self, of: &ResourceRef) -> String {
+        let Ok((pkg, info)) = self.type_of_ref(&of.ty) else {
+            return String::new();
+        };
+        let Some(declared) = pkg.meta.types.iter().find(|ty| ty.id == info.id) else {
+            return sentence(&info.name);
+        };
+        match &declared.untitled {
+            Some(untitled) => {
+                let key = format!("{}.untitled", tilolang::messages::key_of(&declared.id));
+                self.word_args(&key, &[], untitled)
+            }
+            None => sentence(&declared.name),
+        }
     }
 
     /// The actions offered on `target`: its type's own that need nothing else (what else it

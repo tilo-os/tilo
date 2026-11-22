@@ -788,6 +788,9 @@ pub(crate) fn shown_node(key: &str, shown: &Value, phrase: &dyn Fn(&str) -> Stri
     };
     match kind {
         "none" => shown_text(key, Value::Text(phrase("tilolang-none-value")), true),
+        // A title left empty, as the field's placeholder reads: the record's untitled words,
+        // dimmed.
+        "placeholder" => shown_text(key, value, true),
         "date" | "time" => shown_moment(key, kind, value, extra),
         "actor" => {
             let avatar = shown_node_of(

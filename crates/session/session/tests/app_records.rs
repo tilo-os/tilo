@@ -537,9 +537,11 @@ fn a_task_added_in_the_window_is_the_persons_and_marks_nothing_for_them() {
     );
 }
 
-/// What the person types into a task's title in the window is one act of its history: the
-/// keystrokes of one burst fold into one entry beside the task's making, and each keystroke's
-/// own version reads what that keystroke typed, not the whole burst.
+/// A task the person makes with the window's New task and names by typing is, in its history,
+/// one step that says they made it: the keystrokes of the burst fold into one act beside the
+/// making, each keystroke's own version reads what that keystroke typed, and opened, the act reads
+/// from the title's placeholder, dimmed as the empty field shows it, across an arrow to what they
+/// typed.
 #[test]
 fn typing_a_title_in_the_window_is_one_act_of_its_history() {
     use tilolang_tilo::runtime::store::{FieldSpec, FieldValue, Store as _};
@@ -553,7 +555,7 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
         session(&mut home, root.path(), std::sync::Arc::clone(&launches));
     let me = me();
 
-    let (typed, steps) =
+    let (typed, steps, lead, (placeholder, arrow, said)) =
         in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
             let package = host.package(TASKS)?;
             let task = package.meta.types.iter().find(|ty| ty.name == "Task")?;
@@ -563,18 +565,24 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
                 .find(|field| field.name == "title")?
                 .id
                 .clone();
-            let Some((milk, said, _)) = tasks_in(host)
-                .into_iter()
-                .find(|(_, said, _)| said.starts_with("Milk"))
+            let tasks = tasks_in(host);
+            let Some((milk, said, _)) = tasks
+                .iter()
+                .find(|(_, said, _)| said.is_empty() || TYPED.starts_with(said.as_str()))
+                .cloned()
             else {
-                add_task(host, &me, "Milk")?;
+                // The window's New task: a task with nothing in its title yet.
+                add_task(host, &me, "")?;
                 return None;
             };
-            if said == "Milk" {
-                // The person types the rest of the title into the task's page, one key at a time.
+            if said.is_empty() {
+                // The person types its title into the task's page, one key at a time, with no
+                // pause between keys however long a loaded machine takes to write each one.
+                host.store()
+                    .set_edit_pause(std::time::Duration::from_secs(60));
                 let page = host.open_resource(&milk, None).ok()?;
                 let key = bound_key(page.tree(), &title)?;
-                for end in "Milk".len() + 1..=TYPED.len() {
+                for end in 1..=TYPED.len() {
                     page.edit(&key, &Value::text(&TYPED[..end]))
                         .unwrap_or_else(|error| panic!("the title takes the key: {error}"));
                 }
@@ -587,13 +595,16 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
                 id: title.clone(),
                 kind: tilolang_tilo::runtime::meta::FieldKind::Text,
             }];
-            // What each version that wrote the title says it wrote.
+            // What each keystroke's version says it wrote.
             let typed: Vec<(String, String)> = host
                 .runtime()
                 .versions(&milk)
                 .ok()?
                 .iter()
                 .filter(|version| version.fields.contains(&title))
+                .filter(|version| {
+                    version.kind != tilolang_tilo::runtime::store::VersionKind::Created
+                })
                 .filter_map(|version| {
                     let written = host
                         .store()
@@ -623,20 +634,84 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
             else {
                 return None;
             };
-            Some((typed, steps))
+            // The task's page: what its History says, then what it says opened.
+            let page = host.open_resource(&milk, None).ok()?;
+            let mut lead = Vec::new();
+            texts_of(page.tree(), &mut lead);
+            let show = node_where(page.tree(), &|node| {
+                // The words where the window reads its catalogue, the phrase's key where not.
+                node.kind == "ui.Button"
+                    && ["Show changes", "tilolang-history-show"]
+                        .iter()
+                        .any(|label| node.props.get("label") == Some(&Value::text(*label)))
+            })?
+            .key
+            .clone();
+            page.press(&show)
+                .unwrap_or_else(|error| panic!("the step opens: {error}"));
+            let page = host.open_resource(&milk, None).ok()?;
+            let opened = page.tree();
+            // What the opened step draws: the title's placeholder, dimmed; an arrow; and its words.
+            let placeholder = node_where(opened, &|node| {
+                node.kind == "ui.Text"
+                    && node.props.get("value") == Some(&Value::text("Task"))
+                    && node.props.get("secondary") == Some(&Value::Bool(true))
+            })
+            .is_some();
+            let arrow = node_where(opened, &|node| {
+                node.kind == "ui.Icon"
+                    && node.props.get("icon") == Some(&Value::text("arrow-right"))
+            })
+            .is_some();
+            let mut said = Vec::new();
+            texts_of(opened, &mut said);
+            Some((typed, steps, lead, (placeholder, arrow, said)))
         });
-    // The making wrote the title first; each keystroke after it reads only what it typed.
-    let expected: Vec<(String, String)> = std::iter::once((String::new(), "Milk".to_owned()))
-        .chain(
-            ("Milk".len() + 1..=TYPED.len())
-                .map(|end| (TYPED[..end - 1].to_owned(), TYPED[..end].to_owned())),
-        )
+    let expected: Vec<(String, String)> = (1..=TYPED.len())
+        .map(|end| (TYPED[..end - 1].to_owned(), TYPED[..end].to_owned()))
         .collect();
     assert_eq!(typed, expected, "each keystroke reads what it typed");
     assert_eq!(
         steps, "2 2",
         "the making and the burst of typing are one step of two acts, each listed once"
     );
+    // The step leads with the making: the task reads as made, the typing under it.
+    assert!(
+        lead.iter().any(|text| text == "created it"),
+        "the step says the person made it: {lead:?}"
+    );
+    assert!(
+        !lead.iter().any(|text| text == "renamed"),
+        "the step does not lead with the typing: {lead:?}"
+    );
+    // Opened, the typing reads from the empty title, as the field shows it, to what was typed.
+    assert!(
+        placeholder,
+        "the empty title reads as its placeholder, dimmed: {said:?}"
+    );
+    assert!(
+        arrow,
+        "an arrow stands between what the title held and what it holds"
+    );
+    assert!(
+        !said
+            .iter()
+            .any(|text| text == "Empty" || text == "tilolang-empty-value"),
+        "nothing reads the empty title as a word of its own: {said:?}"
+    );
+}
+
+/// The first node of `tree`, depth first, that `wanted` holds for.
+fn node_where<'a>(
+    tree: &'a tilolang_tilo::runtime::UiNode,
+    wanted: &dyn Fn(&tilolang_tilo::runtime::UiNode) -> bool,
+) -> Option<&'a tilolang_tilo::runtime::UiNode> {
+    if wanted(tree) {
+        return Some(tree);
+    }
+    tree.children
+        .iter()
+        .find_map(|child| node_where(child, wanted))
 }
 
 /// The key of the node of `tree` bound to the field `field`: what a person types into.
