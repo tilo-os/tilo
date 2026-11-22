@@ -408,7 +408,45 @@ impl Processes {
         } else {
             runtime_portal::process_link::Shows::Nothing
         };
-        self.hand_over_showing(instance, shows)
+        self.hand_over_showing(instance, shows, false)
+    }
+
+    /// Run `instance`, which shows nothing, for the workspace's server: the server governs the
+    /// workspace, so the run carries over, once, what a native app of the package's id kept there
+    /// ([`Self::keep_earlier`]). It is started as any other run of the package is, with the same
+    /// sandbox and grants.
+    ///
+    /// # Errors
+    /// As [`Self::hand_over_now`].
+    pub fn run_for_workspace_server(self: &Arc<Self>, instance: Instance) -> std::io::Result<bool> {
+        self.hand_over_showing(instance, runtime_portal::process_link::Shows::Nothing, true)
+    }
+
+    /// Keep `documents`, what a native app of the id `app` kept in `workspace` as the host that
+    /// governs the workspace holds it, each by the key it was stored under, where a process of
+    /// `app` in `workspace` reads what an earlier version of its app kept ([`Self::earlier`]):
+    /// that app's documents of that workspace, and nothing else.
+    ///
+    /// # Errors
+    /// A key that names no document of the app, or the store does not keep one.
+    pub fn keep_earlier(
+        &self,
+        workspace: &str,
+        app: &str,
+        documents: Vec<(String, automerge::AutoCommit)>,
+    ) -> std::io::Result<()> {
+        let root = self.earlier_root(workspace, app);
+        let store: std::rc::Rc<dyn durable_store::DurableStore> =
+            std::rc::Rc::new(app_state::FsStore::provisioned(&root));
+        for (key, mut document) in documents {
+            app_state::DocStore::exclusive(
+                std::rc::Rc::clone(&store),
+                durable_store::StorageKey::document(app, workspace, &key),
+            )
+            .and_then(|mut kept| kept.save(&mut document))
+            .map_err(|error| std::io::Error::other(format!("{app}'s {key}: {error}")))?;
+        }
+        store.flush(None).map_err(std::io::Error::other)
     }
 
     /// Show a viewer's page of an app from its tilolang process: the process lays its view out
@@ -418,13 +456,14 @@ impl Processes {
     /// # Errors
     /// As [`Self::hand_over_now`].
     pub fn show_page(self: &Arc<Self>, instance: Instance) -> std::io::Result<bool> {
-        self.hand_over_showing(instance, runtime_portal::process_link::Shows::Page)
+        self.hand_over_showing(instance, runtime_portal::process_link::Shows::Page, false)
     }
 
     fn hand_over_showing(
         self: &Arc<Self>,
         instance: Instance,
         shows: runtime_portal::process_link::Shows,
+        for_workspace_server: bool,
     ) -> std::io::Result<bool> {
         let refused =
             |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
@@ -476,6 +515,7 @@ impl Processes {
                 std::collections::BTreeMap::new()
             },
             access: instance.access,
+            for_workspace_server,
         };
         let fds = InstanceFds {
             broker: instance.collaboration,
@@ -707,15 +747,20 @@ impl Processes {
     /// and the native app it replaced wrote: the directory of that app's documents in the
     /// workspace, and where it lies beneath that store's root. `None` where it kept nothing.
     fn earlier(&self, key: &HostKey) -> Option<(PathBuf, PathBuf)> {
-        let root = launcher::appdir::host_app_dir(
-            &self.data_home,
-            &launcher::appdir::workspace_slug(Some(&key.workspace)),
-            &key.app,
-        )
-        .join(".local/share");
+        let root = self.earlier_root(&key.workspace, &key.app);
         let dir = app_state::workspace_index_directory(&root, &key.app, &key.workspace).ok()?;
         let under = dir.strip_prefix(&root).ok()?.to_path_buf();
         dir.is_dir().then_some((dir, under))
+    }
+
+    /// The root of the store the native app `app` wrote in `workspace` on this device.
+    fn earlier_root(&self, workspace: &str, app: &str) -> PathBuf {
+        launcher::appdir::host_app_dir(
+            &self.data_home,
+            &launcher::appdir::workspace_slug(Some(workspace)),
+            app,
+        )
+        .join(".local/share")
     }
 
     /// Start the process `key`, with its socket at the launch kind's descriptor, and follow it on a
@@ -1012,6 +1057,74 @@ mod tests {
             ..key
         };
         assert!(processes.earlier(&absent).is_none());
+    }
+
+    /// What the server keeps of a native app for one workspace is what a process of the app in
+    /// that workspace reads, and nothing of another workspace's: each is kept where only its own
+    /// workspace's process is granted it.
+    #[test]
+    fn what_the_server_keeps_for_a_workspace_is_read_there_alone() {
+        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000e1";
+        const ELSEWHERE: &str = "7a110d00-0000-4000-8000-0000000000e2";
+        let home = tempfile::tempdir().expect("the server's data home");
+        let processes = Processes::with(
+            home.path().to_path_buf(),
+            Box::new(|_, _, _, _| Command::new("true")),
+            Box::new(|_, _| Err("no package store here".to_owned())),
+        );
+        let notebook = |title: &str| {
+            use automerge::transaction::Transactable as _;
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "title", title).unwrap();
+            doc
+        };
+        processes
+            .keep_earlier(
+                WORKSPACE,
+                NOTES,
+                vec![("ours".to_owned(), notebook("Ours"))],
+            )
+            .unwrap();
+        processes
+            .keep_earlier(
+                ELSEWHERE,
+                NOTES,
+                vec![("theirs".to_owned(), notebook("Theirs"))],
+            )
+            .unwrap();
+        let key = HostKey {
+            workspace: WORKSPACE.to_owned(),
+            app: NOTES.to_owned(),
+            runtime: "tilolang@1".to_owned(),
+            app_runtime: "tilo@1".to_owned(),
+        };
+        let (granted, under) = processes
+            .earlier(&key)
+            .expect("the workspace's documents are kept");
+        // The process reads the store from the root its grant sits under, as its mount shows it.
+        let root = granted
+            .ancestors()
+            .nth(under.components().count())
+            .expect("the store's root")
+            .to_path_buf();
+        let store = app_state::FsStore::provisioned(&root);
+        use durable_store::DurableStore as _;
+        assert_eq!(
+            store.documents(NOTES, WORKSPACE).unwrap(),
+            ["ours"],
+            "the workspace's own documents are there"
+        );
+        let elsewhere = HostKey {
+            workspace: ELSEWHERE.to_owned(),
+            ..key
+        };
+        let (theirs, _) = processes
+            .earlier(&elsewhere)
+            .expect("the other workspace's are kept");
+        assert!(
+            !theirs.starts_with(&granted) && !granted.starts_with(&theirs),
+            "another workspace's documents are no part of what the process reads"
+        );
     }
 
     /// Processes running in each workspace of `running`, behind its socket, each with two windows of

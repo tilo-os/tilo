@@ -68,6 +68,10 @@ launcher = { path = "../../packaging/launcher" }
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 tilo-app-state = { path = "../../system/app-state" }
+# What a native app kept in a workspace, kept where its tilolang successor's process reads it
+# for the host that governs the workspace.
+automerge.workspace = true
+durable-store = { path = "../../system/durable-store" }
 hex.workspace = true
 # The window request the channel carries, as the app reads it.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
@@ -86,10 +90,6 @@ tilo-app-keeper = { path = "../app-keeper" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-# A record a window kept, written as its own process writes it, read back
-# where its host keeps it.
-automerge.workspace = true
-durable-store = { path = "../../system/durable-store" }
 # The subscriber a test reads what an app wrote back through.
 tracing-subscriber = { workspace = true }
 tilo-test-env = { path = "../../dev/test-env" }

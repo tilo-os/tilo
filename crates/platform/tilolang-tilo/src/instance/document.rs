@@ -453,6 +453,14 @@ impl InstanceDocument {
         self.governs
     }
 
+    /// This record as a device that does not govern its workspace holds it: read from the host
+    /// that does, through that host's broker, as a server's own process of an app reads it.
+    #[must_use]
+    pub const fn governed_elsewhere(mut self) -> Self {
+        self.governs = false;
+        self
+    }
+
     /// Whether the document runs on this device alone ([`Self::open_local`]): nothing it publishes
     /// has a broker to go to.
     #[must_use]

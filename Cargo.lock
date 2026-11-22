@@ -23654,6 +23654,7 @@ dependencies = [
  "tilo-agent-session",
  "tilo-app",
  "tilo-app-id",
+ "tilo-app-launch",
  "tilo-app-package",
  "tilo-automation",
  "tilo-automerge",

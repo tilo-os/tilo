@@ -95,7 +95,7 @@ pub struct Presented {
     /// such a device only.
     pub their_device: bool,
     /// The person's identity, on a device of theirs.
-    pub profile: Option<crate::registry::IdentityProfile>,
+    pub profile: Option<crate::store::IdentityProfile>,
 }
 
 /// Why a request is decided as nobody.

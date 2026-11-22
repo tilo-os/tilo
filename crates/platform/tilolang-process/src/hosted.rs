@@ -104,6 +104,10 @@ pub struct Spec {
     /// instance that shows nothing draws no window, offers no window verb, and runs the app's
     /// actions on its document alone.
     pub shows: Shows,
+    /// Whether this is a run for the workspace's server (`InstanceRequest::for_workspace_server`):
+    /// the server governs the workspace, so the run is where the package's migrations carry what a
+    /// native app of its id kept there, though it reads the workspace through the server's broker.
+    pub for_workspace_server: bool,
 }
 
 impl Spec {
@@ -125,6 +129,7 @@ impl Spec {
             language: String::new(),
             access: None,
             shows: Shows::View,
+            for_workspace_server: false,
         }
     }
 
@@ -139,6 +144,15 @@ impl Spec {
     #[must_use]
     pub fn access(mut self, access: tilo_action_policy::MemberAccess) -> Self {
         self.access = Some(access);
+        self
+    }
+
+    /// [`Self::new`] for a run for the workspace's server, which shows nothing
+    /// ([`Self::for_workspace_server`]).
+    #[must_use]
+    pub fn for_the_workspace_server(mut self) -> Self {
+        self.shows = Shows::Nothing;
+        self.for_workspace_server = true;
         self
     }
 
@@ -166,7 +180,7 @@ impl Transport for NoView {
 }
 
 /// The documents a native app of the package's id `app` kept in `record`'s workspace on this
-/// device, when this device governs the workspace (none elsewhere), each by the id it holds (a
+/// device, when this run `governs` the workspace (none elsewhere), each by the id it holds (a
 /// store keys a document by a name made from its id), else by the key it is stored under: its
 /// records, which the package now under that id carries over once with a migration of
 /// its own. They are read under `app`, not under the id of `record`'s route: a package published
@@ -181,11 +195,12 @@ fn earlier_documents(
     documents: Option<&Rc<dyn durable_store::DurableStore>>,
     app: &str,
     record: &InstanceDocument,
+    governs: bool,
 ) -> Vec<(String, automerge::AutoCommit)> {
     let Some(documents) = documents else {
         return Vec::new();
     };
-    if !record.governs() {
+    if !governs {
         return Vec::new();
     }
     let workspace = record.route().cluster_id.to_string();
@@ -1064,9 +1079,16 @@ impl Hosted {
             transport,
         );
         // The device that governs the workspace is its documents' origin: the package's migrations
-        // run there, once, over what a native app of the package's id kept there too.
-        instance.set_origin(record.governs());
-        instance.set_earlier(earlier_documents(kept.earlier.as_ref(), &spec.app, &record));
+        // run there, once, over what a native app of the package's id kept there too. A server
+        // governs its workspaces but reads them through its broker, so its run says so itself.
+        let governs = record.governs() || spec.for_workspace_server;
+        instance.set_origin(governs);
+        instance.set_earlier(earlier_documents(
+            kept.earlier.as_ref(),
+            &spec.app,
+            &record,
+            governs,
+        ));
         // What its runtime offers and invokes is decided by the person's access as the session
         // says it, read at each decision.
         let access = Rc::new(RefCell::new(spec.access.clone()));
@@ -1551,6 +1573,17 @@ impl Hosted {
         let invoker = ActionInvoker::person(self.spec.person.clone());
         self.record
             .revert_step(&mut self.instance, resource, kind, invoker, ambient, change)
+    }
+
+    /// Whether this is a run for the workspace's server whose work is done: the package's
+    /// migrations ran (or found their marks) and the workspace was handed what they wrote. Such a
+    /// run is never a reader that stays, so it ends then.
+    #[must_use]
+    pub fn carried(&self) -> bool {
+        self.spec.for_workspace_server
+            && self.instance.has_migrated()
+            && !self.owes_a_frame()
+            && self.unsent_parts().is_empty()
     }
 
     /// What this instance holds that the workspace was not handed yet, as its parts

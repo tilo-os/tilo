@@ -893,6 +893,7 @@ impl TilolangProcess {
                 language: request.language,
                 access: request.access,
                 shows: request.shows,
+                for_workspace_server: request.for_workspace_server,
                 ..Spec::new(
                     request.app,
                     request.workspace,
@@ -1169,7 +1170,9 @@ impl TilolangProcess {
         let before = self.running.len();
         let ended = &mut self.ended;
         self.running.retain_mut(|running| {
+            let carried = running.hosted.carried();
             let open = !running.broken
+                && !carried
                 && running
                     .window
                     .as_ref()
@@ -1179,7 +1182,8 @@ impl TilolangProcess {
                 tracing::info!(
                     app = running.hosted.spec().app,
                     instance = running.hosted.spec().instance,
-                    "instance ended: its window closed"
+                    carried,
+                    "instance ended: its window closed, or the server's run carried what it had to"
                 );
                 ended.push(running.hosted.spec().instance);
             }

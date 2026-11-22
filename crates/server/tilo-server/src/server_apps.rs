@@ -143,9 +143,9 @@ impl ContentService {
                 .await
                 .map_err(std::io::Error::other)?,
         );
-        let media = fs::document_media::DocumentMedia::new(store);
+        let media = tilo_fs::document_media::DocumentMedia::new(store);
         let server =
-            fs::document_media::serve_socket(socket, media).map_err(std::io::Error::other)?;
+            tilo_fs::document_media::serve_socket(socket, media).map_err(std::io::Error::other)?;
         Ok(Self { _server: server })
     }
 }

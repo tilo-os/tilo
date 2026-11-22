@@ -220,3 +220,159 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
         "the notebook is carried over once"
     );
 }
+
+/// Notes as a server runs it for one of its workspaces: the server governs the workspace, but
+/// its process reads it through the server's broker, so the record does not govern by itself.
+/// `for_server` makes it the run for the workspace's server; `record` is the workspace's document
+/// as the broker holds it. The server granted the process what the native Notes kept, at `native`.
+/// Answers the host once it settled, and what the run handed the workspace.
+fn run_on_the_server(
+    workspace: uuid::Uuid,
+    record: automerge::AutoCommit,
+    native: &std::path::Path,
+    storage: &std::path::Path,
+    for_server: bool,
+) -> (TilolangProcess, Sent) {
+    let bundle = notes();
+    tilolang_tilo::schema::register_previously(NOTES, &[PUBLISHED_BEFORE.to_owned()]);
+    let route = tilolang_process::route_under(&bundle.meta, PUBLISHED_BEFORE, workspace, ADA);
+    let broker = Broker::new(route.clone());
+    let sent = broker.sent();
+    let mut manager = CollaborationManager::with_peer_transport(broker);
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id,
+        record: None,
+        resource_type: None,
+        handle: Some(ADA.to_owned()),
+    }));
+    let _ = manager.poll();
+    let record = InstanceDocument::new(record, manager, route, ADA)
+        .keeping_content_in(tilo_content::ContentStore::memory())
+        .governed_elsewhere();
+    let mut host =
+        TilolangProcess::new(Some(storage.to_path_buf()), wake()).reading_earlier(native.into());
+    let kept = host.kept(PUBLISHED_BEFORE).unwrap();
+    let spec = Spec::new(NOTES, workspace.to_string(), 1, ADA);
+    let spec = if for_server {
+        spec.for_the_workspace_server()
+    } else {
+        spec.showing(Shows::Nothing)
+    };
+    let hosted = Hosted::with_document(
+        spec,
+        record,
+        Arc::new(bundle),
+        &kept,
+        Box::new(tilolang_process::hosted::NoView),
+        &Rc::new(Phrases::new("en-US")),
+        host.formats(),
+        wake(),
+    );
+    host.add(hosted, None);
+    settle_all(&mut host, &mut [], |_| false);
+    (host, sent)
+}
+
+/// The workspace's document as it holds `before` and what a run handed it since.
+fn handed(before: &automerge::AutoCommit, sent: &Sent) -> automerge::AutoCommit {
+    let mut held = before.clone();
+    held.merge(&mut workspace_copy(sent)).unwrap();
+    held
+}
+
+/// Each note the workspace's document `held` holds, as a reader of it is shown them.
+fn notes_held(
+    workspace: uuid::Uuid,
+    held: automerge::AutoCommit,
+    native: &std::path::Path,
+) -> Vec<(String, String, Vec<String>)> {
+    let device = tempfile::tempdir().unwrap();
+    let (reader, _) = run_on_the_server(workspace, held, native, device.path(), false);
+    let held = reader
+        .instances()
+        .next()
+        .unwrap()
+        .instance()
+        .host()
+        .unwrap();
+    let Ok(notebook) = held.root_of(NOTES) else {
+        return Vec::new();
+    };
+    let Value::List(notes) = held.runtime().read(&notebook, "notes").unwrap() else {
+        panic!("the notes read as a list");
+    };
+    if notes.is_empty() {
+        return Vec::new();
+    }
+    notes_shown(&reader)
+}
+
+#[test]
+fn the_run_for_the_workspace_server_carries_the_native_notebook_once_and_ends() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let workspace = uuid::Uuid::new_v4();
+    let device = tempfile::tempdir().unwrap();
+    let native = device.path().join("native");
+    native_notes_kept(&native, workspace);
+    let empty = automerge::AutoCommit::new();
+
+    // A run that is not the server's, reading the workspace through the broker, carries nothing:
+    // it is no origin.
+    assert_eq!(
+        notes_held(workspace, empty.clone(), &native),
+        [],
+        "a run that does not govern the workspace carries nothing of what the native app kept"
+    );
+
+    let (mut first, sent) = run_on_the_server(
+        workspace,
+        empty.clone(),
+        &native,
+        &device.path().join("server"),
+        true,
+    );
+    assert!(
+        first.is_empty() && first.take_ended() == [1],
+        "the server's run ends once it carried what the native app kept"
+    );
+    assert!(
+        documents_sent(&sent) > 0,
+        "the run handed the workspace what it carried"
+    );
+    let held = handed(&empty, &sent);
+    let carried = notes_held(workspace, held.clone(), &native);
+    let titles: Vec<&str> = carried.iter().map(|(_, title, _)| title.as_str()).collect();
+    assert_eq!(
+        titles,
+        ["Handbook", "Setup", "Laptop", "Security", "Inbox"],
+        "the server's run carries every page of the native notebook"
+    );
+    assert_eq!(
+        carried
+            .iter()
+            .find(|(_, title, _)| title == "Setup")
+            .map(|(_, _, body)| body.clone()),
+        Some(vec!["Accounts".into(), "Mail".into(), "Chat".into()]),
+        "each with the body its page had"
+    );
+
+    // The server starts again over what the workspace now holds: nothing is carried twice, and
+    // the run ends again.
+    let (mut again, sent) = run_on_the_server(
+        workspace,
+        held.clone(),
+        &native,
+        &device.path().join("server"),
+        true,
+    );
+    assert!(
+        again.is_empty() && again.take_ended() == [1],
+        "the second run ends too"
+    );
+    assert_eq!(
+        notes_held(workspace, handed(&held, &sent), &native),
+        carried,
+        "a second start carries the notebook no second time"
+    );
+}

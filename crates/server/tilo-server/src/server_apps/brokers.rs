@@ -84,6 +84,49 @@ impl ServerWorkspaces {
     }
 
     /// The `.tapp` file `workspace` installed as `app`, as the server keeps it.
+    /// What a native app of the id `app` kept in `workspace`, as this server holds it: each of
+    /// its documents there by the key a store keeps it under, and none of the records a tilolang
+    /// package keeps under the same id (its document and their chunks). While one of them does
+    /// not read, none are answered: carrying some of them would leave the rest behind for good.
+    ///
+    /// # Errors
+    /// The workspace is not governed here, or one of the documents does not read.
+    pub fn native_documents(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+    ) -> Result<Vec<(String, automerge::AutoCommit)>, String> {
+        let workspaces = self.workspaces.clone();
+        let app = app.to_owned();
+        block_on(&self.runtime, async move {
+            let workspace = workspace.to_string();
+            let routes = workspaces
+                .workspace_document_routes(&workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut kept = Vec::new();
+            for (of, record) in routes {
+                // A tilolang package's record under the same id is its document of the workspace
+                // (`""`) and the chunks above it (`derived:chunk.<n>@`).
+                if of != app || record.is_empty() || record.starts_with("derived:chunk.") {
+                    continue;
+                }
+                let Some(id) = collab_types::document::DocumentId::parse(&record) else {
+                    continue;
+                };
+                let bytes = workspaces
+                    .resource_document(&workspace, &app, &record)
+                    .await
+                    .map_err(|error| format!("{record}: {error}"))?
+                    .ok_or_else(|| format!("{record} has not arrived"))?;
+                let document = automerge::AutoCommit::load(&bytes)
+                    .map_err(|error| format!("{record}: {error}"))?;
+                kept.push((id.storage_key(), document));
+            }
+            Ok(kept)
+        })
+    }
+
     #[must_use]
     pub fn installed_package(&self, workspace: &str, app: &str) -> Option<Vec<u8>> {
         let workspaces = self.workspaces.clone();
@@ -282,7 +325,9 @@ impl ServerApps {
                 }
                 match apps.start(workspace) {
                     Ok(running) => {
+                        let launcher = Arc::clone(&running.launcher);
                         apps.running().insert(workspace, running);
+                        apps.carry_earlier(workspace, &launcher);
                     }
                     Err(error) => {
                         refused.insert(workspace, error.to_string());
@@ -299,6 +344,25 @@ impl ServerApps {
     }
 
     /// Start `workspace`'s broker.
+    /// For each package `workspace` installed under the id of a native app whose documents the
+    /// workspace holds, start a run that shows nothing, for the workspace's server: the server
+    /// governs the workspace, so the package's migrations carry those documents here. The run
+    /// reads the server's own copy of that native app's documents in this workspace alone; its
+    /// migration marks what it carried, so a later start carries nothing again, and it ends once
+    /// its migrations ran, as does a package with none that read them.
+    fn carry_earlier(&self, workspace: WorkspaceId, launcher: &ServerLauncher) {
+        for installed in self.workspaces.installed(workspace) {
+            let app = installed.release.app;
+            let carried = self
+                .workspaces
+                .native_documents(workspace, &app)
+                .and_then(|documents| launcher.runs().carry(&app, documents));
+            if let Err(error) = carried {
+                tracing::warn!(%workspace, app, %error, "what the native app kept is not carried yet");
+            }
+        }
+    }
+
     fn start(&self, workspace: WorkspaceId) -> std::io::Result<Running> {
         use std::os::unix::fs::DirBuilderExt as _;
         // Only this server's own processes reach a workspace's broker, and each workspace's

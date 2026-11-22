@@ -518,8 +518,8 @@ async fn a_page_shows_nothing_to_someone_who_may_not_read_its_app() {
             tokio::task::spawn_blocking(move || {
                 opened
                     .wait_timeout(std::time::Duration::from_secs(30))
-                    .unwrap()
-                    .unwrap()
+                    .unwrap_or_else(|_| panic!("the page is answered in time"))
+                    .expect("the page is answered")
                     .map(|opened| opened.body)
             })
             .await
