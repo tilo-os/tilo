@@ -50,6 +50,8 @@ tilo-session-client = { version = "0.1.0", path = "../../session/client", featur
 tilo-session-actions = { version = "0.1.0", path = "../../session/session-actions" }
 # The device requester uses the same enrollment as the native CLI.
 tilo-enrollment = { version = "0.1.0", path = "../../collab/tilo-enrollment" }
+# The ticket a page's host serves it, and the approval the tab signs with its root.
+tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 # The identity layer's device side: certification transport, pairing, the sign-in proof.
 tilo-server-client = { version = "0.1.0", path = "../../server/tilo-server-client", features = ["dial"] }
 tilo-peer-state = { version = "0.1.0", path = "../../collab/tilo-peer-state" }

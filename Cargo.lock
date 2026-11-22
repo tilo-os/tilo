@@ -18277,6 +18277,7 @@ dependencies = [
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
+ "tilo-device-identity",
  "tilo-enrollment",
  "tilo-live",
  "tilo-peer-state",

@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use js_sys::{Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
+use tilo_device_identity::login::{Approved, Asked};
 use tilo_live::live::Track;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::https::{HttpClient, HttpFuture};
@@ -985,6 +986,45 @@ pub async fn certify_with_root(
     .map_err(js_error)
 }
 
+/// Approve the computer that asked with a ticket this tab's host serves: sign the member
+/// certificate the host built for it with this tab's root (`root`), and sign the question with
+/// this tab's device key. Resolves to the [`Approved`] JSON the host checks with
+/// `check_approval` before it answers the computer.
+///
+/// `asked` is the [`Asked`] JSON the host handed the page.
+///
+/// # Errors
+///
+/// The question is malformed, the root is not the person's, or a signature failed.
+#[wasm_bindgen(js_name = approveAsked)]
+pub async fn approve_asked(&self, root: JsValue, asked: String) -> Result<String, JsError> {
+    let asked: Asked = serde_json::from_str(&asked).map_err(js_error)?;
+    if asked.user_public_key != self.own_cert.user_public_key {
+        return Err(js_error("this tab approves computers of the person it is"));
+    }
+    let root = PageSigner::from_js(&root)?;
+    if root.device_public_key() != asked.user_public_key {
+        return Err(js_error(
+            "the root that signs the certificate is not the person's",
+        ));
+    }
+    let mut cert = asked.cert.clone();
+    tilo_user_identity::sign_device_cert_async(&mut cert, &root)
+        .await
+        .map_err(js_error)?;
+    let signature = self
+        .signer
+        .sign(asked.digest.to_vec())
+        .await
+        .map_err(|error| js_error(error.0))?;
+    serde_json::to_string(&Approved {
+        cert,
+        approver: self.own_cert.clone(),
+        signature,
+    })
+    .map_err(js_error)
+}
+
 /// `refusal` as the page reads it: an `Error` named `LoginCodeError`, with the host's HTTP
 /// `status` (0 unreached) and the kind of refusal as `code`
 /// ([`tilo_server_client::login_code::CodeRefusal::code`]).
@@ -1319,6 +1359,10 @@ use js_state::{
 pub struct WasmPeer {
     id: u32,
     device_key: [u8; 32],
+    /// This tab's device signer, as the session signs: what approves a computer a ticket named.
+    signer: Arc<dyn DeviceSigner>,
+    /// This tab's device certificate, signed by the person's root: the approver of a computer.
+    own_cert: DeviceCert,
     pub(crate) handle: Link,
     /// This page's device in its person's workspaces, over the same session: how it enters them.
     device: Device,
@@ -1453,6 +1497,7 @@ impl WasmPeer {
             ));
         }
         let signer: Arc<dyn DeviceSigner> = Arc::new(signer);
+        let kept_signer = Arc::clone(&signer);
         let store = peer_store(
             namespace,
             record,
@@ -1517,6 +1562,8 @@ impl WasmPeer {
         Ok(Self {
             id,
             device_key,
+            signer: kept_signer,
+            own_cert: reporter_cert,
             durable_events: handle.events_where(is_durable),
             live_events: handle.events_where(is_live),
             voice_events: handle.events_where(is_voice),

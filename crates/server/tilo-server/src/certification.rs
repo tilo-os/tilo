@@ -362,6 +362,14 @@ impl CertificationProtocol {
         let _ = self.records.set(workspaces);
     }
 
+    /// Add `cert`, a certificate the person's root signed here, to the person's
+    /// record, so their devices list it and the workspaces here admit it. Idempotent.
+    pub(crate) fn keep_issued_device(&self, cert: &DeviceCert, label: &str) {
+        if let Some(records) = self.records.get() {
+            records.keep_issued_device(cert, label);
+        }
+    }
+
     /// The devices this host knows are revoked.
     pub(crate) fn revocations(&self) -> RevocationList {
         self.identity.revocations.read_recover().clone()

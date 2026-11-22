@@ -24,6 +24,7 @@ mod sign_in;
 mod stand_in;
 #[cfg(test)]
 mod tests;
+mod tickets;
 mod tls;
 
 pub use fetch::FetchProxySetup;
@@ -233,6 +234,8 @@ struct Web {
     site: Option<Site>,
     /// The login codes tabs hand their agents.
     login_codes: Arc<login_codes::LoginCodes>,
+    /// The tickets tabs hand their agents, and the questions their computers ask with them.
+    tickets: tickets::Tickets,
     /// The wait list the entry keeps for a workspace taking people by
     /// invitation, when whoever runs this host keeps one.
     wait_list: WaitListSlot,
@@ -253,6 +256,17 @@ impl Web {
             follow_endpoint(address, endpoint.addr());
         }
         info
+    }
+
+    /// Serve the tickets a page's host makes for its agent: the certify action a computer with
+    /// no certificate calls, routed to the ticket whose secret its call carries.
+    fn serve_tickets(&self) {
+        if let Some(workspaces) = self.workspaces.as_ref() {
+            workspaces.action_service().admit_uncertified(
+                tilo_device_identity::login::SCOPE,
+                Arc::new(tickets::Router::new(self.tickets.clone())),
+            );
+        }
     }
 }
 
@@ -572,6 +586,7 @@ impl Server {
                 public_origin.clone(),
                 also,
             )),
+            tickets: tickets::Tickets::new(context.certification.clone()),
             wait_list: config.wait_list.clone(),
         });
         // The name each person gives themselves is kept with their profile, which the workspaces
@@ -584,6 +599,7 @@ impl Server {
             let _ = workspaces.shelve_invitations(invitation_shelf as Arc<dyn SealedInvitations>);
         }
         web.serve_code_requests();
+        web.serve_tickets();
         web.serve_pushes(
             self.state_root(),
             config.site.as_deref(),
@@ -1302,6 +1318,42 @@ fn login_route(
     })
 }
 
+/// Why a ticket route was refused, as the page is told it.
+fn ticket_refused(refusal: &tickets::Refusal) -> Response<Body> {
+    let status = match refusal {
+        tickets::Refusal::Malformed => StatusCode::BAD_REQUEST,
+        tickets::Refusal::Unknown => StatusCode::NOT_FOUND,
+        tickets::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
+    };
+    refused(status, refusal.message())
+}
+
+/// The ticket routes ([`tickets`]), or `None` for any other route.
+fn ticket_route(web: &Web, route: &str, bytes: &[u8]) -> Option<Response<Body>> {
+    fn answered<T: serde::Serialize>(result: Result<T, tickets::Refusal>) -> Response<Body> {
+        result.map_or_else(|refusal| ticket_refused(&refusal), |value| json(&value))
+    }
+    let answer = match route {
+        tickets::MINT_ROUTE => match json_body::<tickets::Mint>(bytes) {
+            Ok(mint) => answered(web.tickets.mint(&mint, &web.current_host_info())),
+            Err(refusal) => refusal,
+        },
+        tickets::ASKED_ROUTE => match json_body::<tickets::Asking>(bytes) {
+            Ok(asking) => answered(web.tickets.asking(&asking.id)),
+            Err(refusal) => refusal,
+        },
+        tickets::ANSWER_ROUTE => match json_body::<tickets::Answering>(bytes) {
+            Ok(answering) => match web.tickets.answer(&answering) {
+                Ok(()) => reply(StatusCode::NO_CONTENT, Vec::new()),
+                Err(refusal) => ticket_refused(&refusal),
+            },
+            Err(refusal) => refusal,
+        },
+        _ => return None,
+    };
+    Some(answer)
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one routing table: every browser route and its body type in one place"
@@ -1324,6 +1376,9 @@ async fn route(
     let client = client_address(&request);
     let (_, bytes) = body(request, MAX_REQUEST_BYTES).await?;
     if let Some(answer) = login_route(web, route, &bytes, client) {
+        return Ok(answer);
+    }
+    if let Some(answer) = ticket_route(web, route, &bytes) {
         return Ok(answer);
     }
     match route {
