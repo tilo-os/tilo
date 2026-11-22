@@ -26,6 +26,17 @@ async fn shared(
 ) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
     let (serving_key, serving_cert) = governor();
     let serving = test_host(serving_state, &serving_key, &serving_cert).await;
+    invited(serving, &serving_cert, name, seed).await
+}
+
+/// `serving` creates the workspace `name` and invites a device of `seed` into it: the serving
+/// device, the device it invites, the workspace and the invitation's text.
+async fn invited(
+    serving: TestHost,
+    serving_cert: &DeviceCert,
+    name: &str,
+    seed: u8,
+) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
     let created = serving
         .workspaces()
         .create(name)
@@ -39,7 +50,7 @@ async fn shared(
     let issued = serving
         .workspaces()
         .pre_admit(
-            &serving_cert,
+            serving_cert,
             PreAdmitRequest {
                 request_id: [seed; 32],
                 grant: signed_pre_admission(&created.workspace, &[seed; 8]),
@@ -981,7 +992,16 @@ async fn a_copy_taking_in_its_kept_writes_lets_the_devices_other_work_run_meanwh
 
     let serving_state = tempfile::tempdir().unwrap();
     let member_state = tempfile::tempdir().unwrap();
-    let (serving, device, created, invitation) = shared(serving_state.path(), "Kept", 46).await;
+    // The serving device seals what it writes, as a device taking part in the workspace's key
+    // groups does: a sealed write is what a copy keeps until its keys open it.
+    let (serving_key, serving_cert) = governor();
+    let serving = super::super::fixtures::test_host_taking_part(
+        serving_state.path(),
+        &serving_key,
+        &serving_cert,
+    )
+    .await;
+    let (serving, device, created, invitation) = invited(serving, &serving_cert, "Kept", 46).await;
     let workspace = created.workspace.clone();
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();
@@ -992,13 +1012,30 @@ async fn a_copy_taking_in_its_kept_writes_lets_the_devices_other_work_run_meanwh
     catching_up(&copies, workspace_id).await;
     let records = ["first", "second", "third"];
     for record in records {
-        serving_writes(
-            &serving,
-            &workspace,
-            ("test.app", record),
-            ("value", record),
-        )
-        .await;
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: "test.app".into(),
+            cluster_id: workspace.clone(),
+            document: record.into(),
+        };
+        let sealed = serving
+            .workspaces()
+            .own_route_keys(&route, true)
+            .await
+            .expect("the serving device's key service answers")
+            .expect("the group opens");
+        serving
+            .workspaces()
+            .own_write(
+                &workspace,
+                ("test.app", record),
+                None,
+                &snapshot("value", record),
+                true,
+                true,
+                Some(&sealed),
+            )
+            .await
+            .expect("the serving device writes its record");
     }
     tilo_test_env::within("the copy keeps the serving device's writes", async {
         loop {
