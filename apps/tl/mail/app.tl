@@ -231,7 +231,9 @@ migration action carry_native_mail(m: Mail) {
     // An outbox entry is waiting while it has not settled; one that went or failed for good is
     // the server's to show, not a draft.
     let waiting = earlier.filter(
-        e -> e.of == "outbox" and e.texts.get("settled") == .none and e.lists.get("settled") == .none,
+        e -> e.of == "outbox"
+            and e.texts.get("settled") == .none
+            and e.lists.get("settled") == .none,
     )
     let carried = [
         earlier.filter(e -> e.of == "draft").flat_map(e -> native_draft(e, "", "", "")),
@@ -244,7 +246,8 @@ migration action carry_native_mail(m: Mail) {
                 e.texts.get("value.in_reply_to") ?? "",
             ),
         ),
-    ].flat_map(x -> x)
+    ]
+        .flat_map(x -> x)
     for draft in carried {
         m.drafts.insert(draft)
     }
@@ -264,7 +267,9 @@ fn native_draft(e: host.Earlier, at: Text, account: Text, answers: Text) -> List
     let bcc = native_said(e, "{at}bcc")
     let subject = native_said(e, "{at}subject")
     let plain = native_said(e, "{at}body")
-    let body = if plain == "" { (e.rich.get("{at}rich_body") ?? RichText("")).markdown } else { plain }
+    let body = if plain == "" {
+        (e.rich.get("{at}rich_body") ?? RichText("")).markdown
+    } else { plain }
     let files = e.lists.get("{at}attachments.filename") ?? []
     let notes = native_said(e, "{at}notes")
     let sender = native_said(e, "{at}sender.account")
@@ -274,9 +279,14 @@ fn native_draft(e: host.Earlier, at: Text, account: Text, answers: Text) -> List
     } else {
         let aside = [
             if bcc == "" { "" } else { "Bcc: {bcc}" },
-            if files.len() == 0 { "" } else { "Attachments not carried over: {files.join(", ")}" },
+            if files.len() == 0 {
+                ""
+            } else {
+                "Attachments not carried over: {files.join(", ")}"
+            },
             if notes == "" { "" } else { "Notes: {notes}" },
-        ].filter(t -> t != "")
+        ]
+            .filter(t -> t != "")
         [
             Draft(
                 from: if sender == "" { account } else { sender },
