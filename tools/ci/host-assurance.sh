@@ -993,8 +993,12 @@ refused_boot() {  # WHAT FILE ROOT-SCRIPT
   fi
   ./os/dev/vm.sh serial > "$out/$file-serial.log" 2>&1 || true
   ./os/dev/vm.sh stop >/dev/null 2>&1 || true
-  grep -aiqE 'security violation|access denied' "$out/$file-serial.log" \
-    || { tail -40 "$out/$file-serial.log" >&2; die "FAIL $what: nothing on the console says the firmware refused it"; }
+  # The boot menu draws its messages by cursor position: read the text without the codes.
+  sed 's/\x1b\[[0-9;]*H/ /g; s/\x1b\[[0-9;?=]*[A-Za-z]//g' "$out/$file-serial.log" | tr -d '\r' \
+    > "$out/$file-console.txt"
+  grep -aiqE 'security violation|access denied' "$out/$file-console.txt" \
+    || { grep -a . "$out/$file-console.txt" | cut -c1-300 >&2
+         die "FAIL $what: nothing on the console says the firmware refused it"; }
   qemu-img snapshot -a signed "$disk" || die 'cannot put the signed disk back'
   ok "$what"
 }
