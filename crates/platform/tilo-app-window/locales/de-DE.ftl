@@ -16,7 +16,6 @@ tilolang-suggestion-dismiss = Verwerfen
 tilolang-suggestion-says = { $name } schlägt vor:
 tilolang-suggested-by = vorgeschlagen von { $name }
 tilolang-ask-always = Immer erlauben
-tilolang-ask-sign-in = Mit seinem Passwort bei { $account } anmelden
 tilolang-ask-denied = Diese Änderung ist hier nicht erlaubt.
 tilolang-ask-needs-approval = Diese Änderung muss zuerst bestätigt werden.
 tilolang-change-kept = Deine Änderung bleibt auf diesem Gerät, bis der Arbeitsbereich sie annimmt.

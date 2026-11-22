@@ -11,8 +11,9 @@
 
 use accounts::person::PersonAccounts;
 use accounts::vault_items::{ItemId, ItemKind, NewItem, Place, Released, UsedFor};
-use tilo_actions::remote::Caller;
+use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::person_vault::ItemRef;
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_resource::{Replica, Resource as _};
 use zeroize::Zeroizing;
@@ -32,10 +33,18 @@ pub const MAY_NOT_USE_PASSWORDS: &str = "Your role in this workspace does not in
                                          vault. Ask an owner of the workspace to let you use \
                                          Passwords.";
 
-/// What a release the workspace's rules ask about first is answered with, until the person
-/// asking answers yes ([`Workspaces::account_secret`]'s `confirmed`).
+/// What a release the workspace's rules ask about first is answered with by a device that asks
+/// nobody: a member's device, whose session asks the workspace's host instead
+/// ([`tilo_actions::remote::person_accounts::SIGN_IN`]), which asks the person.
 pub const ASKS_FIRST: &str = "The workspace asks you first before this account's password leaves \
                               its vault.";
+
+/// What a release is refused with once its person said no to it.
+pub const DECLINED: &str = "You did not let this app sign in to this account.";
+
+/// How long the person is asked before a release the rules ask about is refused: within the
+/// longest a sign-in's asker waits for its answer ([`accounts::sign_ins::LONGEST_WAIT`]).
+const ASKED_FOR: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// The words for somebody who may not read the app asking to sign in.
 pub const MAY_NOT_READ_APP: &str = "Your role in this workspace does not let you use this app, so \
@@ -203,21 +212,25 @@ impl Workspaces {
     /// now, with the use written into the entry first, saying which app signed in to which
     /// account. Any kind of account and any app: what decides is whether `by` may use
     /// Passwords. A grant a provider's own page left is released as its access token alone.
-    /// Where the workspace's rules ask first, it is released once the person said yes
-    /// (`confirmed`); until then it is answered with [`ASKS_FIRST`].
+    /// Where the workspace's rules ask first, this device asks the person on their approving
+    /// devices, and releases it once they said yes; a device that asks nobody answers
+    /// [`ASKS_FIRST`], and no agent is asked for its person.
     ///
     /// # Errors
     /// `by` may not use the vault, no enabled account names the entry, the account names no
-    /// server its sign-in belongs to, or the entry is gone or kept for other servers.
+    /// server its sign-in belongs to, the entry is gone or kept for other servers, or the person
+    /// did not say yes.
     pub async fn account_secret(
         &self,
         workspace: &str,
         by: &Caller,
-        (app, confirmed): (&str, bool),
+        app: &str,
         item: &ItemRef,
     ) -> Result<Released, String> {
-        self.using_vault(workspace, by, Some(app), confirmed)
-            .await?;
+        let asks = match self.using_vault(workspace, by, Some(app), false).await {
+            Err(error) if error == ASKS_FIRST && by.agent_called().is_none() => true,
+            decided => decided.map(|()| false)?,
+        };
         let held = self.workspace_accounts(workspace).await?;
         let store = held.store();
         let account = store
@@ -238,6 +251,13 @@ impl Workspaces {
         } else {
             account.display_name.as_str()
         };
+        let allowed = if asks {
+            self.ask_to_sign_in(workspace, by, app, name).await?;
+            self.using_vault(workspace, by, Some(app), true).await?;
+            Some(accounts::vault_items::Allowance::Once)
+        } else {
+            None
+        };
         let what = format!("{app} signed in to {name}");
         let mut refusal = None;
         let released = self
@@ -250,7 +270,7 @@ impl Workspaces {
                         UsedFor {
                             using: SIGN_IN,
                             what: &what,
-                            allowed: None,
+                            allowed,
                         },
                     )
                     .inspect_err(|error| refusal = Some(kept_sign_ins::refused(error)))
@@ -266,6 +286,86 @@ impl Workspaces {
             released,
         )
         .await
+    }
+
+    /// Ask `by`'s person, on their approving devices, whether `app` signs in to the account
+    /// `name` with the password the workspace's vault keeps for it: in the system's words, on
+    /// the sheet every question to them is asked on.
+    ///
+    /// # Errors
+    /// This device asks nobody ([`ASKS_FIRST`]), the person said no ([`DECLINED`]), or nobody
+    /// answered in time.
+    async fn ask_to_sign_in(
+        &self,
+        workspace: &str,
+        by: &Caller,
+        app: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        use tilo_lock::RwLockRecover as _;
+        use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+        let asker = self.inner.asks_people.read_recover().clone();
+        let (Some(asker), Some(person)) = (asker, by.user_public_key()) else {
+            return Err(ASKS_FIRST.to_owned());
+        };
+        let place = self
+            .summary(workspace)
+            .await
+            .map_or_else(|_| workspace.to_owned(), |summary| summary.name);
+        let wait = u64::try_from(ASKED_FOR.as_nanos()).unwrap_or(u64::MAX);
+        let question = PendingConfirmation {
+            id: super::actions::agents::question_id(),
+            agent_label: tilo_app_id::apps::builtin_label_for_app_id(app)
+                .unwrap_or_else(|| app.to_owned()),
+            action_label: "sign in".to_owned(),
+            resource_label: name.to_owned(),
+            risk: "sensitive".to_owned(),
+            kind: "read".to_owned(),
+            workspace: place,
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(wait),
+            ..PendingConfirmation::default()
+        };
+        match asker.ask(*person, question).await? {
+            ConfirmationAnswer::AllowOnce | ConfirmationAnswer::AllowAlways => Ok(()),
+            ConfirmationAnswer::Deny
+            | ConfirmationAnswer::Reply(_)
+            | ConfirmationAnswer::Secret(_) => Err(DECLINED.to_owned()),
+        }
+    }
+
+    /// Answer a [`person_accounts::SIGN_IN`] a member's own device asks: [`Self::account_secret`]
+    /// decided here, for that device and its person, with any question about it put to them
+    /// here. No agent is handed a password this way.
+    pub(super) async fn account_sign_in_invoke(
+        &self,
+        workspace_id: Option<collab_types::WorkspaceId>,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        if caller.acting().is_agent() {
+            return Err(ActionCallError::UnknownAction);
+        }
+        let workspace = workspace_id
+            .ok_or(ActionCallError::UnknownAction)?
+            .to_string();
+        let asked: person_accounts::SignIn = super::person_vault::argument(
+            request,
+            "a sign-in names the vault entry an account signs in with, and the app signing in",
+        )?;
+        let item = ItemRef::parse(&asked.item).ok_or_else(|| ActionCallError::Refused {
+            reason: NOT_NAMED.to_owned(),
+        })?;
+        let by = caller.clone().in_workspace(workspace.clone());
+        let released = self
+            .account_secret(&workspace, &by, &asked.app, &item)
+            .await
+            .map_err(|reason| ActionCallError::Refused { reason })?;
+        serde_json::to_value(person_accounts::SignedIn {
+            secret: released.secret.to_string(),
+        })
+        .map_err(|error| ActionCallError::Refused {
+            reason: error.to_string(),
+        })
     }
 
     /// Whether `workspace`'s vault keeps the entry `item` names, on this device.

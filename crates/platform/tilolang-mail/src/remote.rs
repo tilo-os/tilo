@@ -22,8 +22,6 @@ pub struct RemoteConnector {
     stream: UnixStream,
     heard: Receiver<Heard>,
     accounts: Vec<AccountRef>,
-    /// The accounts whose sign-in waits on the person's yes.
-    asks: Vec<String>,
     /// Set when the connector says the device came online again.
     reconnected: Arc<AtomicBool>,
     /// Why the connector cannot be reached, once it cannot.
@@ -66,7 +64,6 @@ impl RemoteConnector {
             stream,
             heard,
             accounts: Vec::new(),
-            asks: Vec::new(),
             reconnected,
             gone: None,
         })
@@ -89,15 +86,6 @@ impl RemoteConnector {
                 self.gone = Some(format!("the mail connector failed: {error}"));
                 None
             }
-        }
-    }
-
-    /// Tell the connector `message`, which answers nothing of its own.
-    fn tell(&mut self, message: &ToConnector) {
-        if self.gone.is_none()
-            && let Err(error) = wire::write(&mut self.stream, message)
-        {
-            self.gone = Some(format!("the mail connector failed: {error}"));
         }
     }
 }
@@ -156,19 +144,14 @@ impl MailConnector for RemoteConnector {
     }
 
     fn watch(&mut self, account: &str) {
-        self.tell(&ToConnector::Watch {
-            account: account.to_owned(),
-        });
-    }
-
-    fn asks(&self) -> Vec<String> {
-        self.asks.clone()
-    }
-
-    fn allow(&mut self, account: &str) {
-        self.tell(&ToConnector::Allow {
-            account: account.to_owned(),
-        });
+        if self.gone.is_none() {
+            let watch = ToConnector::Watch {
+                account: account.to_owned(),
+            };
+            if let Err(error) = wire::write(&mut self.stream, &watch) {
+                self.gone = Some(format!("the mail connector failed: {error}"));
+            }
+        }
     }
 
     fn events(&mut self) -> Vec<Event> {
@@ -177,7 +160,6 @@ impl MailConnector for RemoteConnector {
             match self.heard.try_recv() {
                 Ok(Heard::Said(FromConnector::Accounts(accounts))) => self.accounts = accounts,
                 Ok(Heard::Said(FromConnector::Event(event))) => out.push(event),
-                Ok(Heard::Said(FromConnector::Asks(asks))) => self.asks = asks,
                 Ok(Heard::Said(FromConnector::Online)) => {
                     self.reconnected.store(true, Ordering::Release);
                 }
@@ -189,7 +171,6 @@ impl MailConnector for RemoteConnector {
                             reason: reason.clone(),
                         });
                     }
-                    self.asks.clear();
                     self.gone = Some(reason);
                 }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,

@@ -60,15 +60,6 @@ pub trait Origin {
     /// An outside effect for one of the origin's capabilities: hand it to the service, or say
     /// what became of it since it was handed over.
     fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery;
-
-    /// The accounts whose sign-in waits on the person's yes: the workspace's rules ask them
-    /// first before the account's password is used. The window asks them on its Ask bar.
-    fn asks(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    /// The person said yes to signing in to `account`.
-    fn allow(&mut self, _account: &str) {}
 }
 
 /// An origin as the instance holds it.

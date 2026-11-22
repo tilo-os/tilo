@@ -654,3 +654,23 @@ reason = "a person's state in a tilolang app, written as a write to the workspac
 file = "crates/collab/neighbour-wire/src/actions.rs"
 enum = "ActionServiceFrame"
 reason = "a frame on a live action stream, never kept; the removed `Offer` was its last variant, so `Action` keeps its position and every frame either build sends the other reads the same. An offer from the previous build no longer decodes and its stream closes unanswered, which that build reads as the device not taking the work, and runs it where it was asked"
+
+[[break]]
+file = "crates/system/accounts/src/sign_ins.rs"
+enum = "Ask"
+reason = "the account sign-ins socket: newline-delimited JSON, by name, between the session and the processes it serves on this device, and no line of it is kept. The session, the cloud service and the connectors the session starts ship in one image. `Hurry` let a connector's ask for accounts go after its person said yes on its window; the workspace's host asks the person now"
+
+[[break]]
+file = "crates/system/accounts/src/sign_ins.rs"
+enum = "Answer"
+reason = "the session's half of the same socket: newline-delimited JSON over a local connection, never kept. `Asks` told a connector to ask its person; the session asks the workspace's host instead and answers a sign-in or a refusal"
+
+[[break]]
+file = "crates/platform/tilolang-mail/src/wire.rs"
+enum = "ToConnector"
+reason = "length-prefixed JSON, by name, between a mail origin and the connector the session started beside it on the same device, and no frame of it is kept. `Allow` carried a yes from Mail's Ask bar, which no longer asks: the workspace's host asks the person"
+
+[[break]]
+file = "crates/platform/tilolang-mail/src/wire.rs"
+enum = "FromConnector"
+reason = "the connector's half of the same connection: length-prefixed JSON, by name, never kept. `Asks` named the accounts waiting on the person's yes for Mail's Ask bar, which no longer asks"

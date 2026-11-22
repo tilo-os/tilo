@@ -1410,14 +1410,6 @@ impl Origin for ImapOrigin {
         "imap"
     }
 
-    fn asks(&self) -> Vec<String> {
-        self.connector.asks()
-    }
-
-    fn allow(&mut self, account: &str) {
-        self.connector.allow(account);
-    }
-
     fn serves(&self, capability: &str) -> bool {
         matches!(capability, "smtp.send" | "imap.check")
     }
