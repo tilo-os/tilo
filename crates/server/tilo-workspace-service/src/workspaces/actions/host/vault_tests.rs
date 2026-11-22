@@ -1187,6 +1187,7 @@ fn mail_account(address: &str, server: &str) -> accounts::Account {
 /// document once the host carries it over as it starts: listed under the reference it had, its uses
 /// kept, and taken out of the host's store. An account's sign-in beside it becomes the
 /// account's own entry, and the host's store is gone.
+#[cfg(feature = "device-keys")]
 #[tokio::test]
 async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document() {
     let dir = tempfile::tempdir().unwrap();

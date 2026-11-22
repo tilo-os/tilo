@@ -480,7 +480,7 @@ impl Workspaces {
     /// somewhere, and its later writes build on the first. A document found
     /// first from a later write would refuse that one for the changes it
     /// lacks, and never be founded.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     pub(super) async fn found_retained(
         &self,
         workspace: &str,

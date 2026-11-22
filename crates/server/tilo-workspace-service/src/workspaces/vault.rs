@@ -26,7 +26,7 @@ use tilo_resource::{Id, Replica};
 use zeroize::Zeroizing;
 
 use super::Workspaces;
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "device-keys")]
 use super::person_settings::kept_sign_ins::HostSignIns;
 
 /// The app that keeps the vault: whose grants decide each reader of it.
@@ -37,7 +37,7 @@ const MAX_VAULT_BYTES: usize = 64 * 1024 * 1024;
 
 /// How many changes one write carries when a host carries its earlier vault over: each write of
 /// a document is bounded in size.
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "device-keys")]
 const CARRIED_PER_WRITE: usize = 16;
 
 /// The words for a vault this device cannot open.
@@ -138,7 +138,7 @@ impl Workspaces {
     /// documents, once, as it starts ([`Self::carry_over`]): no read of a vault converts
     /// anything. A workspace whose keys are not here yet keeps its old store until a start
     /// that holds them.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     pub(crate) async fn carry_vaults_over(&self) {
         let governed: Vec<String> = self.inner.workspaces.lock().await.keys().cloned().collect();
         for workspace in governed {
@@ -185,7 +185,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// The host's store does not open, or what it kept was not written: it stays.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     async fn carry_over(&self, opened: OpenVault) -> Result<(), String> {
         let workspace = opened.workspace.clone();
         let root = self.workspace_root(&workspace);

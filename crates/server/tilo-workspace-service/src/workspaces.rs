@@ -339,7 +339,7 @@ struct GovernedWorkspace {
     /// again, after a compaction failed: each attempt opens and merges the
     /// whole history.
     #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
+        not(feature = "device-keys"),
         allow(
             dead_code,
             reason = "sealed histories are followed only where they are read"
@@ -359,7 +359,7 @@ struct GovernedWorkspace {
     /// is asking to admit it, by app and record: a burst of writes to a
     /// record the host holds no keys of yet asks once
     /// ([`Workspaces::join_soon`]).
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     asking: std::collections::BTreeSet<(String, String)>,
     /// The workspace's document started over from a base at an admission, and
     /// what the server retains of it from before is still to be archived,
@@ -533,7 +533,7 @@ impl GovernedWorkspace {
             desktop_segments: collab_types::DocumentReassembler::default(),
             unkept: false,
             keeping: false,
-            #[cfg(any(feature = "agents", feature = "web"))]
+            #[cfg(feature = "device-keys")]
             asking: std::collections::BTreeSet::new(),
             rebased: false,
             since_base: SinceBase::Withdrew,
@@ -2138,7 +2138,7 @@ impl Workspaces {
                 return;
             }
         };
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "device-keys")]
         self.found_retained(workspace, &state, &retained).await;
         let mut governed = state.lock().await;
         self.recall_retained(&mut governed, retained).await;
@@ -2152,7 +2152,7 @@ impl Workspaces {
     /// one's queue included. Once it is admitted, what the server retains of
     /// the record is replayed ([`Self::replay_soon`]), so its copy starts
     /// from its first write. Asked once per record until the first answer.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     fn join_soon(&self, workspace: &mut GovernedWorkspace, app: String, record: String) {
         // A store of the workspace's ciphertext is never let into its group.
         if self.holds_as_store(workspace) {
@@ -2193,9 +2193,9 @@ impl Workspaces {
             return;
         };
         let mut governed = state.lock().await;
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "device-keys")]
         self.join_soon(&mut governed, app.to_owned(), record.to_owned());
-        #[cfg(not(any(feature = "agents", feature = "web")))]
+        #[cfg(not(feature = "device-keys"))]
         {
             let _ = (&mut governed, app, record);
         }
@@ -2213,13 +2213,13 @@ impl Workspaces {
             return false;
         };
         let governed = state.lock().await;
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "device-keys")]
         let waits = governed.seals()
             && (governed
                 .asking
                 .contains(&(app.to_owned(), record.to_owned()))
                 || !governed.holds_keys().await);
-        #[cfg(not(any(feature = "agents", feature = "web")))]
+        #[cfg(not(feature = "device-keys"))]
         let waits = {
             let _ = (&governed, app, record);
             false
@@ -2355,12 +2355,12 @@ impl Workspaces {
         // read and holds no keys of yet is joined, and the write is taken in
         // when the group admits this host's device: the record's copy starts
         // from its first write, so it is not kept by not asking.
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "device-keys")]
         let readable = !sealed || workspace.holds_keys().await;
-        #[cfg(not(any(feature = "agents", feature = "web")))]
+        #[cfg(not(feature = "device-keys"))]
         let readable = !sealed;
         if !readable {
-            #[cfg(any(feature = "agents", feature = "web"))]
+            #[cfg(feature = "device-keys")]
             self.join_soon(&mut workspace, app_id, document_id);
             return Ok(());
         }
@@ -2712,7 +2712,7 @@ impl Workspaces {
         // sealed frame it cannot read, and a replay takes it once they are. Asking to be let
         // into the record's channel is what brings them here.
         if followed.behind == Some(follow::BehindRefusal::Keys) {
-            #[cfg(any(feature = "agents", feature = "web"))]
+            #[cfg(feature = "device-keys")]
             self.join_soon(workspace, app.clone(), record.clone());
             return;
         }
@@ -2729,7 +2729,7 @@ impl Workspaces {
             tracing::warn!(workspace = %workspace.workspace(), %reason, %error, "the governor did not publish a refusal of a record write");
         }
         crate::timing::window("workspace.follow", following);
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "device-keys")]
         if compact {
             let compacting = crate::timing::start();
             if let Err(error) = self.compact_sealed_histories(workspace).await {
@@ -2737,7 +2737,7 @@ impl Workspaces {
             }
             crate::timing::window("workspace.compact", compacting);
         }
-        #[cfg(not(any(feature = "agents", feature = "web")))]
+        #[cfg(not(feature = "device-keys"))]
         let _ = compact;
         self.tell_followers(workspace, author, (app, record), &message, false)
             .await;

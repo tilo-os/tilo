@@ -64,7 +64,7 @@ pub struct AccountLogin {
 }
 
 /// The route the workspace's accounts record travels on in `workspace`.
-#[cfg(test)]
+#[cfg(all(test, any(feature = "agents", feature = "apps")))]
 fn accounts_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
     tilo_peer_state::document_frame::DocumentRoute {
         app_id: accounts::person::ACCOUNTS_OWNER.to_owned(),
@@ -321,7 +321,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// The record does not hold the account, or does not take the write on this device.
-    #[cfg(test)]
+    #[cfg(all(test, any(feature = "agents", feature = "apps")))]
     pub(crate) async fn name_account_password(
         &self,
         workspace: &str,

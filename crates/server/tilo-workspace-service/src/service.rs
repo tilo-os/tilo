@@ -303,7 +303,7 @@ impl ServiceSessions {
             // Sessions ask its governance what a device may do; the lock is set
             // before the endpoint routes any session to a service that governs here.
             let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
-            #[cfg(any(feature = "agents", feature = "web"))]
+            #[cfg(feature = "device-keys")]
             take_part(&sessions.handler.compactor, &workspaces);
         }
         Ok((
@@ -438,7 +438,7 @@ impl ServiceSessions {
 /// and repair the stores they kept from a run before a page's writes waited for their record:
 /// writes stuck behind a change their writer never sent are folded away now, not at whatever
 /// write next brings each record's fold.
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "device-keys")]
 fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::workspaces::Workspaces) {
     compactor.with_group_keys(Arc::new(workspaces.clone()));
     let (repairing, compactor) = (workspaces.clone(), compactor.clone());

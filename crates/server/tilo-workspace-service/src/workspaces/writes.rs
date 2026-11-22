@@ -89,7 +89,7 @@ impl Workspaces {
 }
 
 /// A sealed write is followed only where the device reads the groups' keys.
-#[cfg(all(test, feature = "apps", any(feature = "agents", feature = "web")))]
+#[cfg(all(test, feature = "apps", feature = "device-keys"))]
 mod tests {
     #![allow(
         clippy::unwrap_used,

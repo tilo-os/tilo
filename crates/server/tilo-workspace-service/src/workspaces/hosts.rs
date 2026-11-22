@@ -102,7 +102,7 @@ impl Workspaces {
     /// workspace's ciphertext: it then asks for none of its keys and compacts
     /// none of what it cannot read.
     #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
+        not(feature = "device-keys"),
         allow(
             dead_code,
             reason = "sealed histories are followed only where they are read"
