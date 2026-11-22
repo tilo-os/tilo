@@ -33213,7 +33213,7 @@
         "required": [
           "files"
         ],
-        "description": "Files dropped on the notebook: a Markdown file comes in as a note, an archive as the pages it\nholds — the notebook's own written out, or another app's export — and each file of a drop in\nturn. One action, so undo takes the whole drop back at once."
+        "description": "Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An\narchive becomes the pages it holds, whether the notebook's own written out or another app's\nexport. One action, so undo takes the whole drop back at once."
       },
       "tl.so.tilo.shell.Shell.$create.Arguments": {
         "type": "object",

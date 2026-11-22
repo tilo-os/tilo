@@ -137,7 +137,7 @@ ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
 
 class Note(Resource):
     """Note — `tl.so.tilo.notes.Note`."""
-    __surface__ = "so.tilo.notes@854f753a0c76da10"
+    __surface__ = "so.tilo.notes@764635e1b6ca1030"
     dpj7scfe: str  # title
     olsyp3aw: str  # body
     pmjerv63: dict[str, str]  # images
@@ -284,7 +284,7 @@ class Note(Resource):
 
 class Notebook(Resource):
     """Notebook — `tl.so.tilo.notes.Notebook`."""
-    __surface__ = "so.tilo.notes@854f753a0c76da10"
+    __surface__ = "so.tilo.notes@764635e1b6ca1030"
     tmqqtkeb: list[Entry[Note]]  # notes
     qgq6mcy7: list[Entry[Note]]  # set_aside
 
@@ -410,7 +410,7 @@ class Notebook(Resource):
         return self.many("import_archive", items)
 
     def import_dropped(self, *, files: list[Any]) -> None:
-        """Files dropped on the notebook: a Markdown file comes in as a note, an archive as the pages it holds — the notebook's own written out, or another app's export — and each file of a drop in turn. One action, so undo takes the whole drop back at once."""
+        """Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An archive becomes the pages it holds, whether the notebook's own written out or another app's export. One action, so undo takes the whole drop back at once."""
         return self.action("import_dropped", files=files)
 
     def import_dropped_many(self, items: list[ImportDroppedArgs]) -> list[dict[str, Any]]:
@@ -424,5 +424,5 @@ class Notebook(Resource):
 
 class Notes(Resource):
     """Notes — `tl.so.tilo.notes`."""
-    __surface__ = "so.tilo.notes@854f753a0c76da10"
+    __surface__ = "so.tilo.notes@764635e1b6ca1030"
 
