@@ -54,6 +54,9 @@ struct State {
     apps: HashMap<ModuleHash, String>,
     /// The resource kind each action is published under, by its id.
     kinds: HashMap<String, String>,
+    /// The name each action is published under, by its id: what programs and grants name it,
+    /// where a change records the id its declaration keeps.
+    names: HashMap<String, String>,
     /// The actors the API admitted as software acting for a person, with that person.
     agents: HashMap<Actor, Option<String>>,
     /// The packages whose documents are each member's own (`resources: .own`), by app id.
@@ -99,6 +102,7 @@ impl TiloAuthority {
                 .target_of(&action.params)
                 .map_or_else(|| meta.package_kind(), |ty| meta.kind_of(&ty.name));
             state.kinds.insert(action.id.clone(), kind);
+            state.names.insert(action.id.clone(), action.name.clone());
         }
     }
 
@@ -255,13 +259,32 @@ impl Authority for TiloAuthority {
         let workspace = access
             .as_ref()
             .map_or(NO_WORKSPACE, MemberAccess::workspace);
-        let workspace_grants: &[Grant] =
-            access.as_ref().map_or(&[], |access| &access.policy.grants);
-        let kind = state
-            .kinds
-            .get(&action.action)
-            .cloned()
-            .unwrap_or_else(|| format!("tl.{}", action.app));
+        // Every grant that speaks for this acting: the workspace's, and those the access itself
+        // carries (a bot's own, made for its program).
+        let held_grants: Vec<Grant> = access.as_ref().map_or_else(Vec::new, |access| {
+            access
+                .policy
+                .grants
+                .iter()
+                .chain(&access.granted)
+                .cloned()
+                .collect()
+        });
+        let workspace_grants: &[Grant] = &held_grants;
+        // The action is decided at the resource it is invoked on, when it addresses one: the
+        // kind of that resource's type and the resource itself, as the change it makes is
+        // claimed. An action that takes a union of types takes its kind from the argument,
+        // which is the resource it acts on.
+        let kind = action.target.as_ref().map_or_else(
+            || {
+                state
+                    .kinds
+                    .get(&action.action)
+                    .cloned()
+                    .unwrap_or_else(|| format!("tl.{}", action.app))
+            },
+            |target| target.kind.clone(),
+        );
         let node = TreePath::workspace(workspace)
             .app(action.app.to_string())
             .kind(kind);
@@ -274,16 +297,26 @@ impl Authority for TiloAuthority {
                 let person = access.person_id()?.to_owned();
                 Some((crate::member_document_of(&action.app, &person)?, person))
             });
-        let node = match &own_document {
-            Some((record, _)) => node.resource(record.clone()),
-            None if access.is_some()
-                && tilo_action_policy::roles::requires_document_keys(action.app.as_str(), "") =>
+        let node = match (&own_document, &action.target) {
+            (Some((record, _)), _) => node.resource(record.clone()),
+            (None, Some(target)) => node.resource(target.resource.clone()),
+            (None, None)
+                if access.is_some()
+                    && tilo_action_policy::roles::requires_document_keys(
+                        action.app.as_str(),
+                        "",
+                    ) =>
             {
                 node.resource("")
             }
-            None => node,
+            (None, None) => node,
         }
-        .action(&action.action);
+        .action(
+            state
+                .names
+                .get(&action.action)
+                .map_or(action.action.as_str(), String::as_str),
+        );
         let agent = state.agents.get(invoker);
         // Who the person is: the one an agent acts for, or the invoker; the person at the window
         // is the access's person.
@@ -307,6 +340,12 @@ impl Authority for TiloAuthority {
             (Some(access), None, _) => access.policy.party_of(grantee(invoker)),
             // No member access here: the API decides the person's own part.
             (None, _, _) => Party::default().owning(TreePath::root()),
+        };
+        // The access is the invoker's own (a person, an agent, a bot): it is what they may do,
+        // the grants it carries included, and every part of the acting tree bounds it.
+        let mut policy = match &access {
+            Some(access) if !alone && access.acting.by == *invoker => access.authority(),
+            _ => Policy::person(person_party),
         };
         let delegation = match (agent, person) {
             (Some(_), Some(person)) => Some(
@@ -348,7 +387,6 @@ impl Authority for TiloAuthority {
         }
         // A grant written under an id the app had before (`previously:`) is the app's.
         let earlier = crate::schema::earlier_ids();
-        let mut policy = Policy::person(person_party);
         if let Some(delegation) = &delegation {
             policy = policy.bounded_by(
                 Party::new(vec![grantee(invoker)], workspace_grants).with_grants(delegation),
@@ -394,6 +432,7 @@ mod tests {
             class,
             own,
             module: module(),
+            target: None,
         }
     }
 
@@ -679,6 +718,7 @@ mod tests {
             class,
             own: true,
             module: tasks.clone(),
+            target: None,
         };
         let renamed = |grants: Vec<Grant>| {
             let authority = authority(grants);

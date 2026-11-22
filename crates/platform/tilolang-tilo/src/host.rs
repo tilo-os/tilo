@@ -889,9 +889,16 @@ impl HostInner {
     ) -> Result<PlannedArgs, String> {
         let mut given: Vec<Option<Value>> = Vec::new();
         let mut params = action.params.iter();
-        if let (Some(target), Some(declared)) =
-            (request.resource, package.meta.target_of(&action.params))
-        {
+        // What the action acts on: the first parameter's type, or, when it takes a union of
+        // types (`to: TextChannel | Thread | Direct`), the case the invoked resource is of, as
+        // the row the action was invoked on names its kind.
+        let case = package.meta.target_of(&action.params).or_else(|| {
+            let name = request
+                .kind
+                .strip_prefix(&format!("tl.{}.", package.meta.app))?;
+            package.meta.type_named(name)
+        });
+        if let (Some(target), Some(declared)) = (request.resource, case) {
             let target = ResourceRef::parse_id(target, declared.id.clone())
                 .ok_or_else(|| format!("`{target}` is not a resource id"))?;
             given.push(Some(Value::resource(&target)));
@@ -1360,6 +1367,24 @@ impl Host {
         // The package's own table too: an action applied or described outside this store (a
         // receiver replaying it, a task's api) resolves its record's type by this version.
         crate::schema::register_package(&meta, &id);
+        // A package loaded from the module compiled into this build ships no surface file of its
+        // own: the host generates it from the metadata, as `tilolang build` writes it for an
+        // installed app, so the changes it makes name a surface this process decides them
+        // against. A package that named its own surface keeps it.
+        if collab_types::app_surface::hash_of(&meta.app).is_none() {
+            let reads: Vec<Meta> = meta
+                .uses
+                .iter()
+                .filter_map(|app| self.package(app).map(|package| package.meta.clone()))
+                .collect();
+            if let Ok(bytes) = crate::surface::surface_toml_reading(
+                &[&meta],
+                &reads,
+                &tilolang_runtime::SourceWords,
+            ) {
+                collab_types::app_surface::register_package(&meta.app, &bytes);
+            }
+        }
         self.inner.store.open_index(&meta.app, &meta.schema_text());
         self.inner.authority.load(&id, &meta);
         let package = Rc::new(Package {

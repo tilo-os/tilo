@@ -388,6 +388,7 @@ impl Surface {
                 class: Clone::clone(class),
                 own: false,
                 module: declared.module.clone(),
+                target: None,
             },
         )
     }

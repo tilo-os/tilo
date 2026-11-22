@@ -219,7 +219,14 @@ pub fn action_type(
     planner: &Arc<dyn Planner>,
     words: &dyn Words,
 ) -> Arc<ActionType> {
-    let params = published_params(meta, action, words);
+    // A row of one of the action's target types addresses its resource: the first parameter is
+    // what the row is, not something the caller gives. The package's own row, where an action
+    // taking a union of types is offered, takes it as a reference argument instead.
+    let targeted = meta
+        .targets_of(&action.params)
+        .iter()
+        .any(|target| meta.kind_of(&target.name) == kind);
+    let params = published_params(meta, action, words, targeted);
     let build = build_of(meta, kind, action, planner);
     let (label, placeholder) = naming_of(action, params.len(), words);
     let spec = spec_of(meta, action, label, placeholder, params, build);
@@ -228,8 +235,20 @@ pub fn action_type(
 
 /// The action's parameters, each with what it is called where a person gives it (a form, a
 /// consent sheet) in the reader's language.
-fn published_params(meta: &Meta, action: &ActionMeta, words: &dyn Words) -> Vec<ActionParam> {
-    meta.arguments(&action.params)
+fn published_params(
+    meta: &Meta,
+    action: &ActionMeta,
+    words: &dyn Words,
+    targeted: bool,
+) -> Vec<ActionParam> {
+    let declared = meta.arguments(&action.params);
+    // A union's target is still among the arguments, its type naming no one record to skip.
+    let declared = if targeted && meta.target_of(&action.params).is_none() {
+        declared.get(1..).unwrap_or_default()
+    } else {
+        declared
+    };
+    declared
         .iter()
         .map(|param| {
             let key = tilolang::messages::param_key(&action.id, &param.name);
@@ -448,8 +467,12 @@ impl ActionTypes {
             let actions = meta
                 .offered_actions()
                 .filter(|action| {
-                    meta.target_of(&action.params)
-                        .is_some_and(|target| target.name == declared.name)
+                    // An action whose first parameter takes a union of types acts on a resource
+                    // of any of them (`send(to: TextChannel | Thread | Direct)`), and is
+                    // published on each.
+                    meta.targets_of(&action.params)
+                        .iter()
+                        .any(|target| target.name == declared.name)
                 })
                 .map(|action| action_type(meta, &kind, action, planner, words))
                 .collect();
@@ -2611,6 +2634,9 @@ pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Word
         app_name(words, meta),
     );
     for action in meta.offered_actions() {
+        // An action whose first parameter takes one record is published on that type
+        // ([`ActionTypes::new`]); one whose parameter takes a union of types is offered here,
+        // taking the resource it acts on as a reference argument.
         if meta.target_of(&action.params).is_none() {
             resource = resource
                 .with_action(action_type(meta, &kind, action, planner, words).bind(Target::none()));

@@ -536,13 +536,13 @@ impl SealingMember {
     }
 }
 
-/// The newest write of `record` the governor `governor` published to
-/// `workspace`'s members.
+/// The newest write of `record` the governor published to `workspace`'s members, whoever it
+/// signs for: a host's checkpoint is its own, and a bot's change of the record is the bot's.
 pub async fn governor_published(
     workspaces: &Workspaces,
     workspace: &str,
     record: &str,
-    governor: &DeviceCert,
+    _governor: &DeviceCert,
 ) -> Option<SignedOp> {
     let state = workspaces.workspace(workspace).await.unwrap();
     let published: Vec<Vec<u8>> = state
@@ -567,11 +567,7 @@ pub async fn governor_published(
                 document_id,
                 envelope,
                 ..
-            } if document_id == record
-                && envelope.author.as_bytes() == &governor.device_public_key =>
-            {
-                Some(*envelope)
-            }
+            } if document_id == record => Some(*envelope),
             _ => None,
         })
 }

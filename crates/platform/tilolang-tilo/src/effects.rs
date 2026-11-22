@@ -680,6 +680,16 @@ impl Host {
         withheld(&mut row, self, reads);
         published_ids(&mut row, app);
         if let Json::Object(fields) = &mut row {
+            // A collection may hold several kinds' items (a chat's channels, its categories): a
+            // reader tells each by the kind it is.
+            let kind = self.package(app).and_then(|package| {
+                use crate::meta::MetaExt as _;
+                package
+                    .meta
+                    .type_named(&at.ty)
+                    .map(|declared| package.meta.kind_of(&declared.name))
+            });
+            fields.insert("kind".into(), kind.map_or(Json::Null, Json::String));
             fields.insert("label".into(), json!(self.label_at(at)));
             fields.insert("created".into(), self.created_json(at, reads));
         }

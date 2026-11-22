@@ -413,7 +413,8 @@ impl Workspaces {
             }
             // A compaction whose record keys are not here yet is kept by the store it came
             // from: the next replay, once they are, takes it in.
-            if let Some(reason) = refused.filter(|_| behind != Some(super::follow::BehindRefusal::Keys))
+            if let Some(reason) =
+                refused.filter(|_| behind != Some(super::follow::BehindRefusal::Keys))
             {
                 let filed = workspace.refused(
                     &self.inner.host.cert,

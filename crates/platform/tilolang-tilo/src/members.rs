@@ -83,6 +83,20 @@ pub fn members_of(access: &MemberAccess, me: &PersonId) -> Vec<Member> {
     agents.sort_unstable();
     agents.dedup();
     out.extend(agents.into_iter().map(Member::agent));
+    // The workspace's installed bots: the grants it made them name them, and a bot reads what
+    // they allow it through the host that runs it.
+    let mut bots: Vec<&str> = policy
+        .grants
+        .iter()
+        .chain(&access.granted)
+        .filter_map(|grant| match &grant.grantee {
+            Grantee::Member(MemberId::Bot(bot)) => Some(bot.as_str()),
+            _ => None,
+        })
+        .collect();
+    bots.sort_unstable();
+    bots.dedup();
+    out.extend(bots.into_iter().map(Member::bot));
     out
 }
 
@@ -177,8 +191,10 @@ fn reads_node(access: &MemberAccess, me: &PersonId, who: &Actor, node: &TreePath
     }
     let party = match who.member_id() {
         Some(MemberId::Person(person)) => policy.party(person_of(access, me, person)),
+        // Software reads what the workspace grants it, and what the access it acts by carries
+        // (a bot's own, made for its program).
         Some(_) => match who.grantee() {
-            Some(grantee) => policy.party_of(grantee),
+            Some(grantee) => policy.party_of(grantee).with_grants(&access.granted),
             None => return false,
         },
         // An automation or an app is no member: it reads as the member it runs for.

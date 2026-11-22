@@ -884,6 +884,7 @@ pub(super) async fn write_message(
                         TlValue::Text("Ada".into()),
                         TlValue::Text("another chat".into()),
                         TlValue::Int(0),
+                        TlValue::List(Vec::new()),
                         TlValue::Opt(None),
                     ],
                     None,

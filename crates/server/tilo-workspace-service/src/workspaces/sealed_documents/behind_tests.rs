@@ -408,7 +408,11 @@ async fn a_copy_takes_a_compaction_that_arrives_before_any_of_its_writes() {
         *envelope
     };
     // The member's writes build on this copy's record, as a page's do on the host it reads.
-    let state = lounge.workspaces.workspace(&lounge.workspace).await.unwrap();
+    let state = lounge
+        .workspaces
+        .workspace(&lounge.workspace)
+        .await
+        .unwrap();
     let base = state
         .lock()
         .await
@@ -439,7 +443,12 @@ async fn a_copy_takes_a_compaction_that_arrives_before_any_of_its_writes() {
         .await;
 
     // The member's compaction reaches the copy first, then the writes it folds.
-    send_sealed(&client, lounge.workspace_id, &lounge.member_key, &compaction);
+    send_sealed(
+        &client,
+        lounge.workspace_id,
+        &lounge.member_key,
+        &compaction,
+    );
     for write in [first, second, third] {
         send_sealed(&client, lounge.workspace_id, &lounge.member_key, &write);
     }
@@ -487,7 +496,12 @@ async fn a_copy_takes_a_compaction_a_device_sends_over_a_write_it_lacks() {
         "the copy lacks the second write"
     );
 
-    send_sealed(&client, lounge.workspace_id, &lounge.member_key, &compaction);
+    send_sealed(
+        &client,
+        lounge.workspace_id,
+        &lounge.member_key,
+        &compaction,
+    );
     let NeighbourMsg::AppDocument { envelope, .. } = &compaction else {
         panic!("a compaction is a document write");
     };
@@ -558,7 +572,12 @@ async fn a_copy_takes_a_compaction_it_kept_before_its_keys_after_a_restart() {
 
     // The copy has not been let into the record's channel yet.
     keys.hold_nothing();
-    send_sealed(&client, lounge.workspace_id, &lounge.member_key, &compaction);
+    send_sealed(
+        &client,
+        lounge.workspace_id,
+        &lounge.member_key,
+        &compaction,
+    );
     // A sealed frame the host cannot read is the retained store's, not a refusal.
     tilo_test_env::within("the copy keeps the compaction", async {
         loop {

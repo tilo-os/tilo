@@ -244,6 +244,7 @@ impl Workspace {
         self.readers.clear();
         self.listings.clear();
         self.named.clear();
+        self.published.clear();
     }
 }
 

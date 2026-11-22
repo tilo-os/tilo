@@ -99,6 +99,19 @@ impl Workspaces {
         .await
     }
 
+    /// `workspace`'s policy as this device reads it, off the replica its own reads answer from:
+    /// what a record opened for a person is read by ([`Self::own_read`]).
+    pub(crate) fn policy_now(
+        &self,
+        workspace: &str,
+    ) -> Option<tilo_action_policy::WorkspacePolicy> {
+        let held = self.inner.readings.held(workspace)?;
+        let peer = held.replica.lock();
+        peer.permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
+            .ok()
+            .map(|permissions| (*permissions.policy).clone())
+    }
+
     /// Every document `workspace` holds here, by its app and route.
     ///
     /// # Errors

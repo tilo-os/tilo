@@ -42,6 +42,15 @@ impl Member {
         }
     }
 
+    /// An installed bot: software the workspace made a member, with the grants it made it.
+    #[must_use]
+    pub fn bot(id: impl Into<String>) -> Self {
+        Self {
+            id: MemberId::bot(id),
+            role: None,
+        }
+    }
+
     /// The actor the language names them by.
     #[must_use]
     pub fn who(&self) -> Actor {

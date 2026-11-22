@@ -883,6 +883,35 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         ))
     }
 
+    /// What the record at `route` publishes to search, read as `person` reads it: a tilolang
+    /// app's entries, one per resource, read through its package by this server (a Chat message
+    /// by the words it says, and a direct conversation's only for the people it is between).
+    /// `None` for a record whose app this build compiles in, whose entries an app worker reads.
+    fn record_entries(
+        &self,
+        workspace: WorkspaceId,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+        person: &str,
+    ) -> Option<Arc<[tilo_resource::search_index::IndexEntry]>> {
+        let workspaces = self.workspaces.as_ref()?;
+        workspaces.record_entries(&workspace.to_string(), route, person)
+    }
+
+    /// Whether `route` is the record of an app this build runs from its own package: a
+    /// tilolang app's root document, which this server reads and writes through the app's
+    /// package. Its chunks are read with it, so only the root is a record to list.
+    fn runs_package_record(
+        &self,
+        _workspace: WorkspaceId,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+    ) -> bool {
+        route.document.is_empty()
+            && tilo_workspace_service::tl_records::built_in(&route.app_id)
+                .ok()
+                .flatten()
+                .is_some()
+    }
+
     /// What stands for the person the turn acts for, read from their own
     /// store on this server now: for the turn's own agent and nobody else.
     fn stands(

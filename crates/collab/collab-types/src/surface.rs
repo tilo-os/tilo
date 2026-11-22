@@ -172,6 +172,14 @@ impl ReceiptSurface for KindSurface {
             .map(|verb| (verb.kind, verb.field.clone()))
     }
 
+    fn action_name<'a>(&'a self, action: &str) -> Option<&'a str> {
+        self.0
+            .verbs
+            .iter()
+            .find(|verb| verb.id == action)
+            .map(|verb| verb.name.as_str())
+    }
+
     fn editable(&self, path: &[PathStep]) -> bool {
         if path.is_empty() {
             return self.0.fields.iter().any(|field| !field.readonly);

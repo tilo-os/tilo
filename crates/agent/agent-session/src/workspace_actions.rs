@@ -1022,6 +1022,9 @@ struct Workspace {
     listings: HashMap<DocumentRoute, Vec<CatalogueRow>>,
     /// The resource a hit at a document was named as, by the resource id the hit names.
     named: HashMap<(DocumentRoute, String), Option<tilo_actions::remote::Found>>,
+    /// What each document whose app this device holds no compiled-in kind for publishes to
+    /// search through the host, as the workspace's own person reads it: a tilolang app's record.
+    published: HashMap<DocumentRoute, Option<Arc<[ui::search::index_publication::IndexEntry]>>>,
     /// What the host says for the runs it executes here ([`session_voice`]).
     sessions: session_voice::Sessions,
     /// What changed in its records, for those following it ([`found`]).
@@ -1077,6 +1080,7 @@ impl Workspace {
             readers: HashMap::new(),
             listings: HashMap::new(),
             named: HashMap::new(),
+            published: HashMap::new(),
             changes: ui::history_source::feed::ChangeLog::new(),
             run_index: invocations::Index::default(),
             watchers: change::Watchers::default(),
@@ -2277,6 +2281,9 @@ impl Worker {
                     // package says what it publishes, never where it is kept.
                     || (workspace_id.is_some_and(|workspace_id| {
                         self.installed_package(workspace_id, &route.app_id).is_some()
+                            || self.shared.link.get().is_some_and(|link| {
+                                link.runs_package_record(workspace_id, route)
+                            })
                     }) && !is_part(&route.document))
             })
             // What this service holds as a document: one another device made and this one

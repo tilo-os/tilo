@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::CopyRole;
 
-use super::{PERSON_WORKSPACE_NAME, person_workspace_id, holds_person_workspace};
+use super::{PERSON_WORKSPACE_NAME, holds_person_workspace, person_workspace_id};
 use crate::workspaces::Workspaces;
 
 /// What the device founding the workspace again keeps of the old copy until

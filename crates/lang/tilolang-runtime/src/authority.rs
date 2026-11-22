@@ -28,6 +28,19 @@ pub struct ActionInfo {
     pub own: bool,
     /// The module that declares the action.
     pub module: ModuleHash,
+    /// The resource the invocation acts on, when it addresses one: its published id and the
+    /// kind of its type. The authority decides the action at that node, as the change it makes
+    /// is claimed there.
+    pub target: Option<ActionTarget>,
+}
+
+/// A resource an action is invoked on, as the policy names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionTarget {
+    /// The resource's published id (`tl:<app>:<id>`).
+    pub resource: String,
+    /// The kind of its type (`tl.<app>.<Type>`).
+    pub kind: String,
 }
 
 pub trait Authority {

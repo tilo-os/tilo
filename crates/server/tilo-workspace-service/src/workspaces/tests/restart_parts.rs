@@ -166,7 +166,12 @@ fn a_restart_does_the_same_work_for_each_part_of_a_long_chain() {
             <= short
                 .saturating_mul(long_parts)
                 .saturating_mul(5)
-                .saturating_add(slack.saturating_mul(long_parts).saturating_mul(short_parts).saturating_mul(4))
+                .saturating_add(
+                    slack
+                        .saturating_mul(long_parts)
+                        .saturating_mul(short_parts)
+                        .saturating_mul(4),
+                )
     };
     assert!(
         within(long.opened.calls, short.opened.calls, 1),
@@ -184,7 +189,12 @@ fn a_restart_does_the_same_work_for_each_part_of_a_long_chain() {
     assert!(
         long.answered.calls <= short.answered.calls.saturating_add(4)
             && long.answered.bytes
-                <= short.answered.bytes.saturating_mul(5).div_ceil(4).saturating_add(4096),
+                <= short
+                    .answered
+                    .bytes
+                    .saturating_mul(5)
+                    .div_ceil(4)
+                    .saturating_add(4096),
         "a restart's first answer took {:?} after a chain of {LONG} parts, {:?} after {SHORT}",
         long.answered,
         short.answered

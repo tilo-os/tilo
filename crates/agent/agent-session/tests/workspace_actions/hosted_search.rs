@@ -491,10 +491,14 @@ async fn answered_knowing(
     };
     let deadline = tilo_test_env::hang_deadline();
     let turn = loop {
+        // The ask `message` made of the agent: a turn's cause is the ask it is owed, not the
+        // message that asked it.
+        let asked = asked_on(&served.workspaces, workspace).await;
+        let cause = ask_on(&asked, message, SCOUT).map(|ask| ask.at.id_string());
         let turns = agents.turns(workspace).await.unwrap();
         if let Some(turn) = turns
             .into_iter()
-            .find(|turn| turn.cause == message.to_string())
+            .find(|turn| Some(&turn.cause) == cause.as_ref())
         {
             break turn;
         }

@@ -235,6 +235,23 @@ impl Opened {
         viewer: Actor,
         policy: Option<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>,
     ) -> Result<Self, String> {
+        Self::open_with(record, packages, viewer, None, policy)
+    }
+
+    /// [`Self::open`] with the access its own authority decides invocations by given: the
+    /// workspace's policy as the actor runs it, for a program with its own grants; `None` leaves
+    /// its authority open, as code on this device that acts for the workspace does. `members` is
+    /// the policy the host's members and their reads are read from.
+    ///
+    /// # Errors
+    /// As [`Self::open`].
+    pub fn open_with(
+        record: &RecordBytes,
+        packages: &Packages,
+        viewer: Actor,
+        access: Option<std::sync::Arc<tilo_action_policy::MemberAccess>>,
+        members: Option<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>,
+    ) -> Result<Self, String> {
         let mut chunks = Chunks::default();
         let mut read_at = BTreeMap::new();
         for (document, bytes) in &record.documents {
@@ -247,20 +264,36 @@ impl Opened {
         }
         chunks.reread_placement();
         let first = chunks.first().cloned().unwrap_or_default();
-        let host = Host::new(&first, viewer, || None).map_err(|error| error.to_string())?;
+        // What the host's own authority decides invocations by: without an access it knows no
+        // grants, and leaves every action to the caller.
+        let acting = access.clone();
+        let host = Host::new(&first, viewer, move || {
+            acting.as_ref().map(|access| (**access).clone())
+        })
+        .map_err(|error| error.to_string())?;
         for package in packages.0.iter() {
             host.load_compiled(package)
                 .map_err(|error| error.to_string())?;
         }
         host.sync(&chunks);
-        if let Some(policy) = policy
+        if let Some(policy) = members
             && let Some(owner) = policy.owner.clone()
         {
             let me = tilo_action_policy::PersonId::parse(&owner).map_err(|error| {
                 format!("the workspace's owner {owner:?} is no person: {error}")
             })?;
-            // The owner stands at no window here: whoever the policy names, the host names
-            // the same.
+            // Each agent the workspace holds as a member acts for the person its entry names,
+            // with that person's authority bounded by the agent's delegation: an ask taken, a
+            // reply written or a step of a turn recorded here is the agent's action, decided as
+            // it is where the agent's own device does the same.
+            for (agent, member) in &policy.agents {
+                host.authority().admit_agent(
+                    &Actor::Member(tilo_actions::MemberId::agent(agent.clone())),
+                    Some(member.for_person.as_str()),
+                );
+            }
+            // The owner stands at no window here: whoever the policy names, the host names the
+            // same.
             let access = tilo_action_policy::MemberAccess::person(policy, me.clone());
             host.runtime().set_members(
                 tilolang_tilo::members::members_of(&access, &me),
@@ -624,33 +657,40 @@ pub fn written_since(
 pub struct ProgramRecord {
     packages: Packages,
     record: RecordBytes,
-    /// The workspace's policy, which bounds what each reader of the run reads.
-    policy: Option<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>,
+    /// The access its own authority decides the run's invocations by: the bot's grants, as the
+    /// workspace made them.
+    access: Option<std::sync::Arc<tilo_action_policy::MemberAccess>>,
 }
 
 impl ProgramRecord {
-    /// `record` as the workspace holds it now, read through `packages` under `policy`.
+    /// `record` as the workspace holds it now, read through `packages`, its invocations decided
+    /// by `access`.
     #[must_use]
     pub const fn new(
         packages: Packages,
         record: RecordBytes,
-        policy: Option<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>,
+        access: Option<std::sync::Arc<tilo_action_policy::MemberAccess>>,
     ) -> Self {
         Self {
             packages,
             record,
-            policy,
+            access,
         }
     }
 
     /// The record opened as its app, so nothing a mention in it asks is made here for anyone.
     fn open(&self) -> Result<Opened, String> {
         let app = runtime::ids::AppId::from(self.packages.app());
-        let mut opened = Opened::open(
+        let members = self
+            .access
+            .as_ref()
+            .map(|access| std::sync::Arc::clone(&access.policy));
+        let mut opened = Opened::open_with(
             &self.record,
             &self.packages,
             Actor::App(app),
-            self.policy.clone(),
+            self.access.clone(),
+            members,
         )?;
         opened.open_root()?;
         Ok(opened)
@@ -773,7 +813,14 @@ fn tree_item(host: &Host, item: &str, reader: &Actor, depth: usize) -> Result<Js
             if let Some(after) = &after {
                 ask["after"] = Json::String(after.clone());
             }
-            let page = host.answer_read(&ask, reader)?;
+            let answer = host.answer_read(&ask, reader)?;
+            // A read of one collection of a resource answers the resource, that collection's
+            // page under its fields.
+            let page = answer
+                .get("fields")
+                .and_then(|fields| fields.get(&name))
+                .cloned()
+                .unwrap_or(Json::Null);
             if let Some(items) = page.get("items").and_then(Json::as_array) {
                 rows.extend(items.iter().cloned());
             }
@@ -825,6 +872,56 @@ impl crate::workspaces::Workspaces {
             }
         }
         Ok(record)
+    }
+
+    /// What `route`'s record of `workspace` publishes to search, read as `person` reads it: the
+    /// entries its app tells search about, one per resource, or `None` for an app this build
+    /// runs no package of (a compiled-in app, whose entries an app worker reads instead).
+    ///
+    /// The record is opened through its app's built-in package as that person, so what a direct
+    /// conversation keeps is found only by the people it is between. Nothing is written: what a
+    /// search reads leaves the record as it was.
+    pub fn record_entries(
+        &self,
+        workspace: &str,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+        person: &str,
+    ) -> Option<Arc<[ui::search::index_publication::IndexEntry]>> {
+        let Some(packages) = built_in(&route.app_id).ok().flatten() else {
+            return None;
+        };
+        let record = self.tl_record_now(workspace, &route.app_id)?;
+        let viewer = Actor::Member(tilo_actions::MemberId::person(person.to_owned()));
+        let policy = self.policy_now(workspace).map(Arc::new);
+        let opened = Opened::open(&record, &packages, viewer, policy).ok()?;
+        Some(tilolang_tilo::search::entries(opened.host()).into())
+    }
+
+    /// [`Self::tl_record`] read here and now, on this thread, with nothing written: what search
+    /// reads of a record.
+    fn tl_record_now(&self, workspace: &str, app: &str) -> Option<RecordBytes> {
+        /// The most bytes of one document a search reads out to index it.
+        const MOST_BYTES: usize = 64 * 1024 * 1024;
+        let mut record = RecordBytes::default();
+        for (of, document) in self.own_listing(workspace).ok()? {
+            if of != app || chunk_of_document(&document).is_none() {
+                continue;
+            }
+            let workspaces = self.clone();
+            let (of_workspace, of_app, of_document) =
+                (workspace.to_owned(), app.to_owned(), document.clone());
+            let read = crate::device_documents::on_its_own(async move {
+                workspaces
+                    .own_read(&of_workspace, (&of_app, &of_document), &[], MOST_BYTES)
+                    .await
+            });
+            if let Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. }) =
+                read
+            {
+                record.documents.insert(document, bytes);
+            }
+        }
+        Some(record)
     }
 
     /// Write `written`, changes of `app`'s record of `workspace`, as this device's own: each

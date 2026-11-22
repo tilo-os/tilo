@@ -511,6 +511,7 @@ impl Core {
             class,
             own: true,
             module: pkg.hash.clone(),
+            target: None,
         })
     }
 

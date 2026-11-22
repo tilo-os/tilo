@@ -1743,8 +1743,11 @@ async fn a_bot_step_reads_the_records_it_follows_through_the_record_api() {
             .unwrap_or_else(|| panic!("{step} read nothing: {report:?}"))
     };
     let chat = read("chat");
+    // The reading is what every reader is answered: the record's value holds the app's
+    // documents, each with its kind.
+    let documents = &chat["records"][0]["value"]["records"];
     assert!(
-        chat["records"].as_array().is_some_and(|records| records
+        documents.as_array().is_some_and(|records| records
             .iter()
             .any(|record| record["kind"] == "tl.so.tilo.chat.Conversations")),
         "the read lists the workspace's conversations: {chat}"

@@ -1162,6 +1162,7 @@ impl ViewInstance {
                 class: EffectClass::Undoable,
                 own: view_module == pkg.hash,
                 module: pkg.hash.clone(),
+                target: None,
             },
         );
         match decision {

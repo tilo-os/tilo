@@ -354,6 +354,110 @@ impl Workspaces {
         Ok(())
     }
 
+    /// [`Self::publish_as_bot`] for a tilolang app's record: `changes` the bot's run made to
+    /// `app`'s `record` of the workspace, published as the bot's own writes, signed by its
+    /// device, and admitted by the workspace as any member's are. The record is one the
+    /// workspace holds already (a tilolang app's record is founded by its host).
+    ///
+    /// # Errors
+    /// As [`Self::publish_as_bot`], and a record the workspace does not hold yet.
+    pub async fn publish_tl_as_bot(
+        &self,
+        workspace: &str,
+        governor: &DeviceCert,
+        bot: &ed25519_dalek::SigningKey,
+        app: &str,
+        record: &str,
+        changes: &[u8],
+    ) -> Result<(), CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        self.authorize(
+            governor,
+            None,
+            WorkspaceOp::Host(ServiceOperation::AuthorApplications),
+            now,
+        )?;
+        if governor != &self.inner.host.cert {
+            return Err(CollaborationError::new(
+                "bot publication requires exact governor ownership",
+            ));
+        }
+        let state = self.workspace(workspace).await?;
+        let mut governed = state.lock().await;
+        if !governed.governs_applications(governor) {
+            return Err(CollaborationError::new(
+                "application governor differs from current workspace authority",
+            ));
+        }
+        let keys = self
+            .sealing_keys(&governed, app, record)
+            .await
+            .map_err(CollaborationError::new)?;
+        let existing = governed
+            .readable_document(app, record)
+            .await
+            .map_err(CollaborationError::new)?;
+        let (mut document, heads, _) =
+            bot_base(&governed.peer(), keys.is_some(), (app, record), existing)?;
+        tilo_automerge::ApplyIncoming::load_incoming(&mut document, changes)
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        // Only what the workspace lacks: the bot's replica also holds the record's history it
+        // started from.
+        let fresh = document.save_after(&heads);
+        if fresh.is_empty() || document.get_heads() == heads {
+            return Ok(());
+        }
+        if fresh.len() > 64 * 1024 {
+            return Err(CollaborationError::new(
+                "bot publication exceeds publication limit",
+            ));
+        }
+        let mut candidate = governed.peer().clone();
+        match &keys {
+            Some(keys) => {
+                super::sealed_documents::publish_changes_for(
+                    &mut candidate,
+                    keys,
+                    bot,
+                    (app, record),
+                    fresh,
+                    &self.inner.host.key,
+                    system_time(now),
+                )?;
+            }
+            None => {
+                candidate.publication_mut().publish_incremental(
+                    app,
+                    record,
+                    fresh,
+                    bot,
+                    system_time(now),
+                )?;
+            }
+        }
+        let collaboration = governed.collaboration().clone();
+        governed.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
+            Ok(collaboration)
+        })?;
+        self.settle(&mut governed).await?;
+        // The workspace decides the bot's changes like any member's: one it refuses or holds
+        // back never reaches the record.
+        let wanted = document.get_heads();
+        let taken = governed
+            .readable_document(app, record)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
+            .is_some_and(|kept| wanted.iter().all(|head| kept.has_change(head)));
+        if !taken {
+            return Err(CollaborationError::new(
+                "the workspace did not take the bot's change",
+            ));
+        }
+        Ok(())
+    }
+
     /// Prepare a registered application's record (`""` for the primary)
     /// with exact governor ownership, from the app's own factory. The
     /// catalogue comes from this host's compiled, trusted application

@@ -27,7 +27,7 @@ const BEFORE: (&str, &str) = (
     include_str!("chat_before_direct_people/app.tl"),
     include_str!("chat_before_direct_people/app.ids"),
 );
-const APP: &str = "so.tilo.lang.chat";
+const APP: &str = "so.tilo.chat";
 const AGENT_APP: &str = "so.tilo.lang.agent";
 const WORKSPACE: &str = "workspace";
 

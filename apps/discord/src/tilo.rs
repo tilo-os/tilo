@@ -146,12 +146,25 @@ impl ChatRead {
 
     /// The app's root record: the sidebar's conversations.
     fn root(&self) -> Option<&Value> {
+        // A read answers `{"revision", "records": [{"record", "value"}]}`; a tilolang app's
+        // record is its one document's value, which lists the app's documents. Each document's
+        // row holds its `fields`: the sidebar's conversations are the root's.
+        let has_fields = |value: &Value| value.get("fields").and_then(Value::as_object).is_some();
         self.tree
             .get("records")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|record| record.get("fields").and_then(Value::as_object).is_some())
+            .and_then(Value::as_array)?
+            .iter()
+            .find_map(|record| {
+                let value = record.get("value").unwrap_or(record);
+                if has_fields(value) {
+                    return Some(value);
+                }
+                value
+                    .get("records")
+                    .and_then(Value::as_array)?
+                    .iter()
+                    .find(|document| has_fields(document))
+            })
     }
 
     /// The channels and categories of the workspace's chat, in sidebar order.

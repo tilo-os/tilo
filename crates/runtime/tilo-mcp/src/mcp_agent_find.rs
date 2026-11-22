@@ -419,19 +419,34 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         {
             let (name, provider) = providers.remove(at);
             let several = providers.iter().any(|(other, _)| *other == name);
-            let (path, kind) = self.ls_path(&provider, found, reads).await?;
             let app = if several {
                 format!("{name}@{provider}")
             } else {
                 name
             };
-            return Some((format!("{app}/{path}"), kind));
+            if let Some((path, kind)) = self.ls_path(&provider, found, reads).await {
+                return Some((format!("{app}/{path}"), kind));
+            }
+            // A record the provider lists no rows of falls through: what its app published
+            // names it below.
         }
         for (name, provider) in providers {
             let Some((path, kind)) = self.ls_path(&provider, found, reads).await else {
                 continue;
             };
             return Some((format!("{name}/{path}"), kind));
+        }
+        // A resource a tilolang app publishes (`tl:<app>:<path>`) is named by its app's name and
+        // the path its app gave it: the host that keeps the record publishes its search entries
+        // where no listing of this workspace holds its rows (a server runs the app for the people
+        // who call it), and the entry the search found is what names it.
+        if let (Some(app), Some(rest)) = (&found.app, found.resource.strip_prefix("tl:"))
+            && let Some(path) = rest
+                .strip_prefix(app.as_str())
+                .and_then(|rest| rest.strip_prefix(':'))
+        {
+            let name = app_names(std::slice::from_ref(app)).join("");
+            return Some((format!("{name}/{path}"), found.kind.clone()));
         }
         None
     }

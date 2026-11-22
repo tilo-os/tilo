@@ -471,8 +471,16 @@ impl Worker {
             // What the app publishes for search is read once per change where the replica's
             // documents are followed; where none is followed, the document is read whole.
             let (entries, changed) = self.entries_of(workspace_id, route);
-            let entries = entries.unwrap_or_default();
-            let held = !entries.is_empty();
+            let mut entries = entries.unwrap_or_default();
+            // A record this device holds no compiled-in app for — a tilolang app's, read through
+            // its package where the workspace is kept — publishes its entries through the host.
+            let mut answered = !entries.is_empty();
+            if entries.is_empty()
+                && let Some(published) = self.published_entries(workspace_id, who, person, route)
+            {
+                entries = published.into();
+                answered = true;
+            }
             for entry in entries.iter() {
                 if !placed_for(person, entry) || !inside(within, entry) {
                     continue;
@@ -494,8 +502,10 @@ impl Worker {
                 searched.push(Some(entry.clone()));
             }
             // What its app tells search nothing about is ranked whole, so only for a caller
-            // who may read all of it.
-            if held || !within.is_everything() {
+            // who may read all of it. A record read through its package answers with what its
+            // app publishes for the person, even where that is nothing (a direct conversation
+            // they take no part in), and is never ranked whole: its text is not all theirs.
+            if answered || !within.is_everything() {
                 continue;
             }
             if !matches!(
@@ -549,6 +559,47 @@ impl Worker {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         (entries, kept.changed(route))
+    }
+
+    /// What the record at `route` publishes to search through the host that keeps it, read as
+    /// `person` reads it, or `None` for a record whose app this host reads no entries of (a
+    /// compiled-in app, whose entries an app worker reads). Kept per caller until a write
+    /// lands, as what a caller may read is ([`Self::readable_cached`]).
+    fn published_entries(
+        &mut self,
+        workspace_id: WorkspaceId,
+        who: Option<&Bounded>,
+        person: &ui::permissions::policy::PersonId,
+        route: &DocumentRoute,
+    ) -> Option<Vec<IndexEntry>> {
+        let Some(link) = self.shared.link.get().cloned() else {
+            return None;
+        };
+        if let Some(who) = who {
+            let key = Reader::of(who);
+            if let Some(access) = self.access(workspace_id, &key)
+                && let Some(known) = access.published.get(route)
+            {
+                return known.clone().map(|entries| entries.to_vec());
+            }
+            let answer = link.record_entries(workspace_id, route, person.as_str());
+            if let Some(access) = self.access(workspace_id, &key) {
+                access.published.insert(route.clone(), answer.clone());
+            }
+            return answer.map(|entries| entries.to_vec());
+        }
+        if let Some(known) = self
+            .workspaces
+            .get(&workspace_id)
+            .and_then(|workspace| workspace.published.get(route))
+        {
+            return known.clone().map(|entries| entries.to_vec());
+        }
+        let answer = link.record_entries(workspace_id, route, person.as_str());
+        if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
+            workspace.published.insert(route.clone(), answer.clone());
+        }
+        answer.map(|entries| entries.to_vec())
     }
 
     /// The document at `route` whole, as search ranks one whose app tells it nothing.
@@ -730,10 +781,24 @@ impl Worker {
         }
         // Where many hits stand in this document, each level of its listing is read once for
         // all of them ([`Self::named_at_each_level_once`]).
-        let (kind, label) = if listed.many.contains(route) {
-            self.named_at_each_level_once(workspace_id, caller, (route, &provider), id, listed)?
+        let named = if listed.many.contains(route) {
+            self.named_at_each_level_once(workspace_id, caller, (route, &provider), id, listed)
         } else {
-            self.named_at_each_level(workspace_id, caller, (route, &provider), id, entry)?
+            self.named_at_each_level(workspace_id, caller, (route, &provider), id, entry)
+        };
+        // A resource a tilolang app publishes (`tl:<app>:<path>`) is named by the id its app
+        // published when no listing of this workspace holds it: the host that keeps the record
+        // publishes its entries, and this device holds no catalogue app to list them through. It
+        // is still exactly what the search found and what a caller addresses it by.
+        let (kind, label) = match named {
+            Some(named) => named,
+            None => {
+                let type_name = entry
+                    .resource
+                    .starts_with("tl:")
+                    .then(|| entry.subtitle.clone().unwrap_or_default())?;
+                (type_name, entry.title.clone())
+            }
         };
         Some(Found {
             resource: id.to_owned(),

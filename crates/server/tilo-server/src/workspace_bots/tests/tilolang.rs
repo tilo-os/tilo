@@ -241,8 +241,10 @@ async fn a_program_answers_a_tasks_change_reading_and_acting_as_the_bot() {
         .as_array()
         .and_then(|records| records.iter().find(|record| record["kind"] == TASKS_KIND))
         .unwrap_or_else(|| panic!("the core read lists the workspace's Tasks: {read}"));
+    // The root was founded as the app opened the record, before anyone wrote in it: the read
+    // says so, and each task below names the member who made it.
     assert_eq!(
-        tasks_root["created"]["who"]["actor"]["member"]["person"], owner,
+        tasks_root["created"]["who"]["actor"]["app"], TASKS,
         "the read says who made it: {tasks_root}"
     );
     // Its own task is a bot's, which the trigger does not count.

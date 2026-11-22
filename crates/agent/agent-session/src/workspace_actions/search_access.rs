@@ -8,6 +8,7 @@
 //! [`FRESHNESS`].
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tilo_actions::remote::Found;
@@ -92,6 +93,12 @@ pub(super) struct SearchAccess {
     pub(super) listings: HashMap<DocumentRoute, Vec<super::CatalogueRow>>,
     /// The resource a hit at a document was named as, by the resource id the hit names.
     pub(super) named: HashMap<(DocumentRoute, String), Option<Found>>,
+    /// What a document whose app this device holds no compiled-in kind for publishes to search
+    /// through the host, read as this caller's person reads it: a tilolang app's record, whose
+    /// entries differ by who reads them (a direct conversation's messages). `None` for a record
+    /// the host reads no entries of.
+    pub(super) published:
+        HashMap<DocumentRoute, Option<Arc<[ui::search::index_publication::IndexEntry]>>>,
     /// Whether the caller may read the workspace's folder.
     pub(super) files: Option<bool>,
 }
@@ -105,6 +112,7 @@ impl SearchAccess {
             self.routes.clear();
             self.listings.clear();
             self.named.clear();
+            self.published.clear();
             self.files = None;
         }
     }

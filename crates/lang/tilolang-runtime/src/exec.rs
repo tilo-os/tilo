@@ -378,6 +378,7 @@ impl Core {
             class: meta.class,
             own: aref.author.as_ref().is_none_or(|a| *a == pkg.hash),
             module: pkg.hash.clone(),
+            target: target_of(&pkg.meta, aref.args.first()),
         };
         Ok(self.authority.decide(&ctx.invoker, &ctx.chain, &info))
     }
@@ -2853,4 +2854,23 @@ fn replay_value(entry: &JournalEntry, action: &str) -> HResult<Value> {
             "the run diverged from its journal: it now invokes `{action}`"
         )),
     }
+}
+
+/// The resource `first`, the action's first argument, names when the action addresses one: its
+/// published id and the kind of its type, read from `meta`.
+fn target_of(
+    meta: &tilolang::meta::PackageMeta,
+    first: Option<&crate::value::Value>,
+) -> Option<crate::authority::ActionTarget> {
+    let crate::value::Value::Ref(reference) = first? else {
+        return None;
+    };
+    let ty = meta
+        .types
+        .iter()
+        .find(|declared| declared.id == reference.target.ty)?;
+    Some(crate::authority::ActionTarget {
+        resource: format!("tl:{}:{}", meta.app, reference.target.id_string()),
+        kind: format!("tl.{}.{}", meta.app, ty.name),
+    })
 }

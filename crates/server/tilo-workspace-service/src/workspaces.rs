@@ -2351,9 +2351,16 @@ impl Workspaces {
         let mut workspace = workspace.lock().await;
         crate::timing::window("workspace.follow_wait", waiting);
         if workspace.peer().holds_document(&app_id, &document_id) {
-            self.follow_write(&mut workspace, author, message, (app_id, document_id), true)
+            let refused = self
+                .follow_write(&mut workspace, author, message, (app_id, document_id), true)
                 .await;
-            return Ok(());
+            // This host's own write is answered to whoever made it: a change the workspace
+            // refuses here is an error of the write, not a verdict to file for another device.
+            // A member's reaches it as their driver's answer, filed where they read it.
+            return match refused {
+                Some(reason) if author == host.cert.device_public_key => Err(reason),
+                _ => Ok(()),
+            };
         }
         let sealed = envelope.encryption.is_some();
         // Only the record's channel members read a sealed write: a record that
@@ -2381,6 +2388,13 @@ impl Workspaces {
         // member's changes only as a tail of a checkpoint that resolves their
         // dependencies.
         let whole = envelope.is_whole_resource();
+        // A record this host's own device founds starts from the write itself: that write is the
+        // whole record, and the coverage row the workspace governs its checkpoints by is
+        // published with it, as a snapshot this device publishes itself has it
+        // ([`StatePeer::cover_own_checkpoint`]). It is no cleartext genesis the members would
+        // have to account for. Any other writer's founding write is a change to the record, and
+        // the host starts that one empty first.
+        let own = author == host.cert.device_public_key;
         // A record that needs keys of its own is founded under them: even its
         // empty base is not written in the clear.
         let needs_keys = !whole
@@ -2396,13 +2410,21 @@ impl Workspaces {
             &host.key,
             now,
             |_, candidate| {
-                if !whole {
+                if !whole && !own {
                     sealed_documents::refound(
                         candidate,
                         founding_keys.as_ref(),
                         (&app_id, &document_id),
                         automerge::AutoCommit::new().save(),
                         &host.key,
+                        now,
+                    )?;
+                }
+                if own {
+                    candidate.cover_own_checkpoint(
+                        &app_id,
+                        &document_id,
+                        envelope.as_ref(),
                         now,
                     )?;
                 }
@@ -2702,7 +2724,8 @@ impl Workspaces {
     /// governor holds, into its copy, compact the workspace's sealed histories
     /// before one is full (past its bound the copy would stop following
     /// the record), tell whoever follows the workspace's documents, and file its
-    /// verdict on a write admission refused.
+    /// verdict on a write admission refused. Answers the refusal, for the writer this host
+    /// itself is.
     async fn follow_write(
         &self,
         workspace: &mut GovernedWorkspace,
@@ -2710,7 +2733,7 @@ impl Workspaces {
         message: neighbour_wire::NeighbourMsg,
         (app, record): (String, String),
         compact: bool,
-    ) {
+    ) -> Option<String> {
         let following = crate::timing::start();
         // A sealed compaction this copy is behind in is taken as the record's base rather than
         // refused ([`GovernedWorkspace::follow_kept`]).
@@ -2721,7 +2744,7 @@ impl Workspaces {
         if followed.behind == Some(follow::BehindRefusal::Keys) {
             #[cfg(any(feature = "agents", feature = "web"))]
             self.join_soon(workspace, app.clone(), record.clone());
-            return;
+            return followed.refused;
         }
         if followed.changed {
             self.landed(workspace, &message);
@@ -2730,8 +2753,8 @@ impl Workspaces {
         if followed.replay_wanted {
             self.replay_soon(workspace.workspace().to_owned());
         }
-        if let Some(reason) = followed.refused
-            && let Err(error) = self.file_refusal(workspace, &message, &reason).await
+        if let Some(reason) = &followed.refused
+            && let Err(error) = self.file_refusal(workspace, &message, reason).await
         {
             tracing::warn!(workspace = %workspace.workspace(), %reason, %error, "the governor did not publish a refusal of a record write");
         }
@@ -2748,6 +2771,7 @@ impl Workspaces {
         let _ = compact;
         self.tell_followers(workspace, author, (app, record), &message, false)
             .await;
+        followed.refused
     }
 
     /// File this device's verdict on the write `message` carried, which

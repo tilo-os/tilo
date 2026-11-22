@@ -245,6 +245,29 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn records(&self, _channel: &str) -> Option<Vec<(String, String)>> {
         None
     }
+    /// What search finds in the record at `route` of `workspace`, read as `person` reads it:
+    /// the entries its app publishes to the search index, one per resource (a message by the
+    /// words it says), or `None` for a record this host reads no entries of here: a compiled-in
+    /// app, whose entries an app worker reads instead.
+    ///
+    /// A tilolang app's record is read through its package by the host that keeps it, so a
+    /// server's search finds a Chat message, a note or a mail as the person the caller acts for
+    /// reads it, and a direct conversation's messages only for the people it is between.
+    fn record_entries(
+        &self,
+        _workspace: WorkspaceId,
+        _route: &DocumentRoute,
+        _person: &str,
+    ) -> Option<Arc<[ui::search::index_publication::IndexEntry]>> {
+        None
+    }
+    /// Whether `route` is the record of a tilolang app this host runs a package of, and the
+    /// record's own document rather than a chunk of it: a record the host reads and writes
+    /// through the app's package where the workspace is kept, though no catalogue app and no
+    /// installed `.tapp` holds it. Its chunks are read with it, never listed beside it.
+    fn runs_package_record(&self, _workspace: WorkspaceId, _route: &DocumentRoute) -> bool {
+        false
+    }
     /// The actions of `workspace` this host runs itself, not a record's (its
     /// governance: giving yourself a name, inviting someone), whose words hold
     /// `needle`, as `caller` may run them: what a page's search lists beside

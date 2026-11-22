@@ -87,6 +87,13 @@ pub trait ReceiptSurface {
     /// tree (a comment verb under the comments it writes), or `None` when
     /// the app publishes no such verb.
     fn verb(&self, action: &str) -> Option<(ActionKind, Option<String>)>;
+    /// The name the app publishes `action` under to the workspace's policy, where a change
+    /// records its declaration id instead: a tilolang app keeps an action's id across a rename,
+    /// while programs and grants name it as the catalogue publishes it. Its own id where the app
+    /// publishes no other (a native app's verb is named what its id is).
+    fn action_name<'a>(&'a self, _action: &str) -> Option<&'a str> {
+        None
+    }
     /// Whether the field at `path` (from the record's root) offers edits: it
     /// is stored and not read-only.
     fn editable(&self, path: &[PathStep]) -> bool;
@@ -182,11 +189,14 @@ pub fn claim_node(
                 Some(item) => resource.item(item.as_str()),
                 None => resource,
             };
+            let named = surface
+                .action_name(&action.action)
+                .unwrap_or(action.action.as_str());
             match surface.verb(&action.action).and_then(|(_, field)| field) {
                 Some(field) => node.field(&field),
                 None => node,
             }
-            .action(action.action.as_str())
+            .action(named)
         }
         ClaimedAction::Edit { path, .. } => edit_node(resource, path),
         ClaimedAction::History(op) => resource.action(match op {

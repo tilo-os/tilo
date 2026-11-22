@@ -265,6 +265,9 @@ pub struct BotRunner {
     /// The next moment of a time a resource holds that the program waits
     /// for, ms since the epoch, so its idle wait ends at it too.
     next_time_ms: Option<i64>,
+    /// What the program's own invocations are decided by here: the bot's grants, as the
+    /// workspace made them for this program.
+    access: tilo_action_policy::MemberAccess,
     /// The mail of the person the program is carried out for, heard for as
     /// long as one of its triggers waits on it.
     mail: Option<sources::Mail>,
@@ -306,21 +309,17 @@ impl BotRunner {
         let catalogue = AppCatalogue::native();
         let mut tilolang = BTreeMap::new();
         for trigger in &mut shortcut.triggers {
-            let TriggerSpec::ResourceChanged { kind, actions, .. } = trigger else {
+            let TriggerSpec::ResourceChanged { kind, .. } = trigger else {
                 continue;
             };
             let Some((app, _)) = tl_records::tilolang_kind(kind) else {
                 continue;
             };
+            // The trigger keeps naming the actions their program names, as the events it is
+            // matched against do ([`name_tilolang_action`]): a change records the declaration's
+            // id, which history keeps across a rename, and the event carries the published name.
             let packages =
                 tl_records::built_in(app)?.ok_or_else(|| tl_records::runs_elsewhere(app))?;
-            // A trigger names an action as the catalogue publishes it; a tilolang change
-            // records the id its declaration keeps.
-            for action in actions.iter_mut() {
-                if let Some(id) = packages.action_id(action) {
-                    *action = id;
-                }
-            }
             tilolang.insert(app.to_owned(), packages);
         }
         let mut apps: BTreeSet<String> = shortcut
@@ -360,7 +359,7 @@ impl BotRunner {
             ReplicaActor::Bot {
                 installation: bot.installation.clone(),
                 installer: installer.clone(),
-                access,
+                access: access.clone(),
             },
         )));
         let handle = tokio::runtime::Handle::current();
@@ -405,6 +404,7 @@ impl BotRunner {
             next_schedule_ms: None,
             person: None,
             next_time_ms: None,
+            access,
             mail: None,
             outside: sources::Outside::default(),
             next_source_ms: None,
@@ -659,6 +659,9 @@ impl BotRunner {
                 }
             }
         }
+        // Whether this is a pass of a bot that has read the workspace before: one it has not is
+        // its first, and what it sees then is the workspace's past.
+        let running = !self.progress.records.is_empty();
         for (app, record) in self.routes().await? {
             let Some(saved) = self.reads(&app, &record).await else {
                 continue;
@@ -679,7 +682,10 @@ impl BotRunner {
                 || (tilolang && !record.is_empty());
             let since = match self.progress.records.get(&key).cloned() {
                 Some(since) => since,
-                None if part && self.follows_app(&app) => Vec::new(),
+                // A record that appeared while the bot was running is what happened during it,
+                // read whole: a tilolang app's record is founded by whoever first writes to it
+                // (Chat's first channel), and the bot answers that.
+                None if running || (part && self.follows_app(&app)) => Vec::new(),
                 None => {
                     self.progress.records.insert(key, heads);
                     continue;
@@ -959,11 +965,7 @@ impl BotRunner {
         // bot cannot hold is left out of the run (and said), not every run
         // with it. A tilolang app's record is held whole, through its package.
         let mut tilolang = BTreeMap::new();
-        let policy = self
-            .workspaces
-            .policy_of(&self.workspace)
-            .await
-            .map(std::sync::Arc::new);
+        let access = std::sync::Arc::new(self.access.clone());
         for (app, packages) in &self.tilolang {
             let record = self.workspaces.tl_record(&self.workspace, app).await?;
             self.held.lock_recover().hold_tilolang(
@@ -971,7 +973,7 @@ impl BotRunner {
                 Box::new(ProgramRecord::new(
                     packages.clone(),
                     record.clone(),
-                    policy.clone(),
+                    Some(std::sync::Arc::clone(&access)),
                 )),
             );
             tilolang.insert(app.clone(), record);
@@ -1042,6 +1044,38 @@ impl BotRunner {
         })
         .await
         .map_err(|error| error.to_string())?;
+        // The run's changes reach the workspace in the order its steps made them: a tilolang
+        // app's record first, then the records held beside it, so one the workspace refuses
+        // leaves what came before it standing.
+        for (app, before) in &tilolang {
+            if let Err(refusal) = self.publish_tilolang(app, before).await {
+                // The refused change, and every later one built on it, stay out of the
+                // workspace; the bot's replicas they touched start over from the workspace's
+                // records, or every later change of theirs would carry the refused one and be
+                // refused too.
+                let mut touched: BTreeSet<DocumentRoute> = self
+                    .held
+                    .lock_recover()
+                    .take_changes()
+                    .into_iter()
+                    .map(|(route, _)| route)
+                    .collect();
+                touched.insert(DocumentRoute {
+                    app_id: app.clone(),
+                    cluster_id: self.workspace.clone(),
+                    document: String::new(),
+                });
+                let mut held = self.held.lock_recover();
+                for route in &touched {
+                    held.forget(route);
+                }
+                drop(held);
+                self.api.forget_steps();
+                let reason = format!("the workspace refused the bot's change to {app}: {refusal}");
+                tracing::warn!(installation = %self.bot.installation, run = %firing.invocation.0, %app, %refusal, "bot change refused; the run goes again");
+                return Ok(Fired::Refused(reason));
+            }
+        }
         let changes = self.held.lock_recover().take_changes();
         let count = changes.len();
         let mut changes = changes.into_iter().enumerate();
@@ -1077,19 +1111,6 @@ impl BotRunner {
                 return Ok(Fired::Refused(reason));
             }
         }
-        for (app, before) in tilolang {
-            if let Err(refusal) = self.publish_tilolang(&app, &before).await {
-                self.held.lock_recover().forget(&DocumentRoute {
-                    app_id: app.clone(),
-                    cluster_id: self.workspace.clone(),
-                    document: String::new(),
-                });
-                self.api.forget_steps();
-                let reason = format!("the workspace refused the bot's change to {app}: {refusal}");
-                tracing::warn!(installation = %self.bot.installation, run = %firing.invocation.0, %app, %refusal, "bot change refused; the run goes again");
-                return Ok(Fired::Refused(reason));
-            }
-        }
         Ok(Fired::Ran(Box::new(report)))
     }
 
@@ -1103,13 +1124,39 @@ impl BotRunner {
         if written.is_empty() {
             return Ok(());
         }
-        #[cfg(test)]
-        if self.refuse_for_test() {
-            return Err("refused for the test".into());
+        // A record the workspace holds already takes the bot's changes as the bot's own writes,
+        // signed by its device, as a native app's does: every member decides each as the bot's,
+        // within its grants and showing another name only where the workspace lets it. Each
+        // change is published on its own, so one the workspace refuses leaves those before it
+        // standing, as a native app's does. The write that founds a record is the host's.
+        for write in written {
+            if write.founding {
+                self.workspaces
+                    .write_tl(&self.workspace, app, vec![write])
+                    .await?;
+                continue;
+            }
+            for change in automerge::Automerge::parse_changes(&write.changes)
+                .map_err(|error| error.to_string())?
+            {
+                #[cfg(test)]
+                if self.refuse_for_test() {
+                    return Err("refused for the test".into());
+                }
+                self.workspaces
+                    .publish_tl_as_bot(
+                        &self.workspace,
+                        &self.host,
+                        &self.bot_key,
+                        app,
+                        &write.document,
+                        change.raw_bytes(),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
         }
-        self.workspaces
-            .write_tl(&self.workspace, app, written)
-            .await
+        Ok(())
     }
 
     /// Who is in the workspace, by name and in what role, as of now: `{"members":

@@ -83,6 +83,94 @@ impl StatePeer {
         self.receive(key.device_public_key(), message.clone(), now)?;
         Ok(message)
     }
+    /// Govern the checkpoint `envelope`, this device's whole-record write of `(app, record)`,
+    /// before it is admitted: record the coverage row saying which history the workspace
+    /// acknowledges it keeps, as [`Self::prepare_signed_mutation`] records it for a snapshot it
+    /// publishes itself. A write this device committed through the workspace's ordered
+    /// persistence reaches the replica without passing that publication, and the replica holds
+    /// a checkpoint back until its coverage is governed
+    /// ([`crate::state::StatePeer::receive_from`]'s `CheckpointCoverage`).
+    ///
+    /// Nothing is written for a write that is no whole record, for one another device signed,
+    /// for a record's empty genesis, or for a route another of the owner's devices covers.
+    ///
+    /// # Errors
+    /// The payload or its snapshot does not decode, or the workspace is not held here.
+    pub fn cover_own_checkpoint(
+        &mut self,
+        app: &str,
+        record: &str,
+        envelope: &collab_types::SignedOp,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let Ok(collab_types::DocumentFrame::Whole(mutation)) =
+            collab_types::DocumentFrame::decode(&envelope.payload)
+        else {
+            return Ok(());
+        };
+        let DocumentMutation::Snapshot(bytes) = &mutation else {
+            return Ok(());
+        };
+        // A sealed checkpoint is covered by the receipt its channel's key holders publish.
+        if envelope.encryption.is_some() {
+            return Ok(());
+        }
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let author = *envelope.author.as_bytes();
+        if !self.core.documents.contains_key(&route) && empty_genesis(bytes) {
+            return Ok(());
+        }
+        if !self.signed_by_governor(&author) {
+            return Ok(());
+        }
+        if self
+            .governed_coverage(&route)?
+            .is_some_and(|row| row.author != author)
+        {
+            return Ok(());
+        }
+        let snapshot = AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+        let mut watermarks = self
+            .core
+            .documents
+            .get(&route)
+            .map(|entry| {
+                entry
+                    .channel
+                    .last_seq_per_author
+                    .iter()
+                    .map(|(key, value)| (hex::encode(key.as_bytes()), *value))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        watermarks.insert(hex::encode(author), envelope.seq);
+        let coverage = crate::coverage::Coverage {
+            workspace: self.core.workspace.clone(),
+            app: app.into(),
+            record: record.into(),
+            payload_hash: *blake3::hash(&envelope.payload).as_bytes(),
+            heads: snapshot
+                .base_heads()
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            author,
+            sequence: envelope.seq,
+            watermarks,
+        };
+        let doc = self
+            .core
+            .workspace_doc
+            .as_deref_mut()
+            .ok_or("missing workspace governance")?;
+        crate::coverage::put(doc, coverage)?;
+        crate::state::commit_governance(doc, crate::state::now_secs(now));
+        Ok(())
+    }
+
     #[expect(
         clippy::needless_pass_by_value,
         reason = "callers hand over freshly built mutations, as `signed_mutation` takes ownership"

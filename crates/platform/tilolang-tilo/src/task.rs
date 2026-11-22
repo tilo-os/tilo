@@ -998,8 +998,12 @@ fn call_of(
                 .iter()
                 .find(|declared| declared.id == *action)
                 .ok_or_else(|| format!("{app} declares no action {action}"))?;
-            let target = meta.target_of(&declared.params);
-            let target = target.and_then(|_| args.first());
+            // The first parameter names the resource acted on, or a union of them.
+            let target = if meta.targets_of(&declared.params).is_empty() {
+                None
+            } else {
+                args.first()
+            };
             let resource = match target {
                 Some((_, Value::Ref(r))) => resource_id(app, &r.target.id_string()),
                 _ => package_resource_id(app),

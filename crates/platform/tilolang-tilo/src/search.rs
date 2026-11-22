@@ -344,6 +344,15 @@ fn entries_of(
         .collect()
 }
 
+/// Every entry a host's packages publish to the search index, read from what it holds now, as
+/// its viewer reads them: one per resource with text, each named by the resource's published id.
+/// A record the host opened for one person answers with what that person reads, a direct
+/// conversation's messages among them only for the people it is between.
+#[must_use]
+pub fn entries(host: &Host) -> Vec<IndexEntry> {
+    entries_of(&host.store().snapshot(), &catalogue(host), host.viewer())
+}
+
 /// The entry the session's persistent search index keeps of the resource at `path` of the
 /// package `meta`, read now: none when it holds no text, when it is gone, or when the records
 /// holding it keep it from the host's viewer. What an instance publishes for the resources a
