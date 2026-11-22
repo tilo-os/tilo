@@ -41,6 +41,9 @@ pub(super) struct SessionCarriers {
     /// sessions' store refuses a write for a while.
     #[cfg(test)]
     pub(super) failing: std::sync::atomic::AtomicUsize,
+    /// The channels of the writes queued, in order: which writes a test's link took in.
+    #[cfg(test)]
+    pub(super) queued: Mutex<Vec<[u8; 32]>>,
 }
 
 impl Workspaces {
@@ -54,6 +57,10 @@ impl Workspaces {
         author: [u8; 32],
         commit: HostCommit,
     ) {
+        #[cfg(test)]
+        (self.inner.session_carriers.queued.lock())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(commit.channel);
         let carried = Carried {
             workspace: workspace.to_owned(),
             number,
