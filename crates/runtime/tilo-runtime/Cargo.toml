@@ -168,8 +168,6 @@ tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 runtime-portal = { path = "../runtime-portal" }
 # The channel fixtures owner tests seal writes with.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "device-keys", "files", "test-support"] }
-# A scripted `/v1` server: a key handed over asks its own server, not the device's daemon.
-test-http = { path = "../../dev/test-http" }
 # The join protocol a runtime joins workspaces over.
 tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 # The governor whose workspaces a runtime joins.
