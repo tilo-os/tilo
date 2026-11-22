@@ -717,6 +717,113 @@ fn a_peer_state_of_an_older_layout_opens_and_is_written_again_in_todays() {
     assert_eq!(reopened.summary().name, "Team");
 }
 
+/// A document write as a build before this one published it: the member's own record it was,
+/// `own`, before its reader set.
+fn published_before_own_removal(
+    write: &neighbour_wire::NeighbourMsg,
+    own: Option<(&str, [u8; 32])>,
+) -> Vec<u8> {
+    let neighbour_wire::NeighbourMsg::AppDocument { readers, .. } = write else {
+        panic!("a document write");
+    };
+    let mut bytes = postcard::to_allocvec(write).unwrap();
+    let today = postcard::to_allocvec(readers).unwrap();
+    bytes.truncate(bytes.len().saturating_sub(today.len()));
+    bytes.extend(postcard::to_allocvec(&own).unwrap());
+    bytes.extend(today);
+    bytes
+}
+
+/// A workspace whose publications an earlier build kept, document writes among them that named
+/// the member's own record they were, opens with every one of them read as this build writes
+/// it, so each is carried and served; its files hold them so from then on.
+#[test]
+fn publications_an_earlier_build_kept_open_in_todays_layout() {
+    use neighbour_wire::NeighbourMsg;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let created =
+        GovernedWorkspace::create(dir.path(), "Team", &cert, &key, None, SystemTime::now())
+            .unwrap();
+    let path = created.path.clone();
+    drop(created);
+    let write = |seq: u64, readers: Option<&str>| NeighbourMsg::AppDocument {
+        peer: 3,
+        app_id: "so.tilo.workspace".into(),
+        cluster_id: "team".into(),
+        document_id: format!("uuid:{seq}"),
+        envelope: Box::new(collab_types::SignedOp::new_unsigned(
+            vec![0xDE, 0xAD, 0xBE, 0xEF],
+            collab_types::ArtifactId(uuid::Uuid::from_bytes([0x11; 16])),
+            collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+            collab_types::AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
+            collab_types::OpKind::Change,
+            SystemTime::UNIX_EPOCH,
+            seq,
+        )),
+        readers: readers.map(str::to_owned),
+    };
+    // Two in the publications file, one in the record's own tail after them, each as that
+    // build wrote it; the record has carried none of them yet.
+    let writes = [
+        (write(1, None), None),
+        (write(2, Some("members")), Some(("notes.page", [7; 32]))),
+        (write(3, None), Some(("notes.page", [9; 32]))),
+    ];
+    let kept: Vec<Publication> = writes
+        .iter()
+        .map(|(write, own)| {
+            let bytes = published_before_own_removal(write, *own);
+            assert!(
+                NeighbourMsg::decode(&bytes).is_err(),
+                "that layout does not read as today's"
+            );
+            Publication {
+                bytes: bytes.into(),
+                checkpoint: false,
+            }
+        })
+        .collect();
+    let mut stored: document_format::StoredResource =
+        postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+    let (mut file, mut filed) =
+        appended::Appended::<Publication>::open(&path, PUBLICATIONS, stored.filed_publications)
+            .unwrap();
+    filed.append(&mut stored.outgoing);
+    let carried = filed.len();
+    filed.extend(kept[..2].iter().cloned());
+    stored.filed_publications = file.file(&filed).unwrap();
+    stored.outgoing = kept[2..].to_vec();
+    stored.published = carried;
+    std::fs::write(&path, postcard::to_stdvec(&stored).unwrap()).unwrap();
+
+    let restored = GovernedWorkspace::open(path.clone(), None).unwrap();
+    let to_carry: Vec<NeighbourMsg> = restored.record.outgoing[restored.record.published..]
+        .iter()
+        .map(|publication| NeighbourMsg::decode(&publication.bytes).unwrap())
+        .collect();
+    let expected: Vec<NeighbourMsg> = writes.iter().map(|(write, _)| write.clone()).collect();
+    assert_eq!(
+        to_carry, expected,
+        "each is carried as today's build reads it"
+    );
+    drop(restored);
+
+    let stored: document_format::StoredResource =
+        postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+    let (_, mut filed) =
+        appended::Appended::<Publication>::open(&path, PUBLICATIONS, stored.filed_publications)
+            .unwrap();
+    filed.extend(stored.outgoing);
+    let written: Vec<NeighbourMsg> = filed[carried..]
+        .iter()
+        .map(|publication| NeighbourMsg::decode(&publication.bytes).unwrap())
+        .collect();
+    assert_eq!(written, expected, "the files hold them in today's layout");
+    let reopened = GovernedWorkspace::open(path, None).unwrap();
+    assert_eq!(reopened.summary().name, "Team");
+}
+
 #[test]
 fn a_workspace_name_must_be_printable_and_short() {
     let (key, cert) = governor();

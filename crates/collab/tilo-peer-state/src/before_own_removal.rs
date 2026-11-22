@@ -1,6 +1,7 @@
 //! Messages as stores and replicas kept them while a document write named the member's own
-//! record it was: a store's frames before version 5 ([`crate::store`]) and a replica's waiting
-//! writes at durable versions 10 and 11 ([`crate::state`]). Each reads as the message of today. Nothing
+//! record it was: a store's frames before version 5 ([`crate::store`]), a replica's waiting
+//! writes at durable versions 10 and 11 ([`crate::state`]), and the publications a governed
+//! workspace's host kept ([`kept_message`]). Each reads as the message of today. Nothing
 //! reads which member's own record a write was any more, so that is dropped; the envelope is the
 //! bytes its author signed.
 //!
@@ -53,6 +54,20 @@ pub(crate) fn frame(bytes: &[u8]) -> Result<NeighbourMsg, postcard::Error> {
         (readers, []) => Ok(write.with(readers)),
         _ => Err(postcard::Error::DeserializeBadEncoding),
     }
+}
+
+/// The message a whole frame `bytes` holds, kept with no version that says which layout it is
+/// in: this build's, or one of those builds' ([`frame`]). A governed workspace's host keeps its
+/// publications so, and those builds' hosts published document writes in it.
+///
+/// Today's layout is read first. Bytes that read whole in it mean the same in an earlier one or
+/// do not read there, and those builds' document writes do not read whole in it, so which layout
+/// they are in is never in doubt.
+///
+/// # Errors
+/// `bytes` are one message in neither layout; the error is the one today's layout gives.
+pub fn kept_message(bytes: &[u8]) -> Result<NeighbourMsg, postcard::Error> {
+    NeighbourMsg::decode(bytes).or_else(|today| frame(bytes).map_err(|_| today))
 }
 
 /// The message at the start of `bytes`, and the bytes after it: for a message kept among other

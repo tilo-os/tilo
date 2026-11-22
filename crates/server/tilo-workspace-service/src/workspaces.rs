@@ -419,11 +419,18 @@ impl GovernedWorkspace {
                 )
             })?;
         let mut parts = peer_parts::PeerParts::open(&path)?;
-        let (publications, published) =
+        let (mut publications, published) =
             appended::Appended::open(&path, PUBLICATIONS, stored.filed_publications)?;
         let (receipts, receipted) =
             appended::Appended::open(&path, RECEIPTS, stored.filed_receipts)?;
-        let record = WorkspaceDocumentEntry::read(stored, published, receipted);
+        let mut record = WorkspaceDocumentEntry::read(stored, published, receipted);
+        // Publications an earlier build kept in its layout are written again in today's with the
+        // record, the publications file whole, so no later start reads the older one.
+        let republished = publication::brought_up(&mut record.outgoing)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if republished {
+            publications.unsure();
+        }
         // The record names the workspace's owner, a fact of its membership
         // that every holder keeps as it was handed over; the device opening
         // it only writes what this host changes, and is never taken for the
@@ -466,9 +473,11 @@ impl GovernedWorkspace {
             Self::assemble(record, peer, path, parts, (publications, receipts), device)?;
         if let Some(today) = today {
             workspace.record.peer = today;
+        }
+        if older || republished {
             workspace
                 .persist()
-                .map_err(|error| format!("peer state written again in today's layout: {error}"))?;
+                .map_err(|error| format!("workspace written again in today's layout: {error}"))?;
         }
         Ok(workspace)
     }

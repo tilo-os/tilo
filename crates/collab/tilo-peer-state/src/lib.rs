@@ -11,6 +11,7 @@
     )
 )]
 mod before_own_removal;
+pub use before_own_removal::kept_message;
 mod frames;
 pub mod governance;
 #[cfg(not(target_arch = "wasm32"))]

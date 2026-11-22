@@ -172,12 +172,20 @@ impl GovernedWorkspace {
         records: &crate::workspace_documents::WorkspaceDocuments,
     ) -> Result<(), String> {
         while let Some(entry) = self.record.outgoing.get(self.record.published) {
-            records.commit(
-                self.record.workspace_id,
-                &crate::workspace_documents::HostCommit {
-                    body: entry.bytes.to_vec(),
-                },
-            )?;
+            records
+                .commit(
+                    self.record.workspace_id,
+                    &crate::workspace_documents::HostCommit {
+                        body: entry.bytes.to_vec(),
+                    },
+                )
+                .map_err(|error| {
+                    format!(
+                        "governance publication {} of {} not carried: {error}",
+                        self.record.published,
+                        self.record.outgoing.len()
+                    )
+                })?;
             self.record.published = self.record.published.saturating_add(1);
         }
         Ok(())
