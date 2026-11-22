@@ -12,7 +12,7 @@ use ui::{ActionPalette, CommandEntry};
 use crate::model::{Held, Hit, SearchStream, Source, Target};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, Captures, CommandSpec, Commands, Content, Published,
-    PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
+    PublishedActions, Recents, ServiceSearches, Switches, WebSearch, WindowEntry, Windows,
 };
 use crate::window::WindowSearch;
 use crate::workers::SearchWorkers;
@@ -119,6 +119,7 @@ struct Sources {
     actions: Arc<Actions>,
     published: Arc<Published>,
     captures: Arc<Captures>,
+    service_searches: Arc<ServiceSearches>,
     content: Content,
     answers: Option<(Arc<Answers>, Arc<WebSearch>)>,
     /// The one window searched, when the search is a window's.
@@ -159,6 +160,7 @@ impl Sources {
                 // these.
                 published: Arc::new(Published(data.published)),
                 captures: Arc::new(Captures(Vec::new())),
+                service_searches: Arc::new(ServiceSearches(Vec::new())),
                 answers: None,
                 window: Some(WindowSearch::new(data.resources, data.providers).within(anchor)),
                 // What the host adds for this window: the app's own entries in the session's
@@ -175,6 +177,7 @@ impl Sources {
             content: Content::new(data.providers, data.resources.clone()).within(anchor),
             actions: Arc::new(Actions(data.resources)),
             published: Arc::new(Published(data.published.clone())),
+            service_searches: Arc::new(ServiceSearches(data.published.clone())),
             captures: Arc::new(Captures(data.published)),
             answers: matches!(data.scope, Scope::Workspace | Scope::Everywhere).then(|| {
                 (

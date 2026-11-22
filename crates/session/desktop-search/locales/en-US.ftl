@@ -82,6 +82,9 @@ search-source-windows = Windows
 search-source-commands = Desktop commands
 search-source-app-actions = Actions in open apps
 search-source-published-actions = Actions apps publish
+search-source-service-searches = Services
+# An app's search of the service it connects to: "Search YouTube for lofi hip hop".
+search-app-for = Search { $app } for { $query }
 search-source-captures = New
 search-source-app-content = What apps hold
 search-source-recent = Recent

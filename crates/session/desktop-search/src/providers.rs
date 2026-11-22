@@ -735,6 +735,102 @@ impl Source for Captures {
     }
 }
 
+/// How strongly an app's search of the service it connects to is offered: under anything the
+/// text names, above the web's search, so a person searching a video site's catalogue finds the
+/// app's own search of it before the web's.
+const SERVICE_SEARCH_SCORE: i32 = 30;
+
+/// What an app's search of its service gains over the bare action it runs: enough that the row
+/// saying what it searches for stands in the action's place, never above what the words name.
+const SERVICE_SEARCH_INTENT: f32 = 2.0;
+
+/// The searches apps run over the outside services they connect to (a video site's catalogue,
+/// a mail server): each app action that hands its text to an outside service's search
+/// (`outside:<service>.search`), offered as "Search `YouTube` for …" and run with what the person
+/// typed, word for word. What it finds comes into the app's own resources, which the
+/// workspace's search finds from then on; the app keeps no search of its own beside it.
+pub struct ServiceSearches(pub Vec<PublishedActions>);
+
+impl ServiceSearches {
+    /// The parameter an app's search takes its text in: its prompted one, else its first.
+    fn query_param(action: &tilo_actions::ActionDescriptor) -> Option<&str> {
+        action
+            .prompt_param()
+            .or_else(|| action.params.first().map(|param| param.name.as_ref()))
+    }
+}
+
+impl Source for ServiceSearches {
+    fn id(&self) -> &'static str {
+        "service-searches"
+    }
+
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-service-searches")
+    }
+
+    /// What the person typed goes to the service as they typed it.
+    fn verbatim(&self) -> bool {
+        true
+    }
+
+    /// The search of the words typed is the row for the app's search action: it stands where the
+    /// action alone, found by a word of it, would.
+    fn intent(&self, _hit: &Hit) -> f32 {
+        SERVICE_SEARCH_INTENT
+    }
+
+    fn query(&self, needle: &str) -> Vec<Hit> {
+        let typed = needle.trim();
+        if typed.is_empty() {
+            return Vec::new();
+        }
+        let mut hits = Vec::new();
+        for published in &self.0 {
+            for action in &published.actions {
+                let searches = action
+                    .contract
+                    .outside_capabilities()
+                    .any(|capability| capability.ends_with(".search"));
+                let Some(param) = Self::query_param(action).filter(|_| searches) else {
+                    continue;
+                };
+                let app = published
+                    .app_name()
+                    .map_or_else(|| action.resource_label.clone(), str::to_owned);
+                let arguments = serde_json::Map::from_iter([(
+                    param.to_owned(),
+                    serde_json::Value::String(typed.to_owned()),
+                )]);
+                let mut hit = Published::row(
+                    self.id(),
+                    published,
+                    action,
+                    SERVICE_SEARCH_SCORE,
+                    arguments,
+                );
+                hit.title = crate::i18n::t_args(
+                    "search-app-for",
+                    &[("app", app.clone().into()), ("query", typed.into())],
+                );
+                // Its own row beside the action's: the action itself, found by its name, is
+                // another row of the same address.
+                hit.id = format!("{}\u{1f}{}", self.id(), hit.id);
+                // The row says what it searches for, and runs with the words it already holds:
+                // nothing about the action is left to show or ask.
+                if let Target::Invoke(invoke) = &mut hit.target {
+                    invoke.descriptor = None;
+                }
+                hit.subtitle = Some(app);
+                hit.row = Some(ui::search::SearchRow::echoing_query());
+                hit.icon = Some(ui::icons::Icon::Search);
+                hits.push(hit);
+            }
+        }
+        hits
+    }
+}
+
 /// The palette kind for an application provider's group label.
 fn content_kind(label: &str) -> ResourceKind {
     match label {

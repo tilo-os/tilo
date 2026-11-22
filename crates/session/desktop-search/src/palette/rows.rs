@@ -352,6 +352,7 @@ pub(super) fn switchable<'a>(
         &sources.content,
         &sources.actions,
         &sources.captures,
+        &sources.service_searches,
         &sources.published,
         &sources.commands,
     ];

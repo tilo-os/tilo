@@ -1771,3 +1771,77 @@ pub(super) fn arrow_down(search: &mut DesktopSearch) -> bool {
     );
     search.palette().cursor() != before
 }
+
+/// An app whose search action asks the service it connects to (`outside:youtube.search`), and
+/// an action of the same app that searches nothing outside.
+fn service_search() -> Vec<PublishedActions> {
+    let prompted = |id: &str, label: &str| {
+        tilo_actions::ActionSpec::prompted_param(
+            id,
+            label,
+            tilo_actions::ActionParam::required("query", tilo_actions::ParamType::Text, "What"),
+            "lofi hip hop",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            |text| tilo_actions::EncodedAction {
+                type_id: "test.action".into(),
+                payload: text.as_bytes().to_vec(),
+            },
+        )
+    };
+    let search = prompted("search", "Search");
+    let contract = tilo_actions::ActionContract {
+        tags: vec![format!(
+            "{}youtube.search",
+            tilo_actions::OUTSIDE_CAPABILITY_PREFIX
+        )],
+        ..search.contract.clone()
+    };
+    let resource = tilo_actions::ResourceSpec::new("tl:so.tilo.tube:root", "tl.tube.YouTube", "YouTube")
+        .with_action(search.with_contract(contract))
+        .with_action(prompted("rename", "Rename playlist"));
+    vec![PublishedActions::of("so.tilo.tube", "", &[resource])]
+}
+
+/// A person types what they want to watch into the system's search: the app that connects to
+/// the video site offers its own search of the site's catalogue, run with their words, and an
+/// action of the app that searches nothing outside offers no such row.
+#[test]
+fn an_apps_search_of_its_service_is_offered_with_the_words_typed() {
+    let mut search = DesktopSearch::new();
+    search.open(SearchData {
+        published: service_search(),
+        scope: Scope::Workspace,
+        ..data()
+    });
+    settled(&mut search);
+    let typed = "lofi hip hop";
+    search.set_query(typed);
+    settled(&mut search);
+    let entries = search.palette().visible_entries();
+    let labels: Vec<&String> = entries.iter().map(|entry| &entry.label).collect();
+    let at = entries
+        .iter()
+        .position(|entry| entry.label == "Search YouTube for lofi hip hop")
+        .unwrap_or_else(|| panic!("YouTube's search is offered: {labels:?}"));
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|label| label.starts_with("Search YouTube"))
+            .count(),
+        1,
+        "only the action that asks the service is a search of it: {labels:?}"
+    );
+    search.palette_mut().set_cursor(at);
+    search.palette_mut().activate_selected();
+    assert!(search.observe(), "choosing the search closes the palette");
+    let Some(Target::Invoke(invoke)) = search.take_choice() else {
+        panic!("the search runs the app's own action");
+    };
+    assert_eq!(invoke.app, "so.tilo.tube");
+    assert_eq!(invoke.address.action.as_str(), "search");
+    assert_eq!(
+        invoke.arguments.get("query"),
+        Some(&serde_json::Value::String(typed.to_owned())),
+        "the service is asked the words the person typed"
+    );
+}
