@@ -1019,6 +1019,8 @@ async fn typed_on_a_terminal_is_recorded() {
             std::time::Instant::now() < deadline,
             "never recorded: {session}"
         );
-        tilo_test_env::within("a change of the workspace's records", changed).await;
+        // A wait the session could not carry is never answered: it ends at the deadline, and
+        // the session is read once more then.
+        let _ = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), changed).await;
     }
 }
