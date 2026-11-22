@@ -284,14 +284,14 @@ fn report_command(app_dir: &Path, executable: &Path) -> Result<ProcessCommand> {
     without_network()?;
     let mut command = ProcessCommand::new(executable);
     command.arg(FLAG).current_dir(app_dir);
-    Ok(with_network_namespace(&command))
+    Ok(with_network_namespace(command))
 }
 
 /// Wrap `command` so it starts in a network namespace of its own: `unshare`
 /// with a user namespace mapping this process's ids, as the launcher starts an
 /// app it granted no network. Nothing else about the process changes.
 #[cfg(target_os = "linux")]
-fn with_network_namespace(command: &ProcessCommand) -> ProcessCommand {
+fn with_network_namespace(command: ProcessCommand) -> ProcessCommand {
     let (uid, gid) = (
         rustix::process::getuid().as_raw(),
         rustix::process::getegid().as_raw(),
@@ -314,8 +314,8 @@ fn with_network_namespace(command: &ProcessCommand) -> ProcessCommand {
 /// A platform with no namespace to give: the report is what the code publishes
 /// either way, and only Linux asks for it with none.
 #[cfg(not(target_os = "linux"))]
-fn with_network_namespace(command: &ProcessCommand) -> ProcessCommand {
-    command.clone()
+fn with_network_namespace(command: ProcessCommand) -> ProcessCommand {
+    command
 }
 
 /// Whether this machine gives a command a network namespace of its own, asked
@@ -325,7 +325,7 @@ fn with_network_namespace(command: &ProcessCommand) -> ProcessCommand {
 fn without_network() -> Result<()> {
     static ASKED: std::sync::OnceLock<std::result::Result<(), String>> = std::sync::OnceLock::new();
     let answer = ASKED.get_or_init(|| {
-        let command = with_network_namespace(&ProcessCommand::new("true"));
+        let command = with_network_namespace(ProcessCommand::new("true"));
         match run_bounded(
             command,
             Duration::from_secs(60),
