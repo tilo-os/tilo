@@ -6,6 +6,7 @@
 //! `tests/serve_handoff.rs` runs the same session in a real one.
 
 use std::path::PathBuf;
+use std::sync::Condvar;
 
 use ush_shell::{Shell, Std};
 use ush_tilo::TiloHost;
@@ -625,6 +626,11 @@ fn play_terminal(
                 writer.write_all(answer.as_bytes()).unwrap();
                 pending = after.to_owned();
             }
+            // Only an ask can still begin in what is left: from a whole ask awaiting its end,
+            // else from the last escape. The prompt draws its whole line again on every key, so
+            // keeping all it drew would read megabytes again on each read of a long typed line.
+            let from = pending.find(&ask).or_else(|| pending.rfind('\x1b'));
+            pending = from.map_or_else(String::new, |at| pending.split_off(at));
         }
     });
 }
@@ -647,14 +653,17 @@ struct Prompt {
     asked: Arc<Mutex<Vec<String>>>,
     session: Option<std::thread::JoinHandle<i32>>,
     out: Arc<Mutex<Vec<u8>>>,
+    /// Told each time the shell writes to its standard output.
+    printed: Arc<Condvar>,
     host: TiloHost,
 }
 
-struct Tee(Arc<Mutex<Vec<u8>>>);
+struct Tee(Arc<Mutex<Vec<u8>>>, Arc<Condvar>);
 
 impl std::io::Write for Tee {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.0.lock().unwrap().extend_from_slice(buf);
+        self.1.notify_all();
         Ok(buf.len())
     }
 
@@ -692,7 +701,8 @@ fn prompt_with(history: &[&str], field: Option<&Arc<SessionField>>) -> Prompt {
         Arc::clone(&place),
     ));
     let out = Arc::new(Mutex::new(Vec::new()));
-    let stdout = Output::new(Tee(Arc::clone(&out)));
+    let printed = Arc::new(Condvar::new());
+    let stdout = Output::new(Tee(Arc::clone(&out), Arc::clone(&printed)));
     let stderr = Output::host(Std::Err, slave.try_clone().unwrap());
     let host = TiloHost::new(
         Arc::new(RecordEnvironment::new(Arc::clone(&state))),
@@ -730,6 +740,7 @@ fn prompt_with(history: &[&str], field: Option<&Arc<SessionField>>) -> Prompt {
         asked,
         session: Some(session),
         out,
+        printed,
         host,
     };
     prompt.wait_for("$ ");
@@ -1027,20 +1038,42 @@ fn load(stop: &Arc<std::sync::atomic::AtomicBool>) -> Vec<std::thread::JoinHandl
 }
 
 impl Prompt {
-    /// Wait until the shell marked its `n`th prompt (from 1) on its output.
+    /// Wait until the shell marked its `n`th prompt (from 1) on its output, woken by each of
+    /// its writes there.
     fn wait_prompt(&self, n: usize) {
         let mark = format!("\x1b]133;A;k={KEY}");
-        let asked = std::time::Instant::now();
-        while String::from_utf8_lossy(&self.out.lock().unwrap())
-            .matches(&mark)
-            .count()
-            < n
-        {
-            assert!(
-                asked.elapsed() < std::time::Duration::from_secs(60),
-                "the shell never marked prompt {n}"
+        let marked = |out: &Vec<u8>| String::from_utf8_lossy(out).matches(&mark).count() >= n;
+        let timed_out = self
+            .printed
+            .wait_timeout_while(
+                self.out.lock().unwrap(),
+                std::time::Duration::from_secs(60),
+                |out| !marked(out),
+            )
+            .unwrap()
+            .1
+            .timed_out();
+        if timed_out {
+            let screen = self.screen.lock().unwrap().clone();
+            let last: String = screen
+                .rsplit('\n')
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .rev()
+                .take(300)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            panic!(
+                "the shell never marked prompt {n}: the terminal is {}, its last row ends {last:?}",
+                if raw(&self.slave) {
+                    "the prompt's"
+                } else {
+                    "cooked"
+                }
             );
-            std::thread::yield_now();
         }
     }
 }
