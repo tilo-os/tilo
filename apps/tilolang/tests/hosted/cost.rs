@@ -322,7 +322,10 @@ fn frame_if_asked(session: &mut Session, changed: bool) -> bool {
                 window.relayout();
                 return true;
             }
-            if !window.frame_schedule().queued_work {
+            // A window on the frame clock draws when its tree owes work or asks to be drawn
+            // again: a list placed by the last frame asks for the rows it now has room for.
+            let schedule = window.frame_schedule();
+            if !(schedule.queued_work || schedule.needs_redraw) {
                 return false;
             }
             window.poll_frame().unwrap_or(true)
@@ -545,8 +548,9 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 60_000,
-                development_us: 340_000,
+                // With the rows the switch shows, which the measurement once left out.
+                optimized_us: 140_000,
+                development_us: 790_000,
             },
         },
     ),
@@ -567,8 +571,9 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 8_000,
             eval_layout_us: 8_000,
             held: Held {
-                optimized_us: 25_000,
-                development_us: 110_000,
+                // With the rows a scroll brings in, which the measurement once left out.
+                optimized_us: 52_000,
+                development_us: 230_000,
             },
         },
     ),
@@ -1335,6 +1340,10 @@ fn switch_places(session: &mut Session, costs: &mut Costs) {
             session.window.click_at(x, y);
         }));
         assert!(chosen(session, place), "the sidebar shows {place} chosen");
+        assert!(
+            !session.titles().is_empty(),
+            "the list shows {place}'s tasks once the switch is at rest"
+        );
     }
 }
 
