@@ -30,14 +30,14 @@ import {createIdentityActions, setupOrigin} from './identity-actions.mjs';
 import {firstScreen, openSignIn, setupDone} from './first-screen.mjs';
 import {fetchPersonProfile} from './profile-photos.mjs';
 import {askOwnPairing, deviceLabel, ofThisSite, ownPairing, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret} from './pairing.mjs';
-import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, keptIdentity, signInWithPasskey} from './identity.mjs';
+import {browserIdentity, browserPerson, currentIdentity, keptIdentity} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
 import {domFailureView, failureCause, failureDetails, failureScreen, namedOrigin, unanswered} from './failure-screen.mjs';
 import {hostUnreachable, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {deviceRemoved} from './session-refusal.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
 import {isInvitedServer, invitedOrigin, nameInvitedServer, siteNames, siteServer} from './site-host.mjs';
-import {chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keptMembership, listedWorkspaces, publicListings, membershipOrigins, ownDesktopOpen, pairViaHost, rememberEntered, settleFailedWorkspace, unmarkOwnPairing, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keptMembership, listedWorkspaces, publicListings, ownDesktopOpen, pairViaHost, rememberEntered, settleFailedWorkspace, unmarkOwnPairing, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {initial, shownName} from './person.mjs';
 
 /** Set for the one reload that joins an embed's visiting page as the person. */
@@ -1049,17 +1049,13 @@ function loadPage(url) {
 /** The bundle version this page runs, for the reconnect screen's details. */
 const PAGE_BUILD = servedVersion(import.meta.url)?.version ?? 'development';
 
-/** Set for the one reload after signing in at the entry, to the person
- * signed in as: refused again, the entry says that identity is not in yet. */
-const ENTRY_SIGNED_IN = 'tilo-entry-signed-in';
-
 /**
  * On a page turned away for coming without an invitation, the entry
  * (index.html, `#arrival-refusal`). Where the host keeps a wait list
  * (`error.entry`), it apologises that Tilo is invite-only for now and asks
  * for an email to invite (`offerWaitList`); else it names the workspace
  * `named` and asks for the invite link someone sends. Under either: signing
- * in with an identity the person already has (a passkey, then the page
+ * in with an identity the person already has (their agent, then the page
  * loads again and joins as them, and a member gets in), and the field to
  * paste an invite or pairing link into, opened in this tab.
  */
@@ -1094,7 +1090,7 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
   }
   if (kept && !shown) offerWaitList({workspace: kept.workspace, contact: kept.contact, mail: kept.mail === true, messages, language});
   // Signing in from a link comes back to the link; at the site's entry, to a workspace of their own.
-  offerSignIn({workspace, named, messages, runtime, link, home, pair, stay: signIn});
+  offerSignIn({workspace, messages, runtime, link, home, pair, stay: signIn});
   // The link that lets someone in, an invitation or a pairing from a device
   // of theirs: behind a small toggle beside the wait list; shown where it is
   // the only way in.
@@ -1184,25 +1180,18 @@ function offerWaitList({workspace, contact, mail, messages, language}) {
 }
 
 /**
- * Signing in at the entry with an identity the person already has: their
- * passkey opens it (its envelope from the hosts that keep it), and the page
- * loads again to join as them, opening a workspace of their own rather than
- * the home workspace's shared desktop. A member gets in; anyone else is told
- * this identity is not in `named` yet, with the wait list still there. Where
- * the place cannot use passkeys at all (a web view inside an app that may not
- * use this site's), trying again changes nothing: the entry says the way in
- * that works there, a device where the person is signed in adding this one.
+ * Signing in at the entry with an identity the person already has: a computer
+ * of theirs vouches for this tab, which pairs here as their new device and
+ * then opens a workspace of their own rather than the home workspace's shared
+ * desktop. A member gets in; the wait list still stands for anyone else.
  */
-export function offerSignIn({workspace, named, messages, runtime, link, home = null, pair = null, stay = false}) {
+export function offerSignIn({workspace, messages, runtime, link, home = null, pair = null, stay = false}) {
   const say = (key, english, args) => localized(messages, key, english, args);
   const row = document.getElementById('arrival-sign-in');
   const agent = document.getElementById('arrival-sign-in-agent');
-  const button = document.getElementById('arrival-sign-in-button');
-  const note = document.getElementById('arrival-sign-in-note');
-  if (!row || !agent || !button || !note) return;
+  if (!row || !agent) return;
   document.getElementById('arrival-sign-in-ask').textContent = say('arrival-sign-in-ask', 'Already have a Tilo identity?');
   agent.textContent = say('arrival-sign-in-agent', 'Sign in with your agent');
-  button.textContent = say('arrival-sign-in-passkey', 'Use a passkey');
   // With their agent: a computer of theirs vouches for this tab, which
   // pairs here as their new device and then opens their own workspace, past
   // the wait list.
@@ -1210,66 +1199,13 @@ export function offerSignIn({workspace, named, messages, runtime, link, home = n
   const target = entryWorkspace(workspace);
   const signInWithAgent = origin && target && runtime?.createLoginCode && link && pair;
   agent.hidden = !signInWithAgent;
-  if (signInWithAgent) {
-    const codes = loginCodes(runtime, new URL(origin).origin);
-    const signIn = claimed => signInAs(claimed, {origin, home, stay}, link, pair);
-    agent.addEventListener('click', () => {
-      const screen = openSignIn(document, {onBack: () => agent.focus()});
-      screen?.offerAgentSignIn(async () => ({...await codes.create(null), signIn}));
-    });
-  }
-  // A browser without passkeys cannot open an identity kept with one.
-  if (typeof globalThis.PublicKeyCredential !== 'function' || !navigator.credentials?.get) {
-    button.hidden = true;
-    row.hidden = !signInWithAgent;
-    return;
-  }
-  let signedIn = null;
-  try {
-    signedIn = sessionStorage.getItem(ENTRY_SIGNED_IN);
-    sessionStorage.removeItem(ENTRY_SIGNED_IN);
-  } catch { /* No storage: nothing to say about a sign-in. */ }
-  if (signedIn && signedIn === currentIdentity()?.userPublicKey) {
-    note.textContent = named
-      ? say('arrival-sign-in-not-member', 'You’re signed in, but this identity isn’t in { $workspace } yet. Join the wait list, or ask someone in it for an invite.', {workspace: named})
-      : say('arrival-sign-in-not-member-unnamed', 'You’re signed in, but this identity isn’t in this workspace yet. Ask someone in it for an invite.');
-  }
-  button.addEventListener('click', async () => {
-    button.disabled = true;
-    note.textContent = '';
-    note.classList.remove('refusal-problem');
-    try {
-      const origins = [...new Set([workspace?.host?.origin, ...membershipOrigins(),
-        ...listedWorkspaces({home: workspace}).map(listed => listed.host.origin)].filter(Boolean))];
-      const identity = await signInWithPasskey({fetchEnvelope: root => fetchEnvelope(root, origins)});
-      try { sessionStorage.setItem(ENTRY_SIGNED_IN, identity.userPublicKey); } catch { /* Said less, nothing lost. */ }
-      // Signed in at the entry of the site's own workspace, the person comes
-      // back to a workspace of their own, as a tab their agent signed in
-      // does: the home workspace's shared desktop is where people meet, not
-      // where someone starts.
-      // From a link, the link: the page loads it again as them.
-      if (!stay) try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
-      // Someone who signs in has been here: the first screen of a first
-      // visit is not theirs, and would name a new workspace for them that
-      // their host does not keep.
-      setupDone();
-      location.reload();
-    } catch (error) {
-      console.warn('signing in at the entry:', error);
-      button.disabled = false;
-      // Closing the passkey prompt is the person's own answer.
-      if (error?.code === 'passkey-cancelled' || ['NotAllowedError', 'AbortError'].includes(error?.name)) return;
-      note.classList.add('refusal-problem');
-      if (['passkeys-refused', 'passkeys-unavailable'].includes(error?.code)) {
-        // Refused before anything was shown: not the person's answer, and not
-        // something another try changes (`asked` in identity.mjs).
-        note.textContent = say('arrival-sign-in-no-passkeys', 'Passkeys can’t be used here. On a device where you are signed in, choose “Pair a new device” and paste its link here.');
-        return;
-      }
-      note.textContent = ['no-envelope', 'not-tilo', 'no-wrap'].includes(error?.code)
-        ? say('arrival-sign-in-unknown', 'That passkey doesn’t open a Tilo identity this site knows. Use one you made on Tilo, or open Tilo where you already use it.')
-        : say('arrival-sign-in-failed', 'Signing in didn’t work in this browser. Try again, or open Tilo where you already use it.');
-    }
+  row.hidden = !signInWithAgent;
+  if (!signInWithAgent) return;
+  const codes = loginCodes(runtime, new URL(origin).origin);
+  const signIn = claimed => signInAs(claimed, {origin, home, stay}, link, pair);
+  agent.addEventListener('click', () => {
+    const screen = openSignIn(document, {onBack: () => agent.focus()});
+    screen?.offerAgentSignIn(async () => ({...await codes.create(null), signIn}));
   });
 }
 
@@ -1385,8 +1321,7 @@ function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
   const agentActions = async () => {
     if (actions) return actions;
     const links = await link;
-    actions = createIdentityActions({identity, pairing: pairingAt({origin: host, identity, runtime, link: links}),
-      passkeys: () => false});
+    actions = createIdentityActions({identity, pairing: pairingAt({origin: host, identity, runtime, link: links})});
     agentWatchers.add(actions);
     return actions;
   };
@@ -1516,13 +1451,6 @@ async function setupWorkspace() {
 
 /** The person's own workspace on the home host, or null, once asked for. */
 let ownWorkspaceAsked = null;
-/** Set once a tab signed in with a passkey left its entry, until the
- * person's own workspace is in front: a load that ends before it opened (the
- * tab loaded again, the host did not answer) leaves it set, so the next one
- * opens it. A tab an agent signed in picks its workspace before it loads
- * (`signInAs`), and never needs this. */
-const OPEN_OWN = 'tilo-open-own-workspace';
-
 /** The workspace switcher's choice of the person's own hosted workspace. */
 /**
  * The person's own workspace on the host of `peer`, with this page's device

@@ -35,8 +35,8 @@ import {siteServer, STALE_SITE_SERVER, staleSiteServer, staleSiteServerReport} f
 import {deviceLabel} from './pairing.mjs';
 
 export {
-  addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
-  installNodeCertificate, MAX_DISPLAY_NAME_BYTES, nodeInstallInfo, publishEnvelope, publishProfile, signInWithPasskey, storagePersisted, unlockIdentity,
+  browserIdentity, browserPerson, certifyDevice, currentIdentity, fetchProfile, fitDisplayName, IdentityError, installNode,
+  installNodeCertificate, MAX_DISPLAY_NAME_BYTES, nodeInstallInfo, publishProfile, storagePersisted,
 } from './identity.mjs';
 // The workspaces a page can open, for hosts of this module (Tilo Cloud) that
 // import only the peer.

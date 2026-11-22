@@ -3,8 +3,8 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 import {ASK_MS, domView, setupLater, showPrompt, CONNECTED_MS, KEPT_LOST_MS, QUIET_MS, createFirstScreen, FOLLOW_MS, MAKE_MS,
-  manualCommands, MCP_URL, OFFER_MS, openFirstScreen, openSignIn, PASSKEY_WAIT_MS, RENEW_MS, readSetup, readShown, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
-  signInPrompt, startFirstScreen, stepLines, minutesLeft, signInFailure} from './first-screen.mjs';
+  manualCommands, MCP_URL, OFFER_MS, openFirstScreen, openSignIn, RENEW_MS, readSetup, readShown, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
+  signInPrompt, startFirstScreen, stepLines, minutesLeft} from './first-screen.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const CODE = 'K7Q-MX2P';
@@ -675,51 +675,6 @@ test('back returns to the start, with the next prompt shown, and forgets the cod
   assert.equal(state.ticks, null);
 });
 
-test('a passkey sign-in that fails is said, with what works where passkeys cannot be used, and a closed prompt is said by nothing', async () => {
-  const {screen, names, last} = fixture();
-  const answered = error => { screen.offerSignIn(async () => { throw error; }); return screen.passkey(); };
-  const count = () => names().filter(name => name === 'signInFailed').length;
-  // A web view inside an app that may not use this site's passkeys: refused before anything showed.
-  await answered(Object.assign(new Error('Passkeys cannot be used here'), {code: 'passkeys-refused'}));
-  assert.equal(count(), 1);
-  assert.equal(signInFailure(last('signInFailed')[1]),
-    'Passkeys can’t be used here. Sign in with your agent, or pair this device from one where you are signed in.');
-  // A passkey of another site's, or a host that keeps no such person.
-  await answered(Object.assign(new Error('none'), {code: 'no-envelope'}));
-  assert.equal(count(), 2);
-  assert.equal(signInFailure(last('signInFailed')[1]), 'That passkey did not sign you in. Try another, or sign in with your agent.');
-  // The person closed the prompt: their own answer.
-  await answered(Object.assign(new Error('closed'), {name: 'NotAllowedError'}));
-  await answered(Object.assign(new Error('none used'), {code: 'passkey-cancelled'}));
-  assert.equal(count(), 2);
-  assert.deepEqual(last('signingIn'), ['signingIn', false], 'and the button is no longer busy');
-});
-
-test('a passkey clicked before the page can ask waits for it, busy, then asks; a page that never can says so', async () => {
-  const {screen, names, stored} = fixture();
-  let asked = 0;
-  const pressed = screen.passkey();
-  assert.deepEqual(names().slice(-1), ['signingIn'], 'busy at once, not dead');
-  await settle();
-  assert.equal(asked, 0);
-  screen.offerSignIn(async () => { asked += 1; });
-  await pressed;
-  assert.equal(asked, 1);
-  await screen.passkey();
-  assert.equal(asked, 2);
-  screen.skip();
-  assert.equal(names().at(-1), 'opening', 'the screen stays until the page can open the workspace');
-  screen.whenDone(() => {});
-  await settle();
-  assert.equal(names().at(-1), 'close');
-  assert.equal(readSetup({getItem: key => stored.get(key)}).step, 'done');
-  const never = fixture();
-  const waiting = never.screen.passkey();
-  await never.fire(PASSKEY_WAIT_MS);
-  await waiting;
-  assert.deepEqual(never.names().slice(-2), ['signInFailed', 'signingIn'], 'the wait ends, said');
-});
-
 /** first-screen.inline.js against a page at `href`, with `stored` keys and the
  * scrubber's `secrets`: whether the first screen shows, and whether it was
  * held for the site's entry to answer (`data-first-screen-hold`). */
@@ -854,7 +809,7 @@ test('the desktop entry page inlines the first screen’s script unchanged, afte
   const at = html.indexOf(`<script>\n${script}</script>`);
   assert.ok(at > 0, 'index.html must inline first-screen.inline.js unchanged');
   assert.ok(html.indexOf('__tiloLinkSecrets') < at, 'after the scrubber, whose secrets it reads');
-  for (const id of ['first-screen', 'first-screen-agent', 'first-screen-offer', 'first-screen-offer-note', 'first-screen-offer-retry', 'first-screen-sign-in-note', 'first-screen-skip', 'first-screen-passkey', 'first-screen-agent-sign-in', 'first-screen-manual-toggle', 'first-screen-mcp', 'first-screen-commands', 'first-screen-steps', 'first-screen-prompt', 'first-screen-status', 'first-screen-heading-wait', 'first-screen-heading-hand', 'first-screen-heading-hand-sign-in']) {
+  for (const id of ['first-screen', 'first-screen-agent', 'first-screen-offer', 'first-screen-offer-note', 'first-screen-offer-retry', 'first-screen-sign-in-note', 'first-screen-skip', 'first-screen-agent-sign-in', 'first-screen-manual-toggle', 'first-screen-mcp', 'first-screen-commands', 'first-screen-steps', 'first-screen-prompt', 'first-screen-status', 'first-screen-heading-wait', 'first-screen-heading-hand', 'first-screen-heading-hand-sign-in']) {
     assert.ok(html.includes(`id="${id}"`), `index.html has #${id}`);
   }
   assert.ok(html.includes('<script type="module" async src="./first-screen.mjs"></script>'));

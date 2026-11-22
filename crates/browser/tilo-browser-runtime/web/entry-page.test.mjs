@@ -157,7 +157,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot, grammar = () => globalThis.__entryPageFixture.page.link;')
     .replace("import {loadRuntime} from './host.mjs';", 'const loadRuntime = async () => globalThis.__entryPageFixture.runtime;')
     .replace(/import \{([^}]*)\bstartArrival, ([^}]*)\} from '.\/arrival.mjs';/, "import {$1$2} from './arrival.mjs';\nconst startArrival = () => {};")
-    .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, keptIdentity, signInWithPasskey} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;\nconst keptIdentity = async () => globalThis.__entryPageFixture.kept;\nconst signInWithPasskey = (...args) => globalThis.__entryPageFixture.signIn(...args);\nconst fetchEnvelope = async () => null;')
+    .replace("import {browserIdentity, browserPerson, currentIdentity, keptIdentity} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;\nconst keptIdentity = async () => globalThis.__entryPageFixture.kept;')
     .replace('hostToReconnect, joinViaHost,', 'hostToReconnect,')
     .replace('identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation,', 'identityProfile, inspectInvitation, invitedServer, openInvitation,')
     .replace('return await pairViaHost({origin,', 'return await pairViaHost({pair: (...args) => globalThis.__entryPageFixture.pair(...args), findProfile: (...args) => globalThis.__entryPageFixture.findProfile(...args), origin,')
@@ -240,51 +240,6 @@ test('the sign-in screen at a closed workspace offers someone with no Tilo ident
     assert.equal(document.documentElement.dataset.refusal, 'invite');
   } finally {
     globalThis.fetch = before;
-  }
-});
-
-test('the entry says what works where passkeys cannot be used, and nothing when the person closes the sheet', async () => {
-  const {module, calls} = await fixture({boot: async () => { throw new AdmissionError('no-access', 'You don’t have access to this workspace.'); }});
-  // The entry's sign-in row (index.html, `#arrival-sign-in`), by id.
-  const parts = {};
-  for (const id of ['arrival-sign-in', 'arrival-sign-in-ask', 'arrival-sign-in-agent', 'arrival-sign-in-button', 'arrival-sign-in-note']) {
-    const classes = new Set();
-    parts[id] = Object.assign(new Element(id), {hidden: false, textContent: '', classes,
-      classList: {add: name => classes.add(name), remove: name => classes.delete(name)}});
-  }
-  document.getElementById = id => parts[id] ?? null;
-  // A web view inside an app has passkeys to offer, whether or not its app may use this site's.
-  const before = {credential: Object.getOwnPropertyDescriptor(globalThis, 'PublicKeyCredential'), navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator')};
-  Object.defineProperty(globalThis, 'PublicKeyCredential', {value: function PublicKeyCredential() {}, configurable: true});
-  Object.defineProperty(globalThis, 'navigator', {value: {credentials: {get() {}}}, configurable: true});
-  try {
-    module.offerSignIn({workspace: null, named: 'Lounge', messages: null, runtime: null, link: null});
-    const button = parts['arrival-sign-in-button'];
-    const note = parts['arrival-sign-in-note'];
-    assert.equal(button.textContent, 'Use a passkey');
-    assert.equal(button.hidden, false);
-    const press = answer => {
-      globalThis.__entryPageFixture.signIn = answer;
-      return button.listeners.get('click')();
-    };
-    // The system refused before it showed anything: the place cannot use passkeys, and the
-    // entry says the way in that works there.
-    await press(async () => { throw Object.assign(new Error('Passkeys cannot be used here'), {name: 'IdentityError', code: 'passkeys-refused'}); });
-    assert.equal(note.textContent, 'Passkeys can’t be used here. On a device where you are signed in, choose “Pair a new device” and paste its link here.');
-    assert.ok(note.classes.has('refusal-problem'));
-    assert.equal(button.disabled, false, 'the other ways in stay');
-    // The person closed the sheet: their own answer, said by nothing, and the sentence before goes.
-    await press(async () => { throw Object.assign(new Error('closed'), {name: 'NotAllowedError'}); });
-    assert.equal(note.textContent, '');
-    assert.ok(!note.classes.has('refusal-problem'));
-    // A passkey of another site's is still told apart from both.
-    await press(async () => { throw Object.assign(new Error('none'), {name: 'IdentityError', code: 'no-envelope'}); });
-    assert.match(note.textContent, /doesn’t open a Tilo identity this site knows/);
-    assert.ok(!calls.includes('reload'), 'nobody was signed in');
-  } finally {
-    for (const [name, descriptor] of [['PublicKeyCredential', before.credential], ['navigator', before.navigator]]) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name];
-    }
   }
 });
 

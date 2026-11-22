@@ -378,7 +378,7 @@ A person's identity root is kept in more than one place:
 | Store | Code | Location | Size |
 |---|---|---|---|
 | Native person records | `tilo-identity` `store/` (`unix.rs`, `backup.rs`, `recovery_words.rs`, `secure_store.rs`) | `$XDG_CONFIG_HOME/tilo/identity/{<id>.json,active,secrets/}` | 4,986 |
-| Browser root | `tilo-browser-runtime` `root_identity.rs`, `web/identity.mjs` `RootEnvelope`, wrapped by a passkey PRF | IndexedDB | 1,466 |
+| Browser root | `tilo-browser-runtime` `root_identity.rs`, `web/identity.mjs`, the root as the identity store's record | IndexedDB | 738 |
 | Old CLI location | `tilo-cli` `identity.rs` `earlier()` | `$XDG_STATE_HOME/tilo/identity/user-identity/pubkey.bin` | ~20 |
 
 `tilo-identity` as a whole is 22,760 lines, with `store/`, `identity_store`,
@@ -387,8 +387,8 @@ over each other. `DeviceIdentity` means two different things: public
 metadata in `tilo-user-identity` `lib.rs`, and a certificate plus signer in
 `tilo-identity` `identity_store.rs`.
 
-There are three recovery formats (the 24 words, the browser `RecoveryKey`,
-and `tilo-auth`'s modhex on disk). There are five sign-in paths: the greeter
+There are two recovery formats (the 24 words and `tilo-auth`'s modhex on
+disk). There are five sign-in paths: the greeter
 through `pam-tilo` to the `tilo-auth` daemon, `boot-signin`, `tilo-api`
 `sign_in.rs` with `oauth.rs` and `SignInProof`, the browser `sign-in.mjs`,
 and `tilo login`. `threshold-identity` (2,644) implements key generation
@@ -397,8 +397,8 @@ used.
 
 ### What survives
 
-- **One identity root type**, `tilo-user-identity` (`RootEnvelope`,
-  `DeviceCert`, `SignInProof`), shared by the OS, the CLI and the browser.
+- **One identity root type**, `tilo-user-identity` (`DeviceCert`,
+  `SignInProof`), shared by the OS, the CLI and the browser.
 - **One person store**, `tilo_identity::store`: the `IdentityRecord` files,
   the `active` selection, and the profiles derived from them. Nothing else
   indexes them. The browser keeps its wrapped root in IndexedDB, in the same
@@ -415,7 +415,7 @@ used.
 | Delete | Size |
 |---|---|
 | The old `$XDG_STATE_HOME/tilo/identity` probe, after one migration | ~20 |
-| The browser `RecoveryKey` and `tilo-auth` modhex recovery formats | ~400 |
+| The `tilo-auth` modhex recovery format | ~400 |
 | `threshold-identity` paths with no caller, until a product needs them | ~2,000 |
 | Overlapping layers inside `tilo-identity` `store/` | to be measured as they fold |
 

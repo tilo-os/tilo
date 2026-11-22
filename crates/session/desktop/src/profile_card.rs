@@ -4,11 +4,11 @@
 //! name) and puts changing that name right there, in a field: type, and it
 //! is kept — on Enter, when you leave the field, once you pause, and when the
 //! card closes. There is no Save button, so nothing typed is lost. Below it,
-//! what keeps this identity yours (a passkey, a recovery key) and your other
-//! devices (pairing a new one). Those are the host's
-//! own commands, the same ones search lists, so the card shows what the
-//! host offers ([`ProfileModel::actions`]) and hands a choice back by id;
-//! it never carries them out itself.
+//! what shows you as you chose (your picture, what you say you are doing) and
+//! your other devices (pairing a new one). Those are the host's own commands,
+//! the same ones search lists, so the card shows what the host offers
+//! ([`ProfileModel::actions`]) and hands a choice back by id; it never carries
+//! them out itself.
 //!
 //! Where the workspace is connected to a service elsewhere (a Discord server it
 //! bridges), the card lists the person's account there under "Linked
@@ -105,7 +105,7 @@ pub enum ProfileGroup {
     Settings,
     /// Being with the people here: saying something beside the pointer.
     Together,
-    /// Keeping this identity: a passkey, a recovery key, signing in.
+    /// The person as others see them: name, picture, what they are doing.
     Identity,
     /// The person's other devices.
     Devices,
@@ -117,7 +117,7 @@ pub struct ProfileAction {
     pub id: String,
     pub title: String,
     pub group: ProfileGroup,
-    /// What it is about at a glance: a passkey, a key, a device.
+    /// What it is about at a glance: a name, a picture, a device.
     pub icon: Icon,
 }
 

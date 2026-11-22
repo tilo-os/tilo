@@ -5,9 +5,7 @@
 #      site, approves a server key `tilo keys create` asks for, on the site's
 #      own /sign-in page; the pictures of what it reads there (the sign-in
 #      card, the API server's grants page, and the key that page makes) are kept in
-#      WORK/startup, light and dark. The page also makes a recovery key for
-#      them, so the machine can hold that person and answer what their hosts
-#      ask them (`tilo-approve`);
+#      WORK/startup, light and dark;
 #   2-6. with that key, the visa run (sdk/python/examples/visa_proof.py): it
 #      makes applicant workspaces, mints a one-workspace key and MCP, the
 #      agent fills the form and writes the letter, a reviewer (another real
@@ -16,8 +14,7 @@
 #      keys refuses them afterwards;
 #   7. a fresh visitor's entry, timed (TILO_SH_ENTRY_VISITS of them, 3 by
 #      default), against the Lounge as it is — seeded with `stack.sh up
-#      --seed` when TILO_SH_SEED=1;
-#   7b. a visitor keeps themselves with a passkey and signs in with it again.
+#      --seed` when TILO_SH_SEED=1.
 #
 # With TILO_SH_VM_HOST=1 it is the same stack with its VM host in it, and the
 # end of the check is the Browser of a hosted workspace (docs/hosted-browser.md),
@@ -88,13 +85,12 @@
 # serves at /releases, else target/{debug,release}/tilo. VISA_APPLICANTS
 # sets how many workspaces the run makes (25 here). The questions put to the
 # startup person are answered by TILO_SH_TILO_APPROVE (tilo-approve, built by
-# the t check), from the root of theirs kept in
-# WORK/startup/root, through the server address the VM host names.
+# the t check), through the server address the VM host names.
 # TILO_SH_ONLY names the steps to run (`1`, `2-6`, `7`, `10,13-18`, comma
 # separated) to chase one of them without the rest; the stack is brought up
 # either way and each step's own seconds are printed beside it.
 #
-#   check.sh --flow signin|visa|entry|passkey
+#   check.sh --flow signin|visa|entry
 #
 # runs one of those steps against a stack that is already up and named by
 # E2E_SITE, E2E_SERVER, E2E_API_URL and E2E_WORK, which is how test-e2e.sh runs
@@ -132,8 +128,7 @@ startup_identity() {
   step '1. a fresh startup identity approves a server key on the local site'
   local invitation
   invitation=$(invite_link) || fail 'the Lounge made no invitation for the startup'
-  local args=(--invite "$invitation" --key 'Visa backend' --tilo "$tilo" --api "$api" --no-pages
-    --root "$work/startup/person.json")
+  local args=(--invite "$invitation" --key 'Visa backend' --tilo "$tilo" --api "$api" --no-pages)
   if [[ ${TILO_SH_VM_HOST:-0} == 1 ]] && runs_step 12; then
     # The person stays on the site in their browser, whose page holds their
     # root: step 12 has them answer the submissions their agent's page holds
@@ -219,24 +214,10 @@ entry_visits() {
   echo "ok: $visits fresh visitors were in after ${entries[*]} ms (median $median ms)"
 }
 
-# 7b: a visitor keeps themselves with a passkey and signs in with it again.
-# The site's name is the passkey's relying party, as tilo.coffee is on
-# tilo.coffee: a browser registers none for an address, which the local site
-# was once.
-passkey_round() {
-  step '7b. a visitor keeps themselves with a passkey and signs in with it again'
-  local invitation
-  invitation=$(invite_link) || fail 'the Lounge made no invitation for the passkey visitor'
-  node "$here/integration/person.mjs" "$site" "$server" "$work/passkey" --invite "$invitation" --passkey \
-    > "$work/passkey.json" \
-    || fail "the passkey did not register or sign in (see $work/passkey)"
-  echo 'ok: a passkey registered, and signed the same visitor in again'
-}
-
 # -- one step, for a runner that keeps the stack up --------------------------
 
 if [[ ${1:-} == --flow ]]; then
-  flow=${2:?--flow names signin, visa, entry or passkey}
+  flow=${2:?--flow names signin, visa or entry}
   work=${E2E_WORK:?E2E_WORK names the work directory}"/$flow"
   site=${E2E_SITE:?E2E_SITE names the site} server=${E2E_SERVER:?E2E_SERVER names the server}
   api=${E2E_API_URL:?E2E_API_URL names the API server}
@@ -254,8 +235,7 @@ if [[ ${1:-} == --flow ]]; then
       reviewer_up
       visa_run ;;
     entry) entry_visits ;;
-    passkey) passkey_round ;;
-    *) fail "no step $flow: signin, visa, entry or passkey" ;;
+    *) fail "no step $flow: signin, visa or entry" ;;
   esac
   step "done ($flow)"
   exit 0
@@ -357,14 +337,11 @@ if [[ $hosted == 1 ]]; then
   # below runs as an account with a card on file, so a probe of its own admits.
   vm_run_account=$(python3 -c 'import json,sys; print(next(iter(json.load(open(sys.argv[1])).get("accounts") or {})))' "$plans") \
     || fail "the plans file $plans names no account with a card"
-  # The person's approving device: the root the page made for them, opened
-  # here, so what the server asks them is answered and printed.
+  # The person's approving device, so what the server asks them is answered
+  # and printed.
   approve=${TILO_SH_TILO_APPROVE:-tilo-approve}
   command -v "$approve" >/dev/null 2>&1 || [[ -x $approve ]] \
     || fail "no tilo-approve: TILO_SH_TILO_APPROVE names the program the t check builds"
-  "$approve" person --person "$work/startup/person.json" --root "$work/startup/root" \
-    > "$work/startup/person-root.json" \
-    || fail "the startup person could not be held from the recovery key their page made (see $work/startup)"
   [[ -n $server_address ]] || fail 'the VM host names no server address for Browser sessions'
 
   # A Linux command in the VM needs the card the check puts on file in step
@@ -695,8 +672,6 @@ fi
 if runs_step 7; then
   entry_visits
 fi
-
-passkey_round
 
 # And still none, now that the steps' people signed in, kept keys and connected
 # accounts: each of those is an entry of their workspace's vault.

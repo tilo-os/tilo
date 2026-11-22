@@ -302,7 +302,7 @@ test('both locales word the whole entry, its wait list and signing in', () => {
   const entry = [...en.keys()].filter(id => /^arrival-(entry|wait|sign-in|invite)/.test(id));
   assert.ok(entry.length >= 25, `${entry.length} entry messages`);
   for (const id of entry) assert.ok(de.has(id), `de-DE: ${id}`);
-  for (const [id, arg] of [['arrival-wait-inbox', 'email'], ['arrival-wait-listed', 'email'], ['arrival-wait-contact', 'contact'], ['arrival-sign-in-not-member', 'workspace']]) {
+  for (const [id, arg] of [['arrival-wait-inbox', 'email'], ['arrival-wait-listed', 'email'], ['arrival-wait-contact', 'contact']]) {
     for (const messages of [en, de]) assert.ok(messages.get(id).includes(`{ $${arg} }`), id);
   }
 });

@@ -102,9 +102,7 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         endpoint: None,
         allowed_origins: vec![],
         workspaces: server.workspaces().cloned(),
-        envelopes: envelopes::Envelopes::new(server.state_root().join("envelopes")),
-        profiles: Arc::new(envelopes::Envelopes::of(
-            envelopes::Kind::Profile,
+        profiles: Arc::new(profiles::Profiles::new(
             server.state_root().join("profiles"),
         )),
         fetch: None,
