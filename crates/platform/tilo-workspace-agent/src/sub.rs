@@ -27,7 +27,6 @@
 
 use std::fmt;
 
-use collab_types::MemberId;
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
 use tilo_resource::{ActionCx, Atom, Id, JsonSchema, Model, Refusal};
@@ -216,9 +215,6 @@ pub struct Sub {
     pub depth: u8,
     /// The issue in Tasks it works for, by its address; `None` when it works for none.
     pub task: Option<String>,
-    /// The direct conversation of its person and itself, by its id in Chat. Its job, its notes
-    /// and its answers are asks and replies of the agent package, not messages there.
-    pub conversation: String,
     /// How it stands.
     pub stands: Stands,
     /// When it came to stand so, in milliseconds since the Unix epoch.
@@ -456,9 +452,7 @@ impl WorkspaceAgents {
         let mut team: Vec<&Agent> = self
             .agents
             .iter()
-            .filter(|agent| {
-                agent.is_active() && self.started_under(agent, &above.id.0)
-            })
+            .filter(|agent| agent.is_active() && self.started_under(agent, &above.id.0))
             .collect();
         team.sort_by(|one, other| {
             (one.created_at, &one.id.0).cmp(&(other.created_at, &other.id.0))
@@ -652,10 +646,6 @@ impl WorkspaceAgents {
             .transpose()?;
         self.make_room()?;
         let now = cx.now_ms();
-        let conversation = MemberId::direct_conversation([
-            MemberId::person(person.as_str()),
-            MemberId::agent(id.as_str()),
-        ]);
         self.agents.push(Agent {
             id: Atom(id),
             name,
@@ -682,7 +672,6 @@ impl WorkspaceAgents {
                 .to_owned(),
                 depth,
                 task,
-                conversation,
                 stands: Stands::Working,
                 since: now,
                 line: String::new(),

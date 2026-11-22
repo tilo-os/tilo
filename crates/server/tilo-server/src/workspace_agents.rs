@@ -1213,10 +1213,14 @@ impl ServerAgents {
         // The answers that owe their askers a turn, and the wakes written already.
         let mut answered = Vec::new();
         let mut woken = std::collections::BTreeSet::new();
-        let Some(chat) = self.read::<chat::chat::Chat>(workspace, CHAT, "").await? else {
+        if self
+            .read::<chat::chat::Chat>(workspace, CHAT, "")
+            .await?
+            .is_none()
+        {
             self.workspaces.note_waiting(workspace, waiting);
             return Ok(asks);
-        };
+        }
         for (app, document) in routes {
             if app != CHAT
                 || collab_types::document::DocumentId::parse(document)

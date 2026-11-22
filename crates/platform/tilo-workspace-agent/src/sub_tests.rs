@@ -2,7 +2,6 @@ use super::sub::{DEFAULT_AT_ONCE, MAX_DEPTH, MAX_LINE, MAX_NOTES, MAX_SUB_AGENTS
 use super::{
     Agent, AgentState, Bound, NewSubAgent, OWNER, Stands, Sub, WorkspaceAgents, workspace_agents,
 };
-use collab_types::MemberId;
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, Party, Rule, TreePath, roles};
 use tilo_resource::{Id, Invoke, Model as _, NonBlank, Replica};
 
@@ -135,19 +134,6 @@ fn an_agent_starts_a_sub_agent_with_its_job_its_role_and_its_kind_of_work() {
     assert_eq!(sub.runs, RUNS_ON_HOST);
     assert_eq!(sub.depth, 1);
     assert_eq!(sub.task.as_deref(), Some("tasks.issues/issues/i_7"));
-    assert_eq!(
-        sub.conversation,
-        MemberId::direct_conversation([
-            MemberId::agent("usage-drop-investigate"),
-            MemberId::person(ADA)
-        ]),
-        "its own conversation is the one of its person and itself"
-    );
-    assert!(
-        sub.conversation.starts_with("direct:"),
-        "{}",
-        sub.conversation
-    );
     assert_eq!((sub.stands, sub.since), (Stands::Working, THEN));
     assert!(sub.line.is_empty() && sub.notes.is_empty());
 
@@ -206,9 +192,7 @@ fn only_an_agent_of_the_workspace_starts_one_for_the_member_it_works_for() {
     // The workspace's agent works for any member: for Grace, whom it was not made by, it starts
     // one that works for her.
     let mut for_grace = record.fork().as_agent_for(MAIN, GRACE);
-    for_grace
-        .apply(start("Research", "Find the deck"))
-        .unwrap();
+    for_grace.apply(start("Research", "Find the deck")).unwrap();
     assert_eq!(
         for_grace.state().unwrap().sub_agents_of(GRACE).count(),
         1,
@@ -418,9 +402,7 @@ fn whoever_started_one_gives_it_notes_and_nobody_below_or_beside_it_does() {
     assert!(refused.to_string().contains("by an agent"), "{refused}");
     // The workspace's agent steers what it started whichever member it works for now.
     let mut for_grace = record.fork().as_agent_for(MAIN, GRACE);
-    for_grace
-        .apply(note("lead", "Do this instead."))
-        .unwrap();
+    for_grace.apply(note("lead", "Do this instead.")).unwrap();
 
     // The record keeps the newest; each is in the conversation once it was carried there.
     let mut main = record.fork().as_agent_for(MAIN, ADA);
@@ -900,10 +882,6 @@ pub(super) fn kept(name: &str, started_by: &str, at: i64, stands: Stands) -> Age
             kind: "subtask".to_owned(),
             runs: RUNS_ON_HOST.to_owned(),
             depth: 1,
-            conversation: MemberId::direct_conversation([
-                MemberId::person(ADA),
-                MemberId::agent(name),
-            ]),
             stands,
             since: at,
             ..Sub::default()
@@ -1009,8 +987,6 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
         .expect("the sub-agent is an item of the same collection")
         .clone();
     let note_id = item["sub"]["notes"][0]["id"].clone();
-    let conversation =
-        MemberId::direct_conversation([MemberId::person(ADA), MemberId::agent("find-the-deck")]);
     assert_eq!(
         item,
         serde_json::json!({
@@ -1034,7 +1010,6 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
                 "runs": "host",
                 "depth": 1,
                 "task": null,
-                "conversation": conversation,
                 "stands": "working",
                 "since": THEN,
                 "line": "",

@@ -154,7 +154,14 @@ pub(super) fn team_turn(
                             .flat_map(|ask| ask.replies.iter())
                             .find(|reply| reply.at.same(from))
                     })
-                    .map(|reply| reply.body.trim().chars().take(TOLD_CHARS).collect::<String>())
+                    .map(|reply| {
+                        reply
+                            .body
+                            .trim()
+                            .chars()
+                            .take(TOLD_CHARS)
+                            .collect::<String>()
+                    })
                     .filter(|body| !body.is_empty())
                     .unwrap_or_else(|| "(it said nothing)".to_owned());
                 let request = format!("{said}\n\nWhat it said:\n{answered}");
@@ -252,7 +259,11 @@ fn ask_of(
         let newest = all
             .iter()
             .filter(|asked| asked.agent.agent_id() == Some(sub.started_by.as_str()))
-            .filter_map(|asked| asked.latest().map(|reply| (asked_ms(asked), reply.at.clone())))
+            .filter_map(|asked| {
+                asked
+                    .latest()
+                    .map(|reply| (asked_ms(asked), reply.at.clone()))
+            })
             .max_by_key(|(at, _)| *at)
             .map(|(_, reply)| reply);
         let root = opened
@@ -350,7 +361,10 @@ pub(super) fn told(turn: &Turn) -> String {
 }
 
 /// The workspace's list of its agents, as `workspaces` holds it in `workspace` now.
-async fn roster_of(workspaces: &Workspaces, workspace: &str) -> Result<Option<WorkspaceAgents>, String> {
+async fn roster_of(
+    workspaces: &Workspaces,
+    workspace: &str,
+) -> Result<Option<WorkspaceAgents>, String> {
     let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     let Some(bytes) = workspaces
         .resource_document(workspace, tilo_workspace_agent::OWNER, &document)
@@ -381,9 +395,12 @@ pub(super) async fn ask_started(
         return Ok(());
     };
     workspaces
-        .with_tl_record(workspace, &asked::packages()?, asked::viewer(), move |opened| {
-            ask_of(opened, &roster, &agent, Some(&from))
-        })
+        .with_tl_record(
+            workspace,
+            &asked::packages()?,
+            asked::viewer(),
+            move |opened| ask_of(opened, &roster, &agent, Some(&from)),
+        )
         .await
 }
 
@@ -392,7 +409,10 @@ impl ServerAgents {
     ///
     /// # Errors
     /// The list could not be read.
-    pub(super) async fn team_roster(&self, workspace: &str) -> Result<Option<WorkspaceAgents>, String> {
+    pub(super) async fn team_roster(
+        &self,
+        workspace: &str,
+    ) -> Result<Option<WorkspaceAgents>, String> {
         roster_of(&self.workspaces, workspace).await
     }
 
@@ -420,12 +440,17 @@ impl ServerAgents {
         }
         let roster = roster.clone();
         self.workspaces
-            .with_tl_record(workspace, &asked::packages()?, asked::viewer(), move |opened| {
-                for agent in &subs {
-                    ask_of(opened, &roster, agent, None)?;
-                }
-                Ok(())
-            })
+            .with_tl_record(
+                workspace,
+                &asked::packages()?,
+                asked::viewer(),
+                move |opened| {
+                    for agent in &subs {
+                        ask_of(opened, &roster, agent, None)?;
+                    }
+                    Ok(())
+                },
+            )
             .await
     }
 
@@ -516,7 +541,12 @@ impl ServerAgents {
     /// Ask the agent that started `turn`'s sub-agent with the news that its work ended as
     /// `stands`: an ask in the sub-agent's name, made from its reply, which the starter's turn
     /// reads ([`team_turn`]). Keyed by that reply, so its news is asked once.
-    async fn tell_starter(&self, acting: &TurnScope, turn: &Turn, stands: Stands) -> Result<(), String> {
+    async fn tell_starter(
+        &self,
+        acting: &TurnScope,
+        turn: &Turn,
+        stands: Stands,
+    ) -> Result<(), String> {
         let (Some(sub), Some(line)) = (&turn.agent.sub, &turn.line) else {
             return Ok(());
         };
@@ -545,10 +575,15 @@ impl ServerAgents {
         let key = key_of(&turn.agent.id.0, &format!("{ENDED}:{}", reply.id_string()));
         let (by, to) = (turn.agent.id.0.clone(), starter.id.0.clone());
         self.workspaces
-            .with_tl_record(&acting.workspace, &asked::packages()?, asked::viewer(), move |opened| {
-                let all = asks::asks(opened)?;
-                ask_once(opened, &all, (&by, &to), (&said, &key), &reply)
-            })
+            .with_tl_record(
+                &acting.workspace,
+                &asked::packages()?,
+                asked::viewer(),
+                move |opened| {
+                    let all = asks::asks(opened)?;
+                    ask_once(opened, &all, (&by, &to), (&said, &key), &reply)
+                },
+            )
             .await
     }
 }
