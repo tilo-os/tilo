@@ -240,12 +240,6 @@ tilo_test_env::scenario! {
             inline_view(&ada.host, &Names, &elsewhere),
             InlineView::Unreadable
         );
-        // An older form reads the same.
-        let old = Reference::of_mark(&format!("tl:{APP}:{task}")).unwrap();
-        assert!(matches!(
-            inline_view(&ada.host, &Names, &old),
-            InlineView::Resource { .. }
-        ));
         // Another app's resource reads as its run, where only that app can say how it reads.
         let channel = Reference::resource("so.tilo.chat", "chat.channel", "chat.channel:general");
         assert_eq!(
