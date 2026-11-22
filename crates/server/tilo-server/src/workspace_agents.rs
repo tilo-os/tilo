@@ -73,6 +73,7 @@ use turn_provider::TurnProvider;
 
 mod across;
 mod answers;
+mod asked;
 mod asking;
 mod asks;
 mod calendar_connect;
@@ -633,6 +634,12 @@ impl ChangeFeed for WorkspaceActionProvider {
     }
 }
 
+/// Whether a write to `app`'s records may ask the agents here something: Chat's, the tracker's,
+/// the record of the workspace's agents, and a record asks are kept in ([`asked::RECORDS`]).
+fn wakes(app: &str) -> bool {
+    app == CHAT || app == TASKS || app == AGENTS_OWNER || asked::keeps_asks(app)
+}
+
 /// What carries one turn's model calls, made fresh for each turn on its own thread: a test's
 /// script, standing where a workspace's model would ([`ServerAgents::for_test`]).
 pub type Model = Arc<dyn Fn() -> Option<Box<dyn PlanTurns>> + Send + Sync>;
@@ -645,6 +652,17 @@ pub enum Ask {
         /// The part of Chat's messages that holds it.
         part: String,
         message: String,
+        attempt: u32,
+    },
+    /// An ask of the agent package, kept in a tilolang app's record: the answer is the ask's
+    /// reply ([`asked`]).
+    Asked {
+        /// The app whose record keeps the ask.
+        app: String,
+        /// The ask, by its id in that record, and its type.
+        ask: String,
+        ty: String,
+        /// Which time it is asked: its first reply is 1.
         attempt: u32,
     },
     /// An issue given to the agent, or written in once it had it: the answer is the agent's
@@ -920,7 +938,7 @@ impl ServerAgents {
             }
             match woke(&mut writes, whole_at).await {
                 Woke::Write(write) => {
-                    if write.app == CHAT || write.app == TASKS || write.app == AGENTS_OWNER {
+                    if wakes(&write.app) {
                         due.insert(write.workspace);
                     }
                 }
@@ -938,7 +956,7 @@ impl ServerAgents {
             }
             // A burst of writes (a person typing, an agent's own steps) is read as one look.
             while let Ok(write) = writes.try_recv() {
-                if write.app == CHAT || write.app == TASKS || write.app == AGENTS_OWNER {
+                if wakes(&write.app) {
                     due.insert(write.workspace);
                 }
             }
@@ -1161,6 +1179,9 @@ impl ServerAgents {
                 .map_err(|error| error.to_string())?;
         }
         let mut asks = self.chat_asks(workspace, &agents, &routes).await?;
+        let (owed, stopped) = asked::turns(&self.workspaces, workspace, &agents).await?;
+        asks.turns.extend(owed);
+        asks.stopped.extend(stopped);
         asks.turns.extend(
             self.issue_turns(workspace, &agents, &routes, now_ms)
                 .await?,
@@ -1474,6 +1495,7 @@ impl ServerAgents {
             roster,
             workspace: workspace.to_owned(),
             workspace_id,
+            replying: asked::Replying::of(&self.workspaces, workspace, turn),
         };
         team::join(&self.workspaces, turn, &mut scope).await;
         across::join(&self.workspaces, self.placed.as_ref(), turn, &mut scope).await;
@@ -1538,6 +1560,9 @@ impl ServerAgents {
     /// of this host is on it, since this one only begins now. Words that turn's model wrote
     /// into the reply stay there, and `reply` goes on below them ([`written`]).
     async fn left_begun(&self, workspace: &str, turn: &Turn, reply: &Reply) -> bool {
+        if let Some(replying) = &reply.replying {
+            return replying.left_begun().await;
+        }
         let Ask::Message {
             part,
             message,
@@ -1628,6 +1653,15 @@ impl ServerAgents {
             .await;
             self.sub_ended(&scope, &turn, &left, false).await;
             return (turn.ask, ended, None);
+        }
+        // An ask's turn is this server's only once its claim holds: another device of the
+        // workspace that claimed it first answers it instead.
+        if let Some(replying) = &reply.replying {
+            match replying.take().await {
+                Ok(true) => {}
+                Ok(false) => return (turn.ask, Ok(()), None),
+                Err(error) => return (turn.ask, Err(error), None),
+            }
         }
         if self.codes(&turn.agent) {
             // Its harness in the workspace's machine does the work, not the model's loop: its
@@ -1763,7 +1797,7 @@ impl ServerAgents {
                 issue,
                 ..
             } => (document.clone(), issue.clone()),
-            Ask::Message { .. } => return Ok(None),
+            Ask::Message { .. } | Ask::Asked { .. } => return Ok(None),
         };
         let id = tilo_resource::Id::from_raw(issue.clone());
         // Only what a session needs of the issue is taken from its document: an issue's rich
@@ -2009,6 +2043,8 @@ struct TurnScope {
     roster: Option<([u8; 32], [u8; 32], i64)>,
     workspace: String,
     workspace_id: WorkspaceId,
+    /// Where the reply of a turn made from an ask is written ([`asked`]).
+    replying: Option<asked::Replying>,
 }
 
 impl TurnScope {
@@ -2062,6 +2098,7 @@ impl TurnScope {
             ask: turn.ask.clone(),
             written: written::Written::of(turn, followed),
             shows_in: shares::shows_in(turn),
+            replying: self.replying.clone(),
         }
     }
 }
@@ -2077,6 +2114,8 @@ struct Reply {
     written: written::Written,
     /// The conversation the turn may show a document in, where it has one ([`shares::shows_in`]).
     shows_in: Option<String>,
+    /// Where the reply of a turn made from an ask is written.
+    replying: Option<asked::Replying>,
 }
 
 impl Reply {
@@ -2093,6 +2132,9 @@ impl Reply {
     /// Tell the person what the agent is doing now. A note Chat does not take costs the person
     /// the step alone, and [`Self::work`] says why.
     async fn doing(&self, did: &str) {
+        if let Some(replying) = &self.replying {
+            replying.step(did, "", false).await;
+        }
         if let Ask::Message { .. } = &self.ask {
             let _ = self.work(json!({"state": "doing", "did": did}), None).await;
         }
@@ -2103,6 +2145,11 @@ impl Reply {
     /// they came. So it stands on the reply before whatever the turn writes there next, and
     /// no tool waits until Chat has taken it. Whether the turn has a reply that takes notes.
     fn notes(&self, did: &str) -> bool {
+        if let Some(replying) = self.replying.clone() {
+            let did = did.to_owned();
+            tokio::spawn(async move { replying.step(&did, "", false).await });
+            return true;
+        }
         let Ask::Message { part, message, .. } = &self.ask else {
             return false;
         };
@@ -2147,6 +2194,11 @@ impl Reply {
     /// # Errors
     /// Chat did not keep that the reply ended ([`Self::unfinished`]).
     async fn went_on(&self) -> Result<(), String> {
+        if let Some(replying) = &self.replying {
+            return replying
+                .finish(&Outcome::Answered(WENT_ON.to_owned()))
+                .await;
+        }
         if self.grown_ends(&Outcome::Answered(String::new())).await {
             return Ok(());
         }
@@ -2178,7 +2230,11 @@ impl Reply {
         cost: u64,
         usage: &TurnUsage,
     ) -> Result<(), String> {
+        if let Some(replying) = &self.replying {
+            return replying.finish(outcome).await;
+        }
         match &self.ask {
+            Ask::Asked { .. } => Err("the ask's reply is not open here".to_owned()),
             Ask::Message { .. } => {
                 let (state, words) = match outcome {
                     Outcome::Answered(words) => ("provider_complete", words.as_str()),

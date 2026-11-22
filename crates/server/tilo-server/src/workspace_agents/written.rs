@@ -162,7 +162,7 @@ pub(super) fn reply_of(turn: &Turn) -> Option<String> {
             )
             .to_string(),
         ),
-        Ask::Issue { .. } => None,
+        Ask::Issue { .. } | Ask::Asked { .. } => None,
     }
 }
 
