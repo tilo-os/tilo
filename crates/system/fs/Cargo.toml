@@ -33,21 +33,17 @@ filesystem = [
     "tilo-files/watch",
     "dep:clap",
     "dep:iroh",
-    "dep:iroh-base",
-    "dep:tilo-endpoint-reachability",
     "dep:automerge",
     "dep:tilo-automerge",
     "dep:tilo-automerge-isolate",
     "dep:tilo-content",
     "dep:collab-types",
     "dep:tilo-action-policy",
-    "dep:tilo-app-id",
     "dep:tilo-actions",
     "dep:fs-protocol",
     "dep:ed25519-dalek",
     "dep:tilo-thumbnail",
     "dep:tilo-user-identity",
-    "dep:tilo-advisory-lock",
     "dep:tilo-power-mgmt",
     "dep:tilo-nm",
     "document-media",
@@ -55,10 +51,8 @@ filesystem = [
     "dep:rustix",
     "dep:serde_bytes",
     "dep:serde_json",
-    "dep:toml",
     "dep:uuid",
     "dep:thiserror",
-    "dep:rand",
     "dep:getrandom",
     "dep:fuser",
     "dep:fs-native",
@@ -71,8 +65,6 @@ filesystem = [
     "dep:cloud-source-icloud",
     "dep:zeroize",
     "dep:wire-frame",
-    "dep:runtime-collab",
-    "dep:runtime-portal",
     "dep:tilo-identity-client",
     "dep:key-group",
 ]
@@ -107,7 +99,6 @@ anyhow.workspace = true
 bytes.workspace = true
 clap = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
-iroh-base = { workspace = true, optional = true }
 iroh-blobs.workspace = true
 # The content format (chunking, manifests) and the pieces of iroh-blobs
 # the content store builds its file-backed provider from.
@@ -115,7 +106,6 @@ fs-content = { version = "0.1.0", path = "../fs-content" }
 bao-tree = { workspace = true }
 irpc = { workspace = true }
 ref-cast = { workspace = true }
-tilo-endpoint-reachability = { version = "0.1.0", path = "../endpoint-reachability", optional = true }
 automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }
 # Conflict members can come from peers: the tilo-doc merge decodes them only here.
@@ -124,7 +114,6 @@ tilo-content = { version = "0.1.0", path = "../content", optional = true }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional = true }
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy", optional = true }
 # A capability may name the app whose sandbox it is; the pre-rename list is read into it.
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id", optional = true }
 # A change of the tree names the file action it is and who made it, as every resource's does.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions", optional = true }
 fs-protocol = { version = "0.1.0", path = "../fs-protocol", optional = true }
@@ -142,7 +131,6 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The machine's one device key. The mount derives its iroh node key from
 # it rather than minting its own, so the node id names the device.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity", optional = true }
-tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock", optional = true }
 # Bus-free, production battery/AC sampling for speculative-hydration policy.
 tilo-power-mgmt = { version = "0.1.0", path = "../power", default-features = false, optional = true }
 # NetworkManager's connectivity and primary-connection metering, followed by
@@ -156,7 +144,6 @@ moka.workspace = true
 serde.workspace = true
 serde_bytes = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-toml = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror = { workspace = true, optional = true }
@@ -166,7 +153,6 @@ hex.workspace = true
 blake3.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 futures-util.workspace = true
-rand = { workspace = true, optional = true }
 redb.workspace = true
 # Cloud accounts as mounted folders: the account store and credential
 # handoff, the provider interface and the providers.
@@ -183,8 +169,6 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 wire-frame = { version = "0.1.0", path = "../wire-frame", optional = true, features = ["tokio", "postcard"] }
 # The daemon's tree writer joins the session's record route as the Files app does.
-runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false, features = ["client"], optional = true }
-runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }
 # The bytes a device signs to join a workspace, as every app's identity does.
 tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-client", default-features = false, optional = true }
 # The tree's changes seal under the record's content keys, as an app's do.
@@ -199,7 +183,6 @@ image = { workspace = true, features = ["png"] }
 # The idle endpoint tests' relay is a loopback one no test shares.
 tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }
 # Endpoints with no relay or directory at all, for tests whose peers are all this machine's.
-test-server = { path = "../../dev/test-server" }
 cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", features = ["fake-server"] }
 cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", features = ["fake-server"] }
 cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", features = ["fake-server"] }

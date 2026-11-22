@@ -401,7 +401,6 @@ collaboration = { path = "../../collab/collaboration", features = ["test-support
 wgpu = { workspace = true, features = ["custom", "noop"] }
 serial_test.workspace = true
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
-regex.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 # The `diag!` tests reproduce the crash they prevent: they need `dup2` to point
 # the process's stderr at a pipe, and the child's exit signal to assert SIGABRT.

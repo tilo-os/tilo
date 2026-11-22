@@ -35,7 +35,6 @@ tilo-failure = { path = "../../crates/platform/tilo-failure" }
 # The app window's half of the window, and the patch protocol between it and the instance.
 tilo-app-window = { path = "../../crates/platform/tilo-app-window" }
 tilo-render-protocol = { path = "../../crates/platform/tilo-render-protocol" }
-tilo-automerge.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
 thiserror.workspace = true
@@ -55,7 +54,6 @@ collaboration = { version = "0.1.0", path = "../../crates/collab/collaboration",
 collab-types = { version = "0.1.0", path = "../../crates/collab/collab-types" }
 # A later build as a development session hands it over the host's socket.
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
-automerge.workspace = true
 # The pictures a page is sent are PNGs as `data:` addresses (`tests/gallery_html.rs`).
 base64.workspace = true
 uuid.workspace = true

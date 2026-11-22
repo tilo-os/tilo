@@ -35,7 +35,6 @@ tilo-app-window = { path = "../../platform/tilo-app-window" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 # Frames drawn on the GPU are delivered in the dma-bufs apps' frames are.
 tilo-render-service = { path = "../render-service" }
-tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 # The shell is an installed package, as every app is: the session reads it from the person's
 # app store, and this build's copy only stands in where the store holds none (shell.md §6).

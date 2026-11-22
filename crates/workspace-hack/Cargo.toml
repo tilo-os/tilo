@@ -23,8 +23,6 @@ aho-corasick = { version = "1" }
 anyhow = { version = "1" }
 arrayvec = { version = "0.7" }
 async-channel = { version = "2" }
-atspi-common = { path = "../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
-atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 base16ct-6f8ce4dd05d13bba = { package = "base16ct", version = "0.2", default-features = false, features = ["alloc"] }
 base16ct-dff4ba8e3ae991db = { package = "base16ct", version = "1", default-features = false, features = ["alloc"] }
 base64 = { version = "0.22" }
@@ -155,7 +153,6 @@ peg-runtime = { version = "0.8", default-features = false, features = ["std"] }
 peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
 phf = { version = "0.13", features = ["macros"] }
-phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13", default-features = false, features = ["std"] }
 pkcs8 = { version = "0.11", default-features = false, features = ["encryption", "pem", "std"] }
 poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
@@ -267,8 +264,6 @@ aho-corasick = { version = "1" }
 anyhow = { version = "1" }
 arrayvec = { version = "0.7" }
 async-channel = { version = "2" }
-atspi-common = { path = "../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
-atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 base16ct-6f8ce4dd05d13bba = { package = "base16ct", version = "0.2", default-features = false, features = ["alloc"] }
 base16ct-dff4ba8e3ae991db = { package = "base16ct", version = "1", default-features = false, features = ["alloc"] }
 base64 = { version = "0.22" }
@@ -402,7 +397,6 @@ peg-runtime = { version = "0.8", default-features = false, features = ["std"] }
 peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
 phf = { version = "0.13", features = ["macros"] }
-phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13", default-features = false, features = ["std"] }
 pkcs8 = { version = "0.11", default-features = false, features = ["encryption", "pem", "std"] }
 poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
@@ -512,6 +506,8 @@ zune-jpeg = { version = "0.5" }
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
+atspi-common = { path = "../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
+atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 brotli = { version = "8" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 futures-executor = { version = "0.3" }
@@ -528,6 +524,7 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
+phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
@@ -544,6 +541,8 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["res"
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
+atspi-common = { path = "../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
+atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 brotli = { version = "8" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 derive_more-impl = { version = "2", default-features = false, features = ["add", "add_assign"] }
@@ -561,6 +560,7 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
+phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
@@ -577,6 +577,8 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["res"
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
+atspi-common = { path = "../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
+atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 brotli = { version = "8" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 futures-executor = { version = "0.3" }
@@ -593,6 +595,7 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
+phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
@@ -609,6 +612,8 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["res"
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
+atspi-common = { path = "../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
+atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 brotli = { version = "8" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 derive_more-impl = { version = "2", default-features = false, features = ["add", "add_assign"] }
@@ -626,6 +631,7 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
+phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }

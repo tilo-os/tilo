@@ -186,7 +186,6 @@ required-features = ["installation", "destination"]
 [dev-dependencies]
 accounts = { path = "../../crates/system/accounts", features = ["sign-ins-fixture"] }
 account-credentials = { path = "../../crates/system/account-credentials" }
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 url.workspace = true
 crc32fast.workspace = true
 tilo-seal = { path = "../../crates/system/tilo-seal" }

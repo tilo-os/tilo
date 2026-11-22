@@ -119,7 +119,6 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 # The person's root, kept in their identity store.
 tilo-identity = { path = "../../runtime/tilo-identity" }
-tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -133,8 +132,6 @@ test-http = { path = "../../dev/test-http" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 # A server a ticket's computer enters, as the person's device.
-tilo-server = { path = "../../server/tilo-server" }
-getrandom.workspace = true
 migration-sources = { path = "../../platform/migration-sources", features = ["fixture"] }
 # Fake cloud drives for `tilo migrate`'s cloud sources.
 cloud-source-dav = { path = "../cloud-source-dav", features = ["fake-server"] }

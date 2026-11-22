@@ -99,8 +99,6 @@ tokio = { workspace = true, features = ["test-util"] }
 # sign-in tests.
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
 tilo-test-env = { path = "../../dev/test-env" }
-test-http = { path = "../../dev/test-http" }
-tilo-seal = { path = "../../system/tilo-seal" }
 # The session a host carries for an account it keeps, proved against the test
 # IMAP and SMTP servers above.
 tilo-mail-session = { path = "../mail-session" }

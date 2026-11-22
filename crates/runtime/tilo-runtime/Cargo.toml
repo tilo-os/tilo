@@ -50,7 +50,6 @@ automerge.workspace = true
 key-group = { path = "../../collab/key-group" }
 blake3.workspace = true
 # The bytes and content addresses a joined workspace's files hydrate with.
-bytes.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 fs-protocol = { path = "../../system/fs-protocol" }
 ed25519-dalek.workspace = true
@@ -72,8 +71,6 @@ package-store = { path = "../../packaging/package-store" }
 # The installed applications this runtime launches, read through their signed
 # manifests.
 app-catalogue = { path = "../../packaging/app-catalogue" }
-postcard = { workspace = true, features = ["alloc"] }
-rand_core.workspace = true
 # Existing certified Join encoder; no new wire schema or credential.
 runtime-collab = { path = "../runtime-collab", default-features = false }
 runtime-fs = { path = "../runtime-fs" }
@@ -121,7 +118,6 @@ tilo-content-device = { path = "../../system/content-device" }
 # The server session a joined workspace syncs through.
 tilo-server-session = { path = "../../server/tilo-server-session" }
 # A workspace host's signed address, which a key enters a workspace at.
-tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-rt.workspace = true
@@ -169,7 +165,6 @@ runtime-portal = { path = "../runtime-portal" }
 # The channel fixtures owner tests seal writes with.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "device-keys", "files", "test-support"] }
 # The join protocol a runtime joins workspaces over.
-tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 # The governor whose workspaces a runtime joins.
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path verifies.
