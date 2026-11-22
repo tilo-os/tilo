@@ -4,6 +4,7 @@
 pub mod action_evidence;
 pub mod app_actions;
 pub mod automation;
+pub mod caller_signer;
 mod broker_error;
 pub mod certificate_authority;
 /// The channel engine every host runs: its groups, the governance that settles them, and the
@@ -28,6 +29,7 @@ pub mod published_authorization;
 pub use tilo_broker_core::route;
 pub mod service_reads;
 pub mod service_resources;
+pub mod service_workspaces;
 pub mod service_writes;
 pub mod services;
 
