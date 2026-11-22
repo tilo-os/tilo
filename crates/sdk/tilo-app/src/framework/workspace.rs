@@ -998,7 +998,13 @@ pub(crate) struct WorkspaceState {
     /// that were on its way when the window opened, answered once every one of them opened
     /// ([`Self::declared_arriving`]).
     awaited: RefCell<Vec<Awaited>>,
+    /// Since when each record asked for has not opened, why not the last time it was asked
+    /// for, and whether that was said ([`Self::waiting_since`]).
+    waiting: RefCell<HashMap<OpenKey, (ui_core::time::Instant, Unopened, bool)>>,
 }
+
+/// How long a record a window asked for goes unopened before the log says so.
+const LONG_WAIT: ui_core::time::Duration = ui_core::time::Duration::from_secs(15);
 
 /// The documents a window's view waits for, and how to tell it they all opened
 /// ([`WorkspaceState::declared_arriving`]).
@@ -1036,6 +1042,7 @@ impl WorkspaceState {
             asked: RefCell::default(),
             arrived: RefCell::default(),
             awaited: RefCell::default(),
+            waiting: RefCell::default(),
         }
     }
 
@@ -1061,6 +1068,32 @@ impl WorkspaceState {
             keys.retain(|waited| waited != key);
         }
         self.answer_awaited();
+    }
+
+    /// `key` did not open, for `why`.
+    fn waiting_since(&self, key: &OpenKey, why: Unopened) {
+        let now = ui_core::time::now();
+        let mut waiting = self.waiting.borrow_mut();
+        let (_, last, _) = waiting.entry(key.clone()).or_insert((now, why, false));
+        *last = why;
+    }
+
+    /// Say, once each, which records asked for have not opened for [`LONG_WAIT`], and why: a
+    /// window that waits for one shows its arriving page all that time.
+    fn say_long_waits(&self) {
+        let now = ui_core::time::now();
+        for (key, (since, why, said)) in self.waiting.borrow_mut().iter_mut() {
+            if !*said && now.saturating_duration_since(*since) >= LONG_WAIT {
+                *said = true;
+                tracing::warn!(
+                    owner = key.0,
+                    kind = key.1,
+                    record = key.2,
+                    ?why,
+                    "a workspace record a window asked for has not opened"
+                );
+            }
+        }
     }
 
     /// Answer each wait whose documents all opened ([`Self::declared_arriving`]).
@@ -1239,6 +1272,7 @@ impl WorkspaceState {
         match open(&self.records) {
             Ok(opened) => {
                 self.unopened.borrow_mut().remove(&key);
+                self.waiting.borrow_mut().remove(&key);
                 self.answer_awaited();
                 self.opened_for_parts(&key);
                 self.held(key, Some(opened))
@@ -1252,6 +1286,7 @@ impl WorkspaceState {
                 }
                 let again = Self::asking_again::<P>(owner, id);
                 self.asked_while_building(&key);
+                self.waiting_since(&key, Unopened::Arriving);
                 self.unopened.borrow_mut().insert(key, (arrived, again));
                 None
             }
@@ -1260,6 +1295,7 @@ impl WorkspaceState {
                 // when what reads it now is done, and nothing arrives to say so.
                 let again = Self::asking_again::<P>(owner, id);
                 self.asked_while_building(&key);
+                self.waiting_since(&key, Unopened::InUse);
                 self.unopened
                     .borrow_mut()
                     .insert(key, (arrived.wrapping_add(1), again));
@@ -1269,6 +1305,7 @@ impl WorkspaceState {
                 None
             }
             Err(Unopened::Failed) => {
+                self.waiting.borrow_mut().remove(&key);
                 self.no_longer_awaited(&key);
                 None
             }
@@ -1294,6 +1331,7 @@ impl WorkspaceState {
     /// anything opened. A window does this in its refresh; a view no window shows is never
     /// refreshed, and whoever holds it asks for this when it told the view what arrived.
     pub(crate) fn open_arrived(&self) -> bool {
+        self.say_long_waits();
         let due: Vec<AskAgain> = {
             let unopened = self.unopened.borrow();
             if unopened.is_empty() {

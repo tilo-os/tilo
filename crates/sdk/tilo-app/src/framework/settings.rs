@@ -958,12 +958,17 @@ impl ViewStorage {
         setting
     }
 
-    /// Take up a newer head of each chain that arrived on this device: in
-    /// a frame's settle, where the store takes the writer opening it needs,
-    /// so the views' next sync reads it.
+    /// Take up a newer head of each chain that arrived on this device, and open the workspace's
+    /// records that arrived: in a frame's settle, where the store takes the writer opening it
+    /// needs, so the views' next sync reads it.
     pub(crate) fn settle(&self) {
         if let Some(person) = &self.person {
             person.settle();
+        }
+        // A workspace record shares the app's store, which the view's sync reads: what arrived
+        // for one, or was asked for while that store was in use, opens here, where it is free.
+        if let Some(workspace) = &self.workspace {
+            workspace.open_arrived();
         }
         for chain in self.chains.apis() {
             let _ = chain.revision();
