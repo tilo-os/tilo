@@ -8,12 +8,16 @@
 
 mod address;
 mod cursor;
+mod level;
 mod names;
 mod node;
 mod pick;
+mod target;
+mod walk;
 
 pub use address::{Address, Segment};
 pub use cursor::LsCursor;
+pub use level::read_on;
 pub use names::{
     BOUND_PREFIX, app_meant, bind_choices, bound_key, close_matches, folded, path_name,
 };
@@ -24,6 +28,14 @@ pub use node::{
 pub use pick::{
     TypeNames, action_rank, is_program_form, named_beyond_its_start, only_by_id, pick, pick_action,
     rank, reads_action,
+};
+pub use target::Called;
+pub use walk::{
+    ANSWER_WAIT, AppRef, Asker, DEEP_READS, FILES_APP, InstalledApp, LEVEL_PAGES, LISTED_NEAR,
+    Levels, ListingResolution, Pause, RESOLVED_PATHS, RESTART_PAUSE_MAX, ROOT_PEEK, Resolved, Tree,
+    Unresolved, app_named, app_names, app_of, as_the_service, below_app, is_window, list_names,
+    list_or_none, listed_as, names_a_type, names_files, not_running, restart_pause, type_address,
+    within,
 };
 
 /// How many names an error lists before it stops.

@@ -1,20 +1,21 @@
 //! How far a directory listing is read: the reads that page a level in, up to
 //! the pages a first read is bound to or on to the resource a listing wants.
 
-use super::{
-    ActionDescriptor, ActionProvider, CatalogueLimits, CatalogueQuery, CatalogueRow,
-    DEFAULT_WAIT_MS, LEVEL_PAGES, Level, Levels, McpServer, Node, PAGE_ROWS, ROOT_PEEK,
-    cannot_be_read_now, level_of, restart_pause,
+use super::walk::{
+    LEVEL_PAGES, LEVEL_WAIT, Levels, PAGE_ROWS, ROOT_PEEK, Tree, Unresolved, cannot_be_read_now,
+    is_chain, restart_pause,
 };
-use tilo_actions::tree::{LevelPages, PageMark, distinct_children};
+use super::{Level, LevelPages, Node, PageMark, distinct_children, level_of};
+use crate::ActionDescriptor;
+use crate::remote::{ActionProvider, CatalogueLimits, CatalogueQuery, CatalogueRow};
 
-/// How often [`McpServer::level_from`] reads on from where it stood at the revision a
+/// How often [`Tree::level_from`] reads on from where it stood at the revision a
 /// directory moved on to, while writes beside it keep moving it on.
 const RESUMES: u32 = 16;
 
 /// Whether `level` was read on past the pages its first read is bound to
 /// ([`LEVEL_PAGES`]): each page after the first leaves its mark.
-pub(super) fn read_on(level: &Level) -> bool {
+pub fn read_on(level: &Level) -> bool {
     level.pages.marks.len() >= LEVEL_PAGES
 }
 
@@ -33,7 +34,7 @@ fn page_bounds(rows: &[CatalogueRow], parent: &str, reach: usize) -> (u32, Optio
         .saturating_sub(distinct_children(rows, parent))
         .saturating_add(1);
     (
-        tilo_actions::remote::MAX_BY_RESOURCE_PAGE,
+        crate::remote::MAX_BY_RESOURCE_PAGE,
         Some(u32::try_from(wanted).unwrap_or(u32::MAX)),
     )
 }
@@ -49,23 +50,23 @@ enum Unread {
     Unavailable(String),
 }
 
-impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
+impl<P: ActionProvider + Sync> Tree<P> {
     /// `level`, read on until it holds more than `children` resources or
     /// the directory ends: what a listing paging past the first bounded
     /// read needs, so every resource a directory holds is reachable.
-    pub(super) async fn level_reaching(
+    pub async fn level_reaching(
         &self,
         provider: &str,
         parent: &str,
         mut level: Level,
         children: usize,
-    ) -> Result<Level, String> {
+    ) -> Result<Level, Unresolved> {
         while level.children.len() <= children && level.unread() {
             let had = level.children.len();
             level = self
                 .read_level(provider, parent, Some(level), children.saturating_add(1))
                 .await?
-                .ok_or("the app's directory kept changing while it was read; try again")?;
+                .ok_or(Unresolved::KeptChanging)?;
             // A directory that moved on between every two pages gave its
             // first pages again: what they hold is what can be listed now.
             if level.children.len() <= had {
@@ -81,20 +82,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// read only to its bound would say a resource past it is not there. `find` picks among
     /// [`Level::whole_children`], so the resource it finds has all its actions. The level,
     /// as far as it was read, is kept in `levels`.
-    pub(super) async fn level_holding(
+    pub async fn level_holding(
         &self,
         provider: &str,
         parent: &str,
         levels: &mut Levels,
-        find: impl Fn(&Level) -> Result<Option<Node>, String> + Send,
-    ) -> Result<(Option<Node>, Level), String> {
+        find: impl Fn(&Level) -> Result<Option<Node>, Unresolved> + Send,
+    ) -> Result<(Option<Node>, Level), Unresolved> {
         let mut level = self.level(provider, parent, levels).await?;
         let mut found = find(&level)?;
         while found.is_none() && level.unread() {
             level = self
                 .read_level(provider, parent, Some(level), usize::MAX)
                 .await?
-                .ok_or("the app's directory kept changing while it was read; try again")?;
+                .ok_or(Unresolved::KeptChanging)?;
             levels.insert(parent.to_owned(), level.clone());
             found = find(&level)?;
         }
@@ -111,13 +112,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// stood before the next write, and answered pages of nothing while its cursor went on.
     /// A provider whose cursor does not carry over to another revision refuses it again, and
     /// the read is `None` as the directory moved on.
-    pub(super) async fn level_from(
+    pub async fn level_from(
         &self,
         provider: &str,
         parent: &str,
         mark: PageMark,
         children: usize,
-    ) -> Result<Option<Level>, String> {
+    ) -> Result<Option<Level>, Unresolved> {
         let mut level = Level {
             pages: std::sync::Arc::new(LevelPages {
                 rest: Some(mark),
@@ -157,13 +158,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// resources its page holds, not a fixed stretch of the directory. It
     /// starts again from the first page while the directory moves on between
     /// pages or the app cannot read it.
-    pub(super) async fn read_level(
+    pub async fn read_level(
         &self,
         provider: &str,
         parent: &str,
         from: Option<Level>,
         reach: usize,
-    ) -> Result<Option<Level>, String> {
+    ) -> Result<Option<Level>, Unresolved> {
         // A level is one snapshot: every page of it at one revision. When the
         // app's directory moves on between pages (its document changed, or an
         // invocation refreshed it), what was read belongs to the old revision
@@ -174,8 +175,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // being applied, is read again the same way: that is not a level
         // with nothing in it, and once the wait is over the caller is told
         // the app cannot list, never that it lacks what was named.
-        let deadline = tokio::time::Instant::now()
-            .checked_add(std::time::Duration::from_millis(DEFAULT_WAIT_MS));
+        let deadline = self.pause().now().checked_add(LEVEL_WAIT);
         let mut from = from.unwrap_or_default();
         let mut reads: u32 = 0;
         loop {
@@ -183,23 +183,22 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if !pause.is_zero()
                 && let Some(deadline) = deadline
             {
-                let until = tokio::time::Instant::now()
+                let now = self.pause().now();
+                let until = now
                     .checked_add(pause)
                     .map_or(deadline, |until| until.min(deadline));
-                tokio::time::sleep_until(until).await;
+                self.pause().pause(until.saturating_sub(now)).await;
             }
             reads = reads.saturating_add(1);
             let unread = match self.read_pages(provider, parent, from, reach).await? {
                 Ok(read) => return Ok(Some(read)),
                 Err(unread) => unread,
             };
-            if deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
+            if deadline.is_none_or(|deadline| self.pause().now() >= deadline) {
                 return match unread {
                     Unread::MovedOn(_) => Ok(None),
-                    Unread::CannotNow => {
-                        Err("the app cannot list what it has right now; try again".into())
-                    }
-                    Unread::Unavailable(reason) => Err(reason),
+                    Unread::CannotNow => Err(Unresolved::CannotListNow),
+                    Unread::Unavailable(reason) => Err(Unresolved::Unavailable(reason)),
                 };
             }
             from = Level::default();
@@ -215,7 +214,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         parent: &str,
         from: Level,
         reach: usize,
-    ) -> Result<Result<Level, Unread>, String> {
+    ) -> Result<Result<Level, Unread>, Unresolved> {
         let LevelPages {
             mut rows,
             mut marks,
@@ -315,11 +314,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// among them holds the app's items: it is listed first, with the items
     /// it holds, and its actions are the app's before any other's
     /// (`notes#new-note`).
-    pub(super) async fn app_children(
+    pub async fn app_children(
         &self,
         provider: &str,
         levels: &mut Levels,
-    ) -> Result<Level, String> {
+    ) -> Result<Level, Unresolved> {
         self.app_children_reading(provider, levels, None).await
     }
 
@@ -331,12 +330,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// whatever the workspace was writing, and while an import wrote between
     /// every two of them the read never held one revision and the listing
     /// failed.
-    pub(super) async fn app_children_listed(
+    pub async fn app_children_listed(
         &self,
         provider: &str,
         levels: &mut Levels,
         reaching: usize,
-    ) -> Result<Level, String> {
+    ) -> Result<Level, Unresolved> {
         self.app_children_reading(provider, levels, Some(reaching))
             .await
     }
@@ -353,7 +352,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         parent: &str,
         levels: &mut Levels,
         reaching: usize,
-    ) -> Result<Level, String> {
+    ) -> Result<Level, Unresolved> {
         let near = self.level_near(provider, parent, levels).await?;
         self.level_reaching(provider, parent, near, reaching).await
     }
@@ -363,7 +362,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         provider: &str,
         levels: &mut Levels,
         listing: Option<usize>,
-    ) -> Result<Level, String> {
+    ) -> Result<Level, Unresolved> {
         let mut root = self.level(provider, "", levels).await?;
         let containers: Vec<Node> = root
             .children
@@ -390,7 +389,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let chains: Vec<Node> = root
             .children
             .iter()
-            .filter(|node| collab_types::document::chain_of_resource_id(&node.id).is_some())
+            .filter(|node| is_chain(&node.id))
             .take(ROOT_PEEK)
             .cloned()
             .collect();

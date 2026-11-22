@@ -61,18 +61,6 @@ pub(super) fn read_answer(
     text
 }
 
-/// How long to wait before a directory level's `read`th read (0 the first)
-/// while it keeps changing: the first change is read past at once, then from
-/// 5 ms, twice as long each time, up to [`RESTART_PAUSE_MAX`].
-pub(super) fn restart_pause(read: u32) -> std::time::Duration {
-    let Some(doublings) = read.checked_sub(2) else {
-        return std::time::Duration::ZERO;
-    };
-    std::time::Duration::from_millis(5)
-        .checked_mul(1_u32.checked_shl(doublings).unwrap_or(u32::MAX))
-        .map_or(RESTART_PAUSE_MAX, |pause| pause.min(RESTART_PAUSE_MAX))
-}
-
 pub(super) fn first_sentence(text: &str) -> String {
     let text = text.trim();
     let sentence = text

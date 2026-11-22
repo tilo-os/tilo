@@ -14,11 +14,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         limit: usize,
         structured: bool,
     ) -> Result<Reply, Failure> {
-        let (_, running) = self.providers().await?;
+        let (_, running) = self.tree.providers().await?;
         let mut lines: Vec<String> = Vec::new();
         let mut rows: Vec<Value> = Vec::new();
         let running_ids = running_app_ids(&running);
-        let (installed, unread) = match self.installed().await {
+        let (installed, unread) = match self.tree.installed().await {
             Ok(installed) => (installed, None),
             Err(reason) => (Vec::new(), Some(reason)),
         };
@@ -103,7 +103,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let _ = write!(
                 text,
                 "\nthe installed apps could not be read: {}",
-                super::answer::words(&reason)
+                reason.words()
             );
         } else if total == 0 {
             text.push_str("\nnone: no app runs in this workspace and none is installed");
@@ -152,16 +152,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         forms: &super::ProgramForms,
         reaching: usize,
     ) -> Result<super::Resolved, String> {
-        self.resolve_in(
-            parsed,
-            fs_protocol::tree::FILES_APP.to_owned(),
-            tilo_actions::remote::workspace_provider(&self.workspace),
-            true,
-            Some(forms),
-            &mut super::Levels::new(),
-            reaching,
-        )
-        .await
+        self.tree
+            .resolve_in(
+                parsed,
+                fs_protocol::tree::FILES_APP.to_owned(),
+                tilo_actions::remote::workspace_provider(&self.workspace),
+                true,
+                Some(forms),
+                &mut super::Levels::new(),
+                reaching,
+            )
+            .await
+            .map_err(String::from)
     }
 }
 

@@ -913,6 +913,39 @@ impl ActionCallError {
         }
     }
 
+    /// This refusal as a caller is told it: the code the API documents
+    /// (`docs/tilo-sh/errors.md`), then what happened, so a caller reading the
+    /// typed answer gets the code and one reading the text still reads a
+    /// sentence that says what to do.
+    #[must_use]
+    pub fn said(&self) -> String {
+        match self {
+            // A caller that retries the same stale revision fails the same way:
+            // what to do instead is said.
+            Self::StaleRevision => "stale_revision: the resource changed since you read it. \
+                Call the action again with tilo_do, which runs it against the resource as it \
+                is now, or tilo_read the resource first to see what changed"
+                .to_owned(),
+            // Refused by the workspace's permissions: said as that, with where it is
+            // changed, never as an action the caller cannot name.
+            Self::NotPermitted => {
+                format!("not_permitted: {}", crate::Availability::NOT_ALLOWED_HERE)
+            }
+            // What the host could not run now is `unavailable`, the code the API
+            // documents; the host's own words follow rather than a restatement.
+            Self::Unavailable { reason } => format!("unavailable: {reason}"),
+            // No answer is not an answer that nothing is there: a workspace that just
+            // started may still be opening its documents, and answers when asked again.
+            Self::Unanswered => "unanswered: the workspace did not answer in time; it may \
+                still be opening its documents after it started, so ask again"
+                .to_owned(),
+            Self::InvalidRequest { reason } | Self::Refused { reason } => {
+                format!("{}: {reason}", self.code())
+            }
+            other => format!("{}: {other}", other.code()),
+        }
+    }
+
     /// Whether the same call, under the same invocation id, is worth making
     /// again: once the workspace serves the caller ([`Self::NotReady`]), or at
     /// once ([`Self::Unanswered`]).

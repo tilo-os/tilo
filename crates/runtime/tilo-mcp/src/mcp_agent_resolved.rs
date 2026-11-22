@@ -52,7 +52,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // it is resolved again, once, and the app it was in looked up again.
                 Err(_) => {
                     self.resolved_paths.lock_recover().remove(path);
-                    self.forget_app(&known.app_id);
+                    self.tree.forget_app(&known.app_id);
                 }
             }
         }
@@ -144,7 +144,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .await
             .map_err(|why| refused_as("not_found", why))?
         else {
-            let AppRef::Installed { app_id, .. } = self.app_ref(&app_of(&parsed)).await? else {
+            let AppRef::Installed { app_id, .. } = self.tree.app_ref(&app_of(&parsed)).await?
+            else {
                 return Err(format!("{} started while it was asked to", app_of(&parsed)).into());
             };
             return (self.launched((&parsed, &app_id, &action), arguments, invocation, wait_ms))
@@ -158,58 +159,62 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // What this session read of the app's directory answers the path where
         // it names the resource: a write on another of the app's resources
         // asks the workspace for nothing but the write.
-        let mut levels = self.levels_kept(&provider);
+        let mut levels = self.tree.levels_kept(&provider);
         let mut resolved = if pinned {
-            self.resolve_in(
-                &parsed,
-                app_id.clone(),
-                provider.clone(),
-                false,
-                forms.as_ref(),
-                &mut levels,
-                usize::MAX,
-            )
-            .await
-            .map_err(|why| refused_as("not_found", why))?
+            self.tree
+                .resolve_in(
+                    &parsed,
+                    app_id.clone(),
+                    provider.clone(),
+                    false,
+                    typed(forms.as_ref()),
+                    &mut levels,
+                    usize::MAX,
+                )
+                .await
+                .map_err(|why| refused_as("not_found", why.to_string()))?
         } else {
-            self.resolve_published(
-                &parsed,
-                app_id.clone(),
-                provider.clone(),
-                false,
-                forms.as_ref(),
-                &mut levels,
-                usize::MAX,
-            )
-            .await
-            .map_err(|why| refused_as("not_found", why))?
+            self.tree
+                .resolve_published(
+                    &parsed,
+                    app_id.clone(),
+                    provider.clone(),
+                    false,
+                    typed(forms.as_ref()),
+                    &mut levels,
+                    usize::MAX,
+                )
+                .await
+                .map_err(|why| refused_as("not_found", why.to_string()))?
         };
         if forms.is_some() && resolved.chain.is_empty() {
             resolved = if pinned {
-                self.resolve_in(
-                    &parsed,
-                    app_id,
-                    provider,
-                    false,
-                    None,
-                    &mut levels,
-                    usize::MAX,
-                )
-                .await?
+                self.tree
+                    .resolve_in(
+                        &parsed,
+                        app_id,
+                        provider,
+                        false,
+                        None,
+                        &mut levels,
+                        usize::MAX,
+                    )
+                    .await?
             } else {
-                self.resolve_published(
-                    &parsed,
-                    app_id,
-                    provider,
-                    false,
-                    None,
-                    &mut levels,
-                    usize::MAX,
-                )
-                .await?
+                self.tree
+                    .resolve_published(
+                        &parsed,
+                        app_id,
+                        provider,
+                        false,
+                        None,
+                        &mut levels,
+                        usize::MAX,
+                    )
+                    .await?
             };
         }
-        self.keep_levels(&resolved.provider, &resolved.levels);
+        self.tree.keep_levels(&resolved.provider, &resolved.levels);
         self.acted_in(&resolved.provider, &resolved.app_id);
         self.resolve_in_target(&parsed, &action, resolved, arguments, invocation, wait_ms)
             .await
@@ -243,6 +248,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if let Some(node) = resolved.node.clone() {
                 let mut levels = std::mem::take(&mut resolved.levels);
                 let here = self
+                    .tree
                     .level(&resolved.provider, &node.id, &mut levels)
                     .await?;
                 resolved.levels = levels;
@@ -289,7 +295,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 }
             }
         };
-        self.keep_levels(&resolved.provider, &resolved.levels);
+        self.tree.keep_levels(&resolved.provider, &resolved.levels);
         let history = resolved.history();
         let known = ResolvedAction {
             app_id: resolved.app_id,

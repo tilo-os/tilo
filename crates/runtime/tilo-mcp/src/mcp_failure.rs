@@ -59,3 +59,9 @@ impl From<Failure> for String {
         failure.message
     }
 }
+
+impl From<tilo_actions::tree::Unresolved> for Failure {
+    fn from(unresolved: tilo_actions::tree::Unresolved) -> Self {
+        String::from(unresolved).into()
+    }
+}

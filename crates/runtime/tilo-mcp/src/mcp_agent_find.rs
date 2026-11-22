@@ -112,7 +112,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             },
         };
         let found = self.searched(&reference, &Within::default()).await?;
-        let (_, running) = self.providers().await?;
+        let (_, running) = self.tree.providers().await?;
         let mut reads = Reads::default();
         for hit in &found {
             if hit.kind == tilo_actions::remote::FOUND_FILE {
@@ -177,7 +177,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // the actions on it apart, and an agent acts on the resource. Each
         // directory is read once for all of the results it names. A hit is
         // named as the listing names it, type and all: the same program form.
-        let (_, running) = self.providers().await?;
+        let (_, running) = self.tree.providers().await?;
         let forms = self.program_forms().await.unwrap_or_default();
         // Every directory this find reads once, for all the hits that name it: a search answers
         // many rows from one app's directory, and reading it again for each of them is what an
@@ -317,13 +317,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// narrowed to an app that is not there does not answer that nothing
     /// matches.
     pub(super) async fn app_ids(&self, name: &str) -> Result<Vec<String>, String> {
-        let (_, running) = self.providers().await?;
+        let (_, running) = self.tree.providers().await?;
         let seen: Vec<String> = running
             .iter()
             .filter_map(|(_, app)| app["app_id"].as_str().map(str::to_owned))
             .collect();
-        let installed = self.installed().await;
-        let unread = installed.as_ref().err().cloned();
+        let installed = self.tree.installed().await;
+        let unread = installed.as_ref().err().map(ToString::to_string);
         searched_apps(
             name,
             &seen,
@@ -450,7 +450,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if !below_app(parsed).is_empty() || app_of(parsed).contains('@') {
             return;
         }
-        let Ok((_, running)) = self.providers().await else {
+        let Ok((_, running)) = self.tree.providers().await else {
             return;
         };
         let name = app_names(std::slice::from_ref(&resolved.app_id)).join("");
@@ -464,6 +464,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let mut levels = Levels::new();
             // A record that holds nothing yet is no item of the app's.
             let Some(label) = self
+                .tree
                 .level(provider, "", &mut levels)
                 .await
                 .ok()
@@ -520,7 +521,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // A row the app publishes at its own top level is named there,
             // however deep its resource also nests it: the shortest address is
             // the one the app's own listing writes.
-            let Ok(top) = self.level(provider, "", reads.of(provider)).await else {
+            let Ok(top) = self.tree.level(provider, "", reads.of(provider)).await else {
                 return None;
             };
             if top.children.iter().any(|node| node.id == here.id) {
@@ -592,7 +593,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let Some(holder) = holder else {
                 // Not a row of this level: the top level lists it, and
                 // names `here` in the level the parent read.
-                let Ok(top) = self.level(provider, "", reads.of(provider)).await else {
+                let Ok(top) = self.tree.level(provider, "", reads.of(provider)).await else {
                     return None;
                 };
                 let top_holder = top.children.iter().find(|node| node.id == parent).cloned();
@@ -604,6 +605,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     // `parent` is an id, not a name a program types a type with: it is found
                     // by the id alone, so no program form is read into it.
                     None => self
+                        .tree
                         .deep(provider, &parent, None, reads.of(provider), None)
                         .await
                         .ok()
@@ -656,7 +658,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if let Ok(Some(named)) = self.named_once(provider, parent, name, reads).await {
             return Ok(named);
         }
-        self.level(provider, parent, reads.of(provider)).await
+        self.tree
+            .level(provider, parent, reads.of(provider))
+            .await
+            .map_err(String::from)
     }
 
     /// [`Self::named`], asked once in one find: the same name under the same parent of the same
@@ -676,7 +681,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if let Some(answered) = reads.named.get(&asked) {
             return Ok(answered.clone());
         }
-        let answered = self.named(provider, parent, name).await?;
+        let answered = self.tree.named(provider, parent, name).await?;
         reads.named.insert(asked, answered.clone());
         Ok(answered)
     }
@@ -690,7 +695,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         found: &Found,
         reads: &mut Reads,
     ) -> Option<Node> {
-        let Ok(top) = self.level(provider, "", reads.of(provider)).await else {
+        let Ok(top) = self.tree.level(provider, "", reads.of(provider)).await else {
             return None;
         };
         let key = bound_key(&found.resource);
@@ -763,7 +768,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     let Some(holder) = at.children.iter().find(|node| node.container) else {
                         continue;
                     };
-                    let Ok(held) = self.level(provider, &holder.id, reads.of(provider)).await
+                    let Ok(held) = self
+                        .tree
+                        .level(provider, &holder.id, reads.of(provider))
+                        .await
                     else {
                         continue;
                     };
@@ -841,6 +849,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // named by the key the bound id spells. Only a bound id: a
                 // plain resource is a row the level above named.
                 let Ok(level) = self
+                    .tree
                     .level(provider, &container.id, reads.of(provider))
                     .await
                 else {

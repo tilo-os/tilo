@@ -59,16 +59,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // does not run.
         // A path naming a kind (`tasks.issues`) names what an app serves rather than
         // an app: that one answers wherever what it keeps is served.
-        match self.app_ref(&app_of(&parsed)).await {
+        match self.tree.app_ref(&app_of(&parsed)).await {
             Ok(AppRef::Running { .. }) => {}
             Ok(AppRef::Installed { app_id, opens }) => {
                 if !opens {
-                    return Err(Self::may_not_open(&app_id).into());
+                    return Err(tilo_actions::tree::Unresolved::MayNotOpen {
+                        name: app_id.clone(),
+                    }
+                    .to_string()
+                    .into());
                 }
-                self.started_provider(&app_id, None).await?;
+                self.tree.started_provider(&app_id, None).await?;
             }
             Err(why) => {
-                if self.kind_app(&app_of(&parsed)).await.is_none() {
+                if self.tree.app_of_type(&app_of(&parsed)).await.is_none() {
                     return Err(why.into());
                 }
             }

@@ -1457,7 +1457,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return Ok(found.clone());
         }
         let found = Addressed {
-            provider: self.started_provider(app, Some(PROGRAM_WAIT_MS)).await?,
+            provider: self
+                .tree
+                .started_provider(app, Some(std::time::Duration::from_millis(PROGRAM_WAIT_MS)))
+                .await?,
             app_id: Some(app.to_owned()),
         };
         known.insert(app.to_owned(), found.clone());
