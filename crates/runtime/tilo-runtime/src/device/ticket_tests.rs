@@ -240,6 +240,10 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
         .enter(&workspace, &laptop_cert)
         .await
         .expect("a device of the person enters the workspace");
+    // The server keeps the person's own workspace too, where their list of workspaces is.
+    let own = tilo_workspace_service::workspaces::person_workspace::found(&hosted)
+        .await
+        .expect("the person's own workspace is founded on their server");
 
     let laptop_login = login_to(&server, &workspace, (&laptop_cert, &server_cert));
 
@@ -359,6 +363,13 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     )
     .await
     .expect("the desk enters as the person's device");
+    // The desk takes the person's own workspace in by its id at the device its ticket names,
+    // without anything listing it there.
+    let own = tilo_server_protocol::WorkspaceId::parse(&own).unwrap();
+    assert!(
+        desk_session.admitted(own).await,
+        "the desk enters the person's own workspace at the server its ticket names"
+    );
     let listed = desk_session
         .personal_list(
             &tilo_server_session::workspaces::WorkspaceLabels::new(),
