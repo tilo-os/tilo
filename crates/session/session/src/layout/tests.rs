@@ -540,6 +540,14 @@ impl tilo_peer_state::workspace_documents::DeviceWrites for HeldWrites {
     }
 }
 
+/// Look at the layouts as the session's loop does: a look asks for what it reads, and the look
+/// after the reads answered lays it in. Whether either changed anything.
+fn look(layouts: &Layouts, engine: &crate::engine::Engine, tree: &mut Layout) -> bool {
+    let asked = layouts.follow(engine, "", tree);
+    layouts.read_through(std::time::Duration::from_secs(30));
+    layouts.follow(engine, "", tree) | asked
+}
+
 /// The wake that says a record's write is done, as a channel.
 fn woken() -> (tilo_service::LoopWake, std::sync::mpsc::Receiver<()>) {
     struct Rings(std::sync::Mutex<std::sync::mpsc::Sender<()>>);
@@ -647,6 +655,10 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
     service.hand_keys(&engine, workspace, service.keys_of(workspace));
     drop(service);
     let layout = (workspace, Route::layout());
+    // A save is made on what the workspace has of the layout: the session's first look asks for
+    // it, off the loop, and the look after its answer saves.
+    let _ = desktops.reached(&layout);
+    desktops.read_through(std::time::Duration::from_secs(30));
     // The write's signature waits for the test: it is under way, so nothing of it can have been
     // taken in here.
     hold.hold();
@@ -677,11 +689,13 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
 
     // The task answers, and the change it wrote is one step of the person's in the layout's
     // history, on any of their devices.
+    // The loop is woken for each answer that lands, a read's among them: the write's is one.
     hold.open();
-    heard
-        .recv_timeout(std::time::Duration::from_secs(30))
-        .expect("the write wakes the loop once it is done");
-    assert!(desktops.settle_publishing(), "the write is done");
+    while !desktops.settle_publishing() {
+        heard
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the write wakes the loop once it is done");
+    }
     assert!(
         desktops.held(&layout, |held| held.written.is_some()),
         "the look takes what the write came to"
@@ -709,7 +723,7 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
     // record. The write's answer need not move the revision again (one that finds nothing to
     // write does not), and the look after it still reads the record.
     let mut tree = tree;
-    desktops.follow(&engine, "", &mut tree);
+    look(&desktops, &engine, &mut tree);
     tree.external_revision += 1;
     let strip = tree.workspaces.iter_mut().flat_map(|held| &mut held.strips);
     strip
@@ -721,9 +735,11 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
     desktops.capture(&engine, &tree);
     desktops.follow(&engine, "", &mut tree.clone());
     hold.open();
-    heard
-        .recv_timeout(std::time::Duration::from_secs(30))
-        .expect("the write wakes the loop once it is done");
+    while !desktops.settle_publishing() {
+        heard
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the write wakes the loop once it is done");
+    }
     assert!(
         !desktops.settled(version, &tree),
         "the look after a write reads the record its follow skipped"
@@ -813,7 +829,7 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = service.reads();
     desktops.attach(&engine, &reads, &writes);
     let mut shown = layout.clone();
-    desktops.follow(&engine, "", &mut shown);
+    look(&desktops, &engine, &mut shown);
     // What a look that cannot reach the workspace leaves behind: the layout the person made of
     // it, and the view they switched, each as a step of theirs.
     desktops.held(&layout_key, |held| {
@@ -851,7 +867,7 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     service.hand_keys(&engine, workspace, service.keys_of(workspace));
     drop(service);
     let mut shown = layout.clone();
-    next.follow(&engine, "", &mut shown);
+    look(&next, &engine, &mut shown);
     next.capture(&engine, &shown);
     next.finish_writes(&engine, &shown, std::time::Duration::from_secs(30));
     let held = next
@@ -990,7 +1006,7 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     let before = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
     attach_through_service(&before, &engine, &service);
     let mut shown = layout.clone();
-    before.follow(&engine, "", &mut shown);
+    look(&before, &engine, &mut shown);
     // The step the session keeps while its workspace cannot hold the layout yet: the whole shell.
     before.held(&layout_key, |held| {
         held.pending_steps.push(
@@ -1018,7 +1034,7 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
         salt,
         ..Layout::default()
     };
-    next.follow(&engine, "", &mut reopened);
+    look(&next, &engine, &mut reopened);
     let strips = strips_of(&reopened.workspaces[0]);
     let wanted = strips_of(&layout.workspaces[0]);
     assert_eq!(strips, wanted, "every strip, group and window is back");
@@ -1027,7 +1043,7 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     // workspace's layout it is not in never takes it away.
     next.capture(&engine, &reopened);
     next.finish_writes(&engine, &reopened, std::time::Duration::from_secs(30));
-    next.follow(&engine, "", &mut reopened);
+    look(&next, &engine, &mut reopened);
     let strips = strips_of(&reopened.workspaces[0]);
     assert_eq!(
         strips, wanted,
@@ -1116,7 +1132,7 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
     attach_through_service(&desktops, &engine, &service);
     drop(service);
     let mut shown = layout.clone();
-    desktops.follow(&engine, "", &mut shown);
+    look(&desktops, &engine, &mut shown);
     let view_key = (workspace, Route::view(&person));
     let own = || {
         desktops.held(&view_key, |held| {
@@ -1234,7 +1250,7 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
     );
     attach_through_service(&desktops, &engine, &service);
     let mut shown = layout.clone();
-    desktops.follow(&engine, "", &mut shown);
+    look(&desktops, &engine, &mut shown);
     let layout_key = (workspace, Route::layout());
     assert!(
         desktops.held(&layout_key, |held| held.pending_steps.is_empty()),
@@ -1285,7 +1301,7 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
         salt,
         ..Layout::default()
     };
-    next.follow(&engine, "", &mut reopened);
+    look(&next, &engine, &mut reopened);
     assert_eq!(
         strips_of(&reopened.workspaces[0]),
         strips_of(&shown.workspaces[0]),
@@ -1419,7 +1435,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
         );
         attach_through_service(&before, &engine, &service);
         let mut shown = layout.clone();
-        before.follow(&engine, "", &mut shown);
+        look(&before, &engine, &mut shown);
         before.capture(&engine, &shown);
         before.finish_writes(&engine, &shown, std::time::Duration::from_secs(30));
         shown.active = studio;
@@ -1454,7 +1470,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
             salt,
             ..Layout::default()
         };
-        before.follow(&engine, "", &mut shown);
+        look(&before, &engine, &mut shown);
         assert_eq!(
             windows_of(&shown.workspaces[0]),
             BTreeSet::from([chat, settings]),
@@ -1511,7 +1527,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
         salt,
         ..Layout::default()
     };
-    next.follow(&engine, "", &mut reopened);
+    look(&next, &engine, &mut reopened);
     assert_eq!(
         windows_of(&reopened.workspaces[0]),
         BTreeSet::from([chat]),
@@ -1539,7 +1555,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
         !waits(studio) && !waits(home),
         "nothing of the view waits any more"
     );
-    next.follow(&engine, "", &mut reopened);
+    look(&next, &engine, &mut reopened);
     let written = |workspace: WorkspaceId| {
         let kept = next
             .held(&(workspace, Route::view(&person)), |held| held.kept.clone())
@@ -1638,7 +1654,7 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
     let before = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
     attach_through_service(&before, &engine, &service);
     let mut shown = saved;
-    before.follow(&engine, "", &mut shown);
+    look(&before, &engine, &mut shown);
     before.capture(&engine, &shown);
     before.finish_writes(&engine, &shown, std::time::Duration::from_secs(30));
     assert!(
@@ -1664,7 +1680,7 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
         salt,
         ..Layout::default()
     };
-    after.follow(&engine, "", &mut login);
+    look(&after, &engine, &mut login);
     assert!(
         windows_of(&login.workspaces[0]).is_empty(),
         "nothing of the layout is readable yet"
@@ -1683,7 +1699,7 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
     // The keys arrive, and the next look lays the saved window out.
     service.hand_keys(&engine, workspace, keys);
     drop(service);
-    after.follow(&engine, "", &mut login);
+    look(&after, &engine, &mut login);
     assert_eq!(
         windows_of(&login.workspaces[0]),
         std::collections::BTreeSet::from([tab]),

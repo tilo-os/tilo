@@ -664,6 +664,8 @@ impl Session {
         // Where this device's own workspace service is installed, and what its roles read from.
         let (workspace_service, document_reads) = crate::broker_services::session_documents();
         let writes = crate::broker_services::session_writes(workspace_service.clone());
+        // A write the service takes to a layout or a view has it read again off the loop.
+        desktops.follow_writes(workspace_service.clone());
         let engine = activity.open_engine(&options, &handle, document_reads.clone(), &writes);
         // This device's channels of its workspaces' sealed records: its keys,
         // and the devices each one admits, which its window streams carry

@@ -662,6 +662,10 @@ pub(crate) struct Layouts {
     /// Where the workspaces' documents are read, once the session opened this device's service: a
     /// layout and its views are read from the workspace's own copy, as they are written to it.
     reads: RefCell<Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>>>,
+    /// The reads of the layouts and views, made off the loop once the session opened its service.
+    reading: RefCell<Option<reads::Reads>>,
+    /// Where the service whose writes ask for those reads again is installed, until they start.
+    notices: RefCell<Option<reads::Notices>>,
     /// What this device's workspace service writes into the workspaces' documents, once the
     /// session opened it: where a layout's write reaches the workspace.
     writes: RefCell<Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>>>,
@@ -870,8 +874,14 @@ impl Layouts {
         if !self.settle_publishing() {
             return true;
         }
+        // An answer that changed since the last look is read in, whatever else moved.
+        let news = self
+            .reading
+            .borrow()
+            .as_ref()
+            .is_some_and(reads::Reads::take_news);
         let person = self.person.borrow().clone();
-        let settled = self.held.borrow().values().all(|held| {
+        let settled = !news && self.held.borrow().values().all(|held| {
             held.pending.is_none()
                 && held.pending_step.is_none()
                 && held.pending_view.is_empty()
@@ -893,40 +903,21 @@ impl Layouts {
         settled
     }
 
-    /// `key`'s document, read from the workspace's own copy in this device's service: what the
-    /// workspace last admitted, what it held before this device joined included. `Ok(None)` for a
-    /// document no one wrote yet, or one that did not move since `known`; [`NotRead::Waiting`] for
-    /// one this device cannot read yet (its keys are on their way), which is no document's absence.
+    /// `key`'s resource as the workspace's own copy in this device's service last answered it:
+    /// what the workspace admitted, what it had before this device joined included. Asks for it
+    /// to be read again off the loop, which the loop is woken for once that read answers
+    /// something new. `Ok(None)` for one no one wrote yet, or one that did not move since `known`;
+    /// [`NotRead::Waiting`] for one this device cannot read yet (its keys are on their way, or no
+    /// read of it answered yet), which is no resource's absence.
     fn document(
         &self,
         key: &Key,
         known: Option<[u8; 32]>,
     ) -> Result<Option<(automerge::AutoCommit, [u8; 32])>, NotRead> {
-        use tilo_peer_state::workspace_documents::DocumentRead;
-        let Some(reads) = self.reads() else {
+        let Some(reading) = self.reading.borrow().clone() else {
             return Ok(None);
         };
-        let (workspace_id, route) = key;
-        match reads
-            .read(&workspace_id.to_string(), route.app, &route.document, None)
-            .map_err(NotRead::Failed)?
-        {
-            DocumentRead::Whole {
-                revision, bytes, ..
-            } => {
-                if known == Some(revision) {
-                    return Ok(None);
-                }
-                automerge::AutoCommit::load(&bytes)
-                    .map(|doc| Some((doc, revision)))
-                    .map_err(|error| NotRead::Failed(error.to_string()))
-            }
-            // What this device holds stands: nothing moved, or nothing is here yet.
-            DocumentRead::Changes { .. } | DocumentRead::Unchanged(_) | DocumentRead::Absent => {
-                Ok(None)
-            }
-            DocumentRead::Pending => Err(NotRead::Waiting),
-        }
+        reading.read(key, known)
     }
 
     /// Lay every workspace's layout into `tree`, and each person's view of it: what the records say
@@ -963,6 +954,7 @@ impl Layouts {
         patience: std::time::Duration,
     ) {
         self.wait_writes(patience);
+        self.read_through(patience);
         if let Some(person) = self.person.borrow().clone() {
             self.capture_layouts(engine, &person, tree);
             self.capture_view(engine, &person, tree, true);
@@ -979,6 +971,7 @@ impl Layouts {
         patience: std::time::Duration,
     ) {
         self.wait_writes(patience);
+        self.read_through(patience);
         if let Some(person) = self.person.borrow().clone() {
             self.capture_view(engine, &person, tree, true);
         }
@@ -1072,6 +1065,31 @@ impl Layouts {
         *self.engine.borrow_mut() = Some(Arc::clone(engine));
         *self.reads.borrow_mut() = Some(Arc::clone(reads));
         *self.writes.borrow_mut() = Some(Arc::clone(writes));
+        if self.reading.borrow().is_none() {
+            *self.reading.borrow_mut() = Some(reads::Reads::start(
+                Arc::clone(reads),
+                self.wake.handle(),
+                self.notices.borrow_mut().take(),
+            ));
+        }
+    }
+
+    /// Read a layout or a view again whenever the service `service` installs takes a write to it,
+    /// rather than only when the session looks.
+    pub(crate) fn follow_writes(&self, service: tilo_workspace_service::service::ServiceSlot) {
+        *self.notices.borrow_mut() = Some(Box::new(move || {
+            service
+                .service()
+                .map(|service| service.workspaces().document_writes())
+        }));
+    }
+
+    /// Read every layout and view followed again, and wait up to `patience` for the answers.
+    fn read_through(&self, patience: std::time::Duration) {
+        let reading = self.reading.borrow().clone();
+        if let Some(reading) = reading {
+            reading.read_through(patience);
+        }
     }
 
     /// Where the workspaces' documents are read, once the session opened its service.
@@ -3008,6 +3026,8 @@ impl tilo_session_core::layout::Layouts for Steps {
         shown
     }
 }
+
+mod reads;
 
 #[cfg(test)]
 mod tests;
