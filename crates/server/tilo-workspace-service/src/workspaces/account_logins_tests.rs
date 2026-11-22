@@ -583,3 +583,59 @@ async fn a_file_accounts_password_signs_in_by_its_entry_on_a_members_device() {
         "the release is written down with what signed in: {uses:?}"
     );
 }
+
+#[tokio::test]
+async fn an_account_a_providers_page_signed_in_is_released_its_access_token_alone() {
+    let server = tokio::task::spawn_blocking(MailServer::start)
+        .await
+        .unwrap();
+    let members = Members::new().await;
+    let workspace = members.workspace.clone();
+    let mut account = server.account();
+    let mut config = server.config();
+    config.auth = accounts::email::AuthMethod::OAuth;
+    account.config = config.to_value().unwrap();
+    account.config["provider"] = "google".into();
+    members.keep_account(&account).await;
+    // The grant a sign-in on Google's own page left, kept in the account's entry: its access
+    // token good for the next hour, and the refresh token that renews it.
+    let tokens = tilo_oauth::TokenSet {
+        access_token: "made-up access token".into(),
+        refresh_token: "made-up refresh token".into(),
+        expires_in: 3600,
+        ..Default::default()
+    }
+    .stamp_now();
+    let grant = account_credentials::oauth_secret(&tokens).token.unwrap();
+    let item = members
+        .owner
+        .keep_account_password(
+            &workspace,
+            &members.owner_caller(),
+            None,
+            server.login(),
+            Zeroizing::new(grant),
+        )
+        .await
+        .unwrap();
+    members
+        .owner
+        .name_account_password(&workspace, ADDRESS, &item)
+        .await
+        .unwrap();
+
+    let named = named_entry(&members.member, &workspace).await;
+    let token = released(
+        &members.member,
+        &workspace,
+        &members.member_caller(),
+        &named,
+    )
+    .await
+    .expect("a member who may use Passwords signs in to the account");
+    assert_eq!(
+        token.as_str(),
+        "made-up access token",
+        "the device signs in with the access token, and never holds the grant"
+    );
+}

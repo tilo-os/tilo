@@ -17,7 +17,6 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
 use accounts::sign_ins::{Answer, Ask, Client};
-use mail_engine::model::AuthMethod;
 
 use crate::engine::{AccountSource, MailAccount};
 
@@ -109,8 +108,9 @@ fn signed_in(
     }
     let mut config = mail_engine::account::config_of(account)?;
     let mut refused = None;
-    if config.auth == AuthMethod::Password
-        && !config.import_pending
+    // A password, or for an account its provider's page signed in, the access token its grant
+    // holds now: the session never hands out the grant itself.
+    if !config.import_pending
         && let Some(entry) = accounts::email::password_item(&account.config)
     {
         let ask = Ask::SignIn {

@@ -179,7 +179,7 @@ impl Workspaces {
     /// ([`accounts::email::password_item`]), released only for the servers that account names
     /// now, with the use written into the entry first, saying which app signed in to which
     /// account. Any kind of account and any app: what decides is whether `by` may use
-    /// Passwords.
+    /// Passwords. A grant a provider's own page left is released as its access token alone.
     ///
     /// # Errors
     /// `by` may not use the vault, no enabled account names the entry, the account names no
@@ -215,20 +215,30 @@ impl Workspaces {
             account.display_name.as_str()
         };
         let what = format!("{app} signed in to {name}");
-        self.changing_vault(workspace, |items| {
-            items.use_as_kept(
-                &id,
-                &places,
-                &who,
-                UsedFor {
-                    using: SIGN_IN,
-                    what: &what,
-                    allowed: None,
-                },
-            )
-        })
+        let released = self
+            .changing_vault(workspace, |items| {
+                items.use_as_kept(
+                    &id,
+                    &places,
+                    &who,
+                    UsedFor {
+                        using: SIGN_IN,
+                        what: &what,
+                        allowed: None,
+                    },
+                )
+            })
+            .await
+            .map_err(said)?;
+        // A grant a provider's page left is handed out as the access token it holds now, never
+        // with the refresh token that renews it.
+        super::person_settings::oauth_grant::signs_in_with(
+            self.vault_at(workspace),
+            &self.workspace_root(workspace),
+            account,
+            released,
+        )
         .await
-        .map_err(said)
     }
 
     /// Whether `workspace`'s vault keeps the entry `item` names, on this device.

@@ -490,8 +490,7 @@ impl EngineConnector {
             EngineEvent::Connected { .. }
             | EngineEvent::Folders { .. }
             | EngineEvent::Sent { .. }
-            | EngineEvent::Unfiled { .. }
-            | EngineEvent::Authorized { .. } => {}
+            | EngineEvent::Unfiled { .. } => {}
         }
     }
 }

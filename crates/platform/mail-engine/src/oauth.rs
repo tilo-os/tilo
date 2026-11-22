@@ -3,10 +3,9 @@
 //! password.
 //!
 //! Mail owns none of the machinery: the client registration and mail scopes come from Tilo's
-//! one client table ([`account_credentials::ClientTable`], `oauth-clients.toml`), the same
-//! registration Settings signs in to Google Drive and `OneDrive` with. The grant is sealed in
-//! the account vault and refreshed by [`account_credentials::CredentialStore`]; Mail holds only a current
-//! access token, long enough to present it as `XOAUTH2`.
+//! one client table ([`account_credentials::ClientTable`], `oauth-clients.toml`). The grant is
+//! an entry of the workspace's vault, renewed where the vault is; Mail is handed only a current
+//! access token, which it presents as `XOAUTH2`.
 
 use account_credentials::{ClientTable, OAuthIssuer, OAuthUse};
 
@@ -74,96 +73,9 @@ impl async_imap::Authenticator for XOAuth2 {
     }
 }
 
-#[cfg(feature = "live")]
-fn ownership_message(error: &account_credentials::CredentialError) -> String {
-    use account_credentials::CredentialError;
-    match error {
-        CredentialError::NeedsAuthentication => {
-            "the OAuth sign-in is no longer valid; sign in again".into()
-        }
-        CredentialError::NotConfigured { provider, .. } => {
-            format!("{provider} sign-in isn’t available in this build")
-        }
-        other => other.to_string(),
-    }
-}
-
-#[cfg(feature = "live")]
-pub fn access_token(
-    credential_store: &account_credentials::CredentialStore,
-    account_id: &str,
-    provider: OAuthProvider,
-    force: bool,
-) -> Result<String, String> {
-    credential_store
-        .oauth_access_token(
-            &accounts::AccountId::from(account_id.to_string()),
-            provider.oauth_use(),
-            force,
-        )
-        .map(|token| token.to_string())
-        .map_err(|error| ownership_message(&error))
-}
-
-/// Run the browser sign-in for `provider`'s mail and seal the grant under
-/// `account_id`: bind the loopback redirect, open the consent page, capture
-/// the code and redeem it with the shared client registration. Blocks until
-/// the user consents or the sign-in times out.
-///
-/// # Errors
-/// Returns `Err` if sign-in is not configured, the browser cannot open, the
-/// redirect never arrives or fails validation, the code exchange fails, or
-/// the vault cannot be written.
-#[cfg(feature = "live")]
-pub fn sign_in(
-    credential_store: &account_credentials::CredentialStore,
-    account_id: &str,
-    provider: OAuthProvider,
-    login_hint: &str,
-    open_browser: impl FnOnce(&str) -> Result<(), String>,
-) -> Result<(), String> {
-    let authorization = credential_store
-        .begin_sign_in_for(provider.oauth_use(), Some(login_hint))
-        .map_err(|error| ownership_message(&error))?;
-    open_browser(authorization.url())
-        .map_err(|error| format!("could not open sign-in browser: {error}"))?;
-    let tokens = account_credentials::CredentialStore::finish_sign_in(authorization)
-        .map_err(|error| ownership_message(&error))?;
-    credential_store
-        .seal_oauth(&accounts::AccountId::from(account_id.to_string()), &tokens)
-        .map_err(|error| format!("could not save sign-in credentials: {error}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(feature = "live")]
-    #[test]
-    fn authorization_reports_browser_failure_before_waiting_for_callback() {
-        let root = tempfile::tempdir().unwrap();
-        let credential_store = account_credentials::CredentialStore::for_root(Some(root.path().to_path_buf()))
-            .with_client_table(
-                ClientTable::parse(
-                    "[google]\nclient_id = \"test-client\"\n[google.scopes]\nmail = [\"https://mail.google.com/\"]\n",
-                )
-                .unwrap(),
-            );
-        let result = sign_in(
-            &credential_store,
-            "fixture@example.invalid",
-            OAuthProvider::Google,
-            "fixture@example.invalid",
-            |url| {
-                assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
-                Err("fixture browser unavailable".into())
-            },
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            "could not open sign-in browser: fixture browser unavailable"
-        );
-    }
 
     fn url_for(provider: OAuthProvider, hint: Option<&str>) -> String {
         let descriptor = ClientTable::defaults().descriptor(provider.oauth_use());

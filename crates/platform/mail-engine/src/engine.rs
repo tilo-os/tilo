@@ -12,7 +12,6 @@ use std::sync::mpsc::{Receiver, Sender};
 use tilo_content::ContentStore;
 
 use crate::model::{AccountConfig, Draft, Folder, Message};
-use crate::oauth::OAuthProvider;
 use crate::transport::build_mime_from;
 
 pub type EngineRequestId = uuid::Uuid;
@@ -73,12 +72,6 @@ pub enum EngineRequest {
     Watch {
         request_id: EngineRequestId,
         account: AccountConfig,
-    },
-    OAuthAuthorize {
-        request_id: EngineRequestId,
-        account_id: String,
-        provider: OAuthProvider,
-        login_hint: String,
     },
 }
 
@@ -155,18 +148,6 @@ impl EngineRequest {
             account,
         }
     }
-    pub fn oauth_authorize(
-        account_id: String,
-        provider: OAuthProvider,
-        login_hint: String,
-    ) -> Self {
-        Self::OAuthAuthorize {
-            request_id: next_request_id(),
-            account_id,
-            provider,
-            login_hint,
-        }
-    }
 
     pub const fn request_id(&self) -> EngineRequestId {
         match self {
@@ -178,13 +159,11 @@ impl EngineRequest {
             | Self::SaveDraft { request_id, .. }
             | Self::Send { request_id, .. }
             | Self::Watch { request_id, .. }
-            | Self::Search { request_id, .. }
-            | Self::OAuthAuthorize { request_id, .. } => *request_id,
+            | Self::Search { request_id, .. } => *request_id,
         }
     }
-    /// The settings of the account the request is for: none for an OAuth sign-in, which names
-    /// the account only by its id.
-    pub const fn account_config(&self) -> Option<&AccountConfig> {
+    /// The settings of the account the request is for.
+    pub const fn account_config(&self) -> &AccountConfig {
         match self {
             Self::Connect { account, .. }
             | Self::Fetch { account, .. }
@@ -194,8 +173,7 @@ impl EngineRequest {
             | Self::SaveDraft { account, .. }
             | Self::Send { account, .. }
             | Self::Watch { account, .. }
-            | Self::Search { account, .. } => Some(account),
-            Self::OAuthAuthorize { .. } => None,
+            | Self::Search { account, .. } => account,
         }
     }
     pub fn account(&self) -> &str {
@@ -209,7 +187,6 @@ impl EngineRequest {
             | Self::Send { account, .. }
             | Self::Watch { account, .. }
             | Self::Search { account, .. } => &account.email,
-            Self::OAuthAuthorize { account_id, .. } => account_id,
         }
     }
     pub const fn kind(&self) -> EngineRequestKind {
@@ -223,7 +200,6 @@ impl EngineRequest {
             Self::Send { .. } => EngineRequestKind::Send,
             Self::Watch { .. } => EngineRequestKind::Watch,
             Self::Search { .. } => EngineRequestKind::Search,
-            Self::OAuthAuthorize { .. } => EngineRequestKind::OAuthAuthorize,
         }
     }
 }
@@ -239,7 +215,6 @@ pub enum EngineRequestKind {
     Send,
     Watch,
     Search,
-    OAuthAuthorize,
 }
 
 /// The context of an [`EngineEvent::Error`] of a send whose SMTP server could not be reached.
@@ -286,10 +261,6 @@ pub enum EngineEvent {
         request_id: EngineRequestId,
         reason: String,
     },
-    Authorized {
-        request_id: EngineRequestId,
-        account_id: String,
-    },
     Error {
         request_id: EngineRequestId,
         kind: EngineRequestKind,
@@ -312,7 +283,6 @@ impl EngineEvent {
             | Self::Unfiled { request_id, .. }
             | Self::Arrived { request_id, .. }
             | Self::Found { request_id, .. }
-            | Self::Authorized { request_id, .. }
             | Self::Error { request_id, .. }
             | Self::Completed { request_id, .. } => *request_id,
         }
@@ -394,17 +364,6 @@ impl MailEngine for StubEngine {
             // Offline there is no server to watch or search; the request
             // just ends.
             EngineRequest::Watch { .. } | EngineRequest::Search { .. } => {}
-            EngineRequest::OAuthAuthorize { account_id, .. } => {
-                // Sign-in needs the live network stack; the offline build can't
-                // complete it. Surface a clear reason instead of silently
-                // pretending to have authorized.
-                let _ = out.send(EngineEvent::Error {
-                    request_id,
-                    kind,
-                    context: "oauth".into(),
-                    message: format!("OAuth sign-in for {account_id} requires the live build"),
-                });
-            }
             EngineRequest::Send {
                 account,
                 draft,
@@ -504,7 +463,6 @@ pub fn spawn_waking(
 pub mod live {
     use std::sync::Arc;
 
-    use account_credentials::CredentialStore;
     use futures_util::TryStreamExt;
 
     use super::{
@@ -514,7 +472,6 @@ pub mod live {
     // AccountConfig / Draft / Folder / Message / Sender come via `super::*`;
     // these are the names the parent doesn't already bring in.
     use crate::model::{Addr, AuthMethod};
-    use crate::oauth;
     use crate::transport::{build_mime, build_mime_from, parse_fetched};
     use crate::validate::classify_conn_failure;
 
@@ -523,7 +480,6 @@ pub mod live {
         tls: std::sync::OnceLock<Arc<rustls::ClientConfig>>,
         trusts_test_servers: bool,
         content: tilo_content::ContentStore,
-        credential_store: CredentialStore,
         sessions: std::collections::HashMap<String, (ImapSession, std::time::Instant)>,
         places: std::collections::HashMap<String, crate::sync::Places>,
         watches: std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
@@ -552,7 +508,6 @@ pub mod live {
                 tls: std::sync::OnceLock::new(),
                 trusts_test_servers: false,
                 content,
-                credential_store: CredentialStore::live(),
                 sessions: std::collections::HashMap::new(),
                 places: std::collections::HashMap::new(),
                 watches: std::collections::HashMap::new(),
@@ -631,7 +586,7 @@ pub mod live {
                 }
             }
             if !self.sessions.contains_key(&key) {
-                let creds = resolve_auth(&self.credential_store, account)?;
+                let creds = resolve_auth(account)?;
                 let session = self.block_on(connect_session(account, &creds, self.tls()?))?;
                 self.sessions
                     .insert(key.clone(), (session, std::time::Instant::now()));
@@ -854,8 +809,7 @@ pub mod live {
             draft: &Draft,
             files: &[crate::model::SendFile],
         ) -> Result<Vec<u8>, SmtpFailure> {
-            let creds =
-                resolve_auth(&self.credential_store, account).map_err(SmtpFailure::Failed)?;
+            let creds = resolve_auth(account).map_err(SmtpFailure::Failed)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
             let bytes = build_mime_from(&from, draft, files).map_err(SmtpFailure::Failed)?;
             let tls = if self.trusts_test_servers {
@@ -951,40 +905,6 @@ pub mod live {
                 }
             }
         }
-
-        fn process_oauth(
-            &self,
-            request_id: EngineRequestId,
-            kind: EngineRequestKind,
-            account_id: String,
-            provider: oauth::OAuthProvider,
-            login_hint: &str,
-            out: &Sender<EngineEvent>,
-        ) {
-            let signed_in = oauth::sign_in(
-                &self.credential_store,
-                &account_id,
-                provider,
-                login_hint,
-                |url| ui::widget::try_open_external_url(url).map_err(|error| error.to_string()),
-            );
-            match signed_in {
-                Ok(()) => {
-                    let _ = out.send(EngineEvent::Authorized {
-                        request_id,
-                        account_id,
-                    });
-                }
-                Err(message) => {
-                    let _ = out.send(EngineEvent::Error {
-                        request_id,
-                        kind,
-                        context: "oauth".into(),
-                        message,
-                    });
-                }
-            }
-        }
     }
 
     impl MailEngine for LiveEngine {
@@ -1055,12 +975,6 @@ pub mod live {
                         }
                     }
                 }
-                EngineRequest::OAuthAuthorize {
-                    account_id,
-                    provider,
-                    login_hint,
-                    ..
-                } => self.process_oauth(request_id, kind, account_id, provider, &login_hint, out),
             }
         }
     }
@@ -1079,10 +993,7 @@ pub mod live {
         }
     }
 
-    fn resolve_auth(
-        credential_store: &CredentialStore,
-        account: &AccountConfig,
-    ) -> Result<AuthCreds, String> {
+    fn resolve_auth(account: &AccountConfig) -> Result<AuthCreds, String> {
         let user = login_user(account);
         if account.import_pending {
             return Err("this imported account needs its sign-in before it can connect".into());
@@ -1097,12 +1008,16 @@ pub mod live {
                     pass: account.password.clone(),
                 })
             }
+            // The session releases the access token the account's grant holds now, in its
+            // password's place; the grant itself stays in the workspace's vault.
             AuthMethod::OAuth => {
-                let provider =
-                    oauth::OAuthProvider::for_account(&account.email, &account.imap_host)
-                        .ok_or("OAuth sign-in is not supported for this provider")?;
-                let token = oauth::access_token(credential_store, &account.email, provider, false)?;
-                Ok(AuthCreds::XOAuth2 { user, token })
+                if account.password.is_empty() {
+                    return Err(crate::engine::NO_PASSWORD.into());
+                }
+                Ok(AuthCreds::XOAuth2 {
+                    user,
+                    token: account.password.clone(),
+                })
             }
         }
     }
@@ -1200,15 +1115,7 @@ pub mod live {
     ) {
         let mut pause = WATCH_RETRY;
         loop {
-            // Sign in afresh each time: an OAuth token may have been
-            // renewed since the last connection.
-            let owner = account.clone();
-            let creds =
-                tokio::task::spawn_blocking(move || resolve_auth(&CredentialStore::live(), &owner))
-                    .await
-                    .map_err(|e| e.to_string())
-                    .and_then(|creds| creds);
-            let watched = match creds {
+            let watched = match resolve_auth(&account) {
                 Ok(creds) => idle_until_failure(&account, &creds, tls.clone(), &arrived).await,
                 Err(error) => Err(error),
             };
@@ -2142,9 +2049,7 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                         auth: AuthMethod::Password,
                         ..Default::default()
                     };
-                    let creds =
-                        resolve_auth(&account_credentials::CredentialStore::live(), &account)
-                            .unwrap();
+                    let creds = resolve_auth(&account).unwrap();
                     let client_tls = accepting_client_config();
 
                     // One signed-in session serves every request: LIST
@@ -2238,9 +2143,7 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                     let from = Addr::new(account.display_name.clone(), account.email.clone());
                     let mime = build_mime(&tilo_content::ContentStore::memory(), &from, &draft)
                         .expect("build MIME");
-                    let creds =
-                        resolve_auth(&account_credentials::CredentialStore::live(), &account)
-                            .unwrap();
+                    let creds = resolve_auth(&account).unwrap();
 
                     // Send: the production submission path over a real STARTTLS
                     // upgrade (the non-465 submission-port behaviour), authenticating
