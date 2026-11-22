@@ -19878,6 +19878,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
+ "jiff",
  "libc",
  "postcard",
  "rand_core 0.10.0",
@@ -19898,7 +19899,6 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-device-identity",
  "tilo-files",
- "tilo-identity-ceremony",
  "tilo-identity-client",
  "tilo-lock",
  "tilo-paths",
@@ -19929,25 +19929,6 @@ dependencies = [
  "tilo-workspace-service",
  "tracing",
  "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-identity-ceremony"
-version = "0.1.0"
-dependencies = [
- "collab-types",
- "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
- "jiff",
- "serde",
- "serde_bytes",
- "serde_json",
- "thiserror 2.0.21",
- "threshold-identity",
- "tilo-clock",
- "tilo-identity-client",
- "tilo-lock",
  "workspace-hack",
 ]
 
@@ -20928,7 +20909,6 @@ dependencies = [
  "tilo-files",
  "tilo-handoff",
  "tilo-identity",
- "tilo-identity-ceremony",
  "tilo-identity-client",
  "tilo-onboarding",
  "tilo-paths",
@@ -29413,7 +29393,6 @@ dependencies = [
  "tilo-host-search",
  "tilo-identity",
  "tilo-identity-authority",
- "tilo-identity-ceremony",
  "tilo-identity-client",
  "tilo-image-codec",
  "tilo-image-policy-check",

@@ -30,7 +30,7 @@ pub(crate) fn load_signing_identity(
         "this device does not hold the identity root needed to approve enrollment";
     let identity_dir = identity_dir
         .with_context(|| format!("{MISSING_ROOT}: name the identity directory that holds it"))?;
-    let file = tilo_identity_client::resolve_active_identity(identity_dir).with_context(|| {
+    let file = tilo_identity::store::resolve_active_identity(identity_dir).with_context(|| {
         format!(
             "{MISSING_ROOT}: {} holds no active identity",
             identity_dir.display()

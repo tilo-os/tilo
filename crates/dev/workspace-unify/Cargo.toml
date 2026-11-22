@@ -1266,7 +1266,6 @@ doc = false
 "tilo-host-search" = { path = "../../../crates/platform/tilo-host-search", default-features = false, features = [] }
 "tilo-identity" = { path = "../../../crates/runtime/tilo-identity", default-features = false, features = [] }
 "tilo-identity-authority" = { path = "../../../crates/session/identity-authority", default-features = false, features = [] }
-"tilo-identity-ceremony" = { path = "../../../crates/collab/tilo-identity-ceremony", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../../crates/runtime/tilo-identity-client", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../../crates/platform/tilo-image-codec", default-features = false, features = [] }
 "tilo-image-policy-check" = { path = "../../../crates/system/image-policy-check", default-features = false, features = [] }
@@ -2495,7 +2494,6 @@ doc = false
 "tilo-headless-schema" = { path = "../../../crates/dev/headless-schema", default-features = false, features = [] }
 "tilo-history" = { path = "../../../crates/sdk/tilo-history", default-features = false, features = [] }
 "tilo-identity" = { path = "../../../crates/runtime/tilo-identity", default-features = false, features = [] }
-"tilo-identity-ceremony" = { path = "../../../crates/collab/tilo-identity-ceremony", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../../crates/runtime/tilo-identity-client", default-features = false, features = [] }
 "tilo-live" = { path = "../../../crates/collab/tilo-live", default-features = false, features = ["default", "iroh", "live_session", "relay"] }
 "tilo-lock" = { path = "../../../crates/platform/tilo-lock", default-features = false, features = [] }
@@ -3944,7 +3942,6 @@ doc = false
 "tilo-host-search" = { path = "../../../crates/platform/tilo-host-search", default-features = false, features = [] }
 "tilo-identity" = { path = "../../../crates/runtime/tilo-identity", default-features = false, features = [] }
 "tilo-identity-authority" = { path = "../../../crates/session/identity-authority", default-features = false, features = [] }
-"tilo-identity-ceremony" = { path = "../../../crates/collab/tilo-identity-ceremony", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../../crates/runtime/tilo-identity-client", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../../crates/platform/tilo-image-codec", default-features = false, features = [] }
 "tilo-image-policy-check" = { path = "../../../crates/system/image-policy-check", default-features = false, features = [] }
@@ -5172,7 +5169,6 @@ doc = false
 "tilo-headless-schema" = { path = "../../../crates/dev/headless-schema", default-features = false, features = [] }
 "tilo-history" = { path = "../../../crates/sdk/tilo-history", default-features = false, features = [] }
 "tilo-identity" = { path = "../../../crates/runtime/tilo-identity", default-features = false, features = [] }
-"tilo-identity-ceremony" = { path = "../../../crates/collab/tilo-identity-ceremony", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../../crates/runtime/tilo-identity-client", default-features = false, features = [] }
 "tilo-live" = { path = "../../../crates/collab/tilo-live", default-features = false, features = ["default", "iroh", "live_session", "relay"] }
 "tilo-lock" = { path = "../../../crates/platform/tilo-lock", default-features = false, features = [] }

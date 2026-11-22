@@ -33,6 +33,7 @@ blake3.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core", "serde"] }
 getrandom.workspace = true
 hex.workspace = true
+jiff.workspace = true
 zeroize.workspace = true
 libc.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
@@ -58,8 +59,6 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-seal = { path = "../../system/tilo-seal" }
 tracing.workspace = true
-# The identity record encoder shared with the interactive identity ceremony.
-tilo-identity-ceremony = { version = "0.1.0", path = "../../collab/tilo-identity-ceremony" }
 wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 

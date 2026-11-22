@@ -318,8 +318,6 @@ A person's identity root is kept in more than one place:
 | Store | Code | Location | Size |
 |---|---|---|---|
 | Native person records | `tilo-identity` `store/` (`unix.rs`, `backup.rs`, `recovery_words.rs`, `secure_store.rs`) | `$XDG_CONFIG_HOME/tilo/identity/{<id>.json,active,secrets/}` | 4,986 |
-| Record format | `tilo-identity-ceremony` `IdentityRecord`, `MemoryIdentityStore` | the same JSON | 315 |
-| Onboarding writer | `onboarding-session` `identity_provisioning.rs` `DiskIdentityStore` | `$XDG_CONFIG_HOME/tilo/identity/primary.json` | 562 |
 | Registry | `tilo-identity` `registry/` `IdentityRegistryStore` | `<identity_dir>/registry.json` | 1,061 |
 | Browser root | `tilo-browser-runtime` `root_identity.rs`, `web/identity.mjs` `RootEnvelope`, wrapped by a passkey PRF | IndexedDB | 1,466 |
 | Old CLI location | `tilo-cli` `identity.rs` `earlier()` | `$XDG_STATE_HOME/tilo/identity/user-identity/pubkey.bin` | ~20 |
@@ -328,8 +326,7 @@ A person's identity root is kept in more than one place:
 `identity_store`, `device_fleet/`, `certificates` and `local_person` layered
 over each other. `DeviceIdentity` means two different things: public
 metadata in `tilo-user-identity` `lib.rs`, and a certificate plus signer in
-`tilo-identity` `identity_store.rs`. `resolve_active_identity` exists in both
-`tilo-identity` and `tilo-identity-client`.
+`tilo-identity` `identity_store.rs`.
 
 There are three recovery formats (the 24 words, the browser `RecoveryKey`,
 and `tilo-auth`'s modhex on disk). There are five sign-in paths: the greeter
@@ -356,10 +353,7 @@ used.
 
 | Delete | Size |
 |---|---|
-| `tilo-identity-ceremony` (its `IdentityRecord` moves into `tilo_identity::store`) | 315 |
-| Onboarding's `DiskIdentityStore` (calls `tilo_identity::provisioning::create_person`) | ~250 |
 | The old `$XDG_STATE_HOME/tilo/identity` probe, after one migration | ~20 |
-| The second `resolve_active_identity` | ~100 |
 | The browser `RecoveryKey` and `tilo-auth` modhex recovery formats | ~400 |
 | `threshold-identity` paths with no caller, until a product needs them | ~2,000 |
 | Overlapping layers inside `tilo-identity` `store/` | to be measured as they fold |
@@ -781,7 +775,7 @@ any of them is added.
 | hosted workspace, `-w`, page-host | a workspace on a server treated as another thing | a workspace; some device holds it |
 | relay runtime | a server mode that forwards without being a device | a device that keeps sealed changes |
 | fleet, `DeviceFleetStore`, `CertifiedFleet` | the person's device list under a third name | the person's devices |
-| ceremony, `tilo-identity-ceremony` | a crate for a record format | the identity store |
+| ceremony | a crate for a record format | the identity store |
 | threshold identity | key generation across devices with no product use | nothing until a product needs it |
 | enrolment, pairing, certification ceremony, handoff | seven ways to add a device | adding a device: a code one of your devices approves |
 | document (as the unit), `workspace_documents`, document host | the storage format named as the thing | a resource |

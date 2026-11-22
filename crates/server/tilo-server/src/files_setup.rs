@@ -55,7 +55,7 @@ fn protected_identity(
     dir: &Path,
     person: [u8; 32],
 ) -> Result<tilo_identity::store::SigningIdentity> {
-    let record = tilo_identity_client::resolve_active_identity(dir)
+    let record = tilo_identity::store::resolve_active_identity(dir)
         .context("existing person identity is unavailable; do not create a replacement")?;
     let identity = tilo_identity::store::load_from_path(record).map_err(|e| {
         anyhow::anyhow!("open existing identity in its normal signing session: {e}")

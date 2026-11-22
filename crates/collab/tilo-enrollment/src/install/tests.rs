@@ -166,7 +166,7 @@ tilo_test_env::scenario! {
         // First use reads a selected joined identity as a finished join;
         // an interrupted commit has selected nothing yet.
         assert_eq!(
-            tilo_identity_client::resolve_active_identity(identity_dir.path()),
+            tilo_identity::store::resolve_active_identity(identity_dir.path()),
             None,
             "an unfinished join selected its identity"
         );
@@ -217,7 +217,7 @@ tilo_test_env::scenario! {
             vec![hex::encode(member.verifying_key().to_bytes())]
         );
         assert!(
-            tilo_identity_client::resolve_active_identity(identity_dir.path()).is_some(),
+            tilo_identity::store::resolve_active_identity(identity_dir.path()).is_some(),
             "the finished join selects its identity"
         );
         // What the runtime starts the identity from is the registry this
@@ -271,7 +271,7 @@ tilo_test_env::scenario! {
         // The joined identity is what this device acts for from the next
         // login on, not an absent default that asks to create one.
         assert_eq!(
-            tilo_identity_client::resolve_active_identity(identity_dir.path()),
+            tilo_identity::store::resolve_active_identity(identity_dir.path()),
             Some(record.clone())
         );
         let loaded = tilo_identity::store::load_from_path(record).unwrap();
@@ -478,7 +478,7 @@ tilo_test_env::scenario! {
         let record = install(identity_dir.path(), uid).unwrap();
         assert_eq!(std::fs::metadata(record).unwrap().uid(), uid);
         assert!(paths.device_cert.exists());
-        assert_eq!(tilo_identity_client::resolve_active_identity(identity_dir.path()), None);
+        assert_eq!(tilo_identity::store::resolve_active_identity(identity_dir.path()), None);
     }
 
 }

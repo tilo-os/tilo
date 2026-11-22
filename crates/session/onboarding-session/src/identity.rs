@@ -383,20 +383,17 @@ fn mint_into_with_paths(
 /// The account's active identity in `identity_dir`, resolved as every other
 /// consumer resolves it, with a typed reason when it cannot be read.
 ///
-/// Goes through `IdentityRecord` — the same type that wrote the file —
-/// so a record this build can't parse is an error, not a fingerprint that
-/// belongs to nothing.
+/// Goes through the store's `IdentityRecord` — the same type that wrote the
+/// file — so a record this build can't parse is an error, not a fingerprint
+/// that belongs to nothing.
 fn existing_identity_in(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
-    use crate::identity_provisioning::DiskIdentityStore;
-    use tilo_identity_ceremony::{IdentityFlowError, IdentityStore as _};
-
-    let path = tilo_identity_client::resolve_active_identity(identity_dir)
+    let path = tilo_identity::store::resolve_active_identity(identity_dir)
         .unwrap_or_else(|| identity_dir.join(crate::firstboot::PRIMARY_IDENTITY_FILE));
     let unreadable = |problem, error: &dyn fmt::Display| OnboardingError::Identity {
         problem,
         detail: format!("identity exists but is unreadable: {error}"),
     };
-    let record = match DiskIdentityStore::at(&path).load() {
+    let record = match tilo_identity::store::load_identity_file(&path) {
         Ok(Some(record)) => record,
         Ok(None) => {
             return Err(unreadable(
@@ -404,7 +401,7 @@ fn existing_identity_in(identity_dir: &Path) -> Result<MintedIdentity, Onboardin
                 &"the identity record is missing",
             ));
         }
-        Err(IdentityFlowError::Io(error)) => {
+        Err(error) => {
             return Err(match IdentityProblem::of(&error) {
                 Some(problem) => unreadable(problem, &error),
                 None => {
@@ -412,7 +409,6 @@ fn existing_identity_in(identity_dir: &Path) -> Result<MintedIdentity, Onboardin
                 }
             });
         }
-        Err(error) => return Err(unreadable(IdentityProblem::ChainInvalid, &error)),
     };
     Ok(MintedIdentity {
         fingerprint: hex::encode(record.threshold_identity.group_public_key),
@@ -426,13 +422,9 @@ fn existing_identity_in(identity_dir: &Path) -> Result<MintedIdentity, Onboardin
 /// startup; resuming first use must not accept a weaker file merely because
 /// no key operation is needed.
 pub fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String> {
-    use crate::identity_provisioning::DiskIdentityStore;
-    use tilo_identity_ceremony::IdentityStore as _;
-
-    let record = DiskIdentityStore::at(path)
-        .load()
-        .map_err(|e| e.to_string())?;
-    let record = record.ok_or_else(|| "the identity record is missing".to_string())?;
+    let record = tilo_identity::store::load_identity_file(path)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "the identity record is missing".to_string())?;
     Ok(MintedIdentity {
         fingerprint: hex::encode(record.threshold_identity.group_public_key),
         path: path.to_path_buf(),
@@ -465,11 +457,7 @@ pub fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
 /// key stays there. An unreadable record counts as holding one, so the ready
 /// screen keeps recommending a backup when in doubt.
 pub fn holds_no_identity_secret(path: &Path) -> bool {
-    use crate::identity_provisioning::DiskIdentityStore;
-    use tilo_identity_ceremony::IdentityStore as _;
-
-    DiskIdentityStore::at(path)
-        .load()
+    tilo_identity::store::load_identity_file(path)
         .ok()
         .flatten()
         .is_some_and(|record| {
@@ -651,7 +639,7 @@ mod tests {
                 )
                 .unwrap()
             );
-            let selected = tilo_identity_client::resolve_active_identity(&identity_dir).unwrap();
+            let selected = tilo_identity::store::resolve_active_identity(&identity_dir).unwrap();
             assert!(!identity_dir.join("primary.json").exists());
 
             let minted = mint_into_with_paths(&identity_dir, &system, false)

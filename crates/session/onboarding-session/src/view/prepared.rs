@@ -45,7 +45,7 @@ impl OnboardingView {
     /// explicit message instead of a generic failure.
     #[cfg(target_os = "linux")]
     fn load_peer_setup(&mut self, home: &Path, identity_dir: &Path) {
-        let active = tilo_identity_client::resolve_active_identity(identity_dir);
+        let active = tilo_identity::store::resolve_active_identity(identity_dir);
         let Some(system) = self.session.identity.clone() else {
             return;
         };
@@ -405,7 +405,7 @@ impl OnboardingView {
         let Some(directory) = self.identity_dir.clone() else {
             return;
         };
-        let active = tilo_identity_client::resolve_active_identity(&directory);
+        let active = tilo_identity::store::resolve_active_identity(&directory);
         if active.is_none() {
             return;
         }

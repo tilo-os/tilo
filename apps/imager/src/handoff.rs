@@ -782,7 +782,7 @@ mod tests {
             profile.user.username.trim()
         ));
         let target_record =
-            tilo_identity_client::resolve_active_identity(&target_identity).unwrap();
+            tilo_identity::store::resolve_active_identity(&target_identity).unwrap();
         let presentation = tilo_identity_client::load_metadata_from_path(&target_record).unwrap();
         assert_eq!(presentation.display_name, "Ada");
         assert_eq!(presentation.avatar_color, [3, 4, 5]);

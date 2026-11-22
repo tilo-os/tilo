@@ -1,4 +1,5 @@
 use super::*;
+use std::fs;
 use std::os::unix::fs::symlink;
 
 fn record(schema: u32) -> serde_json::Value {
@@ -81,39 +82,4 @@ tilo_test_env::scenario! {
         private(&path, &vec![b' '; 1024 * 1024 + 1]);
         assert!(load_metadata_from_path(&path).is_err());
     }
-}
-
-#[test]
-fn active_selector_is_confined_and_preserves_legacy_fallback() {
-    let dir = tempfile::tempdir().unwrap();
-    let primary = dir.path().join("primary.json");
-    let selected = dir.path().join("identity-ada.json");
-    let selector = dir.path().join("active");
-    private(&primary, &serde_json::to_vec(&record(1)).unwrap());
-    private(&selected, &serde_json::to_vec(&record(2)).unwrap());
-    assert_eq!(resolve_active_identity(dir.path()), Some(primary.clone()));
-    private(&selector, b"identity-ada\n");
-    assert_eq!(resolve_active_identity(dir.path()), Some(selected.clone()));
-    for invalid in [
-        b"../outside".as_slice(),
-        b"/outside",
-        b"",
-        b"Upper",
-        &[b'a'; 129],
-        &[0xff],
-    ] {
-        private(&selector, invalid);
-        assert_eq!(resolve_active_identity(dir.path()), Some(primary.clone()));
-    }
-    private(&selector, b"identity-ada");
-    fs::set_permissions(&selector, fs::Permissions::from_mode(0o644)).unwrap();
-    assert_eq!(resolve_active_identity(dir.path()), Some(primary.clone()));
-    fs::remove_file(&selector).unwrap();
-    symlink(&selected, &selector).unwrap();
-    assert_eq!(resolve_active_identity(dir.path()), Some(primary));
-    fs::remove_file(&selector).unwrap();
-    private(&selector, b"identity-ada");
-    fs::remove_file(&selected).unwrap();
-    symlink(dir.path().join("primary.json"), &selected).unwrap();
-    assert_eq!(resolve_active_identity(dir.path()), None);
 }

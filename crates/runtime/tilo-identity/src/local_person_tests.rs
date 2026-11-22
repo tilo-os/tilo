@@ -40,8 +40,7 @@ fn bound_device(root: &Path) -> (IdentityPaths, Account) {
 
 fn signer(account: &Account) -> crate::store::SigningIdentity {
     let dir = account.home.join(IDENTITY_DIR_IN_HOME);
-    crate::store::load_from_path(tilo_identity_client::resolve_active_identity(&dir).unwrap())
-        .unwrap()
+    crate::store::load_from_path(crate::store::resolve_active_identity(&dir).unwrap()).unwrap()
 }
 
 tilo_test_env::scenario! {

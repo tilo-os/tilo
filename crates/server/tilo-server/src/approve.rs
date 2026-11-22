@@ -194,7 +194,7 @@ fn open_person(document: &std::path::Path, root: &std::path::Path) -> anyhow::Re
 
 /// The person's signer for the host's questions.
 fn person_root(root: &std::path::Path) -> anyhow::Result<PersonSigner> {
-    let active = tilo_identity_client::resolve_active_identity(root).with_context(|| {
+    let active = tilo_identity::store::resolve_active_identity(root).with_context(|| {
         format!(
             "{} holds no person: run `tilo-approve person` first",
             root.display()

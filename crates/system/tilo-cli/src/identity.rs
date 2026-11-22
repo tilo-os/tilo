@@ -89,7 +89,7 @@ pub fn paths() -> IdentityPaths {
 
 /// The active identity's file, when this computer holds its root.
 fn root_identity() -> Option<PathBuf> {
-    let active = tilo_identity_client::resolve_active_identity(&dir().ok()?)?;
+    let active = tilo_identity::store::resolve_active_identity(&dir().ok()?)?;
     tilo_identity::store::load_metadata_from_path(&active)
         .is_ok_and(|metadata| metadata.single_device)
         .then_some(active)
@@ -99,23 +99,6 @@ fn root_identity() -> Option<PathBuf> {
 /// that reads it makes itself undumpable ([`held`]).
 pub fn holds_root() -> bool {
     root_identity().is_some()
-}
-
-/// The person an earlier tilo kept on this account, by their user public key,
-/// when it did: it kept their root as a file in `$XDG_STATE_HOME/tilo/identity`.
-/// Only the public key is read. That person comes back with their recovery
-/// words (`tilo login --recovery-key`), never as a new person made beside them.
-fn earlier() -> Result<Option<[u8; 32]>> {
-    let Some(dir) = tilo_paths::state_dir().map(|dir| dir.join("tilo/identity")) else {
-        return Ok(None);
-    };
-    if !dir.join("user-identity/privkey.bin").exists() {
-        return Ok(None);
-    }
-    let public = dir.join("user-identity/pubkey.bin");
-    tilo_device_identity::persist::read_public_key(&public)
-        .map(Some)
-        .map_err(|error| anyhow!("{} cannot be read: {error}", public.display()))
 }
 
 /// The person kept here, if this computer holds their root.
@@ -157,14 +140,6 @@ pub fn held() -> Result<Option<Person>> {
 pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
     let made = !holds_root();
     if made {
-        if let Some(earlier) = earlier()? {
-            bail!(
-                "This computer account holds a Tilo identity an earlier tilo kept: {}. \
-                 Sign in as that person with `tilo login --recovery-key` and their 24 words, \
-                 or use a computer account of its own for a new one.",
-                hex::encode(earlier)
-            );
-        }
         let dir = dir()?;
         // A person goes by the name they give, else by none until they give one: never their
         // computer's account name or a made-up one.
@@ -191,18 +166,6 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
 /// kept here, or the identity could not be written or certified.
 pub fn restore(words: &str) -> Result<Person> {
     let dir = dir()?;
-    if let Some(earlier) = earlier()?.filter(|_| !holds_root()) {
-        let words_are = tilo_identity::store::recovery_words_public_key(words)
-            .map_err(|problem| anyhow!("{problem}"))?;
-        if words_are != earlier {
-            bail!(
-                "This computer account holds another Tilo identity ({}), one an earlier tilo \
-                 kept, not the one these words are: sign in with that person's words, or use a \
-                 computer account of its own for this one.",
-                hex::encode(earlier)
-            );
-        }
-    }
     tilo_enrollment::install::restore_from_recovery_words(
         &dir,
         &paths(),
@@ -551,69 +514,6 @@ mod tests {
     }
 
     #[test]
-    fn a_person_an_earlier_tilo_kept_signs_in_again_with_their_words() {
-        use tilo_device_identity::persist::{write_public_key, write_signing_key};
-        let mut env = tilo_test_env::ScopedEnv::new();
-        let at = |env: &mut tilo_test_env::ScopedEnv, home: &std::path::Path| {
-            env.set("HOME", home)
-                .set("XDG_CONFIG_HOME", home.join("config"))
-                .set("XDG_STATE_HOME", home.join("state"))
-                .set("TILO_IDENTITY_ROOT", home.join("system"))
-                .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-        };
-        // Ada, as a session keeps her, for her words; and Bea's words.
-        let first = tempfile::tempdir().unwrap();
-        at(&mut env, first.path());
-        let (ada, _) = ensure(Some("Ada")).unwrap();
-        let active = tilo_identity_client::resolve_active_identity(&dir().unwrap()).unwrap();
-        let words = tilo_identity::store::recovery_words(&active).unwrap();
-        let other = tempfile::tempdir().unwrap();
-        at(&mut env, other.path());
-        ensure(Some("Bea")).unwrap();
-        let active = tilo_identity_client::resolve_active_identity(&dir().unwrap()).unwrap();
-        let bea_words = tilo_identity::store::recovery_words(&active).unwrap();
-
-        // A computer account where an earlier tilo kept Ada: her root and her
-        // public key as files in its state folder.
-        let home = tempfile::tempdir().unwrap();
-        at(&mut env, home.path());
-        let earlier = home.path().join("state/tilo/identity");
-        let keys = IdentityPaths::under(&earlier);
-        keys.ensure_directories().unwrap();
-        write_public_key(&keys.user_pubkey, &ada.public_key()).unwrap();
-        write_signing_key(
-            &earlier.join("user-identity/privkey.bin"),
-            &SigningKey::from_bytes(&[7; 32]),
-        )
-        .unwrap();
-        assert!(!holds_root(), "the session holds no one yet");
-
-        // No new person is made beside her: the refusal names her.
-        let refused = ensure(Some("Someone")).err().expect("a second person");
-        assert!(refused.to_string().contains(&ada.user()), "{refused:#}");
-        assert!(
-            refused.to_string().contains("--recovery-key"),
-            "{refused:#}"
-        );
-        // Someone else's words are refused too, naming her.
-        let refused = restore(&bea_words).err().expect("another person's words");
-        assert!(refused.to_string().contains(&ada.user()), "{refused:#}");
-        assert!(!holds_root());
-
-        // Her words make the account hers again, with a device its own.
-        let restored = restore(&words).unwrap();
-        assert_eq!(restored.public_key(), ada.public_key(), "the same person");
-        tilo_user_identity::verify_device_cert(&restored.cert).unwrap();
-        let profile = tilo_identity::registry::identity_for_workspace("any")
-            .unwrap()
-            .expect("the session's registry names her");
-        assert_eq!(profile.user_public_key, ada.public_key());
-        let (again, made) = ensure(None).unwrap();
-        assert!(!made, "she is kept");
-        assert_eq!(again.public_key(), ada.public_key());
-    }
-
-    #[test]
     fn a_person_restored_from_their_recovery_words_is_who_they_were() {
         let mut env = tilo_test_env::ScopedEnv::new();
         let at = |env: &mut tilo_test_env::ScopedEnv, home: &std::path::Path| {
@@ -625,12 +525,12 @@ mod tests {
         let first = tempfile::tempdir().unwrap();
         at(&mut env, first.path());
         let (ada, _) = ensure(Some("Ada")).unwrap();
-        let active = tilo_identity_client::resolve_active_identity(&dir().unwrap()).unwrap();
+        let active = tilo_identity::store::resolve_active_identity(&dir().unwrap()).unwrap();
         let words = tilo_identity::store::recovery_words(&active).unwrap();
         let other = tempfile::tempdir().unwrap();
         at(&mut env, other.path());
         ensure(Some("Bea")).unwrap();
-        let active = tilo_identity_client::resolve_active_identity(&dir().unwrap()).unwrap();
+        let active = tilo_identity::store::resolve_active_identity(&dir().unwrap()).unwrap();
         let bea_words = tilo_identity::store::recovery_words(&active).unwrap();
 
         // A computer account with nothing of Tilo on it: the words make it Ada's again, with a

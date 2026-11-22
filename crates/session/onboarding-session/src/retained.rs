@@ -44,7 +44,7 @@ pub fn read_private(path: &Path) -> io::Result<Vec<u8>> {
 }
 fn active_key() -> io::Result<[u8; 32]> {
     let directory = tilo_identity::store::identity_dir_from_env()?;
-    let active = tilo_identity_client::resolve_active_identity(&directory).ok_or_else(failure)?;
+    let active = tilo_identity::store::resolve_active_identity(&directory).ok_or_else(failure)?;
     tilo_identity::store::load_from_path(active)
         .map(|signer| signer.group_public_key())
         .map_err(|_| failure())

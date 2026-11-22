@@ -620,10 +620,10 @@ fn set_private_dir_mode(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::IdentityRecord;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     use threshold_identity::ThresholdIdentity;
-    use tilo_identity_ceremony::IdentityRecord;
 
     fn record(name: &str, seed: u8) -> IdentityRecord {
         let identity = ThresholdIdentity::from_single_device_seed(&[seed; 32]);
@@ -841,7 +841,7 @@ mod tests {
 
         phase recovery_words_restore_a_minted_identity_on_another_computer;
         {
-            use tilo_identity_ceremony::IdentityRecord;
+            use crate::store::IdentityRecord;
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(crate::store::FILE_SECRETS_ENV, "1");
             let original = tempfile::tempdir().expect("original");

@@ -355,7 +355,7 @@ impl PreparedIdentity {
         // identity signs through this session's active root record, which the signer rechecks.
         let record_path = if self.current.is_some() {
             let directory = tilo_identity::store::identity_dir_from_env()?;
-            tilo_identity_client::resolve_active_identity(&directory).ok_or_else(|| {
+            tilo_identity::store::resolve_active_identity(&directory).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
                     "This identity's active root is unavailable",

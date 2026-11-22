@@ -163,7 +163,7 @@ fn rename_to(session: &mut Session, name: &str) {
 /// yet, so the card has a name to ask for.
 fn make_the_identity_unnamed(home: &tilo_test_env::TestHome) {
     let dir = home.config().join("tilo").join("identity");
-    let identity = tilo_identity_client::resolve_active_identity(&dir).expect("an active identity");
+    let identity = tilo_identity::store::resolve_active_identity(&dir).expect("an active identity");
     let id = identity
         .file_stem()
         .and_then(std::ffi::OsStr::to_str)

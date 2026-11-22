@@ -430,7 +430,7 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     assert_eq!(complete.record_path, complete.resource_path);
     assert_eq!(
         complete.record_path,
-        tilo_identity_client::resolve_active_identity(&recipient_identities)
+        tilo_identity::store::resolve_active_identity(&recipient_identities)
     );
     assert!(complete.record_path.is_some());
 

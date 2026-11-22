@@ -605,7 +605,7 @@ impl ThisComputer {
         let key = persist::load_device_key(&paths).expect("this device's key");
         let cert =
             persist::read_device_cert(&paths.device_cert).expect("this device's certificate");
-        let record = tilo_identity_client::resolve_active_identity(&identity_dir)
+        let record = tilo_identity::store::resolve_active_identity(&identity_dir)
             .expect("this identity's record");
         let root = tilo_identity::store::load_from_path(record)
             .expect("the person's root signs on this box");

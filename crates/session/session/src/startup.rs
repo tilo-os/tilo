@@ -19,7 +19,7 @@ use tilo_device_identity::IdentityPaths;
 use tilo_onboarding_session::firstboot;
 use tilo_onboarding_session::identity::IdentityProblem;
 use tilo_onboarding_session::identity_provisioning::{
-    DiskIdentityStore, IDENTITY_RECOVERY_ENV, is_secret_service_unavailable, needs_first_run_flow,
+    IDENTITY_RECOVERY_ENV, is_secret_service_unavailable, needs_first_run_flow,
 };
 use tilo_onboarding_session::view::OnboardingView;
 use tilo_user_identity::CertificateClockError;
@@ -140,21 +140,21 @@ pub fn command(args: &[String]) -> Result<Option<Command>, String> {
 /// control, whose identity setup differs from the image's.
 pub fn run(command: Command, host_desktop: bool) -> std::process::ExitCode {
     use std::process::ExitCode;
-    let store = match DiskIdentityStore::from_env() {
-        Ok(store) => store,
+    let identity_path = match tilo_identity::store::active_identity_path() {
+        Ok(path) => path,
         Err(error) => {
             eprintln!("identity verification failed: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let Some(identity_dir) = store.path().parent() else {
+    let Some(identity_dir) = identity_path.parent() else {
         eprintln!("identity verification failed: primary identity has no parent directory");
         return ExitCode::FAILURE;
     };
     let paths = firstboot::collaboration_identity_paths();
     match command {
         Command::Verify => verify_only(identity_dir, &paths),
-        Command::Provision => provision(&store, identity_dir, &paths, host_desktop),
+        Command::Provision => provision(&identity_path, identity_dir, &paths, host_desktop),
         Command::PairDevice(file) => match pair_device_from_file(identity_dir, &file) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -278,13 +278,13 @@ fn verify_only(identity_dir: &Path, paths: &IdentityPaths) -> std::process::Exit
 /// is never replaced: this repairs a missing or damaged chain, it does not mint a second person
 /// onto a used machine.
 fn provision(
-    store: &DiskIdentityStore,
+    identity_path: &Path,
     identity_dir: &Path,
     paths: &IdentityPaths,
     host_desktop: bool,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
-    if needs_first_run_flow(store) {
+    if needs_first_run_flow(identity_path) {
         let provisioned = if host_desktop {
             firstboot::ensure_collaboration_identity_for_legacy_linux_host(identity_dir, paths)
         } else {
@@ -327,17 +327,17 @@ pub fn identity() -> Identity {
     if let Err(error) = tilo_onboarding_session::identity_provisioning::complete_enrolled_device() {
         tracing::warn!(%error, "the enrolled device could not take up its identity");
     }
-    let store = match DiskIdentityStore::from_env() {
-        Ok(store) => store,
+    let identity_path = match tilo_identity::store::active_identity_path() {
+        Ok(path) => path,
         Err(error) => return Identity::Refused(format!("no identity store: {error}")),
     };
-    if needs_first_run_flow(&store) {
+    if needs_first_run_flow(&identity_path) {
         // No record at all, or one that does not even parse: setup asks the person for an identity
         // and validates what is there before it writes anything, so nothing here has to decide for
         // them.
         return Identity::Shell;
     }
-    let Some(identity_dir) = store.path().parent() else {
+    let Some(identity_dir) = identity_path.parent() else {
         return Identity::Refused("primary identity has no parent directory".to_owned());
     };
     match verify_now(identity_dir) {
@@ -398,16 +398,20 @@ pub fn before_shell(identity: &Identity, host_desktop: bool) -> Option<BeforeShe
 #[must_use]
 pub(crate) fn setup_due_now(host_desktop: bool) -> Option<OnboardingView> {
     use crate::firstboot::setup_due;
-    let store = match DiskIdentityStore::from_env() {
-        Ok(store) => store,
+    let identity_path = match tilo_identity::store::active_identity_path() {
+        Ok(path) => path,
         Err(error) => {
-            tracing::warn!(%error, "no identity store to set up");
+            tracing::warn!(%error, "no identity record to set up");
             return None;
         }
     };
     let recovery = std::env::var_os(IDENTITY_RECOVERY_ENV).is_some();
-    let identity_dir = store.path().parent()?.to_path_buf();
-    if !setup_due(needs_first_run_flow(&store), recovery, &identity_dir) {
+    let identity_dir = identity_path.parent()?.to_path_buf();
+    if !setup_due(
+        needs_first_run_flow(&identity_path),
+        recovery,
+        &identity_dir,
+    ) {
         return None;
     }
     Some(match (host_desktop, recovery) {

@@ -40,6 +40,8 @@ pub use secure_store::{
 };
 pub use tilo_identity_client::PortableBackupInfo;
 
+pub use ondisk::{IdentityRecord, SerializableIdentity};
+
 #[cfg(test)]
 use crate::store::test_wire::{read_frame, write_frame};
 #[cfg(test)]
@@ -237,6 +239,17 @@ pub fn resolve_active_identity(dir: &std::path::Path) -> Option<PathBuf> {
     let path = identity_path(dir, &id).ok()?;
     let meta = fs::symlink_metadata(&path).ok()?;
     (meta.file_type().is_file() && !meta.file_type().is_symlink()).then_some(path)
+}
+
+/// The record this account's session starts from: the identity the active
+/// selector names, else the legacy `primary.json`.
+///
+/// # Errors
+///
+/// Fails when the environment names no absolute identity directory.
+pub fn active_identity_path() -> io::Result<PathBuf> {
+    let dir = identity_dir_from_env()?;
+    Ok(resolve_active_identity(&dir).unwrap_or_else(|| dir.join("primary.json")))
 }
 
 fn read_private_selector(path: &std::path::Path) -> io::Result<String> {
@@ -785,9 +798,13 @@ pub fn remove_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
 
 mod ondisk {
     use std::fmt;
+    use std::io;
+    use std::time::SystemTime;
 
+    use collab_types::Ed25519PublicKey;
     use serde::de::{SeqAccess, Visitor};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use threshold_identity::ThresholdIdentity;
     use zeroize::Zeroizing;
 
     use super::SecretReference;
@@ -808,6 +825,96 @@ mod ondisk {
     }
 
     impl IdentityRecord {
+        /// The record a newly minted single-device identity is written as.
+        ///
+        /// # Errors
+        ///
+        /// Fails if the threshold engine cannot export the device share. The
+        /// result holds that share and must be treated as secret material.
+        pub fn from_threshold_identity(
+            identity: &ThresholdIdentity,
+            display_name: impl Into<String>,
+            avatar_color: [u8; 3],
+            created_at: SystemTime,
+        ) -> io::Result<Self> {
+            let (single_device, secret_bytes) = if let Some(seed) = identity.single_device_seed() {
+                (true, seed.to_vec())
+            } else {
+                (
+                    false,
+                    identity
+                        .export_device_secret()
+                        .map_err(io::Error::other)?
+                        .to_vec(),
+                )
+            };
+            let ts = created_at
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .ok()
+                .and_then(|since| i64::try_from(since.as_secs()).ok())
+                .and_then(|secs| jiff::Timestamp::from_second(secs).ok())
+                .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+            Ok(Self {
+                profile_photo: None,
+                display_name: display_name.into(),
+                avatar_color,
+                threshold_identity: SerializableIdentity {
+                    single_device,
+                    group_public_key: *identity.group_public_key().as_bytes(),
+                    threshold: identity.threshold,
+                    total_shares: identity.total_shares,
+                    share_index: identity.this_share_index,
+                    secret_bytes: Zeroizing::new(secret_bytes),
+                },
+                created_at: format!("{ts:.0}"),
+                schema_version: 1,
+                secret_ref: None,
+            })
+        }
+
+        /// The identity's public key, the actor every resource it owns names.
+        #[must_use]
+        pub fn public_key(&self) -> Ed25519PublicKey {
+            Ed25519PublicKey::from_bytes(self.threshold_identity.group_public_key)
+        }
+
+        /// The record as the bytes `primary.json` holds.
+        ///
+        /// # Errors
+        ///
+        /// Fails if the record cannot be serialized, which for this shape
+        /// only happens on a serializer failure.
+        pub fn to_json_bytes(&self) -> io::Result<Vec<u8>> {
+            serde_json::to_vec_pretty(self).map_err(io::Error::other)
+        }
+
+        /// Decode a record written by any reader of this store. Accepts the
+        /// legacy plaintext schema 1 and the secured metadata schema 2, and
+        /// rejects future layouts so no reader reinterprets key material.
+        ///
+        /// # Errors
+        ///
+        /// Fails if `bytes` are not a record, or its `schema_version` is not
+        /// one this store knows.
+        pub fn from_json_bytes(bytes: &[u8]) -> io::Result<Self> {
+            let record: Self = serde_json::from_slice(bytes).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("identity record could not be decoded: {error}"),
+                )
+            })?;
+            if !matches!(record.schema_version, 1 | 2) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "unknown identity record schema version: {}",
+                        record.schema_version
+                    ),
+                ));
+            }
+            Ok(record)
+        }
+
         pub fn protection(&self) -> KeyProtection {
             if super::is_public_member_projection(self) {
                 return KeyProtection::DeviceCertificate;
@@ -1520,6 +1627,21 @@ fn read_record(path: &std::path::Path) -> io::Result<ondisk::IdentityRecord> {
     parse_record(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
 }
 
+/// The record at `path`, read with the validation every consumer of the
+/// identity directory applies: a private user-owned regular file, no
+/// symlink, bounded size, a known schema. A missing file is no record.
+///
+/// # Errors
+///
+/// Fails when a record exists but may not be read or decoded.
+pub fn load_identity_file(path: &std::path::Path) -> io::Result<Option<IdentityRecord>> {
+    match read_record(path) {
+        Ok(record) => Ok(Some(record)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn identity_from_record(
     record: ondisk::IdentityRecord,
     external_secret: Option<&[u8]>,
@@ -1631,6 +1753,92 @@ fn is_public_member_projection(record: &ondisk::IdentityRecord) -> bool {
 mod tests {
     use super::*;
     use getrandom::{SysRng, rand_core::UnwrapErr};
+
+    tilo_test_env::scenario! {
+        fn a_minted_identity_round_trips_and_signs_for_itself;
+
+        phase json_round_trip_keeps_presentation_and_public_key;
+        {
+            let mut rng = UnwrapErr(SysRng);
+            let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let rec = IdentityRecord::from_threshold_identity(
+                &id,
+                "alice",
+                [248, 113, 113],
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100),
+            )
+            .unwrap();
+            let back = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
+            assert_eq!(back.display_name, "alice");
+            assert_eq!(back.avatar_color, [248, 113, 113]);
+            assert_eq!(
+                back.public_key().as_bytes(),
+                id.group_public_key().as_bytes()
+            );
+        }
+
+        // The property that makes a minted identity an identity: the secret
+        // written to disk must sign for the public key written next to it.
+        // Loads the way every consumer does — expand the stored bytes with
+        // `SigningKey::from_bytes` — asserting the on-disk contract, rather
+        // than an in-process handle.
+        phase the_recorded_secret_signs_for_the_recorded_public_key;
+        {
+            use ed25519_dalek::{Verifier, VerifyingKey};
+
+            let mut rng = UnwrapErr(SysRng);
+            let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let rec = IdentityRecord::from_threshold_identity(
+                &id,
+                "alice",
+                [248, 113, 113],
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100),
+            )
+            .unwrap();
+            let on_disk = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
+
+            let seed: [u8; 32] = on_disk
+                .threshold_identity
+                .secret_bytes
+                .as_slice()
+                .try_into()
+                .expect("secret_bytes must be exactly 32 bytes");
+            let sk = SigningKey::from_bytes(&seed);
+
+            assert_eq!(
+                sk.verifying_key().to_bytes(),
+                on_disk.threshold_identity.group_public_key,
+                "the recorded secret must derive the recorded public key"
+            );
+
+            let msg = b"an op minted by a new identity";
+            let sig = sk.sign(msg);
+            let vk =
+                VerifyingKey::from_bytes(&on_disk.threshold_identity.group_public_key).unwrap();
+            vk.verify(msg, &sig)
+                .expect("a minted identity must be able to sign for itself");
+        }
+
+        phase unknown_schema_version_is_refused;
+        {
+            let body = r#"{
+            "display_name": "x",
+            "avatar_color": [0, 0, 0],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                "threshold": 1,
+                "total_shares": 1,
+                "share_index": 1,
+                "secret_bytes": []
+            },
+            "created_at": "now",
+            "schema_version": 99
+        }"#;
+            let error = IdentityRecord::from_json_bytes(body.as_bytes()).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
+    }
 
     tilo_test_env::scenario! {
         fn public_profile_edits_keep_signer_and_ownership;

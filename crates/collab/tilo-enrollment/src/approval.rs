@@ -318,7 +318,8 @@ fn personal_display_name(
 ) -> Option<String> {
     use tilo_identity::person_files::as_person;
     use tilo_identity::provisioning::is_throwaway_test_display_name;
-    use tilo_identity_client::{load_metadata_from_path, resolve_active_identity};
+    use tilo_identity::store::resolve_active_identity;
+    use tilo_identity_client::load_metadata_from_path;
 
     as_person(person_uid, directory, || {
         let name = resolve_active_identity(directory).and_then(|record| {

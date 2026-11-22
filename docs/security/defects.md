@@ -44,17 +44,16 @@ ceremony-minted identities are not, with the same on-disk format and no way to t
 branch, and make the mismatch fatal in the identity store rather than advisory.
 
 **Resolved.** `ThresholdIdentity` holds the single-device key in dalek form and exports its seed;
-the ceremony persists that seed, and `IdentityRecord::into_threshold_identity` refuses a record
-whose secret does not derive its recorded public key. The mismatch is fatal in the identity store
-in every build profile. Firstboot now goes through the same encoder, so there is one writer of
-the format. Held by
-`crates/collab/tilo-identity-ceremony/src/lib.rs::tests::identity_record_serialization_and_signing_round_trips`
-(phase `ceremony_minted_record_signs_for_its_own_recorded_public_key`)
+the identity store persists that seed, and its record loader refuses a record whose secret does
+not derive its recorded public key. The mismatch is fatal in the identity store in every build
+profile. Firstboot goes through the same encoder, so there is one writer of the format. Held by
+`crates/runtime/tilo-identity/src/store/unix.rs::tests::the_record_of_a_minted_identity_round_trips_and_signs_for_itself`
+(phase `the_recorded_secret_signs_for_the_recorded_public_key`)
 and
 `crates/runtime/tilo-identity/src/store/unix.rs::tests::a_local_secret_must_derive_the_recorded_key_to_sign`
 (phase `secret_that_does_not_derive_the_recorded_pubkey_is_refused`).
 The `identity_flow` widget cited above no longer exists; the record encoder is
-`crates/collab/tilo-identity-ceremony/src/lib.rs` (`IdentityRecord::into_threshold_identity`).
+`crates/runtime/tilo-identity/src/store/unix.rs` (`IdentityRecord::from_threshold_identity`).
 
 ---
 

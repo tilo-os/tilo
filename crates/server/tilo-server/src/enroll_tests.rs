@@ -254,7 +254,7 @@ tilo_test_env::scenario! {
             tilo_device_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
             user
         );
-        let record = tilo_identity_client::resolve_active_identity(identity_dir.path()).unwrap();
+        let record = tilo_identity::store::resolve_active_identity(identity_dir.path()).unwrap();
         let record = tilo_identity::store::load_from_path(record).unwrap();
         assert_eq!(record.group_public_key(), user);
         assert!(record.sign(b"root-only operation").is_err());
@@ -895,7 +895,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     .unwrap();
     assert_eq!(peers.len(), 1);
     assert_eq!(peers[0].server_node_id, hex::encode([43; 32]));
-    let record = tilo_identity_client::resolve_active_identity(new_identities.path()).unwrap();
+    let record = tilo_identity::store::resolve_active_identity(new_identities.path()).unwrap();
     let identity = tilo_identity::store::load_from_path(record).unwrap();
     assert!(
         identity

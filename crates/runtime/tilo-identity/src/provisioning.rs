@@ -10,11 +10,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
+use crate::store::IdentityRecord;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
 use tilo_device_identity::persist::DeviceKeyOwnership;
 use tilo_device_identity::{IdentityPaths, persist};
-use tilo_identity_ceremony::IdentityRecord;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 use zeroize::{Zeroize, Zeroizing};
@@ -145,8 +145,8 @@ pub fn login_account_display_name() -> String {
 }
 
 /// File name for the primary single-device identity record. Matches
-/// what the runtime identity broker migrates and what `DiskIdentityStore`
-/// writes via the UI's identity-flow ceremony.
+/// what the runtime identity broker migrates and what the identity store
+/// writes when setup mints the person.
 pub const PRIMARY_IDENTITY_FILE: &str = "primary.json";
 /// The id of [`PRIMARY_IDENTITY_FILE`] in the store.
 const PRIMARY_IDENTITY_ID: &str = "primary";
@@ -321,13 +321,10 @@ fn import_whole_identity(
         display_name,
         avatar_color,
         std::time::SystemTime::now(),
-    )
-    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    )?;
     let encoded = record.to_json_bytes();
     record.threshold_identity.secret_bytes.zeroize();
-    let bytes = Zeroizing::new(
-        encoded.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?,
-    );
+    let bytes = Zeroizing::new(encoded?);
     import_primary_identity(identity_dir, &bytes, storage)
 }
 
@@ -361,11 +358,8 @@ fn ensure_primary_identity_in_context(
         &display_name,
         crate::store::DEFAULT_AVATAR_COLOR,
         std::time::SystemTime::now(),
-    )
-    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    let bytes = record
-        .to_json_bytes()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    )?;
+    let bytes = record.to_json_bytes()?;
 
     import_primary_identity(identity_dir, &bytes, storage)?;
     Ok(ProvisionOutcome::Created { pubkey_hex })
@@ -500,7 +494,7 @@ pub fn complete_enrolled_device(
         )?;
         tilo_files::native::atomic::write_with_mode(&record_path, &record, 0o600)?;
     }
-    if tilo_identity_client::resolve_active_identity(identity_dir).is_none() {
+    if crate::store::resolve_active_identity(identity_dir).is_none() {
         tilo_files::native::atomic::write_with_mode(
             &identity_dir.join("active"),
             format!("{record_id}\n").as_bytes(),
@@ -586,7 +580,7 @@ fn mint_throwaway_test_identity(
     validate_throwaway_identity_paths(paths)?;
     prepare_identity_directory(identity_dir)?;
     let marker = identity_dir.join(THROWAWAY_TEST_IDENTITY_MARKER);
-    if tilo_identity_client::resolve_active_identity(identity_dir).is_some() {
+    if crate::store::resolve_active_identity(identity_dir).is_some() {
         if !marker.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -742,10 +736,10 @@ fn ensure_collaboration_identity_in_context(
             // the join, or a config tree reset while the enrollment
             // survived. Take the person up again here rather than report an
             // identity that nothing can read.
-            if tilo_identity_client::resolve_active_identity(identity_dir).is_none() {
+            if crate::store::resolve_active_identity(identity_dir).is_none() {
                 complete_enrolled_device(identity_dir, paths, now_ns)?;
             }
-            if let Some(record) = tilo_identity_client::resolve_active_identity(identity_dir)
+            if let Some(record) = crate::store::resolve_active_identity(identity_dir)
                 && let Ok(signer) = crate::store::load_from_path(record)
             {
                 prove_local_person(identity_dir, &signer, paths);
@@ -758,7 +752,7 @@ fn ensure_collaboration_identity_in_context(
 
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     let (selected_path, outcome) =
-        if let Some(path) = tilo_identity_client::resolve_active_identity(identity_dir) {
+        if let Some(path) = crate::store::resolve_active_identity(identity_dir) {
             if context != IdentityProvisioningContext::LegacyLinuxHost {
                 protect_identity_record_at(identity_dir, &path, storage)?;
             }
@@ -938,7 +932,7 @@ fn read_claimed_owner(path: &Path) -> io::Result<[u8; 32]> {
 /// Only public material is read — the active record's metadata, the owner
 /// claim and the certificate — so the answer needs no unlocked secret.
 pub fn active_identity_owns_device(identity_dir: &Path, paths: &IdentityPaths) -> io::Result<bool> {
-    let Some(record) = tilo_identity_client::resolve_active_identity(identity_dir) else {
+    let Some(record) = crate::store::resolve_active_identity(identity_dir) else {
         return Ok(false);
     };
     if !paths.user_pubkey.exists() {
@@ -1112,7 +1106,7 @@ pub fn verify_collaboration_identity(
     // follow the same resolver as provisioning/runtime startup or a freshly
     // imported host identity is created successfully and then immediately
     // reported missing.
-    let primary_path = tilo_identity_client::resolve_active_identity(identity_dir)
+    let primary_path = crate::store::resolve_active_identity(identity_dir)
         .unwrap_or_else(|| identity_dir.join(PRIMARY_IDENTITY_FILE));
     #[cfg(unix)]
     {
@@ -1232,7 +1226,7 @@ pub fn create_person(
     device_label: &str,
     storage: IdentityStorage,
 ) -> io::Result<[u8; 32]> {
-    if let Some(existing) = tilo_identity_client::resolve_active_identity(identity_dir) {
+    if let Some(existing) = crate::store::resolve_active_identity(identity_dir) {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!(
@@ -1547,7 +1541,7 @@ mod tests {
             // record: an `Existing` with nothing to resolve strands the session
             // in recovery although the enrollment is sound.
             let held_by_account = || {
-                let record = tilo_identity_client::resolve_active_identity(&identity_dir)
+                let record = crate::store::resolve_active_identity(&identity_dir)
                     .expect("the joined person has a record the account resolves");
                 tilo_identity_client::load_metadata_from_path(&record)
                     .unwrap()

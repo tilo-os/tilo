@@ -2412,12 +2412,11 @@ fn snapshot(compositor: &mut Compositor, path: &str) -> Result<(), (&'static str
 /// real identity is never replaced; a release build mints none.
 fn provision_test_identity() -> Json {
     use tilo_identity::provisioning::{ProvisionOutcome, THROWAWAY_TEST_IDENTITY_NAME};
-    let store = match tilo_onboarding_session::identity_provisioning::DiskIdentityStore::from_env()
-    {
-        Ok(store) => store,
+    let identity_path = match tilo_identity::store::active_identity_path() {
+        Ok(path) => path,
         Err(error) => return refusal("provision_failed", &format!("no identity store: {error}")),
     };
-    let Some(identity_dir) = store.path().parent() else {
+    let Some(identity_dir) = identity_path.parent() else {
         return refusal("provision_failed", "the identity store has no directory");
     };
     match tilo_onboarding_session::firstboot::ensure_throwaway_test_identity(

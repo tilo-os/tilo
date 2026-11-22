@@ -904,7 +904,7 @@ impl Person {
             IdentityStorage::Files,
         )
         .expect("this person's identity");
-        let record = tilo_identity_client::resolve_active_identity(&identity_dir)
+        let record = tilo_identity::store::resolve_active_identity(&identity_dir)
             .expect("the identity this machine provisioned for the person");
         let root = tilo_identity::store::load_from_path(record).expect("the person's root key");
         Self {

@@ -71,7 +71,7 @@ fn read_present() -> Present {
             photo: None,
         };
     };
-    let Some(record) = tilo_identity_client::resolve_active_identity(&directory) else {
+    let Some(record) = tilo_identity::store::resolve_active_identity(&directory) else {
         return Present {
             identity: None,
             photo: None,

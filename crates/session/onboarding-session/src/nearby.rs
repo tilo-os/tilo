@@ -326,7 +326,7 @@ fn read_status(status_path: &Path, identity_dir: &Path, final_look: bool) -> Sta
         _ => None,
     };
     let active = final_look
-        .then(|| tilo_identity_client::resolve_active_identity(identity_dir))
+        .then(|| tilo_identity::store::resolve_active_identity(identity_dir))
         .flatten()
         .and_then(|path| verified(identity_dir, &path, None));
     StatusRead {

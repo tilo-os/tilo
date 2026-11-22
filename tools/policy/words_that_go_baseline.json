@@ -1937,17 +1937,15 @@
   ],
   "lines": 0
  },
- "ceremony, tilo-identity-ceremony": {
+ "ceremony": {
   "names": [
    "CEREMONY",
    "Ceremony",
    "ceremony",
-   "ceremony_minted_record_signs_for_its_own_recorded_public_key",
    "certification_ceremony",
    "finish_ceremony",
    "release_ceremony",
-   "test_the_ceremony_refuses_what_it_must_not_issue",
-   "tilo_identity_ceremony"
+   "test_the_ceremony_refuses_what_it_must_not_issue"
   ],
   "lines": 0
  },
@@ -3801,7 +3799,6 @@
    "a_legacy_package_opens_in_the_certified_profile",
    "a_legacy_viewer_pins_h264_and_its_departure_allows_a_switch",
    "account_credentials_adopts_legacy_entries_and_preserves_settings_interoperability",
-   "active_selector_is_confined_and_preserves_legacy_fallback",
    "an_app_keeping_chains_preserves_legacy_queue_compatibility",
    "an_explicit_retained_password_keeps_the_legacy_encrypted_route",
    "assert_legacy_wrappers",

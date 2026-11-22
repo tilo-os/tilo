@@ -80,10 +80,7 @@ impl Machine {
 /// The record the session resolves for this account: what it reads before it decides whether the
 /// shell opens.
 fn record() -> PathBuf {
-    tilo_onboarding_session::identity_provisioning::DiskIdentityStore::from_env()
-        .expect("the identity store")
-        .path()
-        .to_path_buf()
+    tilo_identity::store::active_identity_path().expect("the identity record path")
 }
 
 /// A machine whose person enrolled this device: an identity provisioned the way the installer and

@@ -51,7 +51,7 @@ impl Peer {
         let Some(handoff) = tilo_handoff::read_descriptor(home)? else {
             return Ok(None);
         };
-        if tilo_identity_client::resolve_active_identity(identity_dir).is_some()
+        if tilo_identity::store::resolve_active_identity(identity_dir).is_some()
             || match tilo_identity::store::list_identities(identity_dir) {
                 Ok(identities) => !identities.is_empty(),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
@@ -93,7 +93,7 @@ impl Peer {
         let Some(handoff) = tilo_handoff::read_descriptor(home)? else {
             return Ok(None);
         };
-        if tilo_identity_client::resolve_active_identity(identity_dir).is_none() {
+        if tilo_identity::store::resolve_active_identity(identity_dir).is_none() {
             return Ok(None);
         }
         let paths = tilo_device_identity::persist::IdentityPaths::under(identity_root);

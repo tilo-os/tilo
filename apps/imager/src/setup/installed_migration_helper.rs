@@ -26,7 +26,7 @@ fn failure() -> io::Error {
 fn current_person() -> [u8; 32] {
     tilo_identity::store::identity_dir_from_env()
         .ok()
-        .and_then(|directory| tilo_identity_client::resolve_active_identity(&directory))
+        .and_then(|directory| tilo_identity::store::resolve_active_identity(&directory))
         .and_then(|active| tilo_identity::store::load_from_path(active).ok())
         .map_or([0; 32], |signer| signer.group_public_key())
 }

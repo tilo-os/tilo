@@ -47,7 +47,7 @@ fn authorized_device(identity: &Path, certificate: &[u8]) -> io::Result<([u8; 32
     if !tilo_identity::provisioning::active_identity_owns_device(identity, &paths)? {
         return Err(failure());
     }
-    let active = tilo_identity_client::resolve_active_identity(identity).ok_or_else(failure)?;
+    let active = tilo_identity::store::resolve_active_identity(identity).ok_or_else(failure)?;
     let metadata = tilo_identity_client::load_metadata_from_path(&active).map_err(|_| failure())?;
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .map_err(|_| failure())?;

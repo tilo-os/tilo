@@ -259,7 +259,6 @@
   "tilo-server-account": {"libraries": 1038943, "tests": 21000664},
   "tilo-host-search": {"libraries": 478298, "tests": 3289728},
   "tilo-identity-authority": {"libraries": 285646, "tests": 146795168},
-  "tilo-identity-ceremony": {"libraries": 1044320, "tests": 13765232},
   "tilo-identity-client": {"libraries": 3481897, "tests": 19151696},
   "tilo-identity": {"libraries": 13745348, "tests": 161545624},
   "tilo-image-codec": {"libraries": 2363874, "tests": 13880416},
