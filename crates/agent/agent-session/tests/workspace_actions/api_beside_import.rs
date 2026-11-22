@@ -1,12 +1,16 @@
 //! A key's calls while an import goes on in the same workspace: Ada's logged-in computer writes
 //! spreadsheets into the workspace as fast as it reads them in, one new sheet after another, and
 //! her backend's key lists her tasks, her contacts and her folder all the while, through the API
-//! server as `tilo ls -w` asks it. The sheets are another app's writes: every listing answers at
-//! once, the last as fast as the first, and a folder of more files than a page holds lists whole,
-//! never "kept changing" for writes to Sheets.
+//! server as `tilo ls -w` asks it. The sheets are another app's writes: every listing answers
+//! whole, and a folder of more files than a page holds lists whole, never "kept changing" for
+//! writes to Sheets.
 //!
-//! That every listing answers whole beside the writes is checked on every run; how fast it
-//! answers, by the throughput check, which runs the timed test alone.
+//! What a listing costs beside the import is counted, not timed: each listing asks the
+//! workspace's host for the pages it asks for with nothing being written, no more and no other,
+//! so it reads nothing again for what the import moved; and none of its requests waits on the
+//! workspace's thread for anything to land, for a part to arrive or for the workspace to be
+//! joined, so none waits for the import's next write. A shared machine's times vary with its
+//! load while what a listing asks and waits for does not; the times are printed for reading.
 
 use super::api::ISSUER;
 use super::api_on_server::{api_on_server, approved_key};
@@ -24,9 +28,97 @@ const FILES: usize = 300;
 /// How often the key lists while the import goes on.
 const ROUNDS: usize = 8;
 
-/// What one listing of the key may take while Sheets is written: well under a second on the
-/// real path, however busy Sheets is.
-const CALL_BUDGET: Duration = Duration::from_millis(1_000);
+/// The listings of a round, in the order the key asks them.
+const LISTINGS: [&str; 3] = ["tasks", "contacts", "files"];
+
+/// The pages the key's listings asked the workspace's host for, in the order asked: the provider,
+/// the resource and the rows of each, as the agent surface names them when its asks are traced.
+static ASKED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The requests the workspace's thread took up that waited there, for a change to land, for a
+/// part or for the workspace to be joined ([`WAITS`]), by kind.
+static WAITED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The kinds of request the workspace's thread takes up once a request waited there: a watch
+/// for a change to land, parts that arrived for a request held for them, a workspace joined
+/// that requests waited to be joined to.
+const WAITS: [&str; 3] = ["changed", "loaded", "joined"];
+
+/// Keeps every page the agent surface asks the workspace's host for in [`ASKED`], and every
+/// request of [`WAITS`]' kinds the workspace's thread took up in [`WAITED`].
+struct Counted;
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Counted {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        #[derive(Default)]
+        struct Message {
+            text: Option<String>,
+            kind: Option<String>,
+        }
+        impl tracing::field::Visit for Message {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "kind" {
+                    self.kind = Some(value.to_owned());
+                }
+            }
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.text = Some(format!("{value:?}"));
+                }
+            }
+        }
+        let mut message = Message::default();
+        event.record(&mut message);
+        if message.text.as_deref() == Some("workspace actions: a request ran") {
+            if let Some(kind) = message.kind.filter(|kind| WAITS.contains(&kind.as_str())) {
+                WAITED.lock().unwrap().push(kind);
+            }
+            return;
+        }
+        // `TIMING ask.catalogue <µs> provider=… parent=… rows=…`: what was asked, not how long.
+        let Some(line) = message.text else { return };
+        let Some(rest) = line.strip_prefix("TIMING ask.catalogue ") else {
+            return;
+        };
+        if let Some((_, asked)) = rest.split_once(' ') {
+            ASKED.lock().unwrap().push(asked.to_owned());
+        }
+    }
+}
+
+/// Count the agent surface's asks into [`ASKED`] and the workspace thread's waits into
+/// [`WAITED`], once in the process.
+fn count() {
+    static TRACED: std::sync::Once = std::sync::Once::new();
+    TRACED.call_once(|| {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        use tracing_subscriber::{Layer as _, util::SubscriberInitExt as _};
+        tracing_subscriber::registry()
+            .with(
+                Counted.with_filter(
+                    tracing_subscriber::filter::Targets::new()
+                        .with_target("tilo_mcp::timing", tracing::Level::DEBUG)
+                        .with_target(
+                            "tilo_agent_session::workspace_actions",
+                            tracing::Level::DEBUG,
+                        ),
+                ),
+            )
+            .try_init()
+            .expect("the asks and waits are counted: nothing else in this process traces");
+    });
+}
+
+/// What `call` asked the workspace's host for, how long it took, and what it answered. The agent
+/// surface notes an ask once its answer is back, before the listing answers, so every ask of
+/// the call is in.
+async fn asked<T>(call: impl std::future::Future<Output = T>) -> (Vec<String>, Duration, T) {
+    let from = ASKED.lock().unwrap().len();
+    let started = Instant::now();
+    let answer = call.await;
+    let took = started.elapsed();
+    (ASKED.lock().unwrap()[from..].to_vec(), took, answer)
+}
 
 /// Every row `path` lists, page after page as `tilo ls` reads them, with what the key was answered
 /// when a page was refused.
@@ -49,41 +141,23 @@ async fn listed_whole(key: &Key<'_>, path: &str) -> Result<usize, String> {
     }
 }
 
-/// How long `call` took, and what it answered.
-async fn timed<T>(call: impl std::future::Future<Output = T>) -> (Duration, T) {
-    let started = Instant::now();
-    let answer = call.await;
-    (started.elapsed(), answer)
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_keys_listings_answer_whole_beside_an_import_into_another_app() {
     Box::pin(beside_an_import()).await;
 }
 
+/// The same, alone on its machine for the throughput check, whose log keeps the times it prints.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "timed: the throughput check runs it alone"]
+#[ignore = "the throughput check runs it alone, for the times it prints"]
 async fn an_import_into_another_app_never_slows_a_keys_listings() {
-    let rounds = Box::pin(beside_an_import()).await;
-    for (round, took) in rounds.iter().enumerate() {
-        for (call, elapsed) in took {
-            assert!(
-                *elapsed < CALL_BUDGET,
-                "listing {call} in round {round} took {elapsed:?} beside the import"
-            );
-        }
-    }
-    let slowest = |took: &[(&str, Duration)]| took.iter().map(|(_, took)| *took).max().unwrap();
-    let (first, last) = (slowest(&rounds[1]), slowest(&rounds[ROUNDS - 1]));
-    assert!(
-        last <= first * 3 + Duration::from_millis(150),
-        "no listing grows slower than the ones before it: {first:?} early, {last:?} at the end"
-    );
+    Box::pin(beside_an_import()).await;
 }
 
-/// The key's listings, round after round beside the import, each with how long it took. Every
-/// listing answers whole, and every round finds the import writing.
-async fn beside_an_import() -> Vec<Vec<(&'static str, Duration)>> {
+/// The key's listings, round after round beside the import. Every listing answers whole, asks
+/// the host for what it asks with nothing being written, and every round finds the import
+/// writing.
+async fn beside_an_import() {
+    count();
     let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -133,6 +207,23 @@ async fn beside_an_import() -> Vec<Vec<(&'static str, Duration)>> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
 
+    // What each listing asks with nothing being written, once what a first listing finds out
+    // (the workspace's apps, its forms) is known. A listing that waited for a write to land
+    // would never answer here.
+    let lists = Lists {
+        key: &key,
+        paths: [tasks, contacts, files],
+        files: files_listed,
+    };
+    lists.round("before the import").await;
+    let quiet = lists.round("with nothing written").await;
+    for (call, (asks, _)) in LISTINGS.iter().zip(&quiet) {
+        assert!(
+            !asks.is_empty(),
+            "listing {call} asked the host for nothing"
+        );
+    }
+
     // It imports spreadsheets: a new sheet written after another, as fast as it can.
     let stop = Arc::new(AtomicBool::new(false));
     let written = Arc::new(AtomicUsize::new(0));
@@ -154,28 +245,20 @@ async fn beside_an_import() -> Vec<Vec<(&'static str, Duration)>> {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    // The key lists beside it.
-    let mut rounds: Vec<Vec<(&'static str, Duration)>> = Vec::with_capacity(ROUNDS);
+    // The key lists beside it, each listing asking for what it asked with nothing written.
     let mut during_rounds: Vec<usize> = Vec::with_capacity(ROUNDS);
     for round in 0..ROUNDS {
         let before = written.load(Ordering::Relaxed);
-        let mut took = Vec::new();
-        for (call, path) in [("tasks", &tasks), ("contacts", &contacts)] {
-            let (elapsed, (status, listed)) = timed(key.get(path)).await;
-            assert_eq!(status, 200, "listing {call} in round {round}: {listed}");
-            took.push((call, elapsed));
-        }
-        // The folder over its pages: each read on from the last one's cursor while Sheets moves.
-        let (elapsed, listed) = timed(listed_whole(&key, &files)).await;
-        assert_eq!(
-            listed,
-            Ok(files_listed),
-            "the folder lists whole beside Sheets' writes, in round {round}"
-        );
-        took.push(("files", elapsed / 3));
+        let listed = lists.round(&format!("round {round}")).await;
         let during = written.load(Ordering::Relaxed) - before;
-        eprintln!("round {round}: {took:?}, {during} sheets written meanwhile");
-        rounds.push(took);
+        eprintln!("  {during} sheets written meanwhile");
+        for ((call, (asks, _)), (alone, _)) in LISTINGS.iter().zip(&listed).zip(&quiet) {
+            assert_eq!(
+                asks, alone,
+                "listing {call} in round {round} asked the host for other pages beside the \
+                 import than with nothing written"
+            );
+        }
         during_rounds.push(during);
     }
     stop.store(true, Ordering::Relaxed);
@@ -193,5 +276,54 @@ async fn beside_an_import() -> Vec<Vec<(&'static str, Duration)>> {
             "the import wrote nothing while round {round} listed: {during_rounds:?}"
         );
     }
-    rounds
+}
+
+/// The key's listings of one workspace: its tasks, its contacts and its folder.
+struct Lists<'a> {
+    key: &'a Key<'a>,
+    paths: [String; 3],
+    /// The rows the folder lists whole.
+    files: usize,
+}
+
+impl Lists<'_> {
+    /// Each listing once, in [`LISTINGS`]' order, with what it asked the host for and how long
+    /// it took, printed under `name`.
+    async fn round(&self, name: &str) -> Vec<(Vec<String>, Duration)> {
+        let deadline = tilo_test_env::hang_deadline();
+        let mut listed = Vec::with_capacity(LISTINGS.len());
+        for (call, path) in LISTINGS.iter().zip(&self.paths) {
+            let listing = async {
+                if *call == "files" {
+                    // The folder over its pages: each read on from the last one's cursor.
+                    let rows = listed_whole(self.key, path).await;
+                    assert_eq!(
+                        rows,
+                        Ok(self.files),
+                        "the folder lists whole beside Sheets' writes, {name}"
+                    );
+                } else {
+                    let (status, answer) = self.key.get(path).await;
+                    assert_eq!(status, 200, "listing {call}, {name}: {answer}");
+                }
+            };
+            let waited = WAITED.lock().unwrap().len();
+            let (asks, took, ()) = tokio::time::timeout_at(deadline.into(), asked(listing))
+                .await
+                .unwrap_or_else(|_| panic!("listing {call} never answered, {name}"));
+            let waits = WAITED.lock().unwrap()[waited..].to_vec();
+            assert!(
+                waits.is_empty(),
+                "a request waited on the workspace's thread while {call} listed, {name}: {waits:?}"
+            );
+            listed.push((asks, took));
+        }
+        let said: Vec<String> = LISTINGS
+            .iter()
+            .zip(&listed)
+            .map(|(call, (asks, took))| format!("{call} {took:?} ({} asks)", asks.len()))
+            .collect();
+        eprintln!("{name}: {}", said.join(", "));
+        listed
+    }
 }
