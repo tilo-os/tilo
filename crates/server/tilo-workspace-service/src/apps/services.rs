@@ -620,6 +620,10 @@ pub struct ResourceRequestContext {
     app_id: String,
     workspace_id: String,
     caller: tilo_actions::remote::Caller,
+    /// The invocations the workspace service delivered to this route's app that it is still carrying out,
+    /// each with who invoked it: a write that serves one is that invoker's, an agent acting for
+    /// the caller included.
+    serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
 }
 
 impl ResourceRequestContext {
@@ -632,7 +636,28 @@ impl ResourceRequestContext {
             app_id: app_id.into(),
             workspace_id: workspace_id.into(),
             caller,
+            serving: Vec::new(),
         }
+    }
+
+    /// The context, with the invocations `serving` the workspace service delivered to its app and is
+    /// waiting on, each with who invoked it.
+    pub(crate) fn serving(
+        mut self,
+        serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
+    ) -> Self {
+        self.serving = serving;
+        self
+    }
+
+    /// Who invoked `invocation`, when it is one the workspace service delivered to this route's app and
+    /// the app is still carrying out.
+    #[must_use]
+    pub fn invoker_of(&self, invocation: &str) -> Option<&tilo_actions::Actor> {
+        self.serving
+            .iter()
+            .find(|(id, _)| id.0.to_string() == invocation)
+            .map(|(_, actor)| actor)
     }
 
     #[must_use]

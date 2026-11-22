@@ -3075,7 +3075,7 @@ impl ResourceStore {
             })
             .or(burst)
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let actor_text = |actor: &Actor| serde_json::to_string(actor).unwrap_or_default();
+        let actor_text = Stamp::by;
         let from = note.from.as_ref().and_then(|from| {
             let ty = if from.ty.is_empty() {
                 self.type_of_id(&id_of(from))?
@@ -3175,6 +3175,10 @@ impl ResourceStore {
                 placed.push(nested.id.clone());
             }
         }
+        let who = tilo_failure::ignored!(
+            "a stamp naming no invoker the runtime reads has no one to name",
+            stamp.invoked_by()
+        );
         // A step that took changes back is History's, not an action's.
         let action = if stamp.undoes.is_some() {
             tilolang_runtime::store::STEP_ACTION.to_owned()
@@ -3182,10 +3186,7 @@ impl ResourceStore {
             stamp.verb
         };
         Version {
-            who: tilo_failure::ignored!(
-                "a stamp naming no invoker the runtime reads has no one to name",
-                serde_json::from_str::<Actor>(&stamp.invoker).ok()
-            ),
+            who,
             at: stamp.at,
             action,
             run: stamp.group.map(|group| tilolang_runtime::store::Run {
@@ -5024,11 +5025,11 @@ impl Store for ResourceStore {
         &self,
         at: &ResourceRef,
         fields: &[FieldSpec],
-        change: &str,
+        (first, last): (&str, &str),
     ) -> Result<Vec<(FieldId, FieldValue, FieldValue)>, StoreError> {
         let at = &*self.typed(at);
-        let before = self.at_change(at, change, false)?;
-        let after = self.at_change(at, change, true)?;
+        let before = self.at_change(at, first, false)?;
+        let after = self.at_change(at, last, true)?;
         let mut written = Vec::new();
         for field in fields {
             let entry = self.field(&at.ty, &field.id);

@@ -993,7 +993,12 @@ async fn assert_store_edit(
         let stamp = collab_types::Stamp::of_message(change.message().unwrap()).unwrap();
         assert_eq!(stamp.invocation, invocation);
         assert_eq!(stamp.verb, "field-edit");
-        assert_eq!(stamp.invoker, agent);
+        assert_eq!(
+            stamp.invoked_by(),
+            Some(tilo_actions::Actor::Member(tilo_actions::MemberId::agent(
+                agent
+            )))
+        );
         assert!(!stamp.membership.is_empty());
     }
     let envelopes: Vec<_> = hosted

@@ -81,13 +81,16 @@ pub enum ReadRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last: Option<bool>,
     },
-    /// What the change `change` (a version's) wrote to each of `fields` of one resource: each
-    /// field's value before it and after it, as [`crate::store::Store::written`] reads them.
+    /// What the changes from `since` to `change` (a version's; `since` empty for that one
+    /// change) wrote to each of `fields` of one resource: each field's value before them and
+    /// after them, as [`crate::store::Store::written`] reads them.
     Written {
         app: String,
         ty: String,
         id: String,
         fields: Vec<crate::store::FieldSpec>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        since: String,
         change: String,
     },
 }
@@ -756,6 +759,7 @@ impl Core {
                 ty,
                 id,
                 fields,
+                since,
                 change,
                 ..
             } => {
@@ -764,7 +768,11 @@ impl Core {
                 let written = self
                     .store
                     .borrow()
-                    .written(&target, fields, change)
+                    .written(
+                        &target,
+                        fields,
+                        (if since.is_empty() { change } else { since }, change),
+                    )
                     .map_err(|error| error.to_string())?;
                 Ok(Json::Array(
                     written

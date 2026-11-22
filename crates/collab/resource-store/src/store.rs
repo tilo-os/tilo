@@ -1685,13 +1685,16 @@ impl Store {
         out
     }
 
-    /// The resource `id` of `kind` as it stood just before the invocation that made the change
+    /// The resource `id` of `kind` as it stood just before the write that made the change
     /// `change` (its hash, in hex), or just after it with `after`: its indexed fields and its
-    /// content then. One invocation may change both of a resource's documents, so each is read
-    /// before its first change of that invocation, or after its last; a document the
-    /// invocation did not change reads as it stands. What a resource's history reads a step's
-    /// fields from. `None` where the change is not a hash, or the resource's documents are not
-    /// in memory.
+    /// content then. One write may change both of a resource's documents, each change stamped
+    /// alike, so each document is read before its first change of that write, or after its
+    /// last; a document the write did not change reads as it stands. A write is the changes
+    /// that name one invocation at one moment ([`Stamp::moment`]): an invocation that wrote the
+    /// resource several times (the keystrokes of one burst of typing) is read write by write,
+    /// and one whose writer kept no moment is read whole. What a resource's history reads a
+    /// version's fields from. `None` where the change is not a hash, or the resource's
+    /// documents are not in memory.
     #[must_use]
     pub fn at_change(
         &self,
@@ -1705,13 +1708,16 @@ impl Store {
         let content_doc = content_id(&readers, kind, id);
         let held = self.docs.get(&index_doc)?;
         let content = self.docs.get(&content_doc);
-        let invocation = held
+        let written = held
             .get_change_by_hash(&hash)
             .or_else(|| content.and_then(|doc| doc.get_change_by_hash(&hash)))
-            .and_then(|change| Stamp::of(&change))
-            .map(|stamp| stamp.invocation)?;
-        // Each document as it stood before the invocation's first change of the resource, or
-        // after its last: read at those heads, the rest of what the document holds unread.
+            .and_then(|change| Stamp::of(&change))?;
+        let one_write = |stamp: &Stamp| {
+            stamp.invocation == written.invocation
+                && (written.moment == 0 || stamp.moment == written.moment)
+        };
+        // Each document as it stood before the write's first change of the resource, or after
+        // its last: read at those heads, the rest of what the document holds unread.
         let mut touches = self
             .touches
             .lock()
@@ -1721,12 +1727,9 @@ impl Store {
                 .entry(doc_id.to_owned())
                 .or_default()
                 .of(doc, doc_id, id);
-            let mut own = versions.iter().filter(|version| {
-                version
-                    .stamp
-                    .as_ref()
-                    .is_some_and(|stamp| stamp.invocation == invocation)
-            });
+            let mut own = versions
+                .iter()
+                .filter(|version| version.stamp.as_ref().is_some_and(one_write));
             let first = own.next()?;
             let last = own.next_back().unwrap_or(first);
             if after {

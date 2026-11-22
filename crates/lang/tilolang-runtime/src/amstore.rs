@@ -1169,25 +1169,27 @@ impl Store for AmStore {
         &self,
         at: &ResourceRef,
         fields: &[FieldSpec],
-        change: &str,
+        (first, last): (&str, &str),
     ) -> Result<Vec<(FieldId, FieldValue, FieldValue)>, StoreError> {
         let inner = self.inner.borrow();
         let doc = inner.doc(&at.doc)?;
-        let n: usize = change
-            .parse()
-            .map_err(|_| not_found(format!("change {change}")))?;
         let committed = doc.committed_document();
         let changes = committed.get_changes(&[]);
-        let made = changes
-            .get(n)
-            .ok_or_else(|| not_found(format!("change {change}")))?;
+        let change = |change: &str| {
+            change
+                .parse::<usize>()
+                .ok()
+                .and_then(|n| changes.get(n))
+                .ok_or_else(|| not_found(format!("change {change}")))
+        };
+        let (opened, made) = (change(first)?, change(last)?);
         // This store keeps a document per resource and reads it on a fork at each side: what
         // the platform reads in place, a store for tests and the command line reads simply.
         let side = |heads: &[automerge::ChangeHash]| -> Result<AutoCommit, StoreError> {
             let fork = committed.fork_at(heads).map_err(backend)?;
             AutoCommit::load(&fork.save()).map_err(backend)
         };
-        let (before, after) = (side(made.deps())?, side(&[made.hash()])?);
+        let (before, after) = (side(opened.deps())?, side(&[made.hash()])?);
         let obj = |doc: &AutoCommit| match &at.item {
             None => Some(ROOT),
             Some(item) => item_obj(doc, item),

@@ -1341,7 +1341,7 @@ impl Store for TaskStore {
         &self,
         at: &ResourceRef,
         fields: &[FieldSpec],
-        change: &str,
+        (first, last): (&str, &str),
     ) -> Result<Vec<(String, FieldValue, FieldValue)>, StoreError> {
         let app = self.app_of(at)?;
         let request = tilolang_runtime::reads::ReadRequest::Written {
@@ -1349,7 +1349,12 @@ impl Store for TaskStore {
             ty: at.ty.clone(),
             id: at.id_string(),
             fields: fields.to_vec(),
-            change: change.to_owned(),
+            since: if first == last {
+                String::new()
+            } else {
+                first.to_owned()
+            },
+            change: last.to_owned(),
         };
         let encoded = serde_json::to_value(&request)
             .map_err(|error| StoreError::Backend(error.to_string()))?;

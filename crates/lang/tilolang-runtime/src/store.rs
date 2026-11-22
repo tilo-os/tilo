@@ -1893,10 +1893,12 @@ pub trait Store {
         )))
     }
 
-    /// What the change `change` (a [`Version::change`]) wrote to each of `fields` of `at`: the
-    /// field's value before the change and after it, read from the change itself, for each
-    /// field it changed, in the order of `fields`. A field it wrote with what the field held is
-    /// left out.
+    /// What the changes from `first` to `last` (each a [`Version::change`], the same one for a
+    /// single change) wrote to each of `fields` of `at`: the field's value just before `first`
+    /// and just after `last`, read from the changes themselves, for each field they changed, in
+    /// the order of `fields`. A field they left holding what it held is left out. One change
+    /// reads what it wrote, and a run of them (the keystrokes of one burst of typing) reads
+    /// what the run did as a whole.
     ///
     /// # Errors
     ///
@@ -1905,11 +1907,11 @@ pub trait Store {
         &self,
         at: &ResourceRef,
         fields: &[FieldSpec],
-        change: &str,
+        (first, last): (&str, &str),
     ) -> Result<Vec<(FieldId, FieldValue, FieldValue)>, StoreError> {
-        let _ = (at, fields);
+        let _ = (at, fields, first);
         Err(StoreError::Invalid(format!(
-            "this store keeps no log to read what the change {change} wrote"
+            "this store keeps no log to read what the change {last} wrote"
         )))
     }
 

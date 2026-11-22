@@ -239,10 +239,12 @@ async fn assert_delegated_write_refused(
     );
 }
 
+/// The versions of issue `i-1`, oldest first, are by `authors`: whoever the service named on each
+/// write, whatever its stamp claimed.
 async fn assert_certified_history(
     workspaces: &Workspaces,
     context: &ResourceRequestContext,
-    person: &str,
+    authors: &[tilo_actions::Actor],
 ) {
     let Reply::Versions(versions) = workspaces
         .resource_command(
@@ -257,13 +259,12 @@ async fn assert_certified_history(
     else {
         panic!("the resource has a history");
     };
-    assert_eq!(versions.len(), 2);
-    assert!(versions.iter().all(|version| {
-        version
-            .stamp
-            .as_ref()
-            .is_some_and(|stamp| stamp.invoker == person)
-    }));
+    let by: Vec<_> = versions
+        .iter()
+        .map(|version| version.stamp.as_ref().and_then(Stamp::invoked_by))
+        .collect();
+    let expected: Vec<_> = authors.iter().cloned().map(Some).collect();
+    assert_eq!(by, expected, "each version names who made it");
 }
 
 /// The replica follows the document placed by the store so other members hear its changes.
@@ -350,6 +351,25 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
             "the write is read back at once"
         );
     }
+    // A write the app makes while serving an invocation the workspace service delivered to it is that
+    // invocation's invoker's: an agent acting for the person is named as the agent.
+    let agent = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"));
+    let delivered = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+    workspaces
+        .resource_command(
+            &context.clone().serving(vec![(delivered, agent.clone())]),
+            Command::Put {
+                kind: KIND.to_owned(),
+                id: "i-1".to_owned(),
+                resource: issue("Scribed"),
+                stamp: Stamp {
+                    invocation: delivered.0.to_string(),
+                    ..stamp.clone()
+                },
+            },
+        )
+        .await
+        .unwrap();
     assert_replica_holds_issue(&workspaces, &workspace).await;
     // A reader the issue's set leaves out reads nothing of it.
     assert!(
@@ -366,10 +386,13 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
         cert: cert.clone(),
         signer: Arc::new(key),
     }));
-    assert_certified_history(&workspaces, &context, &hex::encode(cert.user_public_key)).await;
+    let person = tilo_actions::Actor::Member(tilo_actions::MemberId::person(hex::encode(
+        cert.user_public_key,
+    )));
+    assert_certified_history(&workspaces, &context, &[person.clone(), person, agent]).await;
     assert_eq!(
         title_through_service(&workspaces, &context, "i-1").await,
-        Some(Value::Text("Renamed".into())),
+        Some(Value::Text("Scribed".into())),
         "a restart reads the store back"
     );
     assert!(

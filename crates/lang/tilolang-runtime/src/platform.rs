@@ -456,6 +456,18 @@ impl Core {
     /// change was made over; then the id of the action that made it and of its change, which
     /// code compares rather than reads (`tilolang::host::action_id_at`).
     fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> HResult<Value> {
+        self.act_value(v, of, None)
+    }
+
+    /// [`Self::version_value`] of the last of a run of changes that are one act (the keystrokes
+    /// of one burst of typing), the run opening with the change `since`: what each field held
+    /// before the run and holds after it, so one entry says what the act did as a whole.
+    fn act_value(
+        &self,
+        v: crate::store::Version,
+        of: &ResourceRef,
+        since: Option<&str>,
+    ) -> HResult<Value> {
         let run = v.run.as_ref().map(|run| Box::new(run_value(run)));
         let info = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
         let named: Vec<String> = v
@@ -501,7 +513,7 @@ impl Core {
             .as_ref()
             .map_or_else(String::new, |who| self.unnamed(who));
         let changes = match &info {
-            Some(info) => self.changes_value(&v, of, info, looking.as_ref())?,
+            Some(info) => self.changes_value((&v, since), of, info, looking.as_ref())?,
             None => Vec::new(),
         };
         Ok(Value::Tuple(vec![
@@ -609,7 +621,7 @@ impl Core {
             return self.action_label(&v.action);
         };
         let said: Vec<String> = self
-            .changes_value(v, of, &info, Some(viewer))
+            .changes_value((v, None), of, &info, Some(viewer))
             .unwrap_or_default()
             .into_iter()
             .filter_map(|change| {
@@ -755,12 +767,13 @@ impl Core {
 
     /// Each field the version `v` of `of` changed, as a `host.Change`: its name, its name in
     /// words, what it held before and after as its type shows it, and the words history says it
-    /// with ([`crate::did`]), read from the change itself. None for a version that made or
+    /// with ([`crate::did`]), read from the change itself, or from before the change `since`
+    /// where `v` ends a run of changes that are one act. None for a version that made or
     /// removed the resource, or one not committed yet. A time of day that moved with its day
     /// reads with it ("Tomorrow 9:00 AM"), not as a change of its own.
     fn changes_value(
         &self,
-        v: &crate::store::Version,
+        (v, since): (&crate::store::Version, Option<&str>),
         of: &ResourceRef,
         info: &crate::registry::TypeInfo,
         viewer: Option<&Actor>,
@@ -790,7 +803,7 @@ impl Core {
         let written = self
             .store
             .borrow()
-            .written(of, &specs, &v.change)
+            .written(of, &specs, (since.unwrap_or(&v.change), &v.change))
             .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
         // Each field it wrote, with what it held before and after as its type shows it.
         let mut held: Vec<(&crate::registry::FieldInfo, Value, Value)> =
@@ -1128,33 +1141,34 @@ impl Core {
             let opens = above.as_ref().is_none_or(|above| opens_visit(above, last));
             let latest = above.is_none();
             above = Some(last.clone());
-            // How many acts the step folds: versions of one change are one command over many
-            // items, and the changes of one gesture are the keystrokes of one burst of typing —
-            // history says the count of each, and Undo takes them all back together.
-            let changes = {
-                let mut count = 0usize;
-                let mut previous: Option<(&str, Option<&str>)> = None;
-                for v in &step {
-                    let holds = (v.change.as_str(), v.gesture.as_deref());
-                    let continues = previous.is_some_and(|(change, gesture)| {
-                        change == holds.0 || (gesture.is_some() && gesture == holds.1)
-                    });
-                    if !continues {
-                        count = count.saturating_add(1);
-                    }
-                    previous = Some(holds);
-                }
-                count
-            };
+            // The acts the step folds: versions of one change are one command over many items,
+            // and the changes of one gesture are the keystrokes of one burst of typing. History
+            // says how many acts, lists each act once, and Undo takes each back whole.
+            let acts = acts_of(&step);
+            let changes = acts.len();
             // What the step did, where its changes are one action's and its words say how many:
             // the count stands in the sentence, not beside it.
             let said = self
                 .counted_said(&step, changes)
                 .map_or_else(|| Value::Text(String::new()), Value::Text);
-            let versions = step
-                .into_iter()
-                .map(|v| self.version_value(v, at))
-                .collect::<HResult<_>>()?;
+            // Each act as its last change, saying what the whole act did: a burst of typing
+            // reads from before its first keystroke to after its last.
+            let mut versions = Vec::with_capacity(acts.len());
+            for act in acts {
+                let (Some(first), Some(last)) = (act.first(), act.last()) else {
+                    continue;
+                };
+                let since = (first.change != last.change).then(|| first.change.clone());
+                let mut whole = last.clone();
+                for v in act {
+                    for field in &v.fields {
+                        if !whole.fields.contains(field) {
+                            whole.fields.push(field.clone());
+                        }
+                    }
+                }
+                versions.push(self.act_value(whole, at, since.as_deref())?);
+            }
             out.push(Value::Tuple(vec![
                 who,
                 at_time,
@@ -2772,6 +2786,27 @@ fn step_facts(version: &crate::store::Version) -> StepFacts<'_> {
         run: version.run.as_ref().map(|run| run.id.as_str()),
         ..StepFacts::default()
     }
+}
+
+/// The acts the versions of one step (oldest first) are, each a run of them in order: versions
+/// of one change (one command over many items), or of one gesture (the keystrokes of one burst
+/// of typing), are one act.
+fn acts_of(step: &[crate::store::Version]) -> Vec<&[crate::store::Version]> {
+    let mut acts = Vec::new();
+    let mut start = 0;
+    for (at, pair) in step.windows(2).enumerate() {
+        let [before, next] = pair else { continue };
+        let continues = before.change == next.change
+            || (before.gesture.is_some() && before.gesture == next.gesture);
+        if !continues {
+            acts.push(step.get(start..=at).unwrap_or_default());
+            start = at.saturating_add(1);
+        }
+    }
+    if start < step.len() {
+        acts.push(step.get(start..).unwrap_or_default());
+    }
+    acts
 }
 
 /// How long after one step the next one by the same hand still joins its visit: a person's

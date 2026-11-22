@@ -1036,7 +1036,13 @@ impl Workspaces {
                 .acting()
                 .person_id()
                 .ok_or("this resource route has no caller-scoped signer for the write")?;
-            stamp_resource_invoker(&mut command, person);
+            let person = tilo_actions::Actor::Member(tilo_actions::MemberId::person(person));
+            stamp_resource_invoker(&mut command, &|invocation| {
+                context
+                    .invoker_of(invocation)
+                    .cloned()
+                    .unwrap_or_else(|| person.clone())
+            });
         }
         let state = self
             .workspace(workspace)
@@ -1183,15 +1189,22 @@ impl Workspaces {
     }
 }
 
-/// The command names the verb and invocation, and the broker names who made it.
+/// The command names the verb and invocation, and the workspace service names who made it: whoever invoked
+/// the invocation a write serves, when the workspace service delivered that one to the app, and the person
+/// the route certifies otherwise.
 #[cfg(feature = "apps")]
-fn stamp_resource_invoker(command: &mut tilo_resource_store::wire::Command, invoker: &str) {
+fn stamp_resource_invoker(
+    command: &mut tilo_resource_store::wire::Command,
+    invoker: &dyn Fn(&str) -> tilo_actions::Actor,
+) {
     use tilo_resource_store::wire::Command;
     match command {
         Command::Put { stamp, .. }
         | Command::Remove { stamp, .. }
         | Command::Undo { stamp, .. }
-        | Command::Edit { stamp, .. } => invoker.clone_into(&mut stamp.invoker),
+        | Command::Edit { stamp, .. } => {
+            stamp.invoker = tilo_resource_store::Stamp::by(&invoker(&stamp.invocation));
+        }
         Command::Batch(commands) => commands
             .iter_mut()
             .for_each(|command| stamp_resource_invoker(command, invoker)),

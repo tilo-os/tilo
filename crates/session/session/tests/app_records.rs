@@ -97,6 +97,17 @@ fn secrets() -> &'static std::path::Path {
     })
 }
 
+/// Who the session runs as: the person its identity certifies, whom the workspace's store names
+/// on every write the person's apps make, as the session names the person its windows are for.
+fn me() -> tilo_actions::Actor {
+    tilo_actions::Actor::from(tilo_actions::MemberId::person(
+        tilo_session::identity::own_person(&Options {
+            person: PERSON.to_owned(),
+            ..Options::default()
+        }),
+    ))
+}
+
 /// The Tasks app's package, as installed.
 fn tasks_bundle() -> Bundle {
     let catalog = package_store::Catalog::at(crate::common::app_store(), None);
@@ -221,13 +232,7 @@ fn in_tasks_window<R: Send>(
             };
             let connection = tilolang_process::connection::Connection::new(manager)?;
             let store = ResourceStore::new(std::rc::Rc::new(connection.port(None)));
-            let host = Host::open(
-                store,
-                tilo_actions::Actor::from(tilo_actions::MemberId::person(PERSON)),
-                None,
-                || None,
-            )
-            .map_err(|error| error.to_string())?;
+            let host = Host::open(store, me(), None, || None).map_err(|error| error.to_string())?;
             host.load_bundle(&tasks_bundle())
                 .map_err(|error| error.to_string())?;
             let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -379,7 +384,7 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
             .clone();
         host.runtime()
             .invoke_action(
-                &tilo_actions::Actor::from(tilo_actions::MemberId::person(PERSON)),
+                &me(),
                 (
                     check.as_str(),
                     vec![Value::resource(&task), Value::Bool(true)],
@@ -408,4 +413,194 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
         read,
         "the REPL reads the task the window checked off: {seen}"
     );
+}
+
+/// Add the task `title` in `host`'s window as `me`, as the list's entry does: the app's own
+/// action, run in the window as theirs. The window reads it back on a later turn.
+fn add_task(host: &Host, me: &tilo_actions::Actor, title: &str) -> Option<()> {
+    let package = host.package(TASKS)?;
+    let tasks = package
+        .meta
+        .types
+        .iter()
+        .find(|ty| ty.name == "Tasks")?
+        .id
+        .clone();
+    let id = host.store().resources_of(&tasks).ok()?.into_iter().next()?;
+    let list = ResourceRef::parse_id(&id, tasks)?;
+    let new_task = package
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == "new_task")?
+        .id
+        .clone();
+    let mut args = vec![Value::resource(&list)];
+    args.extend(std::iter::repeat_with(Value::none).take(5));
+    args.extend([Value::text(title), Value::none()]);
+    host.runtime()
+        .invoke_action(me, (new_task.as_str(), args))
+        .unwrap_or_else(|error| panic!("the window adds the task: {error}"));
+    assert!(
+        host.store().take_refusal().is_none(),
+        "the workspace's store takes the window's write"
+    );
+    Some(())
+}
+
+/// A task the person adds in the Tasks window is theirs: every version of it in the workspace's
+/// store names them, so its row says they made it rather than the app, and the window marks none
+/// of it as a change someone else made that they have not seen.
+#[test]
+fn a_task_added_in_the_window_is_the_persons_and_marks_nothing_for_them() {
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let launches = std::sync::Arc::new(tilo_session::Launches::default());
+    let (mut session, workspace) =
+        session(&mut home, root.path(), std::sync::Arc::clone(&launches));
+    let me = me();
+
+    let (versions, unseen) =
+        in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
+            let Some((milk, _, _)) = tasks_in(host)
+                .into_iter()
+                .find(|(_, title, _)| title == "Milk")
+            else {
+                add_task(host, &me, "Milk")?;
+                return None;
+            };
+            let versions = host.runtime().versions(&milk).ok()?;
+            let unseen = host.runtime().unseen(&me, &milk).ok()?;
+            Some((versions, unseen))
+        });
+    assert!(!versions.is_empty(), "the task has a history");
+    for version in &versions {
+        assert_eq!(
+            version.who.as_ref(),
+            Some(&me),
+            "the store names the person who added it, not the app: {version:?}"
+        );
+    }
+    assert!(
+        unseen.is_empty(),
+        "the person's own change is nothing they have to catch up on: {unseen:?}"
+    );
+}
+
+/// What the person types into a task's title in the window is one act of its history: the
+/// keystrokes of one burst fold into one entry beside the task's making, and each keystroke's
+/// own version reads what that keystroke typed, not the whole burst.
+#[test]
+fn typing_a_title_in_the_window_is_one_act_of_its_history() {
+    use tilolang_tilo::runtime::store::{FieldSpec, FieldValue, Store as _};
+
+    const TYPED: &str = "Milk and eggs";
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let launches = std::sync::Arc::new(tilo_session::Launches::default());
+    let (mut session, workspace) =
+        session(&mut home, root.path(), std::sync::Arc::clone(&launches));
+    let me = me();
+
+    let (typed, steps) =
+        in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
+            let package = host.package(TASKS)?;
+            let task = package.meta.types.iter().find(|ty| ty.name == "Task")?;
+            let title = task
+                .fields
+                .iter()
+                .find(|field| field.name == "title")?
+                .id
+                .clone();
+            let Some((milk, said, _)) = tasks_in(host)
+                .into_iter()
+                .find(|(_, said, _)| said.starts_with("Milk"))
+            else {
+                add_task(host, &me, "Milk")?;
+                return None;
+            };
+            if said == "Milk" {
+                // The person types the rest of the title into the task's page, one key at a time.
+                let page = host.open_resource(&milk, None).ok()?;
+                let key = bound_key(page.tree(), &title)?;
+                for end in "Milk".len() + 1..=TYPED.len() {
+                    page.edit(&key, &Value::text(&TYPED[..end]))
+                        .unwrap_or_else(|error| panic!("the title takes the key: {error}"));
+                }
+                return None;
+            }
+            if said != TYPED {
+                return None;
+            }
+            let spec = [FieldSpec {
+                id: title.clone(),
+                kind: tilolang_tilo::runtime::meta::FieldKind::Text,
+            }];
+            // What each version that wrote the title says it wrote.
+            let typed: Vec<(String, String)> = host
+                .runtime()
+                .versions(&milk)
+                .ok()?
+                .iter()
+                .filter(|version| version.fields.contains(&title))
+                .filter_map(|version| {
+                    let written = host
+                        .store()
+                        .written(&milk, &spec, (&version.change, &version.change))
+                        .ok()?;
+                    let [(_, FieldValue::Text(before), FieldValue::Text(after))] =
+                        written.as_slice()
+                    else {
+                        return None;
+                    };
+                    Some((before.clone(), after.clone()))
+                })
+                .collect();
+            // History's steps of the task, as every history view reads them: how many acts each
+            // folds, and how many entries it lists.
+            let block = tilolang_tilo::tilolang::compile_block(
+                &format!(
+                    "steps(@tasks.Task:{}).map(s -> \"{{s.changes}} {{s.versions.len()}}\")\
+                     .join(\" | \")",
+                    milk.id_string()
+                ),
+                std::slice::from_ref(&package.meta),
+            )
+            .unwrap_or_else(|diagnostics| panic!("the block compiles: {diagnostics:?}"));
+            let tilolang_tilo::runtime::BlockOutput::Data(Value::Text(steps)) =
+                host.runtime().run_block(&me, &block).ok()?
+            else {
+                return None;
+            };
+            Some((typed, steps))
+        });
+    // The making wrote the title first; each keystroke after it reads only what it typed.
+    let expected: Vec<(String, String)> = std::iter::once((String::new(), "Milk".to_owned()))
+        .chain(
+            ("Milk".len() + 1..=TYPED.len())
+                .map(|end| (TYPED[..end - 1].to_owned(), TYPED[..end].to_owned())),
+        )
+        .collect();
+    assert_eq!(typed, expected, "each keystroke reads what it typed");
+    assert_eq!(
+        steps, "2 2",
+        "the making and the burst of typing are one step of two acts, each listed once"
+    );
+}
+
+/// The key of the node of `tree` bound to the field `field`: what a person types into.
+fn bound_key(tree: &tilolang_tilo::runtime::UiNode, field: &str) -> Option<String> {
+    if tree
+        .binding
+        .as_ref()
+        .and_then(|binding| binding.field())
+        .is_some_and(|(_, bound)| bound == field)
+    {
+        return Some(tree.key.clone());
+    }
+    tree.children
+        .iter()
+        .find_map(|child| bound_key(child, field))
 }

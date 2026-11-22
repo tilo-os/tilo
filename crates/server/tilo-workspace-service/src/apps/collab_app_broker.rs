@@ -594,6 +594,26 @@ impl AppBrokerState {
         tilo_broker_core::delivery::open_stream(&*self.publishers.streams.lock().ok()?, peer_id)
             .cloned()
     }
+
+    /// The invocations delivered to `peer_id` that it has not finished, each with who the workspace
+    /// service admitted it for: what a write it makes while serving one is credited to.
+    fn delivered_to(&self, peer_id: u64) -> Vec<(tilo_actions::InvocationId, tilo_actions::Actor)> {
+        let pending = match self.pending_invocations.lock() {
+            Ok(pending) => pending,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        pending
+            .values()
+            .filter(|pending| pending.peer_id == peer_id)
+            .map(|pending| {
+                let actor = pending.context.invoker.as_ref().map_or_else(
+                    || tilo_actions::Actor::Member(pending.actor.clone()),
+                    |invoker| invoker.acting.by.clone(),
+                );
+                (pending.update.invocation(), actor)
+            })
+            .collect()
+    }
 }
 
 /// What ends one invocation stream once its app asks for no more: the broker

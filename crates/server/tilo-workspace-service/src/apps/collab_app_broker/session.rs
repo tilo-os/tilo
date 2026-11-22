@@ -228,7 +228,8 @@ impl JoinedChannel {
             route.app_id,
             route.cluster_id,
             caller,
-        );
+        )
+        .serving(self.state.delivered_to(self.peer_id));
         Ok(service.command(&context, command))
     }
 
