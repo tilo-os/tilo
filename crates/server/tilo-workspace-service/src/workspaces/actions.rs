@@ -1481,7 +1481,12 @@ impl Workspaces {
         arguments.insert("role".to_owned(), Value::from("editor"));
         let request = Self::governance_ask(&workspace, governance::INVITE, arguments);
         let issued = self.page_invoke(workspace_id, caller, &request).await?;
-        let link = issued.get("link").cloned().unwrap_or(Value::Null);
+        // The short link where the site keeps a shelf; the invitation's own
+        // where it does not, which joins just the same.
+        let link = ["short_link", "link"]
+            .into_iter()
+            .find_map(|key| issued.get(key).filter(|link| link.is_string()).cloned())
+            .unwrap_or(Value::Null);
         Ok(json!({"link": link}))
     }
 
@@ -2370,17 +2375,18 @@ impl Workspaces {
             &issued.signed_invitation,
             now,
         );
-        // The short link the site keeps sealed: what a person hands over, and
-        // what the mail to an address carries. A site with no shelf here
-        // answers the invitation's own link, which joins the same way.
-        let link = self
-            .sealed_invitation_link(&issued.signed_invitation, expires_at_ns)
-            .unwrap_or_else(|| self.invitation_link(workspace, &issued.signed_invitation));
+        // The invitation's own link, as every build hands it over, and the
+        // short one the site keeps sealed where it keeps a shelf: what a
+        // person's page hands over in one press, and what the mail to an
+        // address carries.
+        let link = self.invitation_link(workspace, &issued.signed_invitation);
+        let short_link = self.sealed_invitation_link(&issued.signed_invitation, expires_at_ns);
         let mut answered = json!({
             "workspace": workspace,
             "invite": hex::encode(issued.invite_id),
             "invitation": hex::encode(&issued.signed_invitation),
             "link": link,
+            "short_link": short_link.clone(),
             "native_link": native_link,
             "role": args.required_text("role")?,
             "administrator": makes_administrator,
@@ -2390,8 +2396,11 @@ impl Workspaces {
         // An invitation for an address on the wait list is mailed to it where the
         // entry sends mail; where it sends none, the link is handed over.
         if let (Some(entry), Some(fields)) = (wait_list_entry, answered.as_object_mut()) {
+            // The mail carries the short link where the site keeps one: the
+            // same link a person hands over.
+            let mailed_link = short_link.unwrap_or_else(|| link.clone());
             let mailed = self
-                .mail_invite(workspace, device, entry, link.clone(), now)
+                .mail_invite(workspace, device, entry, mailed_link, now)
                 .await;
             fields.insert("sent".into(), json!(mailed.is_ok()));
             if let Err(error) = mailed {
