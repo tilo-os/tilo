@@ -224,11 +224,6 @@ impl super::App {
                 self.actions.published_stamp = None;
             }
             self.publish_action_surface();
-        } else if self.collaboration.manager.is_connected() {
-            // Keep the idempotent directory-capability registration that the
-            // full publication performs on every pass.
-            let app_id = self.publication_app_id();
-            self.collaboration.manager.publish_action_directory(app_id);
         }
         self.broadcast_doc_delta();
         // What search finds can move with the model (a refreshed vault, a

@@ -127,7 +127,7 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
     // The session starts Notes under its id with its documents under the id it had before, and
     // the host honours that earlier id, as it does for a launch the installed catalogue names.
     tilolang_tilo::schema::register_previously(NOTES, &[PUBLISHED_BEFORE.to_owned()]);
-    let route = tilolang_process::route_under(&bundle.meta, PUBLISHED_BEFORE, workspace, ADA);
+    let route = tilolang_process::route_of(&bundle.meta, workspace, ADA);
     assert_eq!(
         route.app_id, PUBLISHED_BEFORE,
         "Notes' documents stay where it kept them"
@@ -221,4 +221,32 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
         shown,
         "the notebook is carried over once"
     );
+}
+
+/// The route an instance joins keeps an earlier id only when the installed catalogue honours it.
+/// A package's own `previously:` names the document, and the host believes it for the catalogue's
+/// say-so alone: a device where the earlier app was never installed routes the app to its own
+/// document, so the broker admits it as its own worker and it can publish what it keeps, instead
+/// of reading another app's record read-only.
+#[test]
+fn a_route_keeps_an_earlier_id_only_when_the_catalogue_honours_it() {
+    let mut meta = notes().meta;
+    // An app id of this test's own: its registration is no other test's.
+    meta.app = "so.tilo.lang.route-test".into();
+    let workspace = uuid::Uuid::new_v4();
+    let earlier = "so.tilo.lang.route-test-before".to_owned();
+    tilolang_tilo::schema::register_previously(&meta.app, &[]);
+    assert_eq!(
+        tilolang_process::route_of(&meta, workspace, ADA).app_id,
+        meta.app,
+        "no predecessor is honoured, so the route is the app's own"
+    );
+    tilolang_tilo::schema::register_previously(&meta.app, std::slice::from_ref(&earlier));
+    assert_eq!(
+        tilolang_process::route_of(&meta, workspace, ADA).app_id,
+        earlier,
+        "an honoured predecessor keeps the route, and its records"
+    );
+    // Leave nothing behind for the process's other tests.
+    tilolang_tilo::schema::register_previously(&meta.app, &[]);
 }

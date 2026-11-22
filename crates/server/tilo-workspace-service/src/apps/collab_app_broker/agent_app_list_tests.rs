@@ -516,4 +516,43 @@ tilo_test_env::scenario! {
             "{refused:?}"
         );
     }
+
+    phase a_running_apps_live_directory_is_what_tilo_ls_lists_it_by;
+    // `tilo_ls` lists the publishers whose records a caller may walk: an app whose instance
+    // publishes a directory is browsable by parent, and its notebook is reached there rather
+    // than through the rows its window happens to show.
+    {
+        let workspace = workspace();
+        let workspace_id = workspace.id().to_string();
+        let state = broker(vec![workspace], vec![NOTES], true);
+        state.replace_published_surfaces_for_test(vec![notes_running(
+            &workspace_id,
+            Vec::new(),
+        )]);
+        state.replace_action_directory_roots_for_test(vec![super::super::ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: NOTES.into(),
+            cluster_id: workspace_id.clone(),
+            document_id: "notes".into(),
+        }]);
+        // `tilo_ls apps` asks who publishes, and finds Notes browsable by its directory.
+        let owner = Caller::local_person("owner").in_workspace(&workspace_id);
+        let page = publishers(&state, &owner).expect("the owner reaches it");
+        let listed = page
+            .providers
+            .iter()
+            .find(|provider| provider.app_id == NOTES && provider.provider == "9")
+            .expect("Notes is listed among the publishers");
+        assert!(
+            listed.browsable,
+            "a live directory makes the app browsable, so an agent walks to its records"
+        );
+        // A caller who may not act in the workspace is told nothing is there, never an
+        // empty list that reads as "nothing publishes".
+        let stranger = turn_caller("scribe", "outsider", &workspace_id);
+        assert!(
+            matches!(publishers(&state, &stranger), Err(ActionCallError::Unavailable { .. })),
+            "a denied caller sees no providers"
+        );
+    }
 }

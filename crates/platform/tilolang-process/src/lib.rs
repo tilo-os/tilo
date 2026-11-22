@@ -58,33 +58,28 @@ use tilolang_tilo::instance::LaterBuilds;
 /// The route an instance of `meta`'s package for `person` in `workspace` joins: the person's own
 /// document of the workspace for an app whose documents are each member's own (`documents: .own`),
 /// which only their devices are admitted to, else the workspace's document of the app.
+///
+/// The route keeps the document of an id the app had before only when this host honours that id
+/// ([`tilo_action_policy::earlier`], filled from the installed catalogue): the same table the
+/// broker maps a route back with, so a route is the app's own on both sides or neither. A package
+/// claiming `previously:` alone does not rename its route.
 #[must_use]
 pub fn route_of(
     meta: &tilolang_tilo::tilolang::PackageMeta,
     workspace: uuid::Uuid,
     person: &str,
 ) -> collaboration::RouteSpec {
-    route_under(meta, &meta.app, workspace, person)
-}
-
-/// [`route_of`], for the documents the app keeps under `documents`: its own id, or for an app
-/// renamed the earliest id it had (`InstanceRequest::documents_under`), whose document it keeps using
-/// where it is.
-#[must_use]
-pub fn route_under(
-    meta: &tilolang_tilo::tilolang::PackageMeta,
-    records: &str,
-    workspace: uuid::Uuid,
-    person: &str,
-) -> collaboration::RouteSpec {
+    let records = tilo_action_policy::earlier::held()
+        .documents_under(&meta.app)
+        .to_owned();
     if meta.uses_personal_profile()
         && let Some(profile) = collab_types::personal_cluster_of(person)
     {
         let kind = format!("tl.{}", meta.app);
         let id = collab_types::person_document_for_workspace(&kind, workspace);
-        return collaboration::RouteSpec::document(records, profile, id);
+        return collaboration::RouteSpec::document(&records, profile, id);
     }
-    collaboration::RouteSpec::app(records.to_owned(), workspace)
+    collaboration::RouteSpec::app(records, workspace)
 }
 
 /// A restricted package closes its window when its read grant is removed.
@@ -719,21 +714,19 @@ impl TilolangProcess {
                 declared: bundle.meta.app,
             });
         }
-        // The document of an id the app had before, as the session names it: one the module says
-        // it had. Whether the same publisher signed both the broker checks as it admits the join.
-        let records = match &request.documents_under {
-            Some(records) if !bundle.meta.previously.contains(records) => {
-                return Err(AdmitError::Records {
-                    app: request.app,
-                    records: records.clone(),
-                });
-            }
-            Some(records) => records.clone(),
-            None => request.app.clone(),
-        };
+        // The session asks the instance to open the document of an id the app had before: one the
+        // module says it had. Whether this host keeps that document is the catalogue's call, below.
+        if let Some(records) = &request.documents_under
+            && !bundle.meta.previously.contains(records)
+        {
+            return Err(AdmitError::Records {
+                app: request.app,
+                records: records.clone(),
+            });
+        }
         // The ids the session believes each app had before are the ones this host honours: a
         // module's own `previously:` is a claim the installed catalogue decides on.
-        for (app, under) in std::iter::once((&request.app, &records)).chain(&request.installed) {
+        for (app, under) in &request.installed {
             if under != app {
                 tilolang_tilo::schema::register_previously(app, std::slice::from_ref(under));
             }
@@ -749,7 +742,7 @@ impl TilolangProcess {
                 "this app needs the person's certified profile".into(),
             ));
         }
-        let route = route_under(&bundle.meta, &records, workspace, &request.person);
+        let route = route_of(&bundle.meta, workspace, &request.person);
         // A window asked for a document: its instance opens the one its route names, and only that
         // one is what it was asked for.
         if let Some(asked) = request.document.as_deref()
