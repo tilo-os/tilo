@@ -80,6 +80,35 @@ pub fn open_at(server: &Path, store: &Store, id: &str, environment: &Environment
     }
 }
 
+/// Read this device's key before this process serves or dials anything.
+///
+/// Reading it makes the process non-dumpable, which the kernel then hides its namespaces and its
+/// executable from the session for, and it arms the proof [`holder_proof`] makes. The session
+/// admits a process of this account it cannot look at for an environment's socket or a
+/// workspace's terminal only on that proof: one that has not read the key yet is, to the session,
+/// a program a sandbox put in another mount namespace, and is refused as one. A device with no key
+/// proves nothing, so the read is skipped and the session refuses this process as it did.
+///
+/// `false` when this process holds no device identity.
+#[must_use]
+pub fn hold_device_identity() -> bool {
+    let paths = crate::images::identity_paths();
+    if !paths.device_privkey.exists() {
+        tracing::debug!(
+            key = %paths.device_privkey.display(),
+            "ush: this device holds no key, so the session can be shown nothing of this process"
+        );
+        return false;
+    }
+    match tilo_device_identity::persist::load_device_key(&paths) {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::debug!(%error, "ush: the device key could not be read, so the session cannot admit this process");
+            false
+        }
+    }
+}
+
 /// That this process holds the device identity, for a request `op` to the session, which
 /// cannot look at this process ([`runtime_portal::holder_proof`]): `None` when it holds none.
 #[cfg(target_os = "linux")]
