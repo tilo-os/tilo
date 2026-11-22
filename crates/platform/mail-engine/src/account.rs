@@ -1,24 +1,19 @@
 //! Mail's view of the shared multi-account store.
 //!
 //! Account management lives in Settings, not in Mail, which only consumes the account list to
-//! fetch and send. The canonical store is the shared [`accounts`] crate: one JSON document
-//! under `$XDG_CONFIG_HOME/tilo/accounts/` holding every account of every type, with
-//! credentials kept out of it and sealed in the encrypted
-//! [`accounts::AccountCredentials`].
+//! fetch and send. The accounts are the workspace's accounts record ([`PersonAccounts`]), which
+//! holds every account of every type and no secret.
 //!
 //! This module keeps the shapes the rest of Mail works with, [`Account`] and
-//! [`AccountStore`], and reads them from that store ([`AccountStore::load_in`]). The connection
-//! settings are serialised into each account's opaque `config`. A password is never read here:
-//! the session releases it from the workspace's vault to whoever signs in
-//! (`accounts::sign_ins`).
+//! [`AccountStore`], reads them from that record ([`AccountStore::from_shared`]) and makes the
+//! edits that keep them there ([`AccountStore::edits_for`]). The connection settings are
+//! serialised into each account's opaque `config`. A password is never read here: the session
+//! releases it from the workspace's vault to whoever signs in (`accounts::sign_ins`).
 
 use std::path::Path;
 
 use accounts::person::PersonAccounts;
-use accounts::{
-    Account as StoredAccount, AccountCredentials, AccountId, AccountStore as SharedStore,
-    AccountTypeId,
-};
+use accounts::{Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId};
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{Id, Invoke};
 
@@ -131,73 +126,6 @@ impl AccountStore {
         Self { accounts, active }
     }
 
-    /// Write these accounts into the shared store + vault under an explicit
-    /// config root, preserving accounts of other types already there. This is
-    /// the full write path: it upserts the current accounts, **reconciles
-    /// removals** (an email account deleted in Mail is dropped from the shared
-    /// store and its vault secret purged), and records the active selection.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the shared account store or the secret vault cannot
-    /// be written under `config_root`.
-    pub fn persist_in(&self, config_root: &Path) -> std::io::Result<()> {
-        self.persist_with_vault(
-            config_root,
-            AccountCredentials::open_in(config_root).map_err(std::io::Error::other)?,
-        )
-    }
-
-    fn persist_with_vault(
-        &self,
-        config_root: &Path,
-        mut vault: AccountCredentials,
-    ) -> std::io::Result<()> {
-        let ty = AccountTypeId::from(TYPE_ID);
-        let mut shared = SharedStore::load_in(config_root);
-
-        // Reconcile deletions: any email account in the shared store that Mail
-        // no longer holds was removed by the user — drop it and its secret.
-        let current: std::collections::HashSet<String> =
-            self.accounts.iter().map(|a| a.id.clone()).collect();
-        let stale: Vec<AccountId> = shared
-            .list(&ty)
-            .into_iter()
-            .map(|s| s.id.clone())
-            .filter(|id| !current.contains(id.as_str()))
-            .collect();
-        for id in stale {
-            shared.remove(&id);
-            vault.remove(&id);
-        }
-
-        for acct in &self.accounts {
-            let id = AccountId::from(acct.id.clone());
-            shared.upsert(acct.to_stored());
-            if acct.config.import_pending {
-                continue;
-            }
-            // Keep an existing sealed OAuth token intact: an OAuth account has
-            // no password, and its token was sealed by the sign-in flow — do
-            // not clobber it. Only manage the password secret here.
-            if acct.config.password.is_empty() {
-                if acct.config.auth != crate::model::AuthMethod::OAuth {
-                    vault.remove(&id);
-                }
-            } else {
-                vault.put_for(
-                    &acct.to_stored(),
-                    &accounts::Secret::password(acct.config.password.clone()),
-                );
-            }
-        }
-        if let Some(active) = self.accounts.get(self.active) {
-            shared.set_active(&ty, &AccountId::from(active.id.clone()));
-        }
-        vault.try_save().map_err(std::io::Error::other)?;
-        shared.save_in(config_root)
-    }
-
     /// The edits that make the workspace's accounts hold these mail accounts.
     pub fn edits_for(
         &self,
@@ -300,7 +228,7 @@ impl AccountStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use accounts::SecretVault;
+    use ui::tilo_resource::Replica;
 
     fn cfg(email: &str, name: &str) -> AccountConfig {
         AccountConfig {
@@ -313,11 +241,20 @@ mod tests {
         }
     }
 
-    tilo_test_env::scenario! {
-        /// The account store over the shared store and the vault; each case has a root of its own.
-        fn the_account_store_keeps_accounts_and_their_secrets;
+    /// Keep `store`'s accounts in `record` as Mail's edits do, and read them back as Mail does.
+    fn kept(record: &mut Replica<PersonAccounts>, store: &AccountStore) -> AccountStore {
+        let (edits, _) = store.edits_for(&record.state().unwrap());
+        for edit in edits {
+            record.apply(edit).unwrap();
+        }
+        AccountStore::from_shared(&record.state().unwrap().store())
+    }
 
-        phase account_store_upserts_clamps_and_round_trips_the_shared_store;
+    tilo_test_env::scenario! {
+        /// Mail's accounts, kept in the workspace's accounts record and read back from it.
+        fn the_account_store_keeps_accounts_in_the_workspaces_record;
+
+        phase account_store_upserts_clamps_and_round_trips_the_record;
         {
             {
                 let mut store = AccountStore::new();
@@ -339,176 +276,44 @@ mod tests {
             }
 
             {
-                let root = temp_root();
+                let mut record = Replica::<PersonAccounts>::new();
                 let mut store = AccountStore::new();
                 store.upsert(Account::new(cfg("a@x.example", "A")));
                 store.upsert(Account::new(cfg("b@y.example", "B")));
-                store.set_active(0);
-                store.persist_in(&root).expect("persist");
-
-                let back = AccountStore::load_in(&root);
+                let back = kept(&mut record, &store);
                 assert_eq!(back.len(), 2);
-                assert_eq!(back.active_account().unwrap().config.email, "a@x.example");
                 assert_eq!(back.accounts[1].config.display_name, "B");
-                std::fs::remove_dir_all(&root).ok();
-            }
 
-            {
-                let root = temp_root();
-                let mut store = AccountStore::new();
-                store.upsert(Account::new(cfg("a@x.example", "A")));
-                store.upsert(Account::new(cfg("b@y.example", "B")));
-                store.persist_in(&root).expect("persist both");
-                assert_eq!(AccountStore::load_in(&root).len(), 2);
-
-                // Remove one and persist again — the shared store must drop it too, so
-                // a reload doesn't resurrect the removed account.
+                // A removed account leaves the record, so a read does not bring it back.
                 store.remove("a@x.example");
-                store.persist_in(&root).expect("persist after remove");
-                let back = AccountStore::load_in(&root);
+                let back = kept(&mut record, &store);
                 assert_eq!(back.len(), 1);
                 assert_eq!(back.accounts[0].config.email, "b@y.example");
-                std::fs::remove_dir_all(&root).ok();
-            }
-        }
-
-        phase account_secrets_live_in_the_vault_and_a_damaged_vault_blocks_changes;
-        {
-            {
-                let root = temp_root();
-                let mut c = cfg("a@x.example", "A");
-                c.password = "top-secret".into();
-                let mut store = AccountStore::single(c);
-                store.persist_in(&root).expect("persist");
-                assert!(
-                    SecretVault::open_in(&root)
-                        .get(&AccountId::from("a@x.example"))
-                        .is_some()
-                );
-
-                store.remove("a@x.example");
-                store.persist_in(&root).expect("persist after remove");
-                assert!(
-                    SecretVault::open_in(&root)
-                        .get(&AccountId::from("a@x.example"))
-                        .is_none(),
-                    "the removed account's secret must be purged from the vault"
-                );
-                std::fs::remove_dir_all(&root).ok();
-            }
-
-            {
-                let root = temp_root();
-                let id = AccountId::from("g@gmail.com");
-                {
-                    let mut vault = SecretVault::open_in(&root);
-                    vault.put(
-                        &id,
-                        &accounts::Secret {
-                            password: String::new(),
-                            token: Some("{\"access_token\":\"tok\"}".into()),
-                        },
-                    );
-                    vault.save();
-                }
-                let mut c = cfg("g@gmail.com", "G");
-                c.auth = crate::model::AuthMethod::OAuth;
-                c.password.clear();
-                let store = AccountStore::single(c);
-                store.persist_in(&root).expect("persist");
-                let secret = SecretVault::open_in(&root)
-                    .get(&id)
-                    .expect("token survives");
-                assert_eq!(secret.token.as_deref(), Some("{\"access_token\":\"tok\"}"));
-                std::fs::remove_dir_all(&root).ok();
-            }
-
-            {
-                let root = temp_root();
-                let mut c = cfg("a@x.example", "A");
-                c.password = "hunter2".into();
-                let store = AccountStore::single(c);
-                store.persist_in(&root).expect("persist");
-
-                let store_json =
-                    std::fs::read_to_string(accounts::store_path_in(&root)).expect("store written");
-                assert!(
-                    !store_json.contains("hunter2"),
-                    "password must not reach the shared store JSON"
-                );
-
-                let back = AccountStore::load_in(&root);
-                assert!(
-                    back.accounts[0].config.password.is_empty(),
-                    "Mail reads no password from the device: the session releases it"
-                );
-                std::fs::remove_dir_all(&root).ok();
-            }
-
-            {
-                let root = tempfile::tempdir().unwrap();
-                let mut config = cfg("a@x.example", "Original");
-                config.password = "fixture-original-secret".into();
-                let mut store = AccountStore::single(config);
-                store.persist_in(root.path()).unwrap();
-                let metadata_path = accounts::store_path_in(root.path());
-                let original_metadata = std::fs::read(&metadata_path).unwrap();
-                let vault_path = accounts::vault_dir_in(root.path()).join("vault.enc");
-                let original_vault = std::fs::read(&vault_path).unwrap();
-                let damaged = b"damaged fixture vault";
-                std::fs::write(&vault_path, damaged).unwrap();
-                store.accounts[0].config.display_name = "Unsaved change".into();
-                store.accounts[0].config.password = "fixture-new-secret".into();
-
-                let error = store
-                    .persist_in(root.path())
-                    .expect_err("ownership must succeed first");
-                assert!(error.to_string().contains("vault recovery required"));
-                assert_eq!(std::fs::read(&vault_path).unwrap(), damaged);
-                assert_eq!(std::fs::read(&metadata_path).unwrap(), original_metadata);
-
-                std::fs::write(&vault_path, original_vault).unwrap();
-                let restored = AccountStore::load_in(root.path());
-                assert_eq!(restored.accounts[0].config.display_name, "Original");
             }
         }
 
         phase a_mail_account_from_the_workspaces_accounts_reads_back_without_a_password;
         {
-            use accounts::person::PersonAccounts;
-            let root = temp_root();
             let config = AccountConfig {
                 display_name: "Work".into(),
                 email: "me@work.example".into(),
-                password: "kept-on-the-device".into(),
+                password: "typed-into-settings".into(),
                 ..AccountConfig::default()
             };
-            let account = Account::new(config.clone());
-            let mut vault = SecretVault::open_in(&root);
-            vault.put(
-                &AccountId::from(account.id.clone()),
-                &accounts::Secret::password(config.password),
-            );
-            vault.save();
-            let mut replica = ui::tilo_resource::Replica::<PersonAccounts>::new();
-            replica
-                .apply(PersonAccounts::saving(&account.to_stored()))
-                .unwrap();
-            let person = replica.state().unwrap();
-            let shown = AccountStore::from_shared(&person.store());
+            let account = Account::new(config);
+            let mut record = Replica::<PersonAccounts>::new();
+            let shown = kept(&mut record, &AccountStore {
+                accounts: vec![account.clone()],
+                active: 0,
+            });
             let mut unsigned = account;
             unsigned.config.password.clear();
             assert_eq!(shown.accounts, vec![unsigned]);
             assert!(
-                !format!("{person:?}").contains("kept-on-the-device"),
+                !format!("{:?}", record.state().unwrap()).contains("typed-into-settings"),
                 "the password never enters the resource"
             );
-            std::fs::remove_dir_all(&root).ok();
         }
-    }
-
-    fn temp_root() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("tilo-mail-accounts-{}", uuid::Uuid::new_v4()))
     }
 }
 

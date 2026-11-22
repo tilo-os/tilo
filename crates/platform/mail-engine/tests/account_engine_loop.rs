@@ -1,32 +1,18 @@
 //! End-to-end proof of the account → Mail → engine loop, on the default
 //! (network-free) build.
 //!
-//! An email account persisted into the shared account store + secret vault is
-//! read back by Mail's own loader, then driven through the real account engine:
+//! An email account kept in the workspace's accounts record is read back as
+//! Mail reads it, then driven through the real account engine:
 //! the same `EngineRequest`/`EngineEvent` channel the live UI posts to. The
 //! offline (stub) backend answers Connect/Fetch and builds a genuine MIME on
 //! Send, so this exercises the whole request/response plumbing plus the real
 //! parse (incoming) and build (outgoing) paths. The live IMAP/SMTP socket loop
 //! is proven separately by the `--features live` engine tests.
 
-
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-
 use mail_engine::account::AccountStore;
 use mail_engine::engine::{EngineEvent, EngineRequest};
 use mail_engine::model::{AccountConfig, Addr, Draft, Folder};
 use mail_engine::transport::{build_mime, parse_eml, parse_fetched};
-
-fn unique_root() -> PathBuf {
-    static N: AtomicU32 = AtomicU32::new(0);
-    let n = N.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "tilo-mail-engine-loop-{}-{}",
-        std::process::id(),
-        n
-    ))
-}
 
 fn recv(
     rx: &std::sync::mpsc::Receiver<EngineEvent>,
@@ -73,11 +59,7 @@ fn assert_send_builds_real_mime(loaded: &AccountConfig, draft: &Draft) {
 
 #[test]
 fn account_from_the_shared_store_drives_the_engine_end_to_end() {
-    let root = unique_root();
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-
-    // 1) An account is configured and persisted the way Settings/Mail write it:
+    // 1) An account is configured and kept in the workspace's accounts the way Mail writes it:
     let mut cfg = AccountConfig {
         display_name: "Ada Lovelace".into(),
         email: "ada@analytical.example".into(),
@@ -89,18 +71,23 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         ..Default::default()
     };
     cfg.password = "app-password".into();
-    AccountStore::single(cfg)
-        .persist_in(&root)
-        .expect("persist account to the shared store");
+    let mut record = ui::tilo_resource::Replica::<accounts::person::PersonAccounts>::new();
+    let (edits, _) = AccountStore::single(cfg).edits_for(&record.state().unwrap());
+    for edit in edits {
+        record.apply(edit).unwrap();
+    }
 
-    // 2) Mail loads that exact account back through its own loader, without its
-    //    password: the session releases that to whoever signs in.
-    let store = AccountStore::load_in(&root);
+    // 2) Mail reads that exact account back from the record, without its password: the session
+    //    releases that to whoever signs in.
+    let store = AccountStore::from_shared(&record.state().unwrap().store());
     assert_eq!(store.len(), 1, "Mail reads back the one configured account");
     let mut loaded = store.active_config();
     assert_eq!(loaded.email, "ada@analytical.example");
     assert_eq!(loaded.imap_host, "imap.analytical.example");
-    assert!(loaded.password.is_empty(), "Mail reads no password from the device");
+    assert!(
+        loaded.password.is_empty(),
+        "Mail reads no password from the device"
+    );
     loaded.password = "app-password".into();
 
     // 3) Drive the account engine with that loaded account over its real
@@ -177,6 +164,4 @@ The mill and the store are ready.\r\n";
     assert_eq!(msg.from.email, "babbage@engine.example");
     assert!(msg.body.contains("mill and the store"));
     assert!(msg.read, "the server's \\Seen flag maps to read");
-
-    let _ = std::fs::remove_dir_all(&root);
 }

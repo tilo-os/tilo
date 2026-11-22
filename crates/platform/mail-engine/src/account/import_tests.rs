@@ -1,13 +1,9 @@
 use super::*;
-use accounts::SecretVault;
+use ui::tilo_resource::Replica;
 
 #[test]
-fn pending_metadata_is_visible_without_hydrating_or_changing_an_existing_secret() {
-    let temp = tempfile::tempdir().unwrap();
+fn a_pending_import_shows_its_metadata_and_stays_pending_once_mail_keeps_it() {
     let id = AccountId::from("person@example.org");
-    let mut vault = SecretVault::open_in(temp.path());
-    vault.put(&id, &accounts::Secret::password("fixture-existing-secret"));
-    vault.try_save().unwrap();
     let mut shared = SharedStore::new();
     let mut stored = StoredAccount::new(id.clone(), accounts::thunderbird::PENDING_TYPE);
     stored.set_config(&AccountConfig {
@@ -20,30 +16,27 @@ fn pending_metadata_is_visible_without_hydrating_or_changing_an_existing_secret(
         ..Default::default()
     });
     shared.upsert(stored);
-    shared.save_in(temp.path()).unwrap();
     let native = AccountStore::from_shared(&shared);
     assert_eq!(native.accounts.len(), 1);
     assert!(native.accounts.first().unwrap().config.password.is_empty());
     assert!(native.accounts.first().unwrap().config.import_pending);
-    native.persist_in(temp.path()).unwrap();
-    let reopened = AccountStore::load_in(temp.path());
+
+    let mut record = Replica::<PersonAccounts>::new();
+    let (edits, _) = native.edits_for(&record.state().unwrap());
+    for edit in edits {
+        record.apply(edit).unwrap();
+    }
+    let kept = record.state().unwrap().store();
+    let reopened = AccountStore::from_shared(&kept);
     assert_eq!(reopened.accounts.len(), 1);
     assert!(reopened.accounts.first().unwrap().config.import_pending);
     assert_eq!(
-        SharedStore::load_in(temp.path())
-            .get(&id)
-            .unwrap()
-            .display_name,
+        kept.get(&id).unwrap().display_name,
         "Imported Reader",
-        "Mail saves the shared AccountConfig label for pending accounts"
+        "Mail keeps the pending account's label"
     );
     assert!(
-        SharedStore::load_in(temp.path())
-            .list(&TYPE_ID.into())
-            .is_empty()
-    );
-    assert_eq!(
-        SecretVault::open_in(temp.path()).get(&id).unwrap().password,
-        "fixture-existing-secret"
+        kept.list(&TYPE_ID.into()).is_empty(),
+        "a pending import is not a mail account until its person signs it in"
     );
 }
