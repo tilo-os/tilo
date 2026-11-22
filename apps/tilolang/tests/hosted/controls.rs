@@ -216,11 +216,11 @@ impl super::Session {
 pub(super) struct ShownControl {
     /// What it does: the identity of the app action it runs, or of the field it edits. `None` for
     /// a control that runs none.
-    pub(super) doing: Option<String>,
+    doing: Option<String>,
     /// What the person's language calls it.
     pub(super) name: String,
     /// Where it stands: its left and top edge, its width and its height.
-    pub(super) at: (f64, f64, f64, f64),
+    at: (f64, f64, f64, f64),
 }
 
 impl super::Session {

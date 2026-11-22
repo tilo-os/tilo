@@ -1144,15 +1144,9 @@ fn the_task_list_holds_many_tasks_through_a_scroll_an_edit_an_undo_and_a_restart
         !numbers.is_empty() && numbers.iter().all(|number| number % 3 == 0),
         "the list holds finished tasks: {numbers:?}"
     );
-    // A task's page opens where its row stands, and what is typed into its title is kept: the
-    // row at the top of what the window shows, so its page opens in view.
-    let title = session
-        .controls()
-        .into_iter()
-        .filter(|control| control.doing.is_none() && end.contains(&control.name))
-        .min_by(|a, b| a.at.1.total_cmp(&b.at.1))
-        .map(|control| control.name)
-        .expect("a row in view");
+    // A task's page opens where its row stands, below the fold included, and what is typed into
+    // its title is kept.
+    let title = end.first().cloned().expect("a row");
     let anchor = {
         let host = session.instance_host();
         let root = host.root_of(super::TASKS).expect("the root");
