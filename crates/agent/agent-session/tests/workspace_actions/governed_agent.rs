@@ -386,6 +386,8 @@ async fn a_hosted_roster_turn() {
     let roster = &hosted.roster;
     let workbook = page.create(SHEETS);
     let tracker = page.create("so.tilo.tasks");
+    // A letter in Writer, which the agent's grant does not name.
+    let letter = page.create("so.tilo.word-processor");
     file_issue(
         &roster.actions,
         &workspaces,
@@ -405,9 +407,13 @@ async fn a_hosted_roster_turn() {
         }
     };
     let deadline = tilo_test_env::hang_deadline();
-    let (workbook_before, tracker_before) = loop {
-        if let (Some(sheets), Some(tasks)) = (read(&workbook).await, read(&tracker).await) {
-            break (sheets, tasks);
+    let (workbook_before, tracker_before, letter_before) = loop {
+        if let (Some(sheets), Some(tasks), Some(letter)) = (
+            read(&workbook).await,
+            read(&tracker).await,
+            read(&letter).await,
+        ) {
+            break (sheets, tasks, letter);
         }
         assert!(
             Instant::now() < deadline,
@@ -436,7 +442,8 @@ async fn a_hosted_roster_turn() {
     let model = does_then_answers(
         vec![
             serde_json::json!({"path": "sheets#new-sheet", "args": {"name": "Roster signed"}}),
-            serde_json::json!({"path": "tasks#create", "args": {"title": "Outside the grant"}}),
+            // Writer is no app its grant names.
+            serde_json::json!({"path": "word-processor#append-paragraph", "args": {"text": "Outside the grant"}}),
             edit(&denied, "protected", "Denied"),
             edit(&accepted, "title", "Updated"),
         ],
@@ -473,6 +480,11 @@ async fn a_hosted_roster_turn() {
     ended.unwrap();
     assert_ne!(read(&workbook).await.unwrap(), workbook_before);
     assert_eq!(read(&tracker).await.unwrap(), tracker_before);
+    assert_eq!(
+        read(&letter).await.unwrap(),
+        letter_before,
+        "the refused write outside the grant changed nothing"
+    );
     let signed = roster_write(&hosted, workspace.workspace_id, &workbook, device).await;
     assert_eq!(signed.len(), 1, "{signed:?}");
     let (count, _) = retained_sealed(&hosted, workspace.workspace_id, &tracker, device).await;
