@@ -758,36 +758,36 @@ const WIPED_TEST: &str = "standalone::files::replica::tests::\
 /// The invitation the member redeems, in its own process, each time it starts.
 const MEMBER_INVITATION: &str = "TILO_REPLICA_TEST_MEMBER_INVITATION";
 
-/// Whether a FUSE mount is still up at `at`: listed, or left by a daemon that is gone and not
-/// unmounted yet, which answers "not connected".
-fn mounted_at(at: &Path) -> bool {
-    if std::fs::symlink_metadata(at)
-        .is_err_and(|error| error.raw_os_error() == Some(libc::ENOTCONN))
-    {
-        return true;
-    }
+/// The FUSE mounts still up under `root`: the member's folders, its own workspace's among them.
+fn mounts_under(root: &Path) -> Vec<String> {
     let Ok(mounts) = std::fs::read_to_string("/proc/self/mounts") else {
-        return false;
+        return Vec::new();
     };
-    let escaped = at.to_string_lossy().replace(' ', "\\040");
-    mounts.lines().any(|line| {
-        let mut fields = line.split_whitespace();
-        let _source = fields.next();
-        let point = fields.next();
-        let kind = fields.next();
-        point == Some(escaped.as_str()) && kind.is_some_and(|kind| kind.starts_with("fuse"))
-    })
+    let under = format!("{}/", root.to_string_lossy().replace(' ', "\\040"));
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let _source = fields.next();
+            let point = fields.next()?;
+            let kind = fields.next()?;
+            (point.starts_with(&under) && kind.starts_with("fuse")).then(|| point.to_owned())
+        })
+        .collect()
 }
 
-/// A member killed the hard way leaves its mount to the guardian: wait for it to go before
-/// wiping, since a folder still mounted there cannot be removed (ENOTCONN).
-fn wait_for_unmount(folder: &Path) {
+/// A member killed the hard way leaves its mounts to the guardian: wait for them all to go
+/// before wiping, since a folder still mounted cannot be removed (ENOTCONN).
+fn wait_for_unmount(root: &Path) {
     let cleared = std::time::Instant::now();
-    while mounted_at(folder) {
+    loop {
+        let left = mounts_under(root);
+        if left.is_empty() {
+            return;
+        }
         assert!(
             cleared.elapsed() <= Duration::from_secs(30),
-            "the stopped member's mount at {} never went",
-            folder.display()
+            "the stopped member's mounts never went: {left:?}"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -806,7 +806,13 @@ fn wipe_all_but_identity(root: &Path) {
         environment.join("cache"),
     ] {
         if gone.exists() {
-            std::fs::remove_dir_all(&gone).unwrap();
+            std::fs::remove_dir_all(&gone).unwrap_or_else(|error| {
+                let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+                panic!(
+                    "could not wipe {}: {error}; mounted:\n{mounts}",
+                    gone.display()
+                )
+            });
         }
         std::fs::create_dir_all(&gone).unwrap();
     }
@@ -998,7 +1004,7 @@ fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
     let _ = first.wait();
     eprintln!("the server kept the tree after {:?}", started.elapsed());
 
-    wait_for_unmount(&folder);
+    wait_for_unmount(&member_root);
 
     // The member's disk is wiped; it starts again with its identity alone and
     // takes part in the workspace again.
