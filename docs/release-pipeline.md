@@ -89,7 +89,7 @@ support-matrix decision remain
 separate from enabling the job.
 
 The Fedora desktop job also emits a small deterministic OS payload containing
-the same install-tested `tilo-session`, `tilo-launcher`, `tilo-runtime-mcp`
+the same install-tested `tilo-session`, `tilo-launcher`, `tilo-runtime`
 and `tilo-unlock-helper` binaries. A successful `main` build publishes it
 immutably and advances `TILO_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`.
 Trusted OS composition downloads the matching architecture and omits those four

@@ -2,7 +2,7 @@
 //! for whoever sees it, changes nothing, and once a person accepts it the change is theirs and
 //! says who proposed it.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::store::Version;
 use tilolang_runtime::{
     Actor, AgentBlock, InvocationEntry, InvokeOutcome, Resolution, ResourceRef, Store as _, Value,
@@ -42,9 +42,9 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 
 /// Ada's replica with a task and a project she filed it under, and the task.
 fn workspace() -> (Replica, Value) {
-    let (mut ada, _) = Replica::new(
+    let (ada, _) = Replica::new(
         "ada",
-        AutoCommit::new(),
+        Workspace::new(),
         &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
     );
     ada.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
@@ -114,7 +114,7 @@ tilo_test_env::scenario! {
 
     phase a_proposed_change_waits_until_a_person_accepts_it;
     {
-        let (mut ada, task) = workspace();
+        let (ada, task) = workspace();
         let (inv, record) = suggest(&ada, "scout", &schedule_source(&task));
         assert_eq!(record.state, "suggested");
         assert_eq!(
@@ -155,7 +155,7 @@ tilo_test_env::scenario! {
 
     phase a_dismissed_proposal_changes_nothing_and_asks_once;
     {
-        let (mut ada, task) = workspace();
+        let (ada, task) = workspace();
         let (inv, _) = suggest(&ada, "scout", &schedule_source(&task));
         ada.commit();
         let before = ada.host.store().versions(&target(&task)).unwrap().len();
@@ -189,7 +189,7 @@ tilo_test_env::scenario! {
 
     phase two_agents_propose_on_one_task_and_each_card_waits_for_its_own_decision;
     {
-        let (mut ada, task) = workspace();
+        let (ada, task) = workspace();
         let priority = read(&ada, &task, "priority");
         let due = suggest(&ada, "scout", &schedule_source(&task));
         let assign = suggest(
@@ -250,7 +250,7 @@ tilo_test_env::scenario! {
 
     phase the_task_shows_what_waits_on_it_and_who_proposed_it;
     {
-        let (mut ada, task) = workspace();
+        let (ada, task) = workspace();
         // The task page and the row draw nothing while nothing waits.
         let page = ada.host.open_resource(&target(&task), None).unwrap();
         assert!(cards(page.tree()).is_empty(), "{:?}", texts(page.tree()));

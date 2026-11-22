@@ -6,7 +6,6 @@
 //! With `TILO_INTERACTION_SHOTS=<dir>` the test `shots` writes each state at desktop and phone
 //! sizes, light and dark.
 
-
 use crate::change_marks::{menu_items, right_click};
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;

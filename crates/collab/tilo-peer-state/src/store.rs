@@ -546,11 +546,12 @@ impl Store {
             .map_or(0, |stored| stored.bytes)
     }
 
-    /// Each lineage of `workspace` with the earliest and latest sequence
-    /// number the store holds there: what a member asks about and what a
-    /// diagnostic shows.
+    /// Where the store stands on each author's line of `workspace`: the
+    /// cursor at the latest frame it keeps there, with the earliest it keeps.
+    /// The cursors are what a device whose store this is asks another's to
+    /// continue from, and what it says it keeps.
     #[must_use]
-    pub fn lineages(&self, workspace: WorkspaceId) -> Vec<(Lineage, u64, u64)> {
+    pub fn stands(&self, workspace: WorkspaceId) -> Vec<(Cursor, u64)> {
         let held = self.held.lock_recover();
         held.workspaces
             .get(&workspace)
@@ -560,7 +561,13 @@ impl Store {
                     .filter_map(|(lineage, entries)| {
                         let first = entries.first()?.seq;
                         let last = entries.last()?.seq;
-                        Some((*lineage, first, last))
+                        Some((
+                            Cursor {
+                                lineage: *lineage,
+                                after_seq: last,
+                            },
+                            first,
+                        ))
                     })
                     .collect()
             })
@@ -1935,8 +1942,8 @@ mod tests {
             }
             let lineage = frames[0].lineage;
             assert_eq!(
-                store.lineages(workspace()),
-                vec![(lineage, 1, 3)],
+                store.stands(workspace()),
+                vec![(cursor(lineage, 3), 1)],
                 "one lineage holds the three frames"
             );
 
@@ -2073,10 +2080,13 @@ mod tests {
                 .retain(workspace(), &frame(&author, 4, ContentRetention::Delta))
                 .unwrap();
 
-            let lineages = store.lineages(workspace());
+            let stands = store.stands(workspace());
             assert_eq!(
-                lineages,
-                vec![(checkpoint.lineage, 3, 4), (theirs.lineage, 1, 1)],
+                stands,
+                vec![
+                    (cursor(checkpoint.lineage, 4), 3),
+                    (cursor(theirs.lineage, 1), 1)
+                ],
                 "the checkpoint retired the author's earlier frames and nothing else"
             );
             let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
@@ -2116,8 +2126,8 @@ mod tests {
             let reopened = Store::open(dir.path(), Appetite::Bounded { max_bytes: kept }).unwrap();
             assert_eq!(reopened.bytes(), kept);
             assert_eq!(
-                reopened.lineages(workspace()),
-                vec![(checkpoint.lineage, 3, 3)]
+                reopened.stands(workspace()),
+                vec![(cursor(checkpoint.lineage, 3), 3)]
             );
             let replay = reopened.replay(workspace(), &[], Budget::default()).unwrap();
             assert_eq!(replay.frames, vec![checkpoint.message]);
@@ -2135,7 +2145,7 @@ mod tests {
             let retired = store.compact(workspace(), 3).unwrap();
             assert_eq!(retired.frames, 2);
             assert!(retired.bytes > 0);
-            assert_eq!(store.lineages(workspace()).len(), 1);
+            assert_eq!(store.stands(workspace()).len(), 1);
             assert_eq!(
                 store.compact(WorkspaceId::from_u128(8), u64::MAX).unwrap(),
                 Retired::default()
@@ -2170,7 +2180,7 @@ mod tests {
             let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
             let retired = store.compact(workspace(), u64::MAX).unwrap();
             assert_eq!(retired.frames, 2, "the two deltas both holders hold went");
-            assert_eq!(store.lineages(workspace()), vec![(lineage, 1, 5)]);
+            assert_eq!(store.stands(workspace()), vec![(cursor(lineage, 5), 1)]);
             let behind = store
                 .replay(workspace(), &[cursor(lineage, 3)], Budget::default())
                 .unwrap();
@@ -2182,8 +2192,8 @@ mod tests {
                 .unwrap();
             assert_eq!(store.compact(workspace(), u64::MAX).unwrap().frames, 2);
             assert_eq!(
-                store.lineages(workspace()),
-                vec![(lineage, 1, 1)],
+                store.stands(workspace()),
+                vec![(cursor(lineage, 1), 1)],
                 "the newest checkpoint stays"
             );
         }
@@ -2608,7 +2618,7 @@ mod tests {
         eprintln!(
             "store at 10k resources: {per_second:.0} writes/s ({WRITES} in {elapsed:?}), reopened in {open:?}"
         );
-        assert_eq!(reopened.lineages(workspace()).len(), RESOURCES);
+        assert_eq!(reopened.stands(workspace()).len(), RESOURCES);
         assert_eq!(reopened.bytes(), bytes);
         assert!(
             reopened.segments(workspace()).len() < 16,

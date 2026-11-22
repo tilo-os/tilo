@@ -1,6 +1,0 @@
-{
-  "about": "The big-folder story's workspace, sized to what one daily run can afford: a photo library's worth of small files and a few long videos, copied in through the mounted workspace folder. The terabyte rungs are the fs-workspace-scale check's (tools/ci/fs-workspace-scale.sh); this story is a person's day at one affordable size, held to a person's budgets.",
-  "photos": {"count": 10000, "bytes": 262144},
-  "videos": {"count": 3, "mib": 2048},
-  "folderEntries": 1000
-}

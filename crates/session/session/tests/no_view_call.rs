@@ -19,20 +19,17 @@
 use serde_json::json;
 use tilo_server_protocol::workspaces::Role;
 
-use crate::common::people::{Device, Person, Site, join_together};
+use crate::common::people::{Device, Person, Site, at, join_together};
+use tilo_actions::remote::RemoteActionTarget;
 
 /// The app whose code the agent's call runs.
 const APP: &str = "so.tilo.lang.tasks";
 /// The workspace's `start` of [`APP`], as the host names it.
-fn start_action(workspace: &str) -> (String, String) {
-    (
-        tilo_actions::remote::workspace_provider(workspace),
-        format!(
-            "{}{APP}{}{}",
-            tilo_actions::remote::APPLICATION_RESOURCE_PREFIX,
-            tilo_actions::KEY_SEP,
-            tilo_actions::remote::APPLICATION_START_ACTION
-        ),
+fn start_action(workspace: &str) -> RemoteActionTarget {
+    at(
+        &tilo_actions::remote::workspace_provider(workspace),
+        &format!("{}{APP}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX),
+        tilo_actions::remote::APPLICATION_START_ACTION,
     )
 }
 
@@ -64,8 +61,7 @@ fn a_call_of_a_tilolang_app_with_nothing_shown_never_opens_a_view() {
 
     // The call an agent makes: the workspace's `start` of the app. It reaches the app's process
     // start, which needs runtimes this check installs none of, and it is answered with that.
-    let (provider, id) = start_action(&site.workspace);
-    let answer = laptop.act_wait(&provider, &id, &json!({}));
+    let answer = laptop.act_wait(&start_action(&site.workspace), &json!({}));
     assert!(
         answer
             .get("err")
@@ -80,9 +76,7 @@ fn a_call_of_a_tilolang_app_with_nothing_shown_never_opens_a_view() {
     // Nothing of the app is running, so no call of it is offered either: a view would have to
     // open for one, and none did.
     assert!(
-        !laptop.actions()["answer"]["actions"]
-            .as_array()
-            .is_some_and(|rows| rows.iter().any(|row| row["application"] == APP)),
+        !laptop.actions().iter().any(|row| row.app_id == APP),
         "no process of the app publishes anything here"
     );
 }

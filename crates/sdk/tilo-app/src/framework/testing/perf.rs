@@ -595,7 +595,7 @@ pub fn glide<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), frames: u
         app.harness().send(&wheel(TouchPhase::Ended, 0.0));
         while report.samples.len() < frames {
             let start = Clocks::start();
-            let (ran, scopes) = tilo_resource::profiling::observe(|| app.frame());
+            let (ran, scopes) = tilo_resource::profiling::observe(|| app.frame_if_owed());
             if !ran {
                 break;
             }

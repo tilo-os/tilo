@@ -18,10 +18,9 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_PROVIDER,
 };
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
-use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use super::super::tests::{admit, caller, governed, request, settled};
+use super::super::tests::{admit, caller, governed, offered, request, settled};
 use super::super::{ADD_MEMBER, ServiceWorkspaceActions};
 use crate::workspaces::tests::{governor, signed_pre_admission, test_host};
 use crate::workspaces::{AsksPeople, PersonAnswer, PreAdmitRequest, Workspaces};
@@ -152,19 +151,7 @@ async fn an_agent_governs_as_its_grants_answer_and_asks_its_person_by_default() 
         "{refused:?}"
     );
     assert_eq!(declining.asked().len(), 1, "refused, nobody is asked");
-    let query = tilo_actions::remote::CatalogueQuery {
-        provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
-        max_results: 100,
-        ..Default::default()
-    };
-    let offered = settled(actions.in_workspace(workspace_id).query(&agent, query))
-        .await
-        .unwrap();
-    let verbs: Vec<_> = offered
-        .rows
-        .into_iter()
-        .filter_map(|row| row.action.map(|action| action.address.action))
-        .collect();
+    let verbs = offered(&actions, workspace_id, &agent).await;
     assert!(!verbs.iter().any(|verb| verb == ADD_MEMBER), "{verbs:?}");
     assert!(
         verbs.iter().any(|verb| verb == super::super::MEMBERS),
@@ -236,7 +223,7 @@ async fn a_persons_own_key_removes_a_member_as_they_may_and_no_further() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, _, _) = governed(workspaces).await;
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
     // Quinten administers the workspace; his scripts' key is him.
@@ -255,32 +242,24 @@ async fn a_persons_own_key_removes_a_member_as_they_may_and_no_further() {
         .unwrap();
     let scripts = device_of(&quinten, "scripts", DeviceCapabilities::server_key_grant());
     let_in(workspaces, &workspace, &owner, &scripts, 3).await;
-    let remove = |member: &DeviceCert| WorkspacesRequest::Remove {
-        workspace: workspace.clone(),
-        request_id: rand::random(),
-        user_public_key: member.user_public_key,
+    let remove = |caller: &Caller, member: &DeviceCert| {
+        let asked = request(
+            &workspace,
+            tilo_action_policy::roles::governance::REMOVE_MEMBER,
+            json!({"person": hex::encode(member.user_public_key)}),
+        );
+        settled(actions.in_workspace(workspace_id).invoke(caller, asked))
     };
     // Its session says it acts for him, as every key's does.
-    let caller = caller(&scripts).delegated_to("scripts");
-    workspaces
-        .admit_page(&scripts, &caller, &remove(&ada))
-        .await
-        .unwrap();
-    let removed = workspaces.page_workspaces(&scripts, remove(&ada)).await;
-    assert!(
-        !matches!(removed, WorkspacesReply::Refused(_)),
-        "{removed:?}"
-    );
+    let removed = remove(&caller(&scripts).delegated_to("scripts"), &ada).await;
+    assert!(removed.is_ok(), "{removed:?}");
 
     // An Editor's own key removes nobody: neither may they.
     let bo = SigningKey::from_bytes(&rand::random());
     let bo_key = device_of(&bo, "bo's scripts", DeviceCapabilities::server_key_grant());
     let_in(workspaces, &workspace, &owner, &bo_key, 4).await;
-    let refused = workspaces.page_workspaces(&bo_key, remove(&laptop)).await;
-    assert!(
-        matches!(refused, WorkspacesReply::Refused(_)),
-        "{refused:?}"
-    );
+    let refused = remove(&caller(&bo_key).delegated_to("scripts"), &laptop).await;
+    assert!(refused.is_err(), "{refused:?}");
     server.shutdown().await;
 }
 
@@ -412,18 +391,24 @@ async fn its_person_is_asked_last_once_their_own_checks_pass() {
 
     // Ada removes nobody herself, so her agent is refused before she is asked:
     // her yes would be refused after.
-    let removing = WorkspacesRequest::Remove {
-        workspace: workspace.clone(),
-        request_id: rand::random(),
-        user_public_key: bo.user_public_key,
+    let remove = || {
+        request(
+            &workspace,
+            tilo_action_policy::roles::governance::REMOVE_MEMBER,
+            json!({"person": hex::encode(bo.user_public_key)}),
+        )
     };
-    let refused = workspaces
-        .admit_page(&ada, &agent_of(&ada), &removing)
-        .await;
+    let refused = settled(
+        actions
+            .in_workspace(workspace_id)
+            .invoke(&agent_of(&ada), remove()),
+    )
+    .await;
     assert!(refused.is_err(), "{refused:?}");
+    assert!(allowing.asked().is_empty(), "{:?}", allowing.asked());
 
-    // Only the owner removes someone by asking: an administrator's agent is
-    // refused before its person is asked.
+    // An administrator removes someone ranked below them: their agent asks
+    // them first, and what they refuse leaves the member in place.
     workspaces
         .set_member_administrator(
             &workspace,
@@ -434,24 +419,26 @@ async fn its_person_is_asked_last_once_their_own_checks_pass() {
         )
         .await
         .unwrap();
-    let remove = request(
-        &workspace,
-        tilo_action_policy::roles::governance::REMOVE_MEMBER,
-        json!({"person": hex::encode(bo.user_public_key)}),
-    );
+    let refusing = Person::answering(ConfirmationAnswer::Deny);
+    workspaces.ask_people(refusing.clone());
     let refused = settled(
         actions
             .in_workspace(workspace_id)
-            .invoke(&agent_of(&ada), remove),
+            .invoke(&agent_of(&ada), remove()),
     )
     .await;
-    assert_eq!(
-        refused.unwrap_err(),
-        ActionCallError::confirmation_required()
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(refusing.asked().len(), 1, "the administrator is asked");
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert!(
+        members
+            .iter()
+            .any(|member| member.root() == Some(bo.user_public_key) && !member.removed),
+        "what she refused leaves Bo in place: {members:?}"
     );
-    assert!(allowing.asked().is_empty(), "{:?}", allowing.asked());
 
     // What passes her checks is hers to answer.
+    workspaces.ask_people(allowing.clone());
     demote(&actions, (&workspace, workspace_id), &agent_of(&ada), &bo)
         .await
         .unwrap();

@@ -316,7 +316,7 @@ impl Post<'_> {
 
 /// `body` posted as `post` says, and the whole of the answer's text, read
 /// to at most [`MAX_STREAM_BYTES`]: a one-shot ask whose body its caller
-/// wrote (a transform, a local model's photo index).
+/// wrote (a local model's photo index).
 pub(super) async fn post(
     post: Post<'_>,
     body: &serde_json::Value,

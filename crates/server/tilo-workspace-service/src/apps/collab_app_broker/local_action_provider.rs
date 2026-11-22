@@ -673,11 +673,11 @@ impl ActionProvider for CertifiedLocalActionProvider {
         &self,
         caller: &Caller,
         scope: tilo_actions::remote::WatchScope,
-    ) -> Option<Pending<()>> {
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
         self.check(caller).ok()?;
         match scope {
             tilo_actions::remote::WatchScope::Records => None,
-            tilo_actions::remote::WatchScope::Here => Some(self.state.policy_changed()),
+            tilo_actions::remote::WatchScope::Here => Some(self.state.policy_changed().map(Ok)),
         }
     }
 

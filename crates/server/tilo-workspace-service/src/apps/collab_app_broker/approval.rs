@@ -178,12 +178,17 @@ impl AppBrokerState {
                 .map(|root| root.peer_id)
         } else if super::launchable::is_launchable_provider(provider) {
             self.launchable.surface_for(provider).and_then(|retained| {
-                self.surfaces.lock().ok()?.values().find_map(|surface| {
-                    (surface.live
-                        && surface.app_id == retained.app_id
-                        && surface.route == retained.route)
-                        .then_some(surface.peer_id)
-                })
+                self.publishers
+                    .surfaces
+                    .lock()
+                    .ok()?
+                    .values()
+                    .find_map(|surface| {
+                        (surface.live
+                            && surface.app_id == retained.app_id
+                            && surface.route == retained.route)
+                            .then_some(surface.peer_id)
+                    })
             })
         } else {
             tilo_failure::ignored!(

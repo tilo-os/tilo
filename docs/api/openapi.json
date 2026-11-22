@@ -48,10 +48,6 @@
       "description": "Bytes going into a workspace and coming out of it"
     },
     {
-      "name": "Members",
-      "description": "The people in a workspace and their invitations"
-    },
-    {
       "name": "Programs",
       "description": "Several calls as one step, written in tilolang"
     }
@@ -1461,530 +1457,6 @@
         }
       }
     },
-    "/v1/workspaces/{workspace}/members": {
-      "get": {
-        "operationId": "listMembers",
-        "summary": "The people in the workspace, and the invitations still open",
-        "tags": [
-          "Members"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The people in the workspace, and the invitations still open",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Members"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "addMember",
-        "summary": "Hold a person in the workspace by their key, at a role, as an administrator or as an owner",
-        "tags": [
-          "Members"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Hold a person in the workspace by their key, at a role, as an administrator or as an owner",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Members"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NewMember"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/members/wait-list": {
-      "get": {
-        "operationId": "listWaitList",
-        "summary": "The addresses people left at the workspace's entry, to invite",
-        "tags": [
-          "Members"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The addresses people left at the workspace's entry, to invite",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WaitList"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/members/wait-list/{entry}": {
-      "delete": {
-        "operationId": "unlistWaiting",
-        "summary": "Take an address off the wait list",
-        "tags": [
-          "Members"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "name": "entry",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The address's entry, as `GET /v1/workspaces/{workspace}/members/wait-list` lists it"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Take an address off the wait list",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WaitList"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/members/invitations": {
-      "post": {
-        "operationId": "invitePerson",
-        "summary": "A link that brings one more person in",
-        "tags": [
-          "Members"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": "A link that brings one more person in",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Invitation"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NewInvitation"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/members/invitations/{invite}": {
-      "delete": {
-        "operationId": "revokeInvitation",
-        "summary": "Revoke an open invitation, by its id: its link lets nobody in from then on",
-        "tags": [
-          "Members"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "name": "invite",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The open invitation's id, as `GET members` lists it"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Revoke an open invitation, by its id: its link lets nobody in from then on",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Members"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/members/name": {
-      "post": {
-        "operationId": "namePerson",
-        "summary": "The name the key's own person goes by, in this workspace and every other one its server keeps",
-        "tags": [
-          "Members"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The name the key's own person goes by, in this workspace and every other one its server keeps",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Members"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NewName"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/members/{person}/role": {
-      "put": {
-        "operationId": "setMemberRole",
-        "summary": "Move a member, by their user public key, to another role, as far as yours allows",
-        "tags": [
-          "Members"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "name": "person",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The person's user public key, as `GET members` lists it"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Move a member, by their user public key, to another role, as far as yours allows",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Members"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MemberRole"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/members/{person}": {
-      "delete": {
-        "operationId": "removeMember",
-        "summary": "Remove a member, by their user public key, and every device of theirs",
-        "tags": [
-          "Members"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "name": "person",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The person's user public key, as `GET members` lists it"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Remove a member, by their user public key, and every device of theirs",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Members"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/workspaces/{workspace}/programs": {
       "post": {
         "operationId": "runProgram",
@@ -3051,13 +2523,6 @@
             "items": {
               "$ref": "#/components/schemas/Workspace"
             }
-          },
-          "text": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The listing as a person reads it ([`super::lines`]): what `tilo`\nprints."
           }
         },
         "required": [
@@ -3218,13 +2683,6 @@
               "null"
             ],
             "description": "For an app: its surface's version, `<app>@<digest>`."
-          },
-          "text": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The read as a person reads it: the same text an MCP client's\n`tilo_read` prints, for a caller with no surface of its own."
           }
         },
         "required": [
@@ -3281,13 +2739,6 @@
             "items": {
               "$ref": "#/components/schemas/KeyRow"
             }
-          },
-          "text": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The listing as a person reads it ([`super::lines`]): what `tilo`\nprints."
           }
         },
         "required": [
@@ -3414,13 +2865,6 @@
               "null"
             ],
             "description": "Passed back as `cursor` for the rest."
-          },
-          "text": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The listing as a person reads it, one line per row: the same lines an\nMCP client's `tilo_ls` prints, for a caller with no surface of its own."
           }
         },
         "required": [
@@ -3745,85 +3189,6 @@
         ],
         "description": "What an app's window shows for a resource: its view's semantic lines, the\nsame ones an MCP client's `tilo_view` prints, and a picture with `picture`."
       },
-      "Members": {
-        "type": "object",
-        "additionalProperties": true,
-        "description": "The workspace's people, each with their role, and the invitations still\nopen, with `text`: the listing as a person reads it."
-      },
-      "NewInvitation": {
-        "type": "object",
-        "properties": {
-          "role": {
-            "type": "string",
-            "description": "`viewer`, `commenter`, `editor`, `administrator` or `owner`."
-          },
-          "email": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The address the invitation names; no mail is sent."
-          },
-          "waiting": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The address on the wait list it is for (its `entry`): mailed to it\nwhere the workspace's entry sends mail, and it leaves the list once\nsomeone joins with it."
-          }
-        },
-        "required": [
-          "role"
-        ]
-      },
-      "NewMember": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string",
-            "description": "Their user public key, 64 hex characters."
-          },
-          "role": {
-            "type": "string",
-            "description": "`viewer`, `commenter`, `editor`, `moderator`, `administrator` or\n`owner`; never more than yours to give. A member already is moved\nthere."
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "How the workspace names them until they name themselves."
-          }
-        },
-        "required": [
-          "person",
-          "role"
-        ],
-        "description": "A person the workspace holds by their key from now on."
-      },
-      "WaitList": {
-        "type": "object",
-        "additionalProperties": true,
-        "description": "The addresses left at the workspace's entry while it takes people by\ninvitation, oldest first, and whether the entry mails invitations, with\n`text`: the listing as a person reads it."
-      },
-      "Invitation": {
-        "type": "object",
-        "additionalProperties": true,
-        "description": "A link that signs the person in and lands them in the workspace."
-      },
-      "NewName": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "The name the workspace's member list and the invitations they make\nshow for them."
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": "How the key's person goes by in the workspace from now on."
-      },
       "WorkspaceName": {
         "type": "object",
         "properties": {
@@ -3836,19 +3201,6 @@
           "name"
         ],
         "description": "What the workspace is called from now on, by every list and device of it."
-      },
-      "MemberRole": {
-        "type": "object",
-        "properties": {
-          "role": {
-            "type": "string",
-            "description": "`viewer`, `commenter`, `editor`, `moderator`, `administrator` or\n`owner`; never more than yours to give."
-          }
-        },
-        "required": [
-          "role"
-        ],
-        "description": "Where a member of the workspace is held from now on."
       },
       "Program": {
         "type": "object",
@@ -4519,22 +3871,6 @@
         ],
         "description": ""
       },
-      "tilo.workspace.agent.set-agent-on-host.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "on_host": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "agent",
-          "on_host"
-        ],
-        "description": ""
-      },
       "tilo.workspace.agent.rename-agent.Arguments": {
         "type": "object",
         "properties": {
@@ -4684,39 +4020,6 @@
               "string",
               "null"
             ]
-          },
-          "coding": {
-            "additionalProperties": false,
-            "properties": {
-              "base": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "branch": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "harness": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "repository": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
           }
         },
         "required": [
@@ -4845,91 +4148,6 @@
           "agent",
           "kind",
           "label"
-        ],
-        "description": ""
-      },
-      "tilo.workspace.agent.sub-agent-coding.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "process": {
-            "additionalProperties": false,
-            "properties": {
-              "command": {
-                "type": "string"
-              },
-              "ended": {
-                "type": "string"
-              },
-              "ended_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "exit": {
-                "maximum": 2147483647,
-                "minimum": -2147483648,
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "started_ms": {
-                "type": "integer"
-              },
-              "stopped_by": {
-                "type": "string"
-              },
-              "words": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "started_ms"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "session": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "spent_micros": {
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "harness": {
-            "additionalProperties": false,
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "agent"
         ],
         "description": ""
       },
@@ -15201,6 +14419,12 @@
         "required": [],
         "description": ""
       },
+      "model-providers.root.list-presets.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "monitor.processes.refresh.Arguments": {
         "type": "object",
         "properties": {},
@@ -23277,6 +22501,7 @@
             "type": "string"
           },
           "item": {
+            "resource_kind": "vault.item",
             "type": "string"
           }
         },
@@ -25259,108 +24484,31 @@
         "required": [],
         "description": ""
       },
-      "tl.host.commit.Arguments": {
-        "type": "object",
-        "properties": {
-          "ticket": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "ticket"
-        ],
-        "description": "Commit a planned action"
-      },
       "tilolang.personal.view-state.Arguments": {
         "type": "object",
-        "properties": {
-          "keep": {}
-        },
-        "required": [
-          "keep"
-        ],
+        "properties": {},
+        "required": [],
         "description": "Keep a view's state"
       },
       "tilolang.personal.seen.Arguments": {
         "type": "object",
-        "properties": {
-          "keep": {}
-        },
-        "required": [
-          "keep"
-        ],
+        "properties": {},
+        "required": [],
         "description": "Keep what is seen"
       },
       "tilolang.personal.seen-runs.Arguments": {
         "type": "object",
-        "properties": {
-          "keep": {}
-        },
-        "required": [
-          "keep"
-        ],
+        "properties": {},
+        "required": [],
         "description": "Keep reviewed runs"
       },
-      "tilolang.personal.reminded.Arguments": {
-        "type": "object",
-        "properties": {
-          "keep": {}
-        },
-        "required": [
-          "keep"
-        ],
-        "description": "Keep a reminder delivered"
-      },
-      "tl.so.tilo.lang.agent.Claim.$create.Arguments": {
+      "tl.so.tilo.agent.Ask.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.agent.Claim.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "device"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.lang.agent.Claim.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.lang.agent.Ask.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.lang.agent.Ask.edit-text.Arguments": {
+      "tl.so.tilo.agent.Ask.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -25379,7 +24527,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Ask.edit-flag.Arguments": {
+      "tl.so.tilo.agent.Ask.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -25397,53 +24545,37 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Ask.withdraw.Arguments": {
+      "tl.so.tilo.agent.Ask.withdraw.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Takes an ask back before a device took its turn. Only its asker may."
       },
-      "tl.so.tilo.lang.agent.Ask.reopen.Arguments": {
+      "tl.so.tilo.agent.Ask.reopen.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Asks again what was withdrawn: the mention that made it is back, as redo puts it back. Only\nits asker may."
       },
-      "tl.so.tilo.lang.agent.Ask.stop.Arguments": {
+      "tl.so.tilo.agent.Ask.stop.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Stops a turn that is working; what the agent did until then stays."
       },
-      "tl.so.tilo.lang.agent.Ask.claim.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "at": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "device",
-          "at"
-        ],
-        "description": "The agent takes the turn of `a` on `device` at `at`. When several devices took it, the\nearliest claim wins and a tie goes to the lowest device key; the others leave it."
-      },
-      "tl.so.tilo.lang.agent.Ask.answer.Arguments": {
+      "tl.so.tilo.agent.Ask.answer.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The agent starts its reply to `a`, the ask's next attempt."
       },
-      "tl.so.tilo.lang.agent.Step.$create.Arguments": {
+      "tl.so.tilo.agent.Step.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.agent.Step.edit-text.Arguments": {
+      "tl.so.tilo.agent.Step.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -25463,7 +24595,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Step.edit-flag.Arguments": {
+      "tl.so.tilo.agent.Step.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -25483,13 +24615,100 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Reply.$create.Arguments": {
+      "tl.so.tilo.agent.SentView.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.agent.Reply.edit-text.Arguments": {
+      "tl.so.tilo.agent.SentView.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "title",
+              "definition"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.agent.SentView.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.agent.Shown.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.agent.Shown.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "card"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.agent.Shown.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.agent.Reply.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.agent.Reply.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -25509,7 +24728,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Reply.edit-flag.Arguments": {
+      "tl.so.tilo.agent.Reply.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -25529,7 +24748,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Reply.say.Arguments": {
+      "tl.so.tilo.agent.Reply.say.Arguments": {
         "type": "object",
         "properties": {
           "more": {
@@ -25551,7 +24770,7 @@
         ],
         "description": "The agent writes `more` at the end of its answer."
       },
-      "tl.so.tilo.lang.agent.Reply.think.Arguments": {
+      "tl.so.tilo.agent.Reply.think.Arguments": {
         "type": "object",
         "properties": {
           "more": {
@@ -25563,7 +24782,7 @@
         ],
         "description": "The agent's model thought `more` on the way, as its provider shows it: at the end of the\nreply's thinking, beside its answer."
       },
-      "tl.so.tilo.lang.agent.Reply.step.Arguments": {
+      "tl.so.tilo.agent.Reply.step.Arguments": {
         "type": "object",
         "properties": {
           "called": {
@@ -25592,7 +24811,45 @@
         ],
         "description": "The agent called `called` on the way, and it answered `answered`."
       },
-      "tl.so.tilo.lang.agent.Reply.finish.Arguments": {
+      "tl.so.tilo.agent.Reply.show_view.Arguments": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "definition": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "definition"
+        ],
+        "description": "The agent answers with a view: `definition`, called `title`."
+      },
+      "tl.so.tilo.agent.Reply.show.Arguments": {
+        "type": "object",
+        "properties": {
+          "card": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "card"
+        ],
+        "description": "The agent shows the thing `card` projects in its answer, live."
+      },
+      "tl.so.tilo.agent.Reply.finish.Arguments": {
         "type": "object",
         "properties": {
           "state": {
@@ -25622,19 +24879,19 @@
         ],
         "description": "The agent's turn ended as `state`: done, failed, or stopped when a person stopped it."
       },
-      "tl.so.tilo.lang.agent.Reply.supersede.Arguments": {
+      "tl.so.tilo.agent.Reply.supersede.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Another device's answer to the same ask stands instead of `r`."
       },
-      "tl.so.tilo.lang.agent.Agents.$create.Arguments": {
+      "tl.so.tilo.agent.Agents.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.agent.Agents.edit-text.Arguments": {
+      "tl.so.tilo.agent.Agents.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -25651,7 +24908,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Agents.edit-flag.Arguments": {
+      "tl.so.tilo.agent.Agents.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -25669,7 +24926,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Agents.ask.Arguments": {
+      "tl.so.tilo.agent.Agents.ask.Arguments": {
         "type": "object",
         "properties": {
           "agent": {
@@ -26085,10 +25342,13 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "topic": {
+            "type": "string"
           }
         },
         "required": [],
-        "description": "Adds a text channel to the sidebar."
+        "description": "Adds a text channel to the sidebar, about `topic` when it is given."
       },
       "tl.so.tilo.chat.Conversations.new_category.Arguments": {
         "type": "object",
@@ -26099,6 +25359,38 @@
         },
         "required": [],
         "description": "Adds a category to the sidebar."
+      },
+      "tl.so.tilo.chat.Conversations.new_voice_channel.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Adds a voice channel to the sidebar."
+      },
+      "tl.so.tilo.chat.Conversations.report_problem.Arguments": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "description": "Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback\nchannel, which the first report opens.\n\nThe people who read the reports there answer, react and start a thread under one as under any\nmessage. The channel is made under one key on every device, so reports filed apart open one."
       },
       "tl.so.tilo.chat.Conversations.message_person.Arguments": {
         "type": "object",
@@ -26139,7 +25431,7 @@
         "required": [
           "who"
         ],
-        "description": "Opens the direct message with `who`, in the sidebar, or the one already open with them: a\nperson has one conversation, not a new empty one each time."
+        "description": "Opens the direct message between the invoker and `who`, in the sidebar, or the one already\nopen between the two of them: two people have one conversation, not a new empty one each\ntime. With yourself it is your notes to self."
       },
       "tl.so.tilo.chat.Conversations.write_to.Arguments": {
         "type": "object",
@@ -26196,6 +25488,177 @@
         ],
         "description": "Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the\none already open, else a new one in the sidebar. The message is sent as every message is."
       },
+      "tl.so.tilo.chat.Conversations.delete_channel.Arguments": {
+        "type": "object",
+        "properties": {
+          "ch": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.TextChannel",
+            "type": "object"
+          }
+        },
+        "required": [
+          "ch"
+        ],
+        "description": "Deletes a channel and what was said in it, from the sidebar or the category it is in."
+      },
+      "tl.so.tilo.chat.Conversations.delete_category.Arguments": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Category",
+            "type": "object"
+          }
+        },
+        "required": [
+          "c"
+        ],
+        "description": "Deletes a category that holds no channel."
+      },
+      "tl.so.tilo.chat.Conversations.move_channel.Arguments": {
+        "type": "object",
+        "properties": {
+          "ch": {},
+          "category": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Category",
+            "type": "object"
+          },
+          "at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ch"
+        ],
+        "description": "Moves a channel to a place in the sidebar: under `category`, or outside any, at `at` among\nthe channels listed there (the end when it is negative). A move keeps the channel and what\nwas written in it."
+      },
+      "tl.so.tilo.chat.Conversations.move_category.Arguments": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Category",
+            "type": "object"
+          },
+          "at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "c"
+        ],
+        "description": "Moves a category to a place in the sidebar, at `at` among the categories and channels listed\nthere (the end when it is negative). Its own channels move with it."
+      },
       "tl.so.tilo.chat.Category.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -26244,10 +25707,107 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "topic": {
+            "type": "string"
           }
         },
         "required": [],
-        "description": "Adds a text channel to a category."
+        "description": "Adds a text channel to a category, about `topic` when it is given."
+      },
+      "tl.so.tilo.chat.Category.add_voice_channel.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Adds a voice channel to a category."
+      },
+      "tl.so.tilo.chat.Category.delete_channel.Arguments": {
+        "type": "object",
+        "properties": {
+          "ch": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.TextChannel",
+            "type": "object"
+          }
+        },
+        "required": [
+          "ch"
+        ],
+        "description": "Deletes a channel and what was said in it, from the sidebar or the category it is in."
+      },
+      "tl.so.tilo.chat.VoiceChannel.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chat.VoiceChannel.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.VoiceChannel.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.chat.TextChannel.$create.Arguments": {
         "type": "object",
@@ -26296,7 +25856,6 @@
       "tl.so.tilo.chat.TextChannel.send.Arguments": {
         "type": "object",
         "properties": {
-          "to": {},
           "body": {
             "oneOf": [
               {
@@ -26341,10 +25900,13 @@
             ],
             "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
+          },
+          "attachments": {
+            "items": {},
+            "type": "array"
           }
         },
         "required": [
-          "to",
           "body"
         ],
         "description": "Posts a message in a channel, a thread or a direct conversation as the invoker, answering\nanother when `reply_to` names one. History and the catch-up say what a person did in its own\nwords, counting the messages a step of them holds."
@@ -26352,7 +25914,6 @@
       "tl.so.tilo.chat.TextChannel.send_view.Arguments": {
         "type": "object",
         "properties": {
-          "to": {},
           "title": {
             "type": "string"
           },
@@ -26361,16 +25922,83 @@
           }
         },
         "required": [
-          "to",
           "title",
           "definition"
         ],
         "description": "Sends a view as a message: its title as what the message says, its definition for anyone\nwho reads it to add to their own views."
       },
+      "tl.so.tilo.chat.TextChannel.relay.Arguments": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "by": {
+            "type": "string"
+          },
+          "written_in": {
+            "type": "string"
+          },
+          "written": {
+            "type": "integer"
+          },
+          "attachments": {
+            "items": {},
+            "type": "array"
+          },
+          "reply_to": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Message",
+            "type": "object"
+          }
+        },
+        "required": [
+          "body",
+          "by",
+          "written_in"
+        ],
+        "description": "Posts a message written on another service, as it was written there: who wrote it, as that\nservice names them, where and when. A bridge relays another service's conversation this\nway; the message's history names the bridge, and the message says whom it relays."
+      },
       "tl.so.tilo.chat.TextChannel.delete.Arguments": {
         "type": "object",
         "properties": {
-          "to": {},
           "m": {
             "pick": "resource",
             "properties": {
@@ -26405,15 +26033,57 @@
           }
         },
         "required": [
-          "to",
           "m"
         ],
-        "description": "Deletes a message from the channel or thread it is in. Its author, or anyone the\nchannel's permissions allow, may: the platform undoes it rather than asking first, and the\nremoval is a version of the message, so who removed it stays answerable."
+        "description": "Deletes a message from the channel or thread it is in. Its author, or anyone the\nchannel's permissions allow, may: the platform undoes it rather than asking first, and the\nremoval is a version of the message, so who removed it stays answerable. Its reports stay,\nsaying it was deleted."
+      },
+      "tl.so.tilo.chat.TextChannel.report.Arguments": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Message",
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "m"
+        ],
+        "description": "Reports a message of a conversation to the workspace's moderators, saying why when the\nreporter does. Who reported it is the report's history's, so moderators see who asked; the\nconversation keeps it, with who wrote the message and what it said, after the message is\ndeleted."
       },
       "tl.so.tilo.chat.TextChannel.start_thread.Arguments": {
         "type": "object",
         "properties": {
-          "c": {},
           "m": {
             "pick": "resource",
             "properties": {
@@ -26451,7 +26121,6 @@
           }
         },
         "required": [
-          "c",
           "m"
         ],
         "description": "Starts a thread from a message of a channel or a direct conversation, named after what the\nmessage says."
@@ -26471,6 +26140,7 @@
               "body",
               "sent_view",
               "by",
+              "written_in",
               "reacted"
             ],
             "type": "string"
@@ -26546,6 +26216,63 @@
         ],
         "description": "Adds your reaction with an emoji to a message, or takes it back when you had reacted with it."
       },
+      "tl.so.tilo.chat.Report.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chat.Report.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "said",
+              "reason",
+              "decision"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.Report.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.Report.decide.Arguments": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "description": "Settles a report: what a moderator, or the moderation agent, decided about it."
+      },
       "tl.so.tilo.chat.Thread.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -26594,7 +26321,6 @@
       "tl.so.tilo.chat.Thread.send.Arguments": {
         "type": "object",
         "properties": {
-          "to": {},
           "body": {
             "oneOf": [
               {
@@ -26639,10 +26365,13 @@
             ],
             "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
+          },
+          "attachments": {
+            "items": {},
+            "type": "array"
           }
         },
         "required": [
-          "to",
           "body"
         ],
         "description": "Posts a message in a channel, a thread or a direct conversation as the invoker, answering\nanother when `reply_to` names one. History and the catch-up say what a person did in its own\nwords, counting the messages a step of them holds."
@@ -26650,7 +26379,6 @@
       "tl.so.tilo.chat.Thread.send_view.Arguments": {
         "type": "object",
         "properties": {
-          "to": {},
           "title": {
             "type": "string"
           },
@@ -26659,16 +26387,83 @@
           }
         },
         "required": [
-          "to",
           "title",
           "definition"
         ],
         "description": "Sends a view as a message: its title as what the message says, its definition for anyone\nwho reads it to add to their own views."
       },
+      "tl.so.tilo.chat.Thread.relay.Arguments": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "by": {
+            "type": "string"
+          },
+          "written_in": {
+            "type": "string"
+          },
+          "written": {
+            "type": "integer"
+          },
+          "attachments": {
+            "items": {},
+            "type": "array"
+          },
+          "reply_to": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Message",
+            "type": "object"
+          }
+        },
+        "required": [
+          "body",
+          "by",
+          "written_in"
+        ],
+        "description": "Posts a message written on another service, as it was written there: who wrote it, as that\nservice names them, where and when. A bridge relays another service's conversation this\nway; the message's history names the bridge, and the message says whom it relays."
+      },
       "tl.so.tilo.chat.Thread.delete.Arguments": {
         "type": "object",
         "properties": {
-          "to": {},
           "m": {
             "pick": "resource",
             "properties": {
@@ -26703,10 +26498,53 @@
           }
         },
         "required": [
-          "to",
           "m"
         ],
-        "description": "Deletes a message from the channel or thread it is in. Its author, or anyone the\nchannel's permissions allow, may: the platform undoes it rather than asking first, and the\nremoval is a version of the message, so who removed it stays answerable."
+        "description": "Deletes a message from the channel or thread it is in. Its author, or anyone the\nchannel's permissions allow, may: the platform undoes it rather than asking first, and the\nremoval is a version of the message, so who removed it stays answerable. Its reports stay,\nsaying it was deleted."
+      },
+      "tl.so.tilo.chat.Thread.report.Arguments": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Message",
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "m"
+        ],
+        "description": "Reports a message of a conversation to the workspace's moderators, saying why when the\nreporter does. Who reported it is the report's history's, so moderators see who asked; the\nconversation keeps it, with who wrote the message and what it said, after the message is\ndeleted."
       },
       "tl.so.tilo.chat.Direct.$create.Arguments": {
         "type": "object",
@@ -26754,7 +26592,6 @@
       "tl.so.tilo.chat.Direct.send.Arguments": {
         "type": "object",
         "properties": {
-          "to": {},
           "body": {
             "oneOf": [
               {
@@ -26799,10 +26636,13 @@
             ],
             "resource_kind": "tl.so.tilo.chat.Message",
             "type": "object"
+          },
+          "attachments": {
+            "items": {},
+            "type": "array"
           }
         },
         "required": [
-          "to",
           "body"
         ],
         "description": "Posts a message in a channel, a thread or a direct conversation as the invoker, answering\nanother when `reply_to` names one. History and the catch-up say what a person did in its own\nwords, counting the messages a step of them holds."
@@ -26810,7 +26650,6 @@
       "tl.so.tilo.chat.Direct.send_view.Arguments": {
         "type": "object",
         "properties": {
-          "to": {},
           "title": {
             "type": "string"
           },
@@ -26819,16 +26658,83 @@
           }
         },
         "required": [
-          "to",
           "title",
           "definition"
         ],
         "description": "Sends a view as a message: its title as what the message says, its definition for anyone\nwho reads it to add to their own views."
       },
+      "tl.so.tilo.chat.Direct.relay.Arguments": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "by": {
+            "type": "string"
+          },
+          "written_in": {
+            "type": "string"
+          },
+          "written": {
+            "type": "integer"
+          },
+          "attachments": {
+            "items": {},
+            "type": "array"
+          },
+          "reply_to": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Message",
+            "type": "object"
+          }
+        },
+        "required": [
+          "body",
+          "by",
+          "written_in"
+        ],
+        "description": "Posts a message written on another service, as it was written there: who wrote it, as that\nservice names them, where and when. A bridge relays another service's conversation this\nway; the message's history names the bridge, and the message says whom it relays."
+      },
       "tl.so.tilo.chat.Direct.delete.Arguments": {
         "type": "object",
         "properties": {
-          "to": {},
           "m": {
             "pick": "resource",
             "properties": {
@@ -26863,15 +26769,57 @@
           }
         },
         "required": [
-          "to",
           "m"
         ],
-        "description": "Deletes a message from the channel or thread it is in. Its author, or anyone the\nchannel's permissions allow, may: the platform undoes it rather than asking first, and the\nremoval is a version of the message, so who removed it stays answerable."
+        "description": "Deletes a message from the channel or thread it is in. Its author, or anyone the\nchannel's permissions allow, may: the platform undoes it rather than asking first, and the\nremoval is a version of the message, so who removed it stays answerable. Its reports stay,\nsaying it was deleted."
+      },
+      "tl.so.tilo.chat.Direct.report.Arguments": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Message",
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "m"
+        ],
+        "description": "Reports a message of a conversation to the workspace's moderators, saying why when the\nreporter does. Who reported it is the report's history's, so moderators see who asked; the\nconversation keeps it, with who wrote the message and what it said, after the message is\ndeleted."
       },
       "tl.so.tilo.chat.Direct.start_thread.Arguments": {
         "type": "object",
         "properties": {
-          "c": {},
           "m": {
             "pick": "resource",
             "properties": {
@@ -26909,10 +26857,54 @@
           }
         },
         "required": [
-          "c",
           "m"
         ],
         "description": "Starts a thread from a message of a channel or a direct conversation, named after what the\nmessage says."
+      },
+      "tl.so.tilo.chat.Attached.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chat.Attached.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "media",
+              "blob"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.Attached.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.chat.Part.$create.Arguments": {
         "type": "object",
@@ -26957,169 +26949,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.chat.send.Arguments": {
-        "type": "object",
-        "properties": {
-          "to": {},
-          "body": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "required": [
-                  "rich"
-                ],
-                "type": "object"
-              }
-            ]
-          },
-          "reply_to": {
-            "pick": "resource",
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "resource_kind": "tl.so.tilo.chat.Message",
-            "type": "object"
-          }
-        },
-        "required": [
-          "to",
-          "body"
-        ],
-        "description": "Posts a message in a channel, a thread or a direct conversation as the invoker, answering\nanother when `reply_to` names one. History and the catch-up say what a person did in its own\nwords, counting the messages a step of them holds."
-      },
-      "tl.so.tilo.chat.send_view.Arguments": {
-        "type": "object",
-        "properties": {
-          "to": {},
-          "title": {
-            "type": "string"
-          },
-          "definition": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "to",
-          "title",
-          "definition"
-        ],
-        "description": "Sends a view as a message: its title as what the message says, its definition for anyone\nwho reads it to add to their own views."
-      },
-      "tl.so.tilo.chat.delete.Arguments": {
-        "type": "object",
-        "properties": {
-          "to": {},
-          "m": {
-            "pick": "resource",
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "resource_kind": "tl.so.tilo.chat.Message",
-            "type": "object"
-          }
-        },
-        "required": [
-          "to",
-          "m"
-        ],
-        "description": "Deletes a message from the channel or thread it is in. Its author, or anyone the\nchannel's permissions allow, may: the platform undoes it rather than asking first, and the\nremoval is a version of the message, so who removed it stays answerable."
-      },
-      "tl.so.tilo.chat.start_thread.Arguments": {
-        "type": "object",
-        "properties": {
-          "c": {},
-          "m": {
-            "pick": "resource",
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "resource_kind": "tl.so.tilo.chat.Message",
-            "type": "object"
-          },
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "c",
-          "m"
-        ],
-        "description": "Starts a thread from a message of a channel or a direct conversation, named after what the\nmessage says."
       },
       "tl.so.tilo.lang.counter.Counter.$create.Arguments": {
         "type": "object",
@@ -27425,7 +27254,6 @@
               "controls_recipient",
               "controls_note",
               "controls_notes",
-              "controls_signed",
               "backlog_draft",
               "media_source"
             ],
@@ -27448,7 +27276,6 @@
             "enum": [
               "controls_by_email",
               "controls_repeating",
-              "controls_locked",
               "controls_background",
               "controls_lettering"
             ],
@@ -28461,6 +28288,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.mail.Account.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.mail.Account.set_signature.Arguments": {
         "type": "object",
         "properties": {
@@ -28536,6 +28369,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.mail.Mailbox.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.mail.Thread.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -28586,6 +28425,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.mail.Thread.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.mail.Thread.reply.Arguments": {
         "type": "object",
@@ -28795,6 +28640,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.mail.Label.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.mail.Message.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -28854,6 +28705,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.mail.Message.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.mail.Message.reply_to.Arguments": {
         "type": "object",
@@ -28926,6 +28783,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.mail.Draft.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.mail.Draft.cancel_later.Arguments": {
         "type": "object",
@@ -29046,6 +28909,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.mail.Mail.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.mail.Mail.set_hold.Arguments": {
         "type": "object",
         "properties": {
@@ -29057,49 +28926,6 @@
           "seconds"
         ],
         "description": "Sets how many seconds a sent message waits before it goes, so it can be taken back: no wait\nat all at zero."
-      },
-      "tl.so.tilo.mail.Mail.recover_previous.Arguments": {
-        "type": "object",
-        "properties": {
-          "drafts": {
-            "items": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "type": "array"
-          },
-          "labels": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "conversations": {
-            "items": {
-              "items": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "type": "array"
-            },
-            "type": "array"
-          },
-          "signatures": {
-            "items": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "type": "array"
-          }
-        },
-        "required": [],
-        "description": "Copies data from the earlier private mailbox into this workspace."
       },
       "tl.so.tilo.mail.Mail.new_draft.Arguments": {
         "type": "object",
@@ -30010,7 +29836,7 @@
         "required": [
           "files"
         ],
-        "description": "Files dropped on the notebook: a Markdown file comes in as a note, an archive as the pages it\nholds — the notebook's own written out, or another app's export — and each file of a drop in\nturn. One action, so undo takes the whole drop back at once."
+        "description": "Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An\narchive becomes the pages it holds, whether the notebook's own written out or another app's\nexport. One action, so undo takes the whole drop back at once."
       },
       "tl.so.tilo.shell.Shell.$create.Arguments": {
         "type": "object",
@@ -30063,6 +29889,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.Shell.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.Shell.asked_on_canvas.Arguments": {
         "type": "object",
@@ -30840,6 +30672,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.BarPart.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.DockItem.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -30889,6 +30727,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.DockItem.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.Layout.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -30931,6 +30775,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.Layout.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.Layout.a_workspace.Arguments": {
         "type": "object",
@@ -31261,6 +31111,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.LayoutQuery.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.LayoutRef.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -31308,6 +31164,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.LayoutRef.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.LayoutWorkspace.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -31354,6 +31216,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.LayoutWorkspace.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.LayoutPerson.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -31397,6 +31265,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.LayoutPerson.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.LayoutRow.$create.Arguments": {
         "type": "object",
@@ -31445,6 +31319,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.LayoutRow.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.LayoutStrip.$create.Arguments": {
         "type": "object",
@@ -31496,6 +31376,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.LayoutStrip.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.LayoutPlace.$create.Arguments": {
         "type": "object",
@@ -31549,6 +31435,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.shell.LayoutPlace.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.shell.Viewing.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -31592,6 +31484,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.Viewing.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.Viewing.show_style.Arguments": {
         "type": "object",
@@ -33012,6 +32910,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.tube.Channel.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.tube.Channel.subscribe.Arguments": {
         "type": "object",
         "properties": {
@@ -33089,6 +32993,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.Video.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.Video.like.Arguments": {
         "type": "object",
@@ -33188,6 +33098,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.tube.Playlist.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.tube.Subscription.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -33231,6 +33147,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.Subscription.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.WatchEntry.$create.Arguments": {
         "type": "object",
@@ -33276,6 +33198,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.WatchEntry.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.YouTube.$create.Arguments": {
         "type": "object",
@@ -33326,6 +33254,12 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.YouTube.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.YouTube.delete_history.Arguments": {
         "type": "object",
@@ -33911,12 +33845,6 @@
     {
       "app": "so.tilo.assistant",
       "resource": "tilo.workspace.agent",
-      "action": "set-agent-on-host",
-      "arguments": "#/components/schemas/tilo.workspace.agent.set-agent-on-host.Arguments"
-    },
-    {
-      "app": "so.tilo.assistant",
-      "resource": "tilo.workspace.agent",
       "action": "rename-agent",
       "arguments": "#/components/schemas/tilo.workspace.agent.rename-agent.Arguments"
     },
@@ -33973,12 +33901,6 @@
       "resource": "tilo.workspace.agent",
       "action": "sub-agent-produced",
       "arguments": "#/components/schemas/tilo.workspace.agent.sub-agent-produced.Arguments"
-    },
-    {
-      "app": "so.tilo.assistant",
-      "resource": "tilo.workspace.agent",
-      "action": "sub-agent-coding",
-      "arguments": "#/components/schemas/tilo.workspace.agent.sub-agent-coding.Arguments"
     },
     {
       "app": "so.tilo.assistant",
@@ -36079,6 +36001,12 @@
       "resource": "tilo.contacts.identities",
       "action": "forget-endpoint",
       "arguments": "#/components/schemas/tilo.contacts.identities.forget-endpoint.Arguments"
+    },
+    {
+      "app": "so.tilo.model-providers",
+      "resource": "model-providers.root",
+      "action": "list-presets",
+      "arguments": "#/components/schemas/model-providers.root.list-presets.Arguments"
     },
     {
       "app": "so.tilo.monitor",
@@ -38493,196 +38421,202 @@
       "arguments": "#/components/schemas/word-processor.document.export-content.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.agent",
+      "app": "so.tilo.agent",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
+      "app": "so.tilo.agent",
       "resource": "tilolang.personal",
       "action": "seen",
       "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
+      "app": "so.tilo.agent",
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Claim",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Claim.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Claim",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Claim.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Claim",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Claim.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "withdraw",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.withdraw.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.withdraw.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "reopen",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.reopen.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.reopen.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "stop",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.stop.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.stop.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
-      "action": "claim",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.claim.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "answer",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.answer.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.answer.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Step",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Step",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Step.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Step.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Step",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Step",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Step.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Step.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Step",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Step",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Step.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Step.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.SentView",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.SentView.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.SentView",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.SentView.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.SentView",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.SentView.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Shown",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Shown.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Shown",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Shown.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Shown",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Shown.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
       "action": "say",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.say.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.say.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
       "action": "think",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.think.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.think.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
       "action": "step",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.step.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.step.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
+      "action": "show_view",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.show_view.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
+      "action": "show",
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.show.Arguments"
+    },
+    {
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
       "action": "finish",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.finish.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.finish.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
       "action": "supersede",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.supersede.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.supersede.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Agents",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Agents",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Agents.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Agents.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Agents",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Agents",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Agents.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Agents.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Agents",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Agents",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Agents.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Agents.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Agents",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Agents",
       "action": "ask",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Agents.ask.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.board",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Agents.ask.Arguments"
     },
     {
       "app": "so.tilo.lang.board",
@@ -38701,12 +38635,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.board",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.board",
@@ -38800,12 +38728,6 @@
     },
     {
       "app": "so.tilo.chat",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -38821,12 +38743,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -38861,6 +38777,18 @@
     {
       "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Conversations",
+      "action": "new_voice_channel",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.new_voice_channel.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
+      "action": "report_problem",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.report_problem.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
       "action": "message_person",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.message_person.Arguments"
     },
@@ -38869,6 +38797,30 @@
       "resource": "tl.so.tilo.chat.Conversations",
       "action": "write_to",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.write_to.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
+      "action": "delete_channel",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.delete_channel.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
+      "action": "delete_category",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.delete_category.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
+      "action": "move_channel",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.move_channel.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
+      "action": "move_category",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.move_category.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -38893,6 +38845,36 @@
       "resource": "tl.so.tilo.chat.Category",
       "action": "add_channel",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Category.add_channel.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Category",
+      "action": "add_voice_channel",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Category.add_voice_channel.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Category",
+      "action": "delete_channel",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Category.delete_channel.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.VoiceChannel",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.VoiceChannel.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.VoiceChannel",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.VoiceChannel.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.VoiceChannel",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.VoiceChannel.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -38927,8 +38909,20 @@
     {
       "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.TextChannel",
+      "action": "relay",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.relay.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
       "action": "delete",
       "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.delete.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
+      "action": "report",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.report.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -38974,6 +38968,30 @@
     },
     {
       "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Report",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Report.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Report",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Report.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Report",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Report.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Report",
+      "action": "decide",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Report.decide.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Thread",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.$create.Arguments"
@@ -39005,8 +39023,20 @@
     {
       "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Thread",
+      "action": "relay",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.relay.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
       "action": "delete",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.delete.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
+      "action": "report",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.report.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -39041,14 +39071,44 @@
     {
       "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Direct",
+      "action": "relay",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.relay.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
       "action": "delete",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.delete.Arguments"
     },
     {
       "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Direct",
+      "action": "report",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.report.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
       "action": "start_thread",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.start_thread.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Attached",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Attached.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Attached",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Attached.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Attached",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Attached.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -39069,36 +39129,6 @@
       "arguments": "#/components/schemas/tl.so.tilo.chat.Part.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.chat",
-      "resource": "tl.so.tilo.chat",
-      "action": "send",
-      "arguments": "#/components/schemas/tl.so.tilo.chat.send.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "tl.so.tilo.chat",
-      "action": "send_view",
-      "arguments": "#/components/schemas/tl.so.tilo.chat.send_view.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "tl.so.tilo.chat",
-      "action": "delete",
-      "arguments": "#/components/schemas/tl.so.tilo.chat.delete.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "tl.so.tilo.chat",
-      "action": "start_thread",
-      "arguments": "#/components/schemas/tl.so.tilo.chat.start_thread.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.counter",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
       "app": "so.tilo.lang.counter",
       "resource": "tilolang.personal",
       "action": "view-state",
@@ -39115,12 +39145,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.counter",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.counter",
@@ -39154,12 +39178,6 @@
     },
     {
       "app": "so.tilo.lang.discussion",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.discussion",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -39175,12 +39193,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.discussion",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.discussion",
@@ -39238,12 +39250,6 @@
     },
     {
       "app": "so.tilo.lang.gallery",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.gallery",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -39259,12 +39265,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.gallery",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.gallery",
@@ -39556,12 +39556,6 @@
     },
     {
       "app": "so.tilo.mail",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -39580,12 +39574,6 @@
     },
     {
       "app": "so.tilo.mail",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Account",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Account.$create.Arguments"
@@ -39601,6 +39589,12 @@
       "resource": "tl.so.tilo.mail.Account",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Account.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Account",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Account.$origin.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -39646,6 +39640,12 @@
     },
     {
       "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mailbox",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mailbox.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Thread",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.$create.Arguments"
@@ -39661,6 +39661,12 @@
       "resource": "tl.so.tilo.mail.Thread",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.$origin.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -39778,6 +39784,12 @@
     },
     {
       "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Label",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Label.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Message",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Message.$create.Arguments"
@@ -39793,6 +39805,12 @@
       "resource": "tl.so.tilo.mail.Message",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Message.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.$origin.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -39829,6 +39847,12 @@
       "resource": "tl.so.tilo.mail.Draft",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.$origin.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -39887,14 +39911,14 @@
     {
       "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Mail",
-      "action": "set_hold",
-      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.set_hold.Arguments"
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.$origin.Arguments"
     },
     {
       "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Mail",
-      "action": "recover_previous",
-      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.recover_previous.Arguments"
+      "action": "set_hold",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.set_hold.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -39934,12 +39958,6 @@
     },
     {
       "app": "so.tilo.notes",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -39955,12 +39973,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.notes",
@@ -40162,12 +40174,6 @@
     },
     {
       "app": "so.tilo.shell",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -40186,12 +40192,6 @@
     },
     {
       "app": "so.tilo.shell",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.Shell",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Shell.$create.Arguments"
@@ -40207,6 +40207,12 @@
       "resource": "tl.so.tilo.shell.Shell",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Shell.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.Shell",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.Shell.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -40426,6 +40432,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.BarPart",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.BarPart.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.DockItem",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.DockItem.$create.Arguments"
@@ -40444,6 +40456,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.DockItem",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.DockItem.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.Layout",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Layout.$create.Arguments"
@@ -40459,6 +40477,12 @@
       "resource": "tl.so.tilo.shell.Layout",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Layout.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.Layout",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.Layout.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -40528,6 +40552,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutQuery",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutQuery.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.LayoutRef",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutRef.$create.Arguments"
@@ -40543,6 +40573,12 @@
       "resource": "tl.so.tilo.shell.LayoutRef",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutRef.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutRef",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutRef.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -40564,6 +40600,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutWorkspace",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutWorkspace.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.LayoutPerson",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutPerson.$create.Arguments"
@@ -40579,6 +40621,12 @@
       "resource": "tl.so.tilo.shell.LayoutPerson",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutPerson.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutPerson",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutPerson.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -40600,6 +40648,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutRow",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutRow.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.LayoutStrip",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutStrip.$create.Arguments"
@@ -40615,6 +40669,12 @@
       "resource": "tl.so.tilo.shell.LayoutStrip",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutStrip.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutStrip",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutStrip.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -40636,6 +40696,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.LayoutPlace",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutPlace.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.Viewing",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Viewing.$create.Arguments"
@@ -40651,6 +40717,12 @@
       "resource": "tl.so.tilo.shell.Viewing",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Viewing.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.Viewing",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.Viewing.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -40720,12 +40792,6 @@
     },
     {
       "app": "so.tilo.lang.tasks",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.tasks",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -40741,12 +40807,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.tasks",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.tasks",
@@ -41026,12 +41086,6 @@
     },
     {
       "app": "so.tilo.lang.today",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.today",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -41047,12 +41101,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.today",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.today",
@@ -41080,12 +41128,6 @@
     },
     {
       "app": "so.tilo.tube",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -41104,12 +41146,6 @@
     },
     {
       "app": "so.tilo.tube",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.Channel",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Channel.$create.Arguments"
@@ -41125,6 +41161,12 @@
       "resource": "tl.so.tilo.tube.Channel",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Channel.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Channel",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Channel.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -41161,6 +41203,12 @@
       "resource": "tl.so.tilo.tube.Video",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Video.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -41218,6 +41266,12 @@
     },
     {
       "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Playlist",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Playlist.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.Subscription",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.$create.Arguments"
@@ -41233,6 +41287,12 @@
       "resource": "tl.so.tilo.tube.Subscription",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Subscription",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -41254,6 +41314,12 @@
     },
     {
       "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.WatchEntry",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.WatchEntry.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.YouTube",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.$create.Arguments"
@@ -41269,6 +41335,12 @@
       "resource": "tl.so.tilo.tube.YouTube",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -41308,12 +41380,6 @@
     },
     {
       "app": "so.tilo.lang.views",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.views",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -41329,12 +41395,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.views",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.views",

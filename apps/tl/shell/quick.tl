@@ -42,7 +42,13 @@ view wifi_tile() {
     let wifi = device.network.wifi
     let joined = wifi.networks.filter(n -> n.connected).first()
     let label = if let n = joined { n.name } else { "Wi-Fi" }
-    ui.Button(label, icon: .wifi, toggled: wifi.on, enabled: wifi.available) {
+    ui.Button(
+        label,
+        icon: .wifi,
+        toggled: wifi.on,
+        enabled: wifi.available,
+        description: "This device has no Wi-Fi",
+    ) {
         on press: device.set_wifi(device.network, not wifi.on)
     }
 }
@@ -50,7 +56,13 @@ view wifi_tile() {
 /// Bluetooth, on while it is on; it cannot be pressed on a device without it.
 view bluetooth_tile() {
     let b = device.bluetooth
-    ui.Button("Bluetooth", icon: .bluetooth, toggled: b.on, enabled: b.available) {
+    ui.Button(
+        "Bluetooth",
+        icon: .bluetooth,
+        toggled: b.on,
+        enabled: b.available,
+        description: "This device has no Bluetooth",
+    ) {
         on press: device.set_bluetooth(b, not b.on)
     }
 }

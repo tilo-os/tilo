@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use tilo_onboarding::{
     OnboardingApp, OnboardingEffect, OnboardingState, Page, Screen, Secrets, TourPage,
 };

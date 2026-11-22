@@ -1,7 +1,6 @@
 //! One photograph, one address — in every session that has it. Same bytes, same blake3 hash, three
 //! names.
 
-
 use automerge::AutoCommit;
 use photos::PhotosApp;
 use photos::model::PhotoLibrary;

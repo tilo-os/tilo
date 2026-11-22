@@ -2,11 +2,11 @@
 //! identity, collaboration and content services independently launched apps
 //! attach to, and an MCP projection of its action host.
 //!
-//! The services are the host's: a desktop session and a standalone profile
-//! serve the same brokers. This crate owns the profile, the native endpoint
-//! and app attachment, and serves `tilo_mcp`'s projection; it reaches the services only through
-//! [`RuntimeServices`]. [`standalone::Standalone`] hosts them without the
-//! Tilo desktop, for the `tilo-runtime` executable.
+//! This crate owns the profile, the native endpoint and app attachment, and serves `tilo_mcp`'s
+//! projection; it reaches the services only through [`RuntimeServices`].
+//! [`device::services::Daemon`] hosts them without the Tilo desktop: this computer's one daemon,
+//! the `tilo-runtime` executable, which serves the person's login as its device too
+//! ([`device`]).
 
 use std::{
     io,
@@ -17,14 +17,14 @@ use std::{
 mod apps;
 pub mod cli;
 mod daemon;
-#[cfg(target_os = "macos")]
+pub mod device;
 mod i18n;
 pub mod key_sessions;
 pub mod offload;
 mod os_search;
+pub mod other_devices;
 pub mod personal_devices;
 pub mod profile;
-pub mod standalone;
 pub mod unix;
 
 // Workspace admission decodes peer bytes in automerge worker processes started
@@ -113,10 +113,9 @@ pub trait RuntimeServices: Sized {
         None
     }
 
-    /// The MCP servers of the person's other devices, as this host reaches
-    /// them from its own endpoint: what a `--connect --device` client is
-    /// carried to. `None` for a host that reaches none.
-    fn other_devices(&self) -> Option<std::sync::Arc<tilo_device_mcp::OtherDevices>> {
+    /// The person's other devices, as this host asks them from its own endpoint: where a
+    /// `--connect --device` client works. `None` for a host that reaches none.
+    fn other_devices(&self) -> Option<other_devices::OtherDevices> {
         None
     }
 }

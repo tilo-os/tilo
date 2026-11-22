@@ -33,13 +33,11 @@ pub fn restore_from_recovery_words(
     words: &str,
     label: Option<&str>,
     storage: tilo_identity::provisioning::IdentityStorage,
-) -> std::io::Result<tilo_identity::registry::IdentityProfile> {
-    use tilo_identity::{
-        device_fleet::DeviceFleetStore, provisioning, registry::IdentityRegistryStore, store,
-    };
+) -> std::io::Result<tilo_identity::store::IdentityProfile> {
+    use tilo_identity::{device_fleet::DeviceFleetStore, provisioning, store};
 
     let profile =
-        IdentityRegistryStore::at(identity_dir).import_recovery_words(words, "", storage)?;
+        store::IdentityRegistryStore::at(identity_dir).import_recovery_words(words, "", storage)?;
     let runtime_id = profile
         .record_path
         .file_stem()
@@ -241,15 +239,6 @@ impl<'a> PersonalInstall<'a> {
             &staged_peers,
         )?;
         before_publish(PersonalCommitCheckpoint::Registry)?;
-        if self.image_source.is_none() {
-            as_person(self.person_uid, self.identity_dir, || {
-                let store = tilo_identity::registry::IdentityRegistryStore::at(self.identity_dir);
-                let mut registry = store.load()?;
-                let id = registry.register_record(&record)?.id.clone();
-                registry.default_identity = Some(id);
-                store.save(&registry)
-            })?;
-        }
         before_publish(PersonalCommitCheckpoint::UserPublicKey)?;
         // The public key and certificates are public, whatever the umask this
         // commit runs under: the session reads them to verify the device, and

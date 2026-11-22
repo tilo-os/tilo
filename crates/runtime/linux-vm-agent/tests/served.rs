@@ -7,7 +7,6 @@
 //! program served is a stand-in for a coding harness, a shell script that
 //! asks its model endpoint over the machine's loopback as a harness does.
 
-
 use std::io::{Read as _, Write as _};
 use std::net::{Ipv4Addr, TcpStream};
 use std::path::Path;

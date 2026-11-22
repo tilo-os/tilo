@@ -77,7 +77,10 @@ chown 65532:65532 "$state"
 port=18080
 issuer=https://api.image.test
 web_entry=https://tilo.example.test
-server=https://server.example.test
+# The host the API server forwards to, as the host writes it in `web-host.json`: its certificate and
+# where it is dialled, its web origin among them. Nothing dials it here; it parses, and names a
+# web origin, which is what the server asks of it.
+host_info=$(cat "$(dirname -- "${BASH_SOURCE[0]}")/host-info.json")
 # Every file of the root filesystem, as it stands: what the run below may not change. The
 # listing is what the run is compared with, not the files' timestamps against the clock, which
 # the archive's own times would answer for.
@@ -87,7 +90,7 @@ b run --user 65532:65532 -v "$state:/state" \
   -e TILO_API_LISTEN=127.0.0.1:$port \
   -e TILO_API_ORIGIN=$issuer \
   -e TILO_API_WEB_ENTRY=$web_entry \
-  -e TILO_API_HOST=$server \
+  -e TILO_API_HOST="$host_info" \
   -e TILO_API_STATE=/state/api.json \
   "$container" -- /usr/local/bin/tilo-api &
 server=$!

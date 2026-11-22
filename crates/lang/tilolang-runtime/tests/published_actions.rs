@@ -3,7 +3,6 @@
 //! channel it shows. The runtime sends that invocation to the app's action API — the one path another
 //! app's declared action takes (one-app-model.md §2, §4).
 
-
 #[cfg(test)]
 mod cases {
     use std::cell::RefCell;

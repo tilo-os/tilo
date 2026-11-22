@@ -371,67 +371,6 @@ fn first_sentence(text: &str) -> String {
     format!("{}…", head.trim_end())
 }
 
-/// The running app `name` means: its exact id, else the one id among
-/// `running` whose last dotted part is `name` (`canvas` for
-/// `so.tilo.canvas`), so an agent may use the name it sees in the window.
-///
-/// A name no running app answers is answered with what is running, each
-/// with the name to use, so a guessed word (`host` for the Browser, which
-/// runs as `so.tilo.browser`) leads to the id that does work instead of a
-/// dead end.
-pub fn app_named(name: &str, running: &[&str]) -> Result<String, String> {
-    if running.contains(&name) {
-        return Ok(name.to_owned());
-    }
-    let mut by_tail = running
-        .iter()
-        .filter(|id| {
-            id.rsplit('.')
-                .next()
-                .is_some_and(|tail| tail.eq_ignore_ascii_case(name))
-        })
-        .collect::<Vec<_>>();
-    by_tail.dedup();
-    match by_tail.as_slice() {
-        [one] => Ok((**one).to_owned()),
-        [] => Err(not_running(name, running)),
-        many => Err(format!(
-            "{name} names several running apps: {}; name one",
-            many.iter().map(|id| **id).collect::<Vec<_>>().join(", ")
-        )),
-    }
-}
-
-/// Why `app_id` cannot be addressed: what is running instead, under the
-/// name to use for each, and how to start an app that is not.
-pub fn not_running(app_id: &str, running: &[&str]) -> String {
-    let mut ids = running.to_vec();
-    ids.sort_unstable();
-    ids.dedup();
-    let listed = if ids.is_empty() {
-        "no app is running".to_owned()
-    } else {
-        format!(
-            "running: {}",
-            ids.iter()
-                .map(|id| app_usage(id))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
-    format!(
-        "{app_id} is not running ({listed}); name a running app by its id, or start one with tilo_do <app>#open"
-    )
-}
-
-/// A running app as an agent names it: `so.tilo.browser (browser)`.
-fn app_usage(app_id: &str) -> String {
-    match app_id.rsplit_once('.') {
-        Some((_, tail)) => format!("{app_id} ({tail})"),
-        None => app_id.to_owned(),
-    }
-}
-
 /// The resource `name` means among `rows` (a provider's resources): one
 /// whose kind or label is `name`, when exactly one is. `None` when `name`
 /// is no kind or label there, so it is taken as a resource id.

@@ -212,7 +212,7 @@ pub fn renewal_due_at(cert: &DeviceCert) -> Option<u64> {
 #[must_use]
 pub fn next_device_certificate_renewal(identity_dir: &Path, paths: &IdentityPaths) -> Option<u64> {
     let mut certificates = vec![paths.device_cert.clone()];
-    if let Some(record) = tilo_identity_client::resolve_active_identity(identity_dir)
+    if let Some(record) = crate::store::resolve_active_identity(identity_dir)
         && let Ok(identity) = crate::store::load_from_path(record)
     {
         certificates.push(paths.device_cert_for_user(&identity.group_public_key()));

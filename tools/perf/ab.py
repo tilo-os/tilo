@@ -426,7 +426,7 @@ def run_fs(ctx: RunContext) -> list[record.Record]:
 # tilo-runtime's dev-overrides turn on the throwaway identity a development
 # login opens its shell with, which the run's spawned session mints.
 RELEASE_SESSION = ("cargo", "build", "--locked", "--release", "-p", "tilo-session", "--bin", "tilo-session",
-                 "-p", "tilo-runtime", "--bin", "tilo-runtime-mcp", "--features", "dev-overrides")
+                 "-p", "tilo-runtime", "--bin", "tilo-runtime", "--features", "dev-overrides")
 
 
 # The groups of tools/ci/perf-scheduled.sh that measure a build of the repository.
@@ -440,7 +440,7 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
                                  "keystroke_writes"),
                                 "target/debug/examples/keystroke_writes")}),
     Group("agent", "release", "lavapipe", (RELEASE_SESSION,),
-          {"session": "target/release/tilo-session", "tilo-runtime-mcp": "target/release/tilo-runtime-mcp"},
+          {"session": "target/release/tilo-session", "tilo-runtime": "target/release/tilo-runtime"},
           {}, {}, run_agent),
     Group("render", "release", "lavapipe",
           (("cargo", "build", "--locked", "--release", "-p", "ui-examples", "--example", "ui-perf"),

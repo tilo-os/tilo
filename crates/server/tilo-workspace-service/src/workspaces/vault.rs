@@ -26,7 +26,7 @@ use tilo_resource::{Id, Replica};
 use zeroize::Zeroizing;
 
 use super::Workspaces;
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "device-keys")]
 use super::person_settings::kept_sign_ins::HostSignIns;
 
 /// The app that keeps the vault: whose grants decide each reader of it.
@@ -37,7 +37,7 @@ const MAX_VAULT_BYTES: usize = 64 * 1024 * 1024;
 
 /// How many changes one write carries when a host carries its earlier vault over: each write of
 /// a document is bounded in size.
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "device-keys")]
 const CARRIED_PER_WRITE: usize = 16;
 
 /// The words for a vault this device cannot open.
@@ -138,7 +138,7 @@ impl Workspaces {
     /// documents, once, as it starts ([`Self::carry_over`]): no read of a vault converts
     /// anything. A workspace whose keys are not here yet keeps its old store until a start
     /// that holds them.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     pub(crate) async fn carry_vaults_over(&self) {
         let governed: Vec<String> = self.inner.workspaces.lock().await.keys().cloned().collect();
         for workspace in governed {
@@ -185,7 +185,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// The host's store does not open, or what it kept was not written: it stays.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     async fn carry_over(&self, opened: OpenVault) -> Result<(), String> {
         let workspace = opened.workspace.clone();
         let root = self.workspace_root(&workspace);
@@ -592,21 +592,22 @@ fn seal_entry(keys: &key_group::ContentKeys, entry: &SecretItem) -> Result<Strin
         .map_err(|error| error.to_string())
 }
 
-/// Whether the workspace's policy lets `by` read the workspace's vault document: the decision
-/// every reader of that document is held to, for `by`'s whole acting.
+/// Whether the workspace's policy lets `by` read the workspace's vault document, the node every
+/// reader of it is decided on, or with `app` that app's node: for `by`'s whole acting. Only the
+/// machine secrets a workspace's programs are started with ask this.
+#[cfg(feature = "agents")]
 pub(crate) fn may_read_vault(
     policy: &tilo_action_policy::WorkspacePolicy,
     workspace: &str,
     by: &tilo_actions::remote::Caller,
+    app: Option<&str>,
 ) -> bool {
     let acting = by.acting();
     let mut granted = acting.handed_preset(workspace);
     granted.extend(by.granted(&[]));
-    // The node every reader of the vault's document is decided on.
-    let node = collab_types::document_node(
-        workspace,
-        tilo_app_id::apps::PASSWORDS,
-        WORKSPACE_VAULT_DOCUMENT,
+    let node = app.map_or_else(
+        || collab_types::document_node(workspace, APP, WORKSPACE_VAULT_DOCUMENT),
+        |app| tilo_action_policy::TreePath::workspace(workspace).app(app),
     );
     let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
     tilo_action_policy::Authority::of_acting(acting, policy, &granted)

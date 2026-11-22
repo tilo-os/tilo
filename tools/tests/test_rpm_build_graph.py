@@ -143,7 +143,7 @@ class RpmBuildGraphTest(unittest.TestCase):
                 "-p",
                 "tilo-runtime",
                 "--bin",
-                "tilo-runtime-mcp",
+                "tilo-runtime",
                 "--no-default-features",
             ],
         )

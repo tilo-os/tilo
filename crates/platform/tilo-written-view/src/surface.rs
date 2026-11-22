@@ -60,8 +60,6 @@ impl Invoker for Asks {
 pub(crate) struct Surface {
     view: AppWindow,
     instance: Instance,
-    /// What the view's package keeps of its own: nothing.
-    record: tilo_resource::Doc,
     workspace: Box<dyn Workspace>,
     /// The apps the view names.
     apps: Vec<Rc<App>>,
@@ -99,8 +97,8 @@ impl Surface {
                 me: view.viewer.clone(),
                 mode: Mode::Live,
                 device: None,
-                index_dir: None,
-                document_loader: None,
+                // What the view's package keeps of its own: nothing, held in memory.
+                store: tilolang_tilo::resources::ResourceStore::in_memory(),
                 // A view reaches nothing outside the workspace by itself.
                 sink: Some(Box::new(MemorySink::new())),
                 root: RootView::default(),
@@ -116,8 +114,7 @@ impl Surface {
         );
         // The package shows another's state and has no root of its own to open.
         instance.without_root();
-        let record = tilo_resource::Doc::new();
-        instance.sync(Some(&record));
+        instance.sync();
         if let Some(why) = failed.borrow_mut().take() {
             return Err(why);
         }
@@ -172,7 +169,6 @@ impl Surface {
         let mut surface = Self {
             view: AppWindow::part(Box::new(window_end)),
             instance,
-            record,
             workspace,
             apps,
             named: BTreeMap::new(),
@@ -207,11 +203,10 @@ impl Surface {
             let read = self.take_readings();
             if read {
                 // A reading moved: the view runs again over it.
-                self.instance.sync(Some(&self.record));
+                self.instance.sync();
             }
             let mut changed = read | self.instance.update();
             changed |= self.ask_named();
-            changed |= self.answer_commits();
             changed |= self.serve();
             changed |= self.view.receive();
             if !changed {
@@ -315,19 +310,6 @@ impl Surface {
             asked = true;
         }
         asked
-    }
-
-    /// The package keeps no record: a step it hands over is answered as refused.
-    fn answer_commits(&mut self) -> bool {
-        let mut any = false;
-        while let Some((invocation, _)) = self.instance.take_invocation() {
-            self.instance.answered(
-                &invocation.address,
-                Some("a written view keeps no record of its own".to_owned()),
-            );
-            any = true;
-        }
-        any
     }
 
     /// Decide what the view asked since the last turn, and send what the person allowed. Whether

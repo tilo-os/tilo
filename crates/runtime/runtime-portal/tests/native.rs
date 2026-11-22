@@ -74,12 +74,10 @@ tilo_test_env::scenario! {
             .output_locked()
             .unwrap();
         assert!(
-            !output.status.success(),
-            "the desktop never selects the standalone host"
-        );
-        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("SOURCE HOST\n--run-app\ndev.tilo.bootstrap-test"),
+            "the desktop attaches to the same host: {}",
             String::from_utf8_lossy(&output.stderr)
-                .contains("cargo build --locked -p tilo-runtime --bin tilo-runtime-mcp")
         );
         std::fs::remove_file(&host).unwrap();
         let output = child_at(&app).env("PATH", &root).output_locked().unwrap();
@@ -104,12 +102,12 @@ tilo_test_env::scenario! {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    phase the_host_is_the_standalone_runtime_outside_the_tilo_desktop_and_the_sessions_inside_it;
+    phase the_host_is_tilo_runtime_on_the_tilo_desktop_and_off_it;
     {
         let root = std::env::temp_dir().join(format!("tilo-host-choice-test-{}", std::process::id()));
-        let both = root.join("both");
-        let standalone_only = root.join("standalone-only");
-        for directory in [&both, &standalone_only] {
+        let installed = root.join("installed");
+        let empty = root.join("empty");
+        for directory in [&installed, &empty] {
             std::fs::create_dir_all(directory).unwrap();
         }
         let host = |directory: &std::path::Path, name: &str| {
@@ -118,9 +116,7 @@ tilo_test_env::scenario! {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
             path
         };
-        host(&both, "tilo-runtime");
-        host(&both, "tilo-runtime-mcp");
-        host(&standalone_only, "tilo-runtime");
+        host(&installed, "tilo-runtime");
         let explicit = host(&root, "explicit-host");
         let run = |path: &std::path::Path, desktop: Option<&str>, binary: Option<&std::path::Path>| {
             let mut command = child();
@@ -150,39 +146,24 @@ tilo_test_env::scenario! {
             )
         };
 
-        let foreign = run(&both, None, None);
-        assert_eq!(
-            chose(&foreign).as_deref(),
-            Some("tilo-runtime"),
-            "case foreign: {}",
-            why(&foreign)
-        );
-        let other_desktop = run(&both, Some("GNOME"), None);
-        assert_eq!(
-            chose(&other_desktop).as_deref(),
-            Some("tilo-runtime"),
-            "case GNOME: {}",
-            why(&other_desktop)
-        );
-        let tilo = run(&both, Some("tilo"), None);
-        assert_eq!(
-            chose(&tilo).as_deref(),
-            Some("tilo-runtime-mcp"),
-            "case tilo"
-        );
-        // ...and never a second authority beside it.
-        let missing = run(&standalone_only, Some("tilo"), None);
-        assert_eq!(
-            missing.status.code(),
-            Some(21),
-            "case tilo without its host"
-        );
+        for desktop in [None, Some("GNOME"), Some("tilo")] {
+            let chosen = run(&installed, desktop, None);
+            assert_eq!(
+                chose(&chosen).as_deref(),
+                Some("tilo-runtime"),
+                "case {desktop:?}: {}",
+                why(&chosen)
+            );
+        }
+        let missing = run(&empty, Some("tilo"), None);
+        assert_eq!(missing.status.code(), Some(21), "case no host: {}", why(&missing));
         assert!(
-            String::from_utf8_lossy(&missing.stderr).contains("tilo-runtime-mcp"),
-            "case tilo without its host"
+            String::from_utf8_lossy(&missing.stderr).contains("install tilo-runtime"),
+            "case no host: {}",
+            why(&missing)
         );
         for desktop in [None, Some("tilo")] {
-            let chosen = run(&both, desktop, Some(&explicit));
+            let chosen = run(&installed, desktop, Some(&explicit));
             assert_eq!(
                 chose(&chosen).as_deref(),
                 Some("explicit-host"),

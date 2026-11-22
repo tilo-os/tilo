@@ -4,15 +4,13 @@
 //! than they do or never arrives at all.
 
 use super::{DIRECT_ALPN, DirectSync, Replica};
+use crate::loopback::{addr, endpoint};
 use crate::owner::testing::{APP, WORKSPACE, finalize, governed_fixture_at, member_key};
 use crate::owner::{NativeWorkspaceOwner, open_file};
 use crate::store::{Appetite, Store};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
-use ed25519_dalek::SigningKey;
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use std::sync::Arc;
-use std::time::Duration;
 use tilo_desktop_model::WorkspaceId;
 
 /// The bytes of one part's text: eighty of them are more than a link takes
@@ -21,25 +19,6 @@ const PART_TEXT: usize = 1536 * 1024;
 
 /// The changes each part takes after it started: an item each.
 const CHANGES_EACH: usize = 6;
-
-/// A localhost endpoint of its own whose identity is the device `key`.
-async fn endpoint(key: &SigningKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .secret_key(SecretKey::from_bytes(&key.to_bytes()))
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
-fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    EndpointAddr::new(endpoint.id()).with_ip_addr(std::net::SocketAddr::from((
-        std::net::Ipv4Addr::LOCALHOST,
-        endpoint.bound_sockets().first().unwrap().port(),
-    )))
-}
 
 const ALPHABET: &[u8; 64] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .";
 
@@ -144,26 +123,27 @@ fn join(parts: usize) -> (u64, u64, usize) {
         let member_endpoint = endpoint(&member_key()).await;
         let mut caught_up = member.caught_up();
         let start = bytes_moved();
-        let linking = tokio::spawn({
+        let mut linking = tokio::spawn({
             let member = member.clone();
             let member_endpoint = member_endpoint.clone();
             let host_addr = addr(&host_endpoint);
             async move { member.connect(&member_endpoint, host_addr).await }
         });
-        let caught = tokio::time::timeout(Duration::from_secs(600), caught_up.wait_for(|up| *up))
-            .await
-            .map(|_| bytes_moved().saturating_sub(start));
-        let ended = if linking.is_finished() {
-            Some(linking.await)
-        } else {
-            linking.abort();
-            None
-        };
-        router.shutdown().await.unwrap();
-        member_endpoint.close().await;
-        caught.unwrap_or_else(|_| {
-            panic!("a newcomer to {parts} parts never took the host's records in: {ended:?}")
+        let took_in = format!("a newcomer to {parts} parts to take the host's records in");
+        tilo_test_env::within(took_in, async {
+            tokio::select! {
+                up = caught_up.wait_for(|up| *up) => drop(up.unwrap()),
+                ended = &mut linking => panic!("the link to {parts} parts ended first: {ended:?}"),
+            }
         })
+        .await;
+        let moved = bytes_moved().saturating_sub(start);
+        linking.abort();
+        tilo_test_env::within("the host to stop serving", router.shutdown())
+            .await
+            .unwrap();
+        tilo_test_env::within("the newcomer to close", member_endpoint.close()).await;
+        moved
     });
     let held = (0..parts)
         .filter(|part| {

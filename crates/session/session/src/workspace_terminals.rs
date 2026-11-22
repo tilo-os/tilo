@@ -99,7 +99,12 @@ fn serve(mut stream: UnixStream, request: &Request, hosting: Option<&HostedWorks
             .set_nonblocking(true)
             .and_then(|()| tokio::net::UnixStream::from_std(stream));
         match local {
-            Ok(local) => tilo_device_mcp::splice(send, recv, local).await,
+            Ok(mut local) => {
+                // Whatever ends on one side ends on the other: a closed window ends the shell's
+                // stream, and a host that closes it ends the window's.
+                let mut carried = tokio::io::join(recv, send);
+                let _ = tokio::io::copy_bidirectional(&mut carried, &mut local).await;
+            }
             Err(error) => tracing::warn!(%error, "a workspace's terminal could not be carried"),
         }
         connection.close(0_u32.into(), b"the terminal closed");

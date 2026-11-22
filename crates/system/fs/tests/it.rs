@@ -24,10 +24,6 @@ mod held_memory;
 mod integration_test;
 #[path = "iroh_idle.rs"]
 mod iroh_idle;
-#[path = "native_sync_bench.rs"]
-mod native_sync_bench;
-#[path = "native_tier1.rs"]
-mod native_tier1;
 #[path = "performance_check.rs"]
 mod performance_check;
 #[path = "performance_timing.rs"]

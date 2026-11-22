@@ -22,8 +22,6 @@ pub mod content;
 pub mod hdr_metadata;
 pub mod input;
 mod key_scope;
-/// Work one device offers another: the question, and what each answers.
-pub mod offer;
 pub mod placement;
 pub mod retention;
 pub use key_scope::KeyScope;

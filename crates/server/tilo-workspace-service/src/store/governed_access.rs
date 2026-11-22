@@ -230,6 +230,8 @@ impl WorkspaceStore {
         &self,
         access: &GovernedAccessRecord,
     ) -> Result<([u8; 32], u64), StoreError> {
+        #[cfg(test)]
+        super::test_barrier::pause(&self.root, "access-write");
         let path = self.root.join(GOVERNED_ACCESS_FILE);
         if self.governed_access.lock_recover().is_none() {
             self.load_governed_access()?;

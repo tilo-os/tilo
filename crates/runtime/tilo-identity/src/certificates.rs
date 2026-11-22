@@ -31,7 +31,7 @@ mod host {
     use tilo_user_identity::DeviceCert;
 
     use crate::device_fleet::{DeviceFleet, DeviceFleetStore};
-    use crate::registry::IdentityProfile;
+    use crate::store::IdentityProfile;
 
     /// `cert` belongs to the identity selected for `workspace` and its device is
     /// not revoked.
@@ -62,7 +62,7 @@ mod host {
 
     /// The identity selected for `workspace` and one verified snapshot of its fleet.
     fn selected_fleet(workspace: &str) -> Result<(IdentityProfile, Arc<DeviceFleet>), String> {
-        let profile = crate::registry::identity_for_workspace(workspace)
+        let profile = crate::store::identity_for_workspace(workspace)
             .map_err(|e| e.to_string())?
             .ok_or("workspace identity unavailable")?;
         let fleet = DeviceFleetStore::from_env()
@@ -116,7 +116,7 @@ mod tests {
                 crate::provisioning::IdentityStorage::Files,
             )
             .expect("provision");
-            let profile = crate::registry::identity_for_workspace(WORKSPACE)
+            let profile = crate::store::identity_for_workspace(WORKSPACE)
                 .expect("registry")
                 .expect("selected identity");
             let cert = store()

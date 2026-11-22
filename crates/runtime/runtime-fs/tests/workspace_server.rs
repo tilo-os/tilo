@@ -1,7 +1,6 @@
 //! A host's workspace served read only over a Unix socket, browsed and
 //! read through the ordinary `FsClient`.
 
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

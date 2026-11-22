@@ -2057,16 +2057,9 @@ fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str,
         } else {
             ui::Theme::light()
         };
-        let mut staged = stage::Staged::over(
-            app,
-            packages,
-            scenario,
-            size,
-            theme.clone(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
+        let mut staged =
+            stage::Staged::over(app, packages, scenario, size, theme.clone(), None, &[])
+                .expect("the scenario stages");
         let input = if size.0 < 600 {
             ui::interaction::InteractionEnvironment::TOUCH
         } else {

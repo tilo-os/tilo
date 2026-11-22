@@ -245,7 +245,7 @@ pub(in crate::workspaces) struct Signing<'a> {
     pub(in crate::workspaces) by: &'a str,
 }
 
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "device-keys")]
 /// One sign-in the host sealed in its own store under a workspace's folder, before the
 /// workspace's vault was the one place a secret is kept.
 struct SealedBefore {
@@ -257,7 +257,7 @@ struct SealedBefore {
     secret: Zeroizing<String>,
 }
 
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "device-keys")]
 /// What a sign-in the host kept before is for.
 #[derive(Clone)]
 pub(in crate::workspaces) enum Owner {
@@ -265,7 +265,7 @@ pub(in crate::workspaces) enum Owner {
     Provider(String),
 }
 
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "device-keys")]
 impl Owner {
     fn id(&self) -> String {
         match self {
@@ -275,7 +275,7 @@ impl Owner {
     }
 }
 
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "device-keys")]
 /// The sign-ins the host kept in its own sealed store under a workspace's folder: each mail,
 /// calendar and cloud account's password or grant, and each model provider's key or grant.
 /// They are carried into the workspace's vault as their owners' own entries, and then the
@@ -285,7 +285,7 @@ pub(in crate::workspaces) struct HostSignIns {
     kept: Vec<SealedBefore>,
 }
 
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "device-keys")]
 impl HostSignIns {
     /// What the host kept under `root`: none where it keeps no store of its own there.
     ///

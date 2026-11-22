@@ -158,7 +158,11 @@ impl FileKeys {
         }
     }
 
-    pub(crate) async fn access(&self) -> Result<ContentKeys> {
+    /// The keys as they are now.
+    ///
+    /// # Errors
+    /// The key authority is not reachable or refuses them.
+    pub async fn access(&self) -> Result<ContentKeys> {
         let read = Arc::clone(&self.read);
         tokio::task::spawn_blocking(move || read()).await?
     }
@@ -217,8 +221,9 @@ impl FileKeys {
 
 enum ScopedKeyService {
     Identity(PathBuf),
-    Session {
-        link: crate::net::SessionLink,
+    /// The session serving this device's trees, over the tree's own connection.
+    Tree {
+        service: crate::tree_sync::remote::Service,
         runtime: tokio::runtime::Handle,
     },
 }
@@ -227,12 +232,10 @@ impl ScopedKeyService {
     fn file_keys(&self, workspace: WorkspaceId) -> FileKeys {
         match self {
             Self::Identity(path) => FileKeys::new(workspace, path.clone()),
-            Self::Session { link, runtime } => {
-                let link = link.clone();
+            Self::Tree { service, runtime } => {
+                let service = service.clone();
                 let runtime = runtime.clone();
-                FileKeys::from_session(workspace, move || {
-                    runtime.block_on(link.file_keys(workspace))
-                })
+                FileKeys::from_session(workspace, move || runtime.block_on(service.keys(workspace)))
             }
         }
     }
@@ -335,14 +338,18 @@ impl Hydrator {
         self.with_key_service(ScopedKeyService::Identity(identity), policy, reader)
     }
 
-    /// Use the active login's authenticated session link for shared workspace keys.
+    /// Use the keys the session serving this device's trees hands the Files endpoint, over the
+    /// tree's connection: a daemon that cannot reach the person's identity itself opens nothing
+    /// more to get them.
     #[must_use]
-    pub fn with_session_file_keys(self, policy: AclHandle, reader: IdentityKey) -> Self {
-        let crate::net::Net::Session(link) = &self.net else {
-            return self;
-        };
-        let authority = ScopedKeyService::Session {
-            link: link.clone(),
+    pub fn with_tree_file_keys(
+        self,
+        service: crate::tree_sync::remote::Service,
+        policy: AclHandle,
+        reader: IdentityKey,
+    ) -> Self {
+        let authority = ScopedKeyService::Tree {
+            service,
             runtime: self.runtime_handle.clone(),
         };
         self.with_key_service(authority, policy, reader)
@@ -826,8 +833,11 @@ mod tests {
         let acl = |allowed| scoped_file_acl(reader, workspace, another, allowed);
         let policy = AclHandle::new(acl(true));
         let store = Arc::new(crate::store::ContentStore::memory());
-        let hydrator = Hydrator::new(super::super::tests::local_endpoint().await, store.clone())
-            .with_scoped_file_keys(PathBuf::new(), policy.clone(), reader);
+        let hydrator = Hydrator::new(store.clone()).with_scoped_file_keys(
+            PathBuf::new(),
+            policy.clone(),
+            reader,
+        );
         install_file_keys(&hydrator, [workspace, another]);
 
         let data = b"private workspace file";

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@7a6c0cd1ad5b7840";
+export const SURFACE = "so.tilo.mail@f043af2c68620b30";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -366,9 +366,6 @@ export interface Mail extends tilo.Resource {
   gkuo27e6: Array<tilo.Entry<Draft>>;  // drafts
   z3zcztpz: Array<tilo.Entry<Label>>;  // labels
   bag7bf25: Array<tilo.Entry<Thread>>;  // recovered_mail
-  fezdozrd: string[];  // recovered_conversations
-  swilesl6: string[];  // recovered_signatures
-  "5upxgb6g": string[];  // recovered_drafts
   "4ow5ydy5": number;  // hold
   /** Sets how many seconds a sent message waits before it goes, so it can be taken back: no wait at all at zero. */
   set_hold(args: {
@@ -376,13 +373,6 @@ export interface Mail extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_hold` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_holdMany(items: SetHoldArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Copies data from the earlier private mailbox into this workspace. */
-  recover_previous(args?: {
-    drafts?: string[][];
-    labels?: string[];
-    conversations?: string[][][];
-    signatures?: string[][];
-  }): Promise<number>;
   /** Starts a message from the first account. */
   new_draft(): Promise<Draft>;
   /** Starts a message inviting `to` to an event, its invitation (`calendar_ics`, iCalendar) carried beside what it says: what Calendar hands Mail for each guest it invites. Nothing is sent; the person reads it, and sends it. */
@@ -431,7 +421,7 @@ export interface Mail extends tilo.Resource {
 
 /** The actions `Mail` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MAIL_ACTIONS = ["set_hold", "set_holdMany", "recover_previous", "new_draft", "prepare_calendar_invitation", "deliver_message", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany"] as const;
+export const MAIL_ACTIONS = ["set_hold", "set_holdMany", "new_draft", "prepare_calendar_invitation", "deliver_message", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany"] as const;
 
 /** The `tl.so.tilo.mail.Mail` kind at `path`. */
 export function mail(ws: tilo.Workspace, path: string): Mail {

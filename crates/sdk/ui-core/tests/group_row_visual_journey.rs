@@ -9,7 +9,6 @@
 //! `TILO_UI_SCREENSHOT_DIR=<path>` to write one PNG per state
 //! (`group_row_<state>.png`) for by-eye inspection.
 
-
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::offscreen::OffscreenRenderer;

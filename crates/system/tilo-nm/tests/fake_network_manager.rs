@@ -8,7 +8,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

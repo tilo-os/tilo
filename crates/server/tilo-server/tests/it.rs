@@ -60,6 +60,7 @@ mod image_enrollment_methods;
 mod live_session;
 #[path = "multi_host.rs"]
 mod multi_host;
+#[cfg(target_os = "linux")]
 #[path = "offloadable_action.rs"]
 mod offloadable_action;
 #[cfg(unix)]

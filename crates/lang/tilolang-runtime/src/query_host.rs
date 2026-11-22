@@ -10,9 +10,15 @@ use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
 use crate::meta::EnumMeta;
-use crate::query::{Clock, Query, Term, find, resolve};
+use crate::query::{Clock, Query, Term, declared_order, find, resolve};
 use crate::store::{FieldSpec, Lit, lit_of, ordered_cmp};
 use crate::value::{RefValue, Value};
+
+/// Whether items a query asks no order of are listed as they are: a collection its view already
+/// ordered (`sort_by`). Anything else is listed in its type's own order (`sort latest newest`).
+fn keeps_its_order(held: &Value) -> bool {
+    matches!(held, Value::Coll(coll) if coll.order.is_some())
+}
 
 impl Core {
     /// The clock queries are read against: the host's, to the minute, so a view that asks
@@ -143,10 +149,12 @@ impl Core {
             .map_err(|e| e.to_string())?;
         clock.instants(next);
         self.note_time(clock.changes_at());
-        // A query that asks nothing: the items as they are.
+        // A query that asks nothing, of items it would not order: the items as they are.
         if resolved.pred == tilolang::pred::Pred::Const(true) && resolved.order.is_none() {
             let held = self.val(scope)?;
-            if matches!(held, Value::Coll(_) | Value::List(_)) {
+            if matches!(held, Value::Coll(_) | Value::List(_))
+                && (declared.search.sort.is_none() || keeps_its_order(&held))
+            {
                 return Ok(held);
             }
         }
@@ -156,10 +164,16 @@ impl Core {
                 declared.name
             ));
         };
-        match self.val(scope)? {
-            Value::Coll(coll) => Ok(Value::Coll(Rc::new(coll.queried(pred, resolved.order)))),
-            Value::List(items) => self.query_list(items, &pred, resolved.order.as_ref()),
-            Value::Opt(None) | Value::Unit => self.query_all(ty, &pred, resolved.order.as_ref()),
+        let held = self.val(scope)?;
+        let order = match resolved.order {
+            Some(order) => Some(order),
+            None if keeps_its_order(&held) => None,
+            None => declared_order(declared)?,
+        };
+        match held {
+            Value::Coll(coll) => Ok(Value::Coll(Rc::new(coll.queried(pred, order)))),
+            Value::List(items) => self.query_list(items, &pred, order.as_ref()),
+            Value::Opt(None) | Value::Unit => self.query_all(ty, &pred, order.as_ref()),
             other => trap(format!(
                 "query: `in:` is a collection or a list of resources, not {}",
                 other.kind_name()

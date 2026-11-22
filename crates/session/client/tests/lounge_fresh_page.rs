@@ -7,7 +7,7 @@
 //! `os/containers/tilo-lounge/entrypoint.sh` given eu1's `TILO_WORKSPACES_*`
 //! (`apps/tilo-eu1/deployment.yaml`), the state volume is the operator's
 //! copy of production, and the pages go through the host's real entry
-//! (`/host`, and the session the entry serves) with invitations the
+//! (the session the entry serves) with invitations the
 //! host itself mints. What it asks about are the records people use — Chat's
 //! and the shared desktop's — and what it checks is what a person sees: the
 //! records' keys arrive, Chat's history opens, Chat's composer is there, the
@@ -41,7 +41,6 @@ use std::sync::Arc;
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use std::time::Duration;
-use tilo_server_client::https::HttpFuture;
 
 use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
@@ -277,24 +276,14 @@ impl Lounge {
         };
         let OperatorEvent::Started {
             workspace: Some(workspace),
-            plain_origin: Some(plain),
-            certificate_sha256: Some(sha256),
+            host_info: Some(info),
             ..
         } = started
         else {
             panic!(
-                "a persistent workspace announces its workspace, its plain listener and its certificate: {started:?}"
+                "a persistent workspace announces its workspace and who its host is: {started:?}"
             );
         };
-        let _ = sha256;
-        // The entry answers on loopback as `localhost:PORT`; a page's session
-        // no longer rides it, but `/host` does.
-        let entry = Arc::new(Plain(plain.trim_end_matches('/').to_owned()));
-        let info = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(tilo_server_client::https::server_info(entry.as_ref()))
-        })
-        .expect("the host's certificate");
         let server_cert = info.server_cert;
         let address = info.address.expect("the host publishes its iroh endpoint");
         let link = address
@@ -966,32 +955,4 @@ fn pointer_on(
         .pointers(tab, now)
         .first()
         .map(|(_, x, y)| over.point((*x, *y)))
-}
-
-/// The host's plain listener, as a page's `fetch`: HTTP/1.1 to it, no TLS
-/// (the deployment's ingress terminates TLS in front of it).
-struct Plain(String);
-
-impl tilo_server_client::https::HttpClient for Plain {
-    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
-        let url = format!("{}{path}", self.0);
-        Box::pin(async move {
-            let client = tilo_net::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .build()
-                .map_err(|error| error.to_string())?;
-            let request = client
-                .post(&url)
-                .header("content-type", "application/octet-stream")
-                .body(body);
-            let response = request.send().await.map_err(|error| error.to_string())?;
-            let status = response.status().as_u16();
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(|error| error.to_string())?
-                .to_vec();
-            Ok((status, bytes))
-        })
-    }
 }

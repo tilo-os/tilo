@@ -13,69 +13,18 @@ use serde_json::json;
 use tilo_server_protocol::workspaces::Role;
 
 use crate::closed_tasks::{APP, titles, tracker};
-use crate::common::people::{Device, Person, Site, share_the_fleet, shared_invitation};
+use crate::common::people::{Device, Person, Site, at, share_the_fleet, shared_invitation};
 
 /// How long a write may take to show on another device. A person waiting on a message notices
 /// more than this; the suite's hang bound is for a write that never arrives.
 const PROMPTLY: Duration = Duration::from_secs(5);
-
-/// The provider and id of Tasks' `operation` as `device` lists it, read page by page: a device
-/// with several apps open lists more actions than one page holds.
-fn tasks_action(device: &Device, operation: &str) -> Option<(String, String)> {
-    let mut cursor = String::new();
-    loop {
-        let page = device.ask(&json!({"op": "actions_enumerate", "cursor": cursor}));
-        let found = page["answer"]["actions"].as_array().and_then(|rows| {
-            rows.iter().find(|row| {
-                row["application"] == APP
-                    && row["operation"] == operation
-                    && row["provider"]
-                        .as_str()
-                        .is_some_and(|provider| provider.parse::<u64>().is_ok())
-            })
-        });
-        if let Some(row) = found {
-            return Some((
-                row["provider"].as_str()?.to_owned(),
-                row["id"].as_str()?.to_owned(),
-            ));
-        }
-        page["answer"]["next_cursor"]
-            .as_str()?
-            .clone_into(&mut cursor);
-    }
-}
-
-/// Invoke Tasks' `operation` on `device` with `args` once its window offers it, the person's
-/// confirmation given where it asks first: what the window answered.
-fn tasks_act(device: &Device, operation: &str, args: &serde_json::Value) -> serde_json::Value {
-    let deadline = tilo_test_env::hang_deadline();
-    let (provider, id) = loop {
-        if let Some(found) = tasks_action(device, operation) {
-            break found;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "Tasks on {} never offers {operation}; its windows: {}\n{}",
-            device.label,
-            device.ask(&json!({"op": "windows"})),
-            device.diagnostic()
-        );
-        std::thread::sleep(Duration::from_millis(200));
-    };
-    let answer = device.act_wait(&provider, &id, args);
-    if answer["err"]["code"].as_str() == Some("needs_confirmation") {
-        return device.act_confirming(&provider, &id, args);
-    }
-    answer
-}
 
 /// Make an issue titled `title` in the workspace's tracker on `device`, as a person does: in Tasks'
 /// window, through the `create` it publishes.
 fn make_issue(device: &Device, title: &str) {
     device.open(APP);
     device.wait_for_window(APP);
-    let made = tasks_act(device, "create", &json!({ "title": title }));
+    let made = device.app_act(APP, "create", &json!({ "title": title }));
     assert!(
         made.get("err").is_none(),
         "{} made no issue: {made}",
@@ -116,7 +65,7 @@ fn wait_for_tasks_showing(device: &Device, title: &str) -> Duration {
     // Starting the app is not the write travelling: a window stands before its app answers, so
     // the app's first view is read before the clock starts. What is timed is the issue reaching a
     // window already reading, never the app's own start on a busy machine.
-    let started = tasks_act(device, "outline", &json!({}));
+    let started = device.app_act(APP, "outline", &json!({}));
     assert!(
         started.get("err").is_none(),
         "{} reads Tasks' view: {started}\n{}",
@@ -126,7 +75,7 @@ fn wait_for_tasks_showing(device: &Device, title: &str) -> Duration {
     let began = Instant::now();
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let outline = tasks_act(device, "outline", &json!({}));
+        let outline = device.app_act(APP, "outline", &json!({}));
         if outline.to_string().contains(title) {
             return began.elapsed();
         }
@@ -134,12 +83,11 @@ fn wait_for_tasks_showing(device: &Device, title: &str) -> Duration {
             Instant::now() < deadline,
             "Tasks on {} never shows {title:?}; it shows {outline}\nits Tasks actions: {:?}\n{}",
             device.label,
-            device.actions()["answer"]["actions"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|row| row["application"] == APP)
-                .map(|row| row["operation"].to_string())
+            device
+                .actions()
+                .iter()
+                .filter(|row| row.app_id == APP)
+                .filter_map(|row| Some(row.action.as_ref()?.address.action.clone()))
                 .collect::<Vec<_>>(),
             device.diagnostic()
         );
@@ -151,8 +99,7 @@ fn wait_for_tasks_showing(device: &Device, title: &str) -> Duration {
 /// workspace that arrived from the person's list stands behind the one they are in.
 fn show(device: &Device, workspace: &str) {
     let shown = device.act(
-        "so.tilo.session",
-        "desktop:chrome\u{1f}switch-workspace",
+        &at("so.tilo.session", "desktop:chrome", "switch-workspace"),
         &json!({ "workspace": workspace }),
     );
     assert!(

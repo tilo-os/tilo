@@ -79,9 +79,6 @@ export const routes = {
   export: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/export`,
   links: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/links`,
   views: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/views`,
-  members: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/members`,
-  invitations: (workspace: string) =>
-    `${PREFIX}/workspaces/${segment(workspace)}/members/invitations`,
   programs: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/programs`,
   uploads: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/uploads`,
   content: (workspace: string, content: string) =>

@@ -87,7 +87,7 @@ impl AppBrokerState {
     ) -> Option<Forward> {
         let peer_id = request.target.provider.parse::<u64>().ok()?;
         let address = &request.target.address;
-        let (route, action) = self.surfaces.lock().ok().and_then(|surfaces| {
+        let (route, action) = self.publishers.surfaces.lock().ok().and_then(|surfaces| {
             let surface = surfaces.get(&peer_id).filter(|surface| surface.live)?;
             let action = surface.actions.iter().find(|action| {
                 action.resource == address.resource && action.action == address.action

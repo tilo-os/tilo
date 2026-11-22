@@ -11,7 +11,7 @@
               until their sessions end"
 )]
 
-use crate::common::people::{Site, show, titles_at, titles_on, two_people_at_a_site, waited};
+use crate::common::people::{Site, at, show, titles_at, titles_on, two_people_at_a_site, waited};
 use tilo_desktop_model::ownership::DESKTOP_APP;
 use tilo_desktop_model::person_view::PersonView;
 
@@ -152,12 +152,11 @@ fn an_undo_takes_back_the_persons_own_change_and_never_another_persons() {
 
     // Ada takes back her last step: her window is the one that goes, and Bob's is not hers to take.
     let undone = ada_laptop.act_wait(
-        "so.tilo.session",
-        "shell:layout\u{1f}undo",
+        &at("so.tilo.session", "shell:layout", "undo"),
         &serde_json::json!({}),
     );
     assert_eq!(
-        undone["answer"]["receipt"]["update"]["state"],
+        undone["update"]["state"],
         serde_json::json!("succeeded"),
         "Ada takes her step back: {undone}\n{}",
         ada_laptop.log()

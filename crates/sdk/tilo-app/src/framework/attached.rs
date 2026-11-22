@@ -1405,6 +1405,11 @@ impl AttachedView {
     /// first: a chain follows what arrived only when it is read, so the part
     /// just handed to it is taken up, and a chain read whole asks for the
     /// parts before its head. Only the chains are read, not the view's tree.
+    ///
+    /// What the app keeps for its whole workspace that the view was told nothing of yet is
+    /// wanted too: it opens only on the workspace's word ([`Self::workspace_answered`]), and
+    /// the view waits for what its app declared of it, so a host that answers what the view
+    /// wants answers that as well.
     #[must_use]
     pub fn wanted_resources(&self) -> Vec<ui_core::resource::DocumentId> {
         // What reached the view from elsewhere asks for what a frame of it
@@ -1424,7 +1429,13 @@ impl AttachedView {
                 .frame_as_is()
                 .resource(&super::chain_resource_id(chain));
         }
-        self.records.wanted_resources()
+        let mut wanted = self.records.wanted_resources();
+        for kept in self.awaited.borrow().iter() {
+            if !wanted.contains(kept) {
+                wanted.push(kept.clone());
+            }
+        }
+        wanted
     }
 
     /// The workspace's hosts sent all they hold of `record`, none of it
@@ -1736,8 +1747,10 @@ impl AttachedView {
 /// Lay `frame` out, and take up what that frame asked for: the invocations
 /// it submitted, the replies it asked a worker for. One frame when it asked
 /// for nothing; when what it submitted changed the record, the frames that
-/// shows ([`FrameHarness::settle_owed`]).
+/// shows ([`FrameHarness::settle_owed`]). Laid out as a still frame
+/// ([`ui_core::arriving::still_frames`]): a view no window shows has no later frame.
 fn lay_out(frame: &mut FrameHarness) {
+    let _still = ui_core::arriving::still_frames();
     frame.relayout();
     if frame.settle_if_owed() == (ui_core::headless::OwedSettle::Unframed { moved: true }) {
         frame.settle_owed();

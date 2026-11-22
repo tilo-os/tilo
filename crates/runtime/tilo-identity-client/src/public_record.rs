@@ -1,7 +1,7 @@
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 use zeroize::Zeroizing;
@@ -61,28 +61,6 @@ pub fn load_metadata_from_bytes(bytes: &[u8]) -> Result<IdentityMetadata, NotAva
 pub fn load_metadata_from_path(path: &Path) -> Result<IdentityMetadata, NotAvailable> {
     let bytes = read_private(path, MAX_DOCUMENT_BYTES).map_err(NotAvailable::ConnectionFailed)?;
     load_metadata_from_bytes(&bytes)
-}
-
-pub fn resolve_active_identity(dir: &Path) -> Option<PathBuf> {
-    let selector = read_private(&dir.join("active"), 128).ok();
-    let id = selector
-        .as_ref()
-        .and_then(|bytes| std::str::from_utf8(bytes).ok())
-        .map(str::trim)
-        .filter(|id| valid_identity_id(id))
-        .unwrap_or("primary");
-    let path = dir.join(format!("{id}.json"));
-    let metadata = fs::symlink_metadata(&path).ok()?;
-    metadata.file_type().is_file().then_some(path)
-}
-
-fn valid_identity_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 64
-        && id.bytes().enumerate().all(|(i, byte)| {
-            byte.is_ascii_lowercase()
-                || i > 0 && (byte.is_ascii_digit() || matches!(byte, b'_' | b'-'))
-        })
 }
 
 fn invalid_record(message: &str) -> NotAvailable {

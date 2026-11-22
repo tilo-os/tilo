@@ -7,6 +7,18 @@
 //! for the Files resources of the workspace the daemon names. [`start`] is the daemon's side: the
 //! same [`TreeSync`] every folder runs, with the socket as its peer.
 //!
+//! The same connection carries everything else the daemon needs of the workspace, so the daemon
+//! opens nothing else to reach it:
+//!
+//! - the bytes of files this device lacks, asked of the workspace by the session's record
+//!   content ([`Service::source`]), and the bytes the session's content asks of this device's
+//!   store, which is the one store a device keeps file bytes in;
+//! - the tree's content keys, as the session's identity hands them to the Files endpoint
+//!   ([`Service::keys`]);
+//! - who may read and write which of the tree's folders, as the session decides it from the
+//!   workspace's signed member list, told again the moment that list changes
+//!   ([`Service::access`]).
+//!
 //! The connection comes and goes with the session. While it is down, reads and writes fail and
 //! the sync waits as it waits for any peer that cannot be reached; each time it is back, the
 //! sync opens every part of the tree again.
@@ -24,7 +36,8 @@ use tilo_server_protocol::DocumentAnswer;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    Config, FILES_APP, Reading, Records, Served, TreePeer, TreeSync, TreeWriter, Wake, WriteFuture,
+    Config, FILES_APP, Reading, Records, Served, Status, TreePeer, TreeSync, TreeWriter, Wake,
+    WriteFuture,
 };
 
 /// The frames both sides send: a little-endian `u32` length, then one postcard value. A whole
@@ -63,6 +76,15 @@ pub enum Ask {
     Served { id: u64, chunks: Vec<TreeChunk> },
     /// Ask the workspace again for file content whose answer stalled.
     ReaskContent,
+    /// The bytes named `hash`, which this device lacks.
+    Want { id: u64, hash: [u8; 32] },
+    /// The content keys of `workspace`'s tree.
+    Keys { id: u64, workspace: String },
+    /// The answer to [`Told::Lend`]: the bytes this device keeps under that hash, if any.
+    Lent { id: u64, bytes: Option<Vec<u8>> },
+    /// Where the folder stands now, which the session shows: said when it changes, and on each
+    /// connection.
+    Status(super::Status),
 }
 
 /// What the session tells the daemon.
@@ -76,11 +98,11 @@ pub enum Told {
     },
     Written {
         id: u64,
-        written: Result<(), String>,
+        written: Result<(), super::Refusal>,
     },
     Served {
         id: u64,
-        served: Result<(), String>,
+        served: Result<(), super::Refusal>,
     },
     /// What the service has now: the parts of the tree it has anything of, among those
     /// this connection named, how many of this device's writes it still keeps, whether this
@@ -92,11 +114,35 @@ pub enum Told {
         lacks: Option<u32>,
     },
     Wake(Wake),
+    /// The answer to [`Ask::Want`]: the bytes, checked against their hash before they are kept,
+    /// or none when the workspace did not hand them over.
+    Content {
+        id: u64,
+        bytes: Option<Vec<u8>>,
+    },
+    /// The answer to [`Ask::Keys`]: the keys' encoding, or why they are not handed over.
+    Keys {
+        id: u64,
+        keys: Result<Vec<u8>, String>,
+    },
+    /// Who may read and write the tree's folders now: the capability list (JSON) the mount
+    /// enforces, replacing the one it was told before.
+    Access(String),
+    /// The bytes this device keeps under `hash`, for the workspace's record content.
+    Lend {
+        id: u64,
+        hash: [u8; 32],
+    },
+    /// Keep `bytes` under their hash in this device's store: content the session's record
+    /// content received for the tree, or kept before this store was the one.
+    Keep {
+        bytes: Vec<u8>,
+    },
 }
 
 /// Hold `workspace`'s tree, kept in `kept_at` between runs, as the device whose key is `device`
 /// (of person `person`), with the session's service on `socket` as its peer; its file bytes
-/// are kept in `content`.
+/// are kept in `content`. The [`Service`] is the rest of what the connection carries.
 ///
 /// # Errors
 /// The kept namespace cannot be read.
@@ -106,28 +152,91 @@ pub async fn start(
     (device, person): ([u8; 32], [u8; 32]),
     kept_at: PathBuf,
     content: Arc<crate::ContentStore>,
-) -> std::io::Result<TreeSync> {
+) -> std::io::Result<(TreeSync, Service)> {
     let link = Arc::new(Link {
         workspace: workspace.clone(),
         out: Mutex::new(None),
         waiting: Mutex::new(BTreeMap::new()),
         next: AtomicU64::new(0),
         state: Mutex::new(PeerState::default()),
+        store: Arc::clone(&content),
+        access: tokio::sync::watch::channel(None).0,
+        shown: Mutex::new(None),
     });
     let (wakes, wake_events) = mpsc::unbounded_channel();
     tokio::spawn(keep_linked(Arc::clone(&link), socket, wakes));
-    TreeSync::start(Config {
+    let tree = TreeSync::start(Config {
         workspace,
         device,
         person,
         kept_at,
         documents: Arc::new(Remote(Arc::clone(&link))),
         writer: Box::new(Remote(Arc::clone(&link))),
-        peer: Arc::new(Remote(link)),
+        peer: Arc::new(Remote(Arc::clone(&link))),
         content,
         wakes: wake_events,
     })
-    .await
+    .await?;
+    tokio::spawn(tell_status(Arc::clone(&link), tree.status_changes()));
+    Ok((tree, Service(link)))
+}
+
+/// Tell the session where the folder stands each time that changes, until the sync is gone.
+async fn tell_status(link: Arc<Link>, mut changes: tokio::sync::watch::Receiver<Status>) {
+    loop {
+        let now = changes.borrow_and_update().clone();
+        *link.shown.lock_recover() = Some(now.clone());
+        link.send(Ask::Status(now));
+        if changes.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// What the session's connection carries beside the tree: file bytes, keys and access.
+#[derive(Clone)]
+pub struct Service(Arc<Link>);
+
+impl Service {
+    /// The workspace as the source of the bytes this device lacks.
+    #[must_use]
+    pub fn source(&self) -> Arc<dyn crate::hydration::ContentSource> {
+        Arc::new(Remote(Arc::clone(&self.0)))
+    }
+
+    /// The content keys of `workspace`'s tree, as the session hands them to this Files endpoint.
+    ///
+    /// # Errors
+    /// The session is not reachable, or refused the keys.
+    pub async fn keys(
+        &self,
+        workspace: collab_types::WorkspaceId,
+    ) -> anyhow::Result<key_group::ContentKeys> {
+        let told = self
+            .0
+            .ask(|id| Ask::Keys {
+                id,
+                workspace: workspace.to_string(),
+            })
+            .ok_or_else(|| anyhow::anyhow!(UNREACHABLE))?;
+        match told.await {
+            Ok(Told::Keys {
+                keys: Ok(bytes), ..
+            }) => {
+                let bytes = zeroize::Zeroizing::new(bytes);
+                Ok(key_group::ContentKeys::from_bytes(&bytes)?)
+            }
+            Ok(Told::Keys { keys: Err(why), .. }) => Err(anyhow::anyhow!(why)),
+            _ => Err(anyhow::anyhow!(UNREACHABLE)),
+        }
+    }
+
+    /// The capability list (JSON) the session last said the mount enforces: `None` until it said
+    /// one on this run.
+    #[must_use]
+    pub fn access(&self) -> tokio::sync::watch::Receiver<Option<String>> {
+        self.0.access.subscribe()
+    }
 }
 
 /// What the session said of the tree's parts, as the sync asks it without waiting.
@@ -150,6 +259,12 @@ struct Link {
     waiting: Mutex<BTreeMap<u64, oneshot::Sender<Told>>>,
     next: AtomicU64,
     state: Mutex<PeerState>,
+    /// This device's store of file bytes, which the session's record content reads and keeps.
+    store: Arc<crate::ContentStore>,
+    /// The access the session said last.
+    access: tokio::sync::watch::Sender<Option<String>>,
+    /// Where the folder stood when it last said: what a new connection says first.
+    shown: Mutex<Option<Status>>,
 }
 
 /// What a sync is told when the session is not reachable.
@@ -204,13 +319,55 @@ impl Link {
                 return Ok(!wakes.is_closed());
             }
             Told::Wake(_) => return Ok(true),
-            Told::Read { id, .. } | Told::Written { id, .. } | Told::Served { id, .. } => *id,
+            Told::Access(capabilities) => {
+                self.access.send_replace(Some(capabilities.clone()));
+                return Ok(true);
+            }
+            Told::Lend { id, hash } => {
+                self.lend(*id, *hash);
+                return Ok(true);
+            }
+            Told::Keep { bytes } => {
+                self.keep(bytes.clone());
+                return Ok(true);
+            }
+            Told::Read { id, .. }
+            | Told::Written { id, .. }
+            | Told::Served { id, .. }
+            | Told::Content { id, .. }
+            | Told::Keys { id, .. } => *id,
         };
         let waiting = self.waiting.lock_recover().remove(&id);
         if let Some(waiting) = waiting {
             let _ = waiting.send(told);
         }
         Ok(!wakes.is_closed())
+    }
+
+    /// Answer the session's ask for the bytes kept here under `hash`.
+    fn lend(&self, id: u64, hash: [u8; 32]) {
+        let store = Arc::clone(&self.store);
+        let out = self.out.lock_recover().clone();
+        tokio::spawn(async move {
+            let bytes = store
+                .local(iroh_blobs::Hash::from_bytes(hash))
+                .await
+                .map(|bytes| bytes.to_vec());
+            if let Some(out) = out {
+                let _ = out.send(Ask::Lent { id, bytes });
+            }
+        });
+    }
+
+    /// Keep what the session hands over for the tree, checked against its hash.
+    fn keep(&self, bytes: Vec<u8>) {
+        let store = Arc::clone(&self.store);
+        tokio::spawn(async move {
+            let hash = iroh_blobs::Hash::new(&bytes);
+            if let Err(error) = store.store_fetched(hash, bytes.into()).await {
+                tracing::debug!(%hash, %error, "the session's content for the tree is not kept");
+            }
+        });
     }
 
     /// The connection ended: nothing waits for its answers, and what it said is unsaid.
@@ -274,6 +431,10 @@ async fn linked_once(
         .await
         .map_err(|error| error.to_string())?;
     let (out, mut outgoing) = mpsc::unbounded_channel();
+    let shown = link.shown.lock_recover().clone();
+    if let Some(shown) = shown {
+        let _ = out.send(Ask::Status(shown));
+    }
     *link.out.lock_recover() = Some(out);
     // Whatever was opened before is opened again on this connection.
     let _ = wakes.send(Wake::HostReady);
@@ -390,6 +551,26 @@ impl TreePeer for Remote {
     }
 }
 
+impl crate::hydration::ContentSource for Remote {
+    fn fetch(
+        &self,
+        hash: iroh_blobs::Hash,
+    ) -> futures_util::future::BoxFuture<'static, Option<bytes::Bytes>> {
+        let told = self.0.ask(|id| Ask::Want {
+            id,
+            hash: *hash.as_bytes(),
+        });
+        Box::pin(async move {
+            match told?.await {
+                Ok(Told::Content {
+                    bytes: Some(bytes), ..
+                }) => Some(bytes.into()),
+                _ => None,
+            }
+        })
+    }
+}
+
 impl TreeWriter for Remote {
     fn write<'a>(
         &'a mut self,
@@ -406,9 +587,12 @@ impl TreeWriter for Remote {
             snapshot,
         });
         Box::pin(async move {
-            match told.ok_or(UNREACHABLE)?.await {
-                Ok(Told::Written { written, .. }) => written,
-                _ => Err(UNREACHABLE.to_owned()),
+            match told {
+                Some(told) => match told.await {
+                    Ok(Told::Written { written, .. }) => written,
+                    _ => Err(UNREACHABLE.to_owned().into()),
+                },
+                None => Err(UNREACHABLE.to_owned().into()),
             }
         })
     }
@@ -419,9 +603,12 @@ impl TreeWriter for Remote {
             chunks: chunks.to_vec(),
         });
         Some(Box::pin(async move {
-            match told.ok_or(UNREACHABLE)?.await {
-                Ok(Told::Served { served, .. }) => served,
-                _ => Err(UNREACHABLE.to_owned()),
+            match told {
+                Some(told) => match told.await {
+                    Ok(Told::Served { served, .. }) => served,
+                    _ => Err(UNREACHABLE.to_owned().into()),
+                },
+                None => Err(UNREACHABLE.to_owned().into()),
             }
         }))
     }

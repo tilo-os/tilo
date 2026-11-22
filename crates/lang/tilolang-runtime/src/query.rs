@@ -883,6 +883,23 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
     })
 }
 
+/// The order the type `ty` declares (`sort latest newest`), which a query that asks none lists
+/// its items in; none when it declares none.
+///
+/// # Errors
+/// The declared order names a field the type cannot be sorted by.
+pub fn declared_order(ty: &TypeMeta) -> Result<Option<Order>, String> {
+    let Some(sort) = &ty.search.sort else {
+        return Ok(None);
+    };
+    let text = if sort.order.descending() {
+        format!("-{}", sort.key)
+    } else {
+        sort.key.clone()
+    };
+    order_of(&text, ty).map(Some)
+}
+
 /// `-received` or `received`: the field by name, and whether the latest or last comes first.
 fn order_of(sort: &str, ty: &TypeMeta) -> Result<Order, String> {
     let (name, descending) = match sort.strip_prefix('-') {

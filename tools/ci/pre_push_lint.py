@@ -11,8 +11,7 @@ head. A branch of one's own is pushed unlinted.
 A push to main lints the packages its commits own: the changed files through the
 repository's own format check, and Clippy over every target of the host with the
 features the workspace's unified build gives each package (so code behind a
-feature that no default build enables is compiled). Those features are the same
-whichever packages are selected, so one push's build stays warm for the next.
+feature that no default build enables is compiled).
 
 A push lints only what its commits change. The crates that use something it
 renamed or removed, the packages as they ship, and the crates that build for the
@@ -20,25 +19,32 @@ page are t's `clippy`, `clippy-{arch}`, `clippy-idle`, `clippy-shipped` and
 `clippy-page` families' work, on every change: each is keyed by what it reads,
 dependents included, and a miss is named on the head it broke.
 
-The Clippy runs start together, so a one-crate push costs about one build. A run
-that passed is not repeated while everything it reads is unchanged
-(tools/ci/lint_inputs.py), so a push retried after a rebase onto unrelated
-commits does not lint again. Commits that passed are not linted again either
-when they are pushed once more as they were, rebased onto a newer main, within
-REBASE_WINDOW: main takes a commit every minute or two and a lint takes minutes,
-so a push that relints after every rebase loses to the next commit each time and
-never lands. What the commits main gained in between do to them is what t's
-families say on main. One cargo names the packages and compiles them: the one
-`$CARGO` names when it is set - any cargo drop-in, which may build on another
-machine - else the `cargo` on PATH, else t's (`t cargo`), which reads and builds
-on t's nodes for a machine that has no cargo of its own. Formatting is checked
-by the `rustfmt` on PATH, when there is one: it compiles nothing, so it needs no
-other machine.
+Where t is installed, the lint is t's own per-package checks of the families
+that build with those unified features (`clippy/<package>`, `clippy-idle/...`,
+`clippy-<arch>/...`: the ones whose `unify` names workspace-unify in t.toml). t
+keys each by what that package's build reads, its dependencies included, and
+answers a key it has seen from its result cache, whoever ran it: after a rebase
+onto commits that reach none of what a package reads, the push is answered in
+seconds, and a package main's new commits did reach, through a dependency too,
+is linted again. Without t, or with `$CARGO` naming a cargo - any cargo drop-in,
+which may build on another machine - that cargo runs Clippy itself, with the
+same unified features. The packages are named by the cargo `$CARGO` names, else
+the `cargo` on PATH, else t's (`t cargo metadata`). Formatting is checked by the
+`rustfmt` on PATH, which must be the version the toolchain pins, or by t's `fmt`
+check where there is none.
+
+A lint that passed stands for the same change after a rebase that leaves it alone: a pass is
+remembered by the push's own patch (`git patch-id`) and the trees of the linted packages' own
+directories at its head. A push retried after main moved, whose rebase resolved nothing and whose
+packages' directories main's new commits did not touch, has both the same and is sent without
+linting again, however long the lint took and however much main changed elsewhere, dependencies
+of those packages included. What only the combination breaks is t's clippy families' to find on
+main, and the next commit's to fix. The passes are kept in the repository's git directory.
 
 The lint reads the files on disk, so a push is refused when what it sends is not
 the tree checked out here: a lint that spoke for another commit would say
-nothing about this one. A push whose changed packages the check cannot name, or
-whose page lint cannot run here, is refused too, rather than passed unread.
+nothing about this one. A push whose changed packages the check cannot name is
+refused too, rather than passed unread.
 
 There is no switch to skip the lint: `git push --no-verify` is Git's own
 escape, and CONTRIBUTING.md asks contributors never to use it.
@@ -52,6 +58,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import shlex
@@ -67,7 +74,6 @@ TOOLS = Path(__file__).resolve().parents[1]
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
 from ci import suites
-from ci.lint_inputs import Workspace
 from ci.workspace_graph import file_at, lockfile_change, package_maps
 
 # A changed file is Rust or Cargo when it can change what a package compiles.
@@ -97,16 +103,14 @@ CARGO_REMARKS = (
 PROGRESS = re.compile(r"^\s*(?:Checking|Compiling|Fresh|Building|Blocking|Downloading|Downloaded"
                       r"|Locking|Updating|Adding|Documenting)\s")
 ZERO_OID = {"0"}
+# Where the passes a later push may stand on are kept, in the repository's common git directory
+# (shared by its worktrees), and how many of the newest are: one line each.
+PASSES = "tilo-pre-push-passes"
+PASSES_KEPT = 256
 # The branch everyone lands on, and the only one a push is linted for. A push to main that is
 # not a fast-forward is a race already lost: nobody force-pushes main, so the remote refuses it
 # after any lint.
 MAIN_REF = "refs/heads/main"
-# How many passing lint keys a clone keeps.
-KEPT_PASSES = 256
-# How long commits that passed the lint are pushed again without it after a rebase that left them
-# as they were. Long enough for a push to be retried until it wins the race for main's head, short
-# enough that main has not become another tree under them.
-REBASE_WINDOW = 20 * 60
 
 
 def say(message: str) -> None:
@@ -114,18 +118,23 @@ def say(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
-# t's cargo: what a machine without a cargo of its own reads and builds the workspace with.
+# t's cargo: what a machine without a cargo of its own reads the workspace with.
 T_CARGO = ["t", "cargo"]
-# Where a t job sees the checkout and its build directory.
-JOB_SOURCES = "/src"
-JOB_TARGET = "/target"
+# t's configuration, whose cargo families name the per-package checks the lint asks t for.
+T_TOML = "t.toml"
+# The package whose manifest gives every member the features the workspace's whole build
+# resolves for it: the clippy families that name it in `unify` lint with those features, which is
+# the lint a push gets.
+UNIFY = "workspace-unify"
+# What an architecture family's `{arch}` is on this machine.
+ARCHITECTURES = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}
 
 
 def cargo_command() -> list[str]:
-    """The cargo that reads the workspace and builds it.
+    """The cargo that reads the workspace, and lints it where t does not.
 
     Any drop-in named in $CARGO (which may build on another machine), else the cargo on PATH, else
-    t's, which builds on t's nodes.
+    t's, which reads it for a machine without a cargo of its own.
     """
     named = shlex.split(os.environ.get("CARGO", ""))
     if named:
@@ -133,6 +142,11 @@ def cargo_command() -> list[str]:
     if shutil.which("cargo") is None and shutil.which(T_CARGO[0]) is not None:
         return T_CARGO
     return ["cargo"]
+
+
+def lints_through_t() -> bool:
+    """Whether t's own checks lint the push: t is installed and no `$CARGO` names a cargo to use."""
+    return not os.environ.get("CARGO", "").strip() and shutil.which(T_CARGO[0]) is not None
 
 
 def cargo_metadata(root: Path) -> dict:
@@ -145,63 +159,17 @@ def cargo_metadata(root: Path) -> dict:
         raise RuntimeError(f"{shlex.join(command)}: {error}") from error
     if result.returncode == 0:
         return json.loads(result.stdout)
-    if cargo == T_CARGO and "does not run through t" in result.stderr:
-        return metadata_through_t_exec(root)
     raise RuntimeError(f"{shlex.join(command)} failed: {result.stderr.strip()}")
 
 
-def metadata_through_t_exec(root: Path) -> dict:
-    """The workspace's packages from a t whose `t cargo` does not read metadata.
-
-    Cargo reads it on a node (`t exec`), into a file the run brings back: a log keeps no line as
-    long as the workspace's metadata. It names the paths the job sees, which are this checkout's.
-    """
-    answer = Path("target/pre-push-metadata.json")
-    command = ["t", "exec", "--no-build", "--fetch", answer.as_posix(), "--", "sh", "-c",
-               f'cargo "$@" > {JOB_TARGET}/{answer.name}', "sh",
-               "metadata", "--locked", "--no-deps", "--format-version", "1"]
-    result = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
-    fetched = root / answer
-    try:
-        if result.returncode != 0:
-            raise RuntimeError(f"{shlex.join(command)} failed: {(result.stdout + result.stderr).strip()}")
-        metadata = json.loads(fetched.read_text())
-    finally:
-        fetched.unlink(missing_ok=True)
-    return host_paths(metadata, str(root))
-
-
-def host_paths(value, root: str):
-    """`value` with the paths a t job names under its sources and build directory as this checkout's."""
-    if isinstance(value, dict):
-        return {key: host_paths(item, root) for key, item in value.items()}
-    if isinstance(value, list):
-        return [host_paths(item, root) for item in value]
-    if isinstance(value, str):
-        # A package's id names its path too: `path+file:///src/crates/a#a@0.1.0`.
-        for job, here in ((JOB_TARGET, f"{root}/target"), (JOB_SOURCES, root)):
-            for scheme, ends in (("", "/"), ("path+file://", "/#")):
-                if value.startswith(scheme + job):
-                    rest = value[len(scheme + job):]
-                    if rest == "" or rest[0] in ends:
-                        return f"{scheme}{here}{rest}"
-    return value
-
-
 class Lint(NamedTuple):
-    """One lint run of the push check: what it is called, the command that reruns it, and what it reads.
+    """One lint run of the push check: what it is called and the command that reruns it.
 
-    `packages` are linted; with `dependencies` the run also reads every crate they build on.
+    `t` marks a run of t's checks, whose output is t's JSON and is reported from it.
     """
     label: str
     command: list[str]
-    packages: list[str]
-    dependencies: bool
-    env: dict[str, str] | None = None
-    # A run too cheap to be worth keying: formatting a handful of files. It is
-    # always made, because what it reads is the changed files rather than the
-    # packages, and a key of the packages would speak for them.
-    reusable: bool = True
+    t: bool = False
 
 
 class Push(NamedTuple):
@@ -507,21 +475,87 @@ def unified_features(root: Path, selected: Iterable[str]) -> list[str]:
     return ["--features", ",".join(sorted(set(features)))] if features else []
 
 
-def lint_runs(root: Path, selection: Selection, formatting: list[str]) -> list[Lint]:
-    """The runs the check makes: formatting, and the host lint.
+def host_architecture() -> str:
+    machine = platform.machine().lower()
+    return ARCHITECTURES.get(machine, machine)
 
+
+def t_checks(root: Path, selected: Iterable[str], members: set[str]) -> tuple[list[str], list[str]]:
+    """t's checks that lint the selected packages as the push lint does, and the packages none does.
+
+    Those are the per-package checks (`<family>/<package>`) of t.toml's clippy families that name
+    workspace-unify in `unify`, on this machine's architecture: a family's members are its
+    `packages`, or every member its `exclude` leaves.
+    """
+    families = tomllib.loads((root / T_TOML).read_text()).get("cargo", [])
+    arch = host_architecture()
+    owners: dict[str, str] = {}
+    for family in families:
+        if family.get("tool") != "clippy" or family.get("unify") != UNIFY:
+            continue
+        name = family["name"]
+        if "{arch}" in name:
+            if arch not in family.get("matrix", {}).get("arch", ()):
+                continue
+            name = name.replace("{arch}", arch)
+        lints = (set(family["packages"]) if "packages" in family
+                 else members - set(family.get("exclude", ())))
+        for package in lints:
+            owners.setdefault(package, name)
+    checks, uncovered = [], []
+    for package in selected:
+        if package in owners:
+            checks.append(f"{owners[package]}/{package}")
+        else:
+            uncovered.append(package)
+    return checks, uncovered
+
+
+def lint_runs(root: Path, selection: Selection, formatting: list[str],
+              checks: list[str] | None) -> list[Lint]:
+    """The runs the check makes: the pinned rustfmt, formatting, and the host lint.
+
+    With `checks`, the lint is t's checks of those names; without, the cargo lints the packages.
     Each command is also the line a failure prints to rerun it.
     """
-    cargo = cargo_command()
     native = selection.native
-    selected = [item for name in native for item in ("-p", name)]
-    runs = []
+    runs = [Lint("rustfmt pinned", ["bash", str(TOOLS / "ci/check-rustfmt-pin.sh")])]
     if formatting:
-        runs.append(Lint("rustfmt", formatting, native, False, None, False))
+        runs.append(Lint("rustfmt" if formatting[0] != "t" else "fmt (t)", formatting))
+    if checks is not None:
+        if checks:
+            runs.append(Lint("clippy (t)", [T_CARGO[0], "test", *checks, "--json"], True))
+        return runs
+    selected = [item for name in native for item in ("-p", name)]
     runs.append(Lint("clippy (native)",
-                     [*cargo, "clippy", "--locked", *selected, *unified_features(root, native),
-                      "--all-targets", "--keep-going", "--", "-D", "warnings"], native, True))
+                     [*cargo_command(), "clippy", "--locked", *selected,
+                      *unified_features(root, native),
+                      "--all-targets", "--keep-going", "--", "-D", "warnings"]))
     return runs
+
+
+def surface_checks(root: Path, push: Push) -> list[str]:
+    """t's checks over what a surface or an action or record type writes, when the push reaches them.
+
+    The app-fleet catalogue and the SDK's generated types are written from the apps' surfaces
+    and from the action and record types of every crate, so the list of what moves them is
+    t's own: `t scope` names the checks a commit's change touches. A push that reaches one
+    and does not regenerate refuses here, not on main.
+    """
+    wanted = ("sdk-policy", "sdk-types")
+    if push.tips:
+        try:
+            scoped = subprocess.run(["t", "scope", "--rev", push.tips[0], "--names"],
+                                    cwd=root, capture_output=True, text=True, check=False)
+        except OSError:
+            scoped = None
+        if scoped is not None and scoped.returncode == 0:
+            named = set(scoped.stdout.split())
+            return [name for name in wanted if name in named]
+    # t could not tell: an app's surface alone still moves the generated catalogue and types.
+    if any(path.startswith(("apps/", "crates/packaging/app-fleet/")) for path in push.files):
+        return list(wanted)
+    return []
 
 
 def rustfmt_available() -> bool:
@@ -546,8 +580,7 @@ def run_together(root: Path, runs: list[Lint],
         # A file, not a pipe: a run whose output outgrows the pipe buffer must
         # not wait on a reader that is still waiting on another run.
         log = tempfile.TemporaryFile(mode="w+")
-        process = subprocess.Popen(run.command, cwd=root, stdout=log, stderr=subprocess.STDOUT, text=True,
-                                   env={**os.environ, **(run.env or {})})
+        process = subprocess.Popen(run.command, cwd=root, stdout=log, stderr=subprocess.STDOUT, text=True)
         running.append((run, process, log))
     finished: dict[int, float] = {}
     while len(finished) < len(running):
@@ -570,108 +603,157 @@ def run_together(root: Path, runs: list[Lint],
     return results, time.monotonic() - started
 
 
-class Passes:
-    """The keys of lint runs that passed, kept in the clone's Git directory for all its worktrees."""
-
-    def __init__(self, root: Path):
-        common = Path(git(root, "rev-parse", "--git-common-dir").stdout.strip())
-        self.directory = (root / common) / "pre-push-lint"
-
-    def passed(self, key: str | None) -> bool:
-        return key is not None and (self.directory / key).is_file()
-
-    def passed_since(self, key: str | None, seconds: float) -> float | None:
-        """How long ago the run of `key` passed, when that is within `seconds`."""
-        if key is None:
-            return None
-        try:
-            age = time.time() - (self.directory / key).stat().st_mtime
-        except FileNotFoundError:
-            return None
-        return age if 0 <= age <= seconds else None
-
-    def keep(self, key: str | None, label: str) -> None:
-        if key is None:
-            return
-        self.directory.mkdir(parents=True, exist_ok=True)
-        (self.directory / key).write_text(label + "\n")
-        # Every worktree of the clone records here, and pushes run at the same time: an entry
-        # another of them pruned between the listing and its stat is not one to keep or to fail on.
-        entries = []
-        for entry in self.directory.iterdir():
-            try:
-                entries.append((entry.stat().st_mtime, entry))
-            except FileNotFoundError:
-                continue
-        entries.sort(key=lambda modified: modified[0])
-        for _modified, stale in entries[:-KEPT_PASSES]:
-            stale.unlink(missing_ok=True)
-
-
-def change_key(root: Path, push: Push) -> str | None:
-    """What the pushed commits change, whatever they stand on, or None when that cannot be named.
-
-    A commit's patch id is the same before and after a rebase that applied it unchanged, and
-    another one as soon as a conflict was resolved or the commit amended. A merge has none, and
-    neither has a worktree that is not the commit: both are linted.
-    """
-    if git(root, "status", "--porcelain").stdout.strip():
-        return None
-    digest = hashlib.sha256()
-    for start, head in push.comparisons:
-        commits = git(root, "rev-list", "--reverse", "--parents", f"{start}..{head}").stdout.split("\n")
-        commits = [line.split() for line in commits if line.strip()]
-        if not commits or any(len(parents) != 2 for parents in commits):
-            return None
-        patches = subprocess.run(["git", "log", "--reverse", "--patch", "--no-color", "--no-ext-diff",
-                                  "--format=commit %H", f"{start}..{head}"],
-                                 cwd=root, capture_output=True, text=True, check=False)
-        named = subprocess.run(["git", "patch-id", "--stable"], cwd=root, input=patches.stdout,
-                               capture_output=True, text=True, check=False)
-        ids = [line.split()[0] for line in named.stdout.splitlines() if line.strip()]
-        if patches.returncode or named.returncode or len(ids) != len(commits):
-            return None  # an empty commit has no patch id: nothing says it is the one that passed
-        for patch in ids:
-            digest.update(patch.encode() + b"\n")
-        digest.update(b"\0")
-    return f"change-{digest.hexdigest()}"
-
-
-def lint_keys(root: Path, metadata: dict, runs: list[Lint]) -> list[str | None]:
-    """Each run's key, or None for every run when the inputs cannot be named.
-
-    The lint reads the files on disk, so only a clean worktree is keyed by its commit.
-    """
-    if git(root, "status", "--porcelain").stdout.strip():
-        return [None] * len(runs)
-    try:
-        workspace = Workspace(root, metadata)
-        return [workspace.key(run.packages, run.dependencies, run.command) if run.reusable else None
-                for run in runs]
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
-        say(f"pre-push: cannot name what the lint reads, so earlier passes are not reused: {error}")
-        return [None] * len(runs)
-
-
 def packages(count: int) -> str:
     return f"{count} package" if count == 1 else f"{count} packages"
 
 
+def t_documents(output: str) -> list[dict]:
+    """The JSON documents in what `t test --json` printed: one per line while it streams, then the
+    whole run's, spread over many lines."""
+    decoder = json.JSONDecoder()
+    documents = []
+    position = 0
+    while position < len(output):
+        if output.startswith("{", position):
+            try:
+                document, position = decoder.raw_decode(output, position)
+            except ValueError:
+                pass
+            else:
+                if isinstance(document, dict):
+                    documents.append(document)
+                continue
+        newline = output.find("\n", position)
+        position = len(output) if newline < 0 else newline + 1
+    return documents
+
+
+def t_outcomes(output: str) -> tuple[list[dict], list[dict]]:
+    """Each check's result from t's output, and the errors t gave instead of results."""
+    finished, errors = [], []
+    for document in t_documents(output):
+        if document.get("type") == "error":
+            errors.append(document)
+        elif isinstance(document.get("body"), dict) and isinstance(document["body"].get("finished"), dict):
+            finished.append(document["body"]["finished"])
+    return finished, errors
+
+
+def say_lines(lines: list[str]) -> None:
+    for line in lines[:SHOWN_DIAGNOSTIC_LINES]:
+        say(f"  {line}")
+    if len(lines) > SHOWN_DIAGNOSTIC_LINES:
+        say(f"  ... {len(lines) - SHOWN_DIAGNOSTIC_LINES} more line(s); the rerun above prints them")
+
+
+def say_t_results(output: str) -> None:
+    """What t answered for each check: from its result cache, or by running it now."""
+    finished, _errors = t_outcomes(output)
+    for result in finished:
+        if result.get("outcome") != "pass":
+            continue
+        if result.get("cached"):
+            say(f"pre-push: {result['check']} passed on these inputs before (t's run {result['cached']})")
+        else:
+            say(f"pre-push: {result['check']} passed in {result.get('duration_ms', 0) / 1000:.0f}s")
+
+
+def say_t_failure(output: str) -> bool:
+    """Each failed check of t's with its diagnostics and the command that prints its whole log;
+    False when t's output names none."""
+    finished, errors = t_outcomes(output)
+    failed = [result for result in finished if result.get("outcome") != "pass"]
+    for result in failed:
+        say(f"  {result['check']}: {result.get('outcome')} - whole log: t log {result.get('log')}")
+        say_lines(str(result.get("excerpt") or "").strip().splitlines())
+    for error in errors:
+        say(f"  t: {error.get('message')}")
+        if error.get("hint"):
+            say(f"  {error['hint']}")
+    return bool(failed or errors)
+
+
 def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str) -> int:
+    for run, status, output in results:
+        if run.t and status == 0:
+            say_t_results(output)
     failed = [(run, output) for run, status, output in results if status != 0]
     if not failed:
         say(f"pre-push: lint passed in {elapsed:.0f}s ({checked})")
         return 0
     for run, output in failed:
-        say(f"pre-push: {run.label} failed - rerun: {shlex.join(run.command)}")
-        lines = [line for line in output.strip().splitlines()
-                 if not any(remark in line for remark in CARGO_REMARKS) and not PROGRESS.match(line)]
-        for line in lines[:SHOWN_DIAGNOSTIC_LINES]:
-            say(f"  {line}")
-        if len(lines) > SHOWN_DIAGNOSTIC_LINES:
-            say(f"  ... {len(lines) - SHOWN_DIAGNOSTIC_LINES} more line(s); the rerun above prints them")
+        command = [part for part in run.command if part != "--json"] if run.t else run.command
+        say(f"pre-push: {run.label} failed - rerun: {shlex.join(command)}")
+        if run.t and say_t_failure(output):
+            continue
+        say_lines([line for line in output.strip().splitlines()
+                   if not any(remark in line for remark in CARGO_REMARKS)
+                   and not PROGRESS.match(line)])
     say("pre-push: refusing the push until the lint passes")
     return 1
+
+
+def own_key(root: Path, push: Push, selection: Selection, runs: list[Lint]) -> str | None:
+    """What a pass of this push's lint is remembered by, or None when it cannot be named.
+
+    The push's own patch, the tree of each linted package's own directory at its head, and the
+    runs it makes. A rebase that resolved no conflict leaves the patch the same, and one onto
+    commits that touch none of those directories leaves their trees the same.
+    """
+    directories = {name: directory.as_posix()
+                   for directory, name in package_maps(selection.metadata, root)[1].items()}
+    # The format check names the commits it compares, which a rebase changes; the change it reads
+    # is the patch below.
+    commits = {commit for comparison in push.comparisons for commit in comparison}
+    parts = [shlex.join(part for part in run.command if part not in commits) for run in runs]
+    for base, head in push.comparisons:
+        patch = subprocess.run(["git", "diff", "--no-renames", "--binary", f"{base}..{head}", "--"],
+                               cwd=root, capture_output=True, check=False)
+        identity = subprocess.run(["git", "patch-id", "--stable"], cwd=root, input=patch.stdout,
+                                  capture_output=True, check=False).stdout.split()
+        if patch.returncode != 0 or not identity:
+            return None
+        parts.append(identity[0].decode())
+    for name in selection.native:
+        directory = directories.get(name)
+        if directory is None or not push.tips:
+            return None
+        tree = rev(root, f"{push.tips[0]}^{{tree}}" if directory in ("", ".")
+                   else f"{push.tips[0]}:{directory}")
+        if tree is None:
+            return None
+        parts.append(f"{name} {tree}")
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+def passes_path(root: Path) -> Path:
+    common = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+    return Path(common) / PASSES
+
+
+def passed_before(root: Path, key: str) -> str | None:
+    """The head a lint of this key passed on, if one did."""
+    try:
+        lines = passes_path(root).read_text().splitlines()
+    except FileNotFoundError:
+        return None
+    for line in reversed(lines):
+        stored, _, head = line.partition(" ")
+        if stored == key:
+            return head
+    return None
+
+
+def remember_pass(root: Path, key: str, head: str) -> None:
+    path = passes_path(root)
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        lines = []
+    lines = [line for line in lines if not line.startswith(f"{key} ")] + [f"{key} {head}"]
+    temporary = path.with_name(f"{PASSES}.{os.getpid()}")
+    temporary.write_text("".join(f"{line}\n" for line in lines[-PASSES_KEPT:]))
+    temporary.replace(path)
 
 
 def formatting_run(root: Path, push: Push) -> list[str]:
@@ -725,17 +807,6 @@ def main(argv: list[str]) -> int:
         say(f"pre-push: {tip[:12]} is not the commit checked out here, and the lint reads the files "
             "on disk: check it out and push again")
         return 1
-    # Only a push asks this: `--range` lints a commit outside a push, and it reads every commit
-    # on the tree it landed on.
-    passes = Passes(root)
-    change = None
-    if not (options.range or options.only or options.plan):
-        change = change_key(root, push)
-        age = passes.passed_since(change, REBASE_WINDOW)
-        if age is not None:
-            say(f"pre-push: these commits passed the lint {age / 60:.0f} min ago and are pushed as "
-                "they were, on a newer main; what main's commits since do to them is linted on main")
-            return 0
     try:
         selection = select(root, push, files)
     except (subprocess.CalledProcessError, RuntimeError) as error:
@@ -755,33 +826,47 @@ def main(argv: list[str]) -> int:
         return 0
     if options.plan:
         print(f"native: {' '.join(selection.native)}")
+        if lints_through_t():
+            print(f"t: {' '.join(t_checks(root, selection.native, set(package_maps(selection.metadata, root)[0]))[0])}")
         return 0
-    if shutil.which(cargo_command()[0]) is None:
+    checks = None
+    if lints_through_t():
+        try:
+            members = set(package_maps(selection.metadata, root)[0])
+            checks, uncovered = t_checks(root, selection.native, members)
+            checks += [name for name in surface_checks(root, push) if name not in checks]
+        except (OSError, ValueError, KeyError) as error:
+            say(f"pre-push: cannot read which of t's checks lint these packages from {T_TOML}: {error}")
+            return 1
+        if uncovered:
+            say(f"pre-push: no clippy family of t's lints {', '.join(uncovered)}, so neither does "
+                "this check")
+    elif shutil.which(cargo_command()[0]) is None:
         say(f"pre-push: there is no cargo to lint with ({cargo_command()[0]}); the lint cannot run")
         return 1
-    if git(root, "status", "--porcelain").stdout.strip():
+    dirty = bool(git(root, "status", "--porcelain").stdout.strip())
+    if dirty:
         say("pre-push: the worktree has uncommitted changes; the lint covers the files on disk, which "
             "is not quite the pushed commit")
-    formatting = formatting_run(root, push) if rustfmt_available() else []
-    if not formatting:
-        say("pre-push: rustfmt is not installed, so formatting is not checked here")
-    say(f"pre-push: linting {packages(len(selection.native))}")
-    runs = lint_runs(root, selection, formatting)
-    checked = (f"{'clippy and rustfmt' if formatting else 'clippy'} "
+    # A machine without rustfmt of its own formats through t, whose `fmt` check runs the
+    # pinned toolchain; one with a rustfmt must hold the pinned version (the run below).
+    formatting = formatting_run(root, push) if rustfmt_available() else ["t", "test", "fmt"]
+    runs = lint_runs(root, selection, formatting, checks)
+    # A lint of files that are not the pushed commit's speaks for no change to stand on later.
+    key = None if options.range or dirty else own_key(root, push, selection, runs)
+    if key is not None and (before := passed_before(root, key)):
+        say(f"pre-push: the lint of this change passed at {before[:12]}, and main's commits since "
+            f"touch none of its packages' own files ({', '.join(selection.native)}): it is not "
+            "linted again. t's clippy families lint it with main's changes on main")
+        return 0
+    say(f"pre-push: linting {packages(len(selection.native))}"
+        + (f" through t ({' '.join(checks)})" if checks else ""))
+    checked = (f"{'clippy and rustfmt' if formatting else 'clippy (no rustfmt on PATH)'} "
                f"for {packages(len(selection.native))}")
-    pending = []
-    for run, key in zip(runs, lint_keys(root, selection.metadata, runs)):
-        if passes.passed(key):
-            say(f"pre-push: {run.label} passed before on the same inputs")
-        else:
-            pending.append((run, key))
-    results, elapsed = run_together(root, [run for run, _key in pending], options.keep_logs)
-    for (_run, key), (run, status, _output) in zip(pending, results):
-        if status == 0:
-            passes.keep(key, " ".join(run.command))
+    results, elapsed = run_together(root, runs, options.keep_logs)
     status = report(results, elapsed, checked)
-    if status == 0:
-        passes.keep(change, "the pushed commits")
+    if status == 0 and key is not None:
+        remember_pass(root, key, push.tips[0])
     return status
 
 

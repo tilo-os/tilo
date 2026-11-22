@@ -300,15 +300,15 @@ async fn retire_written(
         };
         owner
             .read_wait(1, move |_| {
-            if !delivery.live.load(std::sync::atomic::Ordering::SeqCst) {
-                return Ok(());
-            }
-            match std::fs::remove_file(path) {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(e.into()),
-            }
-        })
+                if !delivery.live.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Ok(());
+                }
+                match std::fs::remove_file(path) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(e.into()),
+                }
+            })
             .await?;
     }
     Ok(())

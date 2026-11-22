@@ -227,14 +227,7 @@ d-gkuo27e6 = Drafts
 d-z3zcztpz = Labels
 
 d-bag7bf25 = Recovered mail
-    .doc = Conversations retained from an earlier mailbox, outside the IMAP account collections.
-
-d-fezdozrd = Recovered conversations
-
-d-swilesl6 = Recovered signatures
-
-d-5upxgb6g = Recovered drafts
-    .doc = Previously imported drafts, including ones subsequently deleted.
+    .doc = Conversations kept outside the IMAP account collections: messages delivered from outside an account's server, and the mail of an account that is gone.
 
 d-4ow5ydy5 = Hold
     .doc = How many seconds members have to undo a send.
@@ -260,17 +253,6 @@ d-eon6gbrn = New message
 
 d-v7wxxiaj = Carry native mail
     .doc = The mailbox the native Mail kept before this app took its id over, carried into this one once: every draft it was writing and every message still waiting in its outbox is a draft here, from the same account, to the same people, with the same subject, body and invitation.
-
-d-y6hvqjbf = Recover previous mail
-    .doc = Copies data from the earlier private mailbox into this workspace.
-
-d-y6hvqjbf-drafts = Drafts
-
-d-y6hvqjbf-labels = Labels
-
-d-y6hvqjbf-conversations = Conversations
-
-d-y6hvqjbf-signatures = Signatures
 
 d-ygbvdl5l = New message
     .doc = Starts a message from the first account.
@@ -410,6 +392,7 @@ d-xxxfkczs = Send later
     .doc = Sends the message at a moment instead of now: it waits in the outbox until then, as the person's hold makes a message wait, and goes with no window open.
     .w-this-message-went-already = This message went already
     .w-it-goes-to-nobody-yet = It goes to nobody yet
+    .w-add-a-mail-account-in-settings = Add a mail account in Settings first
     .w-pick-a-moment-still-to-come = Pick a moment still to come
 
 d-xxxfkczs-at = At
@@ -434,6 +417,9 @@ d-trjwm3gb = Mark as unread
 
 d-trjwm3gb-unread = Unread
 
+d-hk43bpjp = Read on open
+    .doc = Opening a conversation reads it, wherever it is opened from: the list, search, a link or an agent.
+
 d-7zk6ua6p = Send from
     .doc = Sends the message from another workspace account.
     .w-this-message-went-already = This message went already
@@ -449,6 +435,7 @@ d-qcfc2rhb = Send
     .doc = Sends the message from its account.
     .w-this-message-went-already = This message went already
     .w-it-goes-to-nobody-yet = It goes to nobody yet
+    .w-add-a-mail-account-in-settings = Add a mail account in Settings first
 
 d-twebu5cb = Undo send
     .doc = Takes back a message that was sent and has not gone yet: it never leaves, and the message is a draft again, as it was.
@@ -527,12 +514,12 @@ d-dhradxj7 = Account notice
 
 d-7rcrynvm = Mail
     .w-add-a-mail-account-in-settings = Add a mail account in Settings
-    .w-mail = Mail
     .w-recovered-mail = Recovered mail
+    .w-mail = Mail
 
 d-4fjgzcq6 = Unified
-    .w-all-accounts = All accounts
     .w-recovered-mail = Recovered mail
+    .w-all-accounts = All accounts
     .w-all-inboxes = All inboxes
     .w-all-mail = All mail
     .w-labels = Labels
@@ -579,8 +566,12 @@ d-oqpazwvc = Editor
     .w-it-goes-in-a-moment = It goes in a moment.
     .w-undo-send = Undo send
     .w-from = From
+    .w-no-mail-account-to-send-from = No mail account to send from
+    .w-add-an-account-in-settings = Add an account in Settings
     .w-to = To
     .w-name-example-org = name@example.org
     .w-cc = Cc
     .w-subject = Subject
     .w-write-your-message = Write your message
+    .w-send = Send
+    .w-add-a-mail-account-in-settings = Add a mail account in Settings first

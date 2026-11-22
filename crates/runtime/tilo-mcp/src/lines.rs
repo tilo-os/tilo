@@ -85,7 +85,7 @@ pub fn spawn_reader(
     // Bounds aggregate buffered input as well as each individual request.
     let (sender, receiver) = tokio::sync::mpsc::channel(16);
     std::thread::Builder::new()
-        .name("tilo-runtime-mcp-reader".into())
+        .name("tilo-mcp-reader".into())
         .spawn(move || {
             let mut reader = BufReader::new(reader);
             loop {

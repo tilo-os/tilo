@@ -1,4 +1,3 @@
-
 //! A resource nested in another — here a saved query's SQL, plain text in a
 //! text object of the query's document — is edited through a child
 //! dispatcher: each keystroke a splice of the child, applied as the parent's

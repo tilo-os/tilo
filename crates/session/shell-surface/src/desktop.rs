@@ -1437,6 +1437,9 @@ mod tests {
     fn a_windows_declared_controls_are_taken_up_in_the_next_frame() {
         use ui::window_targets::{TargetAction, WindowTarget};
 
+        // The window's arrival settles at once rather than over frames that now take no time:
+        // the frames below draw on other threads and the loop's turns no longer wait for them.
+        let _settled = ui::motion::testing::settled();
         let (mut desktop, mut policy) = desktop(7, 1.0);
         ShellSurface::outputs_changed(
             &mut desktop,

@@ -19,7 +19,7 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_server::WorkspaceId;
-use tilo_server::servers::{self, person_workspace_id, applied};
+use tilo_server::servers::{self, applied, person_workspace_id};
 use tilo_server::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION, ServerAnswer};
 use tilo_server::workspaces::Workspaces;
 use tilo_server_protocol::WorkSetting;
@@ -116,8 +116,9 @@ async fn try_ask(
     .await
 }
 
-/// What an invocation came to: the operation's result, or why it was refused.
-fn outcome(answer: RemoteActionMessage) -> Result<ServerOperationResult, String> {
+/// What an invocation came to: what the action answered, or why it was
+/// refused.
+fn completed(answer: RemoteActionMessage) -> Result<Value, String> {
     use tilo_actions::remote::ReceiptStatus;
     let RemoteActionMessage::Receipt(receipt) = answer else {
         return Err("an invocation is answered with a receipt".into());
@@ -125,22 +126,30 @@ fn outcome(answer: RemoteActionMessage) -> Result<ServerOperationResult, String>
     match receipt.status {
         ReceiptStatus::Completed { output } => output
             .value
-            .ok_or_else(|| "the action answered nothing".to_owned())
-            .and_then(|value| serde_json::from_value(value).map_err(|error| error.to_string())),
+            .ok_or_else(|| "the action answered nothing".to_owned()),
         ReceiptStatus::Rejected { error } => Err(error.to_string()),
         other => Err(format!("the action answered {other:?}")),
     }
 }
 
+/// What an operation's invocation came to: the operation's result, or why it
+/// was refused.
+fn outcome(answer: RemoteActionMessage) -> Result<ServerOperationResult, String> {
+    completed(answer)
+        .and_then(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
+}
+
 /// A person with one server and a laptop, the server holding their Servers
 /// workspace and the laptop handed it, both applying what it says.
 struct Fixture {
+    /// The person's root, which signs a revocation of one of their devices.
+    root: ed25519_dalek::SigningKey,
     nas: TestDevice,
     laptop: TestDevice,
     desktop: Hosted,
     admin: String,
-    _server: Hosted,
-    _state: tempfile::TempDir,
+    server: Hosted,
+    state: tempfile::TempDir,
     _policy: tempfile::TempDir,
     _helper: Guard,
     _following: Vec<tokio::task::JoinHandle<()>>,
@@ -246,11 +255,12 @@ async fn person_with_a_server() -> Fixture {
     let helper = operations_helper(state.path());
     Fixture {
         admin: person_workspace_id(&alice.user_pk),
+        root: alice.user_sk.clone(),
         nas,
         laptop,
         desktop,
-        _server: server,
-        _state: state,
+        server,
+        state,
         _policy: policy,
         _helper: helper,
         _following: following,
@@ -440,4 +450,114 @@ async fn another_person_reaches_no_server_of_this_persons() {
         refused,
         "another person's device reaches no server of Alice's"
     );
+}
+
+/// The revocation of `device`'s key `root` signs, as the identity step answers
+/// it.
+fn revocation(root: &ed25519_dalek::SigningKey, device: [u8; 32]) -> String {
+    let mut entry = tilo_user_identity::RevocationEntry {
+        user_public_key: root.verifying_key().to_bytes(),
+        revoked_device_public_key: device,
+        revoked_at_ns: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .try_into()
+            .unwrap(),
+        reason: tilo_user_identity::RevocationReason::Retired,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, root).unwrap();
+    serde_json::to_string(&entry).unwrap()
+}
+
+/// A person names a server and takes it out of service from another of their
+/// devices, as actions on its entry. Retiring it carries the revocation of its
+/// key their root signed: the entry is retired, the server lets go of
+/// everything it holds, and the server and their other device both refuse its
+/// key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_persons_device_renames_and_retires_a_server() {
+    let fixture = person_with_a_server().await;
+    let client = fixture.session().await;
+    let nas = fixture.nas.device_pubkey();
+    let ask = |action: &'static str, argument: Value| {
+        let (client, laptop, admin) = (&client, &fixture.laptop, &fixture.admin);
+        async move {
+            try_ask(client, laptop, admin, action, argument)
+                .await
+                .and_then(completed)
+        }
+    };
+    let server = hex::encode(nas);
+
+    ask(
+        "server.rename",
+        serde_json::json!({"server": server, "name": "Kitchen NAS"}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        ask(
+            "server.rename",
+            serde_json::json!({"server": server, "name": "NAS\u{202e}hidden"}),
+        )
+        .await
+        .is_err(),
+        "a name that reads in another direction is refused"
+    );
+    let servers = servers::read(fixture.workspaces()).await.unwrap();
+    assert_eq!(servers.active(&nas).unwrap().label, "Kitchen NAS");
+
+    let mallory = TestUser::fresh("Mallory");
+    for wrong in [revocation(&mallory.user_sk, nas), "{}".to_owned()] {
+        assert!(
+            ask(
+                "server.retire",
+                serde_json::json!({"server": server, "revocation": wrong}),
+            )
+            .await
+            .is_err(),
+            "a server is retired only with its own person's revocation of it"
+        );
+    }
+    assert!(
+        !fixture
+            .workspaces()
+            .revocations()
+            .refuses(&fixture.nas.cert)
+    );
+    let retired = ask(
+        "server.retire",
+        serde_json::json!({"server": server, "revocation": revocation(&fixture.root, nas)}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(retired["retired"], true);
+    let servers = servers::read(fixture.workspaces()).await.unwrap();
+    assert!(servers.active(&nas).is_none(), "its entry is retired");
+    assert!(
+        fixture
+            .workspaces()
+            .revocations()
+            .refuses(&fixture.nas.cert),
+        "the person's device refuses the server's key"
+    );
+    let held = fixture.server.host.workspaces();
+    // It notes that it is out of service where its machine reads it, so its
+    // daemon does not start again.
+    let noted = fixture.state.path().join("decommissioned");
+    tilo_test_env::within(
+        "the server lets go of everything and refuses its own key",
+        async {
+            while !(held.list().await.is_empty()
+                && held.revocations().refuses(&fixture.nas.cert)
+                && noted.exists())
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+    client.close().await;
 }

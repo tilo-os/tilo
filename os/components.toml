@@ -238,12 +238,12 @@ name = "native-runtime-host"
 kind = "userspace"
 scope = "session"
 packages = ["tilo-runtime"]
-bins = ["tilo-runtime-mcp"]
+bins = ["tilo-runtime"]
 dev_features = ["tilo-runtime/dev-overrides"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-runtime-mcp", to = "/usr/libexec/tilo/tilo-runtime-mcp", mode = "0755" },
-  { link = "../libexec/tilo/tilo-runtime-mcp", to = "/usr/bin/tilo-runtime-mcp" },
+  { from = "tilo-runtime", to = "/usr/libexec/tilo/tilo-runtime", mode = "0755" },
+  { link = "../libexec/tilo/tilo-runtime", to = "/usr/bin/tilo-runtime" },
 ]
 
 [[component]]
@@ -526,7 +526,7 @@ kind = "userspace"
 scope = "vm"
 packages = ["tilo-fs"]
 bins = ["fs"]
-units = ["fs.service", "tilo-fs-replica.service"]
+units = ["fs.service"]
 user_units = ["tilo-fs-cloud.service"]
 layer = "desktop-binaries"
 files = [

@@ -188,7 +188,7 @@ fn ensure_first_use(options: JoinOptions<'_>) -> anyhow::Result<()> {
         .identity_dir
         .context("the device needs a local identity directory")?;
     if paths.device_cert.try_exists()?
-        || tilo_identity_client::resolve_active_identity(person).is_some()
+        || tilo_identity::store::resolve_active_identity(person).is_some()
     {
         bail!("this device already has an identity");
     }

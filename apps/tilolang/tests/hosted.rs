@@ -13,14 +13,9 @@
 )]
 
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use collaboration::{
-    CollabEvent, CollabRequest, CollabTransport, CollaborationManager, DocumentMutation, RouteSpec,
-    TransportCommand, TransportError, TransportStatus,
-};
-use tilo_automerge::ApplyIncoming as _;
+use collaboration::{CollabRequest, CollaborationManager, RouteSpec};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_app::hosted::HostedWindow;
@@ -28,15 +23,11 @@ use tilolang_process::TilolangProcess;
 use tilolang_process::hosted::{Hosted, Spec};
 use tilolang_process::phrases::Phrases;
 use tilolang_process::testing::{Broker, Inbox, Routed, Sent};
-use tilolang_tilo::instance::document::InstanceDocument;
 use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::FrameHarness;
 use ui::widget::Widget;
 
 use crate::settle::{self, Woken};
-
-#[path = "hosted/chunks.rs"]
-mod chunks;
 
 #[path = "hosted/facts.rs"]
 mod facts;
@@ -86,17 +77,14 @@ mod narrow;
 mod personal;
 #[path = "hosted/presence.rs"]
 mod presence;
-#[path = "hosted/replay.rs"]
-mod replay;
-#[path = "hosted/sync.rs"]
-mod sync;
 #[path = "hosted/tasks_board.rs"]
 mod tasks_board;
+#[path = "hosted/two_windows.rs"]
+mod two_windows;
 #[path = "hosted/window.rs"]
 mod window;
 #[path = "hosted/workspaces.rs"]
 mod workspaces;
-use replay::replayed;
 
 const NOTES: &str = "so.tilo.notes";
 /// The test's own notebook, whose notes' bodies are rich text.
@@ -116,96 +104,13 @@ const OPENBY: &str = "so.tilo.lang.openby";
 /// The shelf, whose window its own view composes of the toolkit's components.
 const HANDMADE: &str = "so.tilo.lang.handmade";
 const VIEWPORT: (u32, u32) = (1280, 800);
-/// The longest a cost measurement waits for the host to be woken by the work it has off its
-/// frames.
-const WAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// The broker's end of a connection, as the workspace answers it: while `busy`, its queue takes
-/// no change of the document (`TransportError::Busy`, as the broker transport's queue says under
-/// fast typing); while `refusing`, it answers a change it took with a refusal, as the broker does
-/// a change the workspace's grants deny; and it refuses a change that builds on one it does not
-/// hold, as the workspace's owner does. What it took is `held`.
-#[derive(Clone, Default)]
-struct WorkspaceEnd {
-    busy: Arc<AtomicBool>,
-    refusing: Arc<AtomicBool>,
-    held: Arc<Mutex<automerge::AutoCommit>>,
-}
-
-impl WorkspaceEnd {
-    /// The heads of what the workspace took.
-    fn heads(&self) -> Vec<automerge::ChangeHash> {
-        self.held.lock().unwrap().get_heads()
-    }
-
-    /// Whether the workspace took all `session`'s document holds.
-    fn holds(&self, session: &Session) -> bool {
-        let mut record = session.host.instances().next().unwrap().record().doc();
-        self.heads() == record.get_heads()
-    }
-}
-
-struct Crowded {
-    route: RouteSpec,
-    end: WorkspaceEnd,
-    /// Why the workspace refused the last change, while no later one went through.
-    refused: Option<String>,
-    joined: Option<RouteSpec>,
-}
-
-impl CollabTransport for Crowded {
-    fn status(&self) -> TransportStatus {
-        TransportStatus::Ready
-    }
-
-    fn submit(&mut self, command: TransportCommand) -> Result<(), TransportError> {
-        match command {
-            TransportCommand::Primary(CollabRequest::Hello { .. }) => {
-                self.joined = Some(self.route.clone());
-            }
-            TransportCommand::Primary(CollabRequest::Document { mutation, .. }) => {
-                if self.end.busy.load(Ordering::SeqCst) {
-                    return Err(TransportError::Busy);
-                }
-                if self.end.refusing.load(Ordering::SeqCst) {
-                    self.refused = Some("the workspace's grants deny this change".to_owned());
-                    return Ok(());
-                }
-                let (DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes)) =
-                    mutation;
-                let mut taking = self.end.held.lock().unwrap().clone();
-                taking.load_incoming(&bytes).unwrap();
-                if taking.get_missing_deps(&[]).is_empty() {
-                    *self.end.held.lock().unwrap() = taking;
-                    self.refused = None;
-                } else {
-                    self.refused = Some("the change builds on changes it does not hold".to_owned());
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn drain(&mut self, _: &mut Vec<CollabEvent>) {}
-
-    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
-        self.joined.take().map(Ok)
-    }
-
-    fn take_action_directory_requests(
-        &mut self,
-        _: &mut Vec<collaboration::ActionDirectoryRequest>,
-    ) {
-    }
-
-    fn document_publication_failed(&self) -> bool {
-        self.refused.is_some()
-    }
-
-    fn refused_change(&self) -> Option<String> {
-        self.refused.clone()
-    }
+/// The resources a window keeps on this device alone, in `dir`: what a window without a session
+/// runs over, with what an earlier window of it left there.
+fn stored_store(dir: &std::path::Path) -> tilolang_tilo::resources::ResourceStore {
+    let port = tilolang_tilo::resources::LocalPort::at(dir.join("resources"))
+        .expect("the workspace opens");
+    tilolang_tilo::resources::ResourceStore::new(Rc::new(port))
 }
 
 /// A window-sized region of a host's scene, as a window process's surface is.
@@ -527,16 +432,6 @@ fn spec_of(route: &RouteSpec, person: &str) -> Spec {
     Spec::new(&route.app_id, route.cluster_id.to_string(), 1, person).in_language("en-US")
 }
 
-/// Whether `host`'s instance reads the workspace's indexes: until then it shows the platform's
-/// loading state. An index being built answers from its first step, so this is reached before
-/// the whole workspace is read.
-fn index_ready(host: &TilolangProcess) -> bool {
-    host.instances()
-        .next()
-        .and_then(|hosted| hosted.instance().host())
-        .is_some_and(|host| host.index_answers())
-}
-
 impl Session {
     /// A person at a Tasks window in the frame harness.
     fn tasks() -> Self {
@@ -569,7 +464,7 @@ impl Session {
     }
 
     /// A person at a Today window the live `App` runs, the workspace having Tasks and Notes
-    /// installed as the apps of their own documents it reads.
+    /// installed as the apps of their own resources it reads.
     fn today(window: impl FnOnce(HostedWindow) -> Window) -> Self {
         let route = RouteSpec::app(TODAY, uuid::Uuid::new_v4());
         let mut spec =
@@ -577,8 +472,7 @@ impl Session {
         for app in [TASKS, NOTES] {
             spec.installed.insert(app.to_owned(), app.to_owned());
         }
-        let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
-        let mut session = Self::brokered_as(&route, spec, chunks, None, window);
+        let mut session = Self::brokered_as(&route, spec, window);
         session.settle();
         session
     }
@@ -593,34 +487,6 @@ impl Session {
     /// live `App` running it: the same bar, fields and list as Notes, with a rich body.
     fn live_rich() -> Self {
         Self::open(RICHBODY, "ada", Window::live)
-    }
-
-    /// A person at a Notes window the live `App` runs, whose connection reaches the workspace
-    /// `end`.
-    fn crowded_notes(end: &WorkspaceEnd) -> Self {
-        let mut session = Self::reaching(NOTES, end, Window::live);
-        session.settle();
-        session
-    }
-
-    /// Ada at the window `window` makes of the app `app`, whose connection reaches the workspace
-    /// `end`, before the window had a frame.
-    fn reaching(
-        app: &str,
-        end: &WorkspaceEnd,
-        window: impl FnOnce(HostedWindow) -> Window,
-    ) -> Self {
-        let route = RouteSpec::app(app, uuid::Uuid::new_v4());
-        let manager = CollaborationManager::with_transport(Box::new(Crowded {
-            route: route.clone(),
-            end: end.clone(),
-            refused: None,
-            joined: None,
-        }));
-        let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
-        let wire = (Box::new(()) as Box<dyn std::any::Any>, Rc::default());
-        let spec = Spec::new(app, route.cluster_id.to_string(), 1, "ada").in_language("en-US");
-        Self::launch(manager, &route, spec, chunks, None, wire, window)
     }
 
     /// `person` at a harness window of the app `app`.
@@ -657,106 +523,125 @@ impl Session {
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
-        let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
-        Self::brokered(&route, app, person, language, chunks, None, window)
+        Self::brokered(&route, app, person, language, window)
     }
 
-    /// [`Self::launch`] over a connection whose other end is the test's broker.
+    /// [`Self::launch`] on a connection whose other end is the test's broker, the window over
+    /// its own workspace.
     fn brokered(
         route: &RouteSpec,
         app: &str,
         person: &str,
         language: &'static str,
-        chunks: tilolang_tilo::chunk::Chunks,
-        storage: Option<std::path::PathBuf>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
         let spec = Spec::new(app, route.cluster_id.to_string(), 1, person).in_language(language);
-        Self::brokered_as(route, spec, chunks, storage, window)
+        let bus = Rc::new(tilolang_process::testing::Bus::default());
+        Self::on_bus_window(&bus, route, spec, window)
     }
 
-    /// [`Self::brokered`] of the instance `spec` names, as the session named it: whose window reads
-    /// the other apps installed here, each read from its own document.
+    /// Bo at a window of `app` in Ada's workspace, made its editor: an editor asks before what
+    /// leaves the workspace.
+    fn bo_editing(app: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
+        use ui::permissions::policy::{MemberAccess, Role, WorkspacePolicy};
+        let route = RouteSpec::app(app, uuid::Uuid::new_v4());
+        let mut policy = WorkspacePolicy::new(route.cluster_id.to_string(), "ada");
+        policy.members.insert("bo".to_owned(), Role::Editor);
+        let spec = Spec::new(app, route.cluster_id.to_string(), 1, "bo")
+            .in_language("en-US")
+            .access(MemberAccess::person(policy, "bo"));
+        Self::brokered_as(&route, spec, window)
+    }
+
+    /// The action the window's Ask bar asks the person about, when it is up.
+    fn ask_bar(&mut self) -> Option<String> {
+        let view = self.hosted().view()?;
+        tilo_app_window::AppWindow::asks(view).map(|ask| ask.action.clone())
+    }
+
+    /// [`Self::brokered`] of the instance `spec` names: a workspace of its own.
     fn brokered_as(
         route: &RouteSpec,
         spec: Spec,
-        chunks: tilolang_tilo::chunk::Chunks,
-        storage: Option<std::path::PathBuf>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
-        let broker = Broker::new(route.clone());
-        let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
-        let manager = CollaborationManager::with_peer_transport(broker);
-        let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
-        Self::launch(manager, route, spec, chunks, storage, wire, window)
+        let bus = Rc::new(tilolang_process::testing::Bus::default());
+        Self::on_bus_window(&bus, route, spec, window)
     }
 
-    /// A person at a harness window of the instance `spec` names, of the app of `route`, over the
-    /// workspace document `chunks`, on a connection of `bus`: what they say of themselves reaches
-    /// the bus's other connections on the route, and the bus's member list names everyone.
-    /// Settled.
-    pub(crate) fn on_bus(
+    /// [`Self::on_bus`], before the window had a frame.
+    pub(crate) fn opened_on_bus(
         bus: &Rc<tilolang_process::testing::Bus>,
         route: &RouteSpec,
         spec: Spec,
-        chunks: tilolang_tilo::chunk::Chunks,
     ) -> Self {
         let broker = Broker::on(bus, route.clone(), &spec.person);
         let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
         let manager = CollaborationManager::with_peer_transport(broker);
         let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
-        let mut session =
-            Self::launch(manager, route, spec, chunks, None, wire, Window::in_harness);
+        Self::launch(manager, route, spec, wire, Window::in_harness)
+    }
+
+    /// A person at a harness window of the instance `spec` names, of the app of `route`, on a
+    /// connection of `bus`: the workspace's resources, what they say of themselves and the
+    /// member list are the bus's. Settled.
+    pub(crate) fn on_bus(
+        bus: &Rc<tilolang_process::testing::Bus>,
+        route: &RouteSpec,
+        spec: Spec,
+    ) -> Self {
+        Self::on_bus_window(bus, route, spec, Window::in_harness)
+    }
+
+    /// [`Self::on_bus`], the window `window` makes, settled.
+    fn on_bus_window(
+        bus: &Rc<tilolang_process::testing::Bus>,
+        route: &RouteSpec,
+        spec: Spec,
+        window: impl FnOnce(HostedWindow) -> Window,
+    ) -> Self {
+        let broker = Broker::on(bus, route.clone(), &spec.person);
+        let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
+        let manager = CollaborationManager::with_peer_transport(broker);
+        let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
+        let mut session = Self::launch(manager, route, spec, wire, window);
         session.settle();
         session
     }
 
-    /// A person at a Tasks window over the workspace document `chunks` (its own chunk and the
-    /// chunks above it this replica holds), opened on `route`, whose package keeps what it
-    /// keeps in `storage`: the indexes an earlier window of the same route left there are read,
-    /// not built. The window settles before it is handed over.
-    fn tasks_over_in(
-        route: &RouteSpec,
-        chunks: tilolang_tilo::chunk::Chunks,
-        storage: Option<std::path::PathBuf>,
+    /// A person at the window `window` makes of the app `app`, its resources in the store kept
+    /// under `dir` and no broker: what a window without a session runs over, with what an
+    /// earlier window of it left there.
+    fn in_store(
+        app: &str,
+        person: &str,
+        dir: &std::path::Path,
+        window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
-        let mut session = Self::tasks_over_launched(route, chunks, storage);
+        let route = RouteSpec::app(app, uuid::Uuid::new_v4());
+        let spec = Spec::new(app, route.cluster_id.to_string(), 1, person).in_language("en-US");
+        let mut session = Self::assemble(
+            tilolang_process::connection::Connection::local(route),
+            Vec::new(),
+            spec,
+            (Box::new(()), Sent::default()),
+            Some(stored_store(dir)),
+            window,
+        );
         session.settle();
         session
-    }
-
-    /// [`Self::tasks_over_in`], not settled: the window as it is when it opens, before its first
-    /// frame.
-    fn tasks_over_launched(
-        route: &RouteSpec,
-        chunks: tilolang_tilo::chunk::Chunks,
-        storage: Option<std::path::PathBuf>,
-    ) -> Self {
-        Self::brokered(
-            route,
-            TASKS,
-            "ada",
-            "en-US",
-            chunks,
-            storage,
-            Window::in_harness,
-        )
     }
 
     /// The window `window` makes of the hosted window of the instance `spec`, whose package
     /// [`package_of`] names, whose instance's connection is `manager`, on `route`; `wire` is what
-    /// the broker's end holds and what the instance sends it, `chunks` the workspace record the
-    /// instance runs over, and `storage` where the package keeps what it keeps (nothing: in
-    /// memory), before the window had a frame. The host's own process speaks the source language
-    /// throughout: the language the window reads in is the one the session handed over with
-    /// `spec`, never this one.
+    /// the broker's end holds and what the instance sends it, before the window had a frame. The
+    /// host's own process speaks the source language throughout: the language the window reads in
+    /// is the one the session handed over with `spec`, never this one.
     fn launch(
         mut manager: CollaborationManager,
         route: &RouteSpec,
         spec: Spec,
-        chunks: tilolang_tilo::chunk::Chunks,
-        storage: Option<std::path::PathBuf>,
-        (broker, sent): (Box<dyn std::any::Any>, Sent),
+        wire: (Box<dyn std::any::Any>, Sent),
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
         assert!(manager.send(CollabRequest::Hello {
@@ -769,30 +654,48 @@ impl Session {
         // What arrives while the route joins, the member list among it, the host takes once the
         // instance runs.
         let early = manager.poll();
-        let record = InstanceDocument::of(
-            chunks,
-            manager,
-            route.clone(),
-            spec.person.clone(),
-            "tl.test",
-        );
+        let connection = tilolang_process::connection::Connection::new(manager)
+            .expect("the connection joins its route");
+        let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(connection.port(None)));
+        Self::assemble(connection, early, spec, wire, Some(store), window)
+    }
+
+    /// The window `window` makes of the instance `spec` of `route` over `connection`, its
+    /// resources in `store`, taking `early` on its first frame.
+    fn assemble(
+        connection: tilolang_process::connection::Connection,
+        early: Vec<collaboration::CollabEvent>,
+        spec: Spec,
+        (broker, sent): (Box<dyn std::any::Any>, Sent),
+        store: Option<tilolang_tilo::resources::ResourceStore>,
+        window: impl FnOnce(HostedWindow) -> Window,
+    ) -> Self {
+        let store = store.unwrap_or_else(|| {
+            tilolang_tilo::resources::ResourceStore::new(Rc::new(connection.port(None)))
+        });
         let woken = Arc::new(Woken::default());
         let app = spec.app.clone();
         let person = spec.person.clone();
         let bundle = package(package_of(&spec.app));
-        let (mut host, theirs) = tilolang_app::hosted::start(
+        let mut host = TilolangProcess::new(woken.waker());
+        // The window's instance takes over the later builds `tilolang dev` publishes, as the
+        // app's own host does ([`tilolang_app::hosted::start`]).
+        host.follow_builds(&app, tilolang_app::updates::builds());
+        let (ours, theirs) = Channel::pair().expect("the instance's patch connection");
+        let watched = ours.as_fd().try_clone_to_owned().ok();
+        let transport = ChannelTransport::new(ours).expect("the instance's transport");
+        let mut hosted = Hosted::new(
             spec,
-            |_| Ok(record),
+            connection,
+            (store, tilolang_process::hosted::memory_content()),
             bundle,
-            &Rc::new(Phrases::new("en-US")),
-            storage,
+            &tilolang_process::hosted::Kept::default(),
+            Box::new(transport),
+            (&Rc::new(Phrases::new("en-US")), host.formats()),
             woken.waker(),
-        )
-        .unwrap();
-        host.instances_mut()
-            .next()
-            .expect("the window's instance")
-            .arrived_early(early);
+        );
+        hosted.arrived_early(early);
+        host.add(hosted, watched);
         Self {
             app,
             person,
@@ -865,18 +768,6 @@ impl Session {
         settle::settle(&mut self.host, &self.woken, || false);
     }
 
-    /// The window's frames until its instance reads the workspace's indexes: what its load
-    /// does before it opens the root, over the indexes it found.
-    fn wait_index(&mut self) {
-        settle::until(
-            &mut self.host,
-            &self.woken,
-            || self.window.frame(),
-            "the window reads the workspace's index",
-            |host| index_ready(host).then_some(()),
-        );
-    }
-
     /// Close the window and let the host end its instance, as the session's loop does when a
     /// person closes one: the index the window built reaches the disk, and the workspace's
     /// index is there for the next window to open over.
@@ -897,25 +788,6 @@ impl Session {
         );
     }
 
-    /// Whether the instance is still reading the whole of the workspace's search index off the
-    /// frame: what it publishes once it is read.
-    fn search_index_pending(&self) -> bool {
-        self.host
-            .instances()
-            .next()
-            .is_some_and(Hosted::index_pending)
-    }
-
-    /// Whether the window's store has read the whole workspace: until it has, the lists it shows
-    /// are the part it has read, and a count it does not have yet shows as not yet known.
-    fn index_whole(&self) -> bool {
-        self.host
-            .instances()
-            .next()
-            .and_then(|hosted| hosted.instance().host())
-            .is_some_and(|host| host.store().settled())
-    }
-
     /// The window's hosted instance.
     fn instance(&self) -> &tilolang_process::hosted::Hosted {
         self.host.instances().next().expect("the window's instance")
@@ -934,24 +806,6 @@ impl Session {
             .instance()
             .host()
             .expect("the instance's store")
-    }
-
-    /// How many indexes the window's instance built from its document: none when it opens over
-    /// the ones an earlier run of the app kept.
-    fn builds(&self) -> u64 {
-        self.instance_host().store().stats().builds
-    }
-
-    /// How many indexes the window's instance brought up to date from the heads they were
-    /// stamped with: a chunk caught up after the index was built, rather than built over.
-    fn catch_ups(&self) -> u64 {
-        self.instance_host().store().stats().catch_ups
-    }
-
-    /// How many of those the window's store derived on its own frames: none, for a window whose
-    /// catch-up a worker does and whose frame is woken to take it in.
-    fn catch_ups_in_frame(&self) -> u64 {
-        self.instance_host().store().stats().catch_ups_in_frame
     }
 
     fn hosted(&mut self) -> &HostedWindow {
@@ -1184,52 +1038,6 @@ fn keys_typed_after_each_of_several_presses_land_in_their_own_note_in_the_live_w
 }
 
 #[test]
-fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_workspace_once_it_has_workspace()
- {
-    let workspace = WorkspaceEnd::default();
-    let mut session = Session::crowded_notes(&workspace);
-    let plus = session.control(&session.doing("Notebook", "new_note"));
-    session.window.click_at(plus.0, plus.1);
-    session.settle();
-    // The connection's queue fills up while the person types fast into notes, open and new.
-    workspace.busy.store(true, Ordering::SeqCst);
-    let before = workspace.heads();
-    let title = session.field("title");
-    session.window.click_at(title.0 + 40.0, title.1);
-    for key in ["Be", "ta", "Gam", "ma"] {
-        session.window.type_text(key);
-        session.settle();
-    }
-    let body = session.body();
-    session.window.click_at(body.0, body.1);
-    session.window.type_text("Body");
-    session.settle();
-    let plus = session.control(&session.doing("Notebook", "new_note"));
-    session.window.click_at(plus.0, plus.1);
-    session.window.type_text("WV");
-    session.settle();
-    let mut titles = session.titles();
-    titles.sort();
-    assert_eq!(
-        titles,
-        ["BetaGamma", "WV"],
-        "every key is kept while the workspace cannot take it yet"
-    );
-    assert_eq!(
-        workspace.heads(),
-        before,
-        "nothing went out while the queue was full"
-    );
-    // The queue has workspace again: the host's next frames hand the workspace all of it.
-    workspace.busy.store(false, Ordering::SeqCst);
-    session.settle();
-    assert!(
-        workspace.holds(&session),
-        "the workspace holds every key typed while its connection was full"
-    );
-}
-
-#[test]
 fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() {
     let mut session = Session::live_notes();
     let plus = session.control(&session.doing("Notebook", "new_note"));
@@ -1268,8 +1076,7 @@ fn who_edited_a_page_reads_as_the_name_the_member_list_calls_them_never_their_ke
     let bus = Rc::new(tilolang_process::testing::Bus::default());
     bus.member(ui::tilo_actions::MemberId::person(ada), "Ada");
     let route = RouteSpec::app("so.tilo.lang.signed", uuid::Uuid::new_v4());
-    let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
-    let mut session = Session::on_bus(&bus, &route, spec_of(&route, ada), chunks);
+    let mut session = Session::on_bus(&bus, &route, spec_of(&route, ada));
     let root = session
         .hosted()
         .view()
@@ -2145,32 +1952,24 @@ fn entry(session: &mut Session) -> String {
         .map_or_else(String::new, |input| input.value().to_owned())
 }
 
-/// The document's heads: what the app has written, as its changes name it.
-fn heads(session: &Session) -> Vec<String> {
-    session
-        .instance()
-        .record()
-        .doc()
-        .get_heads()
-        .into_iter()
-        .map(|head| format!("{head:?}"))
-        .collect()
-}
-
-/// How many changes the window's document holds: what the window wrote into the workspace.
-fn changes(session: &Session) -> usize {
-    let doc = session.instance().record().doc();
-    doc.committed_document().get_changes(&[]).len()
+/// The invocation the window's store last wrote: what it wrote into the workspace, as the
+/// change names it. Unchanged where nothing was written.
+fn written(session: &Session) -> Option<String> {
+    session.instance_host().store().last_written()
 }
 
 /// The store of the window's instance.
-fn store(session: &Session) -> tilolang_tilo::store::TiloStore {
+fn store(session: &Session) -> tilolang_tilo::resources::ResourceStore {
     session.instance_host().store().clone()
 }
 
-/// The window's document: the workspace as this device holds it.
-fn record(session: &Session) -> tilolang_tilo::chunk::Chunks {
-    session.instance().record().chunks()
+/// The id of the app's root resource, as its address names it (`tl:<app>:<id>`).
+fn root_id(session: &Session, app: &str) -> String {
+    session
+        .instance_host()
+        .root_of(app)
+        .expect("the app's root")
+        .id_string()
 }
 
 /// The texts a view's tree shows: every text and every person it names.
@@ -2295,7 +2094,7 @@ fn the_primary_action_focuses_the_lists_entry_and_makes_no_task_until_enter() {
 fn an_entry_left_empty_makes_no_task_and_no_history() {
     use ui::winit::keyboard::NamedKey;
     let mut session = Session::tasks();
-    let before = heads(&session);
+    let before = written(&session);
 
     session.window.chord(&["ctrl"], "n");
     session.settle();
@@ -2310,7 +2109,7 @@ fn an_entry_left_empty_makes_no_task_and_no_history() {
     session.window.click_at(x, y);
     session.settle();
     assert!(session.titles().is_empty(), "no task was made");
-    assert_eq!(heads(&session), before, "and nothing was written");
+    assert_eq!(written(&session), before, "and nothing was written");
 }
 
 /// The place a task is added in is its default: the entry at the end of Today's list adds one
@@ -2632,7 +2431,9 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
     // person can take now, drawn from what the action declares. An action that
     // asks for more than a row collects (Open, Remove, Place in board, Move to,
     // Delete project outside a project) is not a row, but every action is
-    // offered: the app keeps none back from the lists.
+    // offered: the app keeps none back from the lists. The app's document offers
+    // the history verbs its store answers — undo and redo of a change, and the
+    // versions history lists — and no checkpoint, which its store does not keep.
     let undo = Some(
         ui::HostShortcut::Undo
             .shortcut(conventions)
@@ -2661,11 +2462,6 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
             ),
             ("Undo".to_owned(), Some(ui::icons::Icon::Undo2), undo),
             ("Redo".to_owned(), Some(ui::icons::Icon::Redo2), redo),
-            (
-                "Checkpoint".to_owned(),
-                Some(ui::icons::Icon::Bookmark),
-                None,
-            ),
         ],
         "the empty window's palette"
     );
@@ -2901,7 +2697,7 @@ fn a_click_on_a_tasks_box_marks_it_done() {
     );
     session.settle();
     assert!(
-        task_in_document(&session, "Water the plants", true),
+        task_in_workspace(&session, "Water the plants", true),
         "the click marked the task done in the workspace"
     );
 }
@@ -2934,42 +2730,32 @@ fn a_tool_opens_a_tasks_menu_and_marks_it_done_by_its_box() {
     session.window.press_named("Mark Water the plants done");
     session.settle();
     assert!(
-        task_in_document(&session, "Water the plants", true),
+        task_in_workspace(&session, "Water the plants", true),
         "the box marked the task done"
     );
 }
 
-/// Whether the workspace's document holds a task titled `title`, done when `done` says so, as the
-/// window's instance runs it: the list shows only the rows on screen, so it is read off the
-/// document's chunks.
-fn task_in_document(session: &Session, title: &str, done: bool) -> bool {
-    use tilolang_tilo::DynValue;
-    let chunks = session.instance().record().chunks();
-    let Some(record) = chunks.first() else {
+/// Whether the workspace's store holds a task titled `title`, done when `done` says so, as the
+/// window's instance runs it: the list shows only the rows on screen, so it is read from the
+/// store.
+fn task_in_workspace(session: &Session, title: &str, done: bool) -> bool {
+    use tilolang_tilo::runtime::Value;
+    let host = session.instance_host();
+    let root = host.root_of(TASKS).expect("the tasks root");
+    let Ok(Value::List(items)) = host.runtime().read(&root, "items") else {
         return false;
     };
-    let has = |item: &tilolang_tilo::DynResource, wanted: &dyn Fn(&DynValue) -> bool| {
-        item.schema()
-            .fields
-            .iter()
-            .any(|field| item.get(&field.id).is_some_and(wanted))
-    };
-    let the_task = |item: &tilolang_tilo::DynResource| {
-        has(
-            item,
-            &|value| matches!(value, DynValue::Text(text) if text == title),
+    items.into_iter().any(|item| {
+        let Value::Ref(item) = item else {
+            return false;
+        };
+        matches!(
+            host.runtime().read(&item.target, "title"),
+            Ok(Value::Text(said)) if said == title
         ) && (!done
-            || has(item, &|value| {
-                matches!(value, DynValue::Register(serde_json::Value::Bool(true)))
-            }))
-    };
-    tilolang_tilo::action::resource_ids(record, TASKS)
-        .into_iter()
-        .filter_map(|id| tilolang_tilo::action::read_resource(&chunks, TASKS, &id).ok())
-        .any(|record| {
-            has(&record, &|value| match value {
-                DynValue::Collection(items) => items.iter().any(|(_, item)| the_task(item)),
-                _ => false,
-            })
-        })
+            || matches!(
+                host.runtime().read(&item.target, "done"),
+                Ok(Value::Bool(true))
+            ))
+    })
 }

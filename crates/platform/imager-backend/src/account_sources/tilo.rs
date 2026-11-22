@@ -23,14 +23,12 @@ pub fn fingerprint(account: &Account) -> Result<[u8; 32], ConnectionError> {
 }
 
 fn supported(account: &Account) -> bool {
-    matches!(
-        account.type_id.as_str(),
-        "nextcloud" | "webdav"
-    ) || (account.type_id.as_str() == "spotify"
-        && matches!(
-            account.id.as_str(),
-            "music.spotify" | "music.spotify.streaming"
-        ))
+    matches!(account.type_id.as_str(), "nextcloud" | "webdav")
+        || (account.type_id.as_str() == "spotify"
+            && matches!(
+                account.id.as_str(),
+                "music.spotify" | "music.spotify.streaming"
+            ))
 }
 
 pub(super) fn discover(roots: &SourceRoots, inventory: &mut Inventory) {

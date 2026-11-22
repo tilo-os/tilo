@@ -24,8 +24,8 @@ use std::time::Duration;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_actions::remote::{
     CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
-    RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,
-    workspace_governance_resource,
+    RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
+    workspace_governance_child, workspace_governance_resource,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_peer_state::join::Role;
@@ -353,10 +353,7 @@ impl TwoTenants {
         let carol_phone = carol.enrol("carol-phone", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
         let server = crate::common::start_server(
-            ServerConfig {
-                state_root: state.path().to_path_buf(),
-                ..ServerConfig::default()
-            },
+            ServerConfig::loopback(state.path().to_path_buf()),
             tilo_server::daemon::ServerIdentity {
                 user_public_key: provider.user_pk,
                 device_signing_key: host.sk.clone(),
@@ -434,8 +431,8 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_workspace() {
     // Positive control: Ann governs her own workspace through the same actions.
     let own = invocation(
         WORKSPACE_GOVERNANCE_PROVIDER,
-        workspace_governance_resource(&t.acme.workspace),
-        "invitation.list",
+        workspace_governance_child(&t.acme.workspace, Some(WORKSPACE_INVITATIONS)),
+        "list",
         serde_json::json!({}),
     );
     to_host(&ann, &t.host, t.acme.workspace_id, own);
@@ -451,20 +448,20 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_workspace() {
     let probes = [
         (
             WORKSPACE_GOVERNANCE_PROVIDER,
-            workspace_governance_resource(globex),
+            workspace_governance_child(globex, Some(WORKSPACE_INVITATIONS)),
             "invite",
             serde_json::json!({ "role": "viewer" }),
         ),
         (
             WORKSPACE_GOVERNANCE_PROVIDER,
-            workspace_governance_resource(globex),
-            "invitation.list",
+            workspace_governance_child(globex, Some(WORKSPACE_INVITATIONS)),
+            "list",
             serde_json::json!({}),
         ),
         (
             WORKSPACE_GOVERNANCE_PROVIDER,
-            workspace_governance_resource(globex),
-            "invitation.cancel",
+            workspace_governance_child(globex, Some(WORKSPACE_INVITATIONS)),
+            "cancel",
             serde_json::json!({ "invite": hex::encode(t.carol_invitation.invite_id) }),
         ),
         (

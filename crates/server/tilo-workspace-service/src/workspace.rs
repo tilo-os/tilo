@@ -210,8 +210,8 @@ pub struct WorkspaceRuntime {
     /// check subscribes AND to decide who gets store-and-forward
     /// on delta receive.
     pub membership: Membership,
-    /// Serializes filesystem authority operations independently of state IO.
-    pub(crate) authorization: Arc<AsyncMutex<()>>,
+    /// Orders this workspace's access-file work independently of state IO.
+    pub(crate) authorization: crate::workspace_io::AccessTurns,
     /// Failed/pending replacements cap what an old external file may grant.
     pub(crate) membership_ceiling: Option<HashSet<[u8; 32]>>,
     pub(crate) membership_revision: u64,
@@ -491,7 +491,7 @@ impl WorkspaceRuntime {
             persistence: None,
             evicted: false,
             membership,
-            authorization: Arc::new(AsyncMutex::new(())),
+            authorization: crate::workspace_io::AccessTurns::default(),
             membership_ceiling: None,
             membership_revision: 0,
             revoked_keys: HashSet::new(),

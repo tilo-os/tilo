@@ -406,12 +406,14 @@ async fn a_listing_right_after_a_person_is_admitted_costs_what_any_listing_does(
     let (status, invited) = agent
         .send(
             hyper::Method::POST,
-            &format!("{base}/members/invitations"),
+            &format!("{base}/resources/workspace/invitations/actions/invite"),
             json!({"role": "editor"}).to_string().as_bytes(),
         )
         .await;
-    assert_eq!(status, 201, "{invited}");
-    let link = invited["link"].as_str().expect("an invitation's link");
+    assert_eq!(status, 200, "{invited}");
+    let link = invited["result"]["link"]
+        .as_str()
+        .expect("an invitation's link");
     let (rosa, _) = tilo_user_identity::UserIdentity::generate("Rosa", 1);
     let (_rosa_page, joined) =
         super::api_on_server::accept_invitation(&on_server, link, &rosa, "Rosa").await;

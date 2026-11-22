@@ -4,7 +4,6 @@
 //! These tests start the app under `bwrap`, through the same `launch_with_captured` path
 //! the launcher uses, and assert on what a syscall answered inside the sandbox.
 
-
 use std::path::PathBuf;
 
 use launcher::appdir;

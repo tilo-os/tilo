@@ -1,4 +1,3 @@
-
 //! A row of Files answers an assistive technology's activation as a double-click opens
 //! it.
 

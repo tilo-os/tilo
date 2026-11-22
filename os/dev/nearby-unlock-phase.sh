@@ -65,8 +65,9 @@ await_question() {
 answer_a() {
   local verdict=$1 resource=$2 action=answer
   [ "$verdict" = allow ] || action=cancel
-  control_a actions invoke so.tilo.session "${resource}"$'\x1f'"${action}" \
-    > "$out/unlock-$verdict-sheet.txt" 2>&1 \
+  { control_a raw "$(action_frame so.tilo.session "$resource" "$action")" \
+      > "$out/unlock-$verdict-sheet.txt" 2>&1 \
+      && action_completed "$out/unlock-$verdict-sheet.txt"; } \
     || { cat "$out/unlock-$verdict-sheet.txt" >&2; die "A's sheet could not be answered ($verdict)"; }
 }
 reboot_b() {
@@ -392,8 +393,8 @@ note "a server-shaped first boot enrolled its sibling slot and booted with A's a
 # The person's own device list is where a device is revoked, by its key: the
 # same step Settings' "Remove from your devices" takes.
 remove_args="$(jq -cn --arg device "$device" '{device: $device, reason: "retired", confirm: true}')"
-control_a actions invoke tilo.identity $'identity\x1frevoke' --args-json "$remove_args" \
-  > "$out/unlock-remove.txt" 2>&1 || { cat "$out/unlock-remove.txt" >&2; die "A could not revoke B"; }
+{ control_a raw "$(action_frame tilo.identity identity revoke "$remove_args")" \
+    > "$out/unlock-remove.txt" 2>&1 && action_completed "$out/unlock-remove.txt"; } || { cat "$out/unlock-remove.txt" >&2; die "A could not revoke B"; }
 # A refusal on the fleet is decided before the person is asked, so no sheet
 # stands: the boot says it was removed and waits for the passphrase.
 reboot_b

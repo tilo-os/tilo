@@ -173,10 +173,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     let state = tempfile::tempdir().unwrap();
     let home_cert = signed_cert(&root, &home, "Home peer", DeviceCapabilities::member());
     let server = crate::common::start_server(
-        ServerConfig {
-            state_root: state.path().to_path_buf(),
-            ..ServerConfig::default()
-        },
+        ServerConfig::loopback(state.path().to_path_buf()),
         ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: home.clone(),
@@ -273,21 +270,9 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
             "{}.json",
             hex::encode(root.verifying_key().to_bytes())
         ));
-        for projected_path in [recipient_identities.join("registry.json"), fleet] {
-            let metadata = std::fs::metadata(&projected_path).unwrap();
-            assert_eq!(
-                metadata.uid(),
-                owner.uid(),
-                "{} uid",
-                projected_path.display()
-            );
-            assert_eq!(
-                metadata.gid(),
-                owner.gid(),
-                "{} gid",
-                projected_path.display()
-            );
-        }
+        let metadata = std::fs::metadata(&fleet).unwrap();
+        assert_eq!(metadata.uid(), owner.uid(), "{} uid", fleet.display());
+        assert_eq!(metadata.gid(), owner.gid(), "{} gid", fleet.display());
     }
 
     let transferred: Vec<HomePeerRegistration> = serde_json::from_slice(
@@ -430,7 +415,7 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     assert_eq!(complete.record_path, complete.resource_path);
     assert_eq!(
         complete.record_path,
-        tilo_identity_client::resolve_active_identity(&recipient_identities)
+        tilo_identity::store::resolve_active_identity(&recipient_identities)
     );
     assert!(complete.record_path.is_some());
 
@@ -622,7 +607,6 @@ wait "$approval"
             recipient_paths.device_cert_for_user(&root.verifying_key().to_bytes()),
             tilo_server::home_peer_registry_path(&recipient_root),
             recipient_identities.join("pairing-status.json"),
-            recipient_identities.join("registry.json"),
             recipient_identities.join("fleets").join(format!(
                 "{}.json",
                 hex::encode(root.verifying_key().to_bytes())

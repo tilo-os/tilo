@@ -724,7 +724,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let doc = session_resource_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
         tilo_test_env::wait_until("the healthy open to finish", || {
-            ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
+            ui::headless::frame_widget(&mut widget, &doc);
             !matches!(widget.session_state(), crate::sessions::OpenState::Opening)
         });
         assert_eq!(widget.session_state(), &crate::sessions::OpenState::Open);
@@ -766,7 +766,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let doc = session_resource_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
         tilo_test_env::wait_until("the failed open to finish", || {
-            ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
+            ui::headless::frame_widget(&mut widget, &doc);
             !matches!(widget.session_state(), crate::sessions::OpenState::Opening)
         });
         assert!(
@@ -1005,7 +1005,7 @@ tilo_test_env::scenario! {
                 .expect("spawn short-lived pty command");
             let doc = AutoCommit::new();
             tilo_test_env::wait_until("PTY EOF to settle the session state", || {
-                widget.sync(&doc, &ROOT);
+                ui::headless::frame_widget(&mut widget, &doc);
                 widget.is_disconnected()
             });
             let node = Widget::accessibility(&widget).expect("terminal semantics");
@@ -1712,7 +1712,7 @@ fn scrollback_viewport_and_scrollbar_track_output() {
         assert!(w.scroll_offset() > 0);
 
         out_tx.send(b"LINE060\r\n".to_vec()).unwrap();
-        w.sync(&doc, &automerge::ROOT);
+        ui::headless::frame_widget(&mut w, &doc);
         assert_eq!(w.scroll_offset(), 0, "new output snaps to the live bottom");
         let after = w.visible_lines();
         assert!(
@@ -3108,12 +3108,10 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
     }
 }
 
-fn pump_until_contains(w: &mut TerminalWidget, doc: &mut AutoCommit, needle: &str) -> bool {
+fn pump_until_contains(w: &mut TerminalWidget, doc: &AutoCommit, needle: &str) -> bool {
     let deadline = ui::time::now() + hang_bound();
     while ui::time::now() < deadline {
-        w.update(doc, &ROOT);
-        w.settle(&mut ui::widget::Edits::lend(doc), &ROOT);
-        w.sync(doc, &ROOT);
+        ui::headless::frame_widget(w, doc);
         if w.grid_text().contains(needle) {
             return true;
         }
@@ -3127,9 +3125,9 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
     {
         let cmd = shell_command("printf 'TILO_PTY_OK\\n'", "echo TILO_PTY_OK");
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         assert!(
-            pump_until_contains(&mut w, &mut doc, "TILO_PTY_OK"),
+            pump_until_contains(&mut w, &doc, "TILO_PTY_OK"),
             "real PTY command output must reach the grid; grid was:\n{}",
             w.grid_text()
         );
@@ -3143,14 +3141,14 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         #[cfg(windows)]
         let cmd = crate::CommandBuilder::new(tilo_process::login_shell::login_shell());
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn default shell");
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         w.sync(&doc, &ROOT);
         #[cfg(unix)]
         w.write_input(b"printf 'TILO_%s_OK\\n' SHELL; exit\n");
         #[cfg(windows)]
         w.write_input(b"set TILO_PART=SHELL\r\necho TILO_%TILO_PART%_OK\r\nexit\r\n");
         assert!(
-            pump_until_contains(&mut w, &mut doc, "TILO_SHELL_OK"),
+            pump_until_contains(&mut w, &doc, "TILO_SHELL_OK"),
             "the real shell must run the typed command and show output; grid was:\n{}",
             w.grid_text()
         );
@@ -3175,7 +3173,7 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         command.arg("printf new-session-output");
         let mut fresh = TerminalWidget::spawn_command(command).expect("new local terminal");
         tilo_test_env::wait_until("the new session's output on the grid", || {
-            fresh.sync(&doc, &automerge::ROOT);
+            ui::headless::frame_widget(&mut fresh, &doc);
             fresh.grid_text().contains("new-session-output")
         });
 
@@ -3196,9 +3194,9 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
     {
         let cmd = shell_command("printf 'TERM=%s\\n' \"$TERM\"", "echo TERM=%TERM%");
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         assert!(
-            pump_until_contains(&mut w, &mut doc, "TERM=xterm-256color"),
+            pump_until_contains(&mut w, &doc, "TERM=xterm-256color"),
             "the shell must see TERM=xterm-256color; grid was:\n{}",
             w.grid_text()
         );
@@ -3679,15 +3677,15 @@ fn real_pty_query_replies_and_fish_startup() {
         cmd.arg("--no-config");
         cmd.arg("-i");
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn fish under a pty");
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
 
         tilo_test_env::wait_until("fish to show its prompt", || {
-            w.sync(&doc, &ROOT);
+            ui::headless::frame_widget(&mut w, &doc);
             !w.grid_text().trim().is_empty()
         });
 
         w.write_input(b"echo TILO_FISH_READY\r");
-        let ready = pump_until_contains(&mut w, &mut doc, "TILO_FISH_READY");
+        let ready = pump_until_contains(&mut w, &doc, "TILO_FISH_READY");
         w.write_input(b"exit\r");
         w.sync(&doc, &ROOT);
 
@@ -3714,9 +3712,9 @@ fn real_pty_query_replies_and_fish_startup() {
         cmd.arg("-c");
         cmd.arg("stty -icanon -echo min 1 time 0; printf '\\033[c'; head -c 5 | cat -v; echo; echo REPLY_DONE");
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         assert!(
-            pump_until_contains(&mut w, &mut doc, "REPLY_DONE"),
+            pump_until_contains(&mut w, &doc, "REPLY_DONE"),
             "the child must receive the DA1 reply over the real PTY; grid was:\n{}",
             w.grid_text()
         );
@@ -3873,7 +3871,7 @@ fn windows_native_and_hosted_terminal_paths() {
         );
         let expected = format!("NATIVE_SIZE={columns}x{rows}");
         assert!(
-            pump_until_contains(&mut widget, &mut document, &expected),
+            pump_until_contains(&mut widget, &document, &expected),
             "the actual child must observe the resized ConPTY: {}",
             widget.grid_text()
         );

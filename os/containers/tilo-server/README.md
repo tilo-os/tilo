@@ -1,8 +1,7 @@
-# Tilo composite home peer
+# Tilo server container
 
 This Compose file turns a NAS or home server into an always-on authenticated
-workspace and filesystem peer. It stores offline updates and complete file
-content for the workspaces selected in Settings.
+workspace server. It stores offline updates for the workspaces it serves.
 
 ## Before starting
 
@@ -25,9 +24,8 @@ podman compose up -d
 Open Settings → Sync between devices on the trusted Tilo device and choose
 **Pair home server**. Settings shows the server name and six-digit code; confirm
 that code on the server, then approve that exact device. The signed
-certificate, selected workspace IDs, file ticket, and signed live authority
-arrive as one authenticated provisioning response. The container writes its
-configuration and starts both replica services automatically.
+certificate arrives in one authenticated provisioning response. The container
+writes its configuration and starts the server automatically.
 
 Existing deployments may still mount a short-lived token at
 `/run/secrets/tilo-enrollment-token`; this is a compatibility path, not required
@@ -39,30 +37,24 @@ metrics. Back it up together with the non-secret `server.toml`; protect the
 identity directory separately. Replacing either volume changes availability
 properties, so restore rather than recreate them after a failure.
 
-The health check reports ready only when the server is live and the full file
-replica has completed its current work.
+The health check reports ready once the server is live and writing its metrics.
 
 ## Trust and members
 
 The generated configuration uses `allow_matching_user`, so the owner's other
 certified devices connect automatically. Workspace authority travels signed by
-the owner identity and remains enforced by the filesystem replica. Inspect the
+the owner identity. Inspect the
 running state with:
 
 ```sh
 podman compose exec tilo-server tilo-server-admin --config /etc/tilo/server.toml status
 ```
 
-The aggregate replica status is the content-capacity health check:
-`full_content_replication` is advertised only while every configured workspace
-has a fresh complete status. App, compute, and remote-control services remain
-separate from filesystem replication.
-
 ## Three roles
 
-This image is the **server / home peer** — not the MCP server:
+This image is the **server** — not the MCP server:
 
 1. **Server / headless store-and-forward** — this daemon (authenticated workspace host).
-2. **Home server / full always-on peer** — this Compose file: host-capable device cert, full file replica, LAN pair from Settings.
+2. **Home server / always-on server** — this Compose file: host-capable device cert, LAN pair from Settings.
 3. **Agent on an existing OS** — an MCP client talking to the **local** runtime beside this server: `tilo mcp` over the profile's own socket, or the host's own `/v1` API and MCP server (`docs/developers/api.md`). Nothing here is exposed to the network.
 

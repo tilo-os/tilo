@@ -54,6 +54,7 @@ impl tilo_desktop_surface::activity::GovernanceReader for GovernanceValues {
         tilo_peer_state::governance::device_row_label(row)
     }
 }
+#[cfg(target_os = "linux")]
 use crate::device_state::DeviceState;
 #[cfg(target_os = "linux")]
 use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
@@ -150,6 +151,7 @@ struct Inner {
     /// Where the session's own history is read from and written to.
     layouts: Box<dyn History>,
     /// What this device shows: the workspace in front, and the displays' partition.
+    #[cfg(target_os = "linux")]
     shown: DeviceState,
     /// What the devices answered when one asked to be unlocked.
     #[cfg(target_os = "linux")]
@@ -323,7 +325,10 @@ impl Activity {
             person,
             store,
             held,
+            #[cfg(target_os = "linux")]
             state,
+            #[cfg(not(target_os = "linux"))]
+                state: _,
             apps,
             #[cfg(target_os = "linux")]
             people,
@@ -338,9 +343,11 @@ impl Activity {
         let woken = Arc::new(AtomicBool::new(false));
         let requests = activity_requests(Arc::clone(&woken));
         let seen = (changes.moved(), 0);
+        #[cfg(target_os = "linux")]
         let shown = DeviceState::load(state.as_deref());
         Self(Rc::new(Inner {
             layouts,
+            #[cfg(target_os = "linux")]
             shown,
             #[cfg(target_os = "linux")]
             unlock,
@@ -567,6 +574,7 @@ impl Activity {
 
     /// Show what this device left in `tree`: the workspace in front and the displays' partition.
     /// Whether anything changed.
+    #[cfg(target_os = "linux")]
     pub fn show(&self, tree: &mut Layout) -> bool {
         self.0.shown.applied(tree)
     }
@@ -580,6 +588,7 @@ impl Activity {
 
     /// Keep what `tree` shows of this device: the workspace in front and the displays' partition.
     /// Read at `revision` of the session, so a session that did not move is not read.
+    #[cfg(target_os = "linux")]
     pub fn keep_shown(&self, revision: Option<u64>, tree: impl FnOnce() -> Layout) -> bool {
         self.0.shown.keep(revision, tree)
     }

@@ -128,31 +128,38 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let Some((app_id, provider, pinned)) =
             self.acting_in(&parsed, SHARE_LINK_ACTION, None).await?
         else {
-            return Err(Self::not_running_note(&app_of(&parsed), true).into());
+            return Err(tilo_actions::tree::Unresolved::NotRunning {
+                name: app_of(&parsed),
+                opens: true,
+            }
+            .to_string()
+            .into());
         };
         let mut levels = Levels::new();
         let resolved = if pinned {
-            self.resolve_in(
-                &parsed,
-                app_id,
-                provider,
-                false,
-                None,
-                &mut levels,
-                usize::MAX,
-            )
-            .await?
+            self.tree
+                .resolve_in(
+                    &parsed,
+                    app_id,
+                    provider,
+                    false,
+                    None,
+                    &mut levels,
+                    usize::MAX,
+                )
+                .await?
         } else {
-            self.resolve_published(
-                &parsed,
-                app_id,
-                provider,
-                false,
-                None,
-                &mut levels,
-                usize::MAX,
-            )
-            .await?
+            self.tree
+                .resolve_published(
+                    &parsed,
+                    app_id,
+                    provider,
+                    false,
+                    None,
+                    &mut levels,
+                    usize::MAX,
+                )
+                .await?
         };
         let mut arguments = serde_json::Map::new();
         if let Some(mode) = args.mode {
@@ -198,7 +205,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             String::new()
         } else {
             let mut levels = Levels::new();
-            let top = self.level(provider, "", &mut levels).await?;
+            let top = self.tree.level(provider, "", &mut levels).await?;
             top.children
                 .iter()
                 .filter(|node| node.parent.is_empty())

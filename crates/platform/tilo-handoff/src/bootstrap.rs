@@ -337,7 +337,7 @@ pub(crate) fn install(
     if projection.schema != PROJECTION_SCHEMA {
         return Err(invalid("The identity export is invalid"));
     }
-    if tilo_identity_client::resolve_active_identity(identity_dir).is_some()
+    if tilo_identity::store::resolve_active_identity(identity_dir).is_some()
         || !identity_dir_empty(identity_dir)?
     {
         return Err(invalid("This computer already has an identity"));

@@ -234,7 +234,6 @@ async fn named_by_workspace(
     let root = read_root(&args.root_file)?;
     let host = read_host_key(&args.state.join("host-device.key"))?;
     let cert = server_cert(&root, &host, &args.persistent)?;
-    let scratch = tempfile::tempdir()?;
     // Bound to this machine alone, and found by nobody: no member reaches
     // the host while its content moves.
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -247,8 +246,6 @@ async fn named_by_workspace(
         tilo_server::ServerConfig {
             state_root: server_root.to_path_buf(),
             identity_root: args.state.join("identity"),
-            full_replica_status: scratch.path().join("status.json"),
-            home_peer_bundle: scratch.path().join("home-peer.toml"),
             ..Default::default()
         },
         tilo_server::daemon::ServerIdentity {
@@ -585,8 +582,6 @@ mod tests {
                     tilo_server::ServerConfig {
                         state_root: server_root.to_path_buf(),
                         identity_root: state.join("identity"),
-                        full_replica_status: state.join("status.json"),
-                        home_peer_bundle: state.join("home-peer.toml"),
                         ..Default::default()
                     },
                     tilo_server::daemon::ServerIdentity {

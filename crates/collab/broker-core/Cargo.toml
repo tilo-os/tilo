@@ -40,7 +40,7 @@ hex.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 # Where a device keeps the history its records' ops are scrolled back from.
 tilo-paths.workspace = true
-tokio = { workspace = true, features = ["sync", "macros", "rt"] }
+tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
 
 [dev-dependencies]
 # The record tests read workspaces through the isolated automerge workers a test binary serves.

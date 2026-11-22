@@ -115,6 +115,7 @@ async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
             ENTER_WORKSPACE,
             HOST_WORKSPACE,
             UNHOST_WORKSPACE,
+            tilo_server_session::workspaces::CATCH_UP_WORKSPACE,
             super::PLAN_MACHINE,
             super::LIST_MACHINES,
             super::SHOW_MACHINE,

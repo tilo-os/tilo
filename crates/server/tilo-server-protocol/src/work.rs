@@ -6,7 +6,6 @@
 
 use std::collections::BTreeSet;
 
-use neighbour_wire::offer::{Answer, Decline, Power, Rank};
 use serde::{Deserialize, Serialize};
 
 use crate::WorkspaceId;
@@ -99,7 +98,7 @@ impl WorkFrom {
     }
 }
 
-/// Whose work an offer is, as the workspace it is offered in says.
+/// Whose work a hand-over is, as the workspace it hands over says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Whose {
     /// The person whose device asked.
@@ -165,6 +164,11 @@ pub struct WorkSetting {
     pub from: WorkFrom,
     /// The states it takes them in.
     pub when: WorkWhen,
+    /// Whether it runs the agents of the workspaces it holds: their turns, on each workspace's
+    /// linked model, in this device's own workspace service. A person's own device does
+    /// ([`Self::own_device`]); a machine that takes work for others does only where it is the
+    /// workspace's host, which runs its agents whatever this says.
+    pub agents: bool,
 }
 
 impl WorkSetting {
@@ -175,6 +179,17 @@ impl WorkSetting {
             kinds: WorkKinds::NONE,
             from: WorkFrom::Nobody,
             when: WorkWhen::default(),
+            agents: false,
+        }
+    }
+
+    /// What a person's own device runs with: no work for anyone else, and the agents of the
+    /// workspaces it holds, with no flag or setup.
+    #[must_use]
+    pub fn own_device() -> Self {
+        Self {
+            agents: true,
+            ..Self::none()
         }
     }
 
@@ -192,299 +207,5 @@ impl WorkSetting {
     #[must_use]
     pub fn takes_nothing(&self) -> bool {
         self.kinds.none() || self.from == WorkFrom::Nobody
-    }
-
-    /// What this device answers an offer of `whose` work with: `machine` is the state it is in now,
-    /// `app_installed`
-    /// whether it can run the app the work belongs to, `free_slots` how many more jobs it can start
-    /// for a device that keeps count, and `holds` which of the work's inputs it already keeps.
-    ///
-    /// The reason a device declines is the first thing its setting says no about, so a person
-    /// reading an offer round sees the limit they set.
-    #[must_use]
-    pub fn answer(
-        &self,
-        whose: &Whose,
-        machine: Machine,
-        app_installed: bool,
-        free_slots: Option<u32>,
-        holds: Vec<[u8; 32]>,
-    ) -> Answer {
-        let rank = Rank {
-            power: machine.power,
-            load_permille: machine.busy_permille,
-            // The device that asked measures the round trip itself.
-            latency_ms: 0,
-        };
-        let decline = if self.takes_nothing() || !self.kinds.actions || !self.from.admits(whose) {
-            Decline::NotTakingWork
-        } else if !app_installed {
-            Decline::AppNotInstalled
-        } else if free_slots == Some(0) {
-            Decline::AtCapacity
-        } else if self.when.charging_only && machine.power == Power::Battery {
-            Decline::OnBattery
-        } else if machine.free_cpu_percent() < u32::from(self.when.free_cpu_percent)
-            || machine
-                .free_memory_percent
-                .is_some_and(|free| free < u32::from(self.when.free_memory_percent))
-        {
-            Decline::LowResources
-        } else {
-            return Answer::taking(rank, holds);
-        };
-        Answer::declining(decline)
-    }
-}
-
-/// The state of a device's machine, as an offer round weighs it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Machine {
-    /// How it is powered.
-    pub power: Power,
-    /// The share of its processors already busy, per thousand.
-    pub busy_permille: u32,
-    /// The share of its memory free, where the machine reports it.
-    pub free_memory_percent: Option<u32>,
-}
-
-impl Machine {
-    /// This machine as an offer round sees it, powered `power`: the load the kernel reports against
-    /// the processors it has, and the memory it has free.
-    #[must_use]
-    pub fn here(power: Power) -> Self {
-        Self {
-            power,
-            busy_permille: busy_permille(),
-            free_memory_percent: free_memory_percent(),
-        }
-    }
-
-    /// The share of the processors left to the people at the machine.
-    #[must_use]
-    pub fn free_cpu_percent(self) -> u32 {
-        (1_000_u32.saturating_sub(self.busy_permille)) / 10
-    }
-}
-
-/// What share of this machine is already busy, per thousand, from the load the kernel reports
-/// against the processors it has. A machine that reports no load says none is in hand.
-fn busy_permille() -> u32 {
-    let cores =
-        u32::try_from(std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get))
-            .unwrap_or(u32::MAX);
-    let Ok(report) = std::fs::read_to_string("/proc/loadavg") else {
-        return 0;
-    };
-    let Some(one) = report.split_whitespace().next() else {
-        return 0;
-    };
-    // The kernel reports the one-minute load in hundredths; read it as thousandths so that dividing
-    // by the processors stays whole numbers.
-    let (whole, fraction) = one.split_once('.').unwrap_or((one, ""));
-    let whole: u32 = whole.parse().unwrap_or(0);
-    let mut fraction = fraction.chars().take(3).collect::<String>();
-    while fraction.len() < 3 {
-        fraction.push('0');
-    }
-    let fraction: u32 = fraction.parse().unwrap_or(0);
-    let thousandths = whole.saturating_mul(1_000).saturating_add(fraction);
-    thousandths.checked_div(cores.max(1)).unwrap_or(0)
-}
-
-/// The share of memory this machine reports as available, or `None` where it reports none.
-fn free_memory_percent() -> Option<u32> {
-    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let read = |name: &str| -> Option<u64> {
-        meminfo
-            .lines()
-            .find_map(|line| line.strip_prefix(name))?
-            .split_whitespace()
-            .next()?
-            .parse()
-            .ok()
-    };
-    let total = read("MemTotal:")?;
-    read("MemAvailable:")?
-        .min(total)
-        .checked_mul(100)
-        .and_then(|hundredfold| hundredfold.checked_div(total))
-        .and_then(|share| u32::try_from(share).ok())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Machine, Whose, WorkFrom, WorkSetting};
-    use crate::WorkspaceId;
-    use neighbour_wire::offer::{Decline, Power};
-
-    /// Work of `asker` in `workspace`, offered to a device of the person `ada`.
-    fn whose(asker: &str, workspace: Option<WorkspaceId>) -> Whose {
-        Whose {
-            asker: asker.to_owned(),
-            own: "ada".into(),
-            workspace,
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn a_work_setting_says_whose_work_a_device_takes;
-
-        phase work_is_admitted_by_person_and_named_workspace;
-        // A device of the person whose work is at stake may hand it work; another person's device
-        // only where the setting names the workspace it acts in or takes anyone's.
-        {
-            let workspace = WorkspaceId::from_u128(7);
-            let mine = whose("ada", Some(workspace));
-            let theirs = whose("bea", Some(workspace));
-
-            assert!(!WorkFrom::Nobody.admits(&mine));
-            assert!(WorkFrom::OwnDevices.admits(&whose("ada", None)));
-            assert!(!WorkFrom::OwnDevices.admits(&theirs));
-            let named = WorkFrom::Workspaces([workspace].into_iter().collect());
-            assert!(named.admits(&theirs));
-            assert!(!named.admits(&whose("bea", None)));
-            assert!(WorkFrom::Anyone.admits(&theirs));
-            assert_eq!(WorkSetting::own_person().from, WorkFrom::OwnDevices);
-            assert!(WorkSetting::none().takes_nothing());
-            assert!(!WorkSetting::own_person().takes_nothing());
-        }
-
-        phase a_device_answers_with_the_first_limit_its_setting_sets;
-        // A device answers with the first thing its setting says no about.
-        {
-            assert_eq!(
-                WorkSetting::none()
-                    .answer(&own(), roomy(), true, None, Vec::new())
-                    .verdict,
-                Err(Decline::NotTakingWork),
-                "a device that takes nothing says so"
-            );
-            assert_eq!(
-                WorkSetting::own_person()
-                    .answer(&whose("bea", None), roomy(), true, None, Vec::new())
-                    .verdict,
-                Err(Decline::NotTakingWork),
-                "a device that takes its own person's work declines another person's"
-            );
-            let mut no_actions = WorkSetting::own_person();
-            no_actions.kinds.actions = false;
-            assert_eq!(
-                no_actions
-                    .answer(&own(), roomy(), true, None, Vec::new())
-                    .verdict,
-                Err(Decline::NotTakingWork)
-            );
-            assert_eq!(
-                WorkSetting::own_person()
-                    .answer(&own(), roomy(), false, None, Vec::new())
-                    .verdict,
-                Err(Decline::AppNotInstalled)
-            );
-            assert_eq!(
-                WorkSetting::own_person()
-                    .answer(&own(), roomy(), true, Some(0), Vec::new())
-                    .verdict,
-                Err(Decline::AtCapacity)
-            );
-
-            let charging = WorkSetting {
-                when: super::WorkWhen {
-                    charging_only: true,
-                    ..super::WorkWhen::always()
-                },
-                ..WorkSetting::own_person()
-            };
-            assert_eq!(
-                charging
-                    .answer(
-                        &own(),
-                        Machine {
-                            power: Power::Battery,
-                            ..roomy()
-                        },
-                        true,
-                        None,
-                        Vec::new()
-                    )
-                    .verdict,
-                Err(Decline::OnBattery),
-                "a device that takes work only while charging is on its battery"
-            );
-            assert!(
-                charging
-                    .answer(
-                        &own(),
-                        Machine {
-                            power: Power::Charging,
-                            ..roomy()
-                        },
-                        true,
-                        None,
-                        Vec::new()
-                    )
-                    .verdict
-                    .is_ok()
-            );
-        }
-
-        phase a_setting_that_wants_room_is_turned_away_where_it_has_none;
-        // The workspace a setting wants is the workspace it gets, and a device told nothing about its states
-        // takes work whatever the machine is doing.
-        {
-            let workspace_kept = WorkSetting {
-                when: super::WorkWhen {
-                    free_cpu_percent: 20,
-                    free_memory_percent: 20,
-                    ..super::WorkWhen::always()
-                },
-                ..WorkSetting::own_person()
-            };
-            let busy = Machine {
-                busy_permille: 900,
-                ..roomy()
-            };
-            assert_eq!(busy.free_cpu_percent(), 10);
-            assert_eq!(
-                workspace_kept
-                    .answer(&own(), busy, true, None, Vec::new())
-                    .verdict,
-                Err(Decline::LowResources),
-                "20 percent of the processors is what the setting wants free"
-            );
-            let full = Machine {
-                free_memory_percent: Some(2),
-                ..roomy()
-            };
-            assert_eq!(
-                workspace_kept
-                    .answer(&own(), full, true, None, Vec::new())
-                    .verdict,
-                Err(Decline::LowResources)
-            );
-            assert!(
-                WorkSetting::own_person()
-                    .answer(&own(), busy, true, None, Vec::new())
-                    .verdict
-                    .is_ok(),
-                "a device told nothing about the states it takes work in takes it whatever its load"
-            );
-            let answer = WorkSetting::own_person().answer(&own(), roomy(), true, None, vec![[7; 32]]);
-            assert!(answer.verdict.is_ok(), "a machine with room takes the work");
-            assert_eq!(answer.holds, vec![[7; 32]]);
-        }
-    }
-
-    /// The person's own work.
-    fn own() -> Whose {
-        whose("ada", None)
-    }
-
-    fn roomy() -> Machine {
-        Machine {
-            power: Power::External,
-            busy_permille: 100,
-            free_memory_percent: Some(80),
-        }
     }
 }

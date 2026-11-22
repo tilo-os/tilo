@@ -2,7 +2,7 @@
 """Write the reference of the tools an agent gets in a workspace.
 
 The tools are what the workspace's MCP server answers `tools/list` with, read
-from the server's own definitions: `tilo-runtime-mcp --tools-json` prints them
+from the server's own definitions: `tilo-runtime --tools-json` prints them
 from the runtime, and this page renders that answer. A tool the server adds,
 renames or rewords reaches the page, and one with no description or no
 parameter documentation stops the generator rather than appearing here as a
@@ -106,7 +106,7 @@ def printed_tools(root: Path, mcp: Path | None) -> str:
     """The tools the runtime prints for a workspace, without a session."""
     command = [str(mcp)] if mcp is not None else [
         "cargo", "run", "--locked", "-q", "-p", "tilo-runtime",
-        "--bin", "tilo-runtime-mcp", "--",
+        "--bin", "tilo-runtime", "--",
     ]
     result = subprocess.run(
         [*command, "--tools-json"],
@@ -197,6 +197,6 @@ if __name__ == "__main__":
         __doc__ or "Write the reference of the tools an agent gets.",
         (
             ("--tools", "a saved {\"tools\": [...]} answer to render, instead of running the runtime"),
-            ("--mcp", "a built `tilo-runtime-mcp` to run, instead of building one with cargo"),
+            ("--mcp", "a built `tilo-runtime` to run, instead of building one with cargo"),
         ),
     ))

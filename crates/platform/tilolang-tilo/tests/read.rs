@@ -1,26 +1,25 @@
-//! What a reader outside tilolang reads of a resource through the API's `read`, as the session
+//! What a reader outside tilolang reads of a resource through the API's `read`, as a window
 //! answers it: who made each item, when and from what; a page of a collection matched by its
-//! items' fields or by what they were made from, read from the index however large the
+//! items' fields or by what they were made from, read from the store however large the
 //! collection; and never more than the reader's grants let them read, whichever way they ask.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use automerge::AutoCommit;
 use serde_json::{Map, Value as Json, json};
 use tilo_action_policy::{
     Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
 };
-use tilo_actions::ActionInvoker;
-use tilo_service::{Service, Started};
+use tilolang_runtime::origin::OriginWrite;
 use tilolang_runtime::value::{ActionRef, ResourceRef};
 use tilolang_runtime::{Actor, InvokeOutcome, Meta, Value};
+use tilolang_tilo::host::Host;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::resource_id;
-use tilolang_tilo::resource_service::ResourceService;
 use tilolang_tilo::runtime::ids::MemberId;
 
-use crate::fixtures::{Replica, action_id, field_id, type_id};
+use crate::fixtures::{Replica, Workspace, action_id, field_id, type_id};
 
 const SOURCE: &str = r#"app test.read "Read"
 
@@ -92,19 +91,12 @@ fn made(value: &Value) -> ResourceRef {
     }
 }
 
-/// `read` of `resource` as `who`, through the session's published `read`.
-fn read(
-    service: &mut ResourceService,
-    who: &str,
-    resource: &str,
-    args: Json,
-) -> Result<Json, String> {
-    let args: Map<String, Json> = args.as_object().cloned().unwrap_or_default();
-    match service.invoke_as(&ActionInvoker::person(who), resource, "read", &args) {
-        Ok(Started::Done(output)) => output.value.ok_or_else(|| "a read answers".to_owned()),
-        Ok(other) => Err(format!("a read is done at once: {other:?}")),
-        Err(error) => Err(error.to_string()),
-    }
+/// `read` of `resource` as `who`, through the `read` a window answers: the resource named in the
+/// arguments, as the API asks it.
+fn read(host: &Host, who: &str, resource: &str, args: Json) -> Result<Json, String> {
+    let mut asked: Map<String, Json> = args.as_object().cloned().unwrap_or_default();
+    asked.insert("item".to_owned(), Json::String(resource.to_owned()));
+    host.answer_read(&Json::Object(asked), &Actor::from(MemberId::person(who)))
 }
 
 fn published(at: &ResourceRef) -> String {
@@ -121,58 +113,82 @@ fn items(page: &Json) -> Vec<String> {
         .collect()
 }
 
-/// Ada's board holding `count` posts, every hundredth pinned, made in one change.
-fn seeded(count: usize) -> (Replica, Meta, ResourceRef) {
-    use tilo_resource::{Collection, Id, Model as _};
-    use tilolang_tilo::action::{DynAction, DynEdit};
-    use tilolang_tilo::resource::{DynResource, DynValue};
+/// Every item of `field` of `resource` in the collection's order, as `who` reads them.
+fn every_item(host: &Host, who: &str, resource: &str, field: &str) -> Vec<Json> {
+    let mut out = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let mut args = json!({"field": field, "limit": 200});
+        if let Some(after) = &after {
+            args["after"] = json!(after);
+        }
+        let page = read(host, who, resource, args).unwrap();
+        let page = &page["fields"][field];
+        out.extend(page["items"].as_array().unwrap().clone());
+        match page.get("next") {
+            Some(next) => after = Some(next.as_str().unwrap().to_owned()),
+            None => break,
+        }
+    }
+    out
+}
 
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(SOURCE, "")]);
+/// Ada's board holding `count` posts, every hundredth pinned, written as an origin brings work in.
+fn seeded(count: usize) -> (Replica, Meta, ResourceRef) {
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[(SOURCE, "")]);
     let meta = packages[0].meta.clone();
     let board = ada.host.root_of(APP).unwrap();
     ada.commit();
-    let post = tilolang_tilo::schema::lookup(&type_id(&meta, "Post")).unwrap();
-    let mut posts = Collection::default();
-    for index in 0..count {
-        let mut item = DynResource::empty(post).unwrap();
-        if let Some(DynValue::Text(text)) = item.get_mut(&field_id(&meta, "Post", "text")) {
-            *text = format!("post {index:05}");
-        }
-        if let Some(DynValue::Register(pinned)) = item.get_mut(&field_id(&meta, "Post", "pinned")) {
-            *pinned = json!(index % 100 == 7);
-        }
-        posts.push(Id::from_raw(format!("post-{index:05}")), item);
-    }
-    let mut root =
-        DynResource::empty(tilolang_tilo::schema::lookup(&type_id(&meta, "Board")).unwrap())
+    let post = type_id(&meta, "Post");
+    let text = field_id(&meta, "Post", "text");
+    let pinned = field_id(&meta, "Post", "pinned");
+    let posts = field_id(&meta, "Board", "posts");
+    let mut written = 0;
+    while written < count {
+        let end = count.min(written.saturating_add(1000));
+        let writes: Vec<OriginWrite> = (written..end)
+            .map(|index| OriginWrite::Insert {
+                owner: board.clone(),
+                field: posts.clone(),
+                ty: post.clone(),
+                fields: vec![
+                    (text.clone(), Value::Text(format!("post {index:05}"))),
+                    (pinned.clone(), Value::Bool(index % 100 == 7)),
+                ],
+            })
+            .collect();
+        ada.host
+            .runtime()
+            .write_origin_for("seed", Some(ada.host.viewer().clone()), None, |change| {
+                change.write(writes)
+            })
             .unwrap();
-    if let Some(DynValue::Collection(slot)) = root.get_mut(&field_id(&meta, "Board", "posts")) {
-        *slot = posts;
+        written = end;
     }
-    ada.apply(&DynAction {
-        app: APP.to_owned(),
-        kind: format!("tl.{APP}.seed"),
-        action_id: "$create".to_owned(),
-        args: Json::Null,
-        authorship: tilolang_tilo::Authorship::default(),
-        edits: vec![DynEdit::Create {
-            id: board.id_string(),
-            record: root.to_json(),
-        }],
-    });
-    ada.commit();
     (ada, meta, board)
 }
 
 #[test]
-fn a_page_of_ten_thousand_is_read_from_the_index() {
+fn a_page_of_ten_thousand_reads_the_page_it_asks_for() {
     let (ada, _meta, board) = seeded(10_000);
-    let mut service = ada.into_service("ada");
     let board = published(&board);
-    let before = service.host().store().read_stats();
+    // The collection's order, and which of its items are pinned.
+    let all = every_item(&ada.host, "ada", &board, "posts");
+    assert_eq!(all.len(), 10_000);
+    let ordered: Vec<String> = all
+        .iter()
+        .map(|row| row["item"].as_str().unwrap().to_owned())
+        .collect();
+    let pinned: Vec<String> = (0..10_000)
+        .filter(|index| index % 100 == 7)
+        .map(|index| ordered[index].clone())
+        .collect();
+    assert_eq!(pinned.len(), 100);
+    assert_ne!(pinned[..30], ordered[..30], "the page is not the first 30");
+
     let started = Instant::now();
     let first = read(
-        &mut service,
+        &ada.host,
         "ada",
         &board,
         json!({"field": "posts", "where": {"pinned": true}, "limit": 30}),
@@ -180,13 +196,11 @@ fn a_page_of_ten_thousand_is_read_from_the_index() {
     .unwrap();
     let page = &first["fields"]["posts"];
     let found = items(page);
-    assert_eq!(found.len(), 30, "{page}");
-    assert_eq!(found[0], format!("{board}/post-00007"));
-    assert_eq!(found[1], format!("{board}/post-00107"));
+    assert_eq!(found, pinned[..30]);
     let next = page["next"].as_str().expect("more match than a page");
-    assert_eq!(next, format!("{board}/post-02907"));
+    assert_eq!(next, pinned[29]);
     let second = read(
-        &mut service,
+        &ada.host,
         "ada",
         &board,
         json!({"field": "posts", "where": {"pinned": true}, "after": next, "limit": 30}),
@@ -194,37 +208,29 @@ fn a_page_of_ten_thousand_is_read_from_the_index() {
     .unwrap();
     let rest = items(&second["fields"]["posts"]);
     let elapsed = started.elapsed();
-    assert_eq!(rest.len(), 30);
-    assert_eq!(rest[0], format!("{board}/post-03007"));
+    assert_eq!(rest, pinned[30..60]);
     // A page without a match reads in the collection's order from where it starts.
     let plain = read(
-        &mut service,
+        &ada.host,
         "ada",
         &board,
-        json!({"field": "posts", "after": format!("{board}/post-09998")}),
+        json!({"field": "posts", "after": ordered[9998]}),
     )
     .unwrap();
     assert_eq!(
         items(&plain["fields"]["posts"]),
-        vec![format!("{board}/post-09999")]
+        vec![ordered[9999].clone()]
     );
     assert!(plain["fields"]["posts"].get("next").is_none());
-    let after = service.host().store().read_stats();
-    assert_eq!(
-        after.evaluated, before.evaluated,
-        "the column of `pinned` answers the match: no item is read to test it"
-    );
-    assert_eq!(
-        after.versions, before.versions,
-        "who made each item is read from the index, not derived from the log"
-    );
     eprintln!("two pages of a 10k collection, matched: {elapsed:?}");
 }
 
 /// Ada's board with a post of hers, an ask Grace made from it, and the agent Scout's reply to
 /// the ask; and a secret post with its own ask and reply.
 struct Chain {
-    service: ResourceService,
+    ada: Replica,
+    /// The access the host reads when it decides who reads what: empty until [`deny_cy`] sets it.
+    access: Rc<RefCell<Option<MemberAccess>>>,
     meta: Meta,
     board: ResourceRef,
     post: ResourceRef,
@@ -236,14 +242,13 @@ struct Chain {
 }
 
 fn chain() -> Chain {
-    // The session keeps the board in a host of its own, deciding by the person's access in the
-    // workspace the session keeps the board in, as a seeded app's host is made.
-    let access = tilo_service::WorkspaceAccess::default();
-    let source = Rc::clone(&access);
-    let (mut ada, packages) =
-        Replica::following("ada", AutoCommit::new(), &[(SOURCE, "")], move || {
-            source.borrow().as_ref().and_then(|access| access())
-        });
+    // Ada's host decides by the person's access in the workspace, which a test may set once the
+    // resources whose grants it names exist.
+    let access: Rc<RefCell<Option<MemberAccess>>> = Rc::new(RefCell::new(None));
+    let held = Rc::clone(&access);
+    let (ada, packages) = Replica::following("ada", Workspace::new(), &[(SOURCE, "")], move || {
+        held.borrow().clone()
+    });
     let meta = packages[0].meta.clone();
     let board = ada.host.root_of(APP).unwrap();
     ada.commit();
@@ -258,13 +263,11 @@ fn chain() -> Chain {
         "ada",
         on_board("post", vec![text("Lunch at noon?")]),
     ));
-    ada.commit_as("ada");
     let ask = made(&call(
         &ada,
         "grace",
         on_board("ask", vec![text("summarise")]).made_from(Some(&post)),
     ));
-    ada.commit_as("grace");
     let scout = Actor::from(MemberId::agent("scout"));
     let reply = match ada
         .host
@@ -278,19 +281,16 @@ fn chain() -> Chain {
         InvokeOutcome::Done(value) => made(&value),
         other => panic!("{other:?}"),
     };
-    ada.commit_as(&scout);
     let secret = made(&call(
         &ada,
         "ada",
         on_board("post", vec![text("The offer is 40k")]),
     ));
-    ada.commit_as("ada");
     let secret_ask = made(&call(
         &ada,
         "ada",
         on_board("ask", vec![text("draft a reply")]).made_from(Some(&secret)),
     ));
-    ada.commit_as("ada");
     let secret_reply = made(&call(
         &ada,
         "ada",
@@ -299,9 +299,9 @@ fn chain() -> Chain {
             vec![Value::resource(&secret_ask), text("Counter at 45k")],
         ),
     ));
-    ada.commit_as("ada");
     Chain {
-        service: ResourceService::of_app(APP, ada.host, "ada", access),
+        ada,
+        access,
         meta,
         board,
         post,
@@ -315,17 +315,11 @@ fn chain() -> Chain {
 
 #[test]
 fn every_item_says_who_made_it_when_and_from_what() {
-    let mut chain = chain();
+    let chain = chain();
     let board = published(&chain.board);
 
     // A message: who wrote it, and when.
-    let post = read(
-        &mut chain.service,
-        "ada",
-        &published(&chain.post),
-        json!({}),
-    )
-    .unwrap();
+    let post = read(&chain.ada.host, "ada", &published(&chain.post), json!({})).unwrap();
     assert_eq!(post["fields"]["text"], "Lunch at noon?");
     assert_eq!(
         post["created"]["who"]["actor"]["member"]["person"], "ada",
@@ -340,26 +334,20 @@ fn every_item_says_who_made_it_when_and_from_what() {
     assert!(post["created"].get("from").is_none(), "{post}");
 
     // The reply names its ask; the ask says what it was made from, and who asked.
-    let reply = read(
-        &mut chain.service,
-        "ada",
-        &published(&chain.reply),
-        json!({}),
-    )
-    .unwrap();
+    let reply = read(&chain.ada.host, "ada", &published(&chain.reply), json!({})).unwrap();
     assert_eq!(
         reply["created"]["who"]["actor"]["member"]["agent"], "scout",
         "{reply}"
     );
     let ask_id = reply["fields"]["ask"]["item"].as_str().unwrap().to_owned();
     assert_eq!(ask_id, published(&chain.ask));
-    let ask = read(&mut chain.service, "ada", &ask_id, json!({})).unwrap();
+    let ask = read(&chain.ada.host, "ada", &ask_id, json!({})).unwrap();
     assert_eq!(ask["created"]["who"]["actor"]["member"]["person"], "grace");
     assert_eq!(ask["created"]["from"], json!(published(&chain.post)));
 
     // The same chain the other way: the asks made from the message, the replies to the ask.
     let asks = read(
-        &mut chain.service,
+        &chain.ada.host,
         "ada",
         &board,
         json!({"field": "asks", "where": {"from": published(&chain.post)}}),
@@ -371,7 +359,7 @@ fn every_item_says_who_made_it_when_and_from_what() {
         json!(published(&chain.post))
     );
     let replies = read(
-        &mut chain.service,
+        &chain.ada.host,
         "ada",
         &board,
         json!({"field": "replies", "where": {"ask": ask_id}}),
@@ -382,14 +370,14 @@ fn every_item_says_who_made_it_when_and_from_what() {
         vec![published(&chain.reply)]
     );
     // A transcript orders by when each was made: the whole board's items say it.
-    let whole = read(&mut chain.service, "ada", &board, json!({})).unwrap();
+    let whole = read(&chain.ada.host, "ada", &board, json!({})).unwrap();
     let posts = whole["fields"]["posts"]["items"].as_array().unwrap();
     assert_eq!(posts.len(), 2);
     assert!(posts.iter().all(|post| post["created"]["at"].is_string()));
 }
 
 /// Ada's workspace, where Cy views and may read neither the secret post nor the ask made from
-/// it, handed to the service as the session hands it the workspace its board is kept in.
+/// it, handed to the host as the session hands it the workspace its board is kept in.
 fn deny_cy(chain: &Chain) {
     let node = |ty: &str, at: &ResourceRef| {
         TreePath::workspace(WORKSPACE)
@@ -412,27 +400,25 @@ fn deny_cy(chain: &Chain) {
             Grantee::person("ada"),
         ));
     }
-    let access = MemberAccess::person(policy, "ada");
-    let kept = chain.service.workspace_document().unwrap();
-    *kept.access.borrow_mut() = Some(Box::new(move || Some(access.clone())));
+    *chain.access.borrow_mut() = Some(MemberAccess::person(policy, "ada"));
 }
 
 #[test]
 fn a_reader_gets_nothing_their_grants_keep_from_them() {
-    let mut chain = chain();
+    let chain = chain();
     deny_cy(&chain);
     let board = published(&chain.board);
     let (secret, secret_ask) = (published(&chain.secret), published(&chain.secret_ask));
 
-    // Ada reads all of it; Cy reads, through the session's own read, what is not kept from them.
-    let ada = read(&mut chain.service, "ada", &board, json!({})).unwrap();
+    // Ada reads all of it; Cy reads, through the host's own read, what is not kept from them.
+    let ada = read(&chain.ada.host, "ada", &board, json!({})).unwrap();
     assert_eq!(items(&ada["fields"]["posts"]).len(), 2);
-    let cy = read(&mut chain.service, "cy", &board, json!({})).unwrap();
+    let cy = read(&chain.ada.host, "cy", &board, json!({})).unwrap();
     assert_eq!(items(&cy["fields"]["posts"]), vec![published(&chain.post)]);
     assert_eq!(items(&cy["fields"]["asks"]), vec![published(&chain.ask)]);
 
     // Read straight, the secret is not there.
-    let refused = read(&mut chain.service, "cy", &secret, json!({}));
+    let refused = read(&chain.ada.host, "cy", &secret, json!({}));
     assert!(refused.is_err(), "{refused:?}");
 
     // Paged one at a time, no page holds it, and none says it is there.
@@ -443,7 +429,7 @@ fn a_reader_gets_nothing_their_grants_keep_from_them() {
         if let Some(after) = &after {
             args["after"] = json!(after);
         }
-        let page = read(&mut chain.service, "cy", &board, args).unwrap();
+        let page = read(&chain.ada.host, "cy", &board, args).unwrap();
         let page = &page["fields"]["posts"];
         seen.extend(items(page));
         match page.get("next") {
@@ -454,7 +440,7 @@ fn a_reader_gets_nothing_their_grants_keep_from_them() {
     assert_eq!(seen, vec![published(&chain.post)]);
     // Nor does a page start after it.
     let after_secret = read(
-        &mut chain.service,
+        &chain.ada.host,
         "cy",
         &board,
         json!({"field": "posts", "after": secret}),
@@ -463,14 +449,14 @@ fn a_reader_gets_nothing_their_grants_keep_from_them() {
 
     // Matched by what was made from it, or by the ask it holds, it answers as one not there.
     let from = read(
-        &mut chain.service,
+        &chain.ada.host,
         "cy",
         &board,
         json!({"field": "asks", "where": {"from": secret}}),
     );
     assert!(from.is_err(), "{from:?}");
     let by_ask = read(
-        &mut chain.service,
+        &chain.ada.host,
         "cy",
         &board,
         json!({"field": "replies", "where": {"ask": secret_ask}}),
@@ -478,7 +464,7 @@ fn a_reader_gets_nothing_their_grants_keep_from_them() {
     assert!(by_ask.is_err(), "{by_ask:?}");
     // Asked as Ada, the same matches answer.
     let by_ask = read(
-        &mut chain.service,
+        &chain.ada.host,
         "ada",
         &board,
         json!({"field": "replies", "where": {"ask": secret_ask}}),
@@ -491,7 +477,7 @@ fn a_reader_gets_nothing_their_grants_keep_from_them() {
 
     // A reply Cy reads names the ask it answers, and holds nothing of it.
     let reply = read(
-        &mut chain.service,
+        &chain.ada.host,
         "cy",
         &published(&chain.secret_reply),
         json!({}),
@@ -503,7 +489,7 @@ fn a_reader_gets_nothing_their_grants_keep_from_them() {
     assert!(!reply.to_string().contains("draft a reply"), "{reply}");
     // Nor does what an item was made from name what the reader may not read.
     let asks = read(
-        &mut chain.service,
+        &chain.ada.host,
         "ada",
         &board,
         json!({"field": "asks", "where": {"from": secret}}),

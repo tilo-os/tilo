@@ -349,6 +349,27 @@ pub(crate) fn font_files_read_after(count: usize) -> Vec<String> {
     })
 }
 
+/// The catalog roots this process's font systems were loaded from, canonical.
+fn loaded_roots() -> &'static Mutex<HashSet<PathBuf>> {
+    static ROOTS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    ROOTS.get_or_init(Mutex::default)
+}
+
+/// The pinned SHA-256 of the catalog file at `path`, when `path` is a file of a catalog this
+/// process set text from: what names the file to another process, which finds the catalog at
+/// a path of its own.
+#[cfg(all(feature = "native", target_os = "linux"))]
+pub(crate) fn catalog_digest(path: &Path) -> Option<&'static str> {
+    let manifest = tilo_font_catalog::manifest().ok()?;
+    let roots = loaded_roots().lock_recover();
+    let relative = roots.iter().find_map(|root| path.strip_prefix(root).ok())?;
+    manifest
+        .font
+        .iter()
+        .find(|asset| Path::new(&asset.file) == relative)
+        .map(|asset| asset.sha256.as_str())
+}
+
 /// Keep one face per family, style, weight and stretch.
 pub(crate) fn drop_duplicate_faces(db: &mut fontdb::Database) {
     let mut kept: HashMap<_, (fontdb::ID, PathBuf, u32)> = HashMap::new();
@@ -533,6 +554,7 @@ impl FontCatalog {
         let bundle = tilo_startup_metrics::span("font-catalog-verify", || {
             verified_bundle(&root, self.fixtures)
         })?;
+        loaded_roots().lock_recover().insert(root.clone());
         let mut db = bundle.db.clone();
         if self.system {
             tilo_startup_metrics::span("font-system-discover", || discover(&mut db));

@@ -106,6 +106,23 @@ pub(crate) fn draw(
     if width <= 0.0 || height <= 0.0 || texels.0 == 0 || texels.1 == 0 {
         return Ok(None);
     }
+    // A region blurred for the first time is a panel just opening: what lies below it is blurred
+    // with the draws of it still under way in, so the panel's first frame is its last. A region
+    // already shown follows what lies below it as each draw of that comes in, and never waits.
+    // The surfaces with material of their own hold their draws until theirs is blurred, so they
+    // are not waited for.
+    if !state
+        .backdrops
+        .watches
+        .iter()
+        .any(|watch| watch.key == (surface, slot))
+    {
+        for (index, below) in state.surfaces.iter().enumerate() {
+            if index != surface && below.backdrops().is_empty() {
+                below.wait_drawn();
+            }
+        }
+    }
     let scale = f64::from(texels.0) / width;
     let size = Size::<i32, Physical>::from((
         i32::try_from(texels.0).unwrap_or(i32::MAX),

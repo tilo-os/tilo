@@ -31,12 +31,7 @@ impl tilo_api::session::Here for Desktop {
             .collect()
     }
 
-    fn enter(
-        &self,
-        workspace: &str,
-        session: &str,
-        label: &str,
-    ) -> Result<Box<dyn tilo_api::session::Answering>, String> {
+    fn enter(&self, workspace: &str) -> Result<tilo_api::session::Reached, String> {
         if !self
             .services
             .workspaces()
@@ -47,18 +42,11 @@ impl tilo_api::session::Here for Desktop {
         }
         let api = SessionApi::new(Some(Arc::clone(&self.broker)), Arc::clone(&self.services))
             .with_session_actions(self.services.actions());
-        let person = self.services.person();
-        Ok(Box::new(
-            tilo_mcp::McpServer::for_person(api, workspace.to_owned(), person)
-                .with_work_group(tilo_actions::WorkGroup {
-                    id: session.to_owned(),
-                    label: Some(label.to_owned()),
-                    kind: "api".into(),
-                    declared_id: None,
-                    session: None,
-                })
-                .with_task_hosts(Some(person_tasks(&self.services))),
-        ))
+        Ok(tilo_api::session::Reached {
+            provider: Arc::new(api),
+            person: self.services.person().to_owned(),
+            tasks: person_tasks(&self.services),
+        })
     }
 }
 

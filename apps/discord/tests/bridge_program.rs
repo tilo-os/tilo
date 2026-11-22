@@ -27,7 +27,7 @@ use tilo_automation::{
 };
 use tilo_workspace_service::tl_records::runtime::Actor;
 use tilo_workspace_service::tl_records::runtime::Value as TlValue;
-use tilo_workspace_service::tl_records::{Opened, RecordBytes};
+use tilo_workspace_service::tl_records::{Opened, ResourceStore};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ActionKey;
 use ui::tilo_actions::params::{ActionParam, ParamType};
@@ -913,7 +913,7 @@ fn chat_record() -> Opened {
         .unwrap()
         .expect("Chat is built into this build");
     let mut opened = Opened::open(
-        &RecordBytes::default(),
+        ResourceStore::in_memory(),
         &packages,
         Actor::App(tilo_workspace_service::tl_records::runtime::ids::AppId::from(CHAT_APP)),
         None,

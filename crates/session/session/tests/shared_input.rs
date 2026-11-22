@@ -33,30 +33,11 @@ fn clipboard(device: &Device) -> Option<String> {
 /// Copy `text` on `device`, as an app there does when the person copies: through the clipboard's
 /// own copy action, as the device publishes it.
 fn copy(device: &Device, text: &str) {
-    const COPY: &str = "session:clipboard\u{1f}copy";
-    let mut cursor = Value::Null;
-    let provider = loop {
-        let page = device.ask(&json!({"op": "actions_enumerate", "cursor": cursor}));
-        // A listing that moved on under the walk is walked again from its start.
-        if page["err"]["code"] == json!("stale_cursor") {
-            cursor = Value::Null;
-            continue;
-        }
-        let answer = &page["answer"];
-        let found = answer["actions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|row| row["id"] == json!(COPY));
-        if let Some(row) = found {
-            break row["provider"].as_str().expect("a provider").to_owned();
-        }
-        cursor = match answer["next_cursor"].as_str() {
-            Some(next) if !next.is_empty() => Value::from(next),
-            _ => panic!("{} publishes no clipboard copy: {page}", device.label),
-        };
-    };
-    let receipt = device.act_wait(&provider, COPY, &json!({ "text": text }));
+    let copy = tilo_test_env::wait_for(
+        format!("{} publishing its clipboard copy", device.label),
+        || device.offered("session:clipboard", "copy"),
+    );
+    let receipt = device.act_wait(&copy, &json!({ "text": text }));
     assert!(receipt.get("err").is_none(), "{}: {receipt}", device.label);
 }
 

@@ -17,8 +17,8 @@
 #                       entry at
 #                       https://<host>/peer/v1/directory/<workspace>/.
 #   TILO_WEB_HOME_HOST_INFO  who that host is and where it is dialled, the one
-#                       line of JSON `tilo-server page-host https://<host>`
-#                       prints, required with a host: the page dials the
+#                       line of JSON the host writes in `web-host.json`,
+#                       required with a host: the page dials the
 #                       host as this names it rather than ask the host first.
 #                       The site serves it with the page, so the page trusts
 #                       it as it trusts itself. It holds while the host keeps
@@ -123,11 +123,11 @@ else
   # backslash is refused on its own: the image's busybox sh lets one through
   # a bracket expression.
   case "$info" in
-    '') echo "TILO_WEB_HOME_HOST_INFO is required with a host: what \`tilo-server page-host https://$host\` prints" >&2; exit 2 ;;
+    '') echo "TILO_WEB_HOME_HOST_INFO is required with a host: what the host writes in web-host.json" >&2; exit 2 ;;
     \{*\}) ;;
-    *) echo "TILO_WEB_HOME_HOST_INFO must be the JSON object \`tilo-server page-host https://$host\` prints" >&2; exit 2 ;;
+    *) echo "TILO_WEB_HOME_HOST_INFO must be the JSON object the host writes in web-host.json" >&2; exit 2 ;;
   esac
-  case "$info" in *\\* | *[!]A-Za-z0-9' {}[":,._/+=-']*) echo "TILO_WEB_HOME_HOST_INFO must be the one line of JSON \`tilo-server page-host https://$host\` prints" >&2; exit 2 ;; esac
+  case "$info" in *\\* | *[!]A-Za-z0-9' {}[":,._/+=-']*) echo "TILO_WEB_HOME_HOST_INFO must be the one line of JSON the host writes in web-host.json" >&2; exit 2 ;; esac
   quoted=$(printf '%s' "$info" | sed 's/"/\\"/g')
   front=
   [ -z "$app" ] || front=",\"app\":\"$app\""

@@ -8,7 +8,6 @@
 //! their targets are where the layout put them at 2×, and that a press at
 //! each changes the device effect the control names.
 
-
 use std::rc::Rc;
 
 use crate::common::{click, drawn_on_each_other, has, hosted_at, target};

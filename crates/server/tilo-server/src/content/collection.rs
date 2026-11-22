@@ -27,8 +27,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc as _, ScalarValue, ValueRef};
-use fs::content::Manifest;
 use tilo_content::{Collected, WorkspaceStores};
+use tilo_fs::content::Manifest;
 
 use crate::workspaces::{WholeDocuments, Workspaces};
 
@@ -463,10 +463,9 @@ mod tests {
             crate::ServerConfig {
                 state_root: state.join("server"),
                 identity_root: state.join("identity"),
-                full_replica_status: state.join("status.json"),
-                home_peer_bundle: state.join("home-peer.toml"),
                 ..Default::default()
-            },
+            }
+            .on_loopback(),
             crate::daemon::ServerIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host,
@@ -490,10 +489,10 @@ mod tests {
         let store = stores.get(&workspace).unwrap();
         let clear = b"legacy file kept by this workspace";
         let hash = store.put_public(clear).unwrap();
-        let mut namespace = fs::Namespace::new("old files").unwrap();
+        let mut namespace = tilo_fs::Namespace::new("old files").unwrap();
         namespace
             .create_file(
-                fs::ROOT_INO,
+                tilo_fs::ROOT_INO,
                 "legacy.txt",
                 Some(&hash.parse().unwrap()),
                 clear.len() as u64,
@@ -504,7 +503,7 @@ mod tests {
         let shared = store.put_public(attachment).unwrap();
         namespace
             .create_file(
-                fs::ROOT_INO,
+                tilo_fs::ROOT_INO,
                 "attachment.txt",
                 Some(&shared.parse().unwrap()),
                 attachment.len() as u64,

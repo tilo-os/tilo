@@ -160,15 +160,6 @@ pub(super) enum ContinuingCaller {
 }
 
 impl ContinuingCaller {
-    pub(super) fn from_durable(durable: DurableContext<'_>) -> Self {
-        let DurableContext::Peer(caller, _) = durable;
-        Self::Certified {
-            caller: Box::new(caller.clone()),
-            foreign_restriction: false,
-            direct: None,
-        }
-    }
-
     pub(super) fn from_origin(origin: &InvocationCaller) -> Self {
         match origin {
             InvocationCaller::NativePerson {
@@ -206,7 +197,6 @@ impl ContinuingCaller {
     /// holds, when it holds one.
     pub(super) fn admitted(
         caller: Option<&tilo_actions::remote::Caller>,
-        durable: Option<DurableContext<'_>>,
         origin: Option<&InvocationCaller>,
     ) -> Option<Self> {
         match (caller, origin) {
@@ -236,9 +226,7 @@ impl ContinuingCaller {
                 direct: Some(direct.clone()),
             }),
             (Some(caller), _) => Some(Self::Caller(caller.clone())),
-            (None, _) => durable
-                .map(Self::from_durable)
-                .or_else(|| origin.map(Self::from_origin)),
+            (None, _) => origin.map(Self::from_origin),
         }
     }
 
@@ -434,6 +422,7 @@ impl AppBrokerState {
         origin: Option<InvocationCaller>,
     ) -> Result<StagedJob, String> {
         let offered = self
+            .publishers
             .surfaces
             .lock()
             .ok()
@@ -456,30 +445,8 @@ impl AppBrokerState {
             offered,
             inputs,
             AdmissionProvenance {
-                durable: None,
                 revision: None,
                 origin,
-                retained_time: None,
-            },
-        )
-    }
-    #[cfg(test)]
-    pub(super) fn dispatch_invocation_from_offered(
-        &self,
-        peer_id: u64,
-        offered: (PublishedSurface, PublishedAction),
-        inputs: InvocationInputs<'_>,
-        durable: Option<(&VerifiedActionCaller, &CallerInvocation)>,
-        revision: Option<&str>,
-    ) -> Result<StagedJob, String> {
-        self.dispatch_invocation_from_offered_owned(
-            peer_id,
-            offered,
-            inputs,
-            AdmissionProvenance {
-                durable: durable.map(|(caller, request)| DurableContext::Peer(caller, request)),
-                revision,
-                origin: None,
                 retained_time: None,
             },
         )
@@ -506,19 +473,15 @@ impl AppBrokerState {
             argument,
             revision,
             original_request,
-            durable,
             local_report,
             typed_local_arguments,
             receipt_context,
         } = inputs;
-        let request = match durable {
-            Some(context) => context.intent(),
-            None => serde_json::json!({
-                "peer_id": peer_id, "app_id": offered.0.app_id, "document_id": offered.0.route.document_id,
-                "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
-                "original_request": original_request,
-            }),
-        };
+        let request = serde_json::json!({
+            "peer_id": peer_id, "app_id": offered.0.app_id, "document_id": offered.0.route.document_id,
+            "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
+            "original_request": original_request,
+        });
         let request = match local_report {
             Some(report) => serde_json::json!({
                 "kind": "local-document-action-report-v1",
@@ -711,7 +674,7 @@ impl AppBrokerState {
     /// to notice the app publishing what it now offers — a page holding a
     /// request that nothing has answered yet — without asking again.
     pub fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.surface_changes.subscribe()
+        self.publishers.changes.subscribe()
     }
     /// Whether job `id`'s action declares untrusted content.
     pub fn untrusted_job(&self, id: u64) -> bool {
@@ -915,7 +878,7 @@ impl AppBrokerState {
         if let Ok(mut tables) = self.surface_tables.lock() {
             tables.remove(&peer_id);
         }
-        if let Ok(mut surfaces) = self.surfaces.lock()
+        if let Ok(mut surfaces) = self.publishers.surfaces.lock()
             && surfaces.remove(&peer_id).is_some()
         {
             self.surfaces_changed();
@@ -940,11 +903,12 @@ impl AppBrokerState {
         }
         // Gone already when its app ended the stream as it closed.
         let ended_by_app = !self
-            .invocation_subscribers
+            .publishers
+            .streams
             .lock()
             .is_ok_and(|mut subscribers| subscribers.remove(&peer_id).is_some());
         if !ended_by_app {
-            self.invocation_streams_changed();
+            self.publishers.streams_changed();
         }
         let unfinished: Vec<(u64, PendingInvocation)> = {
             let Ok(mut pending) = self.pending_invocations.lock() else {

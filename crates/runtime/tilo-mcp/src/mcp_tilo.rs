@@ -1401,8 +1401,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if let Some(answer) = message.get("answer") {
                 return Ok(answer.clone());
             }
-            let reply = if let Some(record) = message.get("record") {
-                self.task_record(record).await
+            let reply = if let Some(read) = message.get("store") {
+                self.task_store_read(read).await
             } else if let Some(listing) = message.get("children") {
                 Box::pin(self.task_children(listing, &mut providers)).await
             } else if let Some(reads) = message.get("reads") {
@@ -1412,7 +1412,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             } else if let Some(call) = message.get("invoke") {
                 Box::pin(self.task_invoke(call, &mut providers)).await
             } else {
-                json!({"err": "the API answers record reads, listings, reads, readings and invocations"})
+                json!({"err": "the API answers store reads, listings, reads, readings and invocations"})
             };
             task.send(&reply).await?;
         }
@@ -1457,43 +1457,48 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return Ok(found.clone());
         }
         let found = Addressed {
-            provider: self.started_provider(app, Some(PROGRAM_WAIT_MS)).await?,
+            provider: self
+                .tree
+                .started_provider(app, Some(std::time::Duration::from_millis(PROGRAM_WAIT_MS)))
+                .await?,
             app_id: Some(app.to_owned()),
         };
         known.insert(app.to_owned(), found.clone());
         Ok(found)
     }
 
-    /// The task's read of the record `record` (`{app, record}`): its committed content, as the
-    /// broker decides the task may read it now ([`tilo_actions::remote::ResourceReads`]), with no
-    /// app asked: `{"ok": {"document": base64}}`, `{"absent": true}` or `{"err": why}`.
-    async fn task_record(&self, record: &Value) -> Value {
-        let (Some(app), Some(id)) = (record["app"].as_str(), record["record"].as_str()) else {
-            return json!({"err": "a record read names its app and record"});
+    /// The task's read of the resources the app `app` keeps in its record `record` (`{app,
+    /// record, command}`, the record empty for the workspace's): the device's store's answer to
+    /// the read command `command`, as the broker decides the task may read it now
+    /// ([`tilo_actions::remote::ResourceReads::store_read`]), with no app asked: `{"ok": reply}`
+    /// or `{"err": why}`.
+    async fn task_store_read(&self, read: &Value) -> Value {
+        let (Some(app), Some(record), Some(command)) = (
+            read["app"].as_str(),
+            read["record"].as_str(),
+            read.get("command"),
+        ) else {
+            return json!({"err": "a store read names its app, record and command"});
         };
         let Some(reads) = self.host().resource_reads() else {
             return json!({"err": tilo_actions::remote::RESOURCE_READS_UNAVAILABLE});
         };
         let address = tilo_actions::remote::ResourceAddress {
             app: app.to_owned(),
-            record: id.to_owned(),
+            record: record.to_owned(),
         };
         let caller = self.execution_caller();
-        // The owner captures the record on this thread's behalf; it may take a while, and the
-        // API's sessions share one runtime.
-        let read = tokio::task::spawn_blocking(move || reads.read(&caller, &address)).await;
+        let command = command.clone();
+        // The store answers under the workspace's lock, and the API's sessions share one runtime.
+        let read =
+            tokio::task::spawn_blocking(move || reads.store_read(&caller, &address, command)).await;
         match read {
-            Ok(Ok(tilo_actions::remote::ResourceCopy::Document(bytes))) => {
-                use base64::Engine as _;
-                json!({"ok": {"document": base64::engine::general_purpose::STANDARD.encode(bytes)}})
-            }
-            Ok(Ok(tilo_actions::remote::ResourceCopy::Read(read))) => json!({"ok": {"read": read}}),
-            Ok(Ok(tilo_actions::remote::ResourceCopy::Absent)) => json!({"absent": true}),
+            Ok(Ok(reply)) => json!({"ok": reply}),
             Ok(Err(error)) => {
                 let name = app_names(&[app.to_owned()]).join("");
                 json!({"err": format!("{name}: {error}")})
             }
-            Err(error) => json!({"err": format!("the record read ended: {error}")}),
+            Err(error) => json!({"err": format!("the store read ended: {error}")}),
         }
     }
 

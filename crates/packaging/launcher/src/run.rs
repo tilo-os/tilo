@@ -2333,10 +2333,7 @@ fn spawn_and_wait(
     child_setup: ChildSetup,
     egress: &crate::egress_proxy::EgressDecision,
     egress_proxy: Option<&crate::sandbox::EgressProxyBind>,
-    observer: Option<(
-        &dyn EnrolledProcessObserver,
-        Option<PathBuf>,
-    )>,
+    observer: Option<(&dyn EnrolledProcessObserver, Option<PathBuf>)>,
 ) -> Result<ExitStatus, LaunchError> {
     let ChildSetup {
         seccomp_fds,
@@ -2360,8 +2357,7 @@ fn spawn_and_wait(
             .map(|file| (path, file))
     });
     SeccompFds::prepend_bwrap_args(&mut argv);
-    let target_projection =
-        observer.and_then(EnrolledProcessObserver::target_projection);
+    let target_projection = observer.and_then(EnrolledProcessObserver::target_projection);
     if let Some(target) = target_projection {
         target.prepare_filter(&seccomp_fds.baseline)?;
         target.splice_baseline_argv(&mut argv)?;
@@ -2428,9 +2424,7 @@ fn spawn_and_wait(
 
     // Validate the canonical full namespace plan above BEFORE the root-only original-source token
     // replaces its user-namespace component.
-    if let Some(capture) =
-        observer.and_then(EnrolledProcessObserver::capture_projection)
-    {
+    if let Some(capture) = observer.and_then(EnrolledProcessObserver::capture_projection) {
         capture.splice_original_bootstrap(&mut argv)?;
     }
 
@@ -2443,9 +2437,7 @@ fn spawn_and_wait(
         .bwrap_bin
         .clone()
         .unwrap_or_else(|| PathBuf::from("bwrap"));
-    if let Some(io) =
-        observer.and_then(EnrolledProcessObserver::retained_io_projection)
-    {
+    if let Some(io) = observer.and_then(EnrolledProcessObserver::retained_io_projection) {
         io.splice_credentials(&mut argv)?;
     }
     if let Some(target) = target_projection {
@@ -2455,9 +2447,7 @@ fn spawn_and_wait(
         observer.and_then(EnrolledProcessObserver::capture_projection)
     {
         capture.command()
-    } else if let Some(io) =
-        observer.and_then(EnrolledProcessObserver::retained_io_projection)
-    {
+    } else if let Some(io) = observer.and_then(EnrolledProcessObserver::retained_io_projection) {
         io.native()?.command()
     } else if let Some(target) = target_projection {
         target.native()?.command()
@@ -2498,26 +2488,19 @@ fn spawn_and_wait(
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
         .collect();
     service_fds.extend(seccomp_fds.child_fds(host_account_fd));
-    if let Some(fd) = observer.and_then(EnrolledProcessObserver::namespace_init_fd)
-    {
+    if let Some(fd) = observer.and_then(EnrolledProcessObserver::namespace_init_fd) {
         service_fds.push((fd, crate::services::SERVICE_NAMESPACE_CHILD_FD));
     }
-    if let Some(capture) =
-        observer.and_then(EnrolledProcessObserver::capture_projection)
-    {
+    if let Some(capture) = observer.and_then(EnrolledProcessObserver::capture_projection) {
         service_fds.extend(capture.descriptor_pairs());
     }
     if let Some(lease) = &original_baseline {
         lease.splice_pairs(&mut service_fds)?;
     }
-    if let Some(io) =
-        observer.and_then(EnrolledProcessObserver::retained_io_projection)
-    {
+    if let Some(io) = observer.and_then(EnrolledProcessObserver::retained_io_projection) {
         service_fds.extend(io.pairs()?);
     }
-    if let Some(retained) =
-        observer.and_then(EnrolledProcessObserver::retained_view)
-    {
+    if let Some(retained) = observer.and_then(EnrolledProcessObserver::retained_view) {
         service_fds.extend(retained.descriptor_pairs()?);
     }
     if let Some(target) = target_projection {
@@ -2892,12 +2875,9 @@ fn prepare_launch_host(
     owner: Option<&dyn EnrolledProcessObserver>,
 ) -> Result<LaunchHost, LaunchError> {
     // A resolved bundle wins over --minimal-libs and skips the loader-bind stopgap entirely.
-    let retained_io =
-        owner.and_then(EnrolledProcessObserver::retained_io_projection);
-    let target_projection =
-        owner.and_then(EnrolledProcessObserver::target_projection);
-    let runtime = if let Some(capture) =
-        owner.and_then(EnrolledProcessObserver::capture_projection)
+    let retained_io = owner.and_then(EnrolledProcessObserver::retained_io_projection);
+    let target_projection = owner.and_then(EnrolledProcessObserver::target_projection);
+    let runtime = if let Some(capture) = owner.and_then(EnrolledProcessObserver::capture_projection)
     {
         Some(capture.resolve_runtime(manifest)?)
     } else if let Some(io) = retained_io {
@@ -2940,17 +2920,14 @@ pub(crate) fn launch_with_context(
     opts: &LaunchOptions,
     native_owner: Option<&dyn EnrolledProcessObserver>,
 ) -> Result<ExitStatus, LaunchError> {
-    let retained_io =
-        native_owner.and_then(EnrolledProcessObserver::retained_io_projection);
-    let target_projection =
-        native_owner.and_then(EnrolledProcessObserver::target_projection);
+    let retained_io = native_owner.and_then(EnrolledProcessObserver::retained_io_projection);
+    let target_projection = native_owner.and_then(EnrolledProcessObserver::target_projection);
     if retained_io.is_some() && target_projection.is_some() {
         return Err(LaunchError::InvalidServiceLaunch(
             "Mixed retained authority".into(),
         ));
     }
-    let retained_view =
-        native_owner.and_then(EnrolledProcessObserver::retained_view);
+    let retained_view = native_owner.and_then(EnrolledProcessObserver::retained_view);
     if retained_view.is_some()
         && (retained_io.is_some()
             || target_projection.is_some()
@@ -3200,9 +3177,7 @@ pub(crate) fn launch_with_context(
         .is_some()
     {
         crate::owned_service::capture::splice(&mut argv, &mut ro_paths);
-        if let Some(capture) =
-            native_owner.and_then(EnrolledProcessObserver::capture_projection)
-        {
+        if let Some(capture) = native_owner.and_then(EnrolledProcessObserver::capture_projection) {
             capture.splice_archive(&mut argv, &mut ro_paths);
         }
     }
@@ -3260,9 +3235,7 @@ pub(crate) fn launch_with_context(
         .is_some()
     {
         crate::owned_service::capture::splice_shim_data(&mut argv)?;
-        if let Some(capture) =
-            native_owner.and_then(EnrolledProcessObserver::capture_projection)
-        {
+        if let Some(capture) = native_owner.and_then(EnrolledProcessObserver::capture_projection) {
             capture.splice_inventory_scratch_policy(&mut argv)?;
         }
     }
@@ -3295,9 +3268,7 @@ pub(crate) fn launch_with_context(
     if target_projection.is_some() {
         crate::owned_service::capture::splice_shim_data(&mut argv)?;
     }
-    if let Some(retained) =
-        native_owner.and_then(EnrolledProcessObserver::retained_view)
-    {
+    if let Some(retained) = native_owner.and_then(EnrolledProcessObserver::retained_view) {
         retained.splice(&mut argv)?;
     }
     let result = spawn_and_wait(

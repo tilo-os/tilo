@@ -76,11 +76,11 @@ async fn the_main_agents_own_turn_starts_notes_and_stops_its_sub_agents() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &host,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
     let workspaces = server.workspaces().unwrap().clone();
@@ -89,7 +89,7 @@ async fn the_main_agents_own_turn_starts_notes_and_stops_its_sub_agents() {
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = worked(&workspaces, &actions, plays(&asked, the_team_plays));
+    let agents = worked(&server, &workspace, plays(&asked, the_team_plays)).await;
 
     mentions(&workspaces, &workspace, &person, (SCOUT, "Scout", ASKED)).await;
     let turns = agents.turns(&workspace).await.unwrap();

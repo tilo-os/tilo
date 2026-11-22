@@ -1,6 +1,5 @@
 //! `tilolang build`: every package of a build is a signed Tilo app of its own.
 
-
 use std::path::Path;
 
 use tilo_app_package::manifest::{Manifest, Platform};
@@ -82,10 +81,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
         }
     }
     let today = apps.last().unwrap();
-    let notes = apps
-        .iter()
-        .find(|app| app.app == "so.tilo.notes")
-        .unwrap();
+    let notes = apps.iter().find(|app| app.app == "so.tilo.notes").unwrap();
     let today_manifest =
         Manifest::from_toml_str(&std::fs::read_to_string(&today.manifest).unwrap()).unwrap();
     assert_eq!(today_manifest.package.name.as_deref(), Some("Today"));
@@ -129,10 +125,7 @@ fn a_package_offers_the_files_its_actions_open() {
         version: "0.1.0".into(),
     };
     let apps = package::build(&options, &identity).unwrap();
-    let notes = apps
-        .iter()
-        .find(|app| app.app == "so.tilo.notes")
-        .unwrap();
+    let notes = apps.iter().find(|app| app.app == "so.tilo.notes").unwrap();
     let manifest =
         Manifest::from_toml_str(&std::fs::read_to_string(&notes.manifest).unwrap()).unwrap();
     assert_eq!(
@@ -171,12 +164,7 @@ fn today_reads_notes(
         surface.reads_any_of(&notes_surface),
         "Today's surface declares that it reads Notes' kinds"
     );
-    assert!(
-        today
-            .payload
-            .join("imports/so.tilo.notes.wasm")
-            .is_file()
-    );
+    assert!(today.payload.join("imports/so.tilo.notes.wasm").is_file());
     let installed = tilolang_tilo::bundle::Bundle::read(&today.payload).unwrap();
     assert_eq!(installed.meta.app, "so.tilo.lang.today");
     assert!(

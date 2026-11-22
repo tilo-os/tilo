@@ -6,12 +6,11 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The per-user shared runtime daemon: private profile, native endpoint, app attachment and the MCP projection of the action host."
+description = "This computer's one Tilo daemon: the login's device, private profile, native endpoint, app attachment and the MCP projection of the action host."
 
-# Deliberately free of the compositor: the desktop session supplies its
-# services through `RuntimeServices`, and `standalone` hosts the shared broker
-# and identity service itself, so this crate and its `tilo-runtime`
-# executable build on stock macOS and on Linux without a Wayland stack.
+# Deliberately free of the compositor: `device` hosts the shared broker and
+# identity service itself, so this crate and its `tilo-runtime` executable
+# build on stock macOS and on Linux without a Wayland stack.
 
 [lib]
 name = "tilo_runtime"
@@ -31,12 +30,6 @@ dev-overrides = [
 [[bin]]
 name = "tilo-runtime"
 path = "src/bin/tilo-runtime.rs"
-
-# The host a Tilo login runs, which `runtime_portal::native` finds by this
-# name inside a login: the same services, under the name the login looks for.
-[[bin]]
-name = "tilo-runtime-mcp"
-path = "src/bin/tilo-runtime-mcp.rs"
 
 # The integration tests: one binary, its files included as modules by
 # `tests/it.rs` (a file per binary linked the whole crate once each).
@@ -95,6 +88,9 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-fs = { package = "tilo-fs", path = "../../system/fs", features = ["tree-sync"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-identity = { path = "../tilo-identity" }
+# The person's root, as this computer's identity store keeps it: what `tilo device add` approves a
+# new computer's certificate with.
+tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 # The surface an app under development names (`app_surface`), and the
 # runtime's own words (consent prompt, device grants), from Fluent. The
 # broker links it on every platform already.
@@ -103,14 +99,20 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false
 tilo-os-search = { path = "../os-search" }
 # The native request an app hands a host search result back with.
 tilo-host-search = { path = "../../platform/tilo-host-search" }
-# What a device says of itself when another device of its workspace offers it
-# work: whether it runs the app, and how it is powered.
-tilo-power-mgmt = { path = "../../system/power" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The neighbour wire messages joined workspaces exchange.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "files"] }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["agents", "apps", "device-keys", "files"] }
+# The groups a device's key service settles, and what their members seal is checked against.
+tilo-workspace-keys = { path = "../../collab/workspace-keys" }
+# This computer's login, the daemon's place, and Tilo's API the daemon serves as the device.
+tilo-api = { path = "../../server/tilo-api" }
+# An agent's actions asked of the workspace's host over the device's one session.
+tilo-session-actions = { path = "../../session/session-actions" }
+# The log a daemon keeps trims, and the socket it stops taking connections at.
+rustix = { workspace = true, features = ["fs", "net", "std"] }
+rand.workspace = true
 # The content store app surfaces are read from.
 # The apps' store: the device content store when the launcher handed one over.
 tilo-content-device = { path = "../../system/content-device" }
@@ -123,10 +125,13 @@ tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-rt.workspace = true
+# The errors a compute job fails with.
+thiserror.workspace = true
 # `tilo mcp`'s agent says its word on the person's session as a client of the workspace's board.
 tilo-session-client = { path = "../../session/client" }
 tilo-mcp = { path = "../tilo-mcp" }
 tilo-device-mcp = { path = "../device-mcp" }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
@@ -153,8 +158,6 @@ launcher-macos = { path = "../../packaging/launcher-macos" }
 tilo-dialogs = { path = "../../platform/tilo-dialogs" }
 # The camera and microphone a confined app asks this runtime to capture.
 tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "microphone"] }
-# The login Keychain keeps the channel-state key.
-tilo-secrets = { path = "../../platform/tilo-secrets" }
 
 [dev-dependencies]
 # The relays the replica tests start.
@@ -164,7 +167,9 @@ tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # process-boundary tests drive as an app inside a login does.
 runtime-portal = { path = "../runtime-portal" }
 # The channel fixtures owner tests seal writes with.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "files", "test-support"] }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "device-keys", "files", "test-support"] }
+# A scripted `/v1` server: a key handed over asks its own server, not the device's daemon.
+test-http = { path = "../../dev/test-http" }
 # The join protocol a runtime joins workspaces over.
 tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 # The governor whose workspaces a runtime joins.

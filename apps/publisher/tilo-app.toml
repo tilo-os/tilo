@@ -56,7 +56,28 @@ ext = []
 
 [[offers]]
 resource = "publisher.profile"
-action = "create-key"
-label = "Create key"
+action = "copy-proof"
+label = "Copy proof"
+kind = "outside"
+[[offers]]
+resource = "publisher.profile"
+action = "copy-secret"
+label = "Copy key for CI"
 kind = "outside"
 confirm = true
+[[offers]]
+resource = "publisher.profile"
+action = "export-key"
+label = "Export key"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "publisher.profile"
+action = "apply-for-namespaces"
+label = "Apply for namespaces"
+kind = "outside"
+[[offers]]
+resource = "publisher.profile"
+action = "check-status"
+label = "Check status"
+kind = "outside"

@@ -105,7 +105,7 @@ def inspect_bundle_metadata(app, entry):
     if any(info.get(k) != v for k, v in required.items()):
         raise ValueError(f'bundle identity/version/type mismatch: {app}')
     main = app / 'Contents/MacOS' / safe_name(info['CFBundleExecutable'])
-    helper = app / 'Contents/MacOS/tilo-runtime-mcp'
+    helper = app / 'Contents/MacOS/tilo-runtime'
     if any(p.is_dir() and p.suffix in {'.app', '.framework', '.appex', '.xpc', '.bundle'} for p in app.rglob('*')):
         raise ValueError(f'unreviewed nested code bundle in {app}')
     manifest = app / 'Contents/Resources/tilo-app.toml'
@@ -128,7 +128,7 @@ def inspect_bundle(app, entry, architecture):
     unexpected = set((app / 'Contents/MacOS').iterdir()) - {main, helper}
     unexpected.update(p for p in app.rglob('*') if p.is_file() and os.access(p, os.X_OK) and p not in binaries)
     if set(binaries) != {main, helper} or main == helper or unexpected:
-        raise ValueError(f'unexpected or missing nested code in {app}; expected SDK app + tilo-runtime-mcp; use its specialized packager')
+        raise ValueError(f'unexpected or missing nested code in {app}; expected SDK app + tilo-runtime; use its specialized packager')
     expected = {'arm64', 'x86_64'} if architecture == 'universal' else {architecture}
     facts = []
     for binary in binaries:
@@ -171,7 +171,7 @@ def sign_bundle(app, policy, identity, offline):
     # Preserve the SDK helper policy: no per-app device entitlements on the helper.
     # Runtime capture qualification is separate from packaging these SDK bundles.
     from collection import ROOT
-    run(common + ['--entitlements', ROOT / 'dist/macos/Tilo.entitlements', app / 'Contents/MacOS/tilo-runtime-mcp'], timeout=60)
+    run(common + ['--entitlements', ROOT / 'dist/macos/Tilo.entitlements', app / 'Contents/MacOS/tilo-runtime'], timeout=60)
     run(common + ['--entitlements', policy, app], timeout=60)
 
 

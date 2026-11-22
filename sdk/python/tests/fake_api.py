@@ -307,24 +307,6 @@ class FakeApi:
             return self.link(call)
         if after == "views":
             return self.view(call)
-        if after == "members":
-            return self.answer(
-                200,
-                {
-                    "workspace": WORKSPACE_ID,
-                    "members": [
-                        {
-                            "person": "cd" * 32,
-                            "name": "Rosa Ortiz",
-                            "role": "editor",
-                            "administrator": False,
-                        }
-                    ],
-                    "invitations": [],
-                },
-            )
-        if after == "members/invitations":
-            return self.invite(call)
         if after == "unattended" and request.method == "PUT":
             return self.unattended(call, workspace)
         if after == "programs":
@@ -578,6 +560,11 @@ class FakeApi:
         args = json.loads(call["body"] or b"{}")
         if at == "invocations#list":
             return self.list_invocations(args)
+        if at == "workspace/members#list":
+            row = {"person": "cd" * 32, "name": "Rosa Ortiz", "role": "editor"}
+            return self.done(at, [row | {"administrator": False}], [path], link_to(path))
+        if at == "workspace/invitations#invite":
+            return self.invite(at, args)
         if action == "group":
             members = args.get("actions")
             if not isinstance(members, list):
@@ -835,25 +822,23 @@ class FakeApi:
             return self.refuse(404, "not_found", f"{path} names nothing", ["GET /v1/workspaces/…/search finds it"])
         return self.answer(200, {"path": path, "link": link_to(path)})
 
-    def invite(self, call: dict[str, Any]) -> httpx.Response:
-        asked = json.loads(call["body"] or b"{}")
-        if asked.get("role") not in ("viewer", "commenter", "editor", "administrator"):
+    def invite(self, at: str, asked: dict[str, Any]) -> httpx.Response:
+        roles = ("viewer", "commenter", "editor", "moderator", "administrator", "owner")
+        if asked.get("role") not in roles:
             return self.refuse(
                 422,
                 "invalid_arguments",
-                "`role` is viewer, commenter, editor or administrator",
+                "`role` is one of the workspace's places",
                 ["send {role: viewer}"],
             )
         invited: dict[str, Any] = {
             "workspace": WORKSPACE_ID,
             "invite": "ab" * 32,
             "role": asked["role"],
-            "link": "https://tilo.sh/i/AAAAAAAAAAAAAAAA#key",
+            "link": f"https://tilo.sh/#/w/{WORKSPACE_ID}?invite=AAAA",
             "expires_at_ns": 7,
         }
-        if "email" in asked:
-            invited |= {"email": asked["email"], "sent": False, "next": "send the link yourself"}
-        return self.answer(201, invited)
+        return self.done(at, invited, [], "")
 
     def program(self, call: dict[str, Any]) -> httpx.Response:
         asked = json.loads(call["body"] or b"{}")

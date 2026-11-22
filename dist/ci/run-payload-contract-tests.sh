@@ -85,7 +85,8 @@ fi
 
 fhs=$work/fhs
 mkdir -p "$fhs"/{usr/bin,usr/libexec/tilo,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/licenses/tilo-session}
-for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/bin/tilo-runtime" \
+              "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
               "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
               "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
@@ -162,7 +163,8 @@ void _start(void) {
 EOF
 for link_mode in -static -static-pie; do
     cc -nostdlib "$link_mode" -Wl,-e,_start "$work/static.c" -o "$work/static"
-    for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+    for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/bin/tilo-runtime" \
+              "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
                   "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
                   "$fhs/usr/libexec/tilo-session-report"; do
         install -m755 "$work/static" "$target"
@@ -197,7 +199,8 @@ for object_mode in -shared -c; do
         exit 1
     fi
 done
-for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/bin/tilo-runtime" \
+              "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
               "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
               "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
@@ -258,7 +261,8 @@ fi
 
 nix=$work/nix-result
 mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/applications,share/xdg-desktop-portal/portals,share/pipewire,share/licenses/tilo-session}
-for target in "$nix/bin/tilo-session" "$nix/bin/tilo" "$nix/bin/tilo-launcher" "$nix/bin/tilo-import-folders" \
+for target in "$nix/bin/tilo-session" "$nix/bin/tilo" "$nix/bin/tilo-runtime" \
+              "$nix/bin/tilo-launcher" "$nix/bin/tilo-import-folders" \
               "$nix/libexec/tilo-unlock-helper" "$nix/libexec/tilo-flight-recorder" \
               "$nix/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
@@ -301,7 +305,7 @@ fi
 # produced by the distro package job.
 payload_bin=$work/payload-bin
 mkdir -p "$payload_bin" "$work/payload-a" "$work/payload-b"
-for binary in tilo-session tilo-launcher tilo-runtime-mcp tilo-unlock-helper; do
+for binary in tilo-session tilo-launcher tilo-runtime tilo-unlock-helper; do
     install -m755 "$true_bin" "$payload_bin/$binary"
 done
 SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \

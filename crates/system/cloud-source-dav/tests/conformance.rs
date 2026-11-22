@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::sync::Arc;
 
 use cloud_source::conformance::{Fault, Fixture, SwitchableCredential};

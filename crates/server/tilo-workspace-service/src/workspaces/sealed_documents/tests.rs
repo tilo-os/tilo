@@ -2592,15 +2592,10 @@ async fn a_device_writes_while_its_copy_fails(
         doc.commit_edit("fixture", "title");
     });
     peer.link.send(message).unwrap();
-    tilo_test_env::within("the server tries to copy the device's write", async {
-        while lounge
-            .workspaces
-            .inner
-            .session_carriers
-            .failing
-            .load(std::sync::atomic::Ordering::Acquire)
-            == failing
-        {
+    let channel = neighbour_wire::app_document_group(APP, &record);
+    let carriers = &lounge.workspaces.inner.session_carriers;
+    tilo_test_env::within("the link takes in the device's write", async {
+        while !carriers.queued.lock().unwrap().contains(&channel) {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     })

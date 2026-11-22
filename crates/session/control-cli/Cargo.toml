@@ -21,6 +21,9 @@ path = "src/main.rs"
 libc.workspace = true
 serde_json.workspace = true
 tilo-paths.workspace = true
+# The action model's frames, which `tilo do` and `tilo open` send, and the
+# published tree's own picking of an action by name.
+tilo-actions = { path = "../../collab/actions" }
 
 [target.'cfg(unix)'.dependencies]
 # The console control socket is reached by path.
@@ -32,6 +35,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 
 [lints]
 workspace = true

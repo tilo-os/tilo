@@ -26,7 +26,12 @@ fn button_saying(html: &str, words: &str) -> Option<u32> {
     if !open.contains("data-a=\"activate\"") {
         return None;
     }
-    open.split("data-p=\"").nth(1)?.split('"').next()?.parse().ok()
+    open.split("data-p=\"")
+        .nth(1)?
+        .split('"')
+        .next()?
+        .parse()
+        .ok()
 }
 
 #[test]

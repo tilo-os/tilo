@@ -3,7 +3,6 @@
 //! shown while it is heard, and every answer going back to the session's
 //! state.
 
-
 use tilo_sheets::dictation::{
     Answer, Dictation, DictationApp, DictationState, Failure, Prompt, RecoveryReason, Stage,
 };

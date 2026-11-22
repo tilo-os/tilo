@@ -89,8 +89,8 @@ async fn content_blobs(holder: &Server, workspace: &str) -> Option<u32> {
 
 /// A workspace on server A whose record names a megabyte of content A's store
 /// keeps. Server B is added and takes a copy, and fetches the content from A
-/// although no member of the workspace holds it. A then goes away, and B
-/// serves the same bytes.
+/// although no member of the workspace holds it, before A counts it handed
+/// over. A then goes away at once, and B serves the same bytes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::significant_drop_tightening,
@@ -158,24 +158,17 @@ async fn a_holder_added_to_a_workspace_fetches_the_content_its_records_name() {
         .await
         .unwrap();
 
-    // B fetches the picture from A, into its own content store, and says it
-    // lacks no content once it has it.
-    tilo_test_env::within("the added holder keeps the record's content", async {
-        loop {
-            let kept = b
-                .content()
-                .get(&workspace.workspace)
-                .ok()
-                .and_then(|store| store.read(&hash));
-            if kept.as_deref() == Some(picture.as_slice())
-                && !lacks_content(&b, &workspace.workspace).await
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
+    // A counts the hand-over done only once B keeps the picture, fetched
+    // into its own content store.
+    assert_eq!(
+        b.content()
+            .get(&workspace.workspace)
+            .ok()
+            .and_then(|store| store.read(&hash))
+            .as_deref(),
+        Some(picture.as_slice()),
+        "the server added keeps the resource's content once it is handed the workspace"
+    );
 
     // The first server goes away: the bytes are the added holder's now.
     a.shutdown().await;

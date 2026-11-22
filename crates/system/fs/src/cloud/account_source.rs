@@ -88,7 +88,9 @@ impl Inner {
                 Ok(changed)
             }
             Answer::Refused { error } => Err(io::Error::other(error)),
-            Answer::SignIn { .. } => Err(io::Error::other("the session answered another ask")),
+            Answer::SignIn { .. } | Answer::Asks { .. } => {
+                Err(io::Error::other("the session answered another ask"))
+            }
         }
     }
 
@@ -197,6 +199,7 @@ impl CredentialSource for EntrySignIn {
         let answer = self.inner.ask(&Ask::SignIn {
             workspace,
             item: item.clone(),
+            confirmed: false,
         });
         match answer {
             Ok(Answer::SignIn { secret }) => {
@@ -209,7 +212,9 @@ impl CredentialSource for EntrySignIn {
                     password: secret,
                 })
             }
-            Ok(Answer::Refused { error }) => {
+            // A mount has no window to ask its person in: a sign-in the workspace's rules ask
+            // about first stays unreleased, said in the log as the session words it.
+            Ok(Answer::Refused { error } | Answer::Asks { question: error }) => {
                 tracing::info!(%error, "the session released no sign-in for a file account");
                 Err(cloud_source::Error::Unauthorized)
             }

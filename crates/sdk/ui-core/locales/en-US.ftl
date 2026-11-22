@@ -223,6 +223,7 @@ arriving-received-of = { $received } of { $total }
 arriving-received = { $received } received
 arriving-failed = Couldn’t load this
 arriving-retry = Try again
+arriving-continue-without = Continue without it
 content-unavailable = None of the connected devices has it
 workspace-sync-connecting = Connecting to { $workspace }…
 workspace-sync-connecting-unnamed = Connecting…
@@ -234,6 +235,9 @@ workspace-sync-host-needs-update-body = Nothing here syncs until it has. Your ch
 workspace-sync-device-needs-update = Tilo needs to update to sync this workspace
 workspace-sync-device-needs-update-body = The update is on its way. Your changes stay on this device until then.
 workspace-sync-shell-gone = This window lost its connection to Tilo, so what this workspace holds can’t reach it. Open it again.
+workspace-record-not-here-title = { $record } hasn’t arrived yet
+workspace-record-not-here = { $record } from { $app } hasn’t reached this device yet.
+workspace-record-not-here-unnamed = { $record } hasn’t reached this device yet.
 workspace-sync-no-identity = This device isn’t signed in to Tilo, so it can’t open this workspace. Sign in, then try again.
 workspace-sync-not-renewed = This workspace no longer lets this device in, and renewing its access failed.
 workspace-sync-holders-unreadable = This device couldn’t read which devices and servers keep this workspace.
@@ -500,6 +504,8 @@ format-day-heading-short = { $weekday }, { $month } { $day }
 format-day-range-in-month = { $month } { $start }–{ $end }
 # Any span between two dates or times: "Jun 29 to Jul 5".
 format-range = { $start } to { $end }
+# A span between two days in a tight space, numbers only: "6/29–7/5".
+format-day-range-numeric = { $month }/{ $day }–{ $month2 }/{ $day2 }
 # Two already-formatted values in a list: "encrypted, 134 GB free".
 format-list-join = { $head }, { $tail }
 # The top of a month grid: "June 2026".

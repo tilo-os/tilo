@@ -2,7 +2,6 @@
 //! vCard files. These tests validate that declaration against the real Tilo
 //! packaging schema.
 
-
 use tilo_app_package::validate::validate_manifest;
 use tilo_app_package::{Kind, Manifest};
 

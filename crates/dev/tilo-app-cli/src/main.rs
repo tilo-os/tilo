@@ -665,7 +665,12 @@ struct PlatformArgs {
 }
 
 impl PlatformArgs {
-    fn resolve(self) -> (tilo_app_cli::PackagePlatform, Option<tilo_app_cli::PackageArch>) {
+    fn resolve(
+        self,
+    ) -> (
+        tilo_app_cli::PackagePlatform,
+        Option<tilo_app_cli::PackageArch>,
+    ) {
         (
             self.platform.unwrap_or(tilo_app_cli::PackagePlatform::Tilo),
             package_arch(self.arch),
@@ -749,7 +754,7 @@ struct BundleMacosArgs {
     /// Previously compiled app executable. Architecture/signature validation is separate.
     #[arg(long)]
     binary: PathBuf,
-    /// Previously compiled tilo-runtime-mcp helper.
+    /// Previously compiled tilo-runtime helper.
     #[arg(long)]
     runtime_host: PathBuf,
     /// New output directory; an existing destination is never overwritten.
@@ -2396,7 +2401,9 @@ fn check_other_platforms(
             println!("[check] {label}");
             (label, tilo_app_cli::android::clippy(path, arch))
         } else {
-            let Some(plan) = tilo_app_cli::plan_platform_clippy(path, platform, package_arch(arch))? else {
+            let Some(plan) =
+                tilo_app_cli::plan_platform_clippy(path, platform, package_arch(arch))?
+            else {
                 continue;
             };
             let label = format!("Clippy for {}", platform.cli_name());

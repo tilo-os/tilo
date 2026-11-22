@@ -515,8 +515,7 @@ impl Accounts {
         if self.checkpoint_worker.is_some() {
             return true;
         }
-        self.saved.running()
-            || matches!(self.step, Step::Working(_) | Step::Removing { .. })
+        self.saved.running() || matches!(self.step, Step::Working(_) | Step::Removing { .. })
     }
     pub fn can_continue(&self) -> bool {
         if self.checkpoint_worker.is_some() {
@@ -1849,7 +1848,8 @@ impl Accounts {
             } => {
                 if matches!(
                     *message,
-                    "installer-accounts-nextcloud-source-reconnect" | "installer-accounts-tilo-reconnect"
+                    "installer-accounts-nextcloud-source-reconnect"
+                        | "installer-accounts-tilo-reconnect"
                 ) {
                     body = body.push(Box::new(
                         action_button(

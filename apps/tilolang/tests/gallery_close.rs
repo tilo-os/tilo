@@ -1,8 +1,7 @@
 //! Closing the gallery (`apps/tl/gallery`) as `tilolang dev` starts it, its instance in the window's
 //! own process: the window lets go of its patch connection, the instance finds it closed on its
-//! next turn and ends at once, without a wait for it, and the indexes it kept reach the
-//! disk off the window's thread, which never waits on storage. A window closing is no failure, so
-//! nothing warns of one.
+//! next turn and ends at once, without a wait for it, on the window's thread, which never waits
+//! on storage. A window closing is no failure, so nothing warns of one.
 
 use std::sync::{Arc, Mutex};
 
@@ -62,13 +61,6 @@ fn closing_the_gallery_ends_its_instance_at_once_and_quietly() {
         0,
         "the instance ends on the first turn after the window let go, without a wait"
     );
-    assert_eq!(
-        calls("tl.index.persist"),
-        0,
-        "the window's thread waits on no index reaching the disk"
-    );
-    // The process waits for it as it ends.
-    tilolang_tilo::index::finish_persisting();
     let logged = String::from_utf8_lossy(
         &log.0
             .lock()

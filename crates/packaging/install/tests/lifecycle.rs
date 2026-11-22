@@ -4,7 +4,6 @@
 //!
 //! Every test runs `tilo-install` with `XDG_DATA_HOME` and `XDG_CONFIG_HOME` in a tempdir.
 
-
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::SigningKey;

@@ -65,7 +65,6 @@ const ASK_WAIT_NS: u64 = 30 * 60 * 1_000_000_000;
 /// The server as an agent supervisor sees it.
 #[derive(Clone)]
 pub struct ServerAgentLink {
-    user_public_key: [u8; 32],
     certification: CertificationProtocol,
     agents: AgentRegistry,
     /// The workspaces this server governs, whose rosters follow each agent's grant.
@@ -80,7 +79,6 @@ impl Server {
     pub fn agent_link(&self) -> ServerAgentLink {
         let web = self.web_context();
         ServerAgentLink {
-            user_public_key: web.server.identity.user_public_key,
             certification: web.certification.clone(),
             agents: web.server.agents.clone(),
             workspaces: self.workspaces().cloned(),
@@ -135,6 +133,7 @@ impl ServerAgentLink {
 
     fn enqueue_approval(
         &self,
+        keeper: [u8; 32],
         key: &SigningKey,
         proposal: &DelegateProposal,
     ) -> Result<([u8; 32], String), String> {
@@ -143,7 +142,7 @@ impl ServerAgentLink {
         getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
         let request = CertificationRequest {
             version: CERTIFICATION_SCHEMA_VERSION,
-            user_public_key: self.user_public_key,
+            user_public_key: keeper,
             device_public_key: key.verifying_key().to_bytes(),
             device_label: format!("Agent: {}", proposal.label),
             requested: DeviceCapabilities::nothing(),
@@ -174,6 +173,18 @@ impl ServerAgentLink {
                 workspaces.reconcile_agent(device, cert.as_ref()).await;
             });
         }
+    }
+}
+
+impl tilo_workspace_service::agents::SessionDevices for ServerAgentLink {
+    fn session_device<'a>(
+        &'a self,
+        sessions: &'a tilo_agent_session::AgentSessions,
+        workspace: WorkspaceId,
+        agent: &'a str,
+        person: &'a [u8; 32],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<[u8; 32]>> + Send + 'a>> {
+        Box::pin(self.roster_session_device(sessions, workspace, agent, person))
     }
 }
 
@@ -489,9 +500,9 @@ struct WorkspaceActionsServer {
     /// The Browser this host places for its workspaces, when it places one.
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
     /// The events this host runs for its workspaces, once they are up.
-    events: Arc<std::sync::OnceLock<crate::workspace_bots::events::WorkspaceEvents>>,
+    events: Arc<std::sync::OnceLock<tilo_workspace_service::agents::events::WorkspaceEvents>>,
     /// What its workspaces' assistants find to do on their own, once they are up.
-    initiative: Arc<std::sync::OnceLock<crate::workspace_bots::initiative::Initiative>>,
+    initiative: Arc<std::sync::OnceLock<tilo_workspace_service::agents::initiative::Initiative>>,
 }
 
 /// The workspaces' apps as web pages, each held by the action service as the
@@ -823,20 +834,20 @@ struct ServerRecordsLink {
 }
 
 impl ServerRecordsLink {
-    /// The person a turn of this server acts for, and where their own store
-    /// is kept, when `caller` is such a turn's agent: one a person's own
-    /// session was handed to, working inside a turn. Nothing else is decided
-    /// by what stands for a person.
+    /// The person a turn of this server works for, and where their own store
+    /// is kept, when `caller` is such a turn's agent: this server's own,
+    /// working inside a turn. Nothing else is decided by what stands for a
+    /// person.
     fn turn_of(&self, caller: &Caller) -> Option<(&crate::workspaces::Workspaces, [u8; 32])> {
         let acting = caller.acting();
         if acting.app().is_some()
             || !acting.is_agent()
-            || !caller.is_session_delegated()
+            || caller.roster_created_at().is_none()
             || caller.turn().is_none()
         {
             return None;
         }
-        Some((self.workspaces.as_ref()?, *caller.user_public_key()?))
+        Some((self.workspaces.as_ref()?, *caller.turn_person()?))
     }
 
     /// The host an actor's address in `workspace` is at: the origin this host publishes its pages
@@ -933,7 +944,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         }
     }
 
-    /// On the approving devices of the person `caller` is or acts for: the
+    /// On the approving devices of the person `caller` is or works for: the
     /// host's own person's, or a member's own root, as their device requests
     /// are answered.
     fn ask_person(
@@ -942,7 +953,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         caller: &Caller,
         question: tilo_actions::remote::ConfirmationQuestion,
     ) -> Option<Pending<Result<tilo_actions::remote::ConfirmationReply, ActionCallError>>> {
-        let person = *caller.user_public_key()?;
+        let person = *caller.turn_person().or_else(|| caller.user_public_key())?;
         // The agent the person's device asks for, when the device asks over its own session.
         let agent_id = caller
             .acting()
@@ -1023,7 +1034,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         };
         self.host_device
             .runtime
-            .block_on(crate::workspace_agents::workspace_agent(
+            .block_on(tilo_workspace_service::agents::workspace_agent(
                 workspaces, workspace, caller,
             ))
     }
@@ -1209,8 +1220,9 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                 .resource_document(workspace, tilo_workspace_agent::OWNER, &list)
                 .await
                 && let Ok(mut doc) = automerge::AutoCommit::load(&bytes)
-                && let Ok(agents) =
-                    crate::workspace_bots::opened::<tilo_workspace_agent::WorkspaceAgents>(&mut doc)
+                && let Ok(agents) = tilo_workspace_service::agents::opened::<
+                    tilo_workspace_agent::WorkspaceAgents,
+                >(&mut doc)
             {
                 named.extend(
                     agents
@@ -1423,7 +1435,7 @@ fn app_catalogue(
 /// registry when `None`) and runs an action on it for whoever the workspace's
 /// policy lets ask, as it does beside agents in [`start`]. Answers the server and the
 /// action service it serves the records with, which the agents the host runs for its workspaces
-/// ([`crate::workspace_agents`]) act through.
+/// ([`tilo_workspace_service::agents`]) act through.
 ///
 /// # Errors
 /// Why the server did not start.
@@ -1458,8 +1470,8 @@ pub async fn start_serving_documents(
 pub struct RosterServices {
     pub sessions: tilo_agent_session::AgentSessions,
     pub actions: WorkspaceActions,
-    pub events: Option<crate::workspace_bots::events::WorkspaceEvents>,
-    pub initiative: Option<crate::workspace_bots::initiative::Initiative>,
+    pub events: Option<tilo_workspace_service::agents::events::WorkspaceEvents>,
+    pub initiative: Option<tilo_workspace_service::agents::initiative::Initiative>,
 }
 
 impl WorkspaceActionsServer {
@@ -1472,9 +1484,10 @@ impl WorkspaceActionsServer {
             .workspaces()
             .cloned()
             .map(|workspaces| {
-                crate::workspace_bots::initiative::Initiative::start(
+                tilo_workspace_service::agents::initiative::Initiative::start(
                     workspaces,
                     Some(self.actions.clone()),
+                    std::sync::Arc::new(crate::workspace_bots::installed::EventRunner),
                 )
             })
             .unzip();
@@ -1503,20 +1516,20 @@ impl WorkspaceActionsServer {
         message: tilo_actions::remote::RemoteActionMessage,
         certificate: Option<&DeviceCert>,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
-        use crate::workspace_bots::events::Authority;
+        use tilo_workspace_service::agents::events::Authority;
 
         self.roster.as_ref()?;
         let authority = certificate.map_or(Authority::Turn, Authority::of);
-        if crate::workspace_bots::events::addresses(&message) {
+        if tilo_workspace_service::agents::events::addresses(&message) {
             return match self.events.get() {
                 Some(events) => events.serve(workspace, caller, authority, message),
-                None => crate::workspace_bots::events::not_served(message),
+                None => tilo_workspace_service::agents::events::not_served(message),
             };
         }
-        if crate::workspace_bots::initiative::addresses(&message) {
+        if tilo_workspace_service::agents::initiative::addresses(&message) {
             return match self.initiative.get() {
                 Some(initiative) => initiative.serve(workspace, caller, authority, message),
-                None => crate::workspace_bots::events::not_served(message),
+                None => tilo_workspace_service::agents::events::not_served(message),
             };
         }
         None
@@ -1619,10 +1632,7 @@ async fn start_inner(
     options: AgentOptions,
 ) -> Result<(Server, AgentService, Arc<WorkspaceActionsServer>), ServerError> {
     let content = crate::content::stores(&cfg.state_root);
-    let mut agents = AgentService::new(
-        identity.user_public_key,
-        (options.state_dir.clone(), Arc::clone(&content)),
-    );
+    let mut agents = AgentService::new((options.state_dir.clone(), Arc::clone(&content)));
     // The server this starts is a large future of its own; boxing it keeps every caller's
     // future small, so a caller that awaits several starts does not build a large one.
     let (server, actions) = Box::pin(start_app_server(

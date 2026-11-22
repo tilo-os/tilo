@@ -1269,17 +1269,18 @@ mod tests {
     }
 
     #[test]
-    fn matching_ten_thousand_pages_fits_a_frame() {
+    fn each_keystroke_over_ten_thousand_pages_scans_only_what_the_last_one_matched() {
         let mut idx = index(&ten_thousand_pages());
-        let start = Instant::now();
+        let mut held = 10_000;
         for q in ["s", "si", "sit", "site", "site1"] {
-            idx.search(q, MAX_ROWS, NOW);
+            assert!(idx.search(q, MAX_ROWS, NOW).len() <= MAX_ROWS);
+            assert_eq!(
+                (q, idx.scanned),
+                (q, held),
+                "a keystroke scans the last one's matches"
+            );
+            held = idx.candidates.len();
         }
-        let took = start.elapsed();
-        println!("five keystrokes over 10k pages: {took:?}");
-        assert!(
-            took < Duration::from_millis(250),
-            "five keystrokes over 10k pages took {took:?}"
-        );
+        assert_eq!(held, 1_111, "site1 narrows to its own pages");
     }
 }

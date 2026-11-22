@@ -61,13 +61,11 @@ const CONTINUITY_ENABLED_KEY: &str = "device_mesh.continuity.enabled";
 const AGENTS_ACCEPT_KEY: &str = "device_mesh.agents.accept_own_devices";
 const AGENTS_ACT_KEY: &str = "device_mesh.agents.act_without_asking";
 const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
-const SERVER_ADMIN: &str = "/usr/libexec/tilo/tilo-server-admin";
 
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
 const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
 const APPLY_TIMEOUT: Duration = Duration::from_secs(120);
-const MANAGEMENT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The work this device can take, named by its message: the chooser's values
 /// are these, so its labels and the setting a choice writes share one table.
 const WORK_FROM: [&str; 3] = ["mesh-work-nothing", "mesh-work-own", "mesh-work-anyone"];
@@ -100,6 +98,7 @@ fn work_from(from: WorkFrom, when: WorkWhen) -> WorkSetting {
         },
         from,
         when,
+        agents: false,
     }
 }
 
@@ -132,8 +131,6 @@ enum ServerRuntimeStatus {
     #[default]
     Offline,
     Online,
-    Syncing,
-    Ready,
     /// The server's state could not be read from here, which says nothing
     /// about whether the server is running.
     Unreadable,
@@ -163,30 +160,6 @@ impl ServerRuntimeStatus {
             return Self::Offline;
         }
         match tilo_server_protocol::metrics::load_metrics(&config.state_root) {
-            Ok(Some(_)) if config.services.full_content_replication => {
-                let ready = std::fs::read(&config.full_replica_status)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                    .is_some_and(|proof| {
-                        let updated = proof
-                            .get("updated_at_ms")
-                            .and_then(serde_json::Value::as_u64)
-                            .unwrap_or(0);
-                        let now_ms = now
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .map_or(0, |duration| {
-                                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-                            });
-                        proof.get("state").and_then(serde_json::Value::as_str) == Some("ready")
-                            && proof
-                                .get("full_content_replication")
-                                .and_then(serde_json::Value::as_bool)
-                                == Some(true)
-                            && now_ms.saturating_sub(updated)
-                                <= u64::try_from(STATUS_FRESHNESS.as_millis()).unwrap_or(u64::MAX)
-                    });
-                if ready { Self::Ready } else { Self::Syncing }
-            }
             Ok(Some(_)) => Self::Online,
             Ok(None) => Self::Offline,
             Err(_) => Self::Unreadable,
@@ -197,8 +170,6 @@ impl ServerRuntimeStatus {
         t(match self {
             Self::Offline => "mesh-runtime-offline",
             Self::Online => "mesh-runtime-online",
-            Self::Syncing => "mesh-runtime-syncing",
-            Self::Ready => "mesh-runtime-ready",
             Self::Unreadable => "mesh-runtime-unreadable",
         })
     }
@@ -206,15 +177,13 @@ impl ServerRuntimeStatus {
 
 const HOME_PEER_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 
-const PENDING_DECOMMISSIONS: &str = "pending-home-peer-decommissions.json";
-
 /// The wall clock the server-status thread judges the heartbeat by: the
 /// process's, unless a test hands it one that reads fresh however long the
 /// thread takes to look.
 type StatusClock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 
 /// What a shown Device mesh pane follows: the server's status, read on a
-/// thread of its own, and the files the pane shows.
+/// thread of its own.
 ///
 /// The server rewrites its metrics every second as a heartbeat, so a watch
 /// that woke the window for each would be a one-second timer again. The
@@ -222,17 +191,16 @@ type StatusClock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 /// would lapse, and wakes the window only when the status changes.
 struct MeshFollow {
     status: Arc<Mutex<Option<ServerRuntimeStatus>>>,
-    files: crate::watch::Watched,
     stop: Arc<std::sync::atomic::AtomicBool>,
     poke: std::sync::mpsc::Sender<()>,
 }
 
 impl MeshFollow {
-    fn start(config: &ServerConfig, files: &[PathBuf]) -> Option<Self> {
-        Self::start_at(config, files, Arc::new(ui::time::wall))
+    fn start(config: &ServerConfig) -> Option<Self> {
+        Self::start_at(config, Arc::new(ui::time::wall))
     }
 
-    fn start_at(config: &ServerConfig, files: &[PathBuf], now: StatusClock) -> Option<Self> {
+    fn start_at(config: &ServerConfig, now: StatusClock) -> Option<Self> {
         let status = Arc::new(Mutex::new(None));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (poke, events) = std::sync::mpsc::channel();
@@ -247,19 +215,13 @@ impl MeshFollow {
             Box::new(move || follow_server(&config, &latest, &stop, poke, &events, &wake, &*now))
         };
         crate::device_read::thread("settings-server-status", follow).ok()?;
-        Some(Self {
-            status,
-            files: crate::watch::Watched::files(files),
-            stop,
-            poke,
-        })
+        Some(Self { status, stop, poke })
     }
 
     #[cfg(test)]
     fn by_hand() -> Self {
         Self {
             status: Arc::new(Mutex::new(None)),
-            files: crate::watch::Watched::by_hand(),
             stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             poke: std::sync::mpsc::channel().0,
         }
@@ -287,12 +249,9 @@ fn follow_server(
     now: &(dyn Fn() -> SystemTime + Send + Sync),
 ) {
     use std::sync::mpsc::RecvTimeoutError;
-    let heartbeat = [
-        config
-            .state_root
-            .join(tilo_server_protocol::metrics::METRICS_FILE),
-        config.full_replica_status.clone(),
-    ];
+    let heartbeat = [config
+        .state_root
+        .join(tilo_server_protocol::metrics::METRICS_FILE)];
     let on_change: crate::watch::OnChange = Arc::new(move || {
         let _ = poke.send(());
     });
@@ -331,8 +290,8 @@ fn follow_server(
 
 fn runtime_status_tone(status: ServerRuntimeStatus) -> StatusTone {
     match status {
-        ServerRuntimeStatus::Ready | ServerRuntimeStatus::Online => StatusTone::Success,
-        ServerRuntimeStatus::Syncing | ServerRuntimeStatus::Unreadable => StatusTone::Warning,
+        ServerRuntimeStatus::Online => StatusTone::Success,
+        ServerRuntimeStatus::Unreadable => StatusTone::Warning,
         ServerRuntimeStatus::Offline => StatusTone::Neutral,
     }
 }
@@ -365,7 +324,7 @@ pub enum DeviceMeshEffect {
     #[effect(kind = "outside")]
     #[effect(idempotent)]
     SetDeviceService {
-        #[param("full_content_replication, inbound_server, remote_control_server, app_serving or compute", choices = SERVICES)]
+        #[param("inbound_server, remote_control_server, app_serving or compute", choices = SERVICES)]
         service: String,
         on: bool,
     },
@@ -403,8 +362,7 @@ pub enum DeviceMeshEffect {
 }
 
 const ROOM_PARTS: [&str; 2] = ["processors", "memory"];
-const SERVICES: [&str; 5] = [
-    "full_content_replication",
+const SERVICES: [&str; 4] = [
     "inbound_server",
     "remote_control_server",
     "app_serving",
@@ -569,7 +527,7 @@ fn home_server_row(peer: &tilo_server_protocol::HomePeerRegistration) -> LiveRow
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HomePeerHealth {
     Connecting,
-    Online { files_ready: bool },
+    Online,
     Removed,
     Unreachable,
 }
@@ -667,9 +625,7 @@ pub struct DeviceMeshModel {
     session_devices: Option<ui::collaboration::SessionResource>,
     device_rows: DisclosureGroup,
     removing: Option<String>,
-    management_child: Option<bounded_command::AsyncCommand>,
-    management_device: Option<String>,
-    management_call: Option<(ui::InvocationCall, Option<String>)>,
+    management_call: Option<(ui::InvocationCall, Managing)>,
     next_peer_health: usize,
     apply_child: Option<bounded_command::AsyncCommand>,
     apply_queued: bool,
@@ -682,7 +638,22 @@ pub struct DeviceMeshModel {
     following: std::rc::Weak<MeshFollow>,
     pages: std::rc::Weak<()>,
     health_round: usize,
-    removals_pending: bool,
+}
+
+/// What the pane asked about one of the person's home servers, named by its
+/// device key: each is an action on their Servers workspace, or the identity
+/// step that signs what retires it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Managing {
+    /// Its health (`server.status`).
+    Status(String),
+    /// A new name for it (`server.rename`).
+    Rename(String, String),
+    /// The revocation of its key the person's root signs (the identity step
+    /// `revoke`), which retires it next.
+    Revoke(String),
+    /// Taking it out of service with that revocation (`server.retire`).
+    Retire(String),
 }
 
 #[derive(Clone, Debug, serde::Deserialize, PartialEq, Eq)]
@@ -698,6 +669,19 @@ pub(super) enum PairingTarget {
     #[default]
     HomePeer,
     PersonalDevice,
+}
+
+/// Change this device's list of the person's home servers with `edit`: what
+/// the pane lists them by.
+fn edit_registry(edit: impl FnOnce(&mut Vec<tilo_server_protocol::HomePeerRegistration>)) {
+    let path = tilo_server_protocol::home_peer_registry_path(&identity_root());
+    let Ok(mut peers) = tilo_server_protocol::read_home_peers(&path) else {
+        return;
+    };
+    edit(&mut peers);
+    if let Err(error) = tilo_server_protocol::write_home_peers(&path, &peers) {
+        tracing::warn!(target: "tilo::settings", %error, "the list of home servers was not written");
+    }
 }
 
 fn registered_home_peers() -> Vec<tilo_server_protocol::HomePeerRegistration> {
@@ -754,8 +738,7 @@ fn last_seen_label(last_seen_ms: u64) -> String {
 fn peer_health_badge(health: HomePeerHealth) -> String {
     t(match health {
         HomePeerHealth::Connecting => "mesh-badge-checking",
-        HomePeerHealth::Online { files_ready: true } => "mesh-badge-online",
-        HomePeerHealth::Online { files_ready: false } => "mesh-badge-syncing",
+        HomePeerHealth::Online => "mesh-badge-online",
         HomePeerHealth::Removed => "mesh-badge-removed",
         HomePeerHealth::Unreachable => "mesh-badge-offline",
     })
@@ -764,8 +747,7 @@ fn peer_health_badge(health: HomePeerHealth) -> String {
 fn peer_health_detail(health: HomePeerHealth) -> String {
     t(match health {
         HomePeerHealth::Connecting => "mesh-health-connecting",
-        HomePeerHealth::Online { files_ready: true } => "mesh-health-ready",
-        HomePeerHealth::Online { files_ready: false } => "mesh-health-syncing",
+        HomePeerHealth::Online => "mesh-health-ready",
         HomePeerHealth::Removed => "mesh-badge-removed",
         HomePeerHealth::Unreachable => "mesh-health-unreachable",
     })
@@ -934,8 +916,6 @@ impl DeviceMeshModel {
             session_devices: None,
             device_rows: DisclosureGroup::new(),
             removing: None,
-            management_child: None,
-            management_device: None,
             management_call: None,
             next_peer_health: 0,
             apply_child: None,
@@ -949,7 +929,6 @@ impl DeviceMeshModel {
             following: std::rc::Weak::new(),
             pages: std::rc::Weak::new(),
             health_round: 0,
-            removals_pending: false,
         }
     }
 
@@ -988,9 +967,6 @@ impl DeviceMeshModel {
             }
             DeviceMeshEffect::SetDeviceService { service, on } => {
                 match service.as_str() {
-                    "full_content_replication" => {
-                        self.config.services.full_content_replication = *on;
-                    }
                     "inbound_server" => self.config.services.inbound_server = *on,
                     "remote_control_server" => self.config.services.remote_control_server = *on,
                     "app_serving" => self.config.services.app_serving = *on,
@@ -1012,7 +988,8 @@ impl DeviceMeshModel {
                 if !tilo_server_protocol::valid_home_peer_label(name) {
                     return Err("that name cannot be used for a home server".into());
                 }
-                self.start_home_peer_command(&peer, "home-peer-rename", Some(name.trim()));
+                let managing = Managing::Rename(peer.device_node_id.clone(), name.trim().into());
+                self.ask_server(&peer, "server.rename", [("name", name.trim())], managing);
                 false
             }
             DeviceMeshEffect::RemoveHomeServer { device } => {
@@ -1089,27 +1066,68 @@ impl DeviceMeshModel {
             .management_call
             .as_ref()
             .and_then(|(call, _)| crate::device_fleet::settled(call))
-            && let Some((_, device)) = self.management_call.take()
+            && let Some((_, managing)) = self.management_call.take()
         {
-            self.take_management_answer(device, answer.map(|output| output.value));
+            self.take_management_answer(managing, answer.map(|output| output.value));
         }
     }
 
+    /// Remove `peer`: the person's root signs the revocation of its key here,
+    /// and its entry in their Servers workspace is retired with it.
     fn start_home_peer_removal(&mut self, peer: &tilo_server_protocol::HomePeerRegistration) {
         use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
-        if self.management_child.is_some() || self.management_call.is_some() {
+        if self.management_call.is_some() {
             return;
         }
         let mut arguments = serde_json::Map::new();
         arguments.insert("device".into(), peer.device_node_id.clone().into());
-        arguments.insert("service".into(), peer.server_node_id.clone().into());
+        arguments.insert("reason".into(), "retired".into());
         arguments.insert("confirm".into(), true.into());
         let call = self.remote.invoke(
-            identity_admin::target(identity_admin::HOME_PEER_REMOVE),
+            identity_admin::target(identity_admin::REVOKE),
             InvokeArgument::Json(arguments),
             Some(Confirmation::Confirmed),
         );
-        self.management_call = Some((call, Some(peer.device_node_id.clone())));
+        self.management_call = Some((call, Managing::Revoke(peer.device_node_id.clone())));
+        self.home_peer_health
+            .insert(peer.device_node_id.clone(), HomePeerHealth::Connecting);
+        self.changed = true;
+    }
+
+    /// Ask the action `verb` of `peer`'s entry in its person's Servers
+    /// workspace, with `arguments` beside the server it names.
+    fn ask_server<const N: usize>(
+        &mut self,
+        peer: &tilo_server_protocol::HomePeerRegistration,
+        verb: &str,
+        arguments: [(&str, &str); N],
+        managing: Managing,
+    ) {
+        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, RemoteActionTarget};
+        let Some(person) = hex::decode(&peer.user_public_key)
+            .ok()
+            .and_then(|key| <[u8; 32]>::try_from(key).ok())
+        else {
+            self.home_peer_health
+                .insert(peer.device_node_id.clone(), HomePeerHealth::Unreachable);
+            return;
+        };
+        let mut argument = serde_json::Map::new();
+        argument.insert("server".into(), peer.device_node_id.clone().into());
+        for (name, value) in arguments {
+            argument.insert(name.into(), value.into());
+        }
+        let confirmed =
+            (!matches!(managing, Managing::Status(_))).then_some(Confirmation::Confirmed);
+        let call = self.remote.invoke(
+            RemoteActionTarget::workspace_governance(
+                &tilo_server_protocol::servers::person_workspace_id(&person),
+                verb,
+            ),
+            InvokeArgument::Json(argument),
+            confirmed,
+        );
+        self.management_call = Some((call, managing));
         self.home_peer_health
             .insert(peer.device_node_id.clone(), HomePeerHealth::Connecting);
         self.changed = true;
@@ -1117,46 +1135,67 @@ impl DeviceMeshModel {
 
     fn take_management_answer(
         &mut self,
-        device: Option<String>,
+        managing: Managing,
         answer: Result<Option<serde_json::Value>, String>,
     ) {
-        match answer {
-            Ok(Some(response)) => {
-                let ready = response
-                    .get("files_ready")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                let removed = response
-                    .get("decommissioned")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                if let Some(device) = device {
-                    self.home_peer_health.insert(
-                        device.clone(),
-                        if removed {
-                            HomePeerHealth::Removed
-                        } else {
-                            HomePeerHealth::Online { files_ready: ready }
-                        },
-                    );
-                    self.home_peer_last_seen
-                        .insert(device, ui::time::unix_now_ms());
+        let device = match &managing {
+            Managing::Status(device)
+            | Managing::Rename(device, _)
+            | Managing::Revoke(device)
+            | Managing::Retire(device) => device.clone(),
+        };
+        let health = match (managing, answer) {
+            (Managing::Revoke(_), Ok(answer)) => {
+                let revocation = answer
+                    .as_ref()
+                    .and_then(|answer| answer.get("revocation"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+                match (revocation, self.home_peer(&device)) {
+                    (Some(revocation), Ok(peer)) => {
+                        let managing = Managing::Retire(device);
+                        self.ask_server(
+                            &peer,
+                            "server.retire",
+                            [("revocation", revocation.as_str())],
+                            managing,
+                        );
+                        return;
+                    }
+                    _ => HomePeerHealth::Unreachable,
                 }
-                self.home_peers = registered_home_peers();
             }
-            Ok(None) => {}
-            Err(detail) => {
+            (Managing::Retire(_), Ok(_)) => {
+                edit_registry(|peers| peers.retain(|peer| peer.device_node_id != device));
+                HomePeerHealth::Removed
+            }
+            (Managing::Rename(_, name), Ok(_)) => {
+                edit_registry(|peers| {
+                    for peer in peers
+                        .iter_mut()
+                        .filter(|peer| peer.device_node_id == device)
+                    {
+                        peer.label.clone_from(&name);
+                    }
+                });
+                HomePeerHealth::Online
+            }
+            (Managing::Status(_), Ok(_)) => HomePeerHealth::Online,
+            (_, Err(detail)) => {
                 tracing::warn!(
                     target: "tilo::settings",
                     %detail,
                     "the home server did not answer"
                 );
-                if let Some(device) = device {
-                    self.home_peer_health
-                        .insert(device, HomePeerHealth::Unreachable);
-                }
+                HomePeerHealth::Unreachable
             }
+        };
+        if health != HomePeerHealth::Unreachable {
+            self.home_peer_last_seen
+                .insert(device.clone(), ui::time::unix_now_ms());
+            self.home_peers = registered_home_peers();
         }
+        self.home_peer_health.insert(device, health);
         self.changed = true;
     }
 
@@ -1192,7 +1231,6 @@ impl DeviceMeshModel {
         // A device that takes no work runs no service for others.
         self.config.services.workspace_replication = takes;
         self.config.services.inbound_server = takes;
-        self.config.services.full_content_replication &= takes;
         self.next_status_refresh = ui::time::now();
         true
     }
@@ -1443,7 +1481,6 @@ impl DeviceMeshModel {
             "identity_root": identity_root(),
             "work": self.config.work,
             "workspace_ids": Vec::<u64>::new(),
-            "full_content_replication": self.config.services.full_content_replication,
             "inbound_server": self.config.services.inbound_server,
             "remote_control_server": self.config.services.remote_control_server,
             "app_serving": self.config.services.app_serving,
@@ -1603,78 +1640,16 @@ impl DeviceMeshModel {
         self.pairing_candidate = None;
     }
 
-    fn start_home_peer_command(
-        &mut self,
-        peer: &tilo_server_protocol::HomePeerRegistration,
-        action: &str,
-        label: Option<&str>,
-    ) {
-        if self.management_child.is_some() || self.management_call.is_some() {
-            return;
-        }
-        let mut command = Command::new(SERVER_ADMIN);
-        command
-            .arg(action)
-            .arg("--identity-root")
-            .arg(identity_root())
-            .args(["--device", &peer.device_node_id])
-            .args(["--service", &peer.server_node_id]);
-        if let Some(label) = label {
-            command.args(["--label", label]);
-        }
-        match bounded_command::spawn_prepared(
-            command,
-            None,
-            COMMAND_OUTPUT_LIMIT,
-            MANAGEMENT_TIMEOUT,
-        ) {
-            Ok(child) => {
-                self.management_child = Some(child);
-                self.management_device = Some(peer.device_node_id.clone());
-                self.home_peer_health
-                    .insert(peer.device_node_id.clone(), HomePeerHealth::Connecting);
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target: "tilo::settings",
-                    %error,
-                    action,
-                    "the home server command did not start"
-                );
-                self.home_peer_health
-                    .insert(peer.device_node_id.clone(), HomePeerHealth::Unreachable);
-            }
-        }
-        self.changed = true;
-    }
-
     fn refresh_one_home_peer(&mut self) {
-        if self.management_child.is_some() || self.management_call.is_some() {
-            return;
-        }
-        let pending = identity_root().join(PENDING_DECOMMISSIONS);
-        self.removals_pending = std::fs::read(&pending)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Vec<serde_json::Value>>(&bytes).ok())
-            .is_some_and(|pending| !pending.is_empty());
-        if self.removals_pending {
-            use ui::tilo_actions::remote::{InvokeArgument, identity_admin};
-            let call = self.remote.invoke(
-                identity_admin::target(identity_admin::HOME_PEER_RETRY),
-                InvokeArgument::None,
-                None,
-            );
-            self.management_call = Some((call, None));
-            return;
-        }
-        if self.home_peers.is_empty() {
+        if self.management_call.is_some() || self.home_peers.is_empty() {
             return;
         }
         let index = self.next_peer_health % self.home_peers.len();
         self.next_peer_health = self.next_peer_health.wrapping_add(1);
         let peer = self.home_peers.get(index).cloned();
         if let Some(peer) = peer {
-            self.start_home_peer_command(&peer, "home-peer-status", None);
+            let managing = Managing::Status(peer.device_node_id.clone());
+            self.ask_server(&peer, "server.status", [], managing);
         }
     }
 
@@ -1723,37 +1698,6 @@ impl DeviceMeshModel {
 
         self.poll_pairing();
         self.poll_host_calls();
-
-        let management_result = self
-            .management_child
-            .as_mut()
-            .and_then(bounded_command::AsyncCommand::try_wait);
-        match management_result {
-            Some(Ok(output)) => {
-                self.management_child = None;
-                let device = self.management_device.take();
-                let answer = if output.status.success() {
-                    Ok(serde_json::from_slice::<serde_json::Value>(&output.stdout).ok())
-                } else {
-                    Err(command_error(&output.stderr, "not reachable"))
-                };
-                self.take_management_answer(device, answer);
-            }
-            Some(Err(error)) => {
-                self.management_child = None;
-                tracing::warn!(
-                    target: "tilo::settings",
-                    %error,
-                    "the home server command did not finish"
-                );
-                if let Some(device) = self.management_device.take() {
-                    self.home_peer_health
-                        .insert(device, HomePeerHealth::Unreachable);
-                }
-                self.changed = true;
-            }
-            None => {}
-        }
     }
 }
 
@@ -1784,7 +1728,7 @@ impl DeviceMeshModel {
     }
 
     fn busy(&self) -> bool {
-        self.apply_child.is_some() || self.pairing_call.is_some() || self.management_child.is_some()
+        self.apply_child.is_some() || self.pairing_call.is_some()
     }
 
     fn next_wake(&self) -> Option<Instant> {
@@ -1792,10 +1736,7 @@ impl DeviceMeshModel {
             return None;
         }
         match self.following.upgrade() {
-            Some(follow) => (!self.home_peers.is_empty()
-                || self.removals_pending
-                || !follow.files.is_complete())
-            .then_some(self.next_status_refresh),
+            Some(_) => (!self.home_peers.is_empty()).then_some(self.next_status_refresh),
             None => Some(self.next_status_refresh),
         }
     }
@@ -1807,8 +1748,7 @@ impl DeviceMeshModel {
         if let Some(follow) = self.following.upgrade() {
             return Some(follow);
         }
-        let files = [identity_root().join(PENDING_DECOMMISSIONS)];
-        let follow = Rc::new(MeshFollow::start(&self.config, &files)?);
+        let follow = Rc::new(MeshFollow::start(&self.config)?);
         self.following = Rc::downgrade(&follow);
         self.health_round = self.home_peers.len().max(1);
         self.next_status_refresh = ui::time::now();
@@ -1848,9 +1788,7 @@ impl DeviceMeshModel {
         }
         let now = ui::time::now();
         let due = now >= self.next_status_refresh;
-        let changed = follow.files.take() || (due && !follow.files.is_complete());
-        let idle = self.management_child.is_none() && self.management_call.is_none();
-        if idle && (changed || due || self.health_round > 0) {
+        if self.management_call.is_none() && (due || self.health_round > 0) {
             self.health_round = self.health_round.saturating_sub(1);
             self.next_status_refresh = now + HOME_PEER_HEALTH_INTERVAL;
             self.refresh_one_home_peer();
@@ -1951,14 +1889,6 @@ mod tests {
             assert!(pane.poll(), "the thread's status is shown");
             assert_eq!(pane.runtime_status, ServerRuntimeStatus::Online);
             assert!(!pane.poll(), "once");
-
-
-            pane.removals_pending = true;
-            assert!(
-                pane.next_wake()
-                    .is_some_and(|at| at >= ui::time::now() + Duration::from_secs(30)),
-                "a pending removal is retried once a minute, not every two seconds"
-            );
         }
 
         phase server_config_edits_are_real_honest_and_coalesced;
@@ -1975,7 +1905,7 @@ mod tests {
                 })
                 .unwrap();
                 pane.apply(&DeviceMeshEffect::SetDeviceService {
-                    service: "full_content_replication".into(),
+                    service: "compute".into(),
                     on: true,
                 })
                 .unwrap();
@@ -1987,7 +1917,7 @@ mod tests {
 
                 let saved = ServerConfig::load(&path).unwrap();
                 assert_eq!(saved.work.from, WorkFrom::Anyone);
-                assert!(saved.services.full_content_replication);
+                assert!(saved.services.compute);
                 assert!(!saved.services.remote_control_server);
             }
 
@@ -2130,16 +2060,9 @@ mod tests {
                     work: "mesh-work-anyone".into(),
                 })
                 .unwrap();
-                pane.apply(&DeviceMeshEffect::SetDeviceService {
-                    service: "full_content_replication".into(),
-                    on: true,
-                })
-                .unwrap();
-
                 let saved = ServerConfig::load(&path).unwrap();
                 assert_eq!(saved.work.from, WorkFrom::Anyone);
                 assert!(saved.services.workspace_replication);
-                assert!(saved.services.full_content_replication);
                 assert!(saved.services.inbound_server);
             }
         }
@@ -2147,14 +2070,7 @@ mod tests {
         phase device_health_and_workspace_status_reflect_fresh_facts;
         {
             {
-                assert_eq!(
-                    peer_health_badge(HomePeerHealth::Online { files_ready: true }),
-                    "Online"
-                );
-                assert_eq!(
-                    peer_health_badge(HomePeerHealth::Online { files_ready: false }),
-                    "Syncing"
-                );
+                assert_eq!(peer_health_badge(HomePeerHealth::Online), "Online");
                 assert_eq!(peer_health_badge(HomePeerHealth::Unreachable), "Offline");
                 assert_eq!(peer_health_badge(HomePeerHealth::Connecting), "Checking");
                 assert_eq!(
@@ -2194,55 +2110,6 @@ mod tests {
                         modified + STATUS_FRESHNESS + Duration::from_secs(1)
                     ),
                     ServerRuntimeStatus::Offline
-                );
-            }
-
-            {
-                let dir = tempfile::tempdir().unwrap();
-                let proof = dir.path().join("full-replica.json");
-                let config = ServerConfig {
-                    state_root: dir.path().to_path_buf(),
-                    full_replica_status: proof.clone(),
-                    work: WorkSetting::own_person(),
-                    services: tilo_server_protocol::ServiceCapabilities::personal_server(),
-                    ..ServerConfig::default()
-                };
-                tilo_server_protocol::metrics::save_metrics(
-                    &config.state_root,
-                    &tilo_server_protocol::metrics::MetricsSnapshot::default(),
-                )
-                .unwrap();
-                let now = std::fs::metadata(
-                    config
-                        .state_root
-                        .join(tilo_server_protocol::metrics::METRICS_FILE),
-                )
-                .unwrap()
-                .modified()
-                .unwrap();
-                let now_ms = now
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis();
-                std::fs::write(
-                    &proof,
-                    format!(
-                        r#"{{"state":"ready","full_content_replication":true,"updated_at_ms":{now_ms}}}"#
-                    ),
-                )
-                .unwrap();
-                assert_eq!(
-                    ServerRuntimeStatus::read(&config, now),
-                    ServerRuntimeStatus::Ready
-                );
-                std::fs::write(
-                    &proof,
-                    r#"{"state":"syncing","full_content_replication":false,"updated_at_ms":0}"#,
-                )
-                .unwrap();
-                assert_eq!(
-                    ServerRuntimeStatus::read(&config, now),
-                    ServerRuntimeStatus::Syncing
                 );
             }
         }
@@ -2298,12 +2165,11 @@ mod tests {
         let state_root = dir.path().join("tilo-server");
         std::fs::create_dir_all(&state_root).unwrap();
         let config = ServerConfig {
-            full_replica_status: state_root.join("full-replica.json"),
             state_root,
             work: WorkSetting::own_person(),
             ..ServerConfig::default()
         };
-        let follow = MeshFollow::start_at(&config, &[], clock).expect("the status thread starts");
+        let follow = MeshFollow::start_at(&config, clock).expect("the status thread starts");
         tilo_test_env::wait_until("the first read", || {
             follow.status() == Some(ServerRuntimeStatus::Offline)
         });
@@ -2622,7 +2488,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
                 assert!(pane.apply(&effect).is_err(), "nothing unpaired is touched");
-                assert!(pane.management_child.is_none());
+                assert!(pane.management_call.is_none());
             }
 
             {
@@ -2639,9 +2505,11 @@ mod tests {
             }
         }
 
-        phase home_server_removal_runs_on_the_host;
+        phase a_server_removal_signs_its_revocation_and_retires_it;
         {
-            use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
+            use ui::tilo_actions::remote::{
+                Confirmation, InvokeArgument, RemoteActionTarget, identity_admin,
+            };
             let dir = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_IDENTITY_ROOT", dir.path());
@@ -2666,25 +2534,43 @@ mod tests {
                 device: NEARBY_DEVICE.into(),
             })
             .unwrap();
-            assert!(
-                pane.management_child.is_none(),
-                "no server process runs here"
-            );
+            // The root signs the revocation, and the server's entry in the
+            // person's Servers workspace is retired with it.
+            pane.poll_background_tasks();
             pane.poll_background_tasks();
             let asked = host.asked();
-            let removal = asked.last().unwrap();
+            let [revoke, retire] = asked.as_slice() else {
+                panic!("a revocation, then a retirement: {asked:?}");
+            };
+            assert_eq!(revoke.target, identity_admin::target(identity_admin::REVOKE));
+            assert_eq!(revoke.confirmation, Some(Confirmation::Confirmed));
             assert_eq!(
-                removal.target,
-                identity_admin::target(identity_admin::HOME_PEER_REMOVE)
-            );
-            assert_eq!(removal.confirmation, Some(Confirmation::Confirmed));
-            assert_eq!(
-                removal.argument,
+                revoke.argument,
                 InvokeArgument::Json(
                     serde_json::json!({
                         "device": NEARBY_DEVICE,
-                        "service": NEARBY_SERVICE,
+                        "reason": "retired",
                         "confirm": true,
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone()
+                )
+            );
+            assert_eq!(
+                retire.target,
+                RemoteActionTarget::workspace_governance(
+                    &tilo_server_protocol::servers::person_workspace_id(&[0x33; 32]),
+                    "server.retire",
+                )
+            );
+            assert_eq!(retire.confirmation, Some(Confirmation::Confirmed));
+            assert_eq!(
+                retire.argument,
+                InvokeArgument::Json(
+                    serde_json::json!({
+                        "server": NEARBY_DEVICE,
+                        "revocation": SIGNED_REVOCATION,
                     })
                     .as_object()
                     .unwrap()
@@ -2703,7 +2589,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
             pane.take_management_answer(
-                Some(NEARBY_DEVICE.into()),
+                Managing::Status(NEARBY_DEVICE.into()),
                 Err("the home server was not reachable".into()),
             );
             assert_eq!(
@@ -2783,7 +2669,7 @@ mod tests {
                 "the paired device is done"
             );
             assert!(
-                pane.apply_child.is_none() && pane.management_child.is_none(),
+                pane.apply_child.is_none() && pane.management_call.is_none(),
                 "pairing started no process in the app"
             );
         }
@@ -2793,6 +2679,8 @@ mod tests {
     const THIS_DEVICE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const PHONE: &str = "2222222222222222222222222222222222222222222222222222222222222222";
     const NEARBY_SERVICE: &str = "bb00000000000000000000000000000000000000000000000000000000000002";
+    /// The revocation the identity step answers, as the pane passes it on.
+    const SIGNED_REVOCATION: &str = "{\"signed\":true}";
 
     #[derive(Default)]
     pub(super) struct PairingHost {
@@ -2835,12 +2723,11 @@ mod tests {
             use ui::tilo_actions::remote::{device_pairing, identity_admin};
             let invocation = request.invocation;
             let value = if request.target.provider == identity_admin::PROVIDER {
-                match request.target.address.action.as_str() {
-                    identity_admin::HOME_PEER_REMOVE => {
-                        serde_json::json!({"decommissioned": true, "files_ready": false})
-                    }
-                    _ => serde_json::json!({"device": PHONE, "revoked": true}),
-                }
+                serde_json::json!({
+                    "device": PHONE,
+                    "revoked": true,
+                    "revocation": SIGNED_REVOCATION,
+                })
             } else if request.target.address.action == device_pairing::DISCOVER {
                 serde_json::json!({
                     "role": "home-peer",

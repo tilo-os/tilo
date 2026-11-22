@@ -13,21 +13,22 @@ const WRITER: &str = "so.tilo.word-processor";
 /// A workspace on a server with one person in it and their agent kept there. The person's page
 /// joins: its device is the one their agent's turns are admitted on.
 macro_rules! team {
-    ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident) => {
+    ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $served:ident) => {
         let ($root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let server = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
         let $browser = enrol(&$root, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (serving, $actions) = crate::harness::hosted::serving_documents_with_actions(
+        let $served = crate::harness::hosted::start(
             &$root,
             &server,
             state.path(),
-            crate::common::catalogue,
+            crate::harness::hosted::Options::offering(crate::common::catalogue),
         )
         .await;
-        let $workspaces = serving.workspaces().unwrap().clone();
+        let $actions = $served.roster.actions.clone();
+        let $workspaces = $served.workspaces().unwrap().clone();
         let $workspace = $workspaces.create("Team").await.unwrap().workspace;
-        let $page = Browser::open_at(&serving, &$browser, &server, &$workspace).await;
+        let $page = Browser::open_at(&$served, &$browser, &server, &$workspace).await;
         let person = hex::encode($root.verifying_key().to_bytes());
         make_agent(&$page, &$workspaces, &$workspace, &person, None).await;
     };
@@ -35,8 +36,11 @@ macro_rules! team {
 
 /// Answer the one turn the workspace owes, with the model `$model`.
 macro_rules! answer_the_turn {
-    ($workspaces:ident, $actions:ident, $workspace:ident, $model:expr) => {
-        let agents = ServerAgents::for_test($workspaces.clone(), $actions.clone(), Some($model));
+    ($served:ident, $workspace:ident, $model:expr) => {
+        let agents = $served
+            .approving(&$workspace, &[SCOUT])
+            .await
+            .scripted($model);
         let turns = agents.turns(&$workspace).await.unwrap();
         assert_eq!(turns.len(), 1, "the ask is the agent's turn: {turns:?}");
         tokio::time::timeout(
@@ -196,13 +200,13 @@ pub(super) async fn read_by(
     document: &str,
 ) -> Result<String, String> {
     let id = WorkspaceId::parse(workspace).unwrap();
-    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(actions.clone(), id);
+    let service = tilo_workspace_service::agents::WorkspaceActionProvider::new(actions.clone(), id);
     let route = DocumentRoute {
         app_id: WRITER.into(),
         cluster_id: workspace.into(),
         document: document.into(),
     };
-    tilo_server::workspace_agents::invoke_named(
+    tilo_workspace_service::agents::invoke_named(
         &service,
         caller,
         &route,
@@ -256,7 +260,7 @@ fn writes_then_shows(asked: &Arc<Mutex<Vec<ModelRequest>>>) -> Model {
 /// failure, and the reply shows nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn where_a_document_is_shown_and_whose_card_it_is_are_never_the_models_to_say() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, _actions, workspaces, workspace, page, served);
     asks_scout(
         &workspaces,
         &workspace,
@@ -291,8 +295,7 @@ async fn where_a_document_is_shown_and_whose_card_it_is_are_never_the_models_to_
     ];
     let asked = Arc::new(Mutex::new(Vec::new()));
     answer_the_turn!(
-        workspaces,
-        actions,
+        served,
         workspace,
         calls_then_answers(
             refused
@@ -332,12 +335,11 @@ async fn where_a_document_is_shown_and_whose_card_it_is_are_never_the_models_to_
 /// decides, and what it answered is told to the model as a failure.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_thing_the_turn_cannot_read_is_not_shown() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, _actions, workspaces, workspace, page, served);
     asks_scout(&workspaces, &workspace, &root, "Show me the budget.").await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     answer_the_turn!(
-        workspaces,
-        actions,
+        served,
         workspace,
         calls_then_answers(
             vec![
@@ -382,7 +384,7 @@ mod denied;
 /// to the ask, after the model's words, and names the document the turn wrote in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_a_server_answers_with_the_document_it_wrote_shown_live() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, actions, workspaces, workspace, page, served);
     asks_scout(
         &workspaces,
         &workspace,
@@ -391,7 +393,7 @@ async fn an_agent_on_a_server_answers_with_the_document_it_wrote_shown_live() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    answer_the_turn!(workspaces, actions, workspace, writes_then_shows(&asked));
+    answer_the_turn!(served, workspace, writes_then_shows(&asked));
 
     // Taken out whole: no lock is held while the test asks the server anything more.
     let asked = asked.lock().unwrap().clone();

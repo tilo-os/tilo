@@ -1,7 +1,6 @@
 //! A part of a tree that only fades, grows or moves is posed by the compositor: drawn once into a
 //! layer of its own below the rest, and only its pose changes while it animates.
 
-
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -96,6 +95,8 @@ fn a_fading_part_is_drawn_once_and_posed_by_the_compositor() {
     // lift the part.
     host.relayout();
     assert!(host.prepare_frame(), "the first frame draws it");
+    // Its frames are drawn on other threads: what the surface shows is read once they are in.
+    host.wait_drawn();
     let layers = host.layers();
     assert_eq!(layers.len(), 2, "the part below the rest of the tree");
     let part = &layers[0];
@@ -118,6 +119,7 @@ fn a_fading_part_is_drawn_once_and_posed_by_the_compositor() {
     opacity.set(0.75);
     host.relayout();
     assert!(host.prepare_frame(), "the compositor draws the new pose");
+    host.wait_drawn();
     let layers = host.layers();
     assert!((layers[0].pose.opacity - 0.75).abs() < f32::EPSILON);
     assert!(
@@ -129,12 +131,14 @@ fn a_fading_part_is_drawn_once_and_posed_by_the_compositor() {
     under.set(true);
     host.relayout();
     assert!(host.prepare_frame());
+    host.wait_drawn();
     assert_eq!(host.layers().len(), 1, "drawn into the tree's own frame");
 
     // Lifted again, it shows what it drew before: nothing of it is drawn again.
     under.set(false);
     host.relayout();
     assert!(host.prepare_frame());
+    host.wait_drawn();
     let layers = host.layers();
     assert_eq!(layers.len(), 2);
     assert!(

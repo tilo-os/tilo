@@ -147,6 +147,7 @@ impl AppBrokerState {
         // route: which surface a command goes to is the one that offers the
         // resource and action it names, not the surface it was filed under.
         let peers = self
+            .publishers
             .surfaces
             .lock()
             .map_err(|_| "membership surfaces unavailable")?
@@ -303,7 +304,7 @@ impl AppBrokerState {
         action: &str,
     ) -> Option<(PublishedSurface, PublishedAction)> {
         let offered = {
-            let surfaces = self.surfaces.lock().ok()?;
+            let surfaces = self.publishers.surfaces.lock().ok()?;
             surfaces
                 .values()
                 .filter(|surface| {
@@ -459,6 +460,7 @@ impl AppBrokerState {
         if let Some(peer) = existing {
             let changed = {
                 let mut surfaces = self
+                    .publishers
                     .surfaces
                     .lock()
                     .map_err(|_| "membership surfaces unavailable")?;
@@ -1291,7 +1293,7 @@ mod tests {
                     .unwrap()
                     .get(&workspace)
                     .unwrap();
-                state.invocation_subscribers.lock().unwrap().remove(&peer);
+                state.publishers.streams.lock().unwrap().remove(&peer);
                 for _ in 0..16 {
                     if state.published_surfaces_generation() == 2 {
                         break;

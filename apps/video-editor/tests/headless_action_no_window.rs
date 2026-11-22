@@ -1,4 +1,3 @@
-
 //! End-to-end action test without a driving window. A member with no
 //! window — an agent, a script — holds the editor's view of the project,
 //! attached and never drawn, surveys what it may do, and edits it through the

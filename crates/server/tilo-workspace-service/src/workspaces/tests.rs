@@ -13,6 +13,7 @@ pub(crate) use super::fixtures::{
     signed_pre_admission, test_host, test_host_taking_part, test_host_with_grants,
 };
 
+mod access_projection;
 pub(crate) mod admission_cost;
 #[cfg(feature = "agents")]
 pub(crate) mod bots;

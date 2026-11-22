@@ -1,6 +1,6 @@
 //! Byte ranges of file-backed content, fetched straight into the content store's
-//! area. A range becomes a few `GET` requests for exactly the chunks it overlaps;
-//! every verified group is written at its offset in the entry's file and recorded
+//! area. A range asks the content source for exactly the chunks it overlaps; each
+//! verified chunk is written at its offset in the entry's file and recorded
 //! resident once durable, so a 10 GiB file costs no more memory than a 10 MiB one.
 //!
 //! A chunk this device already holds is copied locally instead of fetched, and
@@ -9,32 +9,21 @@
 //! A blocked read and read-ahead are interactive and always sent at once; pinned,
 //! predictive and backfill work waits while they are in flight.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::os::unix::fs::FileExt as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use bao_tree::ChunkNum;
-use bao_tree::io::BaoContentItem;
-use iroh::endpoint::Connection;
-use iroh_blobs::get::fsm::{self, BlobContentNext, ConnectedNext, EndBlobNext, RequestCounters};
-use iroh_blobs::protocol::{ChunkRanges, GetRequest};
 use tokio::sync::Notify;
 
-use super::{Duration, EndpointAddr, Hash, Hydrator, Result, anyhow};
+use super::{Hash, Hydrator, Result, anyhow};
 use crate::content::{self, Manifest, RangeSet};
 use crate::store::Retention;
 use tilo_lock::MutexRecover as _;
 
 const REQUEST_BYTES: u64 = 16 * 1024 * 1024;
-const FOREGROUND_REQUEST_BYTES: u64 = 2 * 1024 * 1024;
-const REQUESTS_PER_PEER: usize = 8;
-const CONNECTIONS_PER_PEER: usize = 4;
-/// A request that makes no progress for this long is abandoned for the
-/// next peer.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// BAO verification works in 16 KiB groups, so a request never asks for less.
+/// A range is asked for in whole 16 KiB groups, so a request never asks for less.
 const GROUP: u64 = 16 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -198,18 +187,6 @@ struct ChunkWant {
     within: Range<u64>,
 }
 
-impl ChunkWant {
-    fn ranges(&self) -> ChunkRanges {
-        ChunkRanges::from(
-            ChunkNum::full_chunks(self.within.start)..ChunkNum::chunks(self.within.end),
-        )
-    }
-
-    fn bytes(&self) -> u64 {
-        self.within.end.saturating_sub(self.within.start)
-    }
-}
-
 /// The parts of the chunks of `manifest` that cover `ranges`, one entry per chunk,
 /// aligned to whole BAO groups.
 fn chunk_wants(manifest: &Manifest, ranges: &[Range<u64>]) -> Vec<ChunkWant> {
@@ -236,24 +213,6 @@ fn chunk_wants(manifest: &Manifest, ranges: &[Range<u64>]) -> Vec<ChunkWant> {
     wants
 }
 
-fn requests(wants: Vec<ChunkWant>, max_bytes: u64) -> Vec<Vec<ChunkWant>> {
-    let mut out = Vec::new();
-    let mut current: Vec<ChunkWant> = Vec::new();
-    let mut bytes = 0_u64;
-    for want in wants {
-        if !current.is_empty() && bytes.saturating_add(want.bytes()) > max_bytes {
-            out.push(std::mem::take(&mut current));
-            bytes = 0;
-        }
-        bytes = bytes.saturating_add(want.bytes());
-        current.push(want);
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    out
-}
-
 impl Hydrator {
     pub fn fetched_range_bytes(&self) -> u64 {
         self.ranged_bytes.load(Ordering::Relaxed)
@@ -264,7 +223,7 @@ impl Hydrator {
     ///
     /// # Errors
     ///
-    /// Part of the range could not be fetched from any peer, or the area cannot be
+    /// Part of the range could not be fetched from the workspace, or the area cannot be
     /// written.
     pub async fn ensure_range(
         &self,
@@ -353,7 +312,7 @@ impl Hydrator {
                 .sum();
             if unserved > 0 {
                 return Err(anyhow!(
-                    "{unserved} bytes of {content} were not served by any peer"
+                    "{unserved} bytes of {content} were not handed over by the workspace"
                 ));
             }
             // Background work is admitted before it claims anything, so it
@@ -374,9 +333,7 @@ impl Hydrator {
                 content,
                 ranges: claimed,
             };
-            let result = self
-                .fetch_claimed(content, manifest, &claim.ranges, priority)
-                .await;
+            let result = self.fetch_claimed(content, manifest, &claim.ranges).await;
             let claimed = claim.release();
             drop(admission);
             result?;
@@ -389,52 +346,33 @@ impl Hydrator {
         content: Hash,
         manifest: &Manifest,
         claimed: &[Range<u64>],
-        priority: Priority,
     ) -> Result<()> {
         let wants = chunk_wants(manifest, claimed);
-        let mut wants = self.fill_from_local(content, manifest, wants).await?;
+        let wants = self.fill_from_local(content, manifest, wants).await?;
         if wants.is_empty() {
             return Ok(());
         }
-        let peers = self.known_peers();
-        if peers.is_empty() && self.source.is_some() {
-            // No peer to ask for ranges: the source hands over whole chunks,
-            // which then fill the area as resident chunks do.
-            let chunks = wants
-                .iter()
-                .filter_map(|want| manifest.chunks().get(want.index))
-                .map(|chunk| Hash::from(chunk.hash))
-                .collect::<std::collections::BTreeSet<_>>();
-            self.fetch_from_source(chunks.into_iter().collect()).await;
-            wants = self.fill_from_local(content, manifest, wants).await?;
-            if wants.is_empty() {
-                return Ok(());
-            }
+        let chunks = wants
+            .iter()
+            .filter_map(|want| manifest.chunks().get(want.index))
+            .map(|chunk| Hash::from(chunk.hash))
+            .collect::<std::collections::BTreeSet<_>>();
+        let asked: u64 = wants
+            .iter()
+            .filter_map(|want| manifest.chunks().get(want.index))
+            .map(|chunk| u64::from(chunk.len))
+            .sum();
+        let _guard = self.mark_fetching(content);
+        self.fetch_from_source(chunks.into_iter().collect()).await;
+        let rest = self.fill_from_local(content, manifest, wants).await?;
+        if rest.is_empty() {
+            self.ranged_bytes.fetch_add(asked, Ordering::Relaxed);
+            return Ok(());
         }
-        if peers.is_empty() {
-            return Err(anyhow!("no peers to fetch {content} from"));
-        }
-        let max_bytes = if priority == Priority::Foreground {
-            // A blocked reader waits for all of it: smaller requests,
-            // answered in parallel over the connections.
-            FOREGROUND_REQUEST_BYTES
-        } else {
-            REQUEST_BYTES
-        };
-        let batches = requests(wants, max_bytes);
-        let window = REQUESTS_PER_PEER.saturating_mul(peers.len()).max(1);
-        let jobs = batches.into_iter().enumerate().map(|(index, batch)| {
-            let peers = &peers;
-            async move {
-                self.fetch_request_any(content, manifest, peers, index, batch)
-                    .await
-            }
-        });
-        let results: Vec<Result<()>> = futures_util::StreamExt::collect(
-            futures_util::StreamExt::buffer_unordered(futures_util::stream::iter(jobs), window),
-        )
-        .await;
-        results.into_iter().find(Result::is_err).unwrap_or(Ok(()))
+        Err(anyhow!(
+            "the workspace did not hand over {} chunks of {content}",
+            rest.len()
+        ))
     }
 
     async fn fill_from_local(
@@ -509,165 +447,6 @@ impl Hydrator {
         }
         Ok(rest)
     }
-
-    async fn fetch_request_any(
-        &self,
-        content: Hash,
-        manifest: &Manifest,
-        peers: &[EndpointAddr],
-        index: usize,
-        batch: Vec<ChunkWant>,
-    ) -> Result<()> {
-        let (earlier, later) = peers.split_at(index.checked_rem(peers.len()).unwrap_or(0));
-        let mut remaining = batch;
-        let mut last_error = anyhow!("no peer served {content}");
-        for peer in later.iter().chain(earlier) {
-            let started = std::time::Instant::now();
-            let number = index.checked_rem(CONNECTIONS_PER_PEER).unwrap_or(0);
-            let connection = match self.pooled_blob_connection(peer, number).await {
-                Ok(connection) => connection,
-                Err(error) => {
-                    self.record_peer_result(peer.id, started.elapsed(), false);
-                    last_error = error;
-                    continue;
-                }
-            };
-            let (done, error) = self
-                .fetch_request(&connection, content, manifest, &remaining)
-                .await;
-            remaining.retain(|w| !done.contains(&w.index));
-            let failed = error.is_some();
-            self.record_peer_result(peer.id, started.elapsed(), !failed);
-            if let Some(error) = error {
-                if connection.close_reason().is_some() {
-                    self.forget_blob_connection(peer.id, &connection).await;
-                }
-                last_error = error;
-            }
-            if remaining.is_empty() {
-                return Ok(());
-            }
-        }
-        Err(last_error)
-    }
-
-    /// One `GET` on `connection`. Every verified group is written to the area as it
-    /// arrives, and what arrived is recorded resident even when the request fails
-    /// part way. Returns the chunk indexes completed and the error, if any.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one response, read child by child as the protocol state machine hands it over"
-    )]
-    async fn fetch_request(
-        &self,
-        connection: &Connection,
-        content: Hash,
-        manifest: &Manifest,
-        wants: &[ChunkWant],
-    ) -> (HashSet<usize>, Option<anyhow::Error>) {
-        let key = *content.as_bytes();
-        let files = Arc::clone(self.store.files());
-        let (file, generation) = match files.file_in_generation(&key) {
-            Ok(file) => file,
-            Err(error) => return (HashSet::new(), Some(error.into())),
-        };
-        let by_offset: HashMap<u64, &ChunkWant> = wants
-            .iter()
-            .map(|w| (Manifest::child_offset(w.index), w))
-            .collect();
-        let mut builder = GetRequest::builder();
-        for want in wants {
-            builder = builder.offset(Manifest::child_offset(want.index), want.ranges());
-        }
-        let request = builder.build(content);
-        let _guard = self.mark_fetching(content);
-        let mut written: Vec<Range<u64>> = Vec::new();
-        let mut done = HashSet::new();
-        let transfer = async {
-            let connected = fsm::start(connection.clone(), request, RequestCounters::default())
-                .next()
-                .await
-                .map_err(|e| anyhow!("{e}"))?;
-            let mut next = connected.next().await.map_err(|e| anyhow!("{e}"))?;
-            loop {
-                let child = match next {
-                    ConnectedNext::StartChild(child) => child,
-                    ConnectedNext::StartRoot(root) => {
-                        let end = root.next().drain().await.map_err(|e| anyhow!("{e}"))?;
-                        match end.next() {
-                            EndBlobNext::MoreChildren(child) => child,
-                            EndBlobNext::Closing(closing) => {
-                                closing.next().await.map_err(|e| anyhow!("{e}"))?;
-                                return Ok::<_, anyhow::Error>(());
-                            }
-                        }
-                    }
-                    ConnectedNext::Closing(closing) => {
-                        closing.next().await.map_err(|e| anyhow!("{e}"))?;
-                        return Ok(());
-                    }
-                };
-                let offset = child.offset();
-                let want = *by_offset
-                    .get(&offset)
-                    .ok_or_else(|| anyhow!("response child {offset} was not requested"))?;
-                let chunk = *manifest
-                    .chunks()
-                    .get(want.index)
-                    .ok_or_else(|| anyhow!("chunk {} out of range", want.index))?;
-                let start = manifest.chunk_range(want.index).map_or(0, |r| r.start);
-                let (mut blob, size) = child
-                    .next(Hash::from(chunk.hash))
-                    .next()
-                    .await
-                    .map_err(|e| anyhow!("{e}"))?;
-                anyhow::ensure!(
-                    size == u64::from(chunk.len),
-                    "peer announced a {size} byte chunk for a {} byte one",
-                    chunk.len
-                );
-                let end = loop {
-                    match blob.next().await {
-                        BlobContentNext::More((more, item)) => {
-                            blob = more;
-                            if let BaoContentItem::Leaf(leaf) = item.map_err(|e| anyhow!("{e}"))? {
-                                let at = start.saturating_add(leaf.offset);
-                                file.write_all_at(&leaf.data, at)?;
-                                self.ranged_bytes
-                                    .fetch_add(leaf.data.len() as u64, Ordering::Relaxed);
-                                written.push(at..at.saturating_add(leaf.data.len() as u64));
-                            }
-                        }
-                        BlobContentNext::Done(end) => break end,
-                    }
-                };
-                done.insert(want.index);
-                next = match end.next() {
-                    EndBlobNext::MoreChildren(child) => ConnectedNext::StartChild(child),
-                    EndBlobNext::Closing(closing) => ConnectedNext::Closing(closing),
-                };
-            }
-        };
-        let error = match tokio::time::timeout(REQUEST_TIMEOUT, transfer).await {
-            Ok(Ok(())) => None,
-            Ok(Err(error)) => Some(error),
-            Err(_) => Some(anyhow!("request for {content} timed out")),
-        };
-        if !written.is_empty() {
-            let files = Arc::clone(&files);
-            let mark = tokio::task::spawn_blocking(move || {
-                files.mark_resident_in(&key, Some(generation), &written, false)
-            })
-            .await;
-            if let Err(error) = mark
-                .map_err(anyhow::Error::from)
-                .and_then(|r| r.map_err(Into::into))
-            {
-                return (HashSet::new(), Some(error));
-            }
-        }
-        (done, error)
-    }
 }
 
 #[cfg(test)]
@@ -677,6 +456,8 @@ impl Hydrator {
     reason = "test fixtures: one range per request, small known sizes"
 )]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     use crate::content::{ChunkRef, ChunkTier};
@@ -710,8 +491,6 @@ mod tests {
             let wants = chunk_wants(&m, &[0..10, 60_000..60_010]);
             assert_eq!(wants.len(), 1);
             assert_eq!(wants[0].within, 0..65_536);
-            let split = requests(chunk_wants(&m, &[0..220_000]), 120_000);
-            assert_eq!(split.iter().map(Vec::len).collect::<Vec<_>>(), vec![1, 2]);
         }
 
         phase flights_hand_out_each_range_once;
@@ -744,28 +523,29 @@ mod tests {
 
     use crate::test_bytes::pseudo;
 
-    async fn pair(
-        data: &[u8],
-    ) -> (
-        Hydrator,
-        Hash,
-        Arc<crate::store::ContentStore>,
-        iroh::protocol::Router,
-    ) {
+    async fn pair(data: &[u8]) -> (Hydrator, Hash, Arc<crate::store::ContentStore>, ()) {
         let server_store = Arc::new(crate::store::ContentStore::memory());
         let id = server_store.write_content(data).await.unwrap().unwrap();
-        let server = test_server::direct_endpoint().await;
-        let router = iroh::protocol::Router::builder(server.clone())
-            .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
-            .spawn();
-        let client = test_server::direct_endpoint().await;
-        let hydrator = Hydrator::new(client, Arc::new(crate::store::ContentStore::memory()));
-        hydrator.add_peer(server.addr());
-        (hydrator, id, server_store, router)
+        let hydrator = Hydrator::new(Arc::new(crate::store::ContentStore::memory())).with_source(
+            Arc::new(crate::hydration::StoreSource(Arc::clone(&server_store))),
+        );
+        (hydrator, id, server_store, ())
+    }
+
+    /// A workspace that is asked and never answers.
+    struct Silent;
+
+    impl crate::hydration::ContentSource for Silent {
+        fn fetch(
+            &self,
+            _hash: Hash,
+        ) -> futures_util::future::BoxFuture<'static, Option<bytes::Bytes>> {
+            Box::pin(std::future::pending())
+        }
     }
 
     #[tokio::test]
-    async fn a_photo_sized_file_arrives_from_a_peer_chunk_by_chunk() {
+    async fn a_photo_sized_file_arrives_from_the_workspace_chunk_by_chunk() {
         // A quarter of a megabyte is a photo: too big for the single chunk a
         // test file is, small enough to stay loose blobs rather than the
         // area. Its manifest and several chunks travel, and the first chunk
@@ -902,21 +682,17 @@ mod tests {
         let data = pseudo(3 * 1024 * 1024, 17);
         let source = crate::store::ContentStore::memory();
         let id = source.write_content(&data).await.unwrap().unwrap();
-        let quiet = crate::hydration::test_peers::silent().await;
-        let hydrator = Hydrator::new(
-            test_server::direct_endpoint().await,
-            Arc::new(crate::store::ContentStore::memory()),
-        );
+        let hydrator = Hydrator::new(Arc::new(crate::store::ContentStore::memory()))
+            .with_source(Arc::new(Silent));
         let manifest = source.local(id).await.unwrap();
         assert_eq!(hydrator.store.ingest(manifest).await.unwrap(), id);
-        hydrator.add_peer(quiet.endpoint().addr());
 
         let abandoned = tokio::time::timeout(
             Duration::from_millis(500),
             hydrator.read_with(id, 0, 64 * 1024, Priority::Predictive),
         )
         .await;
-        assert!(abandoned.is_err(), "a quiet peer serves nothing");
+        assert!(abandoned.is_err(), "a quiet workspace hands over nothing");
         assert_eq!(
             hydrator
                 .flights

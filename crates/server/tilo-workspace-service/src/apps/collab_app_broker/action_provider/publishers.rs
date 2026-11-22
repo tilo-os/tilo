@@ -6,13 +6,6 @@ use tilo_actions::remote::{APPLICATION_OPEN_ACTION, APPLICATION_OPEN_LINK_ACTION
 use super::super::AppBrokerState;
 
 impl AppBrokerState {
-    pub(crate) fn is_windowless(&self, peer_id: u64) -> bool {
-        self.launchable
-            .windowless_peers
-            .lock()
-            .is_ok_and(|windowless| windowless.contains(&peer_id))
-    }
-
     /// Whether `address` in `app_id` shows something, and so is taken only
     /// by a window of the app: its `open` and `open-link`, and any action its
     /// surface declares it shows (Chat's conversation with a person, an

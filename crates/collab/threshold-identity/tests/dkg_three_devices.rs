@@ -6,7 +6,6 @@
 //! where a paper share returns to the quorum when a physical device is
 //! unavailable.
 
-
 use std::collections::BTreeMap;
 
 use collab_types::{canonical_bytes, verify_event};

@@ -17,11 +17,11 @@ Each entry is the closest working design to `docs/designs/app-language`.
   option, a list, a reference) holds its runtime value as structured JSON in the document; the
   store reads it back as `Scalar::Json` because the schema marks the field `composite`. Scalars
   are native automerge scalars. An unset register (`null`) reads as absent.
-- **The runtime plans on a mirror.** The runtime expects its commits to be visible at once, but
-  the workspace document belongs to the framework. `TiloStore` applies a transaction's mutations to a
-  copy of the document, queues the recorded `DynAction`, and the host commits it through the API.
-  When the document's heads move, the mirror is replaced by a copy and subscribers are told. One
-  transaction may be open at a time (a rollback discards the mirror's open change).
+- **The runtime plans in the store.** The runtime expects its commits to be visible at once.
+  `ResourceStore` holds a transaction's writes as its own until the run or plan that made them
+  ends, reads them over what the resource store holds, and then sends them as one change; a
+  plan that is rolled back drops them, and nobody is told of them. One transaction may be open
+  at a time.
 - **Press goes through a `commit` action.** A press runs in the runtime (`ViewInstance::press`,
   whose action reference is not reachable from outside), which queues a `DynAction`; the window
   then invokes the host's `tl:host/commit(ticket)`, whose build closure encodes the queued action.

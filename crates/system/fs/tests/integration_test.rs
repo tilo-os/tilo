@@ -18,12 +18,11 @@ use std::{
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use collab_types::{Access as CapAccess, CapOverride, Effect, Scope};
-use fs::namespace::ROOT_INO;
-use fs::{Access, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, WorkspaceAcl};
 use fuser::{Config, MountOption};
-use iroh::endpoint::{Endpoint, presets};
 use tempfile::tempdir;
 use tilo_action_policy::{Grantee, MemberId};
+use tilo_fs::namespace::ROOT_INO;
+use tilo_fs::{Access, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, WorkspaceAcl};
 
 fn fuse_available() -> bool {
     std::path::Path::new("/dev/fuse").exists()
@@ -60,11 +59,9 @@ async fn wait_for_mount(mount: impl AsRef<std::path::Path>) {
 async fn shutdown_fuse_fixture(
     session: fuser::BackgroundSession,
     mount: &std::path::Path,
-    endpoint: Endpoint,
     store: Arc<ContentStore>,
 ) {
-    fs::fuse_session::unmount_and_join(session, mount).expect("unmount and join FUSE session");
-    endpoint.close().await;
+    tilo_fs::fuse_session::unmount_and_join(session, mount).expect("unmount and join FUSE session");
     store.shutdown().await.expect("shut down blob store");
 }
 
@@ -113,7 +110,7 @@ fn teardown_reads_an_aborted_fuse_connection_as_a_clean_end() {
     if let Some(abort) = &abort {
         std::fs::write(abort, b"1").expect("abort the FUSE connection");
     }
-    let ended = fs::fuse_session::unmount_and_join(session, &mount);
+    let ended = tilo_fs::fuse_session::unmount_and_join(session, &mount);
     let _ = std::process::Command::new("fusermount3")
         .args(["-u", "-q", "-z", "--"])
         .arg(&mount)
@@ -167,7 +164,7 @@ fn stopping_a_held_auto_unmount_session_ends_it() {
     let (done, ended) = std::sync::mpsc::channel();
     let stop_at = mount.clone();
     std::thread::spawn(move || {
-        let _ = done.send(fs::fuse_session::unmount_and_join(session, &stop_at));
+        let _ = done.send(tilo_fs::fuse_session::unmount_and_join(session, &stop_at));
     });
     let ended = ended
         .recv_timeout(tilo_test_env::hang_bound())
@@ -195,8 +192,7 @@ fn stopping_a_held_auto_unmount_session_ends_it() {
     }
 }
 
-async fn shutdown_runtime_fixture(endpoint: Endpoint, store: Arc<ContentStore>) {
-    endpoint.close().await;
+async fn shutdown_runtime_fixture(store: Arc<ContentStore>) {
     store.shutdown().await.expect("shut down blob store");
 }
 
@@ -205,7 +201,6 @@ const BOB: [u8; 32] = [0xB0; 32];
 
 struct CapFixture {
     fs: QuickFS,
-    endpoint: Endpoint,
     store: Arc<ContentStore>,
     docs: u64,
     docs_child: u64,
@@ -215,29 +210,21 @@ struct CapFixture {
 
 impl CapFixture {
     async fn shutdown(self) {
-        let Self {
-            fs,
-            endpoint,
-            store,
-            ..
-        } = self;
+        let Self { fs, store, .. } = self;
         drop(fs);
-        shutdown_runtime_fixture(endpoint, store).await;
+        shutdown_runtime_fixture(store).await;
     }
 }
 
 async fn cap_fixture(identity: [u8; 32], caps: &[CapOverride], now: Option<u64>) -> CapFixture {
     cap_fixture_with(
         identity,
-        fs::AclHandle::new(WorkspaceAcl::from_capabilities(identity, caps, &[], now)),
+        tilo_fs::AclHandle::new(WorkspaceAcl::from_capabilities(identity, caps, &[], now)),
     )
     .await
 }
 
-async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture {
-    let endpoint = Endpoint::bind(presets::Minimal)
-        .await
-        .expect("bind endpoint");
+async fn cap_fixture_with(identity: [u8; 32], acl: tilo_fs::AclHandle) -> CapFixture {
     let store = Arc::new(ContentStore::memory());
     let body = b"contents";
     let hash = store.write_content(body).await.unwrap().unwrap();
@@ -262,15 +249,13 @@ async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture 
         (docs, docs_child, other_child, look_alike_child)
     };
 
-    let shutdown_endpoint = endpoint.clone();
     let shutdown_store = store.clone();
-    let hydrator = Arc::new(Hydrator::new(endpoint, store));
+    let hydrator = Arc::new(Hydrator::new(store));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let fs = QuickFS::new(namespace, hydrator, heuristics).with_acl(acl, identity);
 
     CapFixture {
         fs,
-        endpoint: shutdown_endpoint,
         store: shutdown_store,
         docs,
         docs_child,
@@ -459,9 +444,6 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
     async fn fuse_mount_enforces_identity_acl_end_to_end() {
         require_fuse!();
         tilo_test_env::within("the identity-ACL FUSE mounts", async {
-            let endpoint = Endpoint::bind(presets::Minimal)
-                .await
-                .expect("bind endpoint");
             let store = Arc::new(ContentStore::memory());
             let body = b"members only";
             let hash = store.write_content(body).await.unwrap().unwrap();
@@ -473,9 +455,8 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
                     .unwrap();
                 drop(ns);
             }
-            let shutdown_endpoint = endpoint.clone();
             let shutdown_store = store.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
 
             let mut acl = WorkspaceAcl::new();
@@ -513,10 +494,10 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
 
             let bob_read = std::fs::read(bob_dir.path().join("secret.txt")).expect("Bob may read");
             assert_eq!(bob_read, body, "Bob (holds cap) reads the real content");
-            fs::fuse_session::unmount_and_join(sa, alice_dir.path())
+            tilo_fs::fuse_session::unmount_and_join(sa, alice_dir.path())
                 .expect("unmount Alice session");
-            fs::fuse_session::unmount_and_join(sb, bob_dir.path()).expect("unmount Bob session");
-            shutdown_endpoint.close().await;
+            tilo_fs::fuse_session::unmount_and_join(sb, bob_dir.path())
+                .expect("unmount Bob session");
             shutdown_store
                 .shutdown()
                 .await
@@ -525,24 +506,20 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         .await;
     }
     {
-        async fn mount_as(
+        fn mount_as(
             namespace: Arc<Mutex<Namespace>>,
             acl: Option<(WorkspaceAcl, [u8; 32])>,
-        ) -> (QuickFS, Endpoint, Arc<ContentStore>) {
-            let endpoint = Endpoint::bind(presets::Minimal)
-                .await
-                .expect("bind endpoint");
+        ) -> (QuickFS, Arc<ContentStore>) {
             let store = Arc::new(ContentStore::memory());
-            let shutdown_endpoint = endpoint.clone();
             let shutdown_store = store.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let fs = QuickFS::new(namespace, hydrator, heuristics);
             let fs = match acl {
                 Some((a, id)) => fs.with_acl(a, id),
                 None => fs,
             };
-            (fs, shutdown_endpoint, shutdown_store)
+            (fs, shutdown_store)
         }
 
         let store = Arc::new(ContentStore::memory());
@@ -567,8 +544,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         acl.grant_read(ALICE, "/shared.txt");
         acl.grant_read_write(BOB, "/secret");
 
-        let (alice_fs, alice_endpoint, alice_store) =
-            mount_as(namespace.clone(), Some((acl.clone(), ALICE))).await;
+        let (alice_fs, alice_store) = mount_as(namespace.clone(), Some((acl.clone(), ALICE)));
         assert_eq!(
             alice_fs.check_access(shared_ino, Access::Read),
             Ok(()),
@@ -590,7 +566,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
             "Alice's grant is read-only, so the file is on a read-only mount"
         );
 
-        let (bob_fs, bob_endpoint, bob_store) = mount_as(namespace.clone(), Some((acl, BOB))).await;
+        let (bob_fs, bob_store) = mount_as(namespace.clone(), Some((acl, BOB)));
         assert_eq!(
             bob_fs.check_access(secret_child_ino, Access::Read),
             Ok(()),
@@ -607,21 +583,21 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
             "Bob has NO cap on /shared.txt → absent from his view"
         );
 
-        let (open_fs, open_endpoint, open_store) = mount_as(namespace, None).await;
+        let (open_fs, open_store) = mount_as(namespace, None);
         assert_eq!(
             open_fs.check_access(shared_ino, Access::Write),
             Ok(()),
             "a mount without an ACL allows access (compat veneer)"
         );
         drop((alice_fs, bob_fs, open_fs));
-        shutdown_runtime_fixture(alice_endpoint, alice_store).await;
-        shutdown_runtime_fixture(bob_endpoint, bob_store).await;
-        shutdown_runtime_fixture(open_endpoint, open_store).await;
+        shutdown_runtime_fixture(alice_store).await;
+        shutdown_runtime_fixture(bob_store).await;
+        shutdown_runtime_fixture(open_store).await;
         store.shutdown().await.unwrap();
     }
     fuse_mount_enforces_identity_acl_end_to_end().await;
     {
-        use fs::CapabilityFile;
+        use tilo_fs::CapabilityFile;
 
         let dir = tempdir().unwrap();
         let caps_path = dir.path().join("caps.json");
@@ -641,7 +617,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
             &caps_path,
             &[read_cap(ALICE, "/w/docs"), read_cap(ALICE, "/w/other")],
         );
-        assert_eq!(file.refresh(), fs::Refresh::Reloaded(2));
+        assert_eq!(file.refresh(), tilo_fs::Refresh::Reloaded(2));
 
         assert_eq!(
             f.fs.check_access(f.other_child, Access::Read),
@@ -651,7 +627,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         f.shutdown().await;
     }
     {
-        use fs::CapabilityFile;
+        use tilo_fs::CapabilityFile;
 
         let dir = tempdir().unwrap();
         let caps_path = dir.path().join("caps.json");
@@ -665,7 +641,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         assert_eq!(f.fs.check_access(f.other_child, Access::Read), Ok(()));
 
         put_caps(&caps_path, &[read_cap(ALICE, "/w/docs")]);
-        assert_eq!(file.refresh(), fs::Refresh::Reloaded(1));
+        assert_eq!(file.refresh(), tilo_fs::Refresh::Reloaded(1));
 
         assert_eq!(
             f.fs.check_access(f.other_child, Access::Read),
@@ -693,10 +669,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let mount_dir = tempdir().expect("mount temp dir");
             let mount_path = mount_dir.path().to_path_buf();
 
-            let endpoint = Endpoint::bind(presets::Minimal)
-                .await
-                .expect("bind endpoint");
-
             let store = Arc::new(ContentStore::memory());
             let body = b"hello from the collaborative filesystem";
             let hash = store
@@ -716,9 +688,8 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 drop(ns);
             }
 
-            let shutdown_endpoint = endpoint.clone();
             let shutdown_store = store.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
+            let hydrator = Arc::new(Hydrator::new(store.clone()));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let fs = QuickFS::new(namespace, hydrator, heuristics);
 
@@ -747,7 +718,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
 
             let read_back = std::fs::read(mount_path.join("test_file.txt")).expect("read file");
             assert_eq!(read_back, body, "FUSE read must return the real content");
-            shutdown_fuse_fixture(session, &mount_path, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, &mount_path, shutdown_store).await;
         })
         .await;
     }
@@ -759,14 +730,10 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 let mount_dir = tempdir().expect("mount temp dir");
                 let path = mount_dir.path().to_path_buf();
 
-                let endpoint = Endpoint::bind(presets::Minimal)
-                    .await
-                    .expect("bind endpoint");
                 let store = Arc::new(ContentStore::memory());
                 let namespace = Arc::new(Mutex::new(Namespace::new("rw-peer").unwrap()));
-                let shutdown_endpoint = endpoint.clone();
                 let shutdown_store = store.clone();
-                let hydrator = Arc::new(Hydrator::new(endpoint, store));
+                let hydrator = Arc::new(Hydrator::new(store));
                 let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
                 let fs = QuickFS::new(namespace, hydrator, heuristics);
 
@@ -798,7 +765,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
 
                 std::fs::remove_file(path.join("renamed.txt")).expect("unlink");
                 assert!(!path.join("renamed.txt").exists(), "unlinked file gone");
-                shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
+                shutdown_fuse_fixture(session, &path, shutdown_store).await;
             },
         )
         .await;
@@ -810,9 +777,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let second_mount = tempdir().unwrap();
             let store = Arc::new(ContentStore::memory());
             let namespace = Arc::new(Mutex::new(Namespace::new("byte-name-peer").unwrap()));
-            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-            let shutdown_endpoint = endpoint.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
+            let hydrator = Arc::new(Hydrator::new(store.clone()));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
             let mut config = Config::default();
@@ -834,14 +799,11 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             assert!(listed.contains(&b"renamed-\xFE.txt".to_vec()));
 
             let snapshot = namespace.lock().unwrap().save();
-            fs::fuse_session::unmount_and_join(session, first_mount.path()).unwrap();
-            shutdown_endpoint.close().await;
+            tilo_fs::fuse_session::unmount_and_join(session, first_mount.path()).unwrap();
             let reopened = Arc::new(Mutex::new(
                 Namespace::from_bytes("reopened", &snapshot).unwrap(),
             ));
-            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-            let shutdown_endpoint = endpoint.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
+            let hydrator = Arc::new(Hydrator::new(store.clone()));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let fs = QuickFS::new(reopened, hydrator, heuristics);
             let session = fuser::spawn_mount(fs, second_mount.path(), &config).unwrap();
@@ -849,8 +811,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let mut after_restart = second_mount.path().to_path_buf();
             after_restart.push(std::ffi::OsString::from_vec(b"renamed-\xFE.txt".to_vec()));
             assert_eq!(std::fs::read(after_restart).unwrap(), b"exact bytes");
-            fs::fuse_session::unmount_and_join(session, second_mount.path()).unwrap();
-            shutdown_endpoint.close().await;
+            tilo_fs::fuse_session::unmount_and_join(session, second_mount.path()).unwrap();
             store.shutdown().await.unwrap();
         })
         .await;
@@ -861,14 +822,10 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let mount_dir = tempdir().expect("mount temp dir");
             let path = mount_dir.path().to_path_buf();
 
-            let endpoint = Endpoint::bind(presets::Minimal)
-                .await
-                .expect("bind endpoint");
             let store = Arc::new(ContentStore::memory());
             let namespace = Arc::new(Mutex::new(Namespace::new("rm-peer").unwrap()));
-            let shutdown_endpoint = endpoint.clone();
             let shutdown_store = store.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let fs = QuickFS::new(namespace, hydrator, heuristics);
 
@@ -898,7 +855,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             std::fs::remove_file(path.join("dir/inner.txt")).expect("unlink inner");
             std::fs::remove_dir(path.join("dir")).expect("rmdir empty dir");
             assert!(!path.join("dir").exists(), "empty dir removed");
-            shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, &path, shutdown_store).await;
         })
         .await;
     }
@@ -908,14 +865,10 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let mount_dir = tempdir().expect("mount temp dir");
             let path = mount_dir.path().to_path_buf();
 
-            let endpoint = Endpoint::bind(presets::Minimal)
-                .await
-                .expect("bind endpoint");
             let store = Arc::new(ContentStore::memory());
             let namespace = Arc::new(Mutex::new(Namespace::new("doc-peer").unwrap()));
-            let shutdown_endpoint = endpoint.clone();
             let shutdown_store = store.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let fs = QuickFS::new(namespace, hydrator, heuristics);
 
@@ -964,7 +917,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                     .expect("chmod u+s");
                 assert_eq!(mode(&tool), 0o755, "setuid never sticks");
             }
-            shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, &path, shutdown_store).await;
         })
         .await;
     }
@@ -974,9 +927,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let mount_dir = tempdir().expect("mount temp dir");
             let path = mount_dir.path().to_path_buf();
 
-            let endpoint = Endpoint::bind(presets::Minimal)
-                .await
-                .expect("bind endpoint");
             let store = Arc::new(ContentStore::memory());
 
             let body = b"content that is already here";
@@ -1001,9 +951,8 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 drop(ns);
             }
 
-            let shutdown_endpoint = endpoint.clone();
             let shutdown_store = store.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let fs = QuickFS::new(namespace, hydrator, heuristics);
 
@@ -1027,7 +976,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 Some("local"),
                 "a directory is always local",
             );
-            shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, &path, shutdown_store).await;
         })
         .await;
     }
@@ -1045,14 +994,10 @@ async fn an_append_through_the_kernel_mount_lands_at_the_real_end() {
         let path = mount_dir.path().to_path_buf();
         let invoice = path.join("invoice.txt");
 
-        let endpoint = Endpoint::bind(presets::Minimal)
-            .await
-            .expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("append-peer").unwrap()));
-        let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
-        let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
+        let hydrator = Arc::new(Hydrator::new(store.clone()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics);
 
@@ -1113,7 +1058,7 @@ async fn an_append_through_the_kernel_mount_lands_at_the_real_end() {
             expected,
             "the append went after the content, not over its start"
         );
-        shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
+        shutdown_fuse_fixture(session, &path, shutdown_store).await;
     })
     .await;
 }
@@ -1129,14 +1074,10 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
         tilo_test_env::within("the real-FUSE replacement test", async {
             let mount_dir = tempdir().expect("mount temp dir");
             let path = mount_dir.path().to_path_buf();
-            let endpoint = Endpoint::bind(presets::Minimal)
-                .await
-                .expect("bind endpoint");
             let store = Arc::new(ContentStore::memory());
             let namespace = Arc::new(Mutex::new(Namespace::new("replace-handle-peer").unwrap()));
-            let shutdown_endpoint = endpoint.clone();
             let shutdown_store = store.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let fs = QuickFS::new(namespace, hydrator, heuristics);
             let mut config = Config::default();
@@ -1176,7 +1117,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             assert_eq!(private_bytes, b"privated bytes");
             assert_eq!(std::fs::read(&destination).unwrap(), b"source bytes");
             drop(replaced_handle);
-            shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, &path, shutdown_store).await;
         })
         .await;
     }
@@ -1184,14 +1125,10 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
         require_fuse!();
         tilo_test_env::within("the real-FUSE unlink/recreate test", async {
             let mount_dir = tempdir().expect("mount temp dir");
-            let endpoint = Endpoint::bind(presets::Minimal)
-                .await
-                .expect("bind endpoint");
             let store = Arc::new(ContentStore::memory());
             let namespace = Arc::new(Mutex::new(Namespace::new("unlink-handle-peer").unwrap()));
-            let shutdown_endpoint = endpoint.clone();
             let shutdown_store = store.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let fs = QuickFS::new(namespace, hydrator, heuristics);
             let mut config = Config::default();
@@ -1228,8 +1165,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             assert_eq!(observed, b"privatees");
             assert_eq!(std::fs::read(&path).unwrap(), b"new bytes");
             drop(old);
-            shutdown_fuse_fixture(session, mount_dir.path(), shutdown_endpoint, shutdown_store)
-                .await;
+            shutdown_fuse_fixture(session, mount_dir.path(), shutdown_store).await;
         })
         .await;
     }
@@ -1237,14 +1173,10 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
         require_fuse!();
         tilo_test_env::within("the real-FUSE two-writer test", async {
             let mount_dir = tempdir().expect("mount temp dir");
-            let endpoint = Endpoint::bind(presets::Minimal)
-                .await
-                .expect("bind endpoint");
             let store = Arc::new(ContentStore::memory());
             let namespace = Arc::new(Mutex::new(Namespace::new("two-writer-peer").unwrap()));
-            let shutdown_endpoint = endpoint.clone();
             let shutdown_store = store.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let fs = QuickFS::new(namespace, hydrator, heuristics);
             let mut config = Config::default();
@@ -1276,8 +1208,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             drop(right);
 
             assert_eq!(std::fs::read(&path).unwrap(), b"ONETWO");
-            shutdown_fuse_fixture(session, mount_dir.path(), shutdown_endpoint, shutdown_store)
-                .await;
+            shutdown_fuse_fixture(session, mount_dir.path(), shutdown_store).await;
         })
         .await;
     }
@@ -1313,7 +1244,6 @@ fn put_caps(path: &std::path::Path, caps: &[CapOverride]) {
 
 struct ViewFixture {
     session: fuser::BackgroundSession,
-    endpoint: Endpoint,
     store: Arc<ContentStore>,
     dir: tempfile::TempDir,
     namespace: Arc<Mutex<Namespace>>,
@@ -1329,14 +1259,11 @@ impl ViewFixture {
     }
 
     async fn shutdown(self) {
-        shutdown_fuse_fixture(self.session, self.dir.path(), self.endpoint, self.store).await;
+        shutdown_fuse_fixture(self.session, self.dir.path(), self.store).await;
     }
 }
 
 async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> ViewFixture {
-    let endpoint = Endpoint::bind(presets::Minimal)
-        .await
-        .expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
     let body = b"contents";
     let hash = store.write_content(body).await.unwrap().unwrap();
@@ -1364,9 +1291,8 @@ async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> View
             .unwrap();
         drop(ns);
     }
-    let shutdown_endpoint = endpoint.clone();
     let shutdown_store = store.clone();
-    let hydrator = Arc::new(Hydrator::new(endpoint, store));
+    let hydrator = Arc::new(Hydrator::new(store));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
     let fs = match acl {
@@ -1380,7 +1306,6 @@ async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> View
     wait_for_mount(dir.path()).await;
     ViewFixture {
         session,
-        endpoint: shutdown_endpoint,
         store: shutdown_store,
         dir,
         namespace,
@@ -1671,20 +1596,30 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
 
 struct SignalledMount {
     session: fuser::BackgroundSession,
-    endpoint: Endpoint,
     store: Arc<ContentStore>,
     dir: tempfile::TempDir,
     namespace: Arc<Mutex<Namespace>>,
-    signal: Arc<fs::change_signal::ChangeSignal>,
-    availability: Arc<Mutex<fs::AvailabilityRegistry>>,
-    hydrator: Arc<Hydrator>,
+    signal: Arc<tilo_fs::change_signal::ChangeSignal>,
+    availability: Arc<Mutex<tilo_fs::AvailabilityRegistry>>,
+    /// The device that keeps bytes this one does not, once a test hands it some.
+    keeper: Arc<Keeper>,
     _registry_dir: tempfile::TempDir,
 }
 
+#[derive(Default)]
+struct Keeper(Mutex<Option<Arc<ContentStore>>>);
+
+impl tilo_fs::hydration::ContentSource for Keeper {
+    fn fetch(
+        &self,
+        hash: iroh_blobs::Hash,
+    ) -> futures_util::future::BoxFuture<'static, Option<bytes::Bytes>> {
+        let store = self.0.lock().unwrap().clone();
+        Box::pin(async move { store?.local(hash).await })
+    }
+}
+
 async fn signalled_mount() -> SignalledMount {
-    let endpoint = Endpoint::bind(presets::Minimal)
-        .await
-        .expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
     let namespace = Arc::new(Mutex::new(Namespace::new("signalled").unwrap()));
     namespace
@@ -1692,12 +1627,16 @@ async fn signalled_mount() -> SignalledMount {
         .unwrap()
         .create_dir(ROOT_INO, "docs", 1)
         .unwrap();
-    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+    let keeper = Arc::new(Keeper::default());
+    let hydrator = Arc::new(
+        Hydrator::new(store.clone())
+            .with_source(Arc::clone(&keeper) as Arc<dyn tilo_fs::hydration::ContentSource>),
+    );
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-    let signal = Arc::new(fs::change_signal::ChangeSignal::new().unwrap());
+    let signal = Arc::new(tilo_fs::change_signal::ChangeSignal::new().unwrap());
     let registry_dir = tempdir().unwrap();
     let availability = Arc::new(Mutex::new(
-        fs::AvailabilityRegistry::open(registry_dir.path().join("availability.json")).unwrap(),
+        tilo_fs::AvailabilityRegistry::open(registry_dir.path().join("availability.json")).unwrap(),
     ));
     let quick_fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics)
         .with_change_signal(signal.clone())
@@ -1709,18 +1648,17 @@ async fn signalled_mount() -> SignalledMount {
     wait_for_mount(dir.path()).await;
     SignalledMount {
         session,
-        endpoint,
         store,
         dir,
         namespace,
         signal,
         availability,
-        hydrator,
+        keeper,
         _registry_dir: registry_dir,
     }
 }
 
-async fn start_signal(mount: &SignalledMount) -> fs::change_signal::ChangeSignalTask {
+async fn start_signal(mount: &SignalledMount) -> tilo_fs::change_signal::ChangeSignalTask {
     let (signal, namespace, availability, path, notifier) = (
         mount.signal.clone(),
         mount.namespace.clone(),
@@ -1823,17 +1761,16 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
     drop(task);
     let SignalledMount {
         session,
-        endpoint,
         store,
         dir,
         ..
     } = mount;
-    shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
+    shutdown_fuse_fixture(session, dir.path(), store).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_availability_change_reaches_inotify_on_its_directory() {
-    use fs::availability::{DocumentAvailability, EntryKind, TransferError};
+    use tilo_fs::availability::{DocumentAvailability, EntryKind, TransferError};
 
     require_fuse!();
     let mount = signalled_mount().await;
@@ -1884,12 +1821,11 @@ async fn an_availability_change_reaches_inotify_on_its_directory() {
     drop(task);
     let SignalledMount {
         session,
-        endpoint,
         store,
         dir,
         ..
     } = mount;
-    shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
+    shutdown_fuse_fixture(session, dir.path(), store).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1904,11 +1840,7 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
     let len = data.len() as u64;
     let keeper_store = Arc::new(ContentStore::memory());
     let hash = keeper_store.write_content(&data).await.unwrap().unwrap();
-    let keeper = test_server::direct_endpoint().await;
-    let router = iroh::protocol::Router::builder(keeper.clone())
-        .accept(iroh_blobs::ALPN, keeper_store.blobs_protocol(None))
-        .spawn();
-    mount.hydrator.add_peer(keeper.addr());
+    mount.keeper.0.lock().unwrap().replace(keeper_store);
     let record = {
         let mut ns = mount.namespace.lock().unwrap();
         let docs_ino = ns.resolve_path_ino("/docs").unwrap();
@@ -1968,15 +1900,13 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
 
     drop(watcher);
     drop(task);
-    router.shutdown().await.unwrap();
     let SignalledMount {
         session,
-        endpoint,
         store,
         dir,
         ..
     } = mount;
-    shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
+    shutdown_fuse_fixture(session, dir.path(), store).await;
 }
 
 async fn mount_owned_by(
@@ -1985,7 +1915,6 @@ async fn mount_owned_by(
 ) -> (
     tempfile::TempDir,
     fuser::BackgroundSession,
-    Endpoint,
     Arc<ContentStore>,
 ) {
     let dir = if allow_other {
@@ -1997,9 +1926,6 @@ async fn mount_owned_by(
         tempfile::tempdir()
     }
     .expect("mount temp dir");
-    let endpoint = Endpoint::bind(presets::Minimal)
-        .await
-        .expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
     let namespace = Arc::new(Mutex::new(Namespace::new("owner-peer").unwrap()));
     namespace
@@ -2007,7 +1933,7 @@ async fn mount_owned_by(
         .unwrap()
         .create_dir(ROOT_INO, ".config", 1)
         .unwrap();
-    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+    let hydrator = Arc::new(Hydrator::new(store.clone()));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let fs = QuickFS::new(namespace, hydrator, heuristics).with_owner(owner);
     let mut config = Config::default();
@@ -2017,7 +1943,7 @@ async fn mount_owned_by(
     }
     let session = fuser::spawn_mount(fs, dir.path(), &config).expect("spawn FUSE session");
     wait_for_mount(dir.path()).await;
-    (dir, session, endpoint, store)
+    (dir, session, store)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2031,7 +1957,7 @@ async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
         };
         let root = uid == 0;
 
-        let (dir, session, endpoint, store) = mount_owned_by(None, root).await;
+        let (dir, session, store) = mount_owned_by(None, root).await;
         let home = dir.path();
         if root {
             if std::path::Path::new("/usr/bin/setpriv").is_file() {
@@ -2095,14 +2021,14 @@ async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
                 assert_eq!((meta.uid(), meta.gid()), (uid, gid), "{}", path.display());
             }
         }
-        shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
+        shutdown_fuse_fixture(session, dir.path(), store).await;
 
-        let (dir, session, endpoint, store) = mount_owned_by(Some((4242, 4343)), false).await;
+        let (dir, session, store) = mount_owned_by(Some((4242, 4343)), false).await;
         for path in [dir.path().to_path_buf(), dir.path().join(".config")] {
             let meta = std::fs::metadata(&path).unwrap();
             assert_eq!((meta.uid(), meta.gid()), (4242, 4343), "{}", path.display());
         }
-        shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
+        shutdown_fuse_fixture(session, dir.path(), store).await;
     })
     .await;
 }
@@ -2113,12 +2039,9 @@ async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_write_through_the_mount_is_named_for_the_agent_that_made_it() {
     require_fuse!();
-    let endpoint = Endpoint::bind(presets::Minimal)
-        .await
-        .expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
     let namespace = Arc::new(Mutex::new(Namespace::new("writer-peer").unwrap()));
-    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+    let hydrator = Arc::new(Hydrator::new(store.clone()));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     // This test process, as a command an agent session runs would show it.
     let fake = tempdir().unwrap();
@@ -2140,7 +2063,7 @@ async fn a_write_through_the_mount_is_named_for_the_agent_that_made_it() {
         "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-org.gnome.TextEditor-77.scope\n",
     )
     .unwrap();
-    let writers = Arc::new(fs::writer::WriterResolver::new(
+    let writers = Arc::new(tilo_fs::writer::WriterResolver::new(
         fake.path().join("proc"),
         Vec::new(),
     ));
@@ -2211,6 +2134,5 @@ async fn a_write_through_the_mount_is_named_for_the_agent_that_made_it() {
             .all(|name| name.as_deref() == Some("Claude Code")),
         "each change names the agent: {named:?}"
     );
-    fs::fuse_session::unmount_and_join(session, mount_dir.path()).expect("unmount");
-    endpoint.close().await;
+    tilo_fs::fuse_session::unmount_and_join(session, mount_dir.path()).expect("unmount");
 }

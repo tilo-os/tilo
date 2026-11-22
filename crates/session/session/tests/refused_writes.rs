@@ -22,9 +22,10 @@
 )]
 
 use crate::common::people::{
-    Device, show, titles_at, titles_on, two_people_at_a_site, wait_shown, waited, windows,
+    Device, at, show, titles_at, titles_on, two_people_at_a_site, wait_shown, waited, windows,
 };
 use serde_json::{Value, json};
+use tilo_actions::remote::RemoteActionMessage;
 use tilo_server_protocol::workspaces::Role;
 
 /// The app whose window the people here open on their sessions: a note, as a package's window is one.
@@ -33,16 +34,24 @@ const NOTES: &str = "so.tilo.notes";
 /// The workspace's activity as `device` reads it now: its changes, each with the devices that
 /// refused it.
 fn feed(device: &Device) -> Value {
-    let started = device.act("tilo.activity", "workspace.activity\u{1f}feed", &json!({}));
-    let number = started["answer"]["receipt"]["broker_invocation_id"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("{} reads its activity: {started}", device.label));
-    let status = device.ask(&json!({
-        "op": "actions_status",
-        "invocation_id": number,
-        "wait_ms": 5_000,
-    }));
-    status["answer"]["receipt"]["update"]["value"].clone()
+    let started = device.act(
+        &at("tilo.activity", "workspace.activity", "feed"),
+        &json!({}),
+    );
+    let invocation = serde_json::from_value(started["update"]["invocation"].clone())
+        .unwrap_or_else(|_| panic!("{} reads its activity: {started}", device.label));
+    let RemoteActionMessage::Update {
+        state: Some(state), ..
+    } = device.frame(RemoteActionMessage::Observe {
+        correlation: 1,
+        invocation,
+        wait_ms: Some(5_000),
+        seen: None,
+    })
+    else {
+        panic!("{} lost its activity read", device.label);
+    };
+    serde_json::to_value(state.update).expect("an update")["value"].clone()
 }
 
 /// The refusals the feed of `device` names, each as its change's row reads it.

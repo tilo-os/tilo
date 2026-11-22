@@ -92,7 +92,11 @@ pub enum Command {
     PageAt { query: Query, at: usize },
     /// The first version of the resource `id` of `kind`, or its last with `last`: what a view
     /// showing when it was made or last changed reads, without the rest of its history.
-    VersionEnd { kind: String, id: String, last: bool },
+    VersionEnd {
+        kind: String,
+        id: String,
+        last: bool,
+    },
     /// The content of each resource `ids` names, of `kind`, in their order: what [`Self::Content`]
     /// answers of each, in one read, for a reader taking the contents of a page of resources.
     Contents { kind: String, ids: Vec<String> },

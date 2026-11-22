@@ -4,9 +4,9 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use fs::store::ContentStore;
 use iroh_blobs::Hash;
 use tilo_app_package::BlobHash;
+use tilo_fs::store::ContentStore;
 
 use crate::StoreError;
 

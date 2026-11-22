@@ -26,8 +26,6 @@ type Gallery (title: name) {
     controls_title: Text = "Controls"
     controls_by_email: Bool = false
     controls_repeating: Bool = false
-    /// Whether the workspace holds the report locked, which nobody here can change.
-    controls_locked: Bool = true
     controls_margin: Float = 12.0
     controls_share: Float = 0.6
     controls_room: Text = "Studio"
@@ -42,7 +40,6 @@ type Gallery (title: name) {
     controls_recipient: Text = ""
     controls_note: Text = ""
     controls_notes: Text = ""
-    controls_signed: Text = "Ada Lovelace"
     controls_background: Bool = true
     controls_lettering: Bool = true
     /// The backlog's items, and the line being written at its foot.
@@ -327,7 +324,12 @@ view parts(g: Gallery, last: State<Text>) {
             ui.Button("Open in the browser", icon: .external_link, icon_only: true) {
                 on press: set(last, "Open in the browser")
             }
-            ui.Button("Archived", icon: .archive, enabled: false)
+            ui.Button(
+                "Archived",
+                icon: .archive,
+                enabled: false,
+                description: "Nothing is chosen to archive",
+            )
         }
     }
     part("Rich text and a quote", "A message's own text, and the message it answers above it.") {

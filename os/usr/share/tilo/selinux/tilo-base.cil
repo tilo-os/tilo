@@ -141,24 +141,6 @@
 ; the storage-accounting, document-media and workspace-content sockets.
 (allow tilo_fs_t var_run_t (dir (getattr search open read write add_name remove_name)))
 (allow tilo_fs_t var_run_t (sock_file (create getattr setattr unlink)))
-; And one regular file there: the session link (--session-link), where the
-; daemon says which loopback endpoint the session reaches it on, since it
-; reaches the network through the session's endpoint (crates/system/fs/src/net.rs).
-; It is published atomically: a temp file in /run/tilo, its mode set, synced,
-; renamed over the name, the directory synced. So the files the daemon makes
-; in var_run_t take a type of their own whatever their name, and only that
-; type is the daemon's to write: never any other var_run_t file. Sessions
-; run unconfined and read it as they are. Without this every start of
-; fs.service failed ("write the session link ...: Permission denied") and
-; /var/workspace was never mounted (os/tests/fs_selinux_runtime_files.sh).
-(type tilo_fs_var_run_t)
-(roletype object_r tilo_fs_var_run_t)
-(typeattributeset file_type (tilo_fs_var_run_t))
-(typeattributeset non_auth_file_type (tilo_fs_var_run_t))
-(typeattributeset non_security_file_type (tilo_fs_var_run_t))
-(typeattributeset pidfile (tilo_fs_var_run_t))
-(typetransition tilo_fs_t var_run_t file tilo_fs_var_run_t)
-(allow tilo_fs_t tilo_fs_var_run_t (file (create open read write getattr setattr rename unlink link lock ioctl)))
 ; stdout and stderr: the journal stream systemd hands the service.
 (allow tilo_fs_t init_t (unix_stream_socket (read write)))
 (allow tilo_fs_t init_var_run_t (dir (search)))

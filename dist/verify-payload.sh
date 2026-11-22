@@ -12,8 +12,9 @@ libexec_dir=${TILO_LIBEXEC_DIR:-/usr/libexec}
     exit 2
 }
 
-# /usr/bin/tilo: a terminal reaches the desktop's apps and actions with it.
-for file in /usr/bin/tilo-session /usr/bin/tilo /usr/libexec/tilo/tilo-launcher /usr/bin/tilo-import-folders \
+# /usr/bin/tilo: a terminal reaches the desktop's apps and actions with it; /usr/bin/tilo-runtime
+# is the daemon its login starts.
+for file in /usr/bin/tilo-session /usr/bin/tilo /usr/bin/tilo-runtime /usr/libexec/tilo/tilo-launcher /usr/bin/tilo-import-folders \
             "$libexec_dir/tilo-unlock-helper" "$libexec_dir/tilo-session" \
             "$libexec_dir/tilo-session-runner" \
             "$libexec_dir/tilo-flight-recorder" \
@@ -83,7 +84,7 @@ grep -Fxq "TryExec=/usr/bin/tilo-import-folders" "$(path /usr/share/applications
 apps_bin=$(path /usr/lib/tilo-apps/bin)
 [[ ! -d $apps_bin ]] || "$(dirname "${BASH_SOURCE[0]}")/verify-cli-shims.sh" "$apps_bin"
 
-for elf in /usr/bin/tilo-session /usr/bin/tilo /usr/libexec/tilo/tilo-launcher /usr/bin/tilo-import-folders "$libexec_dir/tilo-unlock-helper" \
+for elf in /usr/bin/tilo-session /usr/bin/tilo /usr/bin/tilo-runtime /usr/libexec/tilo/tilo-launcher /usr/bin/tilo-import-folders "$libexec_dir/tilo-unlock-helper" \
            "$libexec_dir/tilo-flight-recorder" "$libexec_dir/tilo-session-report"; do
     elf_description=$(LC_ALL=C file "$(path "$elf")")
     case ${TILO_EXPECT_ARCH:-} in

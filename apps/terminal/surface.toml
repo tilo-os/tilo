@@ -305,7 +305,7 @@ id = "add-secret"
 kind = "undoable"
 params = [
   { name = "variable", type = "text", required = true, schema = { type = "string" } },
-  { name = "item", type = "text", required = true, schema = { type = "string" } },
+  { name = "item", type = { resource = "vault.item" }, required = true, schema = { type = "string", resource_kind = "vault.item" } },
 ]
 
 [[resources.verbs]]

@@ -6,10 +6,9 @@
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::{load_device_key, read_device_cert};
 use tilo_identity::provisioning::{IdentityStorage, collaboration_identity_paths, create_person};
-use tilo_identity_ceremony::IdentityStore as _;
+use tilo_identity::store;
 
 use crate::firstboot::verify_existing_collaboration_identity;
-use crate::identity_provisioning::DiskIdentityStore;
 
 const PASSPHRASE: &[u8] = b"a passphrase of some length";
 
@@ -45,8 +44,9 @@ fn a_person_made_from_the_command_line_is_the_sessions_and_restores_from_its_bac
     let holder_device = certificate_of(&holder_paths, user).device_public_key;
 
     // A session on that account starts as them: no setup, and their chain verifies as it is.
-    let store = DiskIdentityStore::from_env().unwrap();
-    let kept = store.load().unwrap().expect("the session finds the person");
+    let kept = store::load_identity_file(&store::active_identity_path().unwrap())
+        .unwrap()
+        .expect("the session finds the person");
     assert_eq!(kept.threshold_identity.group_public_key, user);
     assert_eq!(kept.display_name, "Ada");
     verify_existing_collaboration_identity(&holder_dir, &holder_paths).unwrap();
@@ -57,7 +57,7 @@ fn a_person_made_from_the_command_line_is_the_sessions_and_restores_from_its_bac
     );
 
     // The holder writes the backup.
-    let active = tilo_identity_client::resolve_active_identity(&holder_dir).unwrap();
+    let active = tilo_identity::store::resolve_active_identity(&holder_dir).unwrap();
     let backup = holder.path().join("ada.tilo-backup");
     tilo_identity::store::export_portable_backup(&active, &backup, PASSPHRASE).unwrap();
 
@@ -68,9 +68,8 @@ fn a_person_made_from_the_command_line_is_the_sessions_and_restores_from_its_bac
     let restored =
         super::super::import_identity(&fresh_dir, &fresh_paths, &backup, PASSPHRASE).unwrap();
     assert_eq!(restored.fingerprint, hex::encode(user), "the same person");
-    let fresh_store =
-        DiskIdentityStore::at(tilo_identity_client::resolve_active_identity(&fresh_dir).unwrap());
-    assert!(fresh_store.load().unwrap().is_some());
+    let fresh_record = tilo_identity::store::resolve_active_identity(&fresh_dir).unwrap();
+    assert!(store::load_identity_file(&fresh_record).unwrap().is_some());
     verify_existing_collaboration_identity(&fresh_dir, &fresh_paths).unwrap();
     let fresh_cert = certificate_of(&fresh_paths, user);
     assert_ne!(

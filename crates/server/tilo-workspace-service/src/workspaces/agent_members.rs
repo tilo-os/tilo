@@ -1,18 +1,19 @@
 //! Delegated agents as governed members of the workspaces this server governs.
 //!
-//! An agent of this server's user is a device of that person, with its own
-//! key, its own certificate and a root-signed delegation naming the workspaces
-//! and apps it may act in, until when. To act in a governed workspace it needs
-//! what every member needs: a place on the workspace's governed roster,
-//! which every member reads, which the server admits to the workspace, and from
-//! which the workspace's key holders admit devices to each record's channel.
+//! An agent of a person this server serves is a device of that person, with
+//! its own key, its own certificate and a root-signed delegation naming the
+//! workspaces and apps it may act in, until when. To act in a governed
+//! workspace it needs what every member needs: a place on the workspace's
+//! governed roster, which every member reads, which the server admits to the
+//! workspace, and from which the workspace's key holders admit devices to each
+//! record's channel.
 //!
 //! So when the agent's grant is approved (or restored after a restart), each
 //! workspace this server governs asks the one admission decision,
 //! [`WorkspaceOperation::DelegateMembership`], with the agent's certificate: only a
-//! live delegated agent of this server's own user, in a workspace the delegation
-//! names and governance owns here. If admitted, the agent goes on the roster
-//! bound to its delegation ([`tilo_peer_state::PeerGovernanceMut::admit_agent`]); the
+//! live delegated agent whose delegation names its person, in a workspace the
+//! delegation names and governance owns here. If admitted, the agent goes on the
+//! roster bound to its delegation ([`tilo_peer_state::PeerGovernanceMut::admit_agent`]); the
 //! server then admits it to the workspace and a key holder to the channels it asks
 //! for, like any member. Every member admits its changes as its own: signed
 //! by its key, at its person's role but never above Editor, and only inside
@@ -77,9 +78,9 @@ impl Workspaces {
         decision == Decision::Admit
     }
 
-    /// Read the current hosted agent entry for the server's own keeper.
-    /// Where a requester is supplied, that exact certified person device must
-    /// still be admitted to the workspace.
+    /// Read the current hosted agent entry for `keeper`, the person who
+    /// approved it. Where a requester is supplied, that exact certified person
+    /// device must still be admitted to the workspace.
     pub async fn hosted_roster_agent(
         &self,
         workspace: WorkspaceId,
@@ -87,9 +88,6 @@ impl Workspaces {
         keeper: &[u8; 32],
         requester: Option<&DeviceCert>,
     ) -> Option<tilo_workspace_agent::Agent> {
-        if keeper != &self.governor().user_public_key {
-            return None;
-        }
         let id = workspace.to_string();
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let agents = self
@@ -117,7 +115,7 @@ impl Workspaces {
         keeper: &[u8; 32],
         cert: &DeviceCert,
     ) -> bool {
-        if keeper != &self.governor().user_public_key || &cert.user_public_key != keeper {
+        if &cert.user_public_key != keeper {
             return false;
         }
         let Ok(governed) = self.workspace(&workspace.to_string()).await else {
@@ -264,10 +262,7 @@ impl Workspaces {
         let agent = caller.acting().agent_id()?;
         let keeper = caller.user_public_key()?;
         let workspace = governed.workspace_id();
-        if keeper != &self.governor().user_public_key
-            || caller.workspace() != Some(governed.workspace())
-            || governed.member.is_some()
-        {
+        if caller.workspace() != Some(governed.workspace()) || governed.member.is_some() {
             return None;
         }
         let list = collab_types::workspace_document_id(KIND);
@@ -421,7 +416,6 @@ fn roster_entry<'a>(
 ) -> Option<&'a tilo_workspace_agent::Agent> {
     let entry = agents.get(&tilo_resource::Id::from_raw(agent.to_owned()))?;
     if !entry.is_active()
-        || !entry.on_host
         || tilo_action_policy::PersonId::parse(&entry.keeper)
             .ok()?
             .root()

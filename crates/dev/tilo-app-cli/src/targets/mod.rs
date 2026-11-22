@@ -330,7 +330,9 @@ pub fn check_targets(start: &Path, targets: &[Target], allow_planned: bool) -> R
             eprintln!("{note}");
         }
         if check_host(target).is_err() {
-            println!("[check] {target}: manifest and capabilities OK; compiling needs a {target} host");
+            println!(
+                "[check] {target}: manifest and capabilities OK; compiling needs a {target} host"
+            );
             continue;
         }
         let mut command = ProcessCommand::new(cargo_program());
@@ -580,7 +582,7 @@ fn build_native(
         .with_context(|| format!("Cargo did not report binary {}", project.bin))
 }
 
-/// The shared runtime daemon (`tilo-runtime-mcp`, a binary of the SDK's
+/// The shared runtime daemon (`tilo-runtime`, the binary of the SDK's
 /// `tilo-runtime` package) in the app's profile. Outside the SDK checkout it
 /// builds under the app's target directory, never inside a Cargo git checkout.
 fn build_runtime_host(project: &Project, request: &TargetRequest) -> Result<PathBuf> {

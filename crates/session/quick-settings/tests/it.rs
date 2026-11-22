@@ -14,7 +14,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 mod common;
 mod layout;
 mod scale;

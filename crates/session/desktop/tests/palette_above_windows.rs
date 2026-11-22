@@ -50,6 +50,9 @@ fn the_palettes_host_stands_above_the_windows_and_paints_nothing_once_closed() {
     assert!(!host.below_windows(), "the chrome stands above the windows");
     host.relayout();
     host.prepare_frame();
+    // Its frames are drawn on other threads: what it shows, and so where it takes the pointer, is
+    // read once they are in.
+    host.wait_drawn();
     // The window is in front, where the person left it.
     assert!(
         !host.accepts_pointer(640.0, 400.0),
@@ -60,6 +63,7 @@ fn the_palettes_host_stands_above_the_windows_and_paints_nothing_once_closed() {
     shell.relayout();
     host.relayout();
     host.prepare_frame();
+    host.wait_drawn();
     assert!(handle.search_open(), "the chord opened the palette");
     let card = {
         let search = handle.search_palette();
@@ -83,6 +87,7 @@ fn the_palettes_host_stands_above_the_windows_and_paints_nothing_once_closed() {
     shell.relayout();
     host.relayout();
     host.prepare_frame();
+    host.wait_drawn();
     assert!(!handle.search_open());
     assert!(
         !host.accepts_pointer(centre.x, centre.y),

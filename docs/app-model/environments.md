@@ -250,7 +250,7 @@ agent the person can tell apart, attribute and stop.
 **Two agents in two workspaces.** In the workspace *Studio*, open Terminal in
 the environment *dev* and run `claude`; switch to *Garden*, open Terminal in
 the environment *site* and run `claude` again. Each one's MCP server is
-`tilo-runtime --connect` (`tilo-runtime-mcp --connect`), with nothing else to
+`tilo-runtime --connect`, with nothing else to
 configure:
 
 ```json
@@ -554,9 +554,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   with it. The tenant has sudo in its VM, so this is a rule among the VM's
   ordinary processes and no wall against its own administrator: what an
   endpoint gives is bounded on the host, where the person and their limits
-  are known. The host's side is `ush::served_runs`; a coding agent is the
-  first program run this way
-  ([`coding_agents.rs`](../../crates/server/tilo-server/src/coding_agents.rs)).
+  are known. The host's side is `ush::served_runs`.
 
 ## Members that take work
 
@@ -586,20 +584,6 @@ which member may enter which workspace, never the request: a device of another
 person asking the member gets nothing from it, and a workspace the server does
 not govern is refused there and remembered for a while, so nothing that names
 workspaces makes the member ask again and again.
-
-A member also starts the programs its workspaces' server serves
-(`tilo_actions::remote::environment_programs`). A coding agent's program needs
-its person's model and the workspace's actions, which only the server holds,
-and where the workspace's machine is on a VM host the server cannot start it
-beside itself. So it asks that VM host's member to start the program in the
-machine, paid for by the account the server names, and the member holds it for
-the server (`crates/runtime/ush/src/environment_programs.rs`,
-`crates/server/tilo-server/src/placed_programs.rs`): what the program sends
-is kept, numbered, until the server says it has taken it, and what the server
-sends is handed to the program in order, each frame once. Only the workspace's
-server may ask, as a device of the member's own operator, and only as the
-program's own workspace. The member ends a program its server cancelled, and
-one its server has not asked after for ninety seconds.
 
 ## Terminal
 

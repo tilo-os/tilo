@@ -18,7 +18,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
 use serde::{Deserialize, Serialize};

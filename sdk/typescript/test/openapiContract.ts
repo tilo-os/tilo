@@ -43,8 +43,8 @@ export class Contract {
   constructor(spec: Schema = JSON.parse(readFileSync(SPEC_PATH, "utf8")) as Schema) {
     this.spec = spec;
     this.paths = spec.paths as Record<string, Record<string, Schema>>;
-    // Longest and most literal first, so `/members/invitations` beats
-    // `/members/{person}`.
+    // Longest and most literal first, so `/invocations/{invocation}/cancel`
+    // beats `/invocations/{invocation}/output` only by its words.
     const rank = (path: string): number[] => {
       const parts = segmentsOf(path);
       return [parts.length, parts.filter((part) => !part.startsWith("{")).length];

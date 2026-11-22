@@ -14,7 +14,7 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, Confirmation,
     InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
-    WORKSPACE_GOVERNANCE_PROVIDER,
+    WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_operation,
 };
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::JoinReply;
@@ -121,7 +121,17 @@ pub(super) fn request(workspace: &str, verb: &str, argument: Value) -> InvokeReq
     };
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget::workspace_governance(workspace, verb),
+        target: match argument.get("person").and_then(Value::as_str) {
+            // Removing is published on the person it removes.
+            Some(person) if verb == governance::REMOVE_MEMBER => RemoteActionTarget {
+                provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    tilo_actions::remote::workspace_member(workspace, person),
+                    "remove",
+                ),
+            },
+            _ => RemoteActionTarget::workspace_governance(workspace, verb),
+        },
         argument: if argument.is_empty() {
             InvokeArgument::None
         } else {
@@ -149,7 +159,7 @@ pub(super) async fn governed(
 }
 
 /// The verbs `caller` is offered on the workspace `workspace_id` carries.
-async fn offered(
+pub(super) async fn offered(
     host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     caller: &Caller,
@@ -163,10 +173,11 @@ async fn offered(
     let page = settled(provider.query(caller, query.clone()))
         .await
         .unwrap();
-    // And what the resources under the workspace's root hold, as browsing
-    // its tree finds them.
+    // And what the resources under the workspace's root hold, and each of its
+    // people, as browsing its tree finds them.
     let mut rows = Vec::new();
-    for row in page.rows {
+    let mut unread = page.rows;
+    while let Some(row) = unread.pop() {
         if row.has_children
             && !rows
                 .iter()
@@ -176,13 +187,24 @@ async fn offered(
                 parent_resource: Some(row.resource.id.clone()),
                 ..query.clone()
             };
-            rows.extend(settled(provider.query(caller, under)).await.unwrap().rows);
+            unread.extend(settled(provider.query(caller, under)).await.unwrap().rows);
         }
         rows.push(row);
     }
-    rows.into_iter()
-        .filter_map(|row| row.action.map(|action| action.address.action))
-        .collect()
+    // Each by the operation a grant names, whichever child publishes it.
+    let mut offered = rows
+        .into_iter()
+        .filter_map(|row| row.action)
+        .map(|action| {
+            workspace_governance_operation(&action.address).map_or_else(
+                || action.address.action.clone(),
+                |(_, granted)| granted.to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    offered.sort_by_key(|verb| VERBS.iter().position(|row| row.id == verb));
+    offered.dedup();
+    offered
 }
 
 /// `request` by `caller`: what it produced, or why not.
@@ -211,9 +233,9 @@ const INVITE_FAMILY: [&str; 7] = [
     MAIL_INVITATION,
 ];
 
-/// Naming themselves, which every person is offered in a workspace they are
-/// in and no grant gives them.
-const NAME_SELF: [&str; 1] = [NAME];
+/// Leaving and naming themselves, which every person is offered in a workspace
+/// they are in and no grant gives them.
+const OWN: [&str; 2] = [governance::REMOVE_MEMBER, NAME];
 
 /// `verbs` in the order the catalogue offers them.
 fn offered_in_catalogue(verbs: impl IntoIterator<Item = &'static str>) -> Vec<String> {
@@ -238,7 +260,7 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
     let owners = offered(&host, workspace_id, &caller(&owner)).await;
     for verb in INVITE_FAMILY
         .iter()
-        .chain(&NAME_SELF)
+        .chain(&[NAME])
         .chain(&[
             governance::UNBAN,
             governance::CALL,
@@ -253,22 +275,23 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
         );
     }
 
-    // An Editor by role alone is offered naming themselves and nothing else.
+    // An Editor by role alone is offered leaving and naming themselves, and
+    // nothing else.
     assert_eq!(
         offered(&host, workspace_id, &caller(&ada)).await,
-        NAME_SELF.map(str::to_owned).to_vec()
+        offered_in_catalogue(OWN)
     );
 
-    // Granted invite, Ada is offered inviting and naming themselves, and
+    // Granted invite, Ada is offered inviting, leaving and naming themselves, and
     // nothing beyond them.
     grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
     let granted = offered(&host, workspace_id, &caller(&ada)).await;
     assert_eq!(
         granted,
-        offered_in_catalogue(INVITE_FAMILY.iter().chain(&NAME_SELF).copied())
+        offered_in_catalogue(INVITE_FAMILY.iter().chain(&OWN).copied())
     );
 
-    // A Moderator is offered unbanning members below them, but no
+    // A Moderator is offered removing and unbanning members below them, but no
     // invitations. Roles, restrictions and the workspace's settings are written
     // by a member's own device, not asked of the host.
     workspaces
@@ -284,7 +307,10 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
         .await
         .unwrap();
     let moderator = offered(&host, workspace_id, &caller(&bo)).await;
-    assert_eq!(moderator, offered_in_catalogue([NAME, governance::UNBAN]));
+    assert_eq!(
+        moderator,
+        offered_in_catalogue([governance::REMOVE_MEMBER, NAME, governance::UNBAN])
+    );
 
     // An agent governs nothing, even on the server person's own key, and a
     // workspace that carries no governed workspace offers nothing.
@@ -715,15 +741,6 @@ async fn destructive_governance_waits_for_the_person() {
         invoke(&host, workspace_id, &caller(&bo), ban).await,
         Err(ActionCallError::confirmation_required())
     );
-    let remove = request(
-        &workspace,
-        governance::REMOVE_MEMBER,
-        json!({ "person": person(&ada) }),
-    );
-    assert_eq!(
-        invoke(&host, workspace_id, &caller(&bo), remove).await,
-        Err(ActionCallError::confirmation_required())
-    );
     let end = request(
         &workspace,
         governance::CALL,
@@ -756,28 +773,66 @@ async fn destructive_governance_waits_for_the_person() {
 }
 
 #[tokio::test]
-async fn the_owners_own_request_confirms_removing_a_member() {
+async fn a_member_removes_someone_ranked_below_them_or_themselves() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
     let person = |cert: &DeviceCert| hex::encode(cert.user_public_key);
-
-    let removed = invoke(
-        &host,
-        workspace_id,
-        &caller(&owner),
+    let remove = |cert: &DeviceCert| {
         request(
             &workspace,
             governance::REMOVE_MEMBER,
-            json!({ "person": person(&ada) }),
-        ),
-    )
-    .await
-    .unwrap();
-    assert!(removed["generation"].as_u64().is_some(), "{removed}");
+            json!({ "person": person(cert) }),
+        )
+    };
+
+    // An Editor removes nobody: unknown and forbidden answer alike.
+    assert_eq!(
+        invoke(&host, workspace_id, &caller(&ada), remove(&bo)).await,
+        Err(ActionCallError::UnknownAction)
+    );
+    // Anyone may leave, but the owner cannot be removed, not even by themselves.
+    let cy = admit(workspaces, &workspace, &owner, 3).await;
+    invoke(&host, workspace_id, &caller(&cy), remove(&cy))
+        .await
+        .unwrap();
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert!(
+        members
+            .iter()
+            .any(|member| member.root() == Some(cy.user_public_key) && member.removed),
+        "{members:?}"
+    );
+    assert!(matches!(
+        invoke(&host, workspace_id, &caller(&owner), remove(&owner)).await,
+        Err(ActionCallError::Refused { reason }) if reason.contains("the owner cannot be removed")
+    ));
+    // A Moderator removes an Editor, answered with the people as they are then.
+    workspaces
+        .set_member_role(
+            &workspace,
+            &owner,
+            SetMemberRoleRequest {
+                request_id: [32; 32],
+                user_public_key: bo.user_public_key,
+                role: Role::Moderator,
+            },
+        )
+        .await
+        .unwrap();
+    let removed = invoke(&host, workspace_id, &caller(&bo), remove(&ada))
+        .await
+        .unwrap();
+    assert!(
+        removed.as_array().is_some_and(|people| people
+            .iter()
+            .all(|row| row["member"]["person"] != person(&ada))),
+        "{removed}"
+    );
     let members = workspaces.summary(&workspace).await.unwrap().members;
     assert!(
         members

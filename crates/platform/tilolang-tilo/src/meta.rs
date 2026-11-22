@@ -5,11 +5,10 @@
 //! action.
 
 use tilolang_runtime::meta::{
-    ActionMeta, EffectClass, FieldKind, FieldMeta, Meta, TriggerWhenMeta, Ty, TypeMeta,
-    element_record, field_kind, parse_ty,
+    ActionMeta, EffectClass, FieldKind, FieldMeta, Meta, Ty, element_record, field_kind, parse_ty,
 };
 
-use crate::schema::{ColumnKind, ColumnSchema, FieldSchema, MergeKind, TypeSchema, lookup_in};
+use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup_in};
 use tilolang::meta::FilterKind;
 
 /// The contract kind an effect class stands for.
@@ -161,154 +160,6 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
     schema
 }
 
-/// The kind of a column holding a value of `ty`, and the cases it can hold when they are
-/// known: `None` for a type no column holds.
-fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
-    Some(match ty {
-        Ty::Option(inner) | Ty::Set(inner) => return kind_of_ty(meta, inner),
-        Ty::Bool => (ColumnKind::Bool, Vec::new()),
-        Ty::Int => (ColumnKind::Int, Vec::new()),
-        Ty::Float => (ColumnKind::Float, Vec::new()),
-        Ty::Text => (ColumnKind::Text, Vec::new()),
-        Ty::Date => (ColumnKind::Date, Vec::new()),
-        Ty::Time => (ColumnKind::Time, Vec::new()),
-        Ty::Identifier => (ColumnKind::Ident, Vec::new()),
-        Ty::Actor => (ColumnKind::Actor, Vec::new()),
-        Ty::Record(_) | Ty::Union(_) => (ColumnKind::Ref, Vec::new()),
-        Ty::Enum(key) => {
-            let cases = meta
-                .enums
-                .iter()
-                .find(|e| key.app == meta.app && e.name == key.name)
-                .map(|e| e.variants.iter().map(|v| v.id.clone()).collect())
-                .unwrap_or_default();
-            (ColumnKind::Enum, cases)
-        }
-        _ => return None,
-    })
-}
-
-/// The filter columns of the type `ty`, whose fields' schemas are `fields`: one per filter,
-/// then one per other field a `filter` compares (a register of a scalar, a counter).
-fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSchema> {
-    let mut out = Vec::new();
-    // A trigger's `at` is asked of the whole type ("the first of them after now"), wherever its
-    // documents are placed, so the field it fires at is kept across the workspace too: with the
-    // type's filters, not with the collection a document is in.
-    let fires_at: Vec<&str> = meta
-        .triggers
-        .iter()
-        .filter(|trigger| trigger.ty == ty.id)
-        .filter_map(|trigger| match &trigger.when {
-            TriggerWhenMeta::At(field) => Some(field.as_str()),
-            TriggerWhenMeta::Every(_) => None,
-        })
-        .collect();
-    for f in &ty.search.filters {
-        // A filter on the person it is asked for holds of different items for each of them: it
-        // is answered from the columns of the fields it reads, never kept as a column of its
-        // own. A filter on the time it is asked at is kept, written at the clock the index is
-        // derived at and written again as the clock passes what changes its answer
-        // ([`super::index::clock`]), so a query asks for it by name like any other filter.
-        if f.pred
-            .as_ref()
-            .is_some_and(tilolang::pred::Pred::reads_viewer)
-        {
-            continue;
-        }
-        let parsed = tilo_failure::ignored!(
-            "a loaded package's filter types all parse, as `unreadable_types` checked",
-            parse_ty(&f.ty, &meta.app).ok()
-        );
-        let (kind, cases) = match f.kind {
-            FilterKind::Bool | FilterKind::Predicate => (ColumnKind::Bool, Vec::new()),
-            _ => match parsed.as_ref().and_then(|t| kind_of_ty(meta, t)) {
-                Some(found) => found,
-                None => continue,
-            },
-        };
-        out.push(ColumnSchema {
-            name: f.field.clone().unwrap_or_else(|| format!("={}", f.key)),
-            field: f.field.clone(),
-            kind,
-            many: f.many,
-            pred: f.pred.clone(),
-            filter: true,
-            cases,
-        });
-    }
-    for (field, schema) in ty.fields.iter().zip(fields) {
-        if out
-            .iter()
-            .any(|c| c.field.as_deref() == Some(schema.id.as_str()))
-        {
-            continue;
-        }
-        let columned = match schema.kind {
-            MergeKind::Register => !matches!(
-                parse_ty(&field.ty, &meta.app),
-                Ok(Ty::List(_) | Ty::Tuple(_) | Ty::Map(_) | Ty::Result(..))
-            ),
-            // A counter is a column of its value. A set's members are one run per member
-            // (`columns::values`), so membership and presence are runs of its column
-            // without any `filter` naming it: `boxes.contains("inbox")` finds the
-            // conversations in one box by one run, not one by one.
-            MergeKind::Counter | MergeKind::Set => true,
-            _ => false,
-        };
-        let Some((kind, cases)) = tilo_failure::ignored!(
-            "a loaded package's field types all parse, as `unreadable_types` checked",
-            parse_ty(&field.ty, &meta.app)
-                .ok()
-                .filter(|_| columned)
-                .and_then(|t| kind_of_ty(meta, &t))
-        ) else {
-            continue;
-        };
-        out.push(ColumnSchema {
-            name: schema.id.clone(),
-            field: Some(schema.id.clone()),
-            kind,
-            many: schema.kind == MergeKind::Set,
-            pred: None,
-            filter: fires_at.contains(&schema.id.as_str()),
-            cases,
-        });
-    }
-    // When each field of a resource last changed, by its time: what a list sorts or filters by
-    // when it reads `changed(r, .field)`. A field of a collection changes with the items in it,
-    // which the ends of the items' versions name.
-    for field in fields {
-        let id = crate::index::reflect::changed_field(&field.id);
-        out.push(ColumnSchema {
-            name: id.clone(),
-            field: Some(id),
-            kind: ColumnKind::Time,
-            many: false,
-            pred: None,
-            filter: false,
-            cases: Vec::new(),
-        });
-    }
-    // Every resource's first and last versions, by their time: what a list sorts or filters
-    // by when it reads `created(r)` or `updated(r)`.
-    for reflected in [
-        crate::index::reflect::CREATED,
-        crate::index::reflect::UPDATED,
-    ] {
-        out.push(ColumnSchema {
-            name: reflected.to_owned(),
-            field: Some(reflected.to_owned()),
-            kind: ColumnKind::Time,
-            many: false,
-            pred: None,
-            filter: false,
-            cases: Vec::new(),
-        });
-    }
-    out
-}
-
 impl MetaExt for Meta {
     fn schemas(&self) -> Vec<TypeSchema> {
         self.types
@@ -334,7 +185,6 @@ impl MetaExt for Meta {
                 for field in &ty.fields {
                     schema.fields.push(field_schema(self, field));
                 }
-                schema.columns = columns(self, ty, &schema.fields);
                 schema
             })
             .collect()

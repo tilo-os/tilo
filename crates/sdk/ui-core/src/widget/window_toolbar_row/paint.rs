@@ -583,11 +583,11 @@ pub(super) fn paint_location(
     if shown.is_empty() || text_rect.width() <= 0.0 {
         return None;
     }
-    // The row made room for the location's form; a notice's text is still cut where it must be.
-    let room = if notice.is_some() {
-        text_rect.width()
-    } else {
+    // A period's forms each fit the row; any other location's text is cut to its rect.
+    let room = if notice.is_none() && !location.shorter.is_empty() {
         f64::INFINITY
+    } else {
+        text_rect.width()
     };
     let label = LocationLabel::measure(tr, theme, shown, trailing_word(location), room);
     let y = rect.center().y - label.height / 2.0;

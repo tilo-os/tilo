@@ -7,7 +7,6 @@
 )]
 // One test binary instead of one per file; #[path] keeps the files in place.
 
-
 #[path = "eviction.rs"]
 mod eviction;
 #[path = "image_apps.rs"]

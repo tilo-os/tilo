@@ -468,7 +468,14 @@ impl Link {
     /// Send the next 20 ms of the Tilo call, or the silence that ends it,
     /// with the Speaking op ahead of the first packet and after the last.
     async fn send_tick(&mut self, socket: &mut Socket) -> Result<(), ()> {
-        let mixed = self.mixer.tick().filter(|_| self.dave.can_send());
+        // Nothing is taken from the mixer while the group's keys are not in
+        // place: the audio is kept for when they are, rather than decoded
+        // away and lost.
+        let mixed = if self.dave.can_send() {
+            self.mixer.tick()
+        } else {
+            None
+        };
         let frame = match mixed {
             Some(frame) => {
                 // A frame the mixer shed from a speaker's passthrough stream
@@ -488,6 +495,10 @@ impl Link {
                 }
                 frame
             }
+            // A frame the mixer is only late in producing: wait for it, and
+            // keep the stream open, rather than answer with silence the
+            // speaker never said.
+            None if self.speaking && self.mixer.active() => return Ok(()),
             None if self.speaking && self.silence_left > 0 => {
                 self.silence_left = self.silence_left.saturating_sub(1);
                 SILENCE.to_vec()

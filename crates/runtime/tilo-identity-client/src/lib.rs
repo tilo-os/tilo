@@ -27,9 +27,7 @@ pub use runtime_portal::NotAvailable;
 #[cfg(unix)]
 mod public_record;
 #[cfg(unix)]
-pub use public_record::{
-    load_metadata_from_bytes, load_metadata_from_path, resolve_active_identity,
-};
+pub use public_record::{load_metadata_from_bytes, load_metadata_from_path};
 
 #[cfg(unix)]
 pub mod inherited;
@@ -52,11 +50,6 @@ pub use load_metadata as load_bound_metadata;
 #[cfg(not(unix))]
 pub fn load_metadata_from_path(_path: &std::path::Path) -> Result<IdentityMetadata, NotAvailable> {
     Err(NotAvailable::ServiceFdMissing)
-}
-
-#[cfg(not(unix))]
-pub fn resolve_active_identity(_dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    None
 }
 
 /// Public fields of an identity record: reading them never unlocks the account

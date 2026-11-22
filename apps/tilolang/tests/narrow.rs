@@ -64,7 +64,7 @@ fn later(after: ui::time::Duration) -> Instant {
 fn frames_until(app: &mut TestApp<TlApp>, until: Instant) -> usize {
     let mut frames: usize = 0;
     while now() < until {
-        if demands_frame(&app.harness().frame_schedule()) && app.frame() {
+        if demands_frame(&app.harness().frame_schedule()) && app.frame_if_owed() {
             frames = frames.saturating_add(1);
         }
         std::thread::sleep(std::time::Duration::from_millis(4));

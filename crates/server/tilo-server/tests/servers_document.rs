@@ -9,10 +9,10 @@
 )]
 
 use tilo_resource::Id;
-use tilo_server::servers::{self, Servers, person_workspace_id, applied};
-use tilo_server::workspaces::Offer;
+use tilo_server::servers::{self, Servers, applied, person_workspace_id};
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
+use tilo_workspace_service::work::offers_compute;
 
 use crate::common::{TestUser, serve_on};
 
@@ -191,7 +191,7 @@ async fn a_server_offers_what_its_entry_says() {
     applied::reconcile_into(workspaces, &applied::Requests::at(&policy_request))
         .await
         .unwrap();
-    assert!(!workspaces.offer().compute, "it runs no work yet");
+    assert!(!offers_compute(workspaces).await, "it runs no work yet");
 
     servers::apply(
         workspaces,
@@ -203,11 +203,12 @@ async fn a_server_offers_what_its_entry_says() {
         .await
         .unwrap();
     assert!(applied.offered);
-    assert_eq!(workspaces.offer(), Offer::of(500, true, 2));
+    assert!(offers_compute(workspaces).await, "its entry offers compute");
 }
 
-/// A retired server lets go of everything it holds and offers nothing, and
-/// keeps its entry so it is never taken in again as a new server.
+/// A retired server lets go of everything it holds, offers nothing and refuses
+/// its own revoked key, and keeps its entry so it is never taken in again as a
+/// new server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_retired_server_lets_go_of_everything() {
     let alice = TestUser::fresh("Alice");
@@ -241,17 +242,28 @@ async fn a_retired_server_lets_go_of_everything() {
     applied::reconcile_into(workspaces, &applied::Requests::at(&policy_request))
         .await
         .unwrap();
-    assert!(workspaces.offer().compute);
+    assert!(offers_compute(workspaces).await);
 
-    servers::apply(workspaces, Servers::RETIRE_SERVER.with(entry(&nas)))
-        .await
-        .unwrap();
+    let mut revocation = tilo_user_identity::RevocationEntry {
+        user_public_key: alice.user_pk,
+        revoked_device_public_key: nas.device_pubkey(),
+        revoked_at_ns: 1,
+        reason: tilo_user_identity::RevocationReason::Retired,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revocation, &alice.user_sk).unwrap();
+    servers::apply(
+        workspaces,
+        Servers::ASK_RETIREMENT.with((entry(&nas), serde_json::to_string(&revocation).unwrap())),
+    )
+    .await
+    .unwrap();
     let applied = applied::reconcile_into(workspaces, &applied::Requests::at(&policy_request))
         .await
         .unwrap();
-    assert!(applied.retired, "its own entry says it was retired");
+    assert!(applied.retired, "asked to retire, it retired its own entry");
     assert!(
-        !workspaces.offer().compute,
+        !offers_compute(workspaces).await,
         "a retired server takes no work"
     );
     assert!(
@@ -264,6 +276,10 @@ async fn a_retired_server_lets_go_of_everything() {
             .iter()
             .any(|summary| summary.workspace == workspace.workspace),
         "it holds nothing: {still_there:?}"
+    );
+    assert!(
+        workspaces.revocations().refuses(&nas.cert),
+        "and refuses its own key, which its person's root revoked"
     );
 }
 
@@ -450,7 +466,9 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
                     let named = servers::read(asking.host.workspaces())
                         .await
                         .map_or(0, |servers| servers.servers.len());
-                    if servers::holds_person_workspace(asking.host.workspaces()).await && named == enrolled {
+                    if servers::holds_person_workspace(asking.host.workspaces()).await
+                        && named == enrolled
+                    {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -508,7 +526,7 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
     .await
     .unwrap();
     tilo_test_env::within("the first server to offer what the third set", async {
-        while first.host.workspaces().offer() != Offer::of(500, true, 2) {
+        while !offers_compute(first.host.workspaces()).await {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })

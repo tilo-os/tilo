@@ -397,13 +397,12 @@ impl Core {
         of: &ResourceRef,
     ) -> Vec<(ResourceRef, crate::InvocationEntry)> {
         self.read_links_of(of);
-        let Ok(links) = self.store.borrow().linked(of) else {
+        let Ok(links) = self.store.borrow().linked_by(of, INVOCATION_TYPE) else {
             return Vec::new();
         };
         links
             .into_iter()
             .map(|link| link.of)
-            .filter(|at| at.ty == INVOCATION_TYPE)
             .filter_map(|at| match self.read_invocation(&at) {
                 Ok(rec) if rec.state == "suggested" => Some((at, rec)),
                 _ => None,

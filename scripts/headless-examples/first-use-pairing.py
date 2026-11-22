@@ -12,7 +12,7 @@ from contextlib import suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from real_apps import Failed, ScriptedSession, until
+from real_apps import Failed, ScriptedSession, invocation, receipt, until
 
 IDENTITY = Path("config/tilo/identity")
 ROOT_KEY = Path("identity/user-identity/pubkey.bin")
@@ -65,8 +65,8 @@ def give_owner_a_name(owner):
 
 
 def request_link(owner):
-    owner.control({"op": "actions_invoke", "provider": "so.tilo.session",
-                   "id": "session:invite\u001fshow-pair-device", "wait_ms": 20000})
+    receipt(owner.control(invocation("so.tilo.session", "session:invite", "show-pair-device",
+                                     None, 10000)))
     click(owner, "Copy link")
     link = until("a native link on the owner's clipboard",
                  lambda: owner.control({"op": "state_dump"})["state"].get("clipboard"), 5)

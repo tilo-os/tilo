@@ -6,7 +6,6 @@
 //! both read a workspace's layout with, and [`desktop_doc::rebuild`], what the
 //! layout's own document projects.
 
-
 use automerge::{AutoCommit, ReadDoc as _};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::desktop_doc;

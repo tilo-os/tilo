@@ -285,12 +285,12 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
     let mut others = not_hosted_turns(&mail.ada, &mail.workspace);
     others.push((
         "a turn in another workspace",
-        Caller::authenticated(cy.user_public_key, cy.device_public_key)
+        Caller::delegated_agent(SCOUT, cy.user_public_key, cy.device_public_key)
             .in_workspace(&elsewhere)
-            .delegated_to(SCOUT)
-            .on_turn(
+            .on_roster_turn(
                 tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
-                Vec::new(),
+                0,
+                cy.user_public_key,
             ),
     ));
     for (who, asks) in others {

@@ -10,7 +10,6 @@
 //! Automerge-change-application ingestion path (out of scope here —
 //! `workspace-crypto` doesn't depend on Automerge).
 
-
 use std::time::SystemTime;
 
 use collab_types::{

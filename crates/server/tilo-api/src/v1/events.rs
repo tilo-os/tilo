@@ -7,7 +7,7 @@
 
 use super::answers::Event;
 use super::errors::ApiError;
-use crate::session::{Call, Session};
+use crate::session::Session;
 use hyper::body::Bytes;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -58,16 +58,15 @@ impl Watch {
         if let Some(path) = &self.path {
             arguments.insert("path".into(), json!(path));
         }
-        let answer = self
+        let typed = self
             .session
-            .call(Call {
-                workspace: Some(self.workspace.clone()),
-                tool: "tilo_watch",
-                arguments: Value::Object(arguments),
-                group: None,
-            })
+            .typed(
+                Some(&self.workspace),
+                "tilo_watch",
+                Value::Object(arguments),
+                None,
+            )
             .await?;
-        let typed = super::typed_answer(&answer)?;
         if let Some(cursor) = typed.get("cursor").and_then(Value::as_str) {
             self.cursor = Some(cursor.to_owned());
         }

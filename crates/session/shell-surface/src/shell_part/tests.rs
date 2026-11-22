@@ -7,6 +7,7 @@
 
 use super::*;
 use tilo_session_core::surfaces::Published;
+use tilolang_tilo::runtime::store::Store as _;
 
 fn reading() -> LayoutReading {
     LayoutReading {
@@ -259,7 +260,7 @@ fn a_press_on_the_bar_hands_its_effect_to_the_session() {
     let outbox = part
         .instance
         .host()
-        .map(|host| host.store().outbox_pending_count());
+        .map(|host| host.store().outbox_pending().len());
     assert!(
         link.has_asks(),
         "the press reached the session: outbox {outbox:?}, {:?}, refusals {:?}",
@@ -585,9 +586,7 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
             ),
         )
         .expect("Sheets is pinned");
-    // The runtime committed the pin: the part applies it to the record its views read, as a
-    // press in the shell's settings does, and the next turn draws the dock over it.
-    part.apply_committed_for_test();
+    // The runtime wrote the pin to the shell's store: the next turn draws the dock over it.
     publish_time(&link, "4:29 PM");
     for _ in 0..6 {
         part.prepare_frame();
@@ -1175,7 +1174,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
             packages,
             person: "Pat",
             link: Rc::clone(&link),
-            record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
+            store: tilolang_tilo::resources::ResourceStore::in_memory(),
             seed: true,
         },
         1.0,
@@ -1489,8 +1488,12 @@ fn a_part_on_a_scaled_output_paints_at_that_scale() {
         (one.scale - 1.0).abs() < f64::EPSILON && (two.scale - 2.0).abs() < f64::EPSILON,
         "each part draws at its own output's scale: {one:?} then {two:?}"
     );
-    // The layer is the frame the tree paints: at 2 it is twice as wide.
-    let width = |part: &mut ShellPart| part.layers()[0].frame.size().0;
+    // The layer is the frame the tree paints: at 2 it is twice as wide, once the frame of that
+    // size is drawn on the threads that draw it.
+    let width = |part: &mut ShellPart| {
+        part.wait_drawn();
+        part.layers()[0].frame.size().0
+    };
     let plain_width = width(&mut plain);
     let wide_width = width(&mut twice);
     assert_eq!(

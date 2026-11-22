@@ -37,13 +37,13 @@ mod agent_app_list_tests;
 mod governance_approval_tests;
 
 mod app_admission;
+pub(super) mod delivering;
 mod directory;
 mod hosted;
 mod launch_child;
 mod own_device;
 mod publishers;
 mod readiness;
-mod readmit;
 mod shortcut_run;
 mod workspace_nodes;
 use app_admission::{
@@ -1013,6 +1013,7 @@ impl AppBrokerState {
                 .map_err(|_| ActionCallError::UnknownAction)?
         };
         let surface = self
+            .publishers
             .surfaces
             .lock()
             .ok()
@@ -1079,7 +1080,8 @@ impl AppBrokerState {
     /// `scope` builds that surface's rows: who publishes is copied, not every
     /// app's whole surface, when that is all a caller asked.
     pub(super) fn live_surfaces(&self, scope: RowScope<'_>) -> Vec<PublishedSurface> {
-        self.surfaces
+        self.publishers
+            .surfaces
             .lock()
             .map(|surfaces| {
                 surfaces
@@ -1178,7 +1180,7 @@ impl AppBrokerState {
                 .filter(|surface| surface.live && surface.route.cluster_id == workspace_id)
             {
                 live_apps.insert(surface.app_id.clone());
-                if !self.is_windowless(surface.peer_id) {
+                if !self.publishers.is_windowless(surface.peer_id) {
                     windowed_apps.insert(surface.app_id.clone());
                 }
                 providers.push(CatalogueProvider {
@@ -2120,278 +2122,6 @@ impl AppBrokerState {
             .map(|offer| app.offered(offer))
     }
 
-    /// Hand `request` to the publisher `peer_id` that offers it at `address` now: a job on that
-    /// connection.
-    async fn deliver_to(
-        self: &Arc<Self>,
-        peer_id: u64,
-        caller: &Caller,
-        origin: Option<&super::published_invocation::InvocationCaller>,
-        (request, address): (&InvokeRequest, &tilo_actions::ActionAddress),
-    ) -> Result<u64, ActionCallError> {
-        let mut delivered = request.clone();
-        delivered.target.provider = peer_id.to_string();
-        delivered.target.address = address.clone();
-        self.start_job(caller, origin, &delivered, request).await
-    }
-
-    /// Deliver `request` to `picked`, the connection found ready for it in `destination` and the
-    /// address it takes it at. `None` when that connection stopped taking invocations before the
-    /// admission, as a window that closed ends its stream: a change like any other, after which
-    /// the caller looks again and passes it over.
-    pub(super) async fn deliver_picked(
-        self: &Arc<Self>,
-        (peer_id, published): (u64, tilo_actions::ActionAddress),
-        caller: &Caller,
-        origin: Option<&super::published_invocation::InvocationCaller>,
-        (request, destination): (&InvokeRequest, &LaunchDestination),
-    ) -> Option<Result<u64, ActionCallError>> {
-        let delivered = self
-            .deliver_to(peer_id, caller, origin, (request, &published))
-            .await;
-        let address = current_address(destination.resource.as_deref(), request);
-        let still_picked = || {
-            self.ready_for(destination, false, &address)
-                .is_some_and(|(again, _)| again == peer_id)
-        };
-        (delivered.is_ok() || still_picked()).then_some(delivered)
-    }
-
-    /// The connection ready to take `address` in `destination`, and the address it takes it
-    /// at: an instance of the app for a `start` (`starts`), else the app's ready publisher of it.
-    fn ready_for(
-        &self,
-        destination: &LaunchDestination,
-        starts: bool,
-        address: &tilo_actions::ActionAddress,
-    ) -> Option<(u64, tilo_actions::ActionAddress)> {
-        let workspace = destination.workspace.id().to_string();
-        if starts {
-            return self
-                .running_instance(&destination.app_id, &workspace, &address.action)
-                .map(|peer_id| (peer_id, address.clone()));
-        }
-        self.ready_delivery(
-            &destination.app_id,
-            &workspace,
-            destination.record.as_deref(),
-            address,
-        )
-    }
-
-    /// Answer `request`, a workspace's `start` of its app ([`super::windowless_instances::started_app`]),
-    /// with `peer_id`, the instance that runs now. The journal blocks, so it answers on the
-    /// delivery runtime's blocking pool.
-    async fn answer_started(
-        self: &Arc<Self>,
-        caller: &Caller,
-        origin: Option<&super::published_invocation::InvocationCaller>,
-        request: &InvokeRequest,
-        (workspace, app_id): (&str, &str),
-        peer_id: u64,
-    ) -> Result<u64, ActionCallError> {
-        let state = Arc::clone(self);
-        let (caller, origin, request) = (caller.clone(), origin.cloned(), request.clone());
-        let reason = format!("{app_id} start worker stopped");
-        let (workspace, app_id) = (workspace.to_owned(), app_id.to_owned());
-        tokio::task::spawn_blocking(move || {
-            state.answer_start(
-                &caller,
-                origin.as_ref(),
-                &request,
-                (&app_id, &workspace),
-                peer_id,
-            )
-        })
-        .await
-        .map_err(|error| ActionCallError::Unavailable {
-            reason: format!("{reason}: {error}"),
-        })?
-    }
-
-    /// Launch `app_id` unless it already publishes the action, then deliver
-    /// the invocation to the connection that does, through the same
-    /// admission a live action takes.
-    ///
-    /// The wait wakes on what readiness depends on — a surface published or
-    /// withdrawn, an invocation stream opened or closed, in either order —
-    /// on the delivery deadline, and on the caller dropping its answer.
-    pub(super) async fn relaunch_and_deliver<T: Send>(
-        self: &Arc<Self>,
-        completer: &Completer<T>,
-        caller: &Caller,
-        destination: &LaunchDestination,
-        origin: Option<&super::published_invocation::InvocationCaller>,
-        request: &InvokeRequest,
-    ) -> Result<u64, ActionCallError> {
-        let stopped_waiting = || ActionCallError::Unavailable {
-            reason: "the caller stopped waiting for admission".into(),
-        };
-        let workspace_id = destination.workspace.id().to_string();
-        let app_id = &destination.app_id;
-        let address = &current_address(destination.resource.as_deref(), request);
-        let timeout = self.launchable.delivery_timeout();
-        let deadline = tokio::time::sleep(timeout);
-        let expired = || self.not_offered(app_id, &workspace_id, address, timeout);
-        let abandoned = completer.abandoned();
-        tokio::pin!(deadline, abandoned);
-        let shows = self.action_shows(app_id, &workspace_id, address);
-        let started = super::windowless_instances::started_app(request);
-        // Taken before the first look, so a publication between that look
-        // and the wait below still wakes it.
-        let mut changes = self.publisher_changes();
-        let mut launched = false;
-        // The start of the instance with no window asked for, until it ends.
-        let mut starting: Option<crate::apps::services::WindowlessStart> = None;
-        loop {
-            self.check_launch_origin(caller, origin, &workspace_id)?;
-            if completer.is_abandoned() {
-                return Err(stopped_waiting());
-            }
-            if tokio::time::Instant::now() >= deadline.deadline() {
-                return Err(expired());
-            }
-            if let Some(picked) = self.ready_for(destination, started.is_some(), address) {
-                if let Some(started) = started {
-                    return self
-                        .answer_started(caller, origin, request, started, picked.0)
-                        .await;
-                }
-                if let Some(delivered) = self
-                    .deliver_picked(picked, caller, origin, (request, destination))
-                    .await
-                {
-                    return delivered;
-                }
-                continue;
-            }
-            // An action that shows nothing runs in an instance of the app
-            // with no window, where the host runs one: it publishes, and the
-            // wait below delivers to it. Only one that shows launches a window.
-            if !launched
-                && !shows
-                && let Some(start) = self.run_windowless(app_id, &workspace_id)?
-            {
-                starting = Some(start);
-                launched = true;
-                continue;
-            }
-            if !launched {
-                let mut permit = Some(tokio::select! {
-                    biased;
-                    () = &mut abandoned => return Err(stopped_waiting()),
-                    () = &mut deadline => return Err(expired()),
-                    seen = changes.changed() => {
-                        if seen.is_err() {
-                            return Err(ActionCallError::Unavailable { reason: "the broker stopped".into() });
-                        }
-                        continue;
-                    }
-                    permit = super::launchable::launch_permits().acquire_owned() => {
-                        permit.map_err(|_| ActionCallError::Unavailable { reason: "the launch queue stopped".into() })?
-                    }
-                });
-                let current = self.readmit_launch(caller, origin, request, destination)?;
-                let launch = self.finish_retained_launch(
-                    completer,
-                    caller,
-                    (origin, request),
-                    current,
-                    permit.take().ok_or(ActionCallError::NotPermitted)?,
-                    (deadline.deadline(), &address.action),
-                );
-                drop(permit);
-                launch.await?;
-                launched = true;
-                continue;
-            }
-            tokio::select! {
-                seen = changes.changed() => if seen.is_err() {
-                    return Err(ActionCallError::Unavailable {
-                        reason: "the broker stopped".into(),
-                    });
-                },
-                () = &mut deadline => return Err(expired()),
-                () = &mut abandoned => return Err(stopped_waiting()),
-                // A start that failed is the action's answer now, with why.
-                failed = super::windowless_instances::start_failed(&mut starting, app_id) => {
-                    return Err(failed);
-                }
-            }
-        }
-    }
-
-    /// `app_id` was launched in `workspace` but did not offer `address` within
-    /// `timeout`: why, with what its connections publish.
-    fn not_offered(
-        &self,
-        app_id: &str,
-        workspace: &str,
-        address: &tilo_actions::ActionAddress,
-        timeout: std::time::Duration,
-    ) -> ActionCallError {
-        ActionCallError::Unavailable {
-            reason: format!(
-                "{app_id} was launched but did not offer \"{}\" within {:.1} s ({})",
-                address.action,
-                timeout.as_secs_f32(),
-                self.publishers_seen(app_id, workspace, address),
-            ),
-        }
-    }
-
-    async fn finish_retained_launch<T: Send>(
-        self: &Arc<Self>,
-        completer: &Completer<T>,
-        caller: &Caller,
-        ownership: (Option<&super::InvocationCaller>, &InvokeRequest),
-        current: LaunchDestination,
-        permit: tokio::sync::OwnedSemaphorePermit,
-        deadline: (tokio::time::Instant, &str),
-    ) -> Result<(), ActionCallError> {
-        let app_id = current.app_id.clone();
-        let workspace_id = current.workspace.id().to_string();
-        let timeout = self.launchable.delivery_timeout();
-        let stopped_waiting = || ActionCallError::Unavailable {
-            reason: "the caller stopped waiting for admission".into(),
-        };
-        let expired = || ActionCallError::Unavailable {
-            reason: format!(
-                "{app_id} was launched but did not offer \"{}\" within {:.1} s",
-                deadline.1,
-                timeout.as_secs_f32()
-            ),
-        };
-        let deadline = tokio::time::sleep_until(deadline.0);
-        let abandoned = completer.abandoned();
-        tokio::pin!(deadline, abandoned);
-        let state = Arc::clone(self);
-        let place = self.launch_place(caller, &workspace_id, None);
-        let caller = caller.clone();
-        let origin = ownership.0.cloned();
-        let parent = ownership.1.clone();
-        let mut launch = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            state.launch_retained_child(&caller, origin.as_ref(), &parent, &current, &place)
-        });
-        let launched_result = tokio::select! {
-            biased;
-            () = &mut abandoned => {
-                launch.abort();
-                return Err(stopped_waiting());
-            }
-            () = &mut deadline => {
-                launch.abort();
-                return Err(expired());
-            }
-            result = &mut launch => result,
-        };
-        launched_result.map_err(|error| ActionCallError::Unavailable {
-            reason: format!("{app_id} launch worker stopped: {error}"),
-        })??;
-        Ok(())
-    }
-
     /// Recheck the original signed ownership while an asynchronous launch waits.
     /// The numeric dispatcher checks it again when capturing the actual offer.
     pub(super) fn check_launch_origin(
@@ -2639,8 +2369,10 @@ impl AppBrokerState {
         record: Option<&str>,
         address: &tilo_actions::ActionAddress,
     ) -> Option<u64> {
-        self.publisher_of(app_id, workspace, record, address, false)
-            .map(|(peer_id, _)| peer_id)
+        let shows = self.action_shows(app_id, workspace, address);
+        let ready =
+            (self.publishers).publisher_of((app_id, workspace, record), address, false, shows);
+        ready.map(|(peer_id, _)| peer_id)
     }
 
     /// [`Self::ready_peer`] and the address that connection publishes
@@ -2659,123 +2391,9 @@ impl AppBrokerState {
         record: Option<&str>,
         address: &tilo_actions::ActionAddress,
     ) -> Option<(u64, tilo_actions::ActionAddress)> {
-        self.publisher_of(app_id, workspace, record, address, true)
-    }
-
-    /// What `app_id`'s connections in `workspace` publish of `address`'s action
-    /// and why none is ready for it: said with a delivery that found none.
-    fn publishers_seen(
-        &self,
-        app_id: &str,
-        workspace: &str,
-        address: &tilo_actions::ActionAddress,
-    ) -> String {
-        let Ok(subscribers) = self.invocation_subscribers.lock() else {
-            return "the invocation streams are unavailable".into();
-        };
-        let Ok(surfaces) = self.surfaces.lock() else {
-            return "the published surfaces are unavailable".into();
-        };
-        let seen: Vec<String> = surfaces
-            .values()
-            .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == workspace)
-            .map(|surface| {
-                let resources: Vec<String> = surface
-                    .actions
-                    .iter()
-                    .filter(|action| action.action == address.action)
-                    .map(|action| {
-                        tilo_actions::selection::logical_resource_id(&action.resource).into_owned()
-                    })
-                    .collect();
-                format!(
-                    "connection {} on {}: {}{}{}publishes \"{}\" on [{}]",
-                    surface.peer_id,
-                    surface.route.document_id,
-                    if surface.live { "" } else { "closed, " },
-                    if super::open_stream(&subscribers, surface.peer_id).is_some() {
-                        ""
-                    } else {
-                        "takes no invocations, "
-                    },
-                    if self.shows(surface.peer_id, &address.action) {
-                        ""
-                    } else {
-                        "has no window for it, "
-                    },
-                    address.action,
-                    resources.join(", ")
-                )
-            })
-            .collect();
-        if seen.is_empty() {
-            format!("no connection of {app_id} published in this workspace")
-        } else {
-            seen.join("; ")
-        }
-    }
-
-    /// The ready publisher of `address` and the address it publishes it
-    /// under: the exact one, else (when `aliases`) one whose resource is a
-    /// bound alias of `address`'s resource, or the one alias of the same
-    /// resource now when `address` names an alias an instance that ended
-    /// published ([`super::PublishedSurface::current_resource`]).
-    fn publisher_of(
-        &self,
-        app_id: &str,
-        workspace: &str,
-        record: Option<&str>,
-        address: &tilo_actions::ActionAddress,
-        aliases: bool,
-    ) -> Option<(u64, tilo_actions::ActionAddress)> {
-        // Asked before the tables are held: it reads them itself. An action
-        // that shows something needs a window to show it in.
+        // Asked before the tables are held: it reads them itself.
         let shows = self.action_shows(app_id, workspace, address);
-        let subscribers = self.invocation_subscribers.lock().ok()?;
-        let surfaces = self.surfaces.lock().ok()?;
-        surfaces
-            .values()
-            .filter(|surface| {
-                surface.live
-                    && self.shows(surface.peer_id, &address.action)
-                    && !(shows && self.is_windowless(surface.peer_id))
-                    && surface.app_id == app_id
-                    && surface.route.cluster_id == workspace
-                    && record.is_none_or(|record| surface.route.document_id == record)
-                    && super::open_stream(&subscribers, surface.peer_id).is_some()
-            })
-            .filter_map(|surface| {
-                let resource = if aliases {
-                    surface
-                        .current_resource(&address.resource, &address.action)
-                        .or_else(|| {
-                            surface
-                                .actions
-                                .iter()
-                                .find(|action| {
-                                    action.action == address.action
-                                        && tilo_actions::selection::logical_resource_id(
-                                            &action.resource,
-                                        ) == address.resource
-                                })
-                                .map(|action| action.resource.as_str())
-                        })?
-                } else {
-                    surface
-                        .actions
-                        .iter()
-                        .find(|action| {
-                            action.action == address.action && action.resource == address.resource
-                        })?
-                        .resource
-                        .as_str()
-                };
-                Some((
-                    surface.peer_id,
-                    tilo_actions::ActionAddress::new(resource, &address.action),
-                ))
-            })
-            .min_by_key(|(peer_id, _)| *peer_id)
+        (self.publishers).publisher_of((app_id, workspace, record), address, true, shows)
     }
 
     pub(super) fn invoke_eager(
@@ -2953,6 +2571,7 @@ impl AppBrokerState {
         // Only the one action this peer offers is copied out, not every
         // app's published surface.
         let (app_id, workspace, action) = self
+            .publishers
             .surfaces
             .lock()
             .ok()

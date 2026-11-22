@@ -241,7 +241,6 @@ async fn open_host(
     host: &SigningKey,
 ) -> anyhow::Result<tilo_server::Server> {
     let cert = server_cert(root, host, &args.persistent)?;
-    let scratch = tempfile::tempdir()?;
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&host.to_bytes()))
         .relay_mode(iroh::RelayMode::Disabled)
@@ -252,8 +251,6 @@ async fn open_host(
         tilo_server::ServerConfig {
             state_root: server_root.to_path_buf(),
             identity_root: args.state.join("identity"),
-            full_replica_status: scratch.path().join("status.json"),
-            home_peer_bundle: scratch.path().join("home-peer.toml"),
             ..Default::default()
         },
         tilo_server::daemon::ServerIdentity {

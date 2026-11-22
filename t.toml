@@ -134,9 +134,7 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd"
 # moves no unit of this family's build. The pam-tilo tests load the PAM module as libpam does:
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml).
-# The server's coding-agent tests start the guest's own agent program in its serving mode, as the
-# machine-siblings setup names it.
-starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], package-service = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"], tilo-server = ["linux-vm-agent:tilo-linux-vm-agent"] }
+starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], package-service = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -147,8 +145,7 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 requires = ["arch={arch}"]
 wrapper = ["bash", "tools/ci/nextest.sh"]
-# tilolang-tilo's budget checks are test-bench's, below.
-args = ["--locked", "--profile", "ci", "--tests", "-E", "not (package(tilolang-tilo) & (binary(budgets) | test(/^bench::costs::/)))"]
+args = ["--locked", "--profile", "ci", "--tests"]
 unify = "workspace-unify"
 packages = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "install",
@@ -164,7 +161,7 @@ isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo
 # none builds it (tools/ci/nextest.sh, or the render helper's setup step, .config/nextest.toml),
 # and a shard names none. So is the capability probe a job of a package
 # .config/nextest-capabilities.toml names first.
-starts = { app-cli = ["install:tilo-install"], windows-vm = ["tilo-test-env:tilo-capability-probe"], tilo-agent-session = ["tilo-video-render:tilo-video-render", "linux-vm-agent:tilo-linux-vm-agent", "tilolang-process:tilolang-process"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe", "linux-vm-agent:tilo-linux-vm-agent"] }
+starts = { app-cli = ["install:tilo-install"], launcher = ["tilo-test-env:tilo-capability-probe"], windows-vm = ["tilo-test-env:tilo-capability-probe"], tilo-agent-session = ["tilo-video-render:tilo-video-render", "linux-vm-agent:tilo-linux-vm-agent", "tilolang-process:tilolang-process"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe", "linux-vm-agent:tilo-linux-vm-agent"] }
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has
@@ -179,22 +176,6 @@ wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
 unify = "workspace-unify"
 packages = ["canvas", "music", "pdf-viewer"]
-heavy = true
-on = ["dispatch", "idle"]
-
-# tilolang-tilo's budget checks: each app's views read at a thousand and at ten thousand records,
-# asserting they do the same work at both. Seeding ten thousand records in a test build makes them
-# 10.4 of the package's 39.6 test-minutes a run (11-14), at every head of main; their counts are
-# deterministic, so main's newest head with room bisects a check a commit breaks as surely.
-[[cargo]]
-name = "test-bench"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-tool = "nextest"
-requires = ["arch=x86_64"]
-wrapper = ["bash", "tools/ci/nextest.sh"]
-args = ["--locked", "--profile", "ci", "--tests", "-E", "binary(budgets) | test(/^bench::costs::/)"]
-unify = "workspace-unify"
-packages = ["tilolang-tilo"]
 heavy = true
 on = ["dispatch", "idle"]
 
@@ -226,7 +207,7 @@ wrapper = ["bash", "-c", "export TILO_TEST_ASSET_CACHE=\"$CARGO_TARGET_DIR/test-
 args = ["--locked", "--examples"]
 unify = "workspace-unify"
 packages = [
-    "accounts", "agent", "app-cli", "browser", "calculator", "key-group", "code-editor",
+    "accounts", "app-cli", "browser", "calculator", "key-group", "code-editor",
     "containers", "discord-worker", "file-explorer", "imager", "launcher", "local-model-service",
     "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "store",
     "tilo-agent-session", "tilo-app", "tilo-bluez",
@@ -331,7 +312,7 @@ packages = [
     "tilo-clipboard", "tilo-clock", "tilo-dialogs", "tilo-files", "tilo-image-codec",
     "tilo-location", "tilo-media", "tilo-net", "tilo-notify", "tilo-peer-state", "tilo-rt",
     "tilo-secrets", "tilo-session-client", "tilo-workspace-service", "tilolang-app",
-    "tilolang-web",
+    "tilolang-web", "workspace-unify",
 ]
 
 # The packages CI also checks as they ship (tools/ci/package_features.py): their default build,
@@ -658,8 +639,8 @@ outputs = [
 [[check]]
 name = "docs-reference-bins"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked -p tilo-cli -p tilo-runtime --bin tilo --bin tilo-runtime-mcp\n"
-outputs = ["/target/debug/tilo", "/target/debug/tilo-runtime-mcp"]
+run = "cargo build --locked -p tilo-cli -p tilo-runtime --bin tilo --bin tilo-runtime\n"
+outputs = ["/target/debug/tilo", "/target/debug/tilo-runtime"]
 default = false
 
 # The same for the TypeScript SDK, whose page is read with the TypeScript
@@ -749,10 +730,13 @@ heavy = true
 # binary prints what it publishes. The catalogue generator then reads each
 # tilolang package of `apps/tl` through `tilolang describe --fleet`, so the
 # fleet knows a tilolang app as fully as a native one, and fails when the
-# generated catalogue is stale or two apps claim one id.
+# generated catalogue is stale or two apps claim one id. Each binary is run in a
+# network namespace of its own (`isolation`), so a report cannot wait on a
+# network: what it publishes is what its code holds.
 [[check]]
 name = "app-surfaces"
 egress = { to = ["code.tilo.so:443"], pinned = true }
+isolation = "nested"
 run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\n"
 fix = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces --write\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\"\n"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }
@@ -848,7 +832,7 @@ heavy = true
 [[check]]
 name = "workspace-service-features"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "for features in '' web apps agents apps,test-support agents,test-support; do\n    cargo check --locked -p tilo-workspace-service --all-targets ${features:+--features \"$features\"} || exit 1\ndone\n"
+run = "for features in '' device-keys apps agents apps,test-support agents,test-support; do\n    cargo check --locked -p tilo-workspace-service --all-targets ${features:+--features \"$features\"} || exit 1\ndone\n"
 
 [[check]]
 name = "android"
@@ -1061,7 +1045,8 @@ secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
 
 [[check]]
 name = "sdk-policy"
-run = "cargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/sdk/publish_check.py --report-only\n"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/sdk/publish_check.py --report-only\n"
 fix = "cargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\""
 
 [[check]]
@@ -1176,7 +1161,7 @@ heavy = true
 name = "real-fuse-runtime"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-runtime --lib standalone::files -- --nocapture --test-threads=1\ncargo test --locked -p file-explorer --test live_collaborative_mount -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-runtime --lib device::take_work::files -- --nocapture --test-threads=1\ncargo test --locked -p file-explorer --test live_collaborative_mount -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
@@ -1494,19 +1479,23 @@ name = "weekly-latency"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo test --locked -p tilo-media --features realtime --test realtime -- --ignored --exact realtime_latency_per_frame --nocapture"
 on = ["dispatch"]
+# A frame's latency is held to a budget: t runs it on a node with nothing beside it.
+timed = true
 
 # A workspace taking records and files at the same speed however full, as one nextest run of
 # `tilo-agent-session`'s `it` binary with `--run-ignored only`: the same binary, the same units and
 # the same nextest path as `test-x86_64`'s build of that package, so the compiler cache serves its
 # compiles instead of resolving a `cargo nextest -p` command's own graph and compiling them again.
 # It is a family of its own because its tests are `#[ignore]`d, which the plain `test-x86_64` run
-# leaves out: they are timed, so they run alone, the workspace's speed however full and an
-# import's floors beside a person's calls. `t test throughput` runs them, and `unify` makes the
-# units the family build's.
+# leaves out: they are timed, the workspace's speed however full and an import's floors beside a
+# person's calls, so `timed` has t run them on a node with nothing beside them (its build shares a
+# node as any build does). `t test throughput` runs them, and `unify` makes the units the family
+# build's.
 [[cargo]]
 name = "throughput"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
+timed = true
 requires = ["arch=x86_64"]
 wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests", "--run-ignored", "only", "-E", "test(=workspace_actions::throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full) | test(=workspace_actions::import_rate::an_import_lands_at_its_floor_while_the_person_works_beside_it) | test(=workspace_actions::api_beside_import::an_import_into_another_app_never_slows_a_keys_listings)", "--test-threads", "1"]
@@ -1609,17 +1598,6 @@ timeout_secs = 7200
 on = ["dispatch"]
 
 [[check]]
-name = "perf-agent-native"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/perf-scheduled.sh agent-native"
-env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
-requires = ["arch=x86_64"]
-outputs = ["/target/perf/agent-native/**"]
-timeout_secs = 7200
-on = ["dispatch"]
-
-[[check]]
 name = "perf-footprint"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
@@ -1681,7 +1659,7 @@ name = "perf-scheduled"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/perf-compare.sh"
-needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-server"]
+needs_any_outcome = ["perf-fs", "perf-agent", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-server"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 outputs = ["/target/perf/compare/**"]
 cache = false
@@ -1692,7 +1670,7 @@ name = "perf-publish"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/perf-compare.sh /target/perf-publish"
-needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-server"]
+needs_any_outcome = ["perf-fs", "perf-agent", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-server"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 outputs = ["/target/perf-publish/**"]
 cache = false
@@ -2486,32 +2464,16 @@ on = ["schedule:40 2 * * *", "dispatch"]
 
 [[check]]
 name = "fs-workspace-scale"
-# The daemon pass mounts FUSE and has one device join another over iroh; the
-# ladder's content stays inside the step's own target directory.
+# The ladder's content stays inside the step's own target directory.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "script=$(cat <<'SCALE'\nexport TILO_FS_LADDER_RUNGS_MIB=${T_INPUT_RUNGS:-10240,20480}\nexport TILO_FS_LADDER_TOTAL_MIB=${T_INPUT_TOTAL_MIB:-10240}\nexport TILO_FS_LADDER_SMALL_FILES=${T_INPUT_SMALL_FILES:-1000}\nexport TILO_FS_LADDER_SMALL_BYTES=${T_INPUT_SMALL_BYTES:-4096}\nexport TILO_FS_COPY_FILES=${T_INPUT_COPY_FILES:-10000}\nexport TILO_FS_COPY_BYTES=${T_INPUT_COPY_BYTES:-4096}\nbash tools/ci/fs-workspace-scale.sh ${T_INPUT_MODE:-all}\nSCALE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
-dispatch_inputs = { mode = "all", rungs = "10240,20480", total_mib = "10240", small_files = "1000", small_bytes = "4096", copy_files = "10000", copy_bytes = "4096" }
-# Every request the daemons answer is named on stderr, so each run prices a listing by the
-# requests it costs as well as by the time it takes.
+run = "script=$(cat <<'SCALE'\nexport TILO_FS_LADDER_RUNGS_MIB=${T_INPUT_RUNGS:-10240,20480}\nexport TILO_FS_LADDER_TOTAL_MIB=${T_INPUT_TOTAL_MIB:-10240}\nexport TILO_FS_LADDER_SMALL_FILES=${T_INPUT_SMALL_FILES:-1000}\nexport TILO_FS_LADDER_SMALL_BYTES=${T_INPUT_SMALL_BYTES:-4096}\nbash tools/ci/fs-workspace-scale.sh ${T_INPUT_MODE:-ladder}\nSCALE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+dispatch_inputs = { mode = "ladder", rungs = "10240,20480", total_mib = "10240", small_files = "1000", small_bytes = "4096" }
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1", TILO_FS_FUSE_REQUESTS = "1" }
 requires = ["/dev/fuse", "disk-100g"]
 isolation = "nested"
 on = ["dispatch"]
 heavy = true
 timeout_secs = 7200
-
-[[check]]
-name = "fs-second-device-open"
-# One device opens a photo another device holds and it never fetched: a
-# quarter-megabyte file crosses on demand through the mount, the size a photo
-# has rather than the few bytes a test file usually has.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "exec unshare --user --map-root-user --mount -- bash tools/ci/fs-workspace-scale.sh photo"
-env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1", TILO_FS_BENCH_VERBOSE = "1" }
-requires = ["/dev/fuse"]
-isolation = "nested"
-on = ["dispatch"]
-timeout_secs = 5400
 
 [[check]]
 name = "native-tier1"
@@ -6484,7 +6446,7 @@ outputs = ["/target/e2e/{proof}/**"]
 timeout_secs = 2400
 on = ["dispatch", "idle"]
 [check.matrix]
-proof = ["tilolang", "two-people", "agent-sessions", "session-lock"]
+proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "session-lock"]
 
 # An app.s first hour, walked in each version its step file names: the Rust version (apps/) and
 # the tilolang one (apps/tl/) before the change that retires the Rust app, the tilolang one alone
@@ -6783,7 +6745,7 @@ default = false
 [[check]]
 name = "lounge-check-cli"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked --profile lounge-check -p tilo-cli --bin tilo\nrm -rf /target/publish/lounge-check/cli\nmkdir -p /target/publish/lounge-check/cli\ncp \"$CARGO_TARGET_DIR/lounge-check/tilo\" /target/publish/lounge-check/cli/\n"
+run = "# The tilo command and the daemon it starts, packed together (tools/ci/publish/cli-release.sh).\ncargo build --locked --profile lounge-check -p tilo-cli -p tilo-runtime --bin tilo --bin tilo-runtime\nrm -rf /target/publish/lounge-check/cli\nmkdir -p /target/publish/lounge-check/cli\ncp \"$CARGO_TARGET_DIR/lounge-check/tilo\" \"$CARGO_TARGET_DIR/lounge-check/tilo-runtime\" /target/publish/lounge-check/cli/\n"
 env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge-check/cli/**"]
@@ -7034,25 +6996,6 @@ evidence = ["/target/user-stories-shell/{story}/index.html", "/target/user-stori
 timeout_secs = 3000
 [check.matrix]
 story = ["agent-mcp", "second-device", "files-in", "calendar-invite", "nextcloud-files", "mail-password", "shared-mailbox", "desktop-easy"]
-
-# The big-folder user story: a person copies a photo library and a few long videos into their
-# workspace through its mounted folder, browses it, joins from a second computer and restarts the
-# first, on the fs daemons and their FUSE mounts, each step held to a person's budget
-# (stories/big-folder.mjs). Its page is the same as every story's.
-[[check]]
-name = "user-stories/big-folder"
-on = ["schedule:0 7 * * *", "dispatch"]
-# The second computer joins the first over iroh, as the fs-workspace-scale check's does.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "exec unshare --user --map-root-user --mount -- bash os/containers/tilo-lounge/test-user-stories.sh /target/user-stories/big-folder big-folder"
-env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
-requires = ["/dev/fuse", "disk-100g"]
-isolation = "nested"
-heavy = true
-cache = false
-outputs = ["/target/user-stories/big-folder/index.html", "/target/user-stories/big-folder/big-folder/**"]
-evidence = ["/target/user-stories/big-folder/index.html", "/target/user-stories/big-folder/big-folder/**"]
-timeout_secs = 7200
 
 # The two programs the tilo.sh stack's checks run as a release's: tilo-enroll makes the VM host's
 # member device, and tilo-approve answers for the person the startup page made. Built here, once,

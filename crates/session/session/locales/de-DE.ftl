@@ -13,6 +13,9 @@ idle-inhibit-unnamed-app = Eine App
 
 remote-use-hold = Fernzugriff von einem anderen deiner Geräte
 
+device-agents-not-accepted = Dieses Gerät nimmt keine Agenten von deinen anderen Geräten an. Schalte in seinen Einstellungen unter Geräte „Agenten von meinen anderen Geräten annehmen“ ein.
+device-agent-stopped = Du hast diesen Agenten auf diesem Gerät gestoppt.
+
 storage-app-name = Speicher
 storage-volume-home = deine Dateien
 storage-volume-system = das System
@@ -243,6 +246,7 @@ session-tray = Statusleiste
 session-invite = Einladen
 session-agents = Agenten
 session-styles = Stile
+session-folders = Ordner
 session-notifications-dismiss = Die Benachrichtigung verwerfen
 session-notifications-act = Die Aktion der Benachrichtigung ausführen
 session-notifications-clear = Das Benachrichtigungszentrum leeren

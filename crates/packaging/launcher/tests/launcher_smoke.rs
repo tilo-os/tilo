@@ -2,7 +2,6 @@
 //!
 //! These tests invoke the *library* surface of `tilo-launcher` against ad-hoc fixtures.
 
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

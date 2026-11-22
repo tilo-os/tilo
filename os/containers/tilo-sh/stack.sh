@@ -193,7 +193,7 @@ packet relay's URL) has the server start no packet relay of its own and be
 reached through that one, its iroh endpoint on every address, so people on
 other networks join it with an invitation over iroh while nothing of the
 stack is on the web. Its invitation links then carry the server's signed
-address themselves (under https://tilo.sh, or TILO_SH_INVITE_ENTRY), and
+address themselves, and
 \`tilo login '<link>'\` joins with one from anywhere. The state keeps it for
 \`restart server\` and \`restart api\`; an empty value goes back to the stack's
 own relay.
@@ -839,26 +839,26 @@ vm_skip_reason() { vm_host_blocker; }
 # started with it places workspaces there, and `down` stops it.
 vm_host_running() { [[ -n $(vm_host status 2>/dev/null | sed -n 's/^tilo-sh-vm-host-0 *running$/running/p') ]]; }
 
+# Who the server is and where it is dialled, as it wrote it in its state when its browser
+# listener started (the web entry's `TILO_WEB_HOME_HOST_INFO`).
+host_info() {
+  local kept=$state/server/lounge/server/web-host.json
+  [[ -r $kept ]] || die "the server said nothing of itself ($kept): is it up?"
+  cat "$kept"
+}
+
 # The API server's environment: apps/tilo-api/deployment.yaml.
 api_env() {
   printf '%s\n' \
     "TILO_API_LISTEN=127.0.0.1:$api_port" \
     "TILO_API_ORIGIN=$api_origin" \
     "TILO_API_WEB_ENTRY=$site_origin" \
-    "TILO_API_HOST=$server_origin" \
+    "TILO_API_HOST=$(host_info)" \
     "TILO_API_STATE=$api_state/api.json"
-  # An invitation's link carries itself under the page whoever follows it
-  # opens: this stack's own site, or tilo.sh's when the stack is reached
-  # through another packet relay and its own page opens nowhere else.
-  if [[ -n $(cat "$state/reached-through" 2>/dev/null || true) ]]; then
-    printf '%s\n' "TILO_API_INVITE_ENTRY=${TILO_SH_INVITE_ENTRY:-https://tilo.sh}"
-  else
-    printf '%s\n' "TILO_API_INVITE_ENTRY=$site_origin"
-  fi
 }
 
 # The web entry's environment: apps/tilo-web/deployment.yaml. INFO is what
-# page_host printed. The app a person lands in is the deployment's: production
+# host_info read. The app a person lands in is the deployment's: production
 # opens Chat, and a page whose checks arrive on the workspace's shell names
 # none (TILO_SH_HOME_APP=).
 web_env() {
@@ -1423,7 +1423,7 @@ seed() {
   local want=$((${TILO_SH_SEED_MEMBERS:-300} - members))
   if ((want > 0)); then
     say "seeding $want members through the Lounge's entry"
-    "$seeder" "$server_origin" "$workspace" "$want" > "$out/members.json" \
+    "$seeder" "$state/server/lounge/server" "$workspace" "$want" > "$out/members.json" \
       || die 'seeding the members failed'
   fi
   say 'seeding the history: a member posts chat through the API server'
@@ -1570,9 +1570,9 @@ build_programs() {
     local oauth_programs=()
     [[ -z ${fake_oauth:-} ]] || oauth_programs=(-p fake-oauth --bin fake-oauth)
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
-      -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process \
+      -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
       "${oauth_programs[@]}" \
-      --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo \
+      --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime \
       --bin tilolang-process >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
         "${oauth_programs[@]}" \
@@ -1641,7 +1641,7 @@ bundle_stage() {
 copy_programs() {
   local from=$1 file stand_in=$1/examples/mail_stand_in
   mkdir -p "$programs"
-  for file in tilo-server discord-worker tilo-api fake-discord fake-model-providers tilo tilolang-process; do
+  for file in tilo-server discord-worker tilo-api fake-discord fake-model-providers tilo tilo-runtime tilolang-process; do
     [[ -x $from/$file ]] || die "the build left no $from/$file; TILO_SH_CARGO names another cargo drop-in to build with"
     cmp -s "$from/$file" "$programs/$file" && continue
     cp --reflink=auto "$from/$file" "$programs/.$file.next" || die "could not copy $file"
@@ -2006,33 +2006,17 @@ start_native_server() {
 }
 
 start_native_api() {
+  host_info > /dev/null
   { private_env api "$programs"
     api_env
   } > "$runs/api.env"
   run_native api "$state/api" "$programs/tilo-api"
 }
 
-# Who the Lounge's host is and where its page dials it, which the web entry
-# hands its page (TILO_WEB_HOME_HOST_INFO): what `tilo-server page-host` prints
-# for the running server, asked at its public origin, as production's operator
-# asks it to set apps/tilo-web. LOUNGE is the server's image with --images.
-page_host() {
-  local image=${1:-}
-  if [[ $mode == images ]]; then
-    podman_ run --rm --network host --read-only --entrypoint /usr/local/bin/tilo-server \
-      -v "$state/trust-bundle.pem:$ca_path:ro,Z" "$image" page-host "$server_origin"
-  else
-    local server=${lounge:-${TILO_SH_LOUNGE:-$native/lounge}}/bin/tilo-server
-    env -i PATH=/usr/bin:/bin "HOME=$runs" \
-      "$(command -v bwrap)" --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" -- \
-      "$server" page-host "$server_origin"
-  fi
-}
-
 start_native_web() {
   local workspace=$1 caddy container=$repo/crates/browser/tilo-browser-runtime/container info
   caddy=$(find_caddy)
-  info=$(page_host) || die 'the server did not say who it is (tilo-server page-host)'
+  info=$(host_info)
 
   { private_env web "$(dirname "$caddy")"
     image_env_here "$container/Containerfile" \
@@ -2490,6 +2474,7 @@ up_images() {
   say "server ready: the Lounge is $workspace ($((SECONDS - began))s)"
 
   # The API server: uid 65532, its state on its own volume.
+  host_info > /dev/null
   local api_args=()
   mapfile -d '' api_args < <(api_env | env_args)
   local api_user=()
@@ -2505,7 +2490,7 @@ up_images() {
   # plain listener (its shelf) and the releases on this machine's loopback.
   start_releases
   local web_args=() info
-  info=$(page_host "$lounge") || die 'the server did not say who it is (tilo-server page-host)'
+  info=$(host_info)
   mapfile -d '' web_args < <(web_env "$workspace" "$info" | env_args)
   start web --network "pasta:-T,$plain_port,-T,$releases_port" -p "127.0.0.1:$web_port:8080" \
     --read-only --tmpfs /tmp --user 10001 \
@@ -2572,7 +2557,7 @@ down() {
   fi
 }
 
-# The holders (`tilo mcp --hold`) the stack's people started with a home under its state, as
+# The daemons (`tilo-runtime --hold`) the stack's people started with a home under its state, as
 # their tilo does once it logs in, stopped, and the workspace folders they mounted there let go:
 # they outlive the stack otherwise, and a wipe cannot remove a folder still mounted. A holder
 # that read its person's root hides its environment, so it is known by the lock it holds on

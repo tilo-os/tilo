@@ -47,7 +47,7 @@ impl SupervisedSession for MountedSession {
     }
 
     fn unmount(self) -> io::Result<()> {
-        fs::fuse_session::unmount_and_join(self.session, &self.mount_point)
+        tilo_fs::fuse_session::unmount_and_join(self.session, &self.mount_point)
     }
 }
 
@@ -75,7 +75,7 @@ fn supervise_watching_on<S: SupervisedSession>(
             let result = thread
                 .join()
                 .unwrap_or_else(|_| Err(io::Error::other("filesystem background thread panicked")));
-            let result = fs::fuse_session::ended(result);
+            let result = tilo_fs::fuse_session::ended(result);
             let _ = ended.send(SessionEvent::Ended(result));
         })?;
     // The watcher holds a sender until it reports, so `recv` fails only

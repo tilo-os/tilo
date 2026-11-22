@@ -553,7 +553,10 @@ fn choosing_a_person_and_clearing_filters_narrows_history_without_a_change() {
         ],
     );
     for listed in [1, 2] {
-        assert!(shows(&mut app, &change(listed)), "change {listed} is listed");
+        assert!(
+            shows(&mut app, &change(listed)),
+            "change {listed} is listed"
+        );
     }
 
     app.harness()
@@ -656,8 +659,10 @@ fn a_person_scrolls_history_toward_its_oldest_change() {
     let at = |app: &mut TestApp<App>, n: u8| app.harness().targets().get(&change(n)).copied();
     let newest = at(&mut app, 40).expect("the newest change is listed");
     let oldest = at(&mut app, 1).expect("the oldest change is laid out");
-    app.harness()
-        .send(&ui::synthetic_input::cursor_moved(newest.center().x, newest.center().y));
+    app.harness().send(&ui::synthetic_input::cursor_moved(
+        newest.center().x,
+        newest.center().y,
+    ));
     for _ in 0..60 {
         app.harness().scroll(0.0, -3.0);
         app.frame();

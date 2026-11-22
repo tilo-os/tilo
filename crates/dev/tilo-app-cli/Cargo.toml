@@ -26,6 +26,7 @@ fluent-syntax.workspace = true
 hex.workspace = true
 getrandom.workspace = true
 libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
 image = { workspace = true, features = ["png"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # Inside a Tilo session, `dev` hands the app the shell's file chooser the

@@ -422,26 +422,37 @@ while IFS= read -r f; do
   esac
   fmt_rs="$fmt_rs$f"$'\n'
 done <<< "$staged_rs"
-if [ -n "$fmt_rs" ] && command -v rustfmt >/dev/null 2>&1; then
-  unformatted=$(printf '%s' "$fmt_rs" | xargs rustfmt --edition 2024 --check -- 2>/dev/null | grep -c '^Diff in' || true)
-  if [ "${unformatted:-0}" -gt 0 ]; then
-    # Formatting is not a judgement call, so do it rather than ask. A file with
-    # unstaged changes is left alone: rewriting it would stage those too.
-    dangerous=""
-    while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      if git diff --quiet -- "$f"; then
-        rustfmt --edition 2024 -- "$f" && git add -- "$f"
+# rustfmt lays code out its own way per version: the one this formats with must be the
+# toolchain rust-toolchain.toml pins, whose fmt the tree's `fmt` check runs. A missing
+# rustfmt or another version fails the commit rather than formatting drift onto main.
+if [ -n "$fmt_rs" ]; then
+  if ! bash tools/ci/check-rustfmt-pin.sh; then
+    fail=1
+  elif ! command -v rustfmt >/dev/null 2>&1; then
+    # No rustfmt of its own: formatting goes through t (its `fmt` check, the pinned
+    # toolchain) at the push.
+    note "rustfmt: none on PATH here; formatting is checked through t at the push"
+  else
+    unformatted=$(printf '%s' "$fmt_rs" | xargs rustfmt --edition 2024 --check -- 2>/dev/null | grep -c '^Diff in' || true)
+    if [ "${unformatted:-0}" -gt 0 ]; then
+      # Formatting is not a judgement call, so do it rather than ask. A file with
+      # unstaged changes is left alone: rewriting it would stage those too.
+      dangerous=""
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if git diff --quiet -- "$f"; then
+          rustfmt --edition 2024 -- "$f" && git add -- "$f"
+        else
+          dangerous="$dangerous$f"$'\n'
+        fi
+      done <<< "$fmt_rs"
+      if [ -n "$dangerous" ]; then
+        note "rustfmt: cannot format files with unstaged changes, stage the whole file first:"
+        printf '%s' "$dangerous" | sed 's/^/  /' >&2
+        fail=1
       else
-        dangerous="$dangerous$f"$'\n'
+        note "rustfmt: formatted $unformatted hunk(s) in staged files and staged them"
       fi
-    done <<< "$fmt_rs"
-    if [ -n "$dangerous" ]; then
-      note "rustfmt: cannot format files with unstaged changes, stage the whole file first:"
-      printf '%s' "$dangerous" | sed 's/^/  /' >&2
-      fail=1
-    else
-      note "rustfmt: formatted $unformatted hunk(s) in staged files and staged them"
     fi
   fi
 fi

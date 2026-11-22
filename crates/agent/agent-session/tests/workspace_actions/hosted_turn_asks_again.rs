@@ -4,8 +4,8 @@
 //! refusal that is the key's fault is the turn's answer at once.
 use super::*;
 use std::collections::VecDeque;
-use tilo_server::workspace_bots::events::WorkspaceEvents;
 use tilo_server::workspaces::person_model::protocol::ErrorKind;
+use tilo_workspace_service::agents::events::WorkspaceEvents;
 
 /// A model whose calls are written out, its provider's refusals among them: each ask takes the
 /// next. What each request asked is kept.
@@ -107,13 +107,19 @@ const ASK: &str = "Remind me every morning to call home.";
 /// out once: the listing the model asks for next holds one event, not two.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
-    let events = WorkspaceEvents::start(workspaces.clone(), false);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let events = WorkspaceEvents::start(
+        workspaces.clone(),
+        false,
+        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+    );
     let first = write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), ASK).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         faltering(
             vec![
                 Ok(does("call-1", sets_up())),
@@ -127,6 +133,7 @@ async fn a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice() 
             &asked,
         ),
     )
+    .await
     .with_events(Some(events));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
@@ -172,13 +179,19 @@ async fn a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice() 
 /// turn ended, how often it asked, what it had done and that it gave no answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
-    let events = WorkspaceEvents::start(workspaces.clone(), false);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let events = WorkspaceEvents::start(
+        workspaces.clone(),
+        false,
+        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+    );
     let first = write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), ASK).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         faltering(
             vec![
                 Ok(does("call-1", sets_up())),
@@ -191,6 +204,7 @@ async fn a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done() {
             &asked,
         ),
     )
+    .await
     .with_events(Some(events));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
@@ -238,12 +252,14 @@ async fn a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done() {
 /// the provider's own failure and nothing after it, since the turn had done nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refusal_that_is_the_keys_fault_is_not_asked_again() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let first = write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), ASK).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         faltering(
             vec![
                 Err(ModelError::new(ErrorKind::Authentication)),
@@ -251,7 +267,8 @@ async fn a_refusal_that_is_the_keys_fault_is_not_asked_again() {
             ],
             &asked,
         ),
-    );
+    )
+    .await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     tokio::time::timeout(

@@ -6,7 +6,7 @@ app so.tilo.chat "Chat" (
     previously: so.tilo.lang.chat,
 )
 
-use so.tilo.lang.agent as agent
+use so.tilo.agent as agent
 
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people.
@@ -131,7 +131,7 @@ type Direct (readers: people) {
 
     search {
         kind conversation
-        people person
+        people people
     }
 }
 
@@ -540,9 +540,7 @@ action send(
 ) -> Message (icon: .send, label: "Send", did: "wrote a message") {
     let m = Message(body: body, reply_to: reply_to)
     for f in attachments {
-        m.attachments.insert(
-            Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()),
-        )
+        m.attachments.insert(Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()))
     }
     match to {
         c: TextChannel => c.messages.insert(m),
@@ -987,7 +985,9 @@ view direct(d: Direct) {
     state revised: RichText = RichText("")
     // What was asked of the agent with no message to stand under, read once for the view and
     // oldest first; each row draws only those asked between the message before it and itself.
-    let asked = if d.person.kind() == .agent { asked_outright(d, workspace.me) } else { [] }
+    let asked = if d.people.any(p -> p.kind() == .agent) {
+        asked_outright(d, workspace.me)
+    } else { [] }
     std.transcript(d, d.messages, unread: first_unseen(d)) { m ->
         let before = d.messages.previous(m)
         for a in asked.filter(a -> made_before(a, m) and after(before, a)) {
@@ -1028,7 +1028,7 @@ view direct(d: Direct) {
 fn asked_outright(d: Direct, me: Actor) -> List<agent.Ask> {
     agent.agents.asks
         .filter(
-            a -> a.agent == d.person
+            a -> d.people.contains(a.agent)
                 and created(a)?.who == me
                 and if let from = created(a)?.from { [from].of(Message).is_empty() } else { false },
         )

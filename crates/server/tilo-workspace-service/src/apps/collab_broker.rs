@@ -938,7 +938,10 @@ fn join_owned_thread(thread: JoinHandle<()>, identity: Option<usize>) {
         let _ = thread.join();
     }
 }
-/// Start the production broker with explicit host-owned authority and services.
+/// Start a broker on any host: the session, a standalone runtime or a server
+/// hosting a workspace. The host hands over the authority it holds: the
+/// workspace tree, its journal and certificate authority, and the services
+/// that start and attest programs.
 pub fn spawn_with_services(
     socket: PathBuf,
     membership: Option<crate::apps::services::WorkspaceAuthorityHandle>,
@@ -949,27 +952,13 @@ pub fn spawn_with_services(
     fanout: Arc<FanoutState>,
 ) -> std::io::Result<BrokerHandle> {
     spawn_inner(
-        socket,
-        membership,
-        publisher,
-        config,
-        services,
-        HarnessAdmission::default(),
-        channels,
-        fanout,
+        socket, membership, publisher, config, services, None, channels, fanout,
     )
 }
 
-/// How a harness broker admits devices instead of a session's identity
-/// store: its enrolled devices, and the authority that admits them.
-#[derive(Default)]
-struct HarnessAdmission {
-    trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
-    certificate_authority:
-        Option<Arc<dyn crate::apps::certificate_authority::CertificateAuthority>>,
-}
-
-/// Native compatibility fixtures only; production callers inject current authority.
+/// A harness broker that admits the devices it lists instead of asking a
+/// certificate authority. Such a device is never checked for revocation and
+/// names its own root, so this stays out of production.
 #[cfg(any(test, feature = "test-support"))]
 pub fn spawn_with_test_services(
     socket: PathBuf,
@@ -987,10 +976,7 @@ pub fn spawn_with_test_services(
         publisher,
         config,
         services,
-        HarnessAdmission {
-            trusted_devices,
-            certificate_authority: None,
-        },
+        trusted_devices,
         channels,
         fanout,
     )
@@ -1002,14 +988,10 @@ fn spawn_inner(
     publisher: Arc<crate::apps::collab_outbound::PeerPublisher>,
     config: Option<&crate::apps::NativePeerBrokerConfig>,
     services: crate::apps::services::ProcessServices,
-    harness: HarnessAdmission,
+    trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
 ) -> std::io::Result<BrokerHandle> {
-    let HarnessAdmission {
-        trusted_devices,
-        certificate_authority,
-    } = harness;
     let quit = Arc::new(AtomicBool::new(false));
     let thread = crate::apps::collab_app_broker::spawn_configured(
         &socket,
@@ -1019,7 +1001,7 @@ fn spawn_inner(
             publisher,
             membership,
             trusted_devices,
-            certificate_authority,
+            certificate_authority: None,
             services,
             config,
         },

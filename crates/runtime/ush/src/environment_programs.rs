@@ -13,13 +13,13 @@
 //!
 //! A program is ended at once when its server cancels it, and when its server has not asked
 //! after it for [`LEFT_AFTER`]: a program nobody answers any more only keeps its machine
-//! awake.
+//! awake. A server waiting for the program's next change is asking after it the whole time.
 
 use std::collections::VecDeque;
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use tilo_actions::remote::ActionCallError;
@@ -101,6 +101,8 @@ pub struct Held {
     handed: Mutex<u64>,
     /// When its server last asked after it.
     asked: Mutex<Instant>,
+    /// How many of its server's waits for its next change are open.
+    waiting: AtomicUsize,
     left_after: Duration,
     /// Its server took frames, so what it is shown changed without the program saying more.
     moved: AtomicBool,
@@ -150,6 +152,7 @@ impl Held {
             }),
             handed: Mutex::new(0),
             asked: Mutex::new(Instant::now()),
+            waiting: AtomicUsize::new(0),
             left_after,
             moved: AtomicBool::new(false),
         })
@@ -165,8 +168,19 @@ impl Held {
         *self.asked.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
     }
 
+    /// Its server waits for its next change until the answer is dropped: asking after it all
+    /// that time, however long the wait.
+    pub(crate) fn waited_on(self: &Arc<Self>) -> Waiting {
+        self.asked_after();
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        Waiting(Arc::clone(self))
+    }
+
     /// Its server has not asked after it for as long as it is kept.
     fn left(&self) -> bool {
+        if self.waiting.load(Ordering::SeqCst) > 0 {
+            return false;
+        }
         let asked = *self.asked.lock().unwrap_or_else(PoisonError::into_inner);
         asked.elapsed() >= self.left_after
     }
@@ -296,6 +310,16 @@ impl Held {
             refusal: over.refusal,
             words: over.words,
         }
+    }
+}
+
+/// One wait of a server for its program's next change ([`Held::waited_on`]).
+pub(crate) struct Waiting(Arc<Held>);
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        self.0.asked_after();
+        self.0.waiting.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

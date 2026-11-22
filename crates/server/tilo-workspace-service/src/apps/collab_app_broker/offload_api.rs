@@ -33,10 +33,6 @@ pub(super) struct QueuedOffload {
     pub(super) app: mpsc::UnboundedSender<InvocationEnvelope>,
 }
 
-/// Local runs awaited at once before the oldest are forgotten: an
-/// invocation that expires never reports its run.
-const MAX_OFFLOADED_HERE: usize = 256;
-
 impl AppBrokerState {
     /// The route this broker's api asks where an admitted offloadable
     /// invocation runs, as its host installed it; `None` runs every one
@@ -136,16 +132,16 @@ impl AppBrokerState {
             }
             Offloaded::RunHere { reason } => {
                 tracing::debug!(id, %reason, "offloadable invocation runs here");
-                self.hand_to_app(id, (request, envelope), &app);
+                self.hand_to_app(id, envelope, &app);
             }
         }
     }
 
-    /// Hand the still-pending invocation `id` to its app, remembering when.
+    /// Hand the still-pending invocation `id` to its app.
     fn hand_to_app(
         &self,
         id: u64,
-        (request, envelope): (OffloadRequest, InvocationEnvelope),
+        envelope: InvocationEnvelope,
         app: &mpsc::UnboundedSender<InvocationEnvelope>,
     ) {
         let Ok(mut registry) = self.pending_invocations.lock() else {
@@ -153,12 +149,6 @@ impl AppBrokerState {
         };
         if !registry.contains_key(&id) {
             return;
-        }
-        if let Ok(mut here) = self.offloaded_here.lock() {
-            if here.len() >= MAX_OFFLOADED_HERE {
-                here.clear();
-            }
-            here.insert(id, (request, tilo_clock::now()));
         }
         let invocation = envelope.invocation;
         if app.send(envelope).is_err() {
@@ -169,30 +159,9 @@ impl AppBrokerState {
                 let _ = self
                     .persist_uncertain_outcome(&pending, &invocation_journal::unknown(invocation));
             }
-            if let Ok(mut here) = self.offloaded_here.lock() {
-                here.remove(&id);
-            }
             return;
         }
         drop(registry);
         self.local_turn.notify_one();
-    }
-
-    /// The app answered invocation `id` with `update`: when the route sent
-    /// it back here and it succeeded, tell the route how long it took.
-    pub(super) fn offload_answered(&self, id: u64, update: &tilo_actions::InvocationUpdate) {
-        let Some((request, handed)) = self
-            .offloaded_here
-            .lock()
-            .ok()
-            .and_then(|mut here| here.remove(&id))
-        else {
-            return;
-        };
-        if matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. })
-            && let Some(route) = &self.services.action_offload
-        {
-            route.ran_here(&request, handed.elapsed());
-        }
     }
 }

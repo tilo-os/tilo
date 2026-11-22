@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Static contract for the operator-facing composite home-peer deployment.
+# Static contract for the operator-facing server container deployment.
 #
 # Keep this cheap: t's image-server check builds the image (tools/ci/publish/server-build.sh,
-# which runs this contract first), while this asserts the Compose artifact includes the
-# complete filesystem replica and the image compiles nothing of its own.
+# which runs this contract first), while this asserts the Compose artifact keeps its state and
+# the image compiles nothing of its own.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,7 +13,6 @@ readme="$root/README.md"
 containerfile="$root/Containerfile"
 build="$root/../../../tools/ci/publish/server-build.sh"
 binaries="$root/../../../tools/ci/publish/server-binaries.sh"
-compose="$root/compose.yaml"
 entrypoint="$root/tilo-home-peer"
 
 fail() { echo "tilo-server container contract: FAIL: $*" >&2; exit 1; }
@@ -45,17 +44,14 @@ assert cfg["iroh_listen"] == "0.0.0.0:4433"
 assert cfg["trust_policy"] == {"kind": "allow_matching_user"}
 PY
 
-# Product boundary: this image promises verified full file residency.
-need "$readme" "filesystem peer"
-need "$readme" "selected workspace IDs"
 need "$readme" "Pair home server"
 
-# The image packages programs t built: the server, its admin, its enroll program and the
-# filesystem replica come from the staged context, and nothing in the image compiles.
+# The image packages programs t built: the server, its admin and its enroll program come from
+# the staged context, and nothing in the image compiles.
 need "$containerfile" "COPY bin/tilo-server /usr/libexec/tilo/tilo-server"
 need "$containerfile" "COPY bin/tilo-server-admin /usr/libexec/tilo/tilo-server-admin"
 need "$containerfile" "COPY bin/tilo-enroll /usr/libexec/tilo/tilo-enroll"
-need "$containerfile" 'COPY bin/fs /usr/bin/fs'
+forbid "$containerfile" 'COPY bin/fs'
 forbid "$containerfile" "cargo build"
 forbid "$containerfile" "--mount=type=cache"
 forbid "$containerfile" "sccache"
@@ -66,10 +62,10 @@ need "$containerfile" "microdnf install -y --setopt=reposdir=/repo --disablerepo
 need "$containerfile" "microdnf remove -y --setopt=protected_packages= openssl-libs coreutils dnf5"
 
 # The programs are one check's, thin LTO and read back off the ELF, from one feature resolution
-# per image: the server and the replica in one, as the image compiled them before. Thin LTO is
+# per image. Thin LTO is
 # the default; only a development image's build asks for none, and the server image's does not.
-need "$binaries" "packages+=(-p tilo-server -p tilo-fs --bins)"
-need "$binaries" "bins+=(tilo-server tilo-server-admin tilo-enroll fs)"
+need "$binaries" "packages+=(-p tilo-server --bins)"
+need "$binaries" "bins+=(tilo-server tilo-server-admin tilo-enroll)"
 need "$binaries" ': "${TILO_SERVER_LTO:=thin}"'
 need "$binaries" "thin) export CARGO_PROFILE_RELEASE_LTO=thin ;;"
 need "$binaries" 'bash os/scripts/verify-elf-hardening.sh "$out"'
@@ -78,7 +74,7 @@ need "$binaries" 'bash os/scripts/verify-elf-hardening.sh "$out"'
 # passed by digest; the binaries are the check's output, staged with the entrypoint and the unit
 # the image copies; nothing else enters the context, and a commit time is no input.
 need "$build" "bash os/containers/tilo-server/test-contract.sh"
-need "$build" 'for bin in tilo-server tilo-server-admin tilo-enroll fs; do'
+need "$build" 'for bin in tilo-server tilo-server-admin tilo-enroll; do'
 need "$build" '--build-arg "RPMS_REF=$rpms_ref"'
 need "$build" 'cp os/containers/tilo-server/tilo-home-peer "$context/os/containers/tilo-server/"'
 need "$build" 'cp os/usr/lib/systemd/system/tilo-server.service "$context/os/usr/lib/systemd/system/"'
@@ -87,12 +83,11 @@ forbid "$build" 'SOURCE_DATE_EPOCH'
 forbid "$build" "sccache"
 
 need "$compose" "./config:/etc/tilo:Z"
-need "$compose" "tilo-full-replica"
-need "$entrypoint" "/usr/bin/fs replica"
+forbid "$compose" "full-replica"
+forbid "$entrypoint" "/usr/bin/fs"
 need "$entrypoint" "/usr/libexec/tilo/tilo-server"
 need "$entrypoint" "/usr/libexec/tilo/tilo-enroll enroll"
 need "$entrypoint" "/var/lib/tilo-server/decommissioned"
 need "$entrypoint" "exec /usr/bin/busybox sleep infinity"
-need "$entrypoint" "wait -n"
 
 echo "tilo-server container contract: PASS"

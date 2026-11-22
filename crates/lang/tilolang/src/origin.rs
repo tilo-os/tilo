@@ -11,9 +11,9 @@
 //! service accepts it. Code writing any other field of the kind is refused (E113), except in a
 //! scenario, whose seed data stands in for the service.
 //!
-//! Some kinds are the origin's to derive rather than to save: the time, the shell, who is here, the
-//! workspaces on the device. They live in the store's unsaved layer, so a change reaches the views at
-//! once and leaves no change behind to be committed, synced or replayed.
+//! Some kinds are the origin's to derive: the time, the shell, who is here, the workspaces on the
+//! device. The origin writes them again from what it holds at every start, so nothing of an app's
+//! makes them.
 
 #[derive(Clone, Copy, Debug)]
 pub struct OriginField {
@@ -31,8 +31,7 @@ pub struct OriginKind {
     pub doc: &'static str,
     pub fields: &'static [OriginField],
     /// The origin derives these resources from what it holds: it makes them again from nothing each
-    /// time it starts, so they are never saved to a collaborative record. They live in the store's
-    /// unsaved layer, where a change reaches the views without being committed.
+    /// time it starts, so an app's action never makes one.
     pub derived: bool,
 }
 
@@ -620,7 +619,7 @@ impl OriginKind {
     }
 }
 
-/// Whether the kind named `name` is one its origin derives, and so never saved to a collaborative record.
+/// Whether the kind named `name` is one its origin derives, written again at every start.
 #[must_use]
 pub fn is_derived(name: &str) -> bool {
     kind(name).is_some_and(|kind| kind.derived)

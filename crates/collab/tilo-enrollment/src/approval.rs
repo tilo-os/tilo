@@ -7,7 +7,6 @@
 //! revocations, the nonce is spent once, and the certificate the machine gains
 //! is signed by the person's own root.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -100,10 +99,9 @@ pub struct PendingApproval {
 
 /// What the approval hands the device besides its certificate.
 struct ApprovalProjection {
-    home_peer_toml: Option<String>,
-    public_identity_json: Option<Vec<u8>>,
-    fleet_json: Option<Vec<u8>>,
-    home_peers_json: Option<Vec<u8>>,
+    public_identity: Option<Vec<u8>>,
+    fleet: Option<Vec<u8>>,
+    home_peers: Option<Vec<u8>>,
 }
 
 /// The signed configuration a machine is answered with, and where to.
@@ -238,51 +236,12 @@ fn approval_projection(
 ) -> anyhow::Result<ApprovalProjection> {
     match options.kind {
         EnrollmentKind::HomePeer => {
-            let ticket_text =
-                std::fs::read_to_string(options.workspace_cache.join("workspace-ticket"))
-                    .context("the local Files workspace is not ready to share")?;
-            let ticket = fs::Ticket::decode(ticket_text.trim())
-                .context("local workspace ticket is invalid")?;
-            let capability_json = std::fs::read_to_string(options.acl)
-                .with_context(|| format!("read {}", options.acl.display()))?;
-            let capabilities: collab_types::FsAuthority = serde_json::from_str(&capability_json)
-                .context("filesystem capability export is invalid")?;
-            let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign_with(
-                ticket.workspace_id(),
-                1,
-                capabilities,
-                false,
-                identity.user_public_key,
-                |digest| {
-                    Ok(identity
-                        .root
-                        .as_ref()
-                        .context("this device holds no identity root")?
-                        .sign_digest(digest)?)
-                },
-            )?;
-            let mut server_workspace_ids = identity.server_workspace_ids.clone();
-            server_workspace_ids.sort_unstable();
-            server_workspace_ids.dedup();
-            let home_peer = fs::full_replica::HomePeerSet {
-                status_file: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
-                workspaces: vec![fs::full_replica::HomePeerBundle {
-                    ticket: ticket.encode()?,
-                    cache_dir: PathBuf::from("/var/lib/tilo/full-replica")
-                        .join(ticket.workspace_id().to_string()),
-                    capability_json,
-                    authority: Some(authority),
-                    members: Vec::new(),
-                    server_workspace_ids,
-                }],
-            };
             Ok(ApprovalProjection {
-                home_peer_toml: Some(toml::to_string_pretty(&home_peer)?),
-                public_identity_json: None,
-                fleet_json: None,
+                public_identity: None,
+                fleet: None,
                 // The person's servers so far: the first one makes their
                 // admin workspace, a later one asks an earlier one for it.
-                home_peers_json: Some(bounded_home_peer_registry(
+                home_peers: Some(bounded_home_peer_registry(
                     options.identity_root,
                     identity.user_public_key,
                 )?),
@@ -295,13 +254,12 @@ fn approval_projection(
             let name =
                 personal_display_name(directory, options.person_uid, identity.user_public_key);
             Ok(ApprovalProjection {
-                home_peer_toml: None,
-                public_identity_json: Some(crate::public_identity_document(
+                public_identity: Some(crate::public_identity_document(
                     identity.user_public_key,
                     name.as_deref().unwrap_or(UNNAMED_DISPLAY_NAME),
                 )?),
-                fleet_json: None,
-                home_peers_json: Some(bounded_home_peer_registry(
+                fleet: None,
+                home_peers: Some(bounded_home_peer_registry(
                     options.identity_root,
                     identity.user_public_key,
                 )?),
@@ -318,7 +276,8 @@ fn personal_display_name(
 ) -> Option<String> {
     use tilo_identity::person_files::as_person;
     use tilo_identity::provisioning::is_throwaway_test_display_name;
-    use tilo_identity_client::{load_metadata_from_path, resolve_active_identity};
+    use tilo_identity::store::resolve_active_identity;
+    use tilo_identity_client::load_metadata_from_path;
 
     as_person(person_uid, directory, || {
         let name = resolve_active_identity(directory).and_then(|record| {
@@ -366,7 +325,7 @@ pub fn prepare_approval(
             "this device holds no identity directory to hand the machine the person's devices from",
         )?;
     let cert = redeem_pending(options, identity, pending, &store)?;
-    projection.fleet_json = Some(
+    projection.fleet = Some(
         store
             .transferred(&hex::encode(cert.user_public_key), &cert)
             .context("hand the joining device this identity's fleet")?,
@@ -377,10 +336,9 @@ pub fn prepare_approval(
             recipient_device_public_key: pending.request.device_public_key,
             server_node_id: pending.request.server_node_id,
             cert: cert.clone(),
-            home_peer_toml: projection.home_peer_toml,
-            public_identity_json: projection.public_identity_json,
-            fleet_json: projection.fleet_json,
-            home_peers_json: projection.home_peers_json,
+            public_identity_json: projection.public_identity,
+            fleet_json: projection.fleet,
+            home_peers_json: projection.home_peers,
         },
         identity.approver(),
     )?;

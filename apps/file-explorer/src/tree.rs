@@ -752,13 +752,15 @@ impl TreeBrowser {
             section: folder == ROOT_ID,
             ..ToolbarLocation::default()
         };
+        // Upload is the window's main action: it leads the row and stands at every width.
         let mut bar = WindowBar::new(self.dispatch.clone())
             .place(Some(location))
+            .effect(&FilesWindowEffect::Upload)
+            .enabled(self.arrived())
+            .primary()
             .effect(&FilesWindowEffect::NewFolder { name: None })
             .enabled(self.arrived())
             .effect(&FilesWindowEffect::NewFile { name: None })
-            .enabled(self.arrived())
-            .effect(&FilesWindowEffect::Upload)
             .enabled(self.arrived());
         if folder != ROOT_ID {
             bar = bar.effect(&FilesWindowEffect::Up).in_menu();
@@ -1718,17 +1720,13 @@ mod tests {
 
     #[test]
     fn the_handoff_opens_the_app_the_bytes_name_with_the_files_content_and_name() {
-        let handoff =
-            TreeBrowser::handoff("so.tilo.notes", "Open").expect("the handoff binds");
+        let handoff = TreeBrowser::handoff("so.tilo.notes", "Open").expect("the handoff binds");
         let hash = "ab".repeat(32);
         let invocation = handoff
             .binding()
             .invoke((hash.clone(), "plan.txt".to_owned()))
             .expect("the row's click is one invocation");
-        assert_eq!(
-            invocation.address.resource.as_str(),
-            "so.tilo.notes.app"
-        );
+        assert_eq!(invocation.address.resource.as_str(), "so.tilo.notes.app");
         assert_eq!(invocation.address.action.as_str(), "open");
         let arguments = serde_json::Value::Object(invocation.arguments);
         assert_eq!(arguments["content_hash"].as_str(), Some(hash.as_str()));
@@ -2220,6 +2218,9 @@ mod window_tests {
             offered.contains(&("New folder", true)) && offered.contains(&("Upload files", true)),
             "the bar offers New folder and Upload: {offered:?}"
         );
+        let upload = bar.actions.first().expect("the bar offers an action first");
+        assert_eq!(upload.name, "Upload files", "Upload leads the row");
+        assert!(upload.primary, "It is the window's main action");
         // New folder asks for its name in the list, and Escape lets it be.
         app.effect(&FilesWindowEffect::NewFolder { name: None })
             .expect("New folder answers");

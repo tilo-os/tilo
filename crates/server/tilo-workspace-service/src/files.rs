@@ -38,8 +38,14 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::content::{ContentScope, ContentShelf, ContentState, CrdtRoute, RouteContent};
 use crate::device_documents::{ServiceDocuments, ServiceWrites};
 use crate::workspaces::Workspaces;
+use tilo_fs::tree_sync::Refusal;
+use tilo_peer_state::owner::WriteRefusal;
 
+pub mod access;
+mod folders;
 pub mod socket;
+
+pub use folders::{Folder, Folders};
 
 /// How long the serving device's word that it holds a write is waited for. It answers only the
 /// writes it decides on: one it keeps while it waits for something it lacks gets no word, so a
@@ -76,7 +82,9 @@ pub async fn start(
     store: Arc<tilo_fs::ContentStore>,
     content: Arc<RouteContent>,
 ) -> std::io::Result<TreeSync> {
-    let backend = Backend::of(workspaces, workspace, content);
+    // A workspace this device governs has no device serving it: its copy here is the workspace.
+    let governed = workspaces.governed_copy(workspace).await.is_some();
+    let backend = Backend::of(workspaces, workspace, content, governed);
     TreeSync::start(tilo_fs::tree_sync::Config {
         workspace: backend.copy.name.clone(),
         device,
@@ -101,12 +109,18 @@ struct Backend {
 
 impl Backend {
     /// `workspace`'s copy in `workspaces`, followed until the wakes are no longer taken.
-    fn of(workspaces: &Workspaces, workspace: WorkspaceId, content: Arc<RouteContent>) -> Self {
+    fn of(
+        workspaces: &Workspaces,
+        workspace: WorkspaceId,
+        content: Arc<RouteContent>,
+        governed: bool,
+    ) -> Self {
         let copy = Arc::new(Copy {
             workspaces: workspaces.clone(),
             documents: ServiceDocuments::of(workspaces.clone()),
             writes: ServiceWrites::of(workspaces.clone()),
             workspace,
+            governed,
             name: workspace.to_string(),
             answers: Mutex::new(BTreeMap::new()),
             unserved: Arc::new(AtomicUsize::new(0)),
@@ -134,12 +148,16 @@ impl Backend {
     }
 }
 
-/// The member copy of one workspace, as its tree's sync reads and writes it.
+/// This device's copy of one workspace, a member copy or the one it governs, as its tree's sync
+/// reads and writes it.
 struct Copy {
     workspaces: Workspaces,
     documents: ServiceDocuments,
     writes: ServiceWrites,
     workspace: WorkspaceId,
+    /// Whether this device governs the workspace: then what the copy holds is what the
+    /// workspace holds, with no serving device to catch up with.
+    governed: bool,
     name: String,
     /// The records of the tree the sync opened, each with what the copy answered of it: `None`
     /// until it can say.
@@ -160,10 +178,11 @@ impl Copy {
     /// holds it once the copy does and the serving device holds every write of this device's to
     /// it.
     fn answer_now(&self, chunk: TreeChunk) -> Option<DocumentAnswer> {
-        let caught_up = self
-            .workspaces
-            .member_caught_up(self.workspace)
-            .is_some_and(|caught_up| *caught_up.borrow());
+        let caught_up = self.governed
+            || self
+                .workspaces
+                .member_caught_up(self.workspace)
+                .is_some_and(|caught_up| *caught_up.borrow());
         if !caught_up {
             return None;
         }
@@ -288,9 +307,10 @@ impl tilo_fs::tree_sync::TreePeer for Copy {
     }
 
     /// The folder waits for the workspace until this device takes it in as a member copy:
-    /// the same link, kept up or not, whose answers [`Self::answer_now`] reads.
+    /// the same link, kept up or not, whose answers [`Self::answer_now`] reads. A workspace this
+    /// device governs is here from the start.
     fn holds_workspace(&self) -> Option<bool> {
-        Some(self.workspaces.member_caught_up(self.workspace).is_some())
+        Some(self.governed || self.workspaces.member_caught_up(self.workspace).is_some())
     }
 }
 
@@ -334,8 +354,12 @@ impl tilo_fs::tree_sync::TreeWriter for Writer {
 }
 
 /// Resolves once the serving device holds every earlier write of this device's to `chunks` in
-/// `copy`, or with why not; `None` when the copy's own store kept them.
+/// `copy`, or with why not. A workspace this device governs kept them in its own store as they
+/// were made: that answers at once, so the records that name them go out.
 fn served(copy: &Copy, chunks: &[TreeChunk]) -> Option<tilo_fs::tree_sync::Served> {
+    if copy.governed {
+        return Some(Box::pin(std::future::ready(Ok(()))));
+    }
     let documents: Vec<String> = chunks
         .iter()
         .map(|chunk| tilo_fs::tree_sync::document_for(*chunk))
@@ -346,14 +370,10 @@ fn served(copy: &Copy, chunks: &[TreeChunk]) -> Option<tilo_fs::tree_sync::Serve
         .collect();
     let served = copy.writes.served(&copy.name, &named)?;
     Some(Box::pin(async move {
-        tokio::time::timeout(SERVED_WITHIN, served)
-            .await
-            .unwrap_or_else(|_| {
-                Err(format!(
-                    "the workspace's server did not say within {}s that it holds the change",
-                    SERVED_WITHIN.as_secs()
-                ))
-            })
+        match tokio::time::timeout(SERVED_WITHIN, served).await {
+            Ok(served) => served.map_err(Refusal::Other),
+            Err(_) => Err(Refusal::Unanswered),
+        }
     }))
 }
 
@@ -365,10 +385,19 @@ async fn write_as_device(
     chunk: TreeChunk,
     changes: &[u8],
     (founding, snapshot): (bool, bool),
-) -> Result<(), String> {
+) -> Result<(), Refusal> {
     let route = route(copy.workspace, chunk);
-    let keys = match copy.workspaces.own_route_keys(&route, founding).await {
-        Some(Err(why)) => return Err(format!("the keys of the workspace's files: {why}")),
+    let keys = match crate::timing::said_if_long(
+        "the keys of the workspace's files",
+        copy.workspaces.own_route_keys(&route, founding),
+    )
+    .await
+    {
+        Some(Err(why)) => {
+            return Err(Refusal::Other(format!(
+                "the keys of the workspace's files: {why}"
+            )));
+        }
         keys => keys.and_then(Result::ok),
     };
     copy.writes
@@ -386,7 +415,11 @@ async fn write_as_device(
         )
         .await
         .map(drop)
-        .map_err(|refusal| refusal.to_string())
+        .map_err(|refusal| match refusal {
+            WriteRefusal::HistoryFull { .. } => Refusal::HistoryFull,
+            WriteRefusal::ChangeRefused(_) => Refusal::NotPermitted,
+            refusal => Refusal::Other(refusal.to_string()),
+        })
 }
 
 /// Count a write of this device's to `document` as unserved until the serving device answers
@@ -413,7 +446,10 @@ async fn follow(
 ) {
     let mut answered = copy.workspaces.member_writes_answered();
     let mut caught_up: Option<tokio::sync::watch::Receiver<bool>> = None;
-    let mut was_caught_up = false;
+    let mut was_caught_up = copy.governed;
+    if copy.governed && wakes.send(Wake::HostReady).is_err() {
+        return;
+    }
     // The holders' word arrives in the workspace's own state, which says nothing when it moves:
     // it is read now and then, and the sync told only when it changed.
     let mut look = tokio::time::interval(HOLDERS_EVERY);
@@ -451,9 +487,10 @@ async fn follow(
             // Held as a member copy only once the device took the workspace in.
             caught_up = copy.workspaces.member_caught_up(copy.workspace);
         }
-        let now_caught_up = caught_up
-            .as_ref()
-            .is_some_and(|caught_up| *caught_up.borrow());
+        let now_caught_up = copy.governed
+            || caught_up
+                .as_ref()
+                .is_some_and(|caught_up| *caught_up.borrow());
         if now_caught_up && !was_caught_up {
             // Caught up again after its link was made anew: what was answered before it may be
             // older than what the copy holds now, so every record is opened and answered again.

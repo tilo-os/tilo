@@ -28,7 +28,7 @@ async fn resolved_invocation_capacity_is_bounded_and_cancellation_releases_it() 
                 release.notified().await;
                 Ok(runtime_collab::ActionDirectoryResolution::Found {
                     row: Box::new(row),
-                    revision: None,
+                    revision: Some("directory-r1".into()),
                 })
             })
         }
@@ -40,7 +40,7 @@ async fn resolved_invocation_capacity_is_bounded_and_cancellation_releases_it() 
             let release = Rc::new(tokio::sync::Notify::new());
             let held = Rc::new(Held {
                 entered: tx,
-                release,
+                release: Rc::clone(&release),
                 row: fixture.directory_state.borrow().row(),
             });
             fixture
@@ -58,7 +58,7 @@ async fn resolved_invocation_capacity_is_bounded_and_cancellation_releases_it() 
                 let peer = fixture.peer_id;
                 requests.push(tokio::task::spawn_local(async move {
                     state
-                        .resolve_invocation_offer(
+                        .resolve_local_document_offer(
                             &directories,
                             &BrokerActor::person("fixture-owner"),
                             &cluster,
@@ -75,7 +75,7 @@ async fn resolved_invocation_capacity_is_bounded_and_cancellation_releases_it() 
             }
             let refused = fixture
                 .state
-                .resolve_invocation_offer(
+                .resolve_local_document_offer(
                     &fixture.directories,
                     &BrokerActor::person("fixture-owner"),
                     &fixture.cluster_id,
@@ -95,10 +95,10 @@ async fn resolved_invocation_capacity_is_bounded_and_cancellation_releases_it() 
                 let _ = request.await;
             }
             assert_eq!(fixture.directories.resolved_permits.available_permits(), 64);
-            fixture.reconnect_directory();
+            release.notify_one();
             let valid = fixture
                 .state
-                .resolve_invocation_offer(
+                .resolve_local_document_offer(
                     &fixture.directories,
                     &BrokerActor::person("fixture-owner"),
                     &fixture.cluster_id,
@@ -417,6 +417,7 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
             let surface = || {
                 workspace
                     .state
+                    .publishers
                     .surfaces
                     .lock()
                     .unwrap()

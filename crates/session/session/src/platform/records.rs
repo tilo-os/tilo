@@ -248,7 +248,11 @@ impl Changes {
     /// How many tasks wait on the records now.
     #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn waiting(&self) -> usize {
-        let mut waiters = self.0.waiters.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut waiters = self
+            .0
+            .waiters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         waiters.retain(|waiter| !waiter.is_closed());
         waiters.len()
     }

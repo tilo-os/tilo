@@ -96,7 +96,7 @@ pub(crate) fn holder_proof(_op: &str) -> Option<String> {
     None
 }
 
-pub const CONNECT_COMMANDS: [&str; 2] = ["tilo-runtime", "tilo-runtime-mcp"];
+pub const CONNECT_COMMANDS: [&str; 1] = ["tilo-runtime"];
 
 /// `tilo-runtime --connect` inside a guest: relay this process's standard
 /// input and output to the environment's server, which

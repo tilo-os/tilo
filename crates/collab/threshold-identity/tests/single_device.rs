@@ -4,7 +4,6 @@
 //! signatures verify through both `collab_types::verify_event` (the
 //! public consumer) and the crate's own `verify_threshold_signature` helper.
 
-
 use collab_types::{canonical_bytes, verify_event};
 use threshold_identity::{ThresholdIdentity, signing::verify_threshold_signature};
 

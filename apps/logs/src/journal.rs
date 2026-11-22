@@ -645,12 +645,12 @@ fn without_terminal_escapes(text: &str) -> String {
 }
 
 /// A realistic offline journal: a Tilo boot sequence across the shell compositor, the FUSE
-/// filesystem, the kernel, networking, audio, and a collaboration session — seeded with a
-/// scatter of warnings and errors so the severity colouring and filters have something to
-/// bite on.
+/// filesystem, the kernel, networking, audio, and a collaboration session — with a scatter
+/// of warnings and errors so the severity colouring and filters have something to bite on.
 pub fn sample_entries() -> Vec<LogEntry> {
-    let now_us = u64::try_from(ui::clock::local_now().timestamp().as_microsecond()).unwrap_or(0);
-    let base: u64 = now_us.saturating_sub(4 * 60 * 1_000_000) / 1_000_000 * 1_000_000;
+    // The sample journal's first instant, fixed so a capture's rows and the ids they
+    // publish hold still from one run to the next.
+    const SAMPLE_BASE_US: u64 = 1_782_808_680_000_000; // 2026-06-30T08:38:00Z
     let host = "tilo-station";
     let boot_a = "9f2c1e7b4a6d4c0fb1e3a8d5c2f70a11";
     let boot_b = "5a1d8c3e2b9f4710a6c4e0d7b385f922";
@@ -670,14 +670,14 @@ pub fn sample_entries() -> Vec<LogEntry> {
 
     // A handful of resources from the previous boot, so the boot filter has two distinct
     // boots to switch between.
-    let prev_base = base - 9_000_000_000; // ~2.5h earlier
+    let prev_base = SAMPLE_BASE_US - 9_000_000_000; // ~2.5h earlier
     for row in prev {
         entries.push(build(row, prev_base, host, boot_b));
     }
 
     let rows = ROWS_BOOT.iter().chain(ROWS_SERVICES).chain(ROWS_SESSION);
     for row in rows {
-        entries.push(build(row, base, host, boot_a));
+        entries.push(build(row, SAMPLE_BASE_US, host, boot_a));
     }
 
     entries.sort_by_key(|e| e.realtime_us);

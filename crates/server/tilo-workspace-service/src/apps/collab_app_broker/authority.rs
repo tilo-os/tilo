@@ -87,43 +87,6 @@ pub(super) fn same_root_and_device(owner: &InvocationOwner) -> Option<([u8; 32],
     }
 }
 
-/// Inert transport-neutral request. The production peer entrypoint validates
-/// its wire host against the durable broker authority before constructing this
-/// request. Tests retain that host to exercise the equivalent direct-admission
-/// boundary. Task4c must also bind this to the certified recipient device
-/// before entering this API.
-#[derive(Clone, Debug)]
-pub(crate) struct CallerInvocation {
-    pub invocation: tilo_actions::InvocationId,
-    #[cfg(test)]
-    pub host: uuid::Uuid,
-    pub peer_id: u64,
-    pub app_id: String,
-    pub document_id: String,
-    pub resource: String,
-    pub action: String,
-    pub argument: Option<String>,
-    pub revision: Option<String>,
-    pub recipient: Option<[u8; 32]>,
-}
-
-impl CallerInvocation {
-    pub(super) fn intent(&self) -> serde_json::Value {
-        let mut intent = serde_json::json!({ "peer_id": self.peer_id, "app_id": self.app_id,
-            "document_id": self.document_id, "resource": self.resource,
-            "action": self.action, "argument": self.argument });
-        if let Some(fields) = intent.as_object_mut() {
-            if let Some(revision) = &self.revision {
-                fields.insert("revision".into(), serde_json::json!(revision));
-            }
-            if let Some(recipient) = &self.recipient {
-                fields.insert("recipient".into(), serde_json::json!(recipient));
-            }
-        }
-        intent
-    }
-}
-
 pub(super) fn revalidate_workspace_control(
     state: &AppBrokerState,
     route: &CrdtRoute,
@@ -514,15 +477,17 @@ impl AppBrokerState {
                     collab_types::ChangeAuthor::answer(access, invoker, node, kind, &cx)
                         == Answer::Allow
                 };
-                Ok::<_, BrokerError>(collab_types::decide_op(
-                    envelope,
-                    &record,
-                    None,
-                    None,
-                    &collab_types::Surfaces::process(),
-                    &allows,
+                Ok::<_, BrokerError>(
+                    collab_types::decide_op(
+                        envelope,
+                        &record,
+                        None,
+                        None,
+                        &collab_types::Surfaces::process(),
+                        &allows,
+                    )
+                    .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit),
                 )
-                .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit))
             })
             .map_err(BrokerError::failed)??;
         if !allowed {

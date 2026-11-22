@@ -237,11 +237,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the server for the lounge's tests",
             )
-        # The server's coding-agent tests start the guest's own agent program in its
-        # serving mode, as a workspace's machine starts it: a program of another
-        # package, which Cargo builds for no test of the server's. So do the agent
-        # session's tests of a coding agent on a person's server, which start it
-        # through that server's own keeper of coding agents.
+        # ush's served-run tests start the guest's own agent program in its serving
+        # mode, as a workspace's machine starts it: a program of another package,
+        # which Cargo builds for no test of ush's.
         machine = scripts.pop("machine-siblings")
         self.assertEqual(machine["command"], ["bash", "tools/build-sibling-binaries.sh",
                                               "linux-vm-agent:tilo-linux-vm-agent"])
@@ -251,10 +249,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [(filter_, {"host": 'cfg(target_os = "linux")'})
-                 for filter_ in ("package(tilo-server) and test(coding_agents::)",
-                                 "package(ush) and (test(served_runs::) or test(environment_programs::))",
-                                 "package(tilo-agent-session) and test(hosted_coding_agents::)")],
-                f"the {profile} profile builds the guest's agent for the tests that start a coding agent",
+                 for filter_ in ("package(ush) and (test(served_runs::) or test(environment_programs::))",)],
+                f"the {profile} profile builds the guest's agent for the tests that serve a run",
             )
         # The browser peer's page tests drive the page's modules beside a
         # runtime module the harness builds once, before they start.
@@ -341,11 +337,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-session-client) and binary(it) and "
                                  "test(lounge_fresh_page::)":
                                      "lounge-siblings",
-                                 "package(tilo-server) and test(coding_agents::)": "machine-siblings",
                                  "package(ush) and (test(served_runs::) or "
                                  "test(environment_programs::))": "machine-siblings",
-                                 "package(tilo-agent-session) and test(hosted_coding_agents::)":
-                                     "machine-siblings",
                                  "package(tilo-session-client) and binary(it) and "
                                  "(test(passkey_root::) or test(node_workspace::))": "page-bundle",
                                  # The values only some packages' tests need, for those packages:

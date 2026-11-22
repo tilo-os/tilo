@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use tasks::App;
 use ui::prelude::*;
 

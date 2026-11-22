@@ -173,7 +173,6 @@ const TAGS: &[(&str, &str)] = &[
     ("Models", "The person's own model, asked one turn at a time"),
     ("Webhooks", "A workspace's events posted to a URL"),
     ("Files", "Bytes going into a workspace and coming out of it"),
-    ("Members", "The people in a workspace and their invitations"),
     ("Programs", "Several calls as one step, written in tilolang"),
 ];
 
@@ -192,7 +191,6 @@ fn tag_of(path: &str) -> &'static str {
         Some("model") => "Models",
         Some("webhooks") => "Webhooks",
         Some("uploads" | "content") => "Files",
-        Some("members") => "Members",
         Some("programs") => "Programs",
         // A branch is another workspace of the account's.
         Some("branches") => "Account",
@@ -212,11 +210,6 @@ fn path_parameter(name: &str) -> &'static str {
         "grant" => "The key's grant, as `GET /v1/keys` lists it",
         "webhook" => "The webhook's id, as its creation answered it",
         "upload" => "The upload's id, chosen by the caller when it opened the upload",
-        "person" => "The person's user public key, as `GET members` lists it",
-        "invite" => "The open invitation's id, as `GET members` lists it",
-        "entry" => {
-            "The address's entry, as `GET /v1/workspaces/{workspace}/members/wait-list` lists it"
-        }
         _ => "",
     }
 }

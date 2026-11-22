@@ -50,7 +50,7 @@ pub mod provisioning {
     }
 }
 
-pub mod registry {
+pub mod store {
     use super::*;
 
     pub struct IdentityRegistryStore {

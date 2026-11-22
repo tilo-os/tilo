@@ -185,6 +185,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             action: None,
         };
         let at = self
+            .tree
             .resolve_in(
                 &parsed,
                 document.app_id.clone(),

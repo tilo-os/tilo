@@ -651,12 +651,12 @@ music_streaming = ["streaming", "user-read-private"]
 "#,
     )
     .unwrap();
-    let credential_store = CredentialStore::for_root(Some(
-        temp.path().join("injected-fixture-root"),
-    ))
-    .with_client_table(table)
-    .with_issuer_endpoints(OAuthIssuer::Spotify, server.provider());
-    let profile = serde_json::json!({"id":"ada-spotify","account_id":"stable-ada","display_name":"Ada"});
+    let credential_store =
+        CredentialStore::for_root(Some(temp.path().join("injected-fixture-root")))
+            .with_client_table(table)
+            .with_issuer_endpoints(OAuthIssuer::Spotify, server.provider());
+    let profile =
+        serde_json::json!({"id":"ada-spotify","account_id":"stable-ada","display_name":"Ada"});
     let (endpoint, _profiles) =
         imager_backend::account_transfer::spotify_identity::profile_server(vec![
             profile.clone(),

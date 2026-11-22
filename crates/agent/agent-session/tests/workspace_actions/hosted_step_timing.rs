@@ -92,7 +92,7 @@ async fn every_tool_step_of_a_turn_says_what_it_cost_and_nothing_it_was_asked() 
     for (at, tool) in ["tilo_find", "tilo_ls", "tilo_do"].into_iter().enumerate() {
         let line = timing[at];
         assert!(
-            line.contains("tilo_server::workspace_agents: timing tool")
+            line.contains("tilo_workspace_service::agents: timing tool")
                 && line.contains(&format!(" tool={tool} ")),
             "{line}"
         );

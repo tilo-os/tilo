@@ -70,7 +70,11 @@ impl MachineSecrets {
     pub fn add_secret(
         &mut self,
         #[param("Variable", example = "CLAUDE_CODE_OAUTH_TOKEN")] variable: String,
-        #[param("Vault item", example = "vault.item:0123456789abcdef0123456789abcdef")]
+        #[param(
+            "Vault item",
+            resource = "vault.item",
+            example = "vault.item:0123456789abcdef0123456789abcdef"
+        )]
         item: String,
     ) -> Result<(), String> {
         let variable = variable.trim();
@@ -172,6 +176,25 @@ mod tests {
 
     fn add(variable: &str, item: &str) -> tilo_resource::Invoke<MachineSecrets> {
         MachineSecrets::ADD_SECRET.with((variable.to_owned(), item.to_owned()))
+    }
+
+    #[test]
+    fn the_item_is_a_vault_resource_a_person_picks() {
+        let declarations = <MachineSecrets as tilo_resource::Resource>::declarations();
+        let declaration = declarations
+            .iter()
+            .find(|declaration| declaration.id == "add-secret")
+            .expect("Terminal offers the action");
+        let item = declaration
+            .params
+            .iter()
+            .find(|param| param.name.as_ref() == "item")
+            .expect("it takes an item");
+        assert_eq!(
+            item.resource_kind(),
+            Some("vault.item"),
+            "the item is picked from the workspace's vault, never typed"
+        );
     }
 
     #[test]

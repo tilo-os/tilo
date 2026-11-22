@@ -2761,7 +2761,6 @@ impl QuickFS {
             {
                 let mut ns = self.ns();
                 ns.set_thumb(ino, &tbh);
-                ns.note_change();
             }
             self.publish();
         }
@@ -3274,7 +3273,6 @@ impl QuickFS {
                 return Err(io::Error::other("could not tag the version with its lease"));
             }
             ns.set_content(ino, hash.as_ref(), byte_len, stamp);
-            ns.note_change();
         }
         self.note_current_content(ino, hash);
         self.publish();
@@ -3318,7 +3316,6 @@ impl QuickFS {
         let ino = namespace
             .create_file(parent, name, content.as_ref(), byte_len, observed_at_ms)
             .ok_or(ENOENT)?;
-        namespace.note_change();
         Ok(ino)
     }
 
@@ -3333,7 +3330,6 @@ impl QuickFS {
         let ino = namespace
             .create_dir(parent, name, timestamp_ms)
             .ok_or(ENOENT)?;
-        namespace.note_change();
         Ok(ino)
     }
 
@@ -3374,7 +3370,6 @@ impl QuickFS {
             if !ns.remove(attr.ino.0) {
                 return Err(ENOENT);
             }
-            ns.note_change();
         }
         self.publish();
         Ok(())
@@ -3404,7 +3399,6 @@ impl QuickFS {
         if !namespace.rename(parent, name, new_parent, new_name, now_ms()) {
             return Err(ENOENT);
         }
-        namespace.note_change();
         drop(namespace);
         Ok(())
     }

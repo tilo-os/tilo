@@ -171,7 +171,6 @@ suites = [
   "os/tests/rollback_luks_device.sh",
   "os/tests/firstboot_user_selinux.sh",
   "os/tests/boot_selinux_domains.sh",
-  "os/tests/fs_selinux_runtime_files.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/esp_generator.sh",
   "os/tests/deployment_dual_esp.sh",
@@ -932,12 +931,6 @@ package = "provider-settings-ui"
 # The provider screenshots list the models of the provider config's recorded OpenRouter answer.
 inputs = ["crates/agent/provider-config/tests/fixtures/openrouter-models.json"]
 readers = ["crates/sdk/provider-settings-ui/src/app_tests.rs"]
-
-[[cargo]]
-package = "tilo-agent-web-tools"
-# The tools' own tests serve the same fixture pages.
-inputs = ["crates/platform/tilo-web-search/tests/fixtures/"]
-readers = ["crates/agent/agent-web-tools/src/lib.rs"]
 
 [[cargo]]
 package = "calendar"

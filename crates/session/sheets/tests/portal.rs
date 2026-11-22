@@ -3,7 +3,6 @@
 //! the keys each kind takes, typed text kept out of every effect, and
 //! answering left to the person.
 
-
 use tilo_sheets::portal::{
     Body, Device, Dialog, DraftRow, DraftValue, Field, PortalApp, PortalEffect, PortalState,
     Prompt, PromptField, Remember, Shortcut,

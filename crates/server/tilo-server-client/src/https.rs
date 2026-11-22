@@ -1,5 +1,6 @@
 //! What a page asks a server before it holds a session, over HTTPS through its
-//! `fetch`: the server's certificate and address, and joining a workspace.
+//! `fetch`: whether a workspace was deleted, what an invitation offers, and
+//! joining a workspace.
 //!
 //! Everything after that is the session, over iroh
 //! (`tilo_server_session::ServerClient`), dialled where [`crate::ServerAddress`] says.
@@ -85,17 +86,6 @@ impl Origin {
         }
     }
 
-    /// The origin itself, as links and routes name it.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.origin
-    }
-
-    /// The origin `origin`, reached with this one's client.
-    #[must_use]
-    pub fn sibling(&self, origin: &str) -> Self {
-        Self::new(&self.client, origin)
-    }
     /// `GET` the route `path` below the origin: its status and body, when the origin answered.
     pub async fn get(&self, path: &str) -> Result<(u16, Vec<u8>), String> {
         let response = self
@@ -186,13 +176,6 @@ async fn call_raw(
 
 fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, LinkError> {
     postcard::to_allocvec(value).map_err(|error| LinkError::Malformed(error.to_string()))
-}
-
-/// What the server publishes before any session: its certificate.
-pub async fn server_info(
-    client: &dyn HttpClient,
-) -> Result<tilo_server_protocol::web::ServerInfo, LinkError> {
-    call(client, "/host", Vec::new()).await
 }
 
 /// Whether its owner deleted `workspace` (its id), as the server says to any device that names it

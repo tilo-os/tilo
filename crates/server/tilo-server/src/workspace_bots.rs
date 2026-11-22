@@ -276,48 +276,10 @@ async fn installed_moderation_grant(
         .find(|grant| is_moderation_grant(grant, &expected, true)))
 }
 
-/// The record `doc` holds, read as this build's `R` once it is brought up to
-/// `R`'s storage version by the app's own migration
-/// ([`tilo_resource::evolution::migrate`]). A workspace an older server or older
-/// devices wrote is read, never refused: a newer server starts on an older
-/// server's state. The migration deletes nothing and rewrites no id, and it
-/// is the same change every device migrating the record makes.
-///
-/// # Errors
-/// The migration failed, or the migrated record does not read as `R`.
-pub fn opened<R>(doc: &mut automerge::AutoCommit) -> Result<R::State, String>
-where
-    R: tilo_resource::Resource,
-{
-    tilo_resource::evolution::migrate::<R>(doc)
-        .map_err(|error| format!("bring the record up to version {}: {error}", R::VERSION))?;
-    R::read(doc).map_err(|error| error.to_string())
-}
-
-/// The record of `app` a workspace keeps and seeds: the primary of an app that
-/// keeps one per workspace (chat), else the workspace's default record, which every
-/// member's first window of the app opens.
-#[must_use]
-pub fn workspace_resource(catalogue: &tilo_agent_session::AppCatalogue, app: &str) -> String {
-    match catalogue.get(app) {
-        Some(definition) if !definition.keeps_workspace_resource() => {
-            collab_types::document::DocumentId::workspace_default()
-                .as_str()
-                .to_owned()
-        }
-        _ => String::new(),
-    }
-}
-
-pub mod assistant;
 pub mod discord;
-pub mod events;
-pub mod initiative;
 pub mod installed;
-pub mod kept;
 pub mod membership;
 pub mod requested;
-mod task_waits;
 
 #[cfg(test)]
 mod tests;

@@ -551,10 +551,7 @@ async fn a_devices_session_started_again_over_its_kept_store_keeps_its_place_in_
     let grant = alice.enrol("api-grant", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server = crate::common::start_server(
-        ServerConfig {
-            state_root: state.path().to_path_buf(),
-            ..ServerConfig::default()
-        },
+        ServerConfig::loopback(state.path().to_path_buf()),
         tilo_server::daemon::ServerIdentity {
             user_public_key: alice.user_pk,
             device_signing_key: host.sk.clone(),

@@ -9,7 +9,7 @@
 //!   the workspace sheet's people rows and the apps naming an author ask
 //!   for; and
 //! - the identity registry
-//!   ([`tilo_identity::registry::IdentityRegistryStore::load_reconciled_prompt`]),
+//!   ([`tilo_identity::store::IdentityRegistryStore::load_reconciled_prompt`]),
 //!   which every publish and frame asks which identity a workspace
 //!   presents. A reconcile lists and parses every identity record, so it runs
 //!   on the worker and the loop is handed the registry it produced.
@@ -71,7 +71,7 @@ fn read_present() -> Present {
             photo: None,
         };
     };
-    let Some(record) = tilo_identity_client::resolve_active_identity(&directory) else {
+    let Some(record) = tilo_identity::store::resolve_active_identity(&directory) else {
         return Present {
             identity: None,
             photo: None,
@@ -153,7 +153,7 @@ pub fn own_person(options: &crate::Options) -> String {
 /// from before the workers' first read: the first read is this one, on this thread, with the
 /// watches already armed.
 pub fn install() {
-    match tilo_identity::registry::IdentityRegistryStore::from_env() {
+    match tilo_identity::store::IdentityRegistryStore::from_env() {
         Ok(store) => {
             if let Err(error) = store.load_reconciled_prompt() {
                 tracing::warn!(%error, "cannot read the identity registry at startup");
@@ -172,7 +172,7 @@ pub fn install() {
 /// Who this device acts for in `workspace` : the identity its registry presents there, else the
 /// person sitting at it.
 pub(crate) fn person_in(workspace: &str, person: &str) -> String {
-    tilo_identity::registry::selected_actor_id_prompt(workspace)
+    tilo_identity::store::selected_actor_id_prompt(workspace)
         .ok()
         .flatten()
         .unwrap_or_else(|| person.to_owned())

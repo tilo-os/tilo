@@ -472,15 +472,6 @@ fn a_local_gguf_file_is_a_model_with_an_unknown_licence() {
     assert!(UserModel::from_file("/home/me/model.gguf", 10, "").is_err());
     assert!(UserModel::from_file("model.safetensors", 10, "").is_err());
     assert!(UserModel::from_file("model.gguf", 0, "").is_err());
-    // A record from before files were handed over keeps its file name.
-    let legacy: UserModelSource =
-        serde_json::from_str(r#"{"kind":"file","path":"old.gguf"}"#).unwrap();
-    assert_eq!(
-        legacy,
-        UserModelSource::File {
-            name: "old.gguf".into()
-        }
-    );
 }
 
 #[test]

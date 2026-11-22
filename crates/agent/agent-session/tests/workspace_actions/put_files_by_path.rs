@@ -18,8 +18,8 @@ use tilo_actions::remote::{
     ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{InvocationId, InvocationUpdate, api::ActionAddress};
-use tilo_server::workspace_agents::WorkspaceActionProvider;
 use tilo_server::workspaces::Workspaces;
+use tilo_workspace_service::agents::WorkspaceActionProvider;
 
 /// The folder the work on one task keeps its material in.
 const TASK: &str = "Tasks/12 Plan the launch";

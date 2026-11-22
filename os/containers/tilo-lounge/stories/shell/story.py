@@ -124,6 +124,11 @@ class Person:
         person waits for; `launcherMs` is the whole start, with what the development launcher
         installs and checks before the session runs, which no person's computer does."""
         self.prepare(apps, tilolang)
+        # A session started again on the same state writes its logs over the last one's: what the
+        # last session said is kept beside the story first.
+        if self.starts and (self.state / "logs").is_dir():
+            shutil.copytree(self.state / "logs", self.logs / f"session-logs-{self.starts}",
+                            dirs_exist_ok=True)
         began = time.monotonic()
         self.starts += 1
         tag = self.key if self.starts == 1 else f"{self.key}-{self.starts}"

@@ -2,7 +2,6 @@
 //! an on-device client would, and assert the wire behaviour of the whole loop, from signature
 //! construction through the server's verify and disk write to GET.
 
-
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use ed25519_dalek::SigningKey;

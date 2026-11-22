@@ -244,7 +244,7 @@ impl Apps {
     }
 
     /// What people call `app_id`: its installed name, else one derived from
-    /// the id.
+    /// the id, as the person is asked to confirm a launch grant.
     #[must_use]
     pub fn display_name(&self, app_id: &str) -> String {
         self.installed()

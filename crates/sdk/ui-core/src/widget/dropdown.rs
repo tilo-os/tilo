@@ -1704,6 +1704,18 @@ impl crate::resources::PublishesResources for Dropdown {
 }
 
 impl crate::widget::ResourceOperations for Dropdown {
+    /// The chooser answers its own change, which it publishes as a view action.
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        match (
+            self.change_verb.is_some(),
+            crate::widget::resource_operation::local_history_handlers(self).is_empty(),
+        ) {
+            (false, _) => crate::widget::resource_operation::local_history_handlers(self),
+            (true, true) => &[CHANGE_DROPDOWN],
+            (true, false) => &[CHANGE_DROPDOWN, crate::undo::EDIT_OPERATION],
+        }
+    }
+
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,

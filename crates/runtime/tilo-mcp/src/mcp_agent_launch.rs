@@ -19,7 +19,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         wait_ms: Option<u64>,
     ) -> Result<(Value, Reply), String> {
         if !below_app(parsed).is_empty() || !starts_app(action) {
-            return Err(Self::not_running_note(&app_of(parsed), true));
+            return Err(tilo_actions::tree::Unresolved::NotRunning {
+                name: app_of(parsed),
+                opens: true,
+            }
+            .to_string());
         }
         let value = self
             .app_in_workspace(app_id, action, arguments, invocation, wait_ms)
@@ -78,7 +82,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     ) -> Result<Done, super::Failure> {
         // Only a path that begins with Files' name is read here before it is read where it acts.
         let app = path.split(['#', '/']).next().unwrap_or_default().trim();
-        if names_files(app)
+        if tilo_actions::tree::names_files(app)
             && let Ok(parsed) = Address::parse(path)
             && let Some(action) = parsed.action.as_deref()
             && in_workspace_folder(&parsed, action, &arguments)
@@ -115,7 +119,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         arguments: &serde_json::Map<String, Value>,
         wait_ms: Option<u64>,
     ) -> Option<Result<Done, super::Failure>> {
-        let (_, started) = self.providers().await.ok()?;
+        let (_, started) = self.tree.providers().await.ok()?;
         // An app's own instance is named by its number; what a holder serves of the
         // workspace's documents is not Files showing a folder.
         let shows = started.iter().any(|(provider, app)| {
@@ -153,6 +157,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // attached to and the record that window shows, as the open that made
         // it said.
         let record = self
+            .tree
             .providers()
             .await
             .ok()
@@ -214,10 +219,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         {
             // An app that opened on the person's shell but publishes nothing an
             // agent lists (yet) is not answered as both running and not.
-            if listing
-                .text
-                .starts_with(&Self::not_running_note(&name, true))
-            {
+            if listing.text.starts_with(
+                &tilo_actions::tree::Unresolved::NotRunning {
+                    name: name.clone(),
+                    opens: true,
+                }
+                .to_string(),
+            ) {
                 if reply.text.ends_with("is running") {
                     reply.text = format!(
                         "ok: {name} opened on the person's shell; it lists nothing to agents"
@@ -269,15 +277,6 @@ pub(super) fn starts_app(action: &str) -> bool {
         || action == tilo_actions::remote::APPLICATION_START_ACTION
 }
 
-/// Whether `name` names Files, every workspace's own folder: its name, the last part of its id,
-/// or its id, in any case and however its words are parted (`file_explorer`).
-pub(super) fn names_files(name: &str) -> bool {
-    let name = tilo_actions::tree::folded(name);
-    ["files", "file-explorer", "so.tilo.file-explorer"]
-        .iter()
-        .any(|files| name == tilo_actions::tree::folded(files))
-}
-
 /// Whether `action` with `arguments`, asked of the app `parsed` names, is one of Files' verbs on
 /// the workspace's own folder, its `write-file` there, or one of its reads of it
 /// ([`reads_workspace_folder`]): a path in the workspace, and no device whose own disk it would
@@ -289,7 +288,7 @@ pub(super) fn in_workspace_folder(
     arguments: &serde_json::Map<String, Value>,
 ) -> bool {
     below_app(parsed).is_empty()
-        && names_files(&app_of(parsed))
+        && tilo_actions::tree::names_files(&app_of(parsed))
         && (fs_protocol::tree::is_tree_verb(action)
             || action == fs_protocol::tree::WRITE_FILE
             || reads_workspace_folder(action, arguments))

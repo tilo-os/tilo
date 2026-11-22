@@ -1019,6 +1019,11 @@ async fn typed_on_a_terminal_is_recorded() {
             std::time::Instant::now() < deadline,
             "never recorded: {session}"
         );
-        tilo_test_env::within("a change of the workspace's records", changed).await;
+        // A wait the session refuses says why at once; the deadline only backs that up.
+        if let Ok(Some(Err(refused))) =
+            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), changed).await
+        {
+            panic!("the session refused to follow the workspace's records: {refused}");
+        }
     }
 }

@@ -51,7 +51,7 @@ use ui::history_source::words::HistoryWords;
 use super::invocation_log::Entry;
 use super::outcome::log_outcome;
 use super::{
-    InteractionPhase, Job, Needs, Outcome, Worker, WorkspaceActions, resource_of, session_voice,
+    InteractionPhase, Job, Needs, Worker, WorkspaceActions, resource_of, session_voice,
     timing_done, timing_start,
 };
 
@@ -750,24 +750,6 @@ impl Worker {
             Ok(claimed) => claimed,
             Err(receipt) => return Some(receipt),
         };
-        if caller.roster_created_at().is_some()
-            && !resource_of(&request.target.provider, "").is_some_and(|route| {
-                self.shared.link.get().is_some_and(|link| {
-                    link.roster_policy(
-                        workspace_id,
-                        &caller,
-                        Some((&route.app_id, &route.document)),
-                    )
-                    .is_some()
-                })
-            })
-        {
-            return Some(self.settle(
-                invocation,
-                Err(Outcome::Rejected(ActionCallError::NotPermitted)),
-                None,
-            ));
-        }
         // A question to the person changes nothing, so it applies nothing where
         // the agent is seen working: it waits on the person's devices.
         if let Some(receipt) = self.ask_in_words(workspace_id, &caller, &request) {
@@ -779,9 +761,7 @@ impl Worker {
             &request,
             (&InteractionPhase::Applying, None),
         );
-        if caller.roster_created_at().is_none()
-            && let Some(receipt) = self.terminal(workspace_id, &caller, &request)
-        {
+        if let Some(receipt) = self.terminal(workspace_id, &caller, &request) {
             return Some(receipt);
         }
         let everything = timing_start();

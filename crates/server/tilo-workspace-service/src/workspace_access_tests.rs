@@ -101,9 +101,9 @@ impl Server {
         self.revocations.write().unwrap().insert(entry).unwrap();
     }
 
-    fn delegate(&self, device: [u8; 32], delegation: Option<(u64, &str)>) {
+    fn delegate(&self, user: [u8; 32], device: [u8; 32], delegation: Option<(u64, &str)>) {
         let delegation = delegation.map(|(expires_at_ns, workspace)| Delegation {
-            user_public_key: self.owner,
+            user_public_key: user,
             device_public_key: device,
             delegate: Delegate::Agent {
                 agent_id: "agent".into(),
@@ -333,7 +333,7 @@ fn decide_matrix() {
             peer: peer(owner, [40; 32], false, None),
             setup: Box::new(|runtime, server| {
                 runtime.membership.devices.push([40; 32]);
-                server.delegate([40; 32], Some((NOW + 1, WORKSPACE)));
+                server.delegate(server.owner, [40; 32], Some((NOW + 1, WORKSPACE)));
             }),
             expected: ["AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
@@ -342,7 +342,7 @@ fn decide_matrix() {
             peer: peer(owner, [41; 32], false, None),
             setup: Box::new(|runtime, server| {
                 runtime.membership.devices.push([41; 32]);
-                server.delegate([41; 32], Some((NOW, WORKSPACE)));
+                server.delegate(server.owner, [41; 32], Some((NOW, WORKSPACE)));
             }),
             expected: ["eeeeeeeeeee", "eeeeeeeeeee"],
         },
@@ -351,7 +351,7 @@ fn decide_matrix() {
             peer: peer(owner, [42; 32], false, None),
             setup: Box::new(|runtime, server| {
                 runtime.membership.devices.push([42; 32]);
-                server.delegate([42; 32], None);
+                server.delegate(server.owner, [42; 32], None);
             }),
             expected: ["wwwwwwwwwww", "wwwwwwwwwww"],
         },
@@ -360,7 +360,7 @@ fn decide_matrix() {
             peer: peer(owner, [43; 32], false, None),
             setup: Box::new(|runtime, server| {
                 runtime.membership.devices.push([43; 32]);
-                server.delegate([43; 32], Some((NOW + 1, OTHER_WORKSPACE)));
+                server.delegate(server.owner, [43; 32], Some((NOW + 1, OTHER_WORKSPACE)));
             }),
             expected: ["ooooooooooo", "ooooooooooo"],
         },
@@ -392,20 +392,22 @@ fn decide_matrix() {
                 runtime.workspace_authority = Some(
                     crate::workspaces::WorkspaceAuthority::governed_by(WORKSPACE),
                 );
-                server.delegate([44; 32], Some((NOW + 1, WORKSPACE)));
+                server.delegate(server.owner, [44; 32], Some((NOW + 1, WORKSPACE)));
             }),
             expected: ["NNNNNNNNdNN", "NNNNNNNNANN"],
         },
         Case {
-            name: "another user's agent, in a workspace this server governs",
+            // The agent's approver is a device of the person it acts for, Bob
+            // here, and the host's own person is no special case.
+            name: "another person's agent, in a workspace this server governs",
             peer: peer(bob, [45; 32], false, None),
             setup: Box::new(|runtime, server| {
                 runtime.workspace_authority = Some(
                     crate::workspaces::WorkspaceAuthority::governed_by(WORKSPACE),
                 );
-                server.delegate([45; 32], Some((NOW + 1, WORKSPACE)));
+                server.delegate(server.bob, [45; 32], Some((NOW + 1, WORKSPACE)));
             }),
-            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNANN"],
         },
         Case {
             name: "member device whose certificate expired",
@@ -581,20 +583,20 @@ fn an_agent_joins_governance_only_inside_its_live_delegation() {
         decide(&runtime, NOW),
         Decision::Deny(DenyReason::NotADelegatedAgent)
     );
-    server.delegate([90; 32], Some((NOW + 1, WORKSPACE)));
+    server.delegate(server.owner, [90; 32], Some((NOW + 1, WORKSPACE)));
     assert_eq!(decide(&runtime, NOW), Decision::Admit);
     // At its expiry, and once withdrawn, it is refused.
     assert_eq!(
         decide(&runtime, NOW + 1),
         Decision::Deny(DenyReason::AgentExpired)
     );
-    server.delegate([90; 32], None);
+    server.delegate(server.owner, [90; 32], None);
     assert_eq!(
         decide(&runtime, NOW),
         Decision::Deny(DenyReason::AgentWithdrawn)
     );
     // A workspace no authority of this server governs takes no agent in.
-    server.delegate([90; 32], Some((NOW + 1, WORKSPACE)));
+    server.delegate(server.owner, [90; 32], Some((NOW + 1, WORKSPACE)));
     runtime.workspace_authority = None;
     assert_eq!(
         decide(&runtime, NOW),

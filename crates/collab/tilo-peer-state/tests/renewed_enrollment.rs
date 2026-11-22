@@ -15,7 +15,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::common::endpoint;
+use crate::common::localhost_endpoint;
 use tilo_peer_state::join::WorkspaceId;
 
 use std::time::Duration;
@@ -86,10 +86,7 @@ impl Admitted {
         // has here, which the device dials directly. A host with a public relay names only that
         // relay, which this test's device would reach over the internet or not at all.
         let server = Server::start_with_relay_mode(
-            ServerConfig {
-                state_root: state.path().to_path_buf(),
-                ..ServerConfig::default()
-            },
+            ServerConfig::loopback(state.path().to_path_buf()),
             tilo_server::daemon::ServerIdentity {
                 user_public_key: alice.verifying_key().to_bytes(),
                 device_signing_key: host_key.clone(),
@@ -126,7 +123,7 @@ impl Admitted {
         let owner =
             tilo_peer_state::owner::open_file(&directory.path().join("joined-workspaces.json"))
                 .unwrap();
-        let client = WorkspaceJoinClient::new(endpoint(&device_key).await);
+        let client = WorkspaceJoinClient::new(localhost_endpoint(&device_key).await);
         let unanswered = tilo_peer_state::owner::enroll::prepare_and_complete(
             client.clone(),
             ownership(&held, &device_key),

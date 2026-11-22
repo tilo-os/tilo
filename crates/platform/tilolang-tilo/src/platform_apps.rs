@@ -78,6 +78,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("tray", "Tray", "session:tray"),
     ("agents", "Agents", "session:agents"),
     ("styles", "Styles", "session:styles"),
+    ("folders", "Folders", "session:folders"),
     ("overlays", "Overlays", "desktop:overlays"),
 ];
 const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[

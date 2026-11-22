@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use serde_json::json;
 use tasks::App;
 use tasks::model::Status;

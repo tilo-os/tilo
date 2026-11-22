@@ -132,13 +132,13 @@ impl ContentService {
     /// The store does not open, or the socket cannot be bound.
     pub async fn start(content: &Path, socket: &Path) -> std::io::Result<Self> {
         let store = std::sync::Arc::new(
-            fs::ContentStore::open(content)
+            tilo_fs::ContentStore::open(content)
                 .await
                 .map_err(std::io::Error::other)?,
         );
-        let media = fs::document_media::DocumentMedia::new(store);
+        let media = tilo_fs::document_media::DocumentMedia::new(store);
         let server =
-            fs::document_media::serve_socket(socket, media).map_err(std::io::Error::other)?;
+            tilo_fs::document_media::serve_socket(socket, media).map_err(std::io::Error::other)?;
         Ok(Self { _server: server })
     }
 }

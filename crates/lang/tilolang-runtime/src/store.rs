@@ -418,6 +418,10 @@ fn is_one(count: &u32) -> bool {
 /// The action id of the change that made a resource, when the host made it.
 pub const CREATE_ACTION: &str = "$create";
 
+/// The action id of the change an outside origin writes: what its service said, taken into the
+/// resources of the types it keeps ([`crate::Runtime::write_origin`]).
+pub const ORIGIN_ACTION: &str = "$origin";
+
 /// The action id of a change a bound control makes to the text field it shows.
 pub const EDIT_TEXT_ACTION: &str = "edit-text";
 
@@ -1717,6 +1721,22 @@ pub trait Store {
         Err(StoreError::Invalid(
             "this store answers no query of what links to a resource".into(),
         ))
+    }
+
+    /// What of the type `ty` links to the resource `at`: [`Self::linked`]'s links whose resource
+    /// is of `ty`, in its order. A store with an index asks it of `ty`'s resources alone, so
+    /// what a row draws of the suggestions waiting on its resource costs the suggestions, not
+    /// every type that could link to it.
+    ///
+    /// # Errors
+    ///
+    /// A store that cannot answer it.
+    fn linked_by(&self, at: &ResourceRef, ty: &str) -> Result<Vec<Link>, StoreError> {
+        Ok(self
+            .linked(at)?
+            .into_iter()
+            .filter(|link| link.of.ty == ty)
+            .collect())
     }
 
     /// The notes of a document's changes, oldest first.

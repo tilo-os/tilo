@@ -27,7 +27,6 @@ use tilo_actions::remote::{
     ReceiptStatus,
 };
 use tilo_desktop_model::WorkspaceId;
-use tilo_device_mcp::enter::Entered;
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_runtime::key_sessions::{KeySessions, SessionHost, Sessions};
 use tilo_runtime::personal_devices::PersonalDevices;
@@ -374,7 +373,11 @@ async fn a_key_lists_enters_and_acts_in_a_workspace_its_persons_device_hosts() {
     );
 
     // Its agent surface acts there, on the device's broker, in a run of its own.
-    let entered = Entered::on_host(key, workspace_id, &device.workspace);
+    let entered = tilo_mcp::McpServer::new(
+        key.actions(workspace_id),
+        device.workspace.clone(),
+        hex::encode(agent.1.user_public_key),
+    );
     let apps = entered
         .handle(tool(2, "tilo_ls", &json!({})))
         .await
@@ -397,6 +400,7 @@ async fn a_key_lists_enters_and_acts_in_a_workspace_its_persons_device_hosts() {
         vec![agent.1.clone()],
         "one run, for the key that came in"
     );
+    key.close();
 }
 
 #[tokio::test(flavor = "current_thread")]

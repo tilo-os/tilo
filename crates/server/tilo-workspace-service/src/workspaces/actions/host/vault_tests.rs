@@ -198,7 +198,14 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
     assert_eq!(kept["kind"], "login");
     assert_eq!(kept["belongsTo"], json!(["https://www.linkedin.com"]));
     assert!(kept["addedAt"].as_u64().is_some_and(|added| added > 0));
-    assert_eq!(fields(&kept), ["addedAt", "belongsTo", "kind", "reference"]);
+    assert_eq!(
+        kept["title"], "www.linkedin.com",
+        "the item is picked by the title its entry carries"
+    );
+    assert_eq!(
+        fields(&kept),
+        ["addedAt", "belongsTo", "kind", "reference", "title"]
+    );
 
     // Every member of the workspace reads the same item, and none of them
     // reads more than what is safe to say of it.
@@ -1180,6 +1187,7 @@ fn mail_account(address: &str, server: &str) -> accounts::Account {
 /// document once the host carries it over as it starts: listed under the reference it had, its uses
 /// kept, and taken out of the host's store. An account's sign-in beside it becomes the
 /// account's own entry, and the host's store is gone.
+#[cfg(feature = "device-keys")]
 #[tokio::test]
 async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document() {
     let dir = tempfile::tempdir().unwrap();

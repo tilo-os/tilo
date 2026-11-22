@@ -33,7 +33,7 @@ type Mailbox (origin: imap.mailbox) {
 }
 
 /// A conversation: messages that answer each other, newest last.
-type Thread (origin: imap.thread) {
+type Thread (origin: imap.thread, title: subject) {
     key: Text merge register
     account: Text merge register
     subject: Text
@@ -84,7 +84,7 @@ type Label {
 }
 
 /// A message.
-type Message (origin: imap.message) {
+type Message (origin: imap.message, title: subject) {
     key: Text merge register
     account: Text merge register
     subject: Text
@@ -146,20 +146,14 @@ type Mail {
     accounts: Collection<Account>
     drafts: Collection<Draft>
     labels: Collection<Label>
-    /// Conversations retained from an earlier mailbox, outside the IMAP account collections.
+    /// Conversations kept outside the IMAP account collections: messages delivered from outside
+    /// an account's server, and the mail of an account that is gone.
     recovered_mail: Collection<Thread>
-    recovered_conversations: Set<Text>
-    recovered_signatures: Set<Text>
-    /// Previously imported drafts, including ones subsequently deleted.
-    recovered_drafts: Set<Text>
     /// How many seconds members have to undo a send. The default is ten seconds.
     hold: Int = 10
 
     search {
         filter hold
-        hide recovered_drafts
-        hide recovered_conversations
-        hide recovered_signatures
     }
 }
 
@@ -193,6 +187,19 @@ fn signature_of(m: Mail, key: Text) -> Text {
 fn signed(m: Mail, key: Text, body: Text) -> Text {
     let signature = signature_of(m, key)
     if signature == "" { body } else { "{signature}{body}" }
+}
+
+/// The account an answer to mail that came to the account `key`, or mail passed on from it,
+/// goes from: that account while the workspace has it, and the workspace's first otherwise, as
+/// mail kept from an account that went is answered from the one the workspace reads now. Empty
+/// while the workspace has no account.
+fn sends_from(m: Mail, key: Text) -> Text {
+    if has_account(m, key) { key } else { m.accounts.first()?.key ?? "" }
+}
+
+/// Whether the workspace has the account `key`.
+fn has_account(m: Mail, key: Text) -> Bool {
+    m.accounts.any(a -> a.key == key)
 }
 
 /// Sets or clears the workspace account's signature.
@@ -300,114 +307,6 @@ fn native_draft(e: host.Earlier, at: Text, account: Text, answers: Text) -> List
             ),
         ]
     }
-}
-
-/// Copies data from the earlier private mailbox into this workspace.
-action recover_previous(
-    m: Mail,
-    drafts: List<List<Text>> = [],
-    labels: List<Text> = [],
-    conversations: List<List<List<Text>>> = [],
-    signatures: List<List<Text>> = [],
-) -> Int (icon: .archive, label: "Recover previous mail") {
-    let before = m.drafts.len()
-        + m.labels.len()
-        + m.recovered_mail.len()
-        + m.recovered_signatures.len()
-    for row in drafts {
-        let key = row.at(0) ?? ""
-        if row.len() == 9 and key != "" and not m.recovered_drafts.contains(key) {
-            m.drafts.insert(
-                Draft(
-                    from: row.at(1) ?? "",
-                    to: row.at(2) ?? "",
-                    cc: row.at(3) ?? "",
-                    subject: row.at(4) ?? "",
-                    body: row.at(5) ?? "",
-                    in_reply_to: row.at(6) ?? "",
-                    references: row.at(7) ?? "",
-                    invitation: row.at(8) ?? "",
-                ),
-            )
-            m.recovered_drafts.add(key)
-        }
-    }
-    for name in labels {
-        if name != "" and not m.labels.any(l -> l.name == name) {
-            m.labels.insert(Label(name: name))
-        }
-    }
-    for rows in conversations {
-        let header = rows.at(0) ?? []
-        let key = header.at(0) ?? ""
-        if header.len() == 10 and key != "" and not m.recovered_conversations.contains(key) {
-            let t = m.recovered_mail.insert(
-                Thread(
-                    key: key,
-                    account: header.at(1) ?? "",
-                    subject: header.at(2) ?? "",
-                    latest: recovered_time(header.at(3) ?? ""),
-                    snippet: header.at(4) ?? "",
-                    senders: header.at(5) ?? "",
-                    count: rows.len() - 3,
-                    unread: header.at(6) == .some("true"),
-                    flagged: header.at(7) == .some("true"),
-                    snoozed_until: recovered_time(header.at(8) ?? ""),
-                    muted: header.at(9) == .some("true"),
-                ),
-            )
-            for name in rows.at(1) ?? [] {
-                if name != "" { t.labels.add(name) }
-            }
-            for name in rows.at(2) ?? [] {
-                if name != "" { t.boxes.add(name) }
-            }
-            for row in rows {
-                if row.len() == 15 and row.at(0) == .some("message") {
-                    t.messages.insert(
-                        Message(
-                            account: t.account,
-                            subject: row.at(1) ?? "",
-                            from: row.at(2) ?? "",
-                            from_name: row.at(3) ?? "",
-                            to: row.at(4) ?? "",
-                            cc: row.at(5) ?? "",
-                            received: recovered_time(row.at(6) ?? ""),
-                            snippet: row.at(7) ?? "",
-                            body: row.at(8) ?? "",
-                            message_id: row.at(9) ?? "",
-                            references: row.at(10) ?? "",
-                            attachments: row.at(11) ?? "",
-                            unread: row.at(12) == .some("true"),
-                            flagged: row.at(13) == .some("true"),
-                            mailbox: row.at(14) ?? "",
-                        ),
-                    )
-                }
-            }
-            m.recovered_conversations.add(key)
-        }
-    }
-    for row in signatures {
-        let stamp = row.at(0) ?? ""
-        let key = row.at(1) ?? ""
-        let signature = row.at(2) ?? ""
-        if row.len() == 3
-            and stamp != ""
-            and key != ""
-            and signature != ""
-            and not m.recovered_signatures.contains(stamp) {
-            if let account = m.accounts.find(a -> a.key == key and a.signature == "") {
-                account.signature = signature
-                m.recovered_signatures.add(stamp)
-            }
-        }
-    }
-    m.drafts.len() + m.labels.len() + m.recovered_mail.len() + m.recovered_signatures.len() - before
-}
-
-fn recovered_time(value: Text) -> Time {
-    Time("1970-01-01T00:00:00Z") + Duration(value.to_int() ?? 0)
 }
 
 /// Starts a message from the first account.
@@ -589,12 +488,13 @@ fn quoted(m: Message) -> Text {
 primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
     let m = root Mail
     let last = t.messages.last()
+    let from = sends_from(m, t.account)
     m.drafts.insert(
         Draft(
-            from: t.account,
+            from: from,
             to: last?.from ?? "",
             subject: re(t.subject),
-            body: signed(m, t.account, if let l = last { quoted(l) } else { "" }),
+            body: signed(m, from, if let l = last { quoted(l) } else { "" }),
             in_reply_to: last?.message_id ?? "",
             references: "{last?.references ?? ""} {last?.message_id ?? ""}",
         ),
@@ -605,15 +505,16 @@ primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
 action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all", key: "a") {
     let m = root Mail
     let last = t.messages.last()
+    let from = sends_from(m, t.account)
     m.drafts.insert(
         Draft(
-            from: t.account,
+            from: from,
             to: last?.from ?? "",
             cc: if let l = last {
                 if l.cc == "" { l.to } else { "{l.to}, {l.cc}" }
             } else { "" },
             subject: re(t.subject),
-            body: signed(m, t.account, if let l = last { quoted(l) } else { "" }),
+            body: signed(m, from, if let l = last { quoted(l) } else { "" }),
             in_reply_to: last?.message_id ?? "",
             references: "{last?.references ?? ""} {last?.message_id ?? ""}",
         ),
@@ -623,12 +524,13 @@ action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all", key:
 /// Answers one message of the conversation, to whoever wrote it, quoting it.
 action reply_to(m: Message) -> Draft (icon: .reply) {
     let mail = root Mail
+    let from = sends_from(mail, m.account)
     mail.drafts.insert(
         Draft(
-            from: m.account,
+            from: from,
             to: m.from,
             subject: re(m.subject),
-            body: signed(mail, m.account, quoted(m)),
+            body: signed(mail, from, quoted(m)),
             in_reply_to: m.message_id,
             references: "{m.references} {m.message_id}",
         ),
@@ -639,13 +541,14 @@ action reply_to(m: Message) -> Draft (icon: .reply) {
 action reply_all_to(m: Message) -> Draft (icon: .reply_all, label: "Reply all") {
     let mail = root Mail
     let theirs = if m.cc == "" { m.to } else { "{m.to}, {m.cc}" }
+    let from = sends_from(mail, m.account)
     mail.drafts.insert(
         Draft(
-            from: m.account,
+            from: from,
             to: m.from,
             cc: theirs,
             subject: re(m.subject),
-            body: signed(mail, m.account, quoted(m)),
+            body: signed(mail, from, quoted(m)),
             in_reply_to: m.message_id,
             references: "{m.references} {m.message_id}",
         ),
@@ -655,13 +558,14 @@ action reply_all_to(m: Message) -> Draft (icon: .reply_all, label: "Reply all") 
 /// Sends one message of the conversation on, with its sender, when and what it says.
 action forward_message(m: Message) -> Draft (icon: .forward) {
     let mail = root Mail
+    let from = sends_from(mail, m.account)
     mail.drafts.insert(
         Draft(
-            from: m.account,
+            from: from,
             subject: "Fwd: {m.subject}",
             body: signed(
                 mail,
-                m.account,
+                from,
                 "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n",
             ),
         ),
@@ -675,9 +579,8 @@ action forward(t: Thread) -> Draft (icon: .forward, key: "f") {
     let said = if let l = last {
         "\n\nFrom {l.from_name} <{l.from}> ({l.received}):\n\n> {l.body.replace("\n", "\n> ")}\n"
     } else { "" }
-    m.drafts.insert(
-        Draft(from: t.account, subject: "Fwd: {t.subject}", body: signed(m, t.account, said)),
-    )
+    let from = sends_from(m, t.account)
+    m.drafts.insert(Draft(from: from, subject: "Fwd: {t.subject}", body: signed(m, from, said)))
 }
 
 /// Archives the conversation: its messages leave the inbox.
@@ -836,6 +739,7 @@ action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
 action send_later(d: Draft, at: Time) uses time (icon: .clock, label: "Send later") {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" "It goes to nobody yet"
+    require has_account(root Mail, d.from) "Add a mail account in Settings first"
     require at > now "Pick a moment still to come"
     outside(
         "smtp.send",
@@ -893,6 +797,12 @@ action mark_read(t: Thread, unread: Bool = not t.unread) (
     }
 }
 
+/// Opening a conversation reads it, wherever it is opened from: the list, search, a link or an
+/// agent.
+opened action read_on_open(t: Thread) {
+    mark_read(t, false)
+}
+
 /// Sends the message from another workspace account.
 action send_from(d: Draft, a: Account) (icon: .user) {
     require not d.sent or d.recalled "This message went already"
@@ -911,6 +821,7 @@ destructive action discard(m: Mail, d: Draft) (icon: .trash, label: "Delete draf
 primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" "It goes to nobody yet"
+    require has_account(root Mail, d.from) "Add a mail account in Settings first"
     let m = root Mail
     let at = now + Duration(m.hold)
     outside(
@@ -1023,10 +934,14 @@ view mail(m: Mail) {
             // page with nothing left to show. There is no account, so there is no sidebar.
             ui.NavShell(
                 content_kind: .document,
+                title: "Recovered mail",
                 sidebar_title: "Mail",
                 overview_title: "Recovered mail",
                 overview_count: m.recovered_mail.len(),
+                actions: [new_draft],
             ) {
+                // The bar holds what a person does here; the mailbox's settings and what scripts
+                // and moves bring in stand behind its "More".
                 sidebar: {
                     ui.NavList(selected: "recovered") {
                         ui.NavItem("recovered", "Recovered mail", icon: .archive) {
@@ -1056,11 +971,13 @@ view unified(m: Mail) {
         let shown = a.threads.matching(query)
         ui.NavShell(
             content_kind: .document,
+            title: if query == "recovered" { "Recovered mail" } else { title },
             sidebar_title: "All accounts",
             overview_title: if query == "recovered" { "Recovered mail" } else { title },
             overview_count: if query == "recovered" {
                 m.recovered_mail.len()
             } else { shown.len() },
+            actions: [new_draft],
         ) {
             sidebar_actions: {
                 // The accounts whose server does not stand well, beside the name of the accounts
@@ -1097,7 +1014,7 @@ view unified(m: Mail) {
                         }
                     }
                     for acct in m.accounts {
-                        ui.NavSection(acct.name) {
+                        ui.NavSection(acct.address) {
                             for p in places {
                                 ui.NavItem("{acct.key}/{p.query}", p.label, icon: p.icon) {
                                     on select: open(acct)
@@ -1162,6 +1079,7 @@ view mailboxes(a: Account) {
     let title = place_title(m, query)
     ui.NavShell(
         content_kind: .document,
+        title: a.address,
         sidebar_title: a.address,
         overview_title: title,
         overview_count: shown.len(),
@@ -1233,8 +1151,8 @@ view thread_list(shown: List<Thread>) {
         ui.EmptyState("Nothing here", icon: .inbox)
     } else {
         ui.VirtualList(selection_follows_focus: true, in_column: true) {
-            on select(x: Thread): open(x, front: false).then(mark_read(x, false))
-            on activate(x: Thread): open(x).then(mark_read(x, false))
+            on select(x: Thread): open(x, front: false)
+            on activate(x: Thread): open(x)
             for x in shown {
                 ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
                     thread_row(x)
@@ -1412,9 +1330,20 @@ view editor(d: Draft) {
                 on act: undo_send(d)
             }
         }
+        let mail = root Mail
+        let sender = mail.accounts.find(a -> a.key == d.from)
         field("From") {
-            let mail = root Mail
-            if mail.accounts.len() > 1 {
+            // One account a draft goes from is said; with more, or none of them chosen yet, each
+            // is offered. With no account at all, nothing can send it: the person is told so and
+            // offered the way to where an account is added.
+            if mail.accounts.is_empty() {
+                stack(gap: .tight) {
+                    text("No mail account to send from")
+                    ui.Link("settings://accounts", label: "Add an account in Settings")
+                }
+            } else if mail.accounts.len() == 1 and sender != .none {
+                text(sender?.address ?? "")
+            } else {
                 row(gap: .tight, wrap: true) {
                     for a in mail.accounts {
                         ui.Chip(a.address, selected: a.key == d.from) {
@@ -1422,8 +1351,6 @@ view editor(d: Draft) {
                         }
                     }
                 }
-            } else if let a = mail.accounts.first() {
-                text(a.address)
             }
         }
         field("To") {
@@ -1434,6 +1361,21 @@ view editor(d: Draft) {
         }
         input(bind: d.subject, placeholder: "Subject")
         ui.BlockEditor(bind: d.body, placeholder: "Write your message")
+        // The message's own Send: a composer sends from where it is written, and the window's
+        // bar keeps it once for the draft it shows.
+        // With no account to send it from, Send stands unavailable where a person looks for it,
+        // saying why in the words `send` refuses it with.
+        row {
+            spacer()
+            ui.Button(
+                "Send",
+                icon: .send,
+                enabled: sender != .none,
+                description: "Add a mail account in Settings first",
+            ) {
+                on press: send(d)
+            }
+        }
     }
 }
 
@@ -1732,6 +1674,34 @@ scenario "a reply being written" -> Draft {
     )
     a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox", total: 1))
     a.mailboxes.insert(Mailbox(key: "drafts", name: "Drafts", role: "drafts"))
+    // The conversation the reply answers stands in the inbox beside it.
+    let launch = a.threads.insert(
+        Thread(
+            key: "launch@rivera.example",
+            account: a.key,
+            subject: "Launch plan for the autumn release",
+            latest: 2026-06-30T08:20,
+            snippet: "Here is the draft plan.",
+            senders: "Grace Hopper",
+            count: 1,
+        ),
+    )
+    launch.boxes.add("inbox")
+    launch.messages.insert(
+        Message(
+            key: "launch@rivera.example",
+            account: a.key,
+            subject: "Launch plan for the autumn release",
+            from: "grace@hopper.example",
+            from_name: "Grace Hopper",
+            to: "sam@rivera.example, ada@analytical.example",
+            received: 2026-06-30T08:20,
+            snippet: "Here is the draft plan.",
+            body: "Hi both,\n\nHere is the draft plan for the autumn release. The beta goes out on the fifth, the release on the twelfth if nothing turns up.\n\nCould you each look at your part by Wednesday?\n\nGrace",
+            message_id: "launch@rivera.example",
+            mailbox: "inbox",
+        ),
+    )
     m.drafts.insert(
         Draft(
             from: a.key,
@@ -1741,6 +1711,20 @@ scenario "a reply being written" -> Draft {
             body: "The fifth works for the beta. I would move the release to the fourteenth so the docs can catch up.\n\nSam",
             in_reply_to: "launch@rivera.example",
             references: "launch@rivera.example",
+        ),
+    )
+}
+
+/// A reply to mail kept from an account that went, with no account left to send it from.
+scenario "a reply with no account to send it" -> Draft {
+    let m = root Mail
+    m.drafts.insert(
+        Draft(
+            to: "desk@parcels.example",
+            subject: "Re: Your parcel was delivered",
+            body: "Thank you, I collected it from number twelve.",
+            in_reply_to: "delivery@parcels.example",
+            references: "delivery@parcels.example",
         ),
     )
 }

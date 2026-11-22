@@ -53,10 +53,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_workspace_host() {
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let server = crate::common::start_server(
-        ServerConfig {
-            state_root: state.path().to_path_buf(),
-            ..ServerConfig::default()
-        },
+        ServerConfig::loopback(state.path().to_path_buf()),
         tilo_server::daemon::ServerIdentity {
             user_public_key: alice.user_pk,
             device_signing_key: host.sk.clone(),

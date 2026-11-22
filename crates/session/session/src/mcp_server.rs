@@ -56,7 +56,6 @@ use crate::Shared;
 use crate::agent_sessions::{AgentSessions, Doing};
 use crate::app_names::app_name;
 use crate::app_wire::LayoutAuthority;
-use crate::device_mcp::DeviceAgents;
 use crate::launches::Launches;
 use crate::platform::steps::SessionSteps as _;
 use tilo_action_policy::AgentSessionId;
@@ -101,9 +100,6 @@ struct Facts {
     exe: Option<PathBuf>,
     /// The app this session launched that the client descends from: the terminal it runs in.
     app: Option<String>,
-    /// The other device of the person's it connected from, over iroh ([`crate::device_mcp`]);
-    /// `None` for a program of this login.
-    origin: Option<tilo_device_mcp::Origin>,
     /// The socket of this login it came in by: the session's own, or an environment's.
     entrance: Origin,
 }
@@ -111,12 +107,6 @@ struct Facts {
 impl Facts {
     /// The line the person reads first: who asks, and from where.
     fn subject(&self) -> String {
-        if let Some(origin) = &self.origin {
-            return words(
-                "mcp-server-client-from-device",
-                &[("client", &self.client), ("device", &origin.name())],
-            );
-        }
         let program = self.exe.as_deref().and_then(Path::file_name).map_or_else(
             || "?".to_owned(),
             |name| name.to_string_lossy().into_owned(),
@@ -142,32 +132,17 @@ impl Facts {
     /// own socket), the executable the kernel names and the name it gives. `None` without an
     /// executable, and such a client is asked about every time.
     fn key(&self) -> Option<BindingKey> {
-        if let Some(origin) = &self.origin {
-            // A client on another device is remembered by that device and the name it gives.
-            return Some(BindingKey {
-                environment: None,
-                exe: PathBuf::new(),
-                client: self.client.clone(),
-                device: Some(hex::encode(origin.key())),
-            });
-        }
         // A program of this login is remembered in the environment it works in, if any.
         Some(BindingKey {
             environment: self.entrance.environment().map(str::to_owned),
             exe: self.exe.clone()?,
             client: self.client.clone(),
-            device: None,
         })
     }
 
-    /// The agent id the client is proposed as: its own name, and the device it came from when it is
-    /// another's.
+    /// The agent id the client is proposed as: its own name.
     fn proposed(&self) -> String {
-        let own = tilo_mcp::session_api::proposed_agent_id(&self.client);
-        match &self.origin {
-            Some(origin) => tilo_mcp::devices::agent_id(&own, &origin.device),
-            None => own,
-        }
+        tilo_mcp::session_api::proposed_agent_id(&self.client)
     }
 }
 
@@ -213,10 +188,6 @@ struct BindingKey {
     environment: Option<String>,
     exe: PathBuf,
     client: String,
-    /// The other device of the person's a client connected from, by its key in hex; absent for a
-    /// program of this login.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    device: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -355,9 +326,6 @@ pub(crate) struct Loop {
     /// at, as that app.
     control: Arc<crate::test_control::Shared>,
     sessions: Arc<AgentSessions>,
-    /// What the person's other devices connect with, and how this one reaches theirs
-    /// ([`crate::device_mcp`]).
-    device_agents: Option<Arc<DeviceAgents>>,
     /// The sockets of the confined environments open now, and the instance each agent reached.
     environments: environments::Sockets,
     /// The agent key the person started the session with, when they did.
@@ -365,13 +333,18 @@ pub(crate) struct Loop {
     /// The hosts of the workspaces this device takes part in but does not host, where a
     /// Terminal window's shell in one of them is opened ([`crate::workspace_terminals`]).
     hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
+    /// This device's actions toward the person's other devices: what a client here works on one
+    /// of them through, and the agents of theirs that work here ([`crate::device_agents`]).
+    devices: Option<(
+        crate::device_actions::DeviceActions,
+        Arc<crate::device_agents::HandedAgents>,
+    )>,
 }
 
 /// What serving one connection takes, on a thread of its own.
 #[derive(Clone)]
 struct Serving {
     broker: Option<Arc<AppBrokerState>>,
-    device_agents: Option<Arc<DeviceAgents>>,
     services: Arc<SessionServices>,
     requests: Sender<Request>,
     launches: Arc<Launches>,
@@ -382,6 +355,7 @@ struct Serving {
     room: Room,
     environments: environments::Opener,
     hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
+    devices: Option<crate::device_actions::DeviceActions>,
 }
 
 impl Serving {
@@ -520,10 +494,10 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         services,
         control,
         sessions,
-        device_agents: None,
         environments,
         agent_key,
         hosting: None,
+        devices: None,
     };
     Ok(Mounted { server })
 }
@@ -546,13 +520,6 @@ impl Shared {
 }
 
 impl Loop {
-    /// Serve what the person's other devices connect with through `device_agents`, each in a
-    /// place of this server's room, and carry this login's clients to theirs.
-    pub(crate) fn hear_device_agents(&mut self, device_agents: Arc<DeviceAgents>) {
-        device_agents.serve(self.room.clone());
-        self.device_agents = Some(device_agents);
-    }
-
     /// Open the shells of Terminal windows in the workspaces `hosting` reaches the hosts of
     /// there, as the device's shell runtime asks.
     pub(crate) fn open_terminals_on(
@@ -560,6 +527,93 @@ impl Loop {
         hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
     ) {
         self.hosting = hosting;
+    }
+
+    /// Carry this login's clients to the person's other devices through `devices`, and work with
+    /// the agents of theirs that hand it requests ([`crate::device_agents`]).
+    pub(crate) fn hear_device_agents(&mut self, devices: crate::device_actions::DeviceActions) {
+        let handed = devices.hear_agents(self.wake.clone(), Arc::clone(&self.sessions));
+        self.devices = Some((devices, handed));
+    }
+
+    /// Answer what the agents the person's other devices hand requests to asked since the last
+    /// pass: each is the person's agent member for its client in the workspace it asked for, in a
+    /// session of its own here, while this device's setting accepts such agents.
+    fn admit_handed(&self, handle: &DesktopHandle, person: &str, members: &Members<'_>) {
+        let Some((_, handed)) = &self.devices else {
+            return;
+        };
+        for ask in handed.take() {
+            let admitted = (|| {
+                if !crate::device_agents::accepts_own_devices() {
+                    return Err(crate::i18n::t("device-agents-not-accepted"));
+                }
+                let workspace_name = handle
+                    .read(|tree| {
+                        tree.workspaces
+                            .iter()
+                            .find(|held| {
+                                !held.id().is_nil() && held.id().to_string() == ask.workspace
+                            })
+                            .map(|held| tilo_desktop_surface::names::workspace(&held.name))
+                    })
+                    .ok_or_else(|| word("mcp-server-no-workspace"))?;
+                let (agent, name) = members(&ask.workspace, &ask.client)?;
+                let session = self.sessions.joining(None, Some(ask.origin.clone()));
+                let consent = Consent::Admit {
+                    workspace: ask.workspace.clone(),
+                    agent: agent.clone(),
+                    person: person.to_owned(),
+                    name: name.clone(),
+                };
+                let program = tilo_mcp::session_api::proposed_agent_id(&ask.client);
+                self.sessions
+                    .admit(&session, &consent, &program, &workspace_name);
+                // It acts as an agent of this login's MCP server does: through the broker as its
+                // own agent session, whose steps its grants decide.
+                let admitted = Admitted {
+                    workspace: &ask.workspace,
+                    person,
+                    agent: &agent,
+                    session: &session,
+                    name: &name,
+                };
+                let connection = match self
+                    .broker
+                    .as_ref()
+                    .map(|broker| connect(broker, &admitted))
+                {
+                    Some(Err(why)) => {
+                        self.sessions.left(&session);
+                        return Err(format!("{}: {why}", word("mcp-server-not-started")));
+                    }
+                    Some(Ok(connection)) => connection,
+                    None => None,
+                };
+                if connection.is_some() {
+                    self.sessions.certified(&session);
+                }
+                let host = Host::new(self.broker.clone(), Arc::clone(&self.services))
+                    .with_session_actions(self.services.actions())
+                    .in_agent_session(&self.sessions, session.clone(), &self.wake)
+                    .with_agent(connection);
+                let caller = tilo_actions::remote::Caller::local_person(person)
+                    .in_workspace(ask.workspace.clone())
+                    .delegated_to(agent.clone())
+                    .in_new_execution()
+                    .named(&name)
+                    .in_agent_session(session.as_str());
+                tracing::info!(client = %ask.client, device = %ask.origin.name, workspace = %ask.workspace, %agent, "MCP server: an agent from another of the person's devices works here");
+                Ok(crate::device_agents::Handed {
+                    session,
+                    agent,
+                    caller,
+                    host: Arc::new(host),
+                })
+            })();
+            ask.answer.complete(admitted);
+        }
+        handed.sweep();
     }
 
     /// End the loop's wait when a client connects, so it is asked about on the
@@ -580,7 +634,6 @@ impl Loop {
     /// as that agent.
     pub(crate) fn follow(&mut self, handle: &DesktopHandle, person: &str, members: &Members<'_>) {
         self.accept();
-        self.accept_remote();
         self.environments.follow(handle, person);
         if let Some(key) = self.agent_key.as_mut() {
             key.certify(person);
@@ -592,6 +645,7 @@ impl Loop {
                 self.request(handle, request, person, members);
             }
         }
+        self.admit_handed(handle, person, members);
         self.settle_waiting(person, members);
     }
 
@@ -632,21 +686,6 @@ impl Loop {
         }
     }
 
-    /// Accept every connection the person's other devices opened since the last pass, each on its
-    /// own thread, as a connection of this login is, in the place it took when it arrived.
-    fn accept_remote(&self) {
-        let Some(device_agents) = &self.device_agents else {
-            return;
-        };
-        for (arrival, place) in device_agents.take() {
-            self.serve(
-                place,
-                arrival.stream,
-                From::Device(Box::new(arrival.origin)),
-            );
-        }
-    }
-
     /// Serve one connection of this account on its own thread, in its `place`: nothing it asks
     /// for runs before the person admits it.
     fn serve(&self, place: Place, stream: UnixStream, from: From) {
@@ -657,7 +696,6 @@ impl Loop {
     fn serving(&self) -> Serving {
         Serving {
             broker: self.broker.clone(),
-            device_agents: self.device_agents.clone(),
             services: Arc::clone(&self.services),
             requests: self.requests.clone(),
             launches: Arc::clone(&self.launches),
@@ -667,6 +705,7 @@ impl Loop {
             room: self.room.clone(),
             environments: self.environments.opener(),
             hosting: self.hosting.clone(),
+            devices: self.devices.as_ref().map(|(devices, _)| devices.clone()),
         }
     }
 
@@ -706,13 +745,8 @@ impl Loop {
             .and_then(|key| self.session.get(key).or_else(|| self.always.get(key)))
             .cloned();
         // What the person said ahead of time admits it as a connection of its own: an answer they
-        // remembered for this client, or this device's setting that lets agents from their other
-        // devices in without being asked.
-        let ahead = remembered.clone().or_else(|| {
-            (facts.origin.is_some() && DeviceAgents::accepts_own_devices())
-                .then(|| facts.proposed())
-        });
-        if let Some(agent) = ahead {
+        // remembered for this client.
+        if let Some(agent) = remembered.clone() {
             tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "MCP server: what the person said ahead of time admits this client");
             let consent = as_member(
                 members,
@@ -921,7 +955,7 @@ fn as_member(
 }
 
 /// Where the client `facts` describes works, by id and as the person reads it, when it may work
-/// here at all: the workspace its device asked for, its environment's, the one it asked for by id,
+/// here at all: its environment's, the one it asked for by id,
 /// or the one in front. The reason it may not, as it is told.
 fn where_it_works(
     handle: &DesktopHandle,
@@ -929,36 +963,11 @@ fn where_it_works(
     facts: &Facts,
     asked: Option<&str>,
 ) -> Result<(String, String), String> {
-    let found = match &facts.origin {
-        Some(origin) => workspace_for(handle, origin.workspace.as_deref())
-            .ok_or_else(|| word("mcp-server-no-workspace")),
-        None => environments::workspace_for(handle, person, &facts.entrance, asked),
-    };
+    let found = environments::workspace_for(handle, person, &facts.entrance, asked);
     if let Err(reason) = &found {
         tracing::info!(client = %facts.client, pid = facts.pid, ?asked, %reason, "MCP server: a client's workspace is refused");
     }
     found
-}
-
-/// The workspace a client works in, by id and as the person reads it: the one
-/// an agent from another device asked for (`asked`), when this session holds it;
-/// else the one in front, as for any other client.
-fn workspace_for(handle: &DesktopHandle, asked: Option<&str>) -> Option<(String, String)> {
-    handle.read(|tree| {
-        asked
-            .and_then(|asked| {
-                tree.workspaces
-                    .iter()
-                    .find(|held| !held.id().is_nil() && held.id().to_string() == asked)
-            })
-            .or_else(|| tree.active_workspace())
-            .map(|held| {
-                (
-                    held.id().to_string(),
-                    tilo_desktop_surface::names::workspace(&held.name),
-                )
-            })
-    })
 }
 
 /// Whether the agent `remembered` is the program the agent `connected` is an instance of. An answer
@@ -1162,7 +1171,6 @@ fn facts_of(pid: u32, launches: &Launches, entrance: Origin) -> Facts {
         pid,
         exe: std::fs::read_link(format!("/proc/{pid}/exe")).ok(),
         app: launches.app_of_descendant(pid).map(|app| app_name(&app)),
-        origin: None,
         entrance,
     }
 }
@@ -1675,6 +1683,8 @@ pub(crate) struct Host {
     /// The agent session an admitted agent's connection is: each step it takes says there what
     /// it is doing. `None` for the person's own connection.
     agent_session: Option<Arc<SessionAt>>,
+    /// Whether every invocation is the person at this device's own ([`Self::for_local_person`]).
+    local_person: bool,
 }
 
 /// What the catalogue says of one action a session was offered: the words the person reads the step
@@ -1859,7 +1869,16 @@ impl Host {
             session_actions: None,
             agent: None,
             agent_session: None,
+            local_person: false,
         }
+    }
+
+    /// The same API, invoking every action as the person at this device
+    /// ([`Self::invoke_as_local_person`]): what this device's own control sockets answer frames
+    /// with.
+    pub(crate) const fn for_local_person(mut self) -> Self {
+        self.local_person = true;
+        self
     }
 
     /// The same server, for the agent session `session` of `sessions`: what it does is said there,
@@ -2156,7 +2175,7 @@ impl ActionProvider for Host {
         // per-role permissions. Device identity belongs to this device's own control sockets alone
         // ([`Host::invoke_as_local_person`]), and the person's own steps on the session go to the loop
         // wherever they come from ([`Host::invoke_within`]).
-        self.invoke_within(caller, request, false)
+        self.invoke_within(caller, request, self.local_person)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
@@ -2249,9 +2268,12 @@ impl ActionProvider for Host {
         &self,
         _caller: &Caller,
         scope: tilo_actions::remote::WatchScope,
-    ) -> Option<Pending<()>> {
+    ) -> Option<tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>>>
+    {
         match scope {
-            tilo_actions::remote::WatchScope::Records => self.session.changes.watching(),
+            tilo_actions::remote::WatchScope::Records => {
+                self.session.changes.watching().map(|landed| landed.map(Ok))
+            }
             tilo_actions::remote::WatchScope::Here => None,
         }
     }
@@ -2429,8 +2451,6 @@ enum From {
     /// A program inside a confined environment of this login, by its pid, at that environment's
     /// own socket ([`environments`]).
     Environment(u32, Arc<environments::Environment>),
-    /// Another of the person's devices, over iroh ([`crate::device_mcp`]).
-    Device(Box<tilo_device_mcp::Origin>),
     /// A process of this account the kernel hides from the session, by the pid that opened it:
     /// the login's shell runtime once it proves it holds the device identity
     /// ([`holds_device_identity`]), served its environments' sockets and its workspaces'
@@ -2453,16 +2473,16 @@ fn left_before_asking(error: &std::io::Error) {
 fn serve_connection(opened: Opened, serving: &Serving) {
     let Serving {
         broker,
-        device_agents,
         services: session,
         requests,
         launches,
         wake,
         control,
         sessions,
+        devices,
         ..
     } = serving;
-    let (broker, device_agents) = (broker.clone(), device_agents.clone());
+    let broker = broker.clone();
     let Opened { mut stream, from } = opened;
     let first = match tilo_mcp::session_api::read_first_line(&mut stream) {
         Ok(first) => first,
@@ -2475,45 +2495,19 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         }
         From::Login(pid) => (pid, Origin::Host),
         From::Environment(pid, environment) => (pid, Origin::Environment(environment)),
-        From::Device(origin) => {
-            // Another device's agent is served MCP and nothing else: what is not an `initialize` is
-            // refused before anyone is asked.
-            let Some(broker) = broker else {
-                refuse(stream, &PeerRefusal::Unavailable);
-                return;
-            };
-            let facts = Facts {
-                client: String::new(),
-                version: None,
-                pid: 0,
-                exe: None,
-                app: None,
-                origin: Some(*origin),
-                entrance: Origin::Host,
-            };
-            serve_admitted(
-                stream,
-                first,
-                facts,
-                (broker, device_agents),
-                session,
-                (requests, wake, sessions),
-            );
-            return;
-        }
     };
     let Some(stream) =
         environments::answer_socket_requests(stream, &first, pid, &entrance, serving)
     else {
         return;
     };
-    if let Some(forward) = tilo_device_mcp::forward_request(&first) {
-        // A client of this login asks to be carried to another of the person's devices, which
-        // decides whether it works there.
+    if let Some(forward) = tilo_mcp::devices::forward_request(&first) {
+        // A client of this login asks to work on another of the person's devices, which decides
+        // each of its requests.
         tracing::info!(pid, device = %forward.device, "MCP server: a client asks to work on another device");
-        match device_agents {
-            Some(device_agents) => device_agents.forward(stream, &forward),
-            None => tilo_device_mcp::refuse_forward(
+        match devices {
+            Some(devices) => devices.other_devices().serve_forward(stream, &forward),
+            None => tilo_mcp::devices::refuse_forward(
                 stream,
                 "this desktop reaches none of your other devices".into(),
             ),
@@ -2551,7 +2545,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         stream,
         first,
         facts,
-        (broker, device_agents),
+        (&broker, devices.clone()),
         session,
         (requests, wake, sessions),
     );
@@ -2588,7 +2582,10 @@ fn serve_admitted(
     stream: UnixStream,
     first: Vec<u8>,
     facts: Facts,
-    (broker, device_agents): (Arc<AppBrokerState>, Option<Arc<DeviceAgents>>),
+    (broker, devices): (
+        &Arc<AppBrokerState>,
+        Option<crate::device_actions::DeviceActions>,
+    ),
     session: &Arc<SessionServices>,
     (requests, wake, sessions): (&Sender<Request>, &Wake, &Arc<AgentSessions>),
 ) {
@@ -2598,12 +2595,7 @@ fn serve_admitted(
     // session of, from the answer to the host the connection is then served through.
     let agent: Arc<std::sync::Mutex<Option<[String; 4]>>> = Arc::default();
     let starting = Arc::clone(&agent);
-    // Where the connection came from, when another of the person's devices carried it: the
-    // device whose certificate the device MCP server verified.
-    let from = facts.origin.as_ref().map(|origin| {
-        tilo_actions::InvokerDevice::certified(origin.key(), &origin.device.device_label)
-    });
-    let agent_session = sessions.joining(facts.entrance.entered(), from);
+    let agent_session = sessions.joining(facts.entrance.entered(), None);
     let session_stream = match stream.try_clone() {
         Ok(copy) => Some(copy),
         Err(error) => {
@@ -2615,7 +2607,7 @@ fn serve_admitted(
         stream,
         Some(first),
         || {
-            let host = Host::new(Some(Arc::clone(&broker)), Arc::clone(session))
+            let host = Host::new(Some(Arc::clone(broker)), Arc::clone(session))
                 .with_session_actions(session.actions());
             let Some([workspace, person, member, name]) = starting.lock_recover().take() else {
                 return Ok(host);
@@ -2631,7 +2623,7 @@ fn serve_admitted(
             };
             // A session the broker does not admit acts on nothing: the client is told why rather
             // than refused action by action.
-            match connect(&broker, &admitted) {
+            match connect(broker, &admitted) {
                 Ok(connection) => {
                     if connection.is_some() {
                         sessions.certified(&agent_session);
@@ -2646,8 +2638,9 @@ fn serve_admitted(
         },
         tilo_mcp::session_api::Beside {
             tasks: Some(tasks as Arc<dyn tilo_mcp::TaskHosts>),
-            devices: device_agents
-                .map(|device_agents| device_agents as Arc<dyn tilo_mcp::devices::DeviceDirectory>),
+            devices: devices.map(|devices| {
+                Arc::new(devices.other_devices()) as Arc<dyn tilo_mcp::devices::DeviceDirectory>
+            }),
         },
         |hello, connected| {
             let consent = ask(
@@ -2804,7 +2797,6 @@ mod sessions_in_the_shells_words {
             pid: std::process::id(),
             exe: None,
             app: None,
-            origin: None,
             entrance: Origin::Host,
         };
         let member =

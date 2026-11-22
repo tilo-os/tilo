@@ -11,11 +11,11 @@ use crate::workspaces::BranchFileKeys;
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use collab_types::{ContentRetention, EncryptionMetadata, WorkspaceId, file_content_artifact};
-use fs::content::Manifest;
 use fs_protocol::tree::FILES_APP;
 pub(super) use fs_protocol::tree::chunk_of_record as tree_chunk;
 use key_group::ContentKeys;
 use tilo_content::{ContentStore, WorkspaceStores};
+use tilo_fs::content::Manifest;
 
 /// The workspaces' stores, as a branch's content is copied between them.
 pub struct StoresBranches(pub Arc<WorkspaceStores>);
@@ -319,8 +319,9 @@ pub(super) fn seal_version(
     let (manifest, mut inline) = if let Some(manifest) = version.manifest {
         (manifest, None)
     } else {
-        let (manifest, _) = fs::content::build_reader(BufReader::new(open()?), version.len, None)
-            .map_err(|error| error.to_string())?;
+        let (manifest, _) =
+            tilo_fs::content::build_reader(BufReader::new(open()?), version.len, None)
+                .map_err(|error| error.to_string())?;
         (manifest, Some(BufReader::new(open()?)))
     };
     let old = manifest.sealed().map(|old| {
@@ -394,7 +395,7 @@ pub(super) fn seal_version(
     let manifest = Manifest::new_sealed(
         manifest.tier(),
         chunks,
-        fs::content::SealedChunks {
+        tilo_fs::content::SealedChunks {
             group: *branch_keys.workspace().as_uuid().as_bytes(),
             epoch: branch_keys.epoch(),
             overhead,
@@ -511,11 +512,11 @@ fn tree_entries(records: &[((String, String), Vec<u8>)]) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::workspaces::BranchContent;
-    use fs::ROOT_INO;
     use fs_protocol::tree::{FILES_APP, chunk_document_id};
     use tilo_automerge::ApplyIncoming as _;
+    use tilo_fs::ROOT_INO;
 
-    fn snapshot(namespace: &mut fs::Namespace) -> Vec<((String, String), Vec<u8>)> {
+    fn snapshot(namespace: &mut tilo_fs::Namespace) -> Vec<((String, String), Vec<u8>)> {
         namespace
             .document_writes(&BTreeMap::new())
             .into_iter()
@@ -531,7 +532,7 @@ mod tests {
     }
 
     fn put_file(store: &ContentStore, keys: &ContentKeys, data: &[u8]) -> String {
-        let (plain, _) = fs::content::build(data, None);
+        let (plain, _) = tilo_fs::content::build(data, None);
         let (_, payload) = keys
             .seal_content(
                 file_content_artifact(keys.workspace()),
@@ -545,7 +546,7 @@ mod tests {
         let manifest = Manifest::new_sealed(
             plain.tier(),
             vec![chunk],
-            fs::content::SealedChunks {
+            tilo_fs::content::SealedChunks {
                 group: *keys.workspace().as_uuid().as_bytes(),
                 epoch: keys.epoch(),
                 overhead: u32::try_from(payload.len().checked_sub(data.len()).unwrap()).unwrap(),
@@ -581,7 +582,7 @@ mod tests {
         let old = put_file(&store, &from, earlier).parse().unwrap();
         let new = put_file(&store, &from, later).parse().unwrap();
 
-        let mut namespace = fs::Namespace::new("source").unwrap();
+        let mut namespace = tilo_fs::Namespace::new("source").unwrap();
         let ino = namespace
             .create_file(ROOT_INO, "report", Some(&old), earlier.len() as u64, 1)
             .unwrap();
@@ -609,7 +610,7 @@ mod tests {
             )
             .map(|((_, id), bytes)| (tree_chunk(&id).unwrap(), bytes))
             .collect();
-        let mut namespace = fs::Namespace::new("branch").unwrap();
+        let mut namespace = tilo_fs::Namespace::new("branch").unwrap();
         namespace
             .take_published_documents(restored, &BTreeMap::new())
             .unwrap();
@@ -647,7 +648,7 @@ mod tests {
         let clear = b"a version stored in the clear";
         let original = stores.get(&source).unwrap();
         let raw = original.put_public(clear).unwrap();
-        let mut namespace = fs::Namespace::new("source").unwrap();
+        let mut namespace = tilo_fs::Namespace::new("source").unwrap();
         namespace
             .create_file(
                 ROOT_INO,
@@ -657,7 +658,7 @@ mod tests {
                 1,
             )
             .unwrap();
-        let (empty, _) = fs::content::build(b"", None);
+        let (empty, _) = tilo_fs::content::build(b"", None);
         let empty_hash = original.put_public(&empty.encode()).unwrap();
         namespace
             .create_file(ROOT_INO, "empty", Some(&empty_hash.parse().unwrap()), 0, 1)

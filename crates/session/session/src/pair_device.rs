@@ -30,6 +30,8 @@ pub(crate) struct Place {
     pub site: String,
     pub origin: String,
     pub workspace: String,
+    /// Where the host that keeps the workspace in front is dialled, as its site publishes it.
+    pub host: tilo_server_client::ServerAddress,
     pub person: [u8; 32],
 }
 
@@ -45,6 +47,8 @@ pub(crate) enum NoLink {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Waiting {
     pub origin: String,
+    /// Where the host the link names is dialled.
+    pub host: tilo_server_client::ServerAddress,
     pub person: [u8; 32],
     pub until_ms: u64,
 }
@@ -127,6 +131,7 @@ impl Adding {
                 }
                 *self.waiting.borrow_mut() = Some(Waiting {
                     origin: place.origin,
+                    host: place.host,
                     person: place.person,
                     until_ms: shown.expires_at_ms,
                 });
@@ -448,6 +453,7 @@ impl crate::Shared {
             crate::certification::watch_host(
                 fabric.as_ref(),
                 &waiting.origin,
+                waiting.host,
                 waiting.person,
                 waiting.until_ms,
             );
@@ -486,17 +492,24 @@ impl crate::Shared {
                     .map(|workspace| workspace.id().to_string())
             })
             .ok_or(NoLink::Because("pair-device-no-workspace"))?;
-        let keeper = self
-            .directory_store
-            .listing(&workspace)
-            .and_then(|listed| listed.entry_url)
+        let listed = self.directory_store.listing(&workspace);
+        let keeper = listed
+            .as_ref()
+            .and_then(|listed| listed.entry_url.as_ref())
             .map(|place| place.origin().ascii_serialization());
         let (site, origin) =
             place_of(crate::platform::directory::community_site(), keeper).ok_or(NoLink::Nearby)?;
+        // Where that host is reached, as the site or directory that names the entry published it.
+        let host = listed
+            .and_then(|listed| listed.entry_host)
+            .and_then(|host| host.address)
+            .map(|address| tilo_server_client::ServerAddress::published(&address.into()))
+            .ok_or(NoLink::Because("pair-device-no-host"))?;
         Ok(Place {
             site,
             origin,
             workspace,
+            host,
             person: engine.identity().device_cert.user_public_key,
         })
     }
@@ -538,8 +551,15 @@ mod tests {
             site: SITE.to_owned(),
             origin: ORIGIN.to_owned(),
             workspace: WORKSPACE.to_owned(),
+            host: host(),
             person: [0xab; 32],
         }
+    }
+
+    fn host() -> tilo_server_client::ServerAddress {
+        tilo_server_client::ServerAddress::at(iroh::EndpointAddr::new(
+            iroh::SecretKey::from_bytes(&[9; 32]).public(),
+        ))
     }
 
     fn adding() -> (Adding, Rc<Sheets>) {
@@ -613,6 +633,7 @@ mod tests {
                 adding.waiting(),
                 Some(Waiting {
                     origin: ORIGIN.to_owned(),
+                    host: host(),
                     person: [0xab; 32],
                     until_ms: START + 600_000,
                 })

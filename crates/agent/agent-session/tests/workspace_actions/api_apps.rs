@@ -26,13 +26,16 @@ async fn a_key_installs_an_app_version_and_asks_for_a_bot_through_the_action_api
     let key_file = keys.path().join("laptop.json");
     std::fs::write(
         &key_file,
-        serde_json::to_vec(&tilo_api::direct::KeyFile::new(
-            &on_server.server,
-            Some(&on_server.web_entry),
-            "Ada's laptop",
-            &laptop.key,
-            &laptop.cert,
-        ))
+        serde_json::to_vec(
+            &tilo_api::direct::KeyFile::new(
+                &on_server.server,
+                Some(&on_server.web_entry),
+                "Ada's laptop",
+                &laptop.key,
+                &laptop.cert,
+            )
+            .reaching_at(on_server.hosted.web.host_info().clone()),
+        )
         .unwrap(),
     )
     .unwrap();

@@ -27,7 +27,7 @@ pub fn files(
     config_home: &Path,
     runtime: &Path,
 ) -> io::Result<Vec<(PathBuf, String)>> {
-    let exec = format!("{} --daemon", quoted(runtime)?);
+    let exec = format!("{} --hold", quoted(runtime)?);
     let export = data_home.join(EXPORT);
     let export_dirs = quotable(&export)?;
     Ok(vec![
@@ -149,7 +149,7 @@ mod tests {
             let entry = read(data.join("applications/so.tilo.Runtime.desktop"));
             assert!(!entry.contains("NoDisplay"), "{entry}");
             assert!(
-                entry.contains("\nExec=\"/opt/Tilo Apps/bin/tilo-runtime\" --daemon\n"),
+                entry.contains("\nExec=\"/opt/Tilo Apps/bin/tilo-runtime\" --hold\n"),
                 "{entry}"
             );
 
@@ -161,7 +161,7 @@ mod tests {
             let service_path = data.join("dbus-1/services/so.tilo.Runtime.service");
             assert_eq!(
                 read(service_path.clone()),
-                "[D-BUS Service]\nName=so.tilo.Runtime\nExec=\"/opt/Tilo Apps/bin/tilo-runtime\" --daemon\n"
+                "[D-BUS Service]\nName=so.tilo.Runtime\nExec=\"/opt/Tilo Apps/bin/tilo-runtime\" --hold\n"
             );
 
             let modified = || {

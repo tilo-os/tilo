@@ -258,7 +258,7 @@ impl StorageAuthority {
 
     pub async fn snapshot(&self) -> SyncStorageSnapshot {
         let logical = self.logical_files();
-        let online = !self.hydrator.known_peers().is_empty();
+        let online = self.hydrator.has_source();
         let dirty = self.dirty_inodes();
         let records = self.records();
         // One captured registry generation and one superset history catalog serve
@@ -358,7 +358,7 @@ impl StorageAuthority {
                             .entry(hash.as_bytes())
                             .is_some_and(|entry| entry.retention == Retention::Cached),
                         acknowledged: held_elsewhere.contains(hash.as_bytes()),
-                        fetched: residence.remote_source.is_some() || residence.remotely_durable,
+                        fetched: residence.remotely_durable,
                     }
                 }
             };
@@ -812,11 +812,7 @@ mod tests {
     async fn the_cache_policy_is_set_and_read_through_the_socket() {
         use runtime_fs::storage::{CachePolicy, MIN_CACHE_BUDGET_BYTES, StorageClient};
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::Minimal)
-            .await
-            .unwrap();
         let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
             Arc::new(crate::store::ContentStore::memory()),
         ));
         let heuristics = Arc::new(crate::smart::Heuristics::new(Arc::clone(&hydrator)));
@@ -863,7 +859,6 @@ mod tests {
         assert_eq!(hydrator.store.files().budget(), MIN_CACHE_BUDGET_BYTES * 4);
 
         server.abort();
-        endpoint.close().await;
     }
 
     #[tokio::test]
@@ -1161,11 +1156,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_authority_reports_frees_and_keeps_a_workspace() {
-        use iroh::endpoint::{Endpoint, presets};
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(crate::ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
+        let hydrator = Arc::new(Hydrator::new(Arc::clone(&store)));
         let namespace = Arc::new(Mutex::new(Namespace::new("residency").unwrap()));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
@@ -1260,7 +1253,5 @@ mod tests {
         let summary = authority.residency().await;
         assert_eq!(summary.workspaces[0].split.cache_bytes, 0);
         assert!(!summary.workspaces[0].kept_here);
-
-        endpoint.close().await;
     }
 }

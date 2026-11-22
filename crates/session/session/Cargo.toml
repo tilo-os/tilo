@@ -189,12 +189,16 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The apps the session runs itself keep their resources in the workspace's store, whose
+# commands are answered by this device's own workspace service.
+futures = { workspace = true, features = ["executor"] }
+tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
 # The toolkit's native half: the winit runner, the host services and the
 # broker transport, which only a desktop host runs.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 # The live session over this session's own iroh endpoint: native only.
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"] }
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "macros", "time"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "sync", "macros", "time"] }
 # Tilo's API, which the session serves its own person's programs on this computer.
 tilo-api = { path = "../../server/tilo-api" }
 # Which app opens a file or a link: the workspace's and the person's default apps, and this
@@ -233,7 +237,7 @@ tilo-model-client = { path = "../../agent/model-client", features = ["runtime-cl
 tilo-network-actor = { path = "../network-actor" }
 # This device's own workspace service: the one a server runs, holding the workspaces this
 # device founds.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "files"] }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["agents", "apps", "files"] }
 # A host's own questions to a member, asked on the collaboration endpoint:
 # what an agent asks before it acts on a workspace, answered by the person.
 tilo-server-client = { path = "../../server/tilo-server-client" }
@@ -287,9 +291,8 @@ image = { workspace = true, features = ["png"] }
 resvg = { version = "0.47", default-features = false }
 tilo-shell-surface = { path = "../shell-surface" }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
-# action vocabulary; and a window's record as an instance opens it (`instance::document`), which
-# the tests that read a program's answer as the person and an agent do.
-tilolang-tilo = { path = "../../platform/tilolang-tilo", features = ["document"] }
+# action vocabulary.
+tilolang-tilo = { path = "../../platform/tilolang-tilo" }
 # The outside origins the session's own services keep records in step with: the mail and
 # YouTube connectors' clients, and the registry that makes an origin's connector reachable
 # (`tilolang_tilo::origin::remote`).
@@ -338,7 +341,6 @@ tilo-native-media = { path = "../native-media" }
 # program of this login through once the person admits it.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 tilo-mcp = { path = "../../runtime/tilo-mcp" }
-tilo-device-mcp = { path = "../../runtime/device-mcp" }
 # The files daemon's link to the network: the session answers and dials for it
 # on the device's endpoint (`fs::net`).
 fs = { package = "tilo-fs", path = "../../system/fs", default-features = false, features = ["filesystem"] }
@@ -433,8 +435,8 @@ settings-store = { path = "../../system/settings-store", features = ["watch"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
-# A test writes an app's record as the app's own instance document, as the app does.
-tilolang-tilo = { path = "../../platform/tilolang-tilo", features = ["document"] }
+# A Tasks window in the tests, as the app's process runs one over the workspace's store.
+tilolang-process = { path = "../../platform/tilolang-process" }
 # The page track and window-share tests drive a synchronous web engine.
 tilo-webview = { version = "0.1.0", path = "../../sdk/tilo-webview" }
 # A check that answers a sheet as the person does asks the questions service the

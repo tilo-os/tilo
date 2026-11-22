@@ -797,7 +797,13 @@ impl Core {
         info: &crate::registry::TypeInfo,
         viewer: Option<&Actor>,
     ) -> HResult<Vec<Value>> {
-        if v.fields.is_empty() || v.change.is_empty() {
+        if v.fields.is_empty()
+            || v.change.is_empty()
+            || matches!(
+                v.kind,
+                crate::store::VersionKind::Created | crate::store::VersionKind::Removed
+            )
+        {
             return Ok(Vec::new());
         }
         let specs: Vec<crate::store::FieldSpec> = v

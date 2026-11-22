@@ -173,21 +173,21 @@ api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"
 workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
   -d '{"name": "Hiring: Ada Lovelace"}' | jq -r .id)
-members=$api/workspaces/$workspace/members
+tree=$api/workspaces/$workspace/resources/workspace
 
-invitation=$(curl -sS --fail-with-body "$members/invitations" -H "$auth" \
-  -H "Content-Type: application/json" -d '{"role": "editor", "email": "reviewer@example.com"}')
-echo "invite link: $(jq -r .link <<<"$invitation")"
-echo "sent by mail: $(jq -r .sent <<<"$invitation")"
+invitation=$(curl -sS --fail-with-body "$tree/invitations/actions/invite" -H "$auth" \
+  -H "Content-Type: application/json" -d '{"role": "editor", "invitee_name": "reviewer@example.com"}')
+echo "invite link: $(jq -r .result.link <<<"$invitation")"
 
-curl -sS --fail-with-body "$members" -H "$auth" \
-  | jq -r '.members[] | "member: \(.name // .person) \(.role)"'
+curl -sS --fail-with-body "$tree/members/actions/list" -H "$auth" -X POST \
+  | jq -r '.result[] | "member: \(.name // .member.person) \(.role)"'
 ```
 
 A key you created that reaches all your workspaces invites as you would, as far as your role in the
-workspace goes. An agent asks you first, unless you allowed it in the workspace's settings, under Agents. Listing the members also
-shows the invitations nobody has accepted yet. One you no longer want is cancelled with
-`tilo workspace people revoke <invitation>` (`DELETE /v1/workspaces/{workspace}/members/invitations/{invitation}`):
+workspace goes. An agent asks you first, unless you allowed it in the workspace's settings, under Agents. Tilo sends
+no mail to the address an invitation names: hand the link over. `workspace/invitations#list` names the invitations
+nobody has accepted yet. One you no longer want is cancelled with
+`tilo workspace people revoke <invitation>` (`workspace/invitations#cancel {invite}`):
 its link lets nobody in from then on. Once the person is in, your agent's record links open
 straight in the record's app for them, because a link opens for the workspace's members and carries no
 secret.
@@ -212,10 +212,10 @@ A workspace has one owner, and `--role owner` hands it on, which only that owner
 their own. `tilo workspace people invite` answers a link instead: `--email` names the address it is
 for, and `--waiting` invites an address already on the wait list.
 
-The same actions reach an agent over MCP (`tilo_do {"path": "workspace/members#add", "args": {"person":
-KEY, "role": "editor"}}`, and `#invite`, `#wait-list`, `#unlist`) and over REST (`POST
-/v1/workspaces/{workspace}/members`, `POST /v1/workspaces/{workspace}/members/invitations`, `GET
-/v1/workspaces/{workspace}/members/wait-list`, `DELETE /v1/workspaces/{workspace}/members/wait-list/{entry}`).
+The same actions are the workspace's own resources, which an agent reaches over MCP (`tilo_do {"path":
+"workspace/members#add", "args": {"person": KEY, "role": "editor"}}`, `workspace/invitations#invite`,
+`workspace/waiting#list` and `#unlist`) and REST reaches as any action
+(`POST /v1/workspaces/{workspace}/resources/workspace/members/actions/add`).
 
 A deployment names its owner when it starts the host: `TILO_WORKSPACES_OWNERS` takes their user public
 key, and the host hands the workspace to them at its first start, staying in it as an administrator

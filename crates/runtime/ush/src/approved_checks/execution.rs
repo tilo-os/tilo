@@ -581,8 +581,7 @@ pub(super) fn run(
         config_bytes: bytes,
         mut child,
     } = start(check, &authority)?;
-    let mut reports =
-        super::reports::ReportParser::new(check, &prepared.report_nonce);
+    let mut reports = super::reports::ReportParser::new(check, &prepared.report_nonce);
     // No build script executes until the cgroup was observed and permitted.
     let (observation, mut outcome, mut output, completed, mut error) =
         match admit(check, &prepared.token, &unit.0, &authority) {

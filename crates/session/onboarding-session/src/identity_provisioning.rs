@@ -1,26 +1,14 @@
-//! Shell-side host for the identity ceremony: persistence
-//! (`~/.config/tilo/identity/primary.json`, `0600`) and the first-run
-//! trigger.
+//! Shell-side host setup for the person's identity: where a host-installed
+//! session keeps its identity tree, and the first-run trigger.
 //!
-//! New ceremonies emit schema-1 JSON matching
-//! [`tilo_identity_ceremony::IdentityRecord`] in memory, then the runtime
-//! lifecycle store atomically imports it as public schema-2 metadata backed by
-//! Secret Service or a host-only broker file before the ceremony returns.
-//!
-//! Intentionally thin: cryptographic logic stays in
-//! `threshold-identity`, visual logic stays in `ui`.
+//! The record itself and its sharing belong to `tilo_identity::store`; this
+//! module only decides when setup has to run in front of the desktop.
 
-use std::fs::OpenOptions;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 use std::fs;
-
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
-
-use tilo_identity_ceremony::{IdentityFlowError, IdentityRecord, IdentityStore};
 
 /// Resolve the user-owned device-identity root used by a Tilo Desktop session
 /// installed on another Linux distribution.
@@ -196,13 +184,6 @@ fn prepare_private_host_identity_tree(_root: &std::path::Path) -> io::Result<()>
     ))
 }
 
-/// Writes public metadata to `$XDG_CONFIG_HOME/tilo/identity/primary.json`
-/// (falling back to `$HOME/.config/...`) and imports its private share into
-/// the runtime identity provider before returning.
-pub struct DiskIdentityStore {
-    path: PathBuf,
-}
-
 /// Environment marker used only within the shell process to carry the result
 /// of the pre-compositor Secret Service probe into native compositor startup.
 /// It is deliberately one-way: an unavailable existing key can request the
@@ -219,112 +200,6 @@ pub fn is_secret_service_unavailable(error: &io::Error) -> bool {
     tilo_identity::store::is_secret_service_unavailable_io(error)
 }
 
-impl DiskIdentityStore {
-    /// Uses the canonical runtime resolver shared by Settings, first boot,
-    /// and the launcher, so the boot chain cannot disagree because of a
-    /// relative XDG path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity directory can't be resolved or
-    /// created.
-    pub fn from_env() -> Result<Self, io::Error> {
-        let base = tilo_identity::store::identity_dir_from_env()?;
-        // Imported identities keep a fingerprinted filename. Resolve the
-        // active runtime identity first so every consumer shares one
-        // canonical selection and a successful import remains ready on the
-        // next login.
-        let path = tilo_identity_client::resolve_active_identity(&base)
-            .unwrap_or_else(|| base.join("primary.json"));
-        Ok(Self { path })
-    }
-
-    /// Used by tests to point at a tempdir without `$HOME` shimming.
-    pub fn at(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub fn identity_present(&self) -> bool {
-        self.path.exists()
-    }
-}
-
-impl IdentityStore for DiskIdentityStore {
-    fn load(&self) -> Result<Option<IdentityRecord>, IdentityFlowError> {
-        let mut file = match OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&self.path)
-        {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(IdentityFlowError::Io(error)),
-        };
-        let metadata = file.metadata().map_err(IdentityFlowError::Io)?;
-        if !metadata.file_type().is_file()
-            || !tilo_files::native::private::private_to_me(&metadata)
-            || metadata.len() > 1024 * 1024
-        {
-            return Err(IdentityFlowError::Io(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "identity record must be a private user-owned regular file",
-            )));
-        }
-        // `metadata.len()` was already checked <= 1 MiB above; this cast is a
-        // capacity hint, so a lossy fallback on exotic 32-bit targets is harmless.
-        let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
-        (&mut file)
-            .take(1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(IdentityFlowError::Io)?;
-        if bytes.len() > 1024 * 1024 {
-            return Err(IdentityFlowError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "identity record exceeds the size limit",
-            )));
-        }
-        Ok(Some(IdentityRecord::from_json_bytes(&bytes)?))
-    }
-
-    fn save(&self, record: &IdentityRecord) -> Result<(), IdentityFlowError> {
-        let bytes = record.to_json_bytes()?;
-        let parent = self.path.parent().ok_or_else(|| {
-            IdentityFlowError::Io(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "identity path has no parent",
-            ))
-        })?;
-        let id = self
-            .path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| {
-                IdentityFlowError::Io(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "identity path has no valid id",
-                ))
-            })?;
-        import_identity_record(parent, id, &bytes).map_err(IdentityFlowError::Io)?;
-        Ok(())
-    }
-}
-
-fn import_identity_record(parent: &Path, id: &str, bytes: &[u8]) -> io::Result<PathBuf> {
-    #[cfg(test)]
-    {
-        let provider = tilo_identity::store::BrokerFileProvider::new(parent);
-        tilo_identity::store::import_identity_with_provider(parent, id, bytes, &provider)
-    }
-    #[cfg(not(test))]
-    {
-        tilo_identity::store::import_identity(parent, id, bytes)
-    }
-}
-
 /// A free function, not a method on the store, so the boot path can
 /// call it without owning the store first.
 /// Complete this session's side of a device the person enrolled without
@@ -337,7 +212,7 @@ fn import_identity_record(parent: &Path, id: &str, bytes: &[u8]) -> io::Result<P
 /// Returns an error if the identity directory cannot be resolved or the
 /// enrolled device cannot be completed.
 pub fn complete_enrolled_device() -> io::Result<bool> {
-    let store = tilo_identity::registry::IdentityRegistryStore::from_env()?;
+    let store = tilo_identity::store::IdentityRegistryStore::from_env()?;
     tilo_identity::provisioning::complete_enrolled_device(
         store.identity_dir(),
         &crate::firstboot::collaboration_identity_paths(),
@@ -345,8 +220,8 @@ pub fn complete_enrolled_device() -> io::Result<bool> {
     )
 }
 
-pub fn needs_first_run_flow(store: &impl IdentityStore) -> bool {
-    match store.load() {
+pub fn needs_first_run_flow(identity_path: &Path) -> bool {
+    match tilo_identity::store::load_identity_file(identity_path) {
         Ok(None) => true,
         Ok(Some(_)) => false,
         Err(e) => {
@@ -367,7 +242,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::SystemTime;
     use threshold_identity::ThresholdIdentity;
-    use tilo_identity_ceremony::MemoryIdentityStore;
+    use tilo_identity::store::IdentityRecord;
 
     fn fixture_record() -> IdentityRecord {
         let mut rng = UnwrapErr(SysRng);
@@ -383,52 +258,48 @@ mod tests {
         .unwrap()
     }
 
-    tilo_test_env::scenario! {
-        fn the_identity_store_round_trips_its_record_and_decides_the_first_run;
+    /// Write a record private from creation, as every writer of the identity
+    /// directory does.
+    fn write_fixture_identity(path: &Path) -> IdentityRecord {
+        let record = fixture_record();
+        tilo_files::native::atomic::write_with_mode(path, &record.to_json_bytes().unwrap(), 0o600)
+            .unwrap();
+        record
+    }
 
-        phase save_and_load_round_trip_on_disk;
+    tilo_test_env::scenario! {
+        fn the_store_reads_what_the_first_run_flow_asks_about;
+
+        phase a_stored_identity_reads_back_with_its_public_key;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
-            let store = DiskIdentityStore::at(tmp.path().join("primary.json"));
-            assert!(store.load().unwrap().is_none());
-            let rec = fixture_record();
-            store.save(&rec).unwrap();
-            assert!(store.identity_present());
-            let back = store.load().unwrap().unwrap();
+            let path = tmp.path().join("primary.json");
+            assert!(
+                tilo_identity::store::load_identity_file(&path)
+                    .expect("missing record")
+                    .is_none()
+            );
+            let rec = write_fixture_identity(&path);
+            let back = tilo_identity::store::load_identity_file(&path)
+                .expect("stored record")
+                .expect("a record");
             assert_eq!(back.display_name, rec.display_name);
             assert_eq!(back.public_key(), rec.public_key());
-            assert_eq!(back.schema_version, 2);
-            assert!(back.threshold_identity.secret_bytes.is_empty());
-            assert!(back.secret_ref.is_some());
-        }
-
-        phase save_sets_0600_mode_on_unix;
-        {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let store = DiskIdentityStore::at(tmp.path().join("primary.json"));
-            store.save(&fixture_record()).unwrap();
+            assert_eq!(back.schema_version, 1);
             #[cfg(unix)]
             {
-                let meta = fs::metadata(store.path()).unwrap();
-                let mode = meta.permissions().mode() & 0o777;
+                let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
                 assert_eq!(mode, 0o600, "primary.json must be 0600, got {mode:o}");
             }
         }
 
-        phase load_on_missing_file_returns_none;
-        {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let store = DiskIdentityStore::at(tmp.path().join("does-not-exist.json"));
-            assert!(store.load().unwrap().is_none());
-            assert!(!store.identity_present());
-        }
-
         phase first_run_flow_triggers_only_on_missing_identity;
         {
-            let store = MemoryIdentityStore::new();
-            assert!(needs_first_run_flow(&store));
-            store.save(&fixture_record()).unwrap();
-            assert!(!needs_first_run_flow(&store));
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let path = tmp.path().join("primary.json");
+            assert!(needs_first_run_flow(&path));
+            write_fixture_identity(&path);
+            assert!(!needs_first_run_flow(&path));
         }
 
         phase only_the_secret_service_unavailable_error_enters_recovery;
@@ -458,14 +329,12 @@ mod tests {
 
             let tmp = tempfile::tempdir().expect("tempdir");
             let target = tmp.path().join("elsewhere.json");
-            let bytes = fixture_record().to_json_bytes().unwrap();
-            fs::write(&target, bytes).unwrap();
+            fs::write(&target, fixture_record().to_json_bytes().unwrap()).unwrap();
             fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
             let path = tmp.path().join("primary.json");
             symlink(&target, &path).unwrap();
 
-            let store = DiskIdentityStore::at(path);
-            assert!(store.load().is_err());
+            assert!(tilo_identity::store::load_identity_file(&path).is_err());
         }
 
         phase host_identity_tree_is_private_and_refuses_a_symlink_root;
@@ -495,9 +364,8 @@ mod tests {
             let path = tmp.path().join("primary.json");
             fs::write(&path, b"not an identity").unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-            let store = DiskIdentityStore::at(path);
             assert!(
-                needs_first_run_flow(&store),
+                needs_first_run_flow(&path),
                 "an invalid identity must not let an identity-less desktop start"
             );
         }

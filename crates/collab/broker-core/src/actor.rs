@@ -35,6 +35,9 @@ pub struct BrokerActor {
     /// takes part in. Every op an agent makes names it, so presence and history
     /// say what caused it, and no agent acts outside one.
     turn: Option<tilo_action_policy::turn::Turn>,
+    /// The bound the agent's own record narrows it to on its turn, as grants
+    /// ([`Caller::granted`]): what every host adds to the delegation's preset.
+    bound: Vec<tilo_action_policy::Grant>,
     /// The app the person acts through, when their session runs one: what it
     /// may reach is bounded by the kinds it declares.
     pub app: Option<AppId>,
@@ -68,6 +71,7 @@ impl BrokerActor {
             for_person: None,
             session_delegated: false,
             turn: None,
+            bound: Vec::new(),
             app: None,
             app_kinds: None,
             session: None,
@@ -86,9 +90,11 @@ impl BrokerActor {
     /// every host starts from.
     #[must_use]
     pub fn for_caller(caller: &Caller) -> Self {
-        Self::actor_of(caller)
+        let mut actor = Self::actor_of(caller)
             .on_turn(caller.turn().cloned())
-            .within(caller.ceiling())
+            .within(caller.ceiling());
+        actor.bound = caller.granted(&[]);
+        actor
     }
 
     /// The actor `caller` is, before any ceiling.
@@ -307,7 +313,8 @@ impl BrokerActor {
     /// Who this actor's invocation in `workspace` is decided for.
     #[must_use]
     pub fn access_in(&self, workspace: &Workspace) -> MemberAccess {
-        let mut access = MemberAccess::new(workspace.policy.clone(), self.acting());
+        let mut access = MemberAccess::new(workspace.policy.clone(), self.acting())
+            .granted(self.bound.iter().cloned());
         if let Some(kinds) = &self.app_kinds {
             access = access.in_app(kinds.clone());
         }

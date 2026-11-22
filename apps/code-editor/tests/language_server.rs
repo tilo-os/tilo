@@ -14,7 +14,6 @@
 //! The test requires `rust-analyzer` and `cargo` on PATH. It also verifies
 //! `$/progress`, which depends on the client advertising work-done progress.
 
-
 use ui::time::Duration;
 
 use code_editor::lsp::{LspClient, LspEvent};

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@854f753a0c76da10";
+export const SURFACE = "so.tilo.notes@fcd0f8369b96a578";
 
 /** The arguments of `pin`. */
 export interface PinArgs {
@@ -283,7 +283,7 @@ export interface Notebook extends tilo.Resource {
   }): Promise<void>;
   /** Runs `import_archive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   import_archiveMany(items: ImportArchiveArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Files dropped on the notebook: a Markdown file comes in as a note, an archive as the pages it holds — the notebook's own written out, or another app's export — and each file of a drop in turn. One action, so undo takes the whole drop back at once. */
+  /** Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An archive becomes the pages it holds, whether the notebook's own written out or another app's export. One action, so undo takes the whole drop back at once. */
   import_dropped(args: {
     files: unknown[];
   }): Promise<void>;

@@ -217,10 +217,10 @@ pub(crate) struct Shared {
     /// last worked out at: both follow every change of the session, so a
     /// revocation reaches the running app at once.
     pub(crate) capabilities_fed: Cell<Option<(u64, u64, u64)>>,
-    /// What publishes the person's file access list to the Files daemon
-    /// while the session runs; `None` where no Files workspace serves.
+    /// What tells the Files mounts the person's file access list while the
+    /// session runs; `None` where the session keeps no records' content.
     #[cfg(target_os = "linux")]
-    pub(crate) fs_authority: Option<crate::fs_authority::Publisher>,
+    pub(crate) files_access: Option<std::sync::Arc<crate::content::ContentService>>,
     /// The workspace's agents and emoji, which workspace settings shows and
     /// changes through Chat's record of the workspace.
     #[cfg(target_os = "linux")]
@@ -341,6 +341,10 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) document_writes:
         std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
+    /// The store of a workspace this device's own service holds, once it is open: where the apps
+    /// the session runs itself keep their resources, as the apps' windows do.
+    #[cfg(target_os = "linux")]
+    pub(crate) held_stores: crate::engine_records::HeldStores,
     /// The workspaces' shared desktops, as their records hold them: what each
     /// device that shows a workspace puts on its own session, and what this one
     /// writes back.
@@ -438,9 +442,6 @@ pub(crate) struct Shared {
     /// on the loop's pass, the only place that may touch them.
     #[cfg(target_os = "linux")]
     pub(crate) session_services: std::sync::Arc<crate::mcp_server::SessionServices>,
-    /// The MCP server toward the person's other devices.
-    #[cfg(target_os = "linux")]
-    pub(crate) device_agents: std::sync::Arc<crate::device_mcp::DeviceAgents>,
     /// The installed folder importer's side of this login, once the session
     /// serves it: what it asks on whether first use is over, and the review
     /// it saved to be opened when it is.

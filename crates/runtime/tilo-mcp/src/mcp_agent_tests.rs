@@ -1303,21 +1303,14 @@ tilo_test_env::scenario! {
                 text,
                 "apps\nnotes  Notes  running\nsheets  Sheets  installed"
             );
-            // The API's routes ask for the typed answer and answer its `text`, so
-            // a caller with no surface reads the words an agent reads.
-            let plain = server
-                .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
-                    "params":{"name":"tilo_ls","arguments":{}}}))
-                .await
-                .unwrap();
-            let words = plain["result"]["content"][0]["text"].as_str().unwrap_or_default();
+            // A typed answer is its fields: the words an agent reads are no part of it.
             let typed = server
                 .handle(json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
                     "params":{"name":"tilo_ls","arguments":{},
                               "_meta":{"so.tilo.mcp":{"structured":true}}}}))
                 .await
                 .unwrap();
-            assert_eq!(typed["result"]["structuredContent"]["text"].as_str(), Some(words));
+            assert!(typed["result"]["structuredContent"].get("text").is_none(), "{typed}");
         });
     }
 

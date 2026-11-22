@@ -216,7 +216,7 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
         &asked,
         &Arc::new(Hold::default()),
     );
-    let agents = up.agents(Some(sets_up));
+    let agents = up.agents(&workspace, Some(sets_up)).await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     agents.answer(&workspace, &turns[0]).await.unwrap();
@@ -277,7 +277,7 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
         &asked,
         &Arc::new(Hold::default()),
     );
-    let agents = up.agents(Some(reads));
+    let agents = up.agents(&workspace, Some(reads)).await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(
         turns.len(),
@@ -359,7 +359,7 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
     );
 
     // She comes back: she was told, in the words of the ask's reply.
-    let mut back = Browser::open_at(&up.server, &browser, &device, &workspace).await;
+    let mut back = Browser::open_at(&up.hosted, &browser, &device, &workspace).await;
     let listed = on_device(
         &mut back,
         (

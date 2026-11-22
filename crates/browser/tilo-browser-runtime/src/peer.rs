@@ -960,19 +960,21 @@ pub fn device_cert_canonical(cert_json: &str) -> Result<Vec<u8>, JsError> {
 }
 
 /// Certify this page's device key (`device key`) with the user root the page
-/// holds, for the host at `post`, whose certificate must be a host of that
-/// root. Resolves to `{cert, hostCert}` JSON, as [`certify_device`] does.
+/// holds, for the host whose certificate the page's own `hostInfo` named
+/// (`host_cert`, JSON), which must be a host of that root. Resolves to
+/// `{cert, hostCert}` JSON, as [`certify_device`] does.
 #[wasm_bindgen(js_name = certifyWithRoot)]
 pub async fn certify_with_root(
-    post: Function,
     root: JsValue,
     device_key: JsValue,
     label: String,
+    host_cert: String,
 ) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
     let signer = PageSigner::from_js(&device_key)?;
+    let server_cert: DeviceCert = serde_json::from_str(&host_cert).map_err(js_error)?;
     let (cert, server_cert) =
-        tilo_enrollment::certification::certify_with_root(&PageHttp(post), &root, &signer, &label)
+        tilo_enrollment::certification::certify_with_root(&root, &signer, &label, &server_cert)
             .await
             .map_err(js_error)?;
     serde_json::to_string(&Certified {
@@ -1351,7 +1353,11 @@ fn peer_store(
         let channel_vault: [u8; 32] = channel_vault
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| js_error("a profile peer needs its 32-byte channel vault"))?;
-        return Ok(Arc::new(DurablePeerStore::open(&namespace, user, channel_vault)?));
+        return Ok(Arc::new(DurablePeerStore::open(
+            &namespace,
+            user,
+            channel_vault,
+        )?));
     }
     let record = record
         .map(|bytes| postcard::from_bytes::<PeerEntry>(&bytes))
@@ -2101,11 +2107,7 @@ impl WasmPeer {
                     hear(self.id, workspace_id, from, &body);
                     None
                 }
-                Event::Live {
-                    ws: _,
-                    from,
-                    frame,
-                } if from != self.device_key => {
+                Event::Live { ws: _, from, frame } if from != self.device_key => {
                     let publisher = hex::encode(from);
                     let event = match LiveFrame::decode(&frame).ok()? {
                         LiveFrame::Ops(OpsFrame::Preview { seq, record, ops }) => {
@@ -2180,16 +2182,17 @@ impl WasmPeer {
 
     /// Resolves `true` once the workspace's server says a write landed in the workspace's documents
     /// ([`tilo_actions::remote::ActionProvider::changed`], a request the server holds for ten seconds
-    /// at most), and `false` once `until` settles first or the server cannot tell. The wait is let
-    /// go of when this resolves, so a server that never answers costs this page nothing: the
-    /// session forgets a wait nobody reads any more.
+    /// at most), and `false` once `until` settles first. The wait is let go of when this
+    /// resolves, so a server that never answers costs this page nothing: the session forgets a
+    /// wait nobody reads any more.
     ///
     /// It says that something was written and never what: what changed is read from the server's
     /// feed of changes, which answers each caller with what it may read.
     ///
     /// # Errors
     ///
-    /// Throws for a malformed workspace and a page with no session with a server.
+    /// Throws for a malformed workspace, a page with no session with a server, and a wait the
+    /// server refused or the session could not carry, with why.
     #[wasm_bindgen(js_name = writeLanded)]
     pub async fn write_landed(&self, workspace: &str, until: Promise) -> Result<bool, JsError> {
         use std::future::Future as _;
@@ -2200,14 +2203,17 @@ impl WasmPeer {
             .ok_or_else(|| js_error("this page holds no session with a server"))?;
         let mut landed = api.wait_for_change(tilo_actions::remote::WatchScope::Records);
         let mut over = JsFuture::from(until);
-        Ok(std::future::poll_fn(move |context| {
-            // A wait the server refused, or one its session could not carry, wakes nobody.
+        std::future::poll_fn(move |context| {
             if let Poll::Ready(woken) = Pin::new(&mut landed).poll(context) {
-                return Poll::Ready(woken.is_some());
+                return Poll::Ready(match woken {
+                    Some(Ok(())) => Ok(true),
+                    Some(Err(refused)) => Err(js_error(refused)),
+                    None => Ok(false),
+                });
             }
-            Pin::new(&mut over).poll(context).map(|_| false)
+            Pin::new(&mut over).poll(context).map(|_| Ok(false))
         })
-        .await)
+        .await
     }
 
     /// Have this page's device in the person's own workspace on the host, asked on the session it

@@ -14,7 +14,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use tilo_actions::ResourceSpec;
 use tilo_resource::{Model, resource};
 

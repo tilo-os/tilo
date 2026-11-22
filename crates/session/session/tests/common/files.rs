@@ -51,6 +51,8 @@ pub fn contents(namespace: &Mounted) -> Vec<String> {
 /// A workspace's tree as `device`'s files daemon mounts it, synced while this value lives.
 pub struct Mount {
     tree: fs::tree_sync::TreeSync,
+    service: fs::tree_sync::remote::Service,
+    store: Arc<fs::ContentStore>,
     _kept: tempfile::TempDir,
 }
 
@@ -58,6 +60,24 @@ impl Mount {
     /// The tree the mount holds, as the daemon's mount reads and changes it.
     pub fn namespace(&self) -> Mounted {
         Arc::clone(&self.tree.namespace)
+    }
+
+    /// The rest of what the session's connection carries: file bytes, keys and access.
+    #[allow(
+        dead_code,
+        reason = "not every test of the tree reads its files' bytes"
+    )]
+    pub fn service(&self) -> &fs::tree_sync::remote::Service {
+        &self.service
+    }
+
+    /// The mount's store of its files' bytes.
+    #[allow(
+        dead_code,
+        reason = "not every test of the tree reads its files' bytes"
+    )]
+    pub fn store(&self) -> &Arc<fs::ContentStore> {
+        &self.store
     }
 }
 
@@ -81,13 +101,13 @@ pub fn mount_on(device: &crate::common::people::Device, workspace: &str) -> Moun
         .join("runtime")
         .join("tilo/services")
         .join(format!("{}.sock", fs::tree_sync::remote::SOCKET));
-    let tree = tokio::runtime::Handle::current().block_on(async {
+    let (tree, service, store) = tokio::runtime::Handle::current().block_on(async {
         let content = Arc::new(
             fs::ContentStore::open(kept.path().join("content"))
                 .await
                 .expect("a content store for the mount"),
         );
-        fs::tree_sync::remote::start(
+        let (tree, service) = fs::tree_sync::remote::start(
             socket,
             workspace.to_owned(),
             (
@@ -95,10 +115,16 @@ pub fn mount_on(device: &crate::common::people::Device, workspace: &str) -> Moun
                 credentials.user_public_key(),
             ),
             kept.path().join("namespace"),
-            content,
+            Arc::clone(&content),
         )
         .await
-        .expect("the mount's tree opens")
+        .expect("the mount's tree opens");
+        (tree, service, content)
     });
-    Mount { tree, _kept: kept }
+    Mount {
+        tree,
+        service,
+        store,
+        _kept: kept,
+    }
 }

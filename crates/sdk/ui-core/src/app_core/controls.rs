@@ -122,7 +122,10 @@ pub(crate) trait ControlCore: AppCore {
     }
 
     /// Run a History API action, or one of the window's own, locally.
-    fn run_local_history_address(&mut self, address: &ActionAddress, argument: &str) -> Started;
+    fn run_local_history_address(&mut self, address: &ActionAddress, argument: &str) -> Started {
+        self.history_address(address, Some(argument))
+            .unwrap_or_else(|| Err(ApiError::Unknown(address.clone())))
+    }
 
     /// A History surface embedded in the app took a control.
     fn embedded_history_acted(&mut self) {}
@@ -201,6 +204,129 @@ pub(crate) trait ControlCore: AppCore {
             ),
             LocalResourceTarget::Outer => self.invoke_outer_control(request),
         }
+    }
+
+    /// Run `address` of the History API or of the window's own actions here, when it is one.
+    fn history_address(
+        &mut self,
+        address: &ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<Started>;
+
+    /// Enter the API of whatever the window publishes `request.address` at: a component's or
+    /// the outer document's.
+    fn invoke_chosen_address(&mut self, request: &ResourceInvocation<'_>) -> Started;
+
+    /// Run what the person chose in the window's palette, once it collected what the action
+    /// asks for: a row History held back only as it was when held, one the palette confirmed at
+    /// the target it was confirmed for, and any other where the window publishes its address.
+    fn run_palette_operation(
+        &mut self,
+        pending: &crate::action_palette::PendingOperation,
+    ) -> Started {
+        let argument = pending.wire_argument();
+        let actor = tilo_actions::Actor::Member(self.local_author().clone());
+        let request = ResourceInvocation::new(&pending.address, &actor)
+            .argument(argument.as_deref())
+            .confirmed(true)
+            .evidence(Some(pending.confirmation_evidence()))
+            .ambient_context(Some(&pending.context));
+        // Confirmation was collected by the palette, but the request has not crossed the session
+        // broker yet: a document the host requires is submitted to that broker, not applied here.
+        if let Some(ordinary) = &pending.ordinary {
+            let tree = self.tree();
+            ordinary.validate(tree.root, &tree.state.doc, self.control_domain())?;
+        }
+        let target = match (&pending.history_target, &pending.ordinary) {
+            (Some(target), _) => {
+                self.held_palette_row_unchanged(pending, target)?;
+                target
+            }
+            (None, Some(ordinary)) => &ordinary.target,
+            (None, None) => {
+                if let Some(ran) = self.history_address(&pending.address, argument.as_deref()) {
+                    return ran;
+                }
+                return match &pending.bound {
+                    Some(target) => self.invoke_bound_control(target, &request),
+                    None => self.invoke_chosen_address(&request),
+                };
+            }
+        };
+        match target {
+            LocalResourceTarget::Component(target) => self.invoke_bound_control(target, &request),
+            LocalResourceTarget::Outer => self.invoke_outer_control(&request),
+        }
+    }
+
+    /// Whether the row History held back for `target` still means, resolves and encodes what it
+    /// did when held: refused as stale otherwise.
+    fn held_palette_row_unchanged(
+        &self,
+        pending: &crate::action_palette::PendingOperation,
+        target: &LocalResourceTarget,
+    ) -> Result<(), ApiError> {
+        use crate::bound_dispatch::{control_draft_identity, control_observation_with_arguments};
+        let stale = |reason: &str| ApiError::Unavailable {
+            code: "stale_pending_palette_action".into(),
+            reason: reason.into(),
+        };
+        let tree = self.tree();
+        let identity =
+            || control_draft_identity(tree.root, &tree.state.doc, target, &pending.address);
+        match &pending.history_draft_identity {
+            Some(Ok(captured)) if identity()? != *captured => {
+                return Err(stale(
+                    "The palette action resolution domain changed while History was open",
+                ));
+            }
+            Some(Err(reason)) => return Err(stale(reason)),
+            Some(Ok(_)) | None => {}
+        }
+        let captured = match &pending.history_identity {
+            Some(Ok(captured)) => captured.clone(),
+            Some(Err(reason)) => return Err(stale(reason)),
+            None => {
+                return Err(stale(
+                    "The original palette action identity was not captured",
+                ));
+            }
+        };
+        let current = match pending.history_seen {
+            Some(_) => captured.clone(),
+            None => identity()?,
+        };
+        if let Some(Err(reason)) = &pending.history_seen {
+            return Err(stale(reason));
+        }
+        let invocation = pending.control_invocation().ok_or_else(|| {
+            ApiError::InvalidArguments("The retained palette arguments are incomplete".into())
+        })?;
+        let arguments = pending.continuation_arguments().ok_or_else(|| {
+            ApiError::InvalidArguments(
+                "The retained palette argument representation is invalid".into(),
+            )
+        })?;
+        let observed = control_observation_with_arguments(
+            tree.root,
+            &tree.state.doc,
+            target,
+            &invocation,
+            &arguments,
+        )?;
+        if let Some(Ok(seen)) = &pending.history_seen
+            && observed != *seen
+        {
+            return Err(stale(
+                "The exact action encoding changed while History was open",
+            ));
+        }
+        if captured != current {
+            return Err(stale(
+                "The action meaning or confirmation policy changed while History was open",
+            ));
+        }
+        Ok(())
     }
 
     /// Run a control a History surface held back, as the person at this device, confirmed when they

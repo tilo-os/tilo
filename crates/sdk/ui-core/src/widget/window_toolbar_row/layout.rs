@@ -5,8 +5,8 @@
 use vello::kurbo::Vec2;
 
 use super::{
-    COMFORTABLE_LOCATION_PX, CONTROL_GAP, CONTROL_PX, FieldFace, Icon, LOCATION_ICON_PX,
-    MIN_LOCATION_PX, Point, Rect, SECTION_GAP, Theme, WindowToolbar, picker_width,
+    CONTROL_GAP, CONTROL_PX, FIELD_LOCATION_PX, FieldFace, Icon, LOCATION_ICON_PX, MIN_LOCATION_PX,
+    Point, Rect, SECTION_GAP, Theme, WindowToolbar, picker_width,
 };
 
 /// The space a location takes back from the gaps beside it, each side: the section gap down to
@@ -78,19 +78,13 @@ pub(crate) struct LocationForms {
 }
 
 impl LocationForms {
-    /// The form the location shows in `width` and the width the row must leave it: the widest
-    /// that stands whole once it takes back the space beside it, where it names itself in more
-    /// than one; where none does, the narrowest, so the row folds what it can for it.
-    pub(super) fn fit(&self, width: f64) -> (usize, f64) {
+    /// The form the location shows in `width`: the widest that stands whole, else the narrowest.
+    pub(super) fn fit(&self, width: f64) -> usize {
         let widest = width + SHARED_GAP;
-        let form = self
-            .text
+        self.text
             .iter()
             .position(|words| words + self.chrome <= widest)
-            .unwrap_or_else(|| self.text.len().saturating_sub(1));
-        let least = self.text.len() > 1;
-        let need = self.text.get(form).copied().unwrap_or(0.0) + self.chrome;
-        (form, if least { need - SHARED_GAP } else { 0.0 })
+            .unwrap_or_else(|| self.text.len().saturating_sub(1))
     }
 
     pub(super) fn width(&self, form: usize) -> f64 {
@@ -169,7 +163,7 @@ pub(super) fn location_chrome(
     }
     let mut chrome = 0.0;
     if editable {
-        let rect = Rect::new(0.0, 0.0, COMFORTABLE_LOCATION_PX, CONTROL_PX);
+        let rect = Rect::new(0.0, 0.0, FIELD_LOCATION_PX, CONTROL_PX);
         chrome += rect.width() - FieldFace::new(rect, "").text_rect(theme).width();
     }
     chrome += match lead {
@@ -287,27 +281,22 @@ impl Kept {
 impl Parts {
     /// Lay `toolbar`'s parts out across `row`, centred on its centre line:
     /// navigation and the leading actions leading, the views and the
-    /// actions trailing, the location filling between. At most
-    /// [`crate::window_toolbar::MAX_ACTIONS`] actions stand in the row;
-    /// while the location would be narrower than
-    /// [`COMFORTABLE_LOCATION_PX`] (or, without one, while the buttons would
-    /// overlap) the last of them move into the overflow menu, as do the
-    /// declared actions past that many and those declared for the menu, and
-    /// the view switcher folds into the views menu. Where that leaves the
-    /// location narrower than [`MIN_LOCATION_PX`], the rest goes into the
-    /// overflow menu in [`Parts::yielding`]'s order, so the location stays
-    /// in the row, elided. One action never goes into the menu alone: the
-    /// menu's button would take its place and hide it. The window's main
-    /// action ([`crate::window_toolbar::ToolbarAction::primary`]) stays in
-    /// the row at every width, its icon alone where the words do not fit.
+    /// actions trailing, the location filling between. The location takes
+    /// what the controls leave: it names itself in the widest of its forms
+    /// that stands whole there, then the narrowest, and leaves the row where
+    /// even that does not. The controls keep their places while they fit: at most [`crate::window_toolbar::MAX_ACTIONS`] actions stand
+    /// in the row, and only where the buttons would overlap do the last of
+    /// them move into the overflow menu, as do the declared actions past
+    /// that many and those declared for the menu, and the view switcher
+    /// folds into the views menu. Beyond that the rest goes into the
+    /// overflow menu in [`Parts::yielding`]'s order. One action never goes
+    /// into the menu alone: the menu's button would take its place and hide
+    /// it. The window's main action
+    /// ([`crate::window_toolbar::ToolbarAction::primary`]) stays in the row
+    /// at every width, its icon alone where the words do not fit.
     ///
-    /// The location shows the widest form of its label that stands whole
-    /// beside the navigation, with everything that yields before it in the
-    /// menu, and that yields only where that form would not stand whole:
-    /// a wider row never shows a narrower form. The location is the views'
-    /// picker only where that same form stands whole beside its chevron.
-    /// The plain leading actions yield before the label shortens: they
-    /// stand only beside its widest form.
+    /// The location is the views' picker only where the form it shows stands
+    /// whole beside its chevron.
     ///
     /// A labelled leading action is a text button only where the row folds
     /// nothing at all, its label included, and an icon otherwise: its label
@@ -337,10 +326,17 @@ impl Parts {
             Self::with_inline(toolbar, row, navigation, ViewsPlace::Overflow, (&[], &[]))
                 .location
                 .width();
-        let (form, least) = forms.fit(leftover);
+        let form = forms.fit(leftover);
         let notice = forms.notice(toolbar, leftover);
-        let least = notice.as_ref().map_or(least, |notice| notice.least);
-        let shown = (forms.width(form), least, form > 0);
+        let least = notice.as_ref().map_or_else(
+            || match (toolbar.location.is_some(), forms.text.len()) {
+                (false, _) => 0.0,
+                (true, 0 | 1) => MIN_LOCATION_PX,
+                (true, n) => forms.width(n - 1) + forms.chrome - SHARED_GAP,
+            },
+            |notice| notice.least,
+        );
+        let shown = (forms.width(form), least);
         let icons = Self::arranged(toolbar, row, views, shown, (&[], &[]));
         let names = labels
             .iter()
@@ -470,6 +466,7 @@ impl Parts {
     /// Where the location names itself in shorter forms, the form it shows stands whole; where
     /// even the space beside it does not hold that, it leaves the row rather than be cut.
     fn fit_shown_form(&mut self, row: Rect, forms: &LocationForms) {
+        self.form = forms.fit(self.location.width());
         let need = forms.width(self.form) + forms.chrome;
         if self.location.area() <= 0.0 || need <= self.location.width() {
             return;
@@ -573,7 +570,7 @@ impl Parts {
         toolbar: &WindowToolbar,
         row: Rect,
         views: ViewsSize,
-        shown: (f64, f64, bool),
+        shown: (f64, f64),
         labels: (&[f64], &[f64]),
     ) -> Self {
         Self::arranged_below(toolbar, row, views, shown, labels, usize::MAX, true)
@@ -587,7 +584,7 @@ impl Parts {
         toolbar: &WindowToolbar,
         row: Rect,
         views: ViewsSize,
-        (form_w, least, shortened): (f64, f64, bool),
+        (form_w, least): (f64, f64),
         (labels, action_labels): (&[f64], &[f64]),
         most: usize,
         keep_alone: bool,
@@ -616,13 +613,14 @@ impl Parts {
                 && (toolbar.views.is_none() || place != ViewsPlace::Overflow)
         };
         let places = match measured {
-            Some(m) => vec![ViewsPlace::Strip(m.strip.0, m.strip.1), folded_views(m)],
+            Some(m) => vec![
+                ViewsPlace::Strip(m.strip.0, m.strip.1),
+                folded_views(m),
+                ViewsPlace::Overflow,
+            ],
             None => vec![ViewsPlace::Overflow],
         };
-        let mut all = Kept::all(toolbar, row_actions);
-        if shortened {
-            all.plain = 0;
-        }
+        let all = Kept::all(toolbar, row_actions);
         let floor = main_action_floor(toolbar, row_actions);
         for &place in &places {
             let mut inline = row_actions.min(most).max(floor).min(row_actions);
@@ -634,14 +632,13 @@ impl Parts {
                     place,
                     (labels, action_labels),
                 );
-                let leftover = if toolbar.location.is_some() {
-                    parts.location.width() >= COMFORTABLE_LOCATION_PX.max(least)
-                } else {
-                    parts.fits(row)
-                };
                 let placed =
                     !matches!(place, ViewsPlace::InLocation(_)) || parts.views_menu.area() > 0.0;
-                if leftover && placed && !lone(inline, place) {
+                if parts.fits(row)
+                    && parts.location.width() >= least
+                    && placed
+                    && !lone(inline, place)
+                {
                     return parts;
                 }
                 if inline <= floor {

@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use shortcuts::locales::CATALOG;
 use std::sync::Arc;
 

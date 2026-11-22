@@ -2,7 +2,6 @@
 //! host: a page that joins is told its workspace serves it, and a write it makes is told behind,
 //! then done, once its host kept it. Nothing here waits on a timer.
 
-
 use collab_types::DocumentMutation;
 use tilo_session_client::{Cmd, Event, Outbox as _, SyncState, WorkspaceState};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};

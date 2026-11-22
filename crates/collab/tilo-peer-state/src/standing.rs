@@ -66,7 +66,10 @@ impl Standing {
             all.entry(person.clone()).or_default().role = Some(*role);
         }
         for (person, assigned) in &policy.assigned_roles {
-            all.entry(person.clone()).or_default().assigned.clone_from(assigned);
+            all.entry(person.clone())
+                .or_default()
+                .assigned
+                .clone_from(assigned);
         }
         for grant in &policy.grants {
             if let Some(person) = grant.grantee.person_id() {
@@ -264,7 +267,10 @@ pub(crate) fn cuts(doc: &AutoCommit, subject: &[u8; 32]) -> Result<Vec<Cut>, Str
             let prior: Standing = serde_json::from_slice(&prior).map_err(|_| NOT_A_CUT)?;
             let written = doc.hash_for_opid(&op).ok_or(NOT_A_CUT)?;
             let cut = cut.get_or_insert_with(|| Cut {
-                id: key.strip_prefix(prefix.as_str()).unwrap_or_default().to_owned(),
+                id: key
+                    .strip_prefix(prefix.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
                 subject: *subject,
                 order,
                 prior,
@@ -299,14 +305,18 @@ pub(crate) fn keeps(
         let key = compaction_key(&cut.subject, &cut.id, device, id, &route);
         return Ok(!stored(doc, &maps, &key)?.is_empty());
     }
-    let taken = stored(doc, &maps, &taken_key(&cut.subject, &cut.id, device, &route))?
-        .into_iter()
-        .filter_map(|(value, _)| match value {
-            Stored::Taken(sequence) => Some(sequence),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0);
+    let taken = stored(
+        doc,
+        &maps,
+        &taken_key(&cut.subject, &cut.id, device, &route),
+    )?
+    .into_iter()
+    .filter_map(|(value, _)| match value {
+        Stored::Taken(sequence) => Some(sequence),
+        _ => None,
+    })
+    .max()
+    .unwrap_or(0);
     Ok(sequence <= taken)
 }
 
@@ -563,7 +573,12 @@ mod tests {
         lowered
             .put(
                 &map,
-                taken_key(&PERSON, "one", &DEVICE, &crate::coverage::route_key("app", "note")),
+                taken_key(
+                    &PERSON,
+                    "one",
+                    &DEVICE,
+                    &crate::coverage::route_key("app", "note"),
+                ),
                 ScalarValue::Bytes(postcard::to_allocvec(&Stored::Taken(1)).unwrap()),
             )
             .unwrap();
@@ -623,7 +638,10 @@ mod tests {
             )],
             ..editor.clone()
         };
-        assert!(!editor.kept_by(&refused), "a refusal given takes standing away");
+        assert!(
+            !editor.kept_by(&refused),
+            "a refusal given takes standing away"
+        );
         assert!(refused.kept_by(&editor));
     }
 }

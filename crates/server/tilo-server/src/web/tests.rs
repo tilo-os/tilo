@@ -75,7 +75,8 @@ async fn server_at(
         ServerConfig {
             state_root: state.path().into(),
             ..config
-        },
+        }
+        .on_loopback(),
         identity,
         iroh::RelayMode::Disabled,
     )
@@ -96,6 +97,7 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         server_info: ServerInfo {
             server_cert: host.cert.clone(),
             address: None,
+            origin: None,
         },
         endpoint: None,
         allowed_origins: vec![],

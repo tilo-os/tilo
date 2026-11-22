@@ -104,12 +104,6 @@ label = "Import passwords"
 kind = "outside"
 [[offers]]
 resource = "passwords.vault"
-action = "import-device-vault"
-label = "Import this device’s vault into the workspace"
-kind = "outside"
-confirm = true
-[[offers]]
-resource = "passwords.vault"
 action = "export"
 label = "Export CSV…"
 kind = "outside"

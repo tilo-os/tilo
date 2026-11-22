@@ -1,6 +1,5 @@
 //! End-to-end control-interaction proofs.
 
-
 use settings::categories::Category;
 
 #[test]

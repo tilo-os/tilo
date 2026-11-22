@@ -256,10 +256,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     // It starts as `tilo-server run` then does: the person's host, on the
     // identity it was installed with.
     let server = Server::start(
-        ServerConfig {
-            state_root: state.clone(),
-            ..ServerConfig::default()
-        },
+        ServerConfig::loopback(state.clone()),
         ServerIdentity {
             user_public_key: persist::read_public_key(&paths.user_pubkey).unwrap(),
             device_signing_key: persist::read_device_key(&paths.device_privkey).unwrap(),
@@ -288,7 +285,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
 
     // The page's own device, certified by the root against the node.
     let page_key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let (page_cert, server_cert) = certify_with_root(&*https, &root, &page_key, "Ada's browser")
+    let (page_cert, server_cert) = certify_with_root(&root, &page_key, "Ada's browser", &node_cert)
         .await
         .unwrap();
     assert_eq!(server_cert, node_cert);
@@ -522,19 +519,14 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         &automerge::AutoCommit::load(&snapshot).unwrap(),
     )
     .await;
-    let removed = workspaces(
-        &ada,
-        WorkspacesRequest::Remove {
-            workspace: acme.workspace.clone(),
-            request_id: [6; 32],
-            user_public_key: cy_root.verifying_key().to_bytes(),
-        },
-    )
-    .await;
-    assert!(
-        matches!(removed, WorkspacesReply::Workspace(_)),
-        "{removed:?}"
-    );
+    // Ada's page signs Cy's removal, as each of her devices writes it.
+    let membership =
+        tilo_session_client::membership::Membership::of(ada.engine(), acme.workspace_id);
+    membership
+        .remove(cy_root.verifying_key().to_bytes())
+        .await
+        .expect("Ada removes Cy");
+    membership.settled(&ada).await.expect("the host holds it");
     wait_for("the node to end Cy's subscription", || async {
         (!server.is_subscribed(acme.workspace_id, &cy_device).await).then_some(())
     })

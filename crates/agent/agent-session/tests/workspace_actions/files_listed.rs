@@ -9,7 +9,7 @@ use fs_protocol::tree::{FILE_RESOURCE_PREFIX, FILES_APP, LIST, READ_TEXT};
 use tilo_actions::remote::{
     ActionProvider as _, Caller, CataloguePage, CatalogueQuery, CatalogueRow, FOUND_FILE,
 };
-use tilo_server::workspace_agents::WorkspaceActionProvider;
+use tilo_workspace_service::agents::WorkspaceActionProvider;
 
 /// The folder the plan's notes are kept in.
 const FOLDER: &str = "Plans/Launch";

@@ -2,7 +2,6 @@
 //! handoff, then the hello, then requests; a session arrives as its pty and
 //! its own lease.
 
-
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
@@ -23,7 +22,11 @@ pub fn connect(socket: &Path, handoff: Option<&[u8]>) -> UnixStream {
     let mut ready = Vec::new();
     let mut byte = [0_u8; 1];
     while ready.last() != Some(&b'\n') {
-        assert_eq!((&stream).read(&mut byte).expect("read ready"), 1, "no ready");
+        assert_eq!(
+            (&stream).read(&mut byte).expect("read ready"),
+            1,
+            "no ready"
+        );
         ready.push(byte[0]);
     }
     let ready = String::from_utf8_lossy(&ready);

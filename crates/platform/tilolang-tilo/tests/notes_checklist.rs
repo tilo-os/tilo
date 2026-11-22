@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 
-use automerge::AutoCommit;
 use tilo_doc::AttrVal;
 use tilo_doc::snapshot::BlockView;
 use tilolang_runtime::rich::RichValue;
@@ -23,7 +22,11 @@ const APP: &str = "so.tilo.notes";
 
 /// Ada's workspace with its notebook.
 fn workspace() -> (Replica, ResourceRef) {
-    let (mut ada, _loaded) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, NOTES]);
+    let (ada, _loaded) = Replica::new(
+        "ada",
+        crate::fixtures::Workspace::new(),
+        &[DISCUSSION, NOTES],
+    );
     ada.host.set_clock(|| "2026-11-06T09:00:00Z".to_owned());
     ada.commit();
     let notebook = ada.host.root_of(APP).expect("the notebook");
@@ -53,7 +56,7 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 }
 
 /// A note made in the notebook, titled `title`.
-fn note(r: &mut Replica, notebook: &ResourceRef, title: &str) -> ResourceRef {
+fn note(r: &Replica, notebook: &ResourceRef, title: &str) -> ResourceRef {
     let made = target(&call(
         r,
         "new_note",
@@ -122,8 +125,8 @@ fn written(rich: &RichValue) -> Vec<Said> {
 
 #[test]
 fn a_checklist_the_editor_wrote_survives_tagging_the_note() {
-    let (mut ada, notebook) = workspace();
-    let note = note(&mut ada, &notebook, "Trip to Lisbon");
+    let (ada, notebook) = workspace();
+    let note = note(&ada, &notebook, "Trip to Lisbon");
     // The page's editor writes the body it typed: a heading, a bullet and two tasks.
     let page = ada
         .host
@@ -183,8 +186,8 @@ fn a_checklist_the_editor_wrote_survives_tagging_the_note() {
 
 #[test]
 fn each_step_of_typing_the_body_leaves_the_note_as_it_was_written() {
-    let (mut ada, notebook) = workspace();
-    let note = note(&mut ada, &notebook, "Trip to Lisbon");
+    let (ada, notebook) = workspace();
+    let note = note(&ada, &notebook, "Trip to Lisbon");
     let page = ada
         .host
         .open_resource(&note, None)
@@ -287,10 +290,10 @@ fn each_step_of_typing_the_body_leaves_the_note_as_it_was_written() {
 fn the_workspace_reads_the_body_as_the_app_wrote_it() {
     // The app keeps its own copy; the workspace keeps the change the app hands it. Both must
     // read the body the person typed, a line each.
-    let (mut ada, notebook) = workspace();
-    let note = note(&mut ada, &notebook, "Trip to Lisbon");
-    let mut workspace_copy = ada.fork("ada", &[DISCUSSION, NOTES]);
-    ada.sync_with(&mut workspace_copy);
+    let (ada, notebook) = workspace();
+    let note = note(&ada, &notebook, "Trip to Lisbon");
+    let workspace_copy = ada.fork("ada", &[DISCUSSION, NOTES]);
+    ada.sync_with(&workspace_copy);
     let page = ada
         .host
         .open_resource(&note, None)
@@ -321,11 +324,8 @@ fn the_workspace_reads_the_body_as_the_app_wrote_it() {
     )
     .expect("the editor's write lands");
     // What the app hands the workspace of the write, as its process does.
-    let recorded = ada.host.take_committed();
     ada.commit();
-    for entry in &recorded {
-        workspace_copy.apply(&entry.action);
-    }
+    ada.send_to(&workspace_copy);
     let want = [
         ("heading".to_owned(), "Packing".to_owned(), None),
         ("list_item".to_owned(), "passport".to_owned(), None),
@@ -349,11 +349,8 @@ fn the_workspace_reads_the_body_as_the_app_wrote_it() {
         "tag",
         vec![Value::resource(&note), Value::text("travel")],
     );
-    let recorded = ada.host.take_committed();
     ada.commit();
-    for entry in &recorded {
-        workspace_copy.apply(&entry.action);
-    }
+    ada.send_to(&workspace_copy);
     assert_eq!(
         written(&body(&workspace_copy, &note)),
         want,
@@ -363,7 +360,7 @@ fn the_workspace_reads_the_body_as_the_app_wrote_it() {
 
 #[test]
 fn a_checklist_a_note_was_made_with_survives_tagging_it() {
-    let (mut ada, notebook) = workspace();
+    let (ada, notebook) = workspace();
     let note = target(&call(
         &ada,
         "new_note",

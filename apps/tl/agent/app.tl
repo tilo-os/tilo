@@ -1,4 +1,4 @@
-app so.tilo.lang.agent "Agents" (icon: .sparkles, category: .system)
+app so.tilo.agent "Agents" (icon: .sparkles, category: .system, previously: so.tilo.lang.agent)
 
 /// Where an ask stands. The workspace's agent engine moves it on, except that its asker
 /// withdraws it and a person stops a turn that is working.
@@ -19,15 +19,6 @@ enum AskState {
     cannot_read (icon: .lock, tone: .warning)
 }
 
-/// A device that took an ask's turn, and when. When several took it, the earliest wins and a
-/// tie goes to the lowest device key; the others leave it before asking their model.
-type Claim {
-    /// The device, by its key.
-    device: Text
-    /// When it took the turn, in milliseconds since 1970.
-    at: Int
-}
-
 /// Someone asked an agent something about a resource: by mentioning it in a chat message, a note
 /// or a task, by writing to it directly, or from the canvas. An ask is made from the resource it
 /// is about (`created(a)?.from`), and who asked is who made it (`created(a)?.who`). What the agent
@@ -44,8 +35,6 @@ type Ask {
     /// text makes one ask however often the text is edited, undone or redone.
     mention: Text = ""
     state: AskState = .waiting
-    /// The devices that took its turn.
-    claims: Collection<Claim>
 }
 
 /// One step of a turn: an action the agent called, with what it answered.
@@ -150,14 +139,6 @@ action reopen(a: Ask) (icon: .rotate_ccw, label: "Ask again") {
 action stop(a: Ask) (icon: .square, label: "Stop") {
     require a.state == .working "Nothing is working on it"
     a.state = .stopped
-}
-
-/// The agent takes the turn of `a` on `device` at `at`. When several devices took it, the
-/// earliest claim wins and a tie goes to the lowest device key; the others leave it.
-action claim(a: Ask, device: Text, at: Int) (icon: .refresh, label: "Take the turn") {
-    require invoker == a.agent "Only the agent asked takes its turn"
-    require a.state == .waiting or a.state == .working "Nobody waits for an answer"
-    a.claims.insert(Claim(device: device, at: at))
 }
 
 /// The agent starts its reply to `a`, the ask's next attempt.
@@ -305,4 +286,66 @@ view ask_page(a: Ask) {
         }
         replies(a)
     }
+}
+
+/// A morning of asks: two people asking two agents, one answered, one at work, one waiting and
+/// one the agent could not read.
+scenario "a morning of asks" {
+    let mia = person("Mia")
+    let leo = person("Leo")
+    let scout = agent("Scout")
+    let ledger = agent("Ledger")
+    let notes = invoke(
+        ask(agents, scout, RichText("Summarise what we decided about the offsite.")),
+        by: mia,
+        at: 2026-06-24T08:02Z,
+    )
+    let summary = invoke(answer(notes), by: scout, at: 2026-06-24T08:02Z)
+    invoke(
+        say(summary, RichText("Two days, Thursday and Friday; Mia books the room.")),
+        by: scout,
+        at: 2026-06-24T08:03Z,
+    )
+    invoke(finish(summary, .done), by: scout, at: 2026-06-24T08:03Z)
+    let costs = invoke(
+        ask(agents, ledger, RichText("What did the studio cost us in May?")),
+        by: leo,
+        at: 2026-06-24T09:15Z,
+    )
+    invoke(answer(costs), by: ledger, at: 2026-06-24T09:15Z)
+    invoke(
+        ask(agents, scout, RichText("Find a train that arrives before ten.")),
+        by: leo,
+        at: 2026-06-24T09:40Z,
+    )
+    invoke(ask(agents, ledger, RichText("")), by: mia, at: 2026-06-24T10:05Z)
+}
+
+/// An answer being written: what the agent thought, the steps it took and its words so far,
+/// under what it was asked.
+scenario "an answer being written" -> Ask {
+    let mia = person("Mia")
+    let scout = agent("Scout")
+    let a = invoke(
+        ask(agents, scout, RichText("Which of this week's tasks are still unassigned?")),
+        by: mia,
+        at: 2026-06-24T08:02Z,
+    )
+    let r = invoke(answer(a), by: scout, at: 2026-06-24T08:02Z)
+    invoke(
+        think(r, "Mia means the release board. I'll list its open cards, then check who has each."),
+        by: scout,
+        at: 2026-06-24T08:02Z,
+    )
+    invoke(
+        step(r, "board/release#list", RichText("Twelve cards, five of them open.")),
+        by: scout,
+        at: 2026-06-24T08:03Z,
+    )
+    invoke(
+        say(r, RichText("Three are unassigned: the release notes, the docs screenshots and")),
+        by: scout,
+        at: 2026-06-24T08:03Z,
+    )
+    a
 }

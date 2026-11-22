@@ -27,8 +27,7 @@ fn in_a_conversation(
     if let Some(policy) = policy(&workspace) {
         spec = spec.access(policy::MemberAccess::person(policy, "ada"));
     }
-    let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
-    let mut session = Session::on_bus(&bus, &route, spec, chunks);
+    let mut session = Session::on_bus(&bus, &route, spec);
     session.instance_mut().stage("a conversation");
     session.settle();
     session

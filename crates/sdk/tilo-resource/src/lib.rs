@@ -265,7 +265,8 @@ pub mod __private {
     pub use tilo_actions::{
         ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, Audience, ChangeKind,
         HOST_RENDER_TAG, OperationKind, PROMPTED_PARAM, ParamType, ResourceSpec, ResourceViewSpec,
-        RiskLevel, SCREEN_PLACE_TAG, SCREEN_TAG, StepKind, picked_resource_schema,
+        RiskLevel, SCREEN_PLACE_TAG, SCREEN_TAG, StepKind, picked_address_schema,
+        picked_resource_schema,
     };
     pub use tilo_resource_macros::word;
 

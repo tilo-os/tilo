@@ -7,7 +7,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

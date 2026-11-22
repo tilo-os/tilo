@@ -1,4 +1,4 @@
-//! The runtime host a Tilo login runs (`tilo-runtime-mcp`) across real process
+//! This computer's daemon (`tilo-runtime`) across real process
 //! boundaries: no global test environment mutation and no GUI. The host is
 //! Cargo's build of the binary, which Cargo builds, current, for every
 //! integration test run.
@@ -15,7 +15,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The runtime host every test launches.
 fn runtime_binary() -> std::path::PathBuf {
-    tilo_test_env::package_binary!("tilo-runtime-mcp")
+    tilo_test_env::package_binary!("tilo-runtime")
 }
 /// The launcher's absolute bound on a daemon start (`STARTUP.cap` in
 /// `tilo_runtime::daemon`). A launcher that fails sooner exits with the reason.
@@ -42,6 +42,7 @@ impl DaemonProfile {
             .context("creating the daemon profile")?;
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
             .context("making the daemon profile private")?;
+        set_up(root.path())?;
         Ok(Self { root })
     }
     fn path(&self) -> &Path {
@@ -73,6 +74,51 @@ impl Drop for DaemonProfile {
         }
     }
 }
+/// Names the profile whose computer [`a_computer_is_set_up`] sets Tilo up on.
+const SET_UP: &str = "TILO_TEST_SET_UP_PROFILE";
+
+/// Set Tilo up on the computer the daemon of `profile` runs as: the person it acts as, kept in
+/// the profile's identity, as Tilo set up on a computer keeps them. A daemon with no identity
+/// and no login says to set Tilo up first, and serves nothing.
+fn set_up(profile: &Path) -> Result<()> {
+    let module = module_path!();
+    let name = format!(
+        "{}::a_computer_is_set_up",
+        module.split_once("::").map_or(module, |(_, within)| within)
+    );
+    let status = Command::new(std::env::current_exe()?)
+        .args(["--exact", &name, "--nocapture", "--test-threads", "1"])
+        .env(SET_UP, profile)
+        .env("XDG_CONFIG_HOME", profile.join("config"))
+        .env("XDG_DATA_HOME", profile.join("data"))
+        .env("XDG_CACHE_HOME", profile.join("cache"))
+        .env("XDG_STATE_HOME", profile.join("state"))
+        .env("TILO_IDENTITY_ROOT", profile.join("identity"))
+        .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+        .stdout(Stdio::null())
+        .status_locked()?;
+    ensure!(
+        status.success(),
+        "setting Tilo up for the daemon failed: {status}"
+    );
+    Ok(())
+}
+
+/// The body of [`set_up`]'s child, and a no-op in every other run.
+#[test]
+fn a_computer_is_set_up() {
+    if std::env::var_os(SET_UP).is_none() {
+        return;
+    }
+    let registry = tilo_identity::store::IdentityRegistryStore::from_env().unwrap();
+    tilo_identity::provisioning::ensure_collaboration_identity(
+        registry.identity_dir(),
+        &tilo_identity::provisioning::collaboration_identity_paths(),
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
+}
+
 /// The runtime's answer to a `status` request on the profile's socket.
 fn status(profile: &Path) -> Result<Value> {
     let mut stream = UnixStream::connect(profile.join("native.sock"))
@@ -277,11 +323,11 @@ fn live_profile_lock_fails_without_unlinking_owners_socket() -> Result<()> {
         !competing.status.success(),
         "a second daemon took a profile that is in use"
     );
-    // It fails on the held profile lock itself, not after waiting for it.
+    // It fails on the held device lock itself, naming who holds it.
     let stderr = String::from_utf8_lossy(&competing.stderr);
     ensure!(
         stderr.contains("is in use"),
-        "a competing daemon must give up on the held profile lock at once: {stderr}"
+        "a competing daemon must give up on the held device lock: {stderr}"
     );
     ensure!(
         daemon(profile.path())? == before,
@@ -421,7 +467,10 @@ fn public_profile_and_symlinked_session_lock_are_rejected() -> Result<()> {
     std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))?;
     let target = profile.path().join("other-file");
     std::fs::write(&target, "untouched")?;
-    std::os::unix::fs::symlink(&target, profile.path().join("runtime.lock"))?;
+    // The device's lock, in the profile's own state.
+    let device = profile.path().join("state/tilo/device");
+    std::fs::create_dir_all(&device)?;
+    std::os::unix::fs::symlink(&target, device.join("holder.lock"))?;
     ensure!(
         !run_true(profile.path(), "dev.tilo.test")?.status.success(),
         "a symlinked session lock was accepted"

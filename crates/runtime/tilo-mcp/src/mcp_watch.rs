@@ -30,6 +30,15 @@ pub(crate) struct WatchedInvocation {
     pub(crate) seq: u64,
 }
 
+/// A source a watch follows that the host refused to tell of: which, why, and whether a watch
+/// said so yet.
+#[derive(Debug)]
+pub(crate) struct Unfollowed {
+    scope: WatchScope,
+    reason: String,
+    told: bool,
+}
+
 /// The invocations a session keeps for its watches and `tilo_status`, at most: one that runs
 /// thousands of actions (a migration does, over one connection) keeps its latest ones rather
 /// than every one it ever ran.
@@ -173,6 +182,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let mut listening = self.watch_changed();
         loop {
             let mut events = Vec::new();
+            self.watch_unfollowed(&mut events);
             self.watch_states(&mut cursor, &mut events);
             self.watch_invocations(&mut cursor, &mut events).await;
             self.watch_here(&mut cursor, &mut events);
@@ -223,8 +233,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let caller = self.caller();
         let mut changed: Vec<tilo_actions::remote::Pending<()>> = Vec::new();
         changed.extend(self.host.session_state_changed(&caller));
-        changed.extend(self.host.changed(&caller, WatchScope::Records));
-        changed.extend(self.host.changed(&caller, WatchScope::Here));
+        for scope in [WatchScope::Records, WatchScope::Here] {
+            if self.unfollows(scope) {
+                continue;
+            }
+            if let Some(wait) = self.host.changed(&caller, scope) {
+                changed.push(self.followed(scope, wait));
+            }
+        }
         let going: Vec<String> = self
             .invocations
             .lock_recover()
@@ -242,6 +258,54 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         changed.push(self.invocations_changed());
         first_wake(changed)
+    }
+
+    /// `wait`, the host's signal that what `scope` follows may have changed, as a wake of this
+    /// watch. A wait the host refuses wakes the watch too: the refusal is told once, as an
+    /// `unwatched` event with why, and the source is not asked again, so the watch neither waits
+    /// on a signal that never comes nor asks again and again for one the host will not give.
+    fn followed(
+        &self,
+        scope: WatchScope,
+        wait: tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>>,
+    ) -> tilo_actions::remote::Pending<()> {
+        let unfollowed = std::sync::Arc::clone(&self.unfollowed);
+        wait.map(move |answer| {
+            if let Err(error) = answer {
+                unfollowed.lock_recover().push(Unfollowed {
+                    scope,
+                    reason: error.to_string(),
+                    told: false,
+                });
+            }
+        })
+    }
+
+    /// Whether the host refused to tell when what `scope` follows changes.
+    fn unfollows(&self, scope: WatchScope) -> bool {
+        self.unfollowed
+            .lock_recover()
+            .iter()
+            .any(|unfollowed| unfollowed.scope == scope)
+    }
+
+    /// The sources the host refused to follow since a watch last said so, each as an
+    /// `unwatched` event: `records` or `presence`, and why.
+    fn watch_unfollowed(&self, events: &mut Vec<Value>) {
+        for unfollowed in self.unfollowed.lock_recover().iter_mut() {
+            if std::mem::replace(&mut unfollowed.told, true) {
+                continue;
+            }
+            let source = match unfollowed.scope {
+                WatchScope::Records => "records",
+                WatchScope::Here => "presence",
+            };
+            events.push(json!({
+                "kind": "unwatched",
+                "source": source,
+                "reason": unfollowed.reason,
+            }));
+        }
     }
 
     /// Resolves on the next invocation event of this session: one of it starting, being held

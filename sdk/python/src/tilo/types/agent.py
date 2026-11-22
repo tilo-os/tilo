@@ -1,9 +1,9 @@
-"""Types for Agents (`so.tilo.lang.agent`), from the app's surface.
+"""Types for Agents (`so.tilo.agent`), from the app's surface.
 
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Claim` is the app's `tl.so.tilo.lang.agent.Claim` at `agent/<resource>`, read with
+`Ask` is the app's `tl.so.tilo.agent.Ask` at `agent/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -21,19 +21,21 @@ from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "AskState",
-    "Claim",
     "Ask",
     "Step",
+    "SentView",
+    "Shown",
     "Reply",
     "Agents",
     "Agent",
     "WithdrawArgs",
     "ReopenArgs",
     "StopArgs",
-    "ClaimArgs",
     "SayArgs",
     "ThinkArgs",
     "StepArgs",
+    "ShowViewArgs",
+    "ShowArgs",
     "FinishArgs",
     "SupersedeArgs",
 ]
@@ -53,12 +55,6 @@ StopArgs = TypedDict("StopArgs", {
 })
 """The arguments of `stop`."""
 
-ClaimArgs = TypedDict("ClaimArgs", {
-    "device": "str",
-    "at": "int",
-})
-"""The arguments of `claim`."""
-
 SayArgs = TypedDict("SayArgs", {
     "more": "str",
 })
@@ -76,6 +72,17 @@ StepArgs = TypedDict("StepArgs", {
 })
 """The arguments of `step`."""
 
+ShowViewArgs = TypedDict("ShowViewArgs", {
+    "title": "str",
+    "definition": "str",
+})
+"""The arguments of `show_view`."""
+
+ShowArgs = TypedDict("ShowArgs", {
+    "card": "str",
+})
+"""The arguments of `show`."""
+
 FinishArgs = TypedDict("FinishArgs", {
     "state": "AskState",
 })
@@ -85,30 +92,9 @@ SupersedeArgs = TypedDict("SupersedeArgs", {
 })
 """The arguments of `supersede`."""
 
-class Claim(Resource):
-    """Claim — `tl.so.tilo.lang.agent.Claim`."""
-    __surface__ = "so.tilo.lang.agent@a988cf8f1d062b84"
-    @property
-    def _6qikspks(self) -> str:
-        """device (`6qikspks` on the wire)."""
-        return self.fields["6qikspks"]
-
-    @_6qikspks.setter
-    def _6qikspks(self, value: str) -> None:
-        self.edit("6qikspks", value=value)
-    @property
-    def _7yz7w4tm(self) -> int:
-        """at (`7yz7w4tm` on the wire)."""
-        return self.fields["7yz7w4tm"]
-
-    @_7yz7w4tm.setter
-    def _7yz7w4tm(self, value: int) -> None:
-        self.edit("7yz7w4tm", value=value)
-
-
 class Ask(Resource):
-    """Ask — `tl.so.tilo.lang.agent.Ask`."""
-    __surface__ = "so.tilo.lang.agent@a988cf8f1d062b84"
+    """Ask — `tl.so.tilo.agent.Ask`."""
+    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
     mcsi6vp5: str  # agent
     @property
     def _7j5pok54(self) -> str | None:
@@ -120,7 +106,6 @@ class Ask(Resource):
         self.edit("7j5pok54", value=value)
     hw6dxbyx: str  # mention
     wtm364ne: AskState  # state
-    gqvm2gqf: list[Entry[Claim]]  # claims
 
     def withdraw(self) -> None:
         """Takes an ask back before a device took its turn. Only its asker may."""
@@ -146,44 +131,47 @@ class Ask(Resource):
         """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("stop", items)
 
-    def claim(self,
-        *,
-        device: str,
-        at: int,
-    ) -> None:
-        """The agent takes the turn of `a` on `device` at `at`. When several devices took it, the earliest claim wins and a tie goes to the lowest device key; the others leave it."""
-        return self.action("claim", device=device, at=at)
-
-    def claim_many(self, items: list[ClaimArgs]) -> list[dict[str, Any]]:
-        """Runs `claim` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("claim", items)
-
     def answer(self) -> Reply:
         """The agent starts its reply to `a`, the ask's next attempt."""
         return self.action("answer")
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"withdraw", "withdraw_many", "reopen", "reopen_many", "stop", "stop_many", "claim", "claim_many", "answer"})
+    __actions__ = frozenset({"withdraw", "withdraw_many", "reopen", "reopen_many", "stop", "stop_many", "answer"})
 
 
 class Step(Resource):
-    """Step — `tl.so.tilo.lang.agent.Step`."""
-    __surface__ = "so.tilo.lang.agent@a988cf8f1d062b84"
+    """Step — `tl.so.tilo.agent.Step`."""
+    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
     ippal7k2: str  # called
     cyu3le2j: str  # answered
     cma7vgpx: bool  # failed
 
 
+class SentView(Resource):
+    """SentView — `tl.so.tilo.agent.SentView`."""
+    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
+    gdhl4pzx: str  # title
+    ytw765gn: str  # definition
+
+
+class Shown(Resource):
+    """Shown — `tl.so.tilo.agent.Shown`."""
+    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
+    mx5wcfl2: str  # card
+
+
 class Reply(Resource):
-    """Reply — `tl.so.tilo.lang.agent.Reply`."""
-    __surface__ = "so.tilo.lang.agent@a988cf8f1d062b84"
+    """Reply — `tl.so.tilo.agent.Reply`."""
+    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
     gjd462ep: Ask  # ask
     oka345cb: str  # body
     czzg7mhh: str  # thinking
     hzlmnzzw: AskState  # state
     tnkzsmes: int  # attempt
     e36wbuu7: list[Entry[Step]]  # steps
+    bnlsdtf6: list[Entry[SentView]]  # views
+    mwwrjl52: list[Entry[Shown]]  # shown
     eyh6zmbf: bool  # superseded
 
     def say(self, *, more: str) -> None:
@@ -220,6 +208,26 @@ class Reply(Resource):
         """Runs `step` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("step", items)
 
+    def show_view(self,
+        *,
+        title: str,
+        definition: str,
+    ) -> None:
+        """The agent answers with a view: `definition`, called `title`."""
+        return self.action("show_view", title=title, definition=definition)
+
+    def show_view_many(self, items: list[ShowViewArgs]) -> list[dict[str, Any]]:
+        """Runs `show_view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("show_view", items)
+
+    def show(self, *, card: str) -> None:
+        """The agent shows the thing `card` projects in its answer, live."""
+        return self.action("show", card=card)
+
+    def show_many(self, items: list[ShowArgs]) -> list[dict[str, Any]]:
+        """Runs `show` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("show", items)
+
     def finish(self, *, state: AskState) -> None:
         """The agent's turn ended as `state`: done, failed, or stopped when a person stopped it."""
         return self.action("finish", state=state)
@@ -238,12 +246,12 @@ class Reply(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"say", "say_many", "think", "think_many", "step", "step_many", "finish", "finish_many", "supersede", "supersede_many"})
+    __actions__ = frozenset({"say", "say_many", "think", "think_many", "step", "step_many", "show_view", "show_view_many", "show", "show_many", "finish", "finish_many", "supersede", "supersede_many"})
 
 
 class Agents(Resource):
-    """Agents — `tl.so.tilo.lang.agent.Agents`."""
-    __surface__ = "so.tilo.lang.agent@a988cf8f1d062b84"
+    """Agents — `tl.so.tilo.agent.Agents`."""
+    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
     mzzoxssv: list[Entry[Ask]]  # asks
     @property
     def _353i7jsi(self) -> list[Entry[Reply]]:
@@ -274,6 +282,6 @@ class Agents(Resource):
 
 
 class Agent(Resource):
-    """Agents — `tl.so.tilo.lang.agent`."""
-    __surface__ = "so.tilo.lang.agent@a988cf8f1d062b84"
+    """Agents — `tl.so.tilo.agent`."""
+    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
 

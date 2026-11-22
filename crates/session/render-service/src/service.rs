@@ -272,6 +272,7 @@ impl Service {
                     &ServiceMessage::Welcome {
                         version: version.min(PROTOCOL_VERSION),
                         limits,
+                        catalog: self.fonts.catalog(),
                         font_roots,
                         renderer: renderer(&self.gpu),
                     },
@@ -320,6 +321,7 @@ impl Service {
             registration @ (AppMessage::RegisterImage { .. }
             | AppMessage::DropImage { .. }
             | AppMessage::RegisterFontFile { .. }
+            | AppMessage::RegisterCatalogFont { .. }
             | AppMessage::RegisterFontData { .. }
             | AppMessage::DropFont { .. }) => return self.register(id, registration, fds.next()),
             AppMessage::Frame {
@@ -381,6 +383,19 @@ impl Service {
                 let result = self
                     .fonts
                     .open(&path, index)
+                    .and_then(|data| connection.registry.add_font(font, data, &limits));
+                if let Err(error) = result {
+                    refuse(connection.peer(), error.into());
+                }
+            }
+            AppMessage::RegisterCatalogFont {
+                font,
+                sha256,
+                index,
+            } => {
+                let result = self
+                    .fonts
+                    .open_catalog(&sha256, index)
                     .and_then(|data| connection.registry.add_font(font, data, &limits));
                 if let Err(error) = result {
                     refuse(connection.peer(), error.into());

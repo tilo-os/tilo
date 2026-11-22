@@ -289,7 +289,7 @@ impl Follower {
         if let Some(person) = runs_for(request) {
             runner = runner.runs_for(
                 person.to_owned(),
-                super::assistant::host_steps(self.workspaces.clone()),
+                tilo_workspace_service::agents::assistant::host_steps(self.workspaces.clone()),
             );
         }
         let running = tokio::spawn(runner.run());

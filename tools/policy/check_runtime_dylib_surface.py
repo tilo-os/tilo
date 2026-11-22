@@ -77,6 +77,8 @@ DENIED = {
     "tilo-model-gateway": "the model service implementation (apps use tilo-model-client)",
     "local-model-service": "the on-device model service the model gateway runs",
     "rten": "the subject model's runtime, which runs in the model gateway daemon",
+    "tilo-web-search": "the keyless web search and page reader the agent engine runs in the "
+                       "runtime daemon",
 }
 # Crates of an engine that is a library of its own beside the runtime
 # (crates/runtime/engines/): only its app maps them.
@@ -179,11 +181,6 @@ ENGINES = {
                                "(libtilo_spreadsheet_engine.so)",
     "ironcalc_base": "the spreadsheet formula engine, which Sheets loads from "
                      "libtilo_spreadsheet_engine.so",
-    "tilo-agent-web-engine": "the agent's web tools' library (libtilo_agent_web_engine.so)",
-    "tilo-agent-web-tools": "the agent's two web tools, which Agent loads from "
-                            "libtilo_agent_web_engine.so",
-    "tilo-web-search": "the keyless web search and page reader, which the agent loads from "
-                       "libtilo_agent_web_engine.so",
     "tilo-fuse-engine": "the FUSE presentation's engine library (libtilo_fuse_engine.so)",
     "runtime-fs-fuse": "the workspace filesystem's FUSE presentation, which Imager's projection "
                        "worker loads from libtilo_fuse_engine.so",

@@ -1,6 +1,6 @@
-//! A tilolang app's record of a workspace, held on a device beside the workspace's documents:
-//! read through the app's own package, changed through its own actions as a given member, and
-//! the change written into the workspace as that member's write, signed by this device.
+//! A tilolang app's record of a workspace, as a device's own roles read and change it: through
+//! the app's own package, as a given member, each write reaching the workspace's resource store
+//! as it is made.
 //!
 //! This is what a device's own roles use when they act on tilolang resources with no window of
 //! the app open: the agent engine answering an ask ([`crate::asks`]), a bridge posting into a
@@ -8,18 +8,15 @@
 //!
 //! - **Packages** ([`Packages`]): the packages a record is read through, compiled once and kept,
 //!   in the order they load (what an app uses first, the app last).
-//! - **The record** ([`RecordBytes`]): an app's document of the workspace and the chunks above
-//!   it, as the workspace holds them ([`crate::workspaces::Workspaces::tl_record`]).
-//! - **Opened** ([`Opened`]): a tilolang host over those bytes on the calling thread. It reads any
-//!   resource ([`Opened::host`]), and runs any action of a loaded package as any member
-//!   ([`Opened::invoke`]): the action's own code plans it, its edits are applied where the
-//!   record's manifest places them, and the host takes them in. What a mention in written text
-//!   asks is made as the host's viewer, as on any device ([`tilolang_tilo::host::Host::ask_from_mentions`]).
-//! - **Written** ([`Opened::written`]): what the actions wrote, one change per document, which
-//!   [`crate::workspaces::Workspaces::write_tl`] writes as this device's own: signed, sealed under the
-//!   document's group where the workspace seals, and committed through the one commit path.
+//! - **The record** ([`Record`]): an app's record of a workspace as this device's workspace
+//!   service holds it, which a [`ResourceStore`] reads and writes through
+//!   ([`crate::workspaces::Workspaces::record_command`]).
+//! - **Opened** ([`Opened`]): a tilolang host over that store on the calling thread. It reads
+//!   any resource ([`Opened::host`]), and runs any action of a loaded package as any member
+//!   ([`Opened::invoke`]): the action's own code runs it, and what it writes goes to the store
+//!   stamped with that member as its invoker.
 //!
-//! [`crate::workspaces::Workspaces::with_tl_record`] does all three for one call. A host is
+//! [`crate::workspaces::Workspaces::with_tl_record`] opens a record for one call. A host is
 //! bound to its thread, so the call runs on a blocking thread of its own and hands back only what
 //! the caller's closure returns.
 //!
@@ -29,30 +26,36 @@
 //! built into this build ([`built_in`]) run here; an app a workspace installed is untrusted code
 //! and runs only on a device that has it open.
 //!
-//! Who may do what is decided where every member's write is decided: the workspace admits the
-//! written change against the app's surface and the member's grants. The caller names the member
-//! it acts as; code on this device that calls here is the device's own.
+//! Who may do what is decided by the host's authority, from the workspace's policy as the
+//! acting member holds it: an agent within its delegation, a bot within its grants
+//! ([`Opened::open_with`]). The caller names the member it acts as; code on this device that
+//! calls here is the device's own.
 
-use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
-use automerge::ChangeHash;
 use serde_json::{Map, Value as Json};
 use tilo_actions::remote::CatalogueRow;
 use tilo_actions::{
-    ActionAddress, ActionContext, ActionFacet, ActionInvoker, ActionOutput, ApiError, InvocationId,
-    ResourceSpec,
+    ActionAddress, ActionContext, ActionInvoker, ActionOutput, ApiError, ResourceSpec,
 };
 use tilo_agent_session::bot::held::TilolangRecord;
+use tilo_resource_store::wire::{Command, Reply};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
-use tilolang_tilo::chunk::{self, ChunkNo, Chunks, FIRST};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{Caller, Planner, Publications, publish_package, resource_id};
+use tilolang_tilo::runtime::store::Run;
 use tilolang_tilo::runtime::{Actor, InvokeOutcome, ResourceRef, Value};
 
 /// The app and type a tilolang resource kind (`tl.<app>.<Type>`) names.
 pub use tilolang_tilo::catalogue::tilolang_kind;
+/// A store held in this process, for a [`ResourceStore`] over a copy of a record's documents
+/// that no workspace service answers: a page's copy, and the tests.
+pub use tilolang_tilo::resources::LocalPort;
+/// The store a record is read and written through: [`Record::store`] for a workspace's, or one
+/// in memory for a record of no workspace.
+pub use tilolang_tilo::resources::ResourceStore;
 /// The tilolang runtime's values, references and stores, as a record is read and changed with.
 pub use tilolang_tilo::runtime;
 
@@ -171,71 +174,80 @@ pub fn runs_elsewhere(app: &str) -> String {
     )
 }
 
-/// An app's record of a workspace as bytes: its document (the app's primary, `""`) and the
-/// chunks above it, by document id. A document the workspace does not hold yet is absent.
-#[derive(Clone, Debug, Default)]
-pub struct RecordBytes {
-    pub documents: BTreeMap<String, Vec<u8>>,
+/// An app's record of a workspace, as this device's own workspace service holds it: what a
+/// [`ResourceStore`] over it reads and writes ([`Self::store`]). It can be sent to another
+/// thread; the store it makes cannot.
+#[derive(Clone)]
+pub struct Record {
+    workspaces: crate::workspaces::Workspaces,
+    workspace: String,
+    app: String,
+    /// The reactor a command waits on. A record without one only reads, waiting as a search
+    /// does.
+    runtime: Option<tokio::runtime::Handle>,
 }
 
-/// The chunk the document `document` of a record is, or `None` for no document of the record.
-#[must_use]
-pub fn chunk_of_document(document: &str) -> Option<ChunkNo> {
-    if document.is_empty() {
-        return Some(FIRST);
-    }
-    let number = document.strip_prefix("derived:chunk.")?.strip_suffix('@')?;
-    tilo_failure::ignored!(
-        "a document named like a chunk without a number is no chunk of the record",
-        number.parse().ok()
-    )
-}
-
-/// The document chunk `chunk` of a record is kept in.
-#[must_use]
-pub fn document_of_chunk(chunk: ChunkNo) -> String {
-    if chunk == FIRST {
-        String::new()
-    } else {
-        chunk::document_id("", chunk)
+impl Record {
+    /// A store over the record, on this thread: each command is carried out by the workspace
+    /// service before the next is sent.
+    #[must_use]
+    pub fn store(&self) -> ResourceStore {
+        ResourceStore::new(Rc::new(self.clone()))
     }
 }
 
-/// One document's change, as [`Opened::written`] answers it: the document, its changes since it
-/// was read, and whether this write founds it (then the changes are the document whole).
-#[derive(Clone, Debug)]
-pub struct Written {
-    pub document: String,
-    pub changes: Vec<u8>,
-    pub founding: bool,
+impl tilolang_tilo::resources::Port for Record {
+    fn command(&self, command: Command) -> Result<Reply, String> {
+        let workspaces = self.workspaces.clone();
+        let (workspace, app) = (self.workspace.clone(), self.app.clone());
+        let Some(runtime) = &self.runtime else {
+            if command.writes() {
+                return Err(format!(
+                    "{app}'s record was opened to be read, and takes no write"
+                ));
+            }
+            return crate::device_documents::on_its_own(async move {
+                workspaces.record_command(&workspace, &app, command).await
+            });
+        };
+        let carried = async move { workspaces.record_command(&workspace, &app, command).await };
+        // A first write can wait for this device's group keys on the reactor. A thread already
+        // inside the reactor (a bot's run is driven by it) waits from a thread of its own.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return runtime.block_on(carried);
+        }
+        std::thread::scope(
+            |scope| match scope.spawn(|| runtime.block_on(carried)).join() {
+                Ok(reply) => reply,
+                Err(panic) => std::panic::resume_unwind(panic),
+            },
+        )
+    }
 }
 
 /// An app's record opened on this thread: a host over it with its packages loaded.
 pub struct Opened {
     host: Host,
     app: String,
-    chunks: Chunks,
-    /// The heads each document stood at when it was read; a chunk missing here was not held.
-    read_at: BTreeMap<ChunkNo, Vec<ChangeHash>>,
     /// The Shortcut whose run what is invoked here is ([`Opened::in_run_of`]).
     run_of: Option<String>,
 }
 
 impl Opened {
-    /// Open `record` through `packages` for `viewer`: the member whose device this is, as whom
-    /// what its written text asks is asked. `policy` is the workspace's, as this device reads it:
+    /// Open the record `store` holds through `packages` for `viewer`: the member as whom the
+    /// platform's own writes are made. `policy` is the workspace's, as this device reads it:
     /// the host's members and who of them reads what (`workspace.members`, `std.may_read`,
     /// [`Self::readers`]). Without one, the host knows no members, and nobody reads anything.
     ///
     /// # Errors
-    /// A document does not load, or a package does not.
+    /// The host or a package does not load.
     pub fn open(
-        record: &RecordBytes,
+        store: ResourceStore,
         packages: &Packages,
         viewer: Actor,
         policy: Option<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>,
     ) -> Result<Self, String> {
-        Self::open_with(record, packages, viewer, None, policy)
+        Self::open_with(store, packages, viewer, None, policy)
     }
 
     /// [`Self::open`] with the access its own authority decides invocations by given: the
@@ -246,28 +258,16 @@ impl Opened {
     /// # Errors
     /// As [`Self::open`].
     pub fn open_with(
-        record: &RecordBytes,
+        store: ResourceStore,
         packages: &Packages,
         viewer: Actor,
         access: Option<std::sync::Arc<tilo_action_policy::MemberAccess>>,
         members: Option<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>,
     ) -> Result<Self, String> {
-        let mut chunks = Chunks::default();
-        let mut read_at = BTreeMap::new();
-        for (document, bytes) in &record.documents {
-            let Some(chunk) = chunk_of_document(document) else {
-                continue;
-            };
-            let mut doc = tilo_resource::Doc::load(bytes).map_err(|error| error.to_string())?;
-            read_at.insert(chunk, doc.get_heads());
-            chunks.insert(chunk, doc);
-        }
-        chunks.reread_placement();
-        let first = chunks.first().cloned().unwrap_or_default();
         // What the host's own authority decides invocations by: without an access it knows no
         // grants, and leaves every action to the caller.
         let acting = access.clone();
-        let host = Host::new(&first, viewer, move || {
+        let host = Host::open(store, viewer, None, move || {
             acting.as_ref().map(|access| (**access).clone())
         })
         .map_err(|error| error.to_string())?;
@@ -275,7 +275,6 @@ impl Opened {
             host.load_compiled(package)
                 .map_err(|error| error.to_string())?;
         }
-        host.sync(&chunks);
         if let Some(policy) = members
             && let Some(owner) = policy.owner.clone()
         {
@@ -300,17 +299,11 @@ impl Opened {
                 Some(tilolang_tilo::members::reads_of(&access, &me, &host)),
             );
         }
-        let mut opened = Self {
+        Ok(Self {
             host,
             app: packages.app().to_owned(),
-            chunks,
-            read_at,
             run_of: None,
-        };
-        // What the host did of its own as it took the record in (a mention's ask) is the
-        // viewer's, written as any change made here.
-        opened.commit()?;
-        Ok(opened)
+        })
     }
 
     /// The host the record is read through: [`Host::runtime`] reads any field of any resource,
@@ -340,19 +333,47 @@ impl Opened {
     }
 
     /// Mark what is invoked from here on as a run of the Shortcut `shortcut` (an event, a
-    /// reminder) acting for its person: each change it makes carries the `shortcut` facet, so
-    /// what reads the workspace's changes (a look-round, the Shortcut's own trigger) knows its
-    /// own output by it rather than by who it acted as.
+    /// reminder) acting for its person: each change it makes is a step of that run, so what
+    /// reads the workspace's changes knows its own output by it rather than by who it acted as.
     pub fn in_run_of(&mut self, shortcut: impl Into<String>) {
         self.run_of = Some(shortcut.into());
+    }
+
+    /// Run `act`, what is written while it runs a step of `run` (or of the Shortcut this was
+    /// marked a run of), and fail with what the store refused of it.
+    fn writing<R>(
+        &self,
+        run: Option<Run>,
+        act: impl FnOnce() -> Result<R, String>,
+    ) -> Result<R, String> {
+        let store = self.host.store();
+        let run = run.or_else(|| {
+            self.run_of.clone().map(|shortcut| Run {
+                id: shortcut,
+                title: String::new(),
+            })
+        });
+        let ran = run.is_some();
+        if ran {
+            store.set_run(run);
+        }
+        let answer = act();
+        if ran {
+            store.set_run(None);
+        }
+        let answer = answer?;
+        match store.take_refusal() {
+            Some(refused) => Err(refused),
+            None => Ok(answer),
+        }
     }
 
     /// Run `app`'s action `action` with `args` as `who`, made from `from` when given (what it
     /// creates is made from that resource: `created(r)?.from`). Answers what the action returned.
     ///
     /// # Errors
-    /// The package has no such action, the action was refused or failed, or what it wrote does
-    /// not apply.
+    /// The package has no such action, the action was refused or failed, or the workspace
+    /// refused what it wrote.
     pub fn invoke(
         &mut self,
         who: &Actor,
@@ -372,34 +393,31 @@ impl Opened {
             .map(|declared| declared.id.clone())
             .ok_or_else(|| format!("{app} has no action {action}"))?;
         let runtime = self.host.runtime();
-        let outcome = match from {
-            Some(from) => runtime.invoke_action_from(who, (id.as_str(), args), from),
-            None => runtime.invoke_action(who, (id.as_str(), args)),
-        }
-        .map_err(|error| error.to_string())?;
-        let value = match outcome {
-            InvokeOutcome::Done(value) => value,
-            InvokeOutcome::Denied => return Err(format!("{app}#{action} was refused")),
-            InvokeOutcome::Suggested(_) => {
-                return Err(format!("{app}#{action} waits for an answer"));
+        let outcome = self.writing(None, || {
+            match from {
+                Some(from) => runtime.invoke_action_from(who, (id.as_str(), args), from),
+                None => runtime.invoke_action(who, (id.as_str(), args)),
             }
-        };
-        self.commit()?;
-        Ok(value)
+            .map_err(|error| error.to_string())
+        })?;
+        match outcome {
+            InvokeOutcome::Done(value) => Ok(value),
+            InvokeOutcome::Denied => Err(format!("{app}#{action} was refused")),
+            InvokeOutcome::Suggested(_) => Err(format!("{app}#{action} waits for an answer")),
+        }
     }
 
     /// The app's root resource, made the first time it is wanted, as a launcher opening the app
     /// makes it: what the app's own actions are published on.
     ///
     /// # Errors
-    /// The package has no root, or making it does not apply.
+    /// The package has no root, or the workspace refused making it.
     pub fn open_root(&mut self) -> Result<ResourceRef, String> {
-        let root = self
-            .host
-            .root_of(&self.app)
-            .map_err(|error| error.to_string())?;
-        self.commit()?;
-        Ok(root)
+        self.writing(None, || {
+            self.host
+                .root_of(&self.app)
+                .map_err(|error| error.to_string())
+        })
     }
 
     /// What plans an action of the record for `invoker`, or for the host's viewer.
@@ -444,10 +462,9 @@ impl Opened {
     }
 
     /// Run the published action `address` with `arguments` as `invoker`: found among the
-    /// record's published resources, its arguments typed by its declared parameters, planned by
-    /// its own code and applied where the record's manifest places its edits, recorded with what
-    /// `context` says of the run it is a step of. A `read` answers the core read, as `invoker`
-    /// reads.
+    /// record's published resources, its arguments typed by its declared parameters, run by its
+    /// own code as it is planned, and written as a step of the work `context` groups it in,
+    /// under the invocation `context` names. A `read` answers the core read, as `invoker` reads.
     ///
     /// # Errors
     /// As any call of a published action: unknown, unavailable, invalid arguments, refused.
@@ -459,7 +476,25 @@ impl Opened {
         context: &ActionContext,
     ) -> Result<ActionOutput, ApiError> {
         let resources = self.published(&self.planner(Some(invoker)));
-        let encoded = tilo_actions::api::encode_json(&resources, address, arguments)?;
+        let store = self.host.store();
+        let run = context.group.as_ref().map(|group| Run {
+            id: group.id.clone(),
+            title: group.label.clone().unwrap_or_default(),
+        });
+        // What the action writes is stamped with the invocation it serves, so the workspace's
+        // history tells the step by the call that made it.
+        store.serve(
+            context
+                .source_invocation
+                .map(|invocation| invocation.0.to_string()),
+        );
+        let encoded = self.writing(run, || {
+            Ok(self.host.carrying_out(&invoker.acting.by, || {
+                tilo_actions::api::encode_json(&resources, address, arguments)
+            }))
+        });
+        store.serve(None);
+        let encoded = encoded.map_err(ApiError::Failed)??;
         if encoded.type_id == tilo_resource::read::TYPE {
             let args = if encoded.payload.is_empty() {
                 Json::Null
@@ -481,10 +516,6 @@ impl Opened {
         }
         let action: DynAction = serde_json::from_slice(&encoded.payload)
             .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
-        self.apply_as(&action, Some((invoker, context)))
-            .map_err(ApiError::Failed)?;
-        self.host.sync(&self.chunks);
-        self.commit().map_err(ApiError::Failed)?;
         let made = self
             .host
             .take_returned(&action.action_id)
@@ -494,118 +525,6 @@ impl Opened {
             resources: made.into_iter().collect(),
         })
     }
-
-    /// Apply every action the host committed since the last call to the record, and take the
-    /// record back into the host; again while taking it in commits more (a mention's ask).
-    fn commit(&mut self) -> Result<(), String> {
-        loop {
-            let committed = self.host.take_committed();
-            if committed.is_empty() {
-                return Ok(());
-            }
-            for entry in committed {
-                self.apply(&entry.action)?;
-            }
-            self.host.sync(&self.chunks);
-        }
-    }
-
-    /// Apply `action` where its edits belong: each chunk it writes holds its part as one change,
-    /// and every part names the one invocation the action ran in.
-    fn apply(&mut self, action: &DynAction) -> Result<(), String> {
-        self.apply_as(action, None)
-    }
-
-    /// [`Self::apply`], recorded as `step`'s invoker's when given, with the run, step and cause
-    /// its context names.
-    fn apply_as(
-        &mut self,
-        action: &DynAction,
-        step: Option<(&ActionInvoker, &ActionContext)>,
-    ) -> Result<(), String> {
-        let actor = action.invoker();
-        let invoker = step.map_or_else(
-            || ActionInvoker::admitted(&actor.clone().into()),
-            |(invoker, _)| invoker.clone(),
-        );
-        let invocation = action
-            .authorship
-            .invocation
-            .as_deref()
-            .map_or_else(InvocationId::new, tilolang_tilo::action::invocation_id);
-        let mut first = false;
-        for (chunk, part) in self.chunks.parts_of(action) {
-            let encoded = part.encode().map_err(|error| error.to_string())?;
-            let mut context = ActionContext::for_resource(
-                part.resources().first().copied().unwrap_or("workspace"),
-                &part.kind,
-                &part.kind,
-            )
-            .with_app(&self.app, "tilolang")
-            .with_source_invocation(Some(invocation))
-            .in_gesture(action.authorship.gesture)
-            .with_invoker(invoker.clone());
-            if let Some((_, step)) = step {
-                context.group.clone_from(&step.group);
-                context.facets.clone_from(&step.facets);
-                context.caused_by.clone_from(&step.caused_by);
-                context.purpose.clone_from(&step.purpose);
-            }
-            let context = match &self.run_of {
-                Some(shortcut) => {
-                    context.with_facet(ActionFacet::new("shortcut", shortcut.clone()))
-                }
-                None => context,
-            };
-            let doc = self.chunks.open(chunk);
-            self.host
-                .with_schemas(|| {
-                    tilo_actions::apply_local_with_context(
-                        doc,
-                        &part,
-                        encoded,
-                        Some(&actor.actor_bytes()),
-                        context,
-                    )
-                })
-                .map_err(|error| error.to_string())?;
-            doc.commit();
-            first |= chunk == FIRST;
-        }
-        if first {
-            self.chunks.reread_placement();
-        }
-        Ok(())
-    }
-
-    /// What the actions run here wrote, one change per document: the changes since the document
-    /// was read, or the document whole where this founds it.
-    #[must_use]
-    pub fn written(&self) -> Vec<Written> {
-        let mut written = Vec::new();
-        for (chunk, doc) in self.chunks.all() {
-            let document = document_of_chunk(chunk);
-            let mut doc = doc.clone();
-            match self.read_at.get(&chunk) {
-                Some(heads) if doc.get_heads() == *heads => {}
-                Some(heads) => {
-                    written.push(Written {
-                        document,
-                        changes: doc.save_after(heads),
-                        founding: false,
-                    });
-                }
-                None => {
-                    written.push(Written {
-                        document,
-                        changes: doc.save(),
-                        founding: true,
-                    });
-                }
-            }
-        }
-        written
-    }
 }
 
 /// The member `id` names, as a tilolang actor.
@@ -614,61 +533,23 @@ pub fn member(id: tilo_actions::MemberId) -> Actor {
     Actor::Member(id)
 }
 
-/// What the documents `after` gained since the record stood as `before`, one change per
-/// document: the whole document for one `before` lacked.
-///
-/// # Errors
-/// A document does not load.
-pub fn written_since(
-    before: &RecordBytes,
-    after: &BTreeMap<String, Vec<u8>>,
-) -> Result<Vec<Written>, String> {
-    let mut written = Vec::new();
-    for (document, bytes) in after {
-        let Some(was) = before.documents.get(document) else {
-            written.push(Written {
-                document: document.clone(),
-                changes: bytes.clone(),
-                founding: true,
-            });
-            continue;
-        };
-        if was == bytes {
-            continue;
-        }
-        let heads = automerge::Automerge::load(was)
-            .map_err(|error| error.to_string())?
-            .get_heads();
-        let now = automerge::Automerge::load(bytes).map_err(|error| error.to_string())?;
-        if now.get_heads() != heads {
-            written.push(Written {
-                document: document.clone(),
-                changes: now.save_after(&heads),
-                founding: false,
-            });
-        }
-    }
-    Ok(written)
-}
-
-/// An app's record as a program run on this device holds it: its documents as the workspace has
-/// them with what the program's steps changed since, opened through the app's packages for each
-/// step, so every step reads what the steps before it wrote.
+/// An app's record as a program run on this device holds it: opened anew through the app's
+/// packages for each step, over the workspace's store, so every step reads what the steps
+/// before it wrote.
 pub struct ProgramRecord {
     packages: Packages,
-    record: RecordBytes,
+    record: Record,
     /// The access its own authority decides the run's invocations by: the bot's grants, as the
     /// workspace made them.
     access: Option<std::sync::Arc<tilo_action_policy::MemberAccess>>,
 }
 
 impl ProgramRecord {
-    /// `record` as the workspace holds it now, read through `packages`, its invocations decided
-    /// by `access`.
+    /// `record`, read through `packages`, its invocations decided by `access`.
     #[must_use]
     pub const fn new(
         packages: Packages,
-        record: RecordBytes,
+        record: Record,
         access: Option<std::sync::Arc<tilo_action_policy::MemberAccess>>,
     ) -> Self {
         Self {
@@ -686,7 +567,7 @@ impl ProgramRecord {
             .as_ref()
             .map(|access| std::sync::Arc::clone(&access.policy));
         let mut opened = Opened::open_with(
-            &self.record,
+            self.record.store(),
             &self.packages,
             Actor::App(app),
             self.access.clone(),
@@ -694,24 +575,6 @@ impl ProgramRecord {
         )?;
         opened.open_root()?;
         Ok(opened)
-    }
-
-    /// Keep what `written` changed in the record's documents.
-    fn keep(&mut self, written: Vec<Written>) -> Result<(), String> {
-        for write in written {
-            let bytes = match self.record.documents.get(&write.document) {
-                Some(bytes) if !write.founding => {
-                    let mut doc =
-                        automerge::Automerge::load(bytes).map_err(|error| error.to_string())?;
-                    doc.load_incremental(&write.changes)
-                        .map_err(|error| error.to_string())?;
-                    doc.save()
-                }
-                _ => write.changes,
-            };
-            self.record.documents.insert(write.document, bytes);
-        }
-        Ok(())
     }
 }
 
@@ -737,10 +600,9 @@ impl TilolangRecord for ProgramRecord {
         invoker: &ActionInvoker,
         context: &ActionContext,
     ) -> Result<ActionOutput, ApiError> {
-        let mut opened = self.open().map_err(ApiError::Failed)?;
-        let output = opened.invoke_published(address, arguments, invoker, context)?;
-        self.keep(opened.written()).map_err(ApiError::Failed)?;
-        Ok(output)
+        self.open()
+            .map_err(ApiError::Failed)?
+            .invoke_published(address, arguments, invoker, context)
     }
 
     fn read(&self, resource: &str, reader: &Actor) -> Result<Json, String> {
@@ -755,10 +617,6 @@ impl TilolangRecord for ProgramRecord {
             serde_json::json!({ "item": resource })
         };
         host.answer_read(&args, reader)
-    }
-
-    fn documents(&self) -> BTreeMap<String, Vec<u8>> {
-        self.record.documents.clone()
     }
 }
 
@@ -848,30 +706,20 @@ fn tree_item(host: &Host, item: &str, reader: &Actor, depth: usize) -> Result<Js
 }
 
 impl crate::workspaces::Workspaces {
-    /// `app`'s record of `workspace`, as this device holds it: its document and every chunk
-    /// above it this device reads.
+    /// `app`'s record of `workspace`, as this device's workspace service holds it, its commands
+    /// waiting on the reactor this is called on.
     ///
     /// # Errors
-    /// The workspace is not held here, or a document of it cannot be read.
-    pub async fn tl_record(&self, workspace: &str, app: &str) -> Result<RecordBytes, String> {
-        let routes = self
-            .document_routes(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut record = RecordBytes::default();
-        for (of, document) in routes {
-            if of != app || chunk_of_document(&document).is_none() {
-                continue;
-            }
-            let bytes = self
-                .resource_document(workspace, app, &document)
-                .await
-                .map_err(|error| error.to_string())?;
-            if let Some(bytes) = bytes {
-                record.documents.insert(document, bytes);
-            }
-        }
-        Ok(record)
+    /// This is called outside a reactor.
+    pub fn tl_record(&self, workspace: &str, app: &str) -> Result<Record, String> {
+        let runtime = tokio::runtime::Handle::try_current()
+            .map_err(|error| format!("{app}'s record is read on a reactor: {error}"))?;
+        Ok(Record {
+            workspaces: self.clone(),
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+            runtime: Some(runtime),
+        })
     }
 
     /// What `route`'s record of `workspace` publishes to search, read as `person` reads it: the
@@ -887,89 +735,37 @@ impl crate::workspaces::Workspaces {
         route: &tilo_peer_state::document_frame::DocumentRoute,
         person: &str,
     ) -> Option<Arc<[ui::search::index_publication::IndexEntry]>> {
-        let Some(packages) = built_in(&route.app_id).ok().flatten() else {
-            return None;
+        let packages = match built_in(&route.app_id) {
+            Ok(packages) => packages?,
+            Err(error) => {
+                tracing::warn!(app = %route.app_id, %error, "a built-in package does not compile");
+                return None;
+            }
         };
-        let record = self.tl_record_now(workspace, &route.app_id)?;
+        let record = Record {
+            workspaces: self.clone(),
+            workspace: workspace.to_owned(),
+            app: route.app_id.clone(),
+            runtime: None,
+        };
         let viewer = Actor::Member(tilo_actions::MemberId::person(person.to_owned()));
         let policy = self.policy_now(workspace).map(Arc::new);
-        let opened = Opened::open(&record, &packages, viewer, policy).ok()?;
+        let opened = match Opened::open(record.store(), &packages, viewer, policy) {
+            Ok(opened) => opened,
+            Err(error) => {
+                tracing::warn!(app = %route.app_id, %error, "a record search reads does not open");
+                return None;
+            }
+        };
         Some(tilolang_tilo::search::entries(opened.host()).into())
     }
 
-    /// [`Self::tl_record`] read here and now, on this thread, with nothing written: what search
-    /// reads of a record.
-    fn tl_record_now(&self, workspace: &str, app: &str) -> Option<RecordBytes> {
-        /// The most bytes of one document a search reads out to index it.
-        const MOST_BYTES: usize = 64 * 1024 * 1024;
-        let mut record = RecordBytes::default();
-        for (of, document) in self.own_listing(workspace).ok()? {
-            if of != app || chunk_of_document(&document).is_none() {
-                continue;
-            }
-            let workspaces = self.clone();
-            let (of_workspace, of_app, of_document) =
-                (workspace.to_owned(), app.to_owned(), document.clone());
-            let read = crate::device_documents::on_its_own(async move {
-                workspaces
-                    .own_read(&of_workspace, (&of_app, &of_document), &[], MOST_BYTES)
-                    .await
-            });
-            if let Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. }) =
-                read
-            {
-                record.documents.insert(document, bytes);
-            }
-        }
-        Some(record)
-    }
-
-    /// Write `written`, changes of `app`'s record of `workspace`, as this device's own: each
-    /// document's change signed, sealed under its group where the workspace seals, and
-    /// committed.
+    /// Open `packages`' app's record of `workspace` for `viewer` and run `work` on it: what
+    /// `work` answered. Each write `work` makes reaches the workspace as it is made, so a write
+    /// the workspace refuses fails `work` and leaves what came before it standing.
     ///
     /// # Errors
-    /// The workspace refused a write, or its keys could not be had: what was written before it
-    /// stands.
-    pub async fn write_tl(
-        &self,
-        workspace: &str,
-        app: &str,
-        written: Vec<Written>,
-    ) -> Result<(), String> {
-        for write in written {
-            let route = tilo_peer_state::document_frame::DocumentRoute {
-                app_id: app.to_owned(),
-                cluster_id: workspace.to_owned(),
-                document: write.document.clone(),
-            };
-            let sealed = match self.own_route_keys(&route, write.founding).await {
-                Some(Ok(keys)) => Some(keys),
-                Some(Err(reason)) => return Err(reason),
-                None => None,
-            };
-            self.own_write(
-                workspace,
-                (app, &write.document),
-                None,
-                &write.changes,
-                write.founding,
-                write.founding,
-                sealed.as_ref(),
-            )
-            .await
-            .map_err(|refusal| refusal.to_string())?;
-        }
-        Ok(())
-    }
-
-    /// Open `packages`' app's record of `workspace` for `viewer`, run `work` on it, and write what
-    /// it changed as this device's own ([`Self::write_tl`]): what `work` answered. The record is
-    /// read anew for each call, so `work` acts on what the workspace holds now.
-    ///
-    /// # Errors
-    /// The record could not be read or opened, `work` failed (nothing it changed is written), or
-    /// the write was refused.
+    /// The record could not be opened, or `work` failed.
     pub async fn with_tl_record<R: Send + 'static>(
         &self,
         workspace: &str,
@@ -977,18 +773,14 @@ impl crate::workspaces::Workspaces {
         viewer: Actor,
         work: impl FnOnce(&mut Opened) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
-        let app = packages.app().to_owned();
-        let record = self.tl_record(workspace, &app).await?;
+        let record = self.tl_record(workspace, packages.app())?;
         let packages = packages.clone();
         let policy = self.policy_of(workspace).await.map(std::sync::Arc::new);
-        let (answer, written) = tokio::task::spawn_blocking(move || {
-            let mut opened = Opened::open(&record, &packages, viewer, policy)?;
-            let answer = work(&mut opened)?;
-            Ok::<_, String>((answer, opened.written()))
+        tokio::task::spawn_blocking(move || {
+            let mut opened = Opened::open(record.store(), &packages, viewer, policy)?;
+            work(&mut opened)
         })
         .await
-        .map_err(|error| error.to_string())??;
-        self.write_tl(workspace, &app, written).await?;
-        Ok(answer)
+        .map_err(|error| error.to_string())?
     }
 }

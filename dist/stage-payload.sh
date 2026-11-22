@@ -18,7 +18,7 @@ stage=$2
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 [[ ! -e $stage ]] || { echo "stage path already exists: $stage" >&2; exit 1; }
-bins=(tilo-session tilo tilolang-process tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report imager)
+bins=(tilo-session tilo tilo-runtime tilolang-process tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report imager)
 (( ! primary_files )) || bins+=(fs tilo-server-admin tilo-enroll)
 for bin in "${bins[@]}"; do
     [[ -x $bin_dir/$bin ]] || { echo "missing executable: $bin_dir/$bin" >&2; exit 1; }
@@ -38,6 +38,9 @@ install -pm 0755 "$bin_dir/tilo"              "$stage/bin/tilo"
 # The program a task's tilolang programs run in, which `tilo` and the session start beside
 # themselves.
 install -pm 0755 "$bin_dir/tilolang-process"     "$stage/bin/tilolang-process"
+# This computer's one daemon (`tilo-runtime --hold`), which `tilo login` and `tilo mcp` start
+# beside `tilo`: without it a login holds no workspace here.
+install -pm 0755 "$bin_dir/tilo-runtime"         "$stage/bin/tilo-runtime"
 if (( primary_files )); then
     install -pm 0755 "$bin_dir/fs" "$stage/bin/fs"
     install -pm 0755 "$bin_dir/tilo-server-admin" "$stage/bin/tilo-server-admin"

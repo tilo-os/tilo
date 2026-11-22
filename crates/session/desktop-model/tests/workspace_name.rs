@@ -3,7 +3,6 @@
 //! ([`Workspace::named_as`]), never written into the layout's document or its
 //! stored form, so no device's layout holds a second, older name.
 
-
 use automerge::AutoCommit;
 use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
 use tilo_desktop_model::desktop_doc;

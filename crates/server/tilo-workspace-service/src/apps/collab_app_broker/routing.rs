@@ -367,7 +367,7 @@ impl AppBrokerState {
         // holds instead.
         let candidate = self.next_peer_id();
         let peer_id = if candidate == u64::MAX {
-            match self.surfaces.lock() {
+            match self.publishers.surfaces.lock() {
                 Ok(surfaces) if surfaces.contains_key(&candidate) => (1..candidate)
                     .rev()
                     .find(|id| !surfaces.contains_key(id))
@@ -802,11 +802,12 @@ impl AppBrokerState {
         &self,
         caller: &tilo_actions::remote::Caller,
         scope: tilo_actions::remote::WatchScope,
-    ) -> Option<tilo_actions::remote::Pending<()>> {
+    ) -> Option<tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>>>
+    {
         self.here(caller)?;
         match scope {
             tilo_actions::remote::WatchScope::Records => None,
-            tilo_actions::remote::WatchScope::Here => Some(self.policy_changed()),
+            tilo_actions::remote::WatchScope::Here => Some(self.policy_changed().map(Ok)),
         }
     }
     /// The name a person reads for `agent`: the one the workspace's record of its agents gives

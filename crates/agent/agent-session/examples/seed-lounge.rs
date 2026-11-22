@@ -14,37 +14,30 @@
 
 use std::sync::Arc;
 
+use tilo_server_protocol::web::{PageHost, ServerAddress};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, DeviceIdentity, UserIdentity};
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
-    let usage = "usage: seed-lounge SERVER_ORIGIN WORKSPACE COUNT [CA_PEM]";
-    let server = args.next().ok_or(usage)?;
+    let usage = "usage: seed-lounge SERVER_STATE WORKSPACE COUNT";
+    let state = args.next().ok_or(usage)?;
     let workspace = args.next().ok_or(usage)?;
     let count: usize = args
         .next()
         .ok_or(usage)?
         .parse()
         .map_err(|_| "COUNT is a number")?;
-    let mut builder = tilo_net::Client::builder();
-    if let Some(ca) = args.next() {
-        use rustls::pki_types::CertificateDer;
-        use rustls::pki_types::pem::PemObject as _;
-        let pem = std::fs::read(&ca).map_err(|error| format!("{ca}: {error}"))?;
-        let trusted = CertificateDer::pem_slice_iter(&pem)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("{ca}: {error}"))?;
-        builder = builder.tls(
-            tilo_net::client_config_also_trusting(trusted).map_err(|error| error.to_string())?,
-        );
-    }
-    let client = builder.build().map_err(|error| error.to_string())?;
-    let host = tilo_server_client::https::Origin::new(&client, &server);
-    let info = tilo_server_client::https::server_info(&host)
-        .await
-        .map_err(|error| format!("the server: {error}"))?;
-    let address = info.address.ok_or("the server takes no device sessions")?;
+    // Who the server is and where it is dialled: what it wrote in its own state when its
+    // browser listener started (`web-host.json`).
+    let kept = std::path::Path::new(&state).join("web-host.json");
+    let bytes = std::fs::read(&kept).map_err(|error| format!("{}: {error}", kept.display()))?;
+    let info: PageHost =
+        serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", kept.display()))?;
+    let address: ServerAddress = info
+        .address
+        .ok_or("the server takes no device sessions")?
+        .into();
     let began = std::time::Instant::now();
     let mut joined: usize = 0;
     for number in 1..=count {

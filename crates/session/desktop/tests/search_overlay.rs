@@ -546,16 +546,19 @@ fn typing_in_the_palette_repaints_the_card_not_the_display() {
     let mut session = session_parts(&tree, (1280, 800), Some(Rc::new(Many)), true);
     session.frame();
     session.handle.open_search(Scope::Workspace, None);
-    session.frame();
-    session.frame();
-    let card = session.card();
-    let painted = ui::widget::floating_surface::painted_bounds(card, &ui::Theme::dark());
+    // The rows come from a worker: rows that land in the keystroke's frame grow the card down the
+    // display, which that frame rightly repaints. The search is settled first.
+    session.settle_search();
     let mut shown = Presented::new(&session, (1280, 800));
     // The frame that opens search draws the scrim and the card: everything changes.
     shown.next(&mut session);
     for _ in 0..2 {
         shown.next(&mut session);
     }
+    // The card as it stands when the key is typed: it takes the room its rows need in the frames
+    // after they arrive.
+    let card = session.card();
+    let painted = ui::widget::floating_surface::painted_bounds(card, &ui::Theme::dark());
     // No key typed yet: the settled card damages only what its own caret or a result changes,
     // never the display it dims.
     session.type_text("n");

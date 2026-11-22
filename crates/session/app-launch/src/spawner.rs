@@ -1544,9 +1544,10 @@ fn diagnostics_file(planned: &Planned, command: &mut Command) -> Option<std::fs:
             // written inside the app's own directory, the one place the
             // sandbox lets it write; a measured session reads it from
             // there. An app started any other way writes none.
-            let timeline =
-                std::path::Path::new(launcher::appdir::SANDBOX_APP_DIR).join("startup.json");
-            command.env("TILO_STARTUP_METRICS_PATH", timeline);
+            command.env(
+                "TILO_STARTUP_METRICS_PATH",
+                launcher::appdir::SANDBOX_STARTUP_TIMELINE,
+            );
             return Some(file);
         }
         None

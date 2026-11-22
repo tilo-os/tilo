@@ -2,7 +2,6 @@
 //! the project or the file it acts on, or a field edit at a path — and what
 //! it did reads back as the editor's own sentences.
 
-
 use code_editor::project::{Project, SourceEdit};
 use code_editor::{CodeEditorShell, actions};
 use ui::framework::testing::TestApp;

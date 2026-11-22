@@ -12,8 +12,8 @@ use std::rc::Rc;
 
 use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::pair;
-use tilolang_tilo::instance::memory::MemoryDocument;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
+use tilolang_tilo::resources::{LocalPort, ResourceStore};
 use ui::composition::page::{PAGE_CSS, Page, Patch, theme_css};
 use ui::headless::FrameHarness;
 
@@ -50,7 +50,6 @@ pub struct Gaps {
 pub struct AppPage {
     instance: Instance,
     harness: FrameHarness,
-    record: MemoryDocument,
     page: Page,
     theme: ui::Theme,
 }
@@ -80,8 +79,7 @@ impl AppPage {
                 me: ME.into(),
                 mode: Mode::Live,
                 device: None,
-                index_dir: None,
-                document_loader: None,
+                store: ResourceStore::new(Rc::new(LocalPort::in_memory())),
                 root: tilolang_tilo::host::RootView {
                     root: staging.root.map(str::to_owned),
                     view: None,
@@ -92,8 +90,7 @@ impl AppPage {
             names,
             Box::new(app_end),
         );
-        let mut record = MemoryDocument::new(ui::automerge::AutoCommit::default(), ME.to_owned());
-        instance.sync(Some(record.doc()));
+        instance.sync();
         instance.settle_pending();
         // The package's own roots, every layer it has, are made with what each starts with, as a
         // session makes them when it loads the package.
@@ -111,10 +108,9 @@ impl AppPage {
             }
         }
         instance.set_origin(true);
-        record.take_in(&mut instance, None)?;
         instance.stage(staging.scenario);
-        let now = packages.now();
-        record.take_in(&mut instance, Some(&now))?;
+        // The scenario runs with the instance's next frame.
+        instance.sync();
         if let Some(why) = instance.take_stage_failure() {
             return Err(format!(
                 "the scenario \"{}\" failed: {why}",
@@ -136,7 +132,6 @@ impl AppPage {
         let mut page = Self {
             instance,
             harness,
-            record,
             page: Page::new(),
             theme,
         };
@@ -159,9 +154,6 @@ impl AppPage {
             if let Some(window) = self.window() {
                 window.flush();
             }
-            // What the window's actions wrote reaches the workspace's record, and what the
-            // record holds reaches the instance, as a session carries both.
-            let _ = self.record.take_in(&mut self.instance, None);
             let moved = self.instance.update();
             let received = self.window().is_some_and(AppWindow::receive);
             let owing =

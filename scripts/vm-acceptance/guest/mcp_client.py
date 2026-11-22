@@ -4,8 +4,8 @@
     mcp_client.py session   # connect, initialize, tools/list, list apps, a new Notes note, a refusal
     mcp_client.py deny      # connect and initialize only (the person refuses)
 
-It spawns `tilo-runtime-mcp --connect` (override with ACC_MCP_BIN) with no profile, as
-`claude mcp add tilo -- tilo-runtime-mcp --connect` does, speaks newline-delimited JSON-RPC
+It spawns `tilo-runtime --connect` (override with ACC_MCP_BIN) with no profile, as
+`claude mcp add tilo -- tilo-runtime --connect` does, speaks newline-delimited JSON-RPC
 over its stdio, and prints one line, `ACC-MCP <json>`, with everything it saw. It judges
 nothing: the harness reads the transcript. Python standard library only (the guest image's).
 
@@ -22,7 +22,7 @@ import sys
 import time
 import tempfile
 
-BIN = os.environ.get("ACC_MCP_BIN", "tilo-runtime-mcp")
+BIN = os.environ.get("ACC_MCP_BIN", "tilo-runtime")
 INITIALIZE_S = float(os.environ.get("ACC_MCP_INITIALIZE_S", "90"))
 CALL_S = float(os.environ.get("ACC_MCP_CALL_S", "30"))
 PROTOCOL = "2025-06-18"

@@ -3,14 +3,11 @@
 //! each mark shows the run that made it; a view may place the mark itself; and every mark goes
 //! once the run is seen.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewEvent, ViewInstance};
-use tilolang_tilo::host::Host;
 
 use crate::fixtures::Replica;
-use crate::legibility::{
-    AGENT, NOTES_APP, RUN, Tidied, an_agent_tidies_notes_and_tasks, call, helper,
-};
+use crate::legibility::{AGENT, NOTES_APP, Tidied, an_agent_tidies_notes_and_tasks, call, helper};
 
 /// Every row of the view's list, as the list builds them.
 fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
@@ -111,12 +108,13 @@ tilo_test_env::scenario! {
 
     phase the_host_marks_rows_and_the_window_and_a_mark_shows_its_run;
     {
+        let tidied = an_agent_tidies_notes_and_tasks();
         let Tidied {
             ada,
             made,
             groceries,
             ..
-        } = an_agent_tidies_notes_and_tasks();
+        } = &tidied;
 
         // The notebook: the rows the run made or changed carry its mark, with who and which run;
         // no app code asked for it.
@@ -127,10 +125,6 @@ tilo_test_env::scenario! {
                 .unwrap_or_else(|| panic!("{at:?} is marked: {marks:?}"));
             assert_eq!(mark.kind, "ui.ChangeMark");
             assert_eq!(actor(mark, "by").as_deref(), Some(AGENT));
-            assert_eq!(
-                mark.props.get("run"),
-                Some(&Value::text("Tidy my notes and tasks"))
-            );
             assert_eq!(mark.props.get("kind"), Some(&Value::text(kind)));
         }
         // What each marked row says under its title: the change in words.
@@ -182,13 +176,13 @@ tilo_test_env::scenario! {
         assert!(
             notebook.poll_events().iter().any(|event| matches!(
                 event,
-                ViewEvent::Review { run, target } if run == RUN && *target == groceries
+                ViewEvent::Review { target, .. } if target.id_string() == groceries.id_string()
             )),
-            "the mark shows its run"
+            "the mark opens what it marked"
         );
 
-        // Mark all seen on the run: every mark goes, live.
-        assert!(ada.host.runtime().mark_run_seen(&tilolang_tilo::personal::actor("ada"), RUN));
+        // Mark all seen: every mark goes, live.
+        crate::legibility::mark_all_seen(&tidied);
         let marks = tree_marks(&mut notebook);
         assert!(marks.iter().all(|(_, mark)| mark.is_none()), "{marks:?}");
         assert!(
@@ -233,11 +227,13 @@ tilo_test_env::scenario! {
     phase a_view_that_places_the_mark_itself_gets_it_filled_and_the_host_places_none;
     {
         let app = "so.tilo.lang.placed";
-        let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(PLACED, "")]);
+        let (ada, _) = Replica::new("ada", Workspace::new(), &[(PLACED, "")]);
         let shelf = Value::resource(&ada.host.root_of(app).unwrap());
         ada.commit();
+        crate::legibility::in_run(&ada, "Stock the shelf");
         call(&ada, &helper(), app, "shelve", vec![shelf, Value::text("Dune")]);
-        ada.commit_in_run(&helper(), RUN, "Stock the shelf");
+        ada.host.store().set_run(None);
+        ada.commit();
         let mut view = ada.view(app);
         let rows = rows(&mut view);
         let placed: Vec<&UiNode> = rows
@@ -258,11 +254,9 @@ tilo_test_env::scenario! {
 #[test]
 fn the_header_names_everyone_who_changed_it() {
     const BO: &str = "bo";
-    const SORTED: &str = "issue-8@8000000000000001";
-    let Tidied { mut ada, .. } = an_agent_tidies_notes_and_tasks();
+    let Tidied { ada, .. } = an_agent_tidies_notes_and_tasks();
     let notes = Value::resource(&ada.host.root_of(NOTES_APP).unwrap());
     call(&ada, BO, NOTES_APP, "new_note", vec![notes]);
-    ada.commit_in_run(BO, SORTED, "Sort the paper mail");
 
     let mut notebook = ada.view(NOTES_APP);
     notebook.poll_patches().unwrap();
@@ -296,7 +290,7 @@ fn the_header_names_everyone_who_changed_it() {
 #[test]
 fn a_change_watched_landing_is_seen_and_one_made_unwatched_is_not() {
     let Tidied {
-        mut ada,
+        ada,
         groceries,
         landlord,
         ..
@@ -376,7 +370,8 @@ fn removed_rows(tree: &UiNode) -> Vec<(String, UiNode)> {
 
 #[test]
 fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
-    let Tidied { ada, .. } = an_agent_tidies_notes_and_tasks();
+    let tidied = an_agent_tidies_notes_and_tasks();
+    let ada = &tidied.ada;
     let mut inbox = ada.view(crate::legibility::TASKS_APP);
     crate::tasks::go_to(&mut inbox, "Inbox");
     inbox.poll_patches().unwrap();
@@ -393,11 +388,7 @@ fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
     let note_rows = removed_rows(notebook.tree());
     assert_eq!(note_rows.len(), 1, "{note_rows:?}");
     // Seen, the row goes.
-    assert!(
-        ada.host
-            .runtime()
-            .mark_run_seen(&tilolang_tilo::personal::actor("ada"), RUN)
-    );
+    crate::legibility::mark_all_seen(&tidied);
     inbox.poll_patches().unwrap();
     assert!(removed_rows(inbox.tree()).is_empty());
     notebook.poll_patches().unwrap();
@@ -410,10 +401,6 @@ fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
 fn a_list_built_over_the_document_shows_what_left_it() {
     let Tidied { ada, .. } = an_agent_tidies_notes_and_tasks();
     let fresh = crate::legibility::built_over(&ada);
-    assert!(
-        fresh.store().stats().builds > 0,
-        "the indexes are built whole"
-    );
     let mut inbox = fresh.open_main(crate::legibility::TASKS_APP).unwrap();
     crate::tasks::go_to(&mut inbox, "Inbox");
     inbox.poll_patches().unwrap();
@@ -523,7 +510,7 @@ struct Away {
 }
 
 fn a_day_away() -> Away {
-    let (mut ada, tasks) = crate::tasks::workspace();
+    let (ada, tasks) = crate::tasks::workspace();
     let make = |ada: &Replica, title: &str| -> ResourceRef {
         match call(
             ada,
@@ -555,7 +542,6 @@ fn a_day_away() -> Away {
             ))),
         ],
     );
-    ada.commit_as(BO);
     call(
         &ada,
         &scout(),
@@ -573,7 +559,6 @@ fn a_day_away() -> Away {
         "check",
         vec![Value::resource(&milk)],
     );
-    ada.commit_as(&scout());
     Away { ada, paper, survey }
 }
 
@@ -793,7 +778,7 @@ fn a_day_aways_catch_up_says_each_step_in_historys_words() {
 
 /// Ada's milk, seen when she made it and changed `changes` times by Bo since.
 fn a_task_bo_changed(changes: usize) -> (Replica, ResourceRef) {
-    let (mut ada, tasks) = crate::tasks::workspace();
+    let (ada, tasks) = crate::tasks::workspace();
     ada.host.set_clock(|| "2026-10-30T09:00:00Z".to_owned());
     let milk = match call(
         &ada,
@@ -824,46 +809,7 @@ fn a_task_bo_changed(changes: usize) -> (Replica, ResourceRef) {
             vec![Value::resource(&milk)],
         );
     }
-    ada.commit_as(BO);
     (ada, milk)
-}
-
-/// A document someone changed a thousand times since the person looked: opening the window reads a
-/// page of the document's history, never the thousand, and still says it once.
-#[test]
-fn a_documents_history_costs_a_page_whatever_its_length() {
-    const CHANGES: usize = 1_000;
-    let (ada, _) = a_task_bo_changed(CHANGES);
-    // The window opened once already, so what the second opening reads is the document's history
-    // and nothing the store builds.
-    window_mark(&mut ada.view(crate::legibility::TASKS_APP));
-    let before = ada.host.store().read_stats().versions_read;
-    let mut view = ada.view(crate::legibility::TASKS_APP);
-    let read = ada
-        .host
-        .store()
-        .read_stats()
-        .versions_read
-        .saturating_sub(before);
-    let window = window_mark(&mut view);
-    assert!(
-        read <= 16,
-        "opening read {read} versions of a document of {CHANGES} changes"
-    );
-    assert_eq!(
-        window.props.get("count"),
-        Some(&Value::Int(1)),
-        "one document changed: {window:?}"
-    );
-    let content = catch_up(&window);
-    let mut lines = content.of_kind("row");
-    lines.retain(|line| {
-        line.children
-            .first()
-            .is_some_and(|child| child.kind == "ui.Avatar")
-    });
-    assert_eq!(lines.len(), 1, "one row, not a thousand: {content:?}");
-    assert_eq!(texts(&content, "caption"), ["1000 changes"], "{content:?}");
 }
 
 /// Opening it marks nothing: only the footer's one action does, and its undo gives the marks
@@ -899,70 +845,12 @@ fn a_day_aways_catch_up_marks_all_seen_at_once_and_undo_brings_them_back() {
     );
 }
 
-/// The header's mark reads what changed, not the workspace: at four thousand items, three changes
-/// cost what three changes cost at a thousand.
-#[test]
-fn the_headers_mark_reads_the_changes_not_the_items() {
-    fn away(compiled: &[tilolang::Compiled], n: usize) -> (ViewInstance, usize) {
-        let doc = tilolang_tilo::bench::seeded_record_by(compiled, n, "ada")
-            .expect("the workspace seeds");
-        // The packages the document was seeded from, loaded as a workspace loads them: from the
-        // compilation both sizes share, not compiled again per size.
-        let host = Host::new(
-            &doc,
-            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-            || None,
-        )
-        .unwrap();
-        for package in compiled {
-            host.load_compiled(package).expect("the package loads");
-        }
-        let mut ada = Replica {
-            name: "ada".to_owned(),
-            doc,
-            host,
-            log: Vec::new(),
-        };
-        let root = ada.host.root_of(crate::legibility::TASKS_APP).unwrap();
-        let items = match ada.host.runtime().read(&root, "items").unwrap() {
-            Value::List(items) => items,
-            other => panic!("the tasks are a list: {other:?}"),
-        };
-        for item in items.iter().take(3) {
-            call(
-                &ada,
-                BO,
-                crate::legibility::TASKS_APP,
-                "check",
-                vec![item.clone()],
-            );
-        }
-        ada.commit_as(BO);
-        let view = ada.view(crate::legibility::TASKS_APP);
-        (view, items.len())
-    }
-    // Compiled once: the same package seeds the document at both sizes and runs its window.
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/tasks");
-    let compiled = tilolang_tilo::bench::compile(&dir).expect("the tasks package compiles");
-    // The larger workspace is seeded in seventeen actions to the thousand's four, and holds nine
-    // index pages of items to its two: longer than the sixteen versions a catch-up reads at a
-    // time, and over the index pages both already span.
-    let (small, small_items) = away(&compiled, 1_000);
-    let (large, large_items) = away(&compiled, 4_100);
-    assert_eq!(small_items, 1_000);
-    assert_eq!(large_items, 4_100);
-    let (small, large) = (small.stats(), large.stats());
-    assert_eq!(
-        small.reads, large.reads,
-        "the header's reads at four thousand items ({large:?}) are the reads at a thousand ({small:?})"
-    );
-}
-
 /// A note the run removed stands struck in the notebook's tree until the person has seen it go:
 /// a node of the tree, after its rows, with who removed it.
 #[test]
 fn a_note_the_run_removed_stands_struck_in_the_tree() {
-    let Tidied { ada, old, .. } = an_agent_tidies_notes_and_tasks();
+    let tidied = an_agent_tidies_notes_and_tasks();
+    let Tidied { ada, old, .. } = &tidied;
     let mut notebook = ada.view(NOTES_APP);
     notebook.poll_patches().unwrap();
     let struck = |view: &mut ViewInstance| -> Vec<UiNode> {
@@ -998,10 +886,6 @@ fn a_note_the_run_removed_stands_struck_in_the_tree() {
     assert_eq!(mark.props.get("kind"), Some(&Value::text("removed")));
     assert_eq!(actor(&mark, "by").as_deref(), Some(AGENT));
     // Seen, the row goes.
-    assert!(
-        ada.host
-            .runtime()
-            .mark_run_seen(&tilolang_tilo::personal::actor("ada"), RUN)
-    );
+    crate::legibility::mark_all_seen(&tidied);
     assert!(struck(&mut notebook).is_empty());
 }

@@ -13,7 +13,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use tilolang_tilo::host::Host;
 use tilolang_tilo::runtime::{ResourceRef, Value};
 
@@ -56,9 +55,7 @@ fn native_documents() -> Vec<(String, automerge::AutoCommit)> {
 /// Ada's workspace with the tilolang Tube, the native app's `documents` beside it, migrated as
 /// the workspace's origin migrates it when the app starts.
 fn opened(documents: &[(String, automerge::AutoCommit)]) -> Host {
-    let doc = tilo_resource::Doc::new();
     let host = Host::new(
-        &doc,
         tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("Ada")),
         || None,
     )
@@ -105,7 +102,11 @@ fn items(host: &Host, collection: &str, ty: &str, fields: &[&str]) -> Vec<Vec<Va
             let at: ResourceRef = (*at.target).clone();
             fields
                 .iter()
-                .map(|field| host.runtime().read(&at, &field_id(host, ty, field)).unwrap())
+                .map(|field| {
+                    host.runtime()
+                        .read(&at, &field_id(host, ty, field))
+                        .unwrap()
+                })
                 .collect()
         })
         .collect()
@@ -121,7 +122,10 @@ fn text(value: &Value) -> String {
 #[test]
 fn the_native_tubes_subscriptions_likes_queue_and_history_are_carried_over_once() {
     let documents = native_documents();
-    let before: Vec<Vec<u8>> = documents.iter().map(|(_, doc)| doc.clone().save()).collect();
+    let before: Vec<Vec<u8>> = documents
+        .iter()
+        .map(|(_, doc)| doc.clone().save())
+        .collect();
     let host = opened(&documents);
 
     let mut subscribed: Vec<String> = items(&host, "subscriptions", "Subscription", &["key"])
@@ -142,9 +146,17 @@ fn the_native_tubes_subscriptions_likes_queue_and_history_are_carried_over_once(
             .find(|item| text(&item[0]) == key)
             .unwrap_or_else(|| panic!("the video {key} is carried: {videos:?}"))
     };
-    assert_eq!(video("jfKfPfyJRdk")[1], Value::Bool(true), "the liked video");
+    assert_eq!(
+        video("jfKfPfyJRdk")[1],
+        Value::Bool(true),
+        "the liked video"
+    );
     assert_eq!(video("jfKfPfyJRdk")[2], Value::Bool(false));
-    assert_eq!(video("aircAruvnKk")[2], Value::Bool(true), "the video kept for later");
+    assert_eq!(
+        video("aircAruvnKk")[2],
+        Value::Bool(true),
+        "the video kept for later"
+    );
     assert_eq!(video("aircAruvnKk")[1], Value::Bool(false));
     assert_eq!(videos.len(), 2, "one video each, liked or kept: {videos:?}");
 
@@ -158,7 +170,10 @@ fn the_native_tubes_subscriptions_likes_queue_and_history_are_carried_over_once(
         2,
         "the two videos watched, and not the one taken out of the history: {watched:?}"
     );
-    for (key, at) in [("jfKfPfyJRdk", "2025-11-01T12:26:40"), ("aircAruvnKk", "2025-11-02T16:13:20")] {
+    for (key, at) in [
+        ("jfKfPfyJRdk", "2025-11-01T12:26:40"),
+        ("aircAruvnKk", "2025-11-02T16:13:20"),
+    ] {
         let (_, when) = watched
             .iter()
             .find(|(watched, _)| watched == key)
@@ -168,9 +183,18 @@ fn the_native_tubes_subscriptions_likes_queue_and_history_are_carried_over_once(
 
     // Opened again, nothing is carried twice: the migration ran once.
     host.migrate();
-    assert_eq!(items(&host, "subscriptions", "Subscription", &["key"]).len(), 2);
+    assert_eq!(
+        items(&host, "subscriptions", "Subscription", &["key"]).len(),
+        2
+    );
     assert_eq!(items(&host, "history", "WatchEntry", &["key"]).len(), 2);
 
-    let after: Vec<Vec<u8>> = documents.iter().map(|(_, doc)| doc.clone().save()).collect();
-    assert_eq!(before, after, "the native app's documents are left as they were");
+    let after: Vec<Vec<u8>> = documents
+        .iter()
+        .map(|(_, doc)| doc.clone().save())
+        .collect();
+    assert_eq!(
+        before, after,
+        "the native app's documents are left as they were"
+    );
 }

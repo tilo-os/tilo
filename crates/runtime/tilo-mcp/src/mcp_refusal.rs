@@ -9,38 +9,7 @@ use super::BridgeError;
 
 pub(crate) fn said(error: BridgeError) -> String {
     match error {
-        // What happened, and what to do: a bare code leaves the caller
-        // guessing whether to retry, and a caller that retries the same
-        // stale revision fails the same way.
-        BridgeError::Host(tilo_actions::remote::ActionCallError::StaleRevision) => {
-            "stale_revision: the resource changed since you read it. Call the action \
-                 again with tilo_do, which runs it against the resource as it is now, or \
-                 tilo_read the resource first to see what changed"
-                .to_owned()
-        }
-        BridgeError::Host(ref host) => {
-            // The code the API documents, then the host's own words rather
-            // than a second restatement of them.
-            let code = match host {
-                // What the host could not run now is `unavailable`: the code
-                // the API documents, not the one this crate spells.
-                tilo_actions::remote::ActionCallError::Unavailable { .. } => "unavailable",
-                host => host.code(),
-            };
-            match host {
-                // Refused by the workspace's permissions: said as that, with where it is
-                // changed, never as an action the caller cannot name.
-                tilo_actions::remote::ActionCallError::NotPermitted => {
-                    format!("{code}: {}", tilo_actions::Availability::NOT_ALLOWED_HERE)
-                }
-                tilo_actions::remote::ActionCallError::InvalidRequest { reason }
-                | tilo_actions::remote::ActionCallError::Refused { reason }
-                | tilo_actions::remote::ActionCallError::Unavailable { reason } => {
-                    format!("{code}: {reason}")
-                }
-                host => format!("{code}: {host}"),
-            }
-        }
+        BridgeError::Host(host) => host.said(),
         BridgeError::Bridge(message) => message,
     }
 }

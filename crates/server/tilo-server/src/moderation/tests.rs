@@ -7,7 +7,7 @@
 use std::sync::Mutex;
 
 use tilo_moderation::{Case, Judge, JudgeError, ModerationAgent, Verdict};
-use tilo_workspace_service::tl_records::RecordBytes;
+use tilo_workspace_service::tl_records::ResourceStore;
 
 use super::*;
 
@@ -55,7 +55,7 @@ fn texts_by(opened: &Opened, who: &str) -> Vec<String> {
 /// The workspace's Chat after Mallory flooded `#general` and Ada reported one of her posts.
 fn flooded_workspace() -> Opened {
     let mut chat = Opened::open(
-        &RecordBytes::default(),
+        ResourceStore::in_memory(),
         &tl_chat::packages().unwrap(),
         tl_chat::viewer(),
         None,

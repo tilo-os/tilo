@@ -410,7 +410,6 @@ mod tests {
             &Config {
                 issuer: "https://api.test".into(),
                 web_entry: "https://tilo.test".into(),
-                invite_entry: None,
                 // Nothing here reaches a workspace, so nothing dials one.
                 hosts: Vec::new(),
             },
@@ -427,12 +426,7 @@ mod tests {
             Vec::new()
         }
 
-        fn enter(
-            &self,
-            workspace: &str,
-            _session: &str,
-            _label: &str,
-        ) -> Result<Box<dyn crate::session::Answering>, String> {
+        fn enter(&self, workspace: &str) -> Result<crate::session::Reached, String> {
             Err(format!("no workspace {workspace} here"))
         }
     }

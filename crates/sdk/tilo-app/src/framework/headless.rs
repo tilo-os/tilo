@@ -1983,11 +1983,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.harness().idle();
     }
 
-    /// One frame of the live window, when it asks for one: what its
-    /// components' workers woke them for taken up, as the window's frame
-    /// takes it, then the frame a redraw, an animation or a due deadline
-    /// asks for. Whether a frame ran.
-    pub fn frame(&mut self) -> bool {
+    /// One live frame: the frame the window asked for, and one drawn now when none did.
+    pub fn frame(&mut self) {
+        if !self.frame_if_owed() {
+            self.harness().relayout();
+        }
+    }
+
+    /// The frame the window draws when something asks for one, and none when nothing does.
+    pub fn frame_if_owed(&mut self) -> bool {
         self.harness().poll_frame().unwrap_or(false)
     }
 

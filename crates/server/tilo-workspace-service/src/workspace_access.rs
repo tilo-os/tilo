@@ -63,19 +63,19 @@
 //! records take part in like any other.
 //!
 //! And one protocol admits a device to a workspace's governance itself:
-//! [`WorkspaceOperation::DelegateMembership`], a delegated agent of this server's own
-//! user joining, as a governed member, a workspace this server governs. Agents are
-//! members: each has its own device key, a certificate and a
-//! delegation its person's root signed, and the governor records it on the
-//! workspace's roster bound to that delegation, so every member admits its
-//! changes as its own, at its person's role and never above Editor, only
-//! within the delegation, and only until the governor withdraws it. The
-//! rule, after steps 1 to 3: admit iff the workspace's admission is governance's,
-//! this server governs it, and the device is a registered agent of this
-//! server's own user whose delegation (step 2) is live and names this workspace. A
-//! device that is no agent, an agent of another user, and any workspace this
-//! server does not govern are refused; nothing is admitted by membership,
-//! enrolment or attachment. Being a governed member is what admits the agent
+//! [`WorkspaceOperation::DelegateMembership`], a delegated agent joining, as a
+//! governed member, a workspace this server governs. Agents are members: each
+//! has its own device key, a certificate and a delegation its person's root
+//! signed, and the governor records it on the workspace's roster bound to that
+//! delegation, so every member admits its changes as its own, at its person's
+//! role and never above Editor, only within the delegation, and only until the
+//! governor withdraws it. The rule, after steps 1 to 3: admit iff the
+//! workspace's admission is governance's, this server governs it, and the
+//! device is a registered agent whose live delegation (step 2) names this
+//! workspace and the person the agent acts for. The agent's approver is any
+//! device of that person, the host's own person included and never singled
+//! out. A device that is no agent, and any workspace this server does not
+//! govern, are refused; nothing is admitted by membership or attachment. Being a governed member is what admits the agent
 //! to the workspace on the other protocols and lets the workspace's key holders admit it
 //! to the channels of its records.
 //!
@@ -142,8 +142,8 @@ pub enum WorkspaceOperation {
     Environment,
     /// Originating or receiving a remote (directed) action.
     RemoteAction,
-    /// A delegated agent of this server's user becoming a governed member of
-    /// a workspace this server governs (see the module documentation).
+    /// A delegated agent becoming a governed member of a workspace this
+    /// server governs (see the module documentation).
     #[cfg(any(test, feature = "agents"))]
     DelegateMembership,
 }
@@ -221,7 +221,7 @@ pub enum DenyReason {
     /// reaches nothing, and no protocol admits it, until its certificate expires.
     EnvironmentStopped,
     /// Governed membership as an agent asked for by a device that is no
-    /// delegated agent of this server's user, or for a workspace this server does
+    /// delegated agent of its person, or for a workspace this server does
     /// not govern.
     #[cfg(any(test, feature = "agents"))]
     NotADelegatedAgent,
@@ -257,7 +257,7 @@ impl DenyReason {
             }
             #[cfg(any(test, feature = "agents"))]
             Self::NotADelegatedAgent => {
-                "only a delegated agent of this server's user joins a workspace it governs as an agent"
+                "only a delegated agent joins a workspace it governs as an agent"
             }
         }
     }
@@ -280,10 +280,10 @@ pub struct ServerTrust<'a> {
 
 impl ServerTrust<'_> {
     /// Whether `device` is an agent this server was told about, delegated or
-    /// withdrawn. An agent is a device of the server's own person, yet no
-    /// person: what only the host's person may do (its compute, its workspaces'
-    /// administration) is never its to do. A poisoned registry counts every
-    /// device as an agent, so it refuses rather than admits.
+    /// withdrawn. An agent is no person of its own: what a person alone may
+    /// do (their compute, a workspace's administration) is never its to do. A
+    /// poisoned registry counts every device as an agent, so it refuses rather
+    /// than admits.
     pub fn is_agent(&self, device: &[u8; 32]) -> bool {
         !self
             .agents
@@ -517,17 +517,16 @@ pub(crate) fn decide_in(
     }
     #[cfg(any(test, feature = "agents"))]
     if op == WorkspaceOperation::DelegateMembership {
-        // Never by membership, enrolment or attachment: only this server's
-        // user's own agent, inside its delegation, in a workspace governed here.
-        let own_user = &peer.user_public_key == trust.own_user;
-        let delegated = own_user
-            && trust
-                .delegation(
-                    &peer.device_public_key,
-                    workspace.runtime.store.workspace_id(),
-                    now_ns,
-                )
-                .is_some_and(|delegation| delegation.user_public_key == peer.user_public_key);
+        // Never by membership, enrolment or attachment: only an agent inside
+        // its live delegation, acting for its own person's root, in a
+        // workspace governed here.
+        let delegated = trust
+            .delegation(
+                &peer.device_public_key,
+                workspace.runtime.store.workspace_id(),
+                now_ns,
+            )
+            .is_some_and(|delegation| delegation.user_public_key == peer.user_public_key);
         return if delegated && workspace.governed_here() {
             Decision::Admit
         } else {

@@ -171,10 +171,7 @@ key is kept beside it, in `device/certs/<user>.bin`.
    certificate and address, `CertifyAnswer`). It keeps them with its device key in `login.json`,
    then enters the workspace over its one session.
 
-A login an
-earlier tilo kept with a key of its own (`$XDG_STATE_HOME/tilo/device/key`) is taken over once.
-Its key becomes the device key when the computer has none, and otherwise the person logs in
-again, so that a computer keeps one key. On a computer whose Tilo desktop is running, the desktop
+A computer keeps one device key, and a login is never kept with a key of its own. On a computer whose Tilo desktop is running, the desktop
 is the device already, and `tilo login` refuses rather than open a second session under the same
 key.
 

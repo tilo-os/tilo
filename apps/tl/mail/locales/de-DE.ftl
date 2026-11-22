@@ -225,13 +225,6 @@ d-z3zcztpz = Labels
 d-bag7bf25 = Übernommene Mail
     .doc = Unterhaltungen aus einem früheren Postfach, außerhalb der Sammlungen des IMAP-Kontos.
 
-d-fezdozrd = Übernommene Unterhaltungen
-
-d-swilesl6 = Übernommene Signaturen
-
-d-5upxgb6g = Übernommene Entwürfe
-    .doc = Früher importierte Entwürfe, auch solche, die danach gelöscht wurden.
-
 d-4ow5ydy5 = Wartezeit
     .doc = Wie viele Sekunden eine gesendete Nachricht wartet, bevor sie rausgeht, damit sie zurückgeholt werden kann: die Einstellung der Person, zehn von Haus aus, und keine Wartezeit, wenn sie null ist.
 
@@ -253,17 +246,6 @@ d-arnkrvgw = Jetzt abrufen
 
 d-eon6gbrn = Neue Nachricht
     .doc = Beginnt eine Nachricht von dem Konto.
-
-d-y6hvqjbf = Vorherige Mail übernehmen
-    .doc = Kopiert Daten aus dem früheren privaten Postfach in diesen Arbeitsbereich.
-
-d-y6hvqjbf-drafts = Entwürfe
-
-d-y6hvqjbf-labels = Labels
-
-d-y6hvqjbf-conversations = Unterhaltungen
-
-d-y6hvqjbf-signatures = Signaturen
 
 d-ygbvdl5l = Neue Nachricht
     .doc = Beginnt eine Nachricht vom ersten Konto.
@@ -403,6 +385,7 @@ d-xxxfkczs = Später senden
     .doc = Sendet die Nachricht zu einem Zeitpunkt statt jetzt: sie wartet bis dahin im Postausgang, wie die Wartezeit der Person eine Nachricht warten lässt, und geht raus, ohne dass ein Fenster offen ist.
     .w-this-message-went-already = Diese Nachricht ist schon rausgegangen
     .w-it-goes-to-nobody-yet = Sie geht noch an niemanden
+    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
     .w-pick-a-moment-still-to-come = Wähle einen Zeitpunkt, der noch kommt
 
 d-xxxfkczs-at = Um
@@ -442,6 +425,7 @@ d-qcfc2rhb = Senden
     .doc = Sendet die Nachricht von ihrem Konto.
     .w-this-message-went-already = Diese Nachricht ist schon rausgegangen
     .w-it-goes-to-nobody-yet = Sie geht noch an niemanden
+    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
 
 d-twebu5cb = Senden rückgängig
     .doc = Holt eine Nachricht zurück, die gesendet ist und noch nicht rausging: sie geht nie raus und die Nachricht ist wieder ein Entwurf, wie sie war.
@@ -572,11 +556,15 @@ d-oqpazwvc = Schreiben
     .w-it-goes-in-a-moment = Sie geht gleich raus.
     .w-undo-send = Senden rückgängig
     .w-from = Von
+    .w-no-mail-account-to-send-from = Kein Mailkonto zum Senden
+    .w-add-an-account-in-settings = Mailkonto in den Einstellungen hinzufügen
     .w-to = An
     .w-name-example-org = name@example.org
     .w-cc = Cc
     .w-subject = Betreff
     .w-write-your-message = Schreib deine Nachricht
+    .w-send = Senden
+    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
 
 d-ozukvva2 = Zur Seite gelegt
     .doc = Was die frühere Mail an diesem Entwurf hielt, wofür diese keinen Platz hat (Bcc, Anhänge, private Notizen), in Worten gesagt: nie mit ihm versendet.

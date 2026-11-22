@@ -58,11 +58,8 @@ for image in "${images[@]}"; do
       packages+=(-p linux-vm --bin tilo-linux-vm --bin tilo-hosted-jail -p tilo-runtime --bin tilo-runtime)
       bins+=(tilo-linux-vm tilo-hosted-jail tilo-runtime) ;;
     server)
-      # The server and the filesystem replica in one feature resolution, as the image compiled them:
-      # separate Cargo invocations recompile the shared dependencies whose selected features differ
-      # by package root.
-      packages+=(-p tilo-server -p tilo-fs --bins)
-      bins+=(tilo-server tilo-server-admin tilo-enroll fs) ;;
+      packages+=(-p tilo-server --bins)
+      bins+=(tilo-server tilo-server-admin tilo-enroll) ;;
     host)
       # The server OS: the server and replica, the hosted-VM service and its jail helper, the API
       # server with the program it starts a task's tilolang programs in (it finds it beside

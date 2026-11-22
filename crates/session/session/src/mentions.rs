@@ -75,10 +75,7 @@ impl Look<'_> {
 }
 
 /// What a notice of `mention` says: who mentioned the person, and where.
-fn notice_title(
-    mention: &ui::mentions::Mention,
-    name: &dyn Fn(&ui::MemberId) -> String,
-) -> String {
+fn notice_title(mention: &ui::mentions::Mention, name: &dyn Fn(&ui::MemberId) -> String) -> String {
     let who = mention
         .by
         .as_ref()

@@ -1,4 +1,3 @@
-
 //! The index as the store drives it: commits put, move and remove resources, and queries page,
 //! filter, sort and count what the commits left.
 #![allow(
@@ -158,10 +157,16 @@ fn a_listing_kept_across_writes_answers_as_one_read_after_them() {
     let queries = [
         Query::of(ISSUE, 5)
             .filter(Filter::Is(PARENT.into(), "board".into()))
-            .filter(Filter::Not(Box::new(Filter::Is("state".into(), "done".into())))),
+            .filter(Filter::Not(Box::new(Filter::Is(
+                "state".into(),
+                "done".into(),
+            )))),
         Query::of(ISSUE, 5)
             .filter(Filter::Is(PARENT.into(), "board".into()))
-            .filter(Filter::Not(Box::new(Filter::Is("state".into(), "done".into()))))
+            .filter(Filter::Not(Box::new(Filter::Is(
+                "state".into(),
+                "done".into(),
+            ))))
             .order(Order::by("points").absent(Absent::Last).then("title", true)),
     ];
     let seed = |index: &mut Index| {
@@ -206,24 +211,44 @@ fn a_listing_kept_across_writes_answers_as_one_read_after_them() {
     seed(&mut kept);
     seed(&mut fresh);
     for query in &queries {
-        assert!(kept.len(query, &anyone) > 0, "the listing is kept from here on");
+        assert!(
+            kept.len(query, &anyone) > 0,
+            "the listing is kept from here on"
+        );
     }
     writes(&mut kept);
     writes(&mut fresh);
     for query in &queries {
         let all = listed(&fresh, query, &anyone);
-        assert!(!all.contains(&"i0007".to_owned()), "a removed issue leaves it");
-        assert!(!all.contains(&"i0010".to_owned()), "an issue done leaves it");
-        assert!(all.contains(&"i0005".to_owned()), "an issue moved to it joins it");
+        assert!(
+            !all.contains(&"i0007".to_owned()),
+            "a removed issue leaves it"
+        );
+        assert!(
+            !all.contains(&"i0010".to_owned()),
+            "an issue done leaves it"
+        );
+        assert!(
+            all.contains(&"i0005".to_owned()),
+            "an issue moved to it joins it"
+        );
         assert_eq!(listed(&kept, query, &anyone), all, "{query:?}");
         assert_eq!(kept.len(query, &anyone), all.len(), "{query:?}");
         for (position, id) in all.iter().enumerate() {
-            assert_eq!(kept.position(query, id, &anyone), Some(position), "{query:?} {id}");
+            assert_eq!(
+                kept.position(query, id, &anyone),
+                Some(position),
+                "{query:?} {id}"
+            );
         }
         for start in [0, 3, all.len().saturating_sub(2)] {
             assert_eq!(
                 kept.at(query, start, &anyone).ids().collect::<Vec<_>>(),
-                all.iter().skip(start).take(5).map(String::as_str).collect::<Vec<_>>(),
+                all.iter()
+                    .skip(start)
+                    .take(5)
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
                 "{query:?} at {start}"
             );
         }
@@ -756,6 +781,43 @@ mod store {
             .collect()
     }
 
+    /// What a write costs follows what it touched, never how much its kind holds: retitling one
+    /// issue of a hundred and one of three thousand writes one change to one document, of the
+    /// same operations, and the index answers the new title either way.
+    #[test]
+    fn a_write_costs_what_it_touched_whatever_its_kind_holds() {
+        let retitled = |held: usize| {
+            let mut store = Store::new();
+            for n in 0..held {
+                put(
+                    &mut store,
+                    &format!("i{n}"),
+                    resource("board", &format!("a{n:05}"), "Issue", "open"),
+                );
+            }
+            let written = put(
+                &mut store,
+                "i7",
+                resource("board", "a00007", "Renamed", "open"),
+            );
+            assert_eq!(written.len(), 1, "one document is written");
+            let found = store.query(
+                &Query::of(ISSUE, 10).filter(Filter::Is("title".to_owned(), "Renamed".into())),
+                &anyone,
+            );
+            assert_eq!(found.ids().collect::<Vec<_>>(), ["i7"]);
+            let change = &written[0].change;
+            (change.len(), change.raw_bytes().len())
+        };
+        let (small_ops, small_bytes) = retitled(100);
+        let (large_ops, large_bytes) = retitled(3_000);
+        assert_eq!(large_ops, small_ops, "the same operations at either size");
+        assert!(
+            large_bytes.abs_diff(small_bytes) <= 8,
+            "the change is as large at 3000 issues ({large_bytes} bytes) as at 100 ({small_bytes})"
+        );
+    }
+
     /// A write taken back leaves the store as it stood before it: a changed resource reads
     /// its earlier fields, one the write made is gone and not counted as removed, and an open
     /// query over the kind is told.
@@ -838,25 +900,45 @@ mod store {
                 );
             }
         };
-        store.put(ISSUE, "board", root("Board"), &at("make", 1)).unwrap();
+        store
+            .put(ISSUE, "board", root("Board"), &at("make", 1))
+            .unwrap();
         ends_agree(&store, "the making");
         for (id, moment) in [("board/a", 2), ("board/b", 3)] {
             store
-                .put(ISSUE, id, resource("board", id, id, "open"), &at(id, moment))
+                .put(
+                    ISSUE,
+                    id,
+                    resource("board", id, id, "open"),
+                    &at(id, moment),
+                )
                 .unwrap();
             ends_agree(&store, id);
         }
-        store.put(ISSUE, "board", root("Renamed"), &at("rename", 4)).unwrap();
+        store
+            .put(ISSUE, "board", root("Renamed"), &at("rename", 4))
+            .unwrap();
         ends_agree(&store, "the rename");
         store
-            .put(ISSUE, "board/a", resource("board", "a", "Changed", "done"), &at("change", 5))
+            .put(
+                ISSUE,
+                "board/a",
+                resource("board", "a", "Changed", "done"),
+                &at("change", 5),
+            )
             .unwrap();
         ends_agree(&store, "an item's change");
         store.remove(ISSUE, "board/b", &at("take out", 6)).unwrap();
         ends_agree(&store, "an item's removal");
         let last = store.version_end(ISSUE, "board", true).unwrap();
-        assert_eq!(last.stamp.map(|stamp| stamp.invocation).as_deref(), Some("take out"));
-        assert!(!last.nested.is_empty(), "the root's last version names what it took out");
+        assert_eq!(
+            last.stamp.map(|stamp| stamp.invocation).as_deref(),
+            Some("take out")
+        );
+        assert!(
+            !last.nested.is_empty(),
+            "the root's last version names what it took out"
+        );
         store.remove(ISSUE, "board/a", &at("empty", 7)).unwrap();
         store.remove(ISSUE, "board", &at("remove", 8)).unwrap();
         ends_agree(&store, "the root's removal");
@@ -1270,7 +1352,11 @@ mod store {
             &here,
             &Command::Contents {
                 kind: ISSUE.to_owned(),
-                ids: vec!["a".to_owned(), "nothing by this id".to_owned(), "a".to_owned()],
+                ids: vec![
+                    "a".to_owned(),
+                    "nothing by this id".to_owned(),
+                    "a".to_owned(),
+                ],
             },
             may_read,
         ) {
@@ -1307,7 +1393,10 @@ mod store {
             query,
             fields: vec![name.clone(), "no field by this name".to_owned()],
         });
-        assert_eq!(some.ids().collect::<Vec<_>>(), whole.ids().collect::<Vec<_>>());
+        assert_eq!(
+            some.ids().collect::<Vec<_>>(),
+            whole.ids().collect::<Vec<_>>()
+        );
         for ((_, part), (_, all)) in some.resources.iter().zip(&whole.resources) {
             assert_eq!(part.fields.keys().collect::<Vec<_>>(), [&name]);
             assert_eq!(part.fields.get(&name), all.fields.get(&name));

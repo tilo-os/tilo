@@ -10,7 +10,6 @@
 //! resize into a pure cache hit), while a real width change still MUST
 //! re-shape wrapped text so the user never sees stale glyph positions.
 
-
 use std::collections::HashMap;
 
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};

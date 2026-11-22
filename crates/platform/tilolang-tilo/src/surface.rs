@@ -14,18 +14,16 @@ use tilo_actions::surface::{
     TypeSet, VerbSurface,
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
-use tilo_resource::Resource as _;
 use tilolang_runtime::Words;
 use tilolang_runtime::meta::Ty;
 
-use crate::action::{CREATE_ACTION, DIRECT_EDITS};
+use crate::action::{CREATE_ACTION, DIRECT_EDITS, ORIGIN_ACTION};
 use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 
 use crate::meta::{MetaExt as _, action_kind};
 
 /// The kind of the host's own resource.
 pub const HOST_KIND: &str = "tl.host";
-pub use crate::publish::COMMIT;
 
 /// The storage version of every generated resource.
 pub const VERSION: u32 = 1;
@@ -432,6 +430,25 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
     verbs
 }
 
+/// The verb of what an outside origin writes: its service's answer, taken into the resources the
+/// package keeps in step with it, as one change of the host's own. Receivers decide that change
+/// against this verb.
+fn origin_verb() -> VerbSurface {
+    VerbSurface {
+        id: ORIGIN_ACTION.to_owned(),
+        name: String::new(),
+        label: "Keep in step with its service".to_owned(),
+        description: Some("What the outside service said is taken in.".to_owned()),
+        kind: ActionKind::Undoable,
+        destructive: false,
+        incoming_message: false,
+        params: Vec::new(),
+        returns: None,
+        writes: vec![RESOURCE_UNIT.to_owned()],
+        field: None,
+    }
+}
+
 fn field_surfaces(
     meta: &Meta,
     ty: &TypeMeta,
@@ -484,9 +501,15 @@ fn field_surfaces(
 #[must_use]
 pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     let mut surfaces = Vec::new();
+    // A package with an outside origin writes what its service says into the resources holding
+    // those of the origin's types, the package's root among them: each resource takes that change.
+    let kept_in_step = meta.types.iter().any(|ty| ty.origin.is_some());
     for ty in &meta.types {
         let mut types = TypeSet::new();
         let mut verbs = edit_verbs(ty);
+        if kept_in_step {
+            verbs.push(origin_verb());
+        }
         // An action on a union of the package's types is one on each of them: the change a call
         // makes is claimed on the kind of the resource it was called on.
         verbs.extend(
@@ -532,23 +555,8 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     surfaces
 }
 
-fn host_verb(id: &str, label: &str, kind: ActionKind, params: Vec<ParamSurface>) -> VerbSurface {
-    VerbSurface {
-        id: id.to_owned(),
-        name: String::new(),
-        label: label.to_owned(),
-        description: None,
-        kind,
-        destructive: false,
-        incoming_message: false,
-        params,
-        returns: None,
-        writes: vec![RESOURCE_UNIT.to_owned()],
-        field: None,
-    }
-}
-
-/// The surface of the host's own resource: the commit of an action the runtime planned.
+/// The surface of the host's own resource. It declares no verbs: an agent's host effects are
+/// answered by the window that publishes them, never written to a document.
 #[must_use]
 pub fn host_surface() -> Surface {
     Surface {
@@ -557,18 +565,45 @@ pub fn host_surface() -> Surface {
         version: VERSION,
         person: false,
         own: false,
-        verbs: vec![host_verb(
-            COMMIT,
-            "Commit a planned action",
-            ActionKind::Undoable,
-            vec![ParamSurface {
-                name: "ticket".to_owned(),
-                required: true,
-                schema: json!({"type": "integer"}),
-                ty: FieldType::Int,
-                within: None,
-            }],
-        )],
+        verbs: Vec::new(),
+        fields: Vec::new(),
+        types: Vec::new(),
+        shows: Vec::new(),
+    }
+}
+
+/// The surface of each person's own state of an app's windows ([`crate::personal`]): a
+/// member's own resource, which the verbs keeping a slot, a seen mark or the reviewed runs write.
+#[must_use]
+pub fn personal_surface() -> Surface {
+    use crate::personal::{KIND, RUNS, SEEN, VIEW_STATE};
+    let verbs = [
+        (VIEW_STATE, "Keep a view's state"),
+        (SEEN, "Keep what is seen"),
+        (RUNS, "Keep reviewed runs"),
+    ]
+    .into_iter()
+    .map(|(id, label)| VerbSurface {
+        id: id.to_owned(),
+        name: String::new(),
+        label: label.to_owned(),
+        description: None,
+        kind: ActionKind::Undoable,
+        destructive: false,
+        incoming_message: false,
+        params: Vec::new(),
+        returns: None,
+        writes: vec![RESOURCE_UNIT.to_owned()],
+        field: None,
+    })
+    .collect();
+    Surface {
+        kind: KIND.to_owned(),
+        label: "Your place in the app".to_owned(),
+        version: VERSION,
+        person: false,
+        own: true,
+        verbs,
         fields: Vec::new(),
         types: Vec::new(),
         shows: Vec::new(),
@@ -598,7 +633,7 @@ pub fn surface_toml_reading(
     reads: &[Meta],
     words: &dyn Words,
 ) -> Result<Vec<u8>, toml::ser::Error> {
-    let mut resources = vec![host_surface(), crate::personal::Personal::surface()];
+    let mut resources = vec![host_surface(), personal_surface()];
     for meta in packages {
         resources.extend(package_surfaces(meta, words));
     }

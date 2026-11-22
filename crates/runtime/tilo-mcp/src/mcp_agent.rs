@@ -18,9 +18,9 @@
 //! (they wait for it), and nothing here needs a second call to learn
 //! whether the first one worked.
 use super::{
-    ActionProvider, Addressed, CatalogueLimits, CatalogueQuery, CatalogueRow, DEFAULT_WAIT_MS,
-    Deserialize, Failure, MAX_CALLS, McpServer, OneCall, RemoteActionTarget, Value,
-    batch_invocation, invocation_id, json, page, parse,
+    ActionProvider, Addressed, CatalogueQuery, DEFAULT_WAIT_MS, Deserialize, Failure, MAX_CALLS,
+    McpServer, OneCall, RemoteActionTarget, Value, batch_invocation, invocation_id, json, page,
+    parse,
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -36,7 +36,8 @@ mod ask;
 mod find;
 #[path = "mcp_agent_launch.rs"]
 mod launch;
-use launch::{names_files, opens_a_file, starts_app};
+use launch::{opens_a_file, starts_app};
+use tilo_actions::tree::{DEEP_READS, names_files};
 #[path = "mcp_agent_link.rs"]
 mod link;
 #[path = "mcp_agent_list.rs"]
@@ -56,11 +57,7 @@ mod view;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
 use answer::{action_named, action_row, actions_named, answer_of, outcome, text_result};
-use level::read_on;
-use render::{
-    action_line, action_page, block_line, parse_read_cursor, read_answer, restart_pause,
-    strip_blank,
-};
+use render::{action_line, action_page, block_line, parse_read_cursor, read_answer, strip_blank};
 use tilo::actions_note;
 /// A person's own line in a run's conversation, run in the task's host as they are
 /// (shell.md §8.1): what the API's `person_line` hands on.
@@ -68,26 +65,11 @@ pub use tilo::{PersonStep, literals_in};
 pub(super) use tilo::{ProgramForms, Programs, TaskLink};
 pub use tilo::{TaskHosts, TaskProgram};
 
-/// Resource rows one directory level reads at most, across its pages.
-const LEVEL_PAGES: usize = 4;
-/// Times a name not found is looked for again, after pauses that double from 5 ms to 200 ms:
-/// about seven tenths of a second in all.
-const LOOKS_AGAIN: u32 = 8;
-/// The moment those looks come to. A level that was read on past its bound is looked through
-/// again only within it: one that takes longer to read whole is not read whole eight times.
-const LOOKS_MOMENT: std::time::Duration = std::time::Duration::from_millis(700);
-/// Rows asked per page.
-const PAGE_ROWS: u32 = 128;
-/// Containers at an app's top level whose contents the app's root also
-/// offers: a notebook's pages are the app's own.
-const ROOT_PEEK: usize = 3;
-/// Containers a name that is not where it was looked for reads on, one by
-/// one, before it is called missing.
-const DEEP_READS: usize = 16;
-/// Longest name asked of an app whole; a longer one is a key or an id.
-const NAME_BYTES: usize = 256;
-/// Lines `tilo_ls` answers before a cursor.
-const LS_LINES: usize = 40;
+#[cfg(test)]
+use super::CatalogueRow;
+use tilo_actions::tree::ROOT_PEEK;
+/// Lines `tilo_ls` answers before a cursor: as many as the tree reads a level near for.
+const LS_LINES: usize = tilo_actions::tree::LISTED_NEAR;
 /// Root-resource read searches a session keeps, by app and directory revision.
 const SWEPT_READS: usize = 256;
 /// Hits `tilo_find` answers.
@@ -98,9 +80,6 @@ const READ_CHARS: usize = 12_000;
 /// `read+<characters already answered>`, then `+<the app's cursor>` when the
 /// cut answer was a page the app's own cursor asked for.
 const READ_CURSOR: &str = "read+";
-/// The longest pause between two reads of a directory level that keeps
-/// changing while it is read.
-const RESTART_PAUSE_MAX: std::time::Duration = std::time::Duration::from_millis(200);
 /// The most rows one page of a listing answers: a bound on what one call holds and sends,
 /// and enough that a tracker of a company's issues is listed in a couple of calls.
 const LS_PAGE_MAX: usize = 1_000;
@@ -108,8 +87,6 @@ const LS_PAGE_MAX: usize = 1_000;
 const LABEL_CHARS: usize = 60;
 /// Longest first sentence of an action's description in an action's page.
 const DESCRIPTION_CHARS: usize = 200;
-/// Pages of installed apps read at most: a page holds 256.
-const INSTALLED_PAGES: usize = 4;
 
 #[path = "mcp_agent_arguments.rs"]
 mod arguments;
@@ -202,57 +179,18 @@ mod mcp_agent_tools;
 )]
 mod mcp_agent_pick;
 
-use mcp_agent_paths::kind_address;
 use mcp_agent_pick::{pick_action_anywhere, published_on};
 pub(super) use mcp_agent_tools::{held_until_ended, tool_definitions};
 use tilo_actions::tree::{
-    Address, CLOSE_MATCHES, Level, LsCursor, NAMES_LISTED, Names, Node, PageMark, Segment,
-    TypeNames, action_rank, app_meant, bound_key, is_program_form, level_of,
-    named_beyond_its_start, only_by_id, path_name, pick, pick_action, rank, reads_action,
-    shared_names,
+    Address, AppRef, CLOSE_MATCHES, InstalledApp, Level, Levels, LsCursor, Names, Node, PageMark,
+    Resolved, Segment, TypeNames, action_rank, app_names, app_of, below_app, bound_key,
+    is_program_form, list_names, listed_as, named_beyond_its_start, only_by_id, path_name,
+    pick_action, reads_action, shared_names,
 };
-
-/// The app a path starts with, as it was written (`browser@4711`).
-fn app_of(parsed: &Address) -> String {
-    parsed
-        .segments
-        .first()
-        .map(Segment::written)
-        .unwrap_or_default()
-}
-
-/// The segments of a path below the app it starts with.
-fn below_app(parsed: &Address) -> &[Segment] {
-    parsed.segments.get(1..).unwrap_or_default()
-}
 
 /// `forms` as the names a pick reads types by.
 fn typed(forms: Option<&ProgramForms>) -> Option<&dyn TypeNames> {
     forms.map(|forms| forms as &dyn TypeNames)
-}
-
-/// [`list_names`], or `none` for no names: an empty list reads as a
-/// sentence cut short.
-fn list_or_none(names: &[String]) -> String {
-    if names.is_empty() {
-        "none".to_owned()
-    } else {
-        list_names(names)
-    }
-}
-
-fn list_names(names: &[String]) -> String {
-    let mut shown: Vec<&str> = names
-        .iter()
-        .take(NAMES_LISTED)
-        .map(String::as_str)
-        .collect();
-    let more = names.len().saturating_sub(NAMES_LISTED);
-    let tail = format!("… +{more}");
-    if more > 0 {
-        shown.push(&tail);
-    }
-    shown.join(", ")
 }
 
 /// Cut `text` to at most `chars` characters at a line break. The count of
@@ -554,192 +492,7 @@ fn next_cursor(value: &Value) -> Option<String> {
     }
 }
 
-/// What an app name names.
-#[derive(Clone)]
-pub(super) enum AppRef {
-    /// A running publisher of the app: its newest window, the window the
-    /// path named (`browser@4711`, `pinned`), or the host's own service
-    /// answering for it (`desktop`).
-    Running {
-        app_id: String,
-        provider: String,
-        pinned: bool,
-    },
-    /// `opens` when this caller may start it.
-    Installed { app_id: String, opens: bool },
-}
-
-impl AppRef {
-    /// The app's id, as the workspace names it.
-    pub(super) fn app_id(&self) -> &str {
-        match self {
-            Self::Running { app_id, .. } | Self::Installed { app_id, .. } => app_id,
-        }
-    }
-}
-
-/// The one resource an already-read level names exactly as `name`: its id
-/// first, then its label. `None` for a name several resources carry, or one
-/// none of them does.
-fn named_among(level: &Level, name: &str) -> Option<Node> {
-    let children = level.whole_children();
-    if let [only] = children
-        .iter()
-        .filter(|node| node.names_id(name))
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        return Some((*only).clone());
-    }
-    match children
-        .iter()
-        .filter(|node| node.answers_to(name) == Some(0))
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        [only] => Some((*only).clone()),
-        _ => None,
-    }
-}
-
-/// An app installed for the workspace, as the workspace lists it.
-pub(super) struct InstalledApp {
-    app_id: String,
-    label: String,
-    /// Whether this caller may open it: the workspace names an app it may
-    /// not open without the action.
-    opens: bool,
-    /// What its signed package publishes (`surface.toml`), as the workspace's
-    /// listing carries it: the types an agent reads before the app opens.
-    surface: Option<String>,
-}
-
-impl InstalledApp {
-    /// The app as naming it answers: its newest window `window` while it
-    /// runs, else the app to open.
-    fn named(&self, window: Option<String>) -> AppRef {
-        let app_id = self.app_id.clone();
-        match window {
-            Some(provider) => AppRef::Running {
-                app_id,
-                provider,
-                pinned: false,
-            },
-            None => AppRef::Installed {
-                app_id,
-                opens: self.opens,
-            },
-        }
-    }
-}
-
-/// The directory levels one call read, by the resource each holds, seeded
-/// with what the session read before ([`McpServer::dirs`]).
-pub(crate) type Levels = HashMap<String, Level>;
-
-/// A path resolved against the live directory, kept for the pages that list on from it.
-pub(super) type ListingResolution = std::sync::Arc<Resolved>;
-
-/// The resolved paths one session keeps for its listings, at most: a page of any listing
-/// reads the one its cursor names, and a session of thousands of anything holds only these.
-const LISTING_RESOLUTIONS: usize = 32;
-
-/// A path resolved against the live directory.
-pub(super) struct Resolved {
-    app_id: String,
-    provider: String,
-    /// Written back as a path: the app and the names down to the target.
-    path: String,
-    /// The target resource; `None` for the app itself.
-    node: Option<Node>,
-    /// Actions on the target (the app's root actions for the app itself).
-    actions: Vec<ActionDescriptor>,
-    /// Its children (the app's resources for the app itself).
-    children: Vec<Node>,
-    /// The nodes this resolution passed through, root first.
-    chain: Vec<Node>,
-    /// The directory levels the resolution read, which what the call does
-    /// next (finding the action that reads the target) reads again from
-    /// here rather than asking the app twice.
-    levels: Levels,
-    /// The directory revision the target was found at.
-    revision: String,
-}
-
-/// Whether `page` says of itself that it is not all there is and cannot be gone on from: it
-/// stopped at a limit, is not the end and offers no cursor. An app answers so when its
-/// directory cannot be read now and when a page of it broke off.
-fn cannot_be_read_now(page: &tilo_actions::remote::CataloguePage) -> bool {
-    page.budget_exhausted && !page.exhausted && page.next_cursor.is_empty()
-}
-
-impl Resolved {
-    /// Where a change of the target is taken back: its document's own history, on the nearest
-    /// resource that holds the target (or the target itself) and offers `undo`; for an app
-    /// named itself (a document whose root is the app's), where its root actions offer it.
-    fn history(&self) -> Option<String> {
-        let offers = |node: &&Node| {
-            node.actions
-                .iter()
-                .any(|action| action.address.action == "undo")
-        };
-        let nearest = self.node.iter().chain(self.chain.iter().rev()).find(offers);
-        nearest.map(|node| node.id.clone()).or_else(|| {
-            self.node
-                .is_none()
-                .then(|| {
-                    self.actions
-                        .iter()
-                        .find(|action| action.address.action == "undo")
-                        .map(|action| action.address.resource.clone())
-                })
-                .flatten()
-        })
-    }
-}
-
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
-    /// One directory level: the resources under `parent` and their actions,
-    /// over as many pages as a bounded read takes.
-    async fn level(
-        &self,
-        provider: &str,
-        parent: &str,
-        levels: &mut Levels,
-    ) -> Result<Level, String> {
-        if let Some(read) = levels.get(parent) {
-            return Ok(read.clone());
-        }
-        let read = self
-            .read_level(provider, parent, None, usize::MAX)
-            .await?
-            .ok_or("the app's directory kept changing while it was read; try again")?;
-        levels.insert(parent.to_owned(), read.clone());
-        Ok(read)
-    }
-
-    /// One directory level, read as far as one page of a listing holds:
-    /// enough to name a resource and what it holds on its first page, and
-    /// extended by whoever pages past it ([`Self::level_reaching`],
-    /// [`Self::level_holding`]). A listing reads one page of a directory of
-    /// thousands per call, not a fixed stretch of it.
-    async fn level_near(
-        &self,
-        provider: &str,
-        parent: &str,
-        levels: &mut Levels,
-    ) -> Result<Level, String> {
-        if let Some(read) = levels.get(parent) {
-            return Ok(read.clone());
-        }
-        let read = self
-            .read_level(provider, parent, None, LS_LINES)
-            .await?
-            .ok_or("the app's directory kept changing while it was read; try again")?;
-        levels.insert(parent.to_owned(), read.clone());
-        Ok(read)
-    }
-
     /// Whether the resource `resource` a provider publishes answers a read of itself: whether
     /// its directory lists a read on the resource itself. A resource that does not is read by
     /// the resource its directory lists it under, which takes it as its `item` ([`Self::reader`]).
@@ -750,6 +503,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     ) -> Result<bool, String> {
         let mut levels: Levels = HashMap::new();
         let level = self
+            .tree
             .level(&provider.provider, resource, &mut levels)
             .await?;
         Ok(reads_action(&level.own).is_some())
@@ -765,6 +519,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     ) -> Result<Vec<Value>, String> {
         let mut levels: Levels = HashMap::new();
         let level = self
+            .tree
             .level(&provider.provider, resource, &mut levels)
             .await?;
         Ok(level
@@ -780,888 +535,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             })
             .collect())
     }
-
-    /// The directory levels this session read in `provider`, as the last call
-    /// left them: what a call resolving a path there starts from.
-    fn levels_kept(&self, provider: &str) -> Levels {
-        self.dirs
-            .lock_recover()
-            .get(provider)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// Keep what a call resolving its path in `provider` read, for the calls
-    /// after it: a write on another of the app's resources is resolved from
-    /// what the workspace already answered.
-    fn keep_levels(&self, provider: &str, levels: &Levels) {
-        let mut dirs = self.dirs.lock_recover();
-        if dirs.len() >= resolved::RESOLVED_PATHS && !dirs.contains_key(provider) {
-            dirs.clear();
-        }
-        dirs.insert(provider.to_owned(), levels.clone());
-    }
-
-    /// Forget the app `app_id` the session found, after the workspace refused a
-    /// call as one the app does not offer: the app or its directory moved
-    /// since, so the next call looks both up again.
-    pub(super) fn forget_app(&self, app_id: &str) {
-        self.apps
-            .lock_recover()
-            .retain(|_, app| app.app_id() != app_id);
-        self.dirs.lock_recover().clear();
-    }
-
-    /// The app `name` means: a running one by its id or last part, else an
-    /// installed one the workspace offers to open.
-    ///
-    /// A running app the session found is kept: every call in it names the
-    /// app again, and asking which apps run for each of them cost a request a
-    /// call. A call the app refuses drops what was kept
-    /// ([`McpServer::forget_app`]), so one that closed or moved is looked up
-    /// again.
-    async fn app_ref(&self, name: &str) -> Result<AppRef, String> {
-        let known = { self.apps.lock_recover().get(name).cloned() };
-        if let Some(known) = known {
-            return Ok(known);
-        }
-        let found = self.app_ref_live(name).await?;
-        if matches!(found, AppRef::Running { .. }) {
-            let mut apps = self.apps.lock_recover();
-            if apps.len() >= resolved::RESOLVED_PATHS {
-                apps.clear();
-            }
-            apps.insert(name.to_owned(), found.clone());
-        }
-        Ok(found)
-    }
-
-    /// [`Self::app_ref`] as the live directory answers it, asked of the
-    /// workspace: the app a running one is by its id or last part, else an
-    /// installed one the workspace offers to open.
-    async fn app_ref_live(&self, name: &str) -> Result<AppRef, String> {
-        // Files is every workspace's own folder, served by the framework
-        // rather than installed into it: `files#open` reaches it wherever the
-        // workspace is, and puts a file into its tree.
-        if names_files(name) {
-            return Ok(AppRef::Installed {
-                app_id: fs_protocol::tree::FILES_APP.to_owned(),
-                opens: true,
-            });
-        }
-        let (name, instance) = match name.rsplit_once('@') {
-            Some((app, instance)) if !instance.trim().is_empty() => {
-                (app.trim(), Some(instance.trim()))
-            }
-            _ => (name, None),
-        };
-        let (_, running) = self.providers().await?;
-        if let Some(instance) = instance {
-            return pinned_window(&running, name, instance);
-        }
-        // A record a device serves whoever has it open (a host serving its
-        // workspace's records) is the app, live, as a window of it is.
-        let is_window = |provider: &str| {
-            provider.parse::<u64>().is_ok() || tilo_actions::remote::is_resource_provider(provider)
-        };
-        let ids_where = |window: bool| {
-            running
-                .iter()
-                .filter(|(provider, _)| is_window(provider) == window)
-                .filter_map(|(_, app)| app["app_id"].as_str())
-                .collect::<Vec<_>>()
-        };
-        let newest = |app_id: &str, window: bool| {
-            running
-                .iter()
-                .rev()
-                .filter(|(provider, _)| is_window(provider) == window)
-                .find(|(_, app)| app["app_id"].as_str() == Some(app_id))
-                .map(|(provider, _)| provider.clone())
-        };
-        let windows = ids_where(true);
-        match page::app_named(name, &windows) {
-            Ok(app_id) => {
-                let provider =
-                    newest(&app_id, true).ok_or_else(|| page::not_running(&app_id, &windows))?;
-                return Ok(AppRef::Running {
-                    app_id,
-                    provider,
-                    pinned: false,
-                });
-            }
-            Err(error) if error.contains("names several") => return Err(error),
-            Err(_) => {}
-        }
-        // The host's own services (the desktop's layout, the workspace's
-        // activity) answer for app ids no app installs: the app itself,
-        // when it is installed, is what its name opens.
-        let installed = self.installed().await;
-        // The name the listing shows an app by (`Files`) is that app.
-        if let Some(app) = installed
-            .as_ref()
-            .ok()
-            .and_then(|apps| listed_as(apps, name))
-        {
-            return Ok(app.named(newest(&app.app_id, true)));
-        }
-        let services = ids_where(false);
-        let service = page::app_named(name, &services).ok().filter(|app_id| {
-            installed
-                .as_ref()
-                .is_ok_and(|installed| !installed.iter().any(|app| app.app_id == *app_id))
-                || installed.is_err()
-        });
-        if let Some(app_id) = service
-            && let Some(provider) = newest(&app_id, false)
-        {
-            return Ok(AppRef::Running {
-                app_id,
-                provider,
-                pinned: false,
-            });
-        }
-        // An installed list that could not be read is said, never taken for
-        // an empty one: the agent would conclude the app does not exist.
-        let installed = installed.map_err(|reason| {
-            format!(
-                "no running app is named {name}, and the installed apps could not be read: {}",
-                answer::words(&reason)
-            )
-        })?;
-        let ids = installed
-            .iter()
-            .map(|app| app.app_id.as_str())
-            .collect::<Vec<_>>();
-        match page::app_named(name, &ids) {
-            Ok(app_id) => {
-                let opens = installed
-                    .iter()
-                    .any(|app| app.app_id == app_id && app.opens);
-                Ok(AppRef::Installed { app_id, opens })
-            }
-            Err(error) if error.contains("names several") => Err(error),
-            // No app is called exactly that: the name is read once more as a model writes one.
-            Err(_) => freely_named(name, &running, &installed),
-        }
-    }
-
-    /// The apps installed for this workspace, with their labels and whether
-    /// this caller may open them. The workspace answers them by their kind,
-    /// whole, wherever they fall among its other rows (governance, shortcuts),
-    /// so a workspace with many of those still lists every app.
-    async fn installed(&self) -> Result<Vec<InstalledApp>, String> {
-        let provider = tilo_actions::remote::workspace_provider(&self.workspace);
-        let mut apps: Vec<InstalledApp> = Vec::new();
-        let mut cursor = Vec::new();
-        let mut revision = None;
-        for _ in 0..INSTALLED_PAGES {
-            let page = self
-                .ask(CatalogueQuery {
-                    provider: Some(provider.clone()),
-                    resource_name: Some(tilo_actions::remote::APPLICATION_RESOURCE_KIND.to_owned()),
-                    max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
-                    cursor: std::mem::take(&mut cursor),
-                    revision: revision.take(),
-                    ..CatalogueQuery::default()
-                })
-                .await?;
-            for row in page.rows {
-                let Some(app_id) = row
-                    .resource
-                    .id
-                    .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
-                    .filter(|app_id| !app_id.starts_with("host:"))
-                else {
-                    continue;
-                };
-                // The workspace offers an action on an app (open, or close
-                // while it runs) only to a caller that may use it, and names
-                // one it may not without any: a running app shows only its
-                // close, and is still this caller's to open.
-                let opens = row.action.is_some();
-                match apps.iter_mut().find(|app| app.app_id == app_id) {
-                    Some(app) => {
-                        app.opens |= opens;
-                        if row.surface.is_some() {
-                            app.surface.clone_from(&row.surface);
-                        }
-                    }
-                    None => apps.push(InstalledApp {
-                        app_id: app_id.to_owned(),
-                        label: row.resource.label.clone(),
-                        opens,
-                        surface: row.surface.clone(),
-                    }),
-                }
-            }
-            if page.exhausted || page.next_cursor.is_empty() {
-                break;
-            }
-            cursor = page.next_cursor;
-            revision = Some(page.revision);
-        }
-        Ok(apps)
-    }
-
-    /// The resources under `parent` that `name` names (by label or kind),
-    /// asked of the app whole: one note among a notebook's thousands costs
-    /// the rows naming it, not a page of every note. `None` when the app
-    /// cannot say (a host from before parents were named answers about its
-    /// top level), and the level is listed instead.
-    async fn named(
-        &self,
-        provider: &str,
-        parent: &str,
-        name: &str,
-    ) -> Result<Option<Level>, String> {
-        let name = name.trim();
-        if name.is_empty() || name.len() > NAME_BYTES {
-            return Ok(None);
-        }
-        let Ok(page) = self
-            .ask(CatalogueQuery {
-                provider: Some(provider.to_owned()),
-                parent_resource: (!parent.is_empty()).then(|| parent.to_owned()),
-                resource_name: Some(name.to_owned()),
-                max_results: PAGE_ROWS,
-                ..CatalogueQuery::default()
-            })
-            .await
-        else {
-            return Ok(None);
-        };
-        if !page.exhausted
-            || page.stale_cursor
-            || page.rows.iter().any(|row| row.parent_resource != parent)
-        {
-            return Ok(None);
-        }
-        let mut named = level_of(&page.rows, parent);
-        named.revision = page.revision;
-        Ok(Some(named))
-    }
-
-    /// What `name` may mean at the app's level, asked by name: the app's top
-    /// level and, inside each of its containers, what `name` names there,
-    /// less what another of them owns; `None` when one cannot be asked.
-    async fn named_at_app(
-        &self,
-        provider: &str,
-        name: &str,
-        levels: &mut Levels,
-    ) -> Result<Option<Level>, String> {
-        // What this call already holds of the app's own level answers the name
-        // where it names one resource exactly: the session keeps the directory
-        // it read, so a call on another of the app's resources costs itself.
-        if let Some(root) = levels.get("").cloned()
-            && let Some(only) = named_among(&root, name)
-        {
-            return Ok(Some(Level {
-                own: Vec::new(),
-                children: vec![only],
-                revision: root.revision,
-                pages: std::sync::Arc::default(),
-            }));
-        }
-        // A name the app's own level carries is asked of the app by name
-        // first: a chain it keeps is answered from the head part publishing
-        // it, never a page of the listing built from every item the app
-        // shows. A name no one resource there answers is listed as before.
-        if let Some(among) = self.named(provider, "", name).await?
-            && let [only] = among.children.as_slice()
-        {
-            return Ok(Some(Level {
-                own: Vec::new(),
-                children: vec![only.clone()],
-                revision: among.revision,
-                pages: std::sync::Arc::default(),
-            }));
-        }
-        let root = self.level(provider, "", levels).await?;
-        let mut revision = root.revision.clone();
-        // A name the app's own level carries exactly is answered there: its id
-        // first, then its label. The containers hold the resource's items,
-        // and asking each of them for a name it is not (the resource's own
-        // name, most often) lists every item it holds.
-        let by_id: Vec<&Node> = root
-            .children
-            .iter()
-            .filter(|node| node.names_id(name))
-            .collect();
-        let by_label: Vec<&Node> = root
-            .children
-            .iter()
-            .filter(|node| node.answers_to(name) == Some(0))
-            .collect();
-        for named in [by_id, by_label] {
-            if let [only] = named.as_slice() {
-                return Ok(Some(Level {
-                    own: Vec::new(),
-                    children: vec![(**only).clone()],
-                    revision,
-                    pages: std::sync::Arc::default(),
-                }));
-            }
-        }
-        let mut pool = root.children.clone();
-        for container in root
-            .children
-            .iter()
-            .filter(|node| node.container)
-            .take(ROOT_PEEK)
-        {
-            let Some(inside) = self.named(provider, &container.id, name).await? else {
-                return Ok(None);
-            };
-            revision = inside.revision;
-            for child in inside.children {
-                if !pool.iter().any(|seen| seen.id == child.id) {
-                    pool.push(child);
-                }
-            }
-        }
-        let all = pool.clone();
-        pool.retain(|node| !all.iter().any(|owner| owner.beside(node)));
-        Ok(Some(Level {
-            own: Vec::new(),
-            children: pool,
-            revision,
-            pages: std::sync::Arc::default(),
-        }))
-    }
-
-    /// The resource `segment` names under `parent` (the app itself for
-    /// `None`), and the resources it was named among. A name only one
-    /// resource there carries is asked of the app by name; anything else (a
-    /// key, the start of a name, a name several carry, one that is not
-    /// there) is decided on the whole level, as listing it shows. With them
-    /// comes the directory revision it was found at. `at` is the address the
-    /// level is listed at, which a name not found is answered with.
-    async fn step(
-        &self,
-        provider: &str,
-        at: &str,
-        parent: Option<&Node>,
-        segment: &str,
-        levels: &mut Levels,
-        forms: Option<&ProgramForms>,
-    ) -> Result<(Node, Level), String> {
-        let asked = match parent {
-            Some(owner) if !levels.contains_key(&owner.id) => {
-                self.named(provider, &owner.id, segment).await?
-            }
-            None => self.named_at_app(provider, segment, levels).await?,
-            Some(_) => None,
-        };
-        if let Some(among) = asked {
-            // What the app answered is the resource the segment names: one
-            // whose id it is, before any label, else one its label names
-            // exactly. Either costs the answer, not a read of the level.
-            let mut named = among.children.iter().filter(|node| node.names_id(segment));
-            if let (Some(only), None) = (named.next(), named.next()) {
-                let only = only.clone();
-                return Ok((only, among));
-            }
-            let mut named = among
-                .children
-                .iter()
-                .filter(|node| node.answers_to(segment) == Some(0));
-            if let (Some(only), None) = (named.next(), named.next()) {
-                let only = only.clone();
-                return Ok((only, among));
-            }
-        }
-        // An app's directory is rebuilt whenever its document changes, and for an instant it
-        // lists less than it has. A name not found is looked for again for a moment, the
-        // levels read anew, before the app is said not to have it.
-        let began = tokio::time::Instant::now();
-        let mut looks: u32 = 0;
-        loop {
-            // A level is read as far as its bound, and a directory that holds more goes on
-            // past it. A name the pages read first do not carry is looked for on the pages
-            // after them, to the directory's end, before it is looked for anywhere else: what
-            // a resource holds is found under it wherever it falls in the directory, and
-            // only a name no page carries is not there.
-            let (picked, here) = if let Some(owner) = parent {
-                self.level_holding(provider, &owner.id, levels, |level| {
-                    Ok(pick(segment, level.whole_children(), typed(forms))?.cloned())
-                })
-                .await?
-            } else {
-                let here = self.app_children(provider, levels).await?;
-                (pick(segment, &here.children, typed(forms))?.cloned(), here)
-            };
-            let found = match picked {
-                Some(node) => Some(node),
-                None => self.deep(provider, segment, parent, levels, forms).await?,
-            };
-            if let Some(found) = found {
-                return Ok((found, here));
-            }
-            if looks >= LOOKS_AGAIN || (read_on(&here) && began.elapsed() >= LOOKS_MOMENT) {
-                // Each name as the address that takes it, not the word alone:
-                // a caller reading where it went wrong writes the next call
-                // from what it is told, and a word it cannot place is no
-                // address at all.
-                let addresses: Vec<_> = (here.children.iter())
-                    .map(|node| format!("{at}/{}", node.name(&here.children)))
-                    .collect();
-                return if addresses.is_empty() {
-                    Err(format!("no {segment} in {at}; it lists nothing here"))
-                } else {
-                    Err(format!(
-                        "no {segment} in {at}; it has: {}",
-                        list_names(&addresses)
-                    ))
-                };
-            }
-            looks = looks.saturating_add(1);
-            tokio::time::sleep(restart_pause(looks.saturating_add(1))).await;
-            levels.clear();
-        }
-    }
-
-    /// A resource `name` names somewhere below `within` (or anywhere in the
-    /// app), found among the nodes this call has read and then by reading
-    /// the containers it has not: a note's body is published beside the
-    /// note rather than inside it, and its key says whose it is.
-    async fn deep(
-        &self,
-        provider: &str,
-        name: &str,
-        within: Option<&Node>,
-        levels: &mut Levels,
-        forms: Option<&ProgramForms>,
-    ) -> Result<Option<Node>, String> {
-        for _ in 0..=DEEP_READS {
-            let pool: Vec<Node> = levels
-                .values()
-                .flat_map(|level| level.whole_children().iter())
-                .filter(|node| {
-                    within.is_none_or(|owner| {
-                        node.key.contains(owner.token()) || Self::below(node, owner, levels)
-                    }) && rank(name, node, typed(forms)).is_some()
-                })
-                .cloned()
-                .collect();
-            if let Some(found) = pick(name, &pool, typed(forms))? {
-                return Ok(Some(found.clone()));
-            }
-            let unread = levels
-                .values()
-                .flat_map(|level| level.children.iter())
-                .find(|node| node.container && !levels.contains_key(&node.id))
-                .map(|node| node.id.clone());
-            let Some(unread) = unread else {
-                return Ok(None);
-            };
-            self.level(provider, &unread, levels).await?;
-        }
-        Ok(None)
-    }
-
-    /// Whether `node`'s parent chain, as far as this call has read it,
-    /// reaches `owner`.
-    fn below(node: &Node, owner: &Node, levels: &Levels) -> bool {
-        let mut parent = node.parent.clone();
-        for _ in 0..8 {
-            if parent.is_empty() {
-                return false;
-            }
-            if parent == owner.id {
-                return true;
-            }
-            let Some(next) = levels
-                .values()
-                .flat_map(|level| level.children.iter())
-                .find(|candidate| candidate.id == parent)
-            else {
-                return false;
-            };
-            parent.clone_from(&next.parent);
-        }
-        false
-    }
-
-    /// Resolve a whole path. A segment written the way a program types a type (`tasks.Task`)
-    /// is read as that type first: it names the resource whose published kind the listing
-    /// prints that name for. Only a segment written that way is asked of the task's programs,
-    /// so a path of titles (`notes/Todo`) does not start a task's host to read a name already
-    /// said; a form no app declares falls back to the plain reading, where it may be a title.
-    ///
-    /// With the resolution come the forms it was read by (`None` when it was read plainly), so
-    /// a caller that shows what it found names the type the same way without asking again.
-    async fn resolve(
-        &self,
-        parsed: &Address,
-    ) -> Result<(Result<Resolved, String>, Option<ProgramForms>), String> {
-        if below_app(parsed)
-            .iter()
-            .any(|segment| is_program_form(&segment.written()))
-            && let Some(forms) = self.program_forms().await
-        {
-            let by_type = self.resolve_with(parsed, Some(&forms), usize::MAX).await?;
-            // A path of segments resolves to a resource only when it walked every one: an
-            // empty chain is a name no resource answered.
-            if by_type.as_ref().is_ok_and(|found| !found.chain.is_empty()) {
-                return Ok((by_type, Some(forms)));
-            }
-        }
-        Ok((self.resolve_with(parsed, None, usize::MAX).await?, None))
-    }
-
-    /// [`Self::resolve`] reading the names a path segment may go by as `forms` says they are
-    /// written: a segment names a type by the name a listing prints for it (`tasks.Task`),
-    /// which `forms` reads back as its kind. `reaching` is how many resources of an app's own
-    /// page to read its containers for: a listing reads the page's end and one past it, and
-    /// a read takes every one (`usize::MAX`).
-    async fn resolve_with(
-        &self,
-        parsed: &Address,
-        forms: Option<&ProgramForms>,
-        reaching: usize,
-    ) -> Result<Result<Resolved, String>, String> {
-        let mut levels = Levels::new();
-        let reference = match self.app_ref(&app_of(parsed)).await {
-            Ok(reference) => reference,
-            Err(why) => match self.kind_app(&app_of(parsed)).await {
-                Some((app_id, provider, _)) => {
-                    return Ok(Ok(self
-                        .resolve_in(parsed, app_id, provider, true, forms, &mut levels, reaching)
-                        .await?));
-                }
-                None => return Err(why),
-            },
-        };
-        match reference {
-            AppRef::Running {
-                app_id,
-                provider,
-                pinned: true,
-            } => Ok(Ok(self
-                .resolve_in(parsed, app_id, provider, true, forms, &mut levels, reaching)
-                .await?)),
-            AppRef::Running {
-                app_id, provider, ..
-            } => Ok(Ok(self
-                .resolve_published(parsed, app_id, provider, true, forms, &mut levels, reaching)
-                .await?)),
-            // Reading what an installed app holds starts it without a window, as an action on
-            // it does: a path names the app's resources, not one of its processes.
-            AppRef::Installed {
-                app_id,
-                opens: true,
-            } => {
-                let provider = self.started_provider(&app_id, None).await?;
-                Ok(Ok(self
-                    .resolve_published(parsed, app_id, provider, true, forms, &mut levels, reaching)
-                    .await?))
-            }
-            AppRef::Installed { opens: false, .. } => {
-                Ok(Err(Self::not_running_note(&app_of(parsed), false)))
-            }
-        }
-    }
-
-    /// [`Self::resolve_in`] the newest instance `newest` of `app_id`, or, when
-    /// it has published nothing for the path, the app's older instances in
-    /// turn. A path names the app, not one of its processes: an instance
-    /// lists as running a moment before it publishes its directory, and must
-    /// not hide an older one that has (an agent saw an app's actions, and
-    /// the next call found none).
-    async fn resolve_published(
-        &self,
-        parsed: &Address,
-        app_id: String,
-        newest: String,
-        list: bool,
-        forms: Option<&ProgramForms>,
-        levels: &mut Levels,
-        reaching: usize,
-    ) -> Result<Resolved, String> {
-        let published = |found: &Resolved| {
-            !found.chain.is_empty() || !found.actions.is_empty() || !found.children.is_empty()
-        };
-        let first = self
-            .resolve_in(
-                parsed,
-                app_id.clone(),
-                newest.clone(),
-                list,
-                forms,
-                levels,
-                reaching,
-            )
-            .await;
-        if first.as_ref().is_ok_and(published) {
-            return first;
-        }
-        // The levels here are the newest instance's: an older one keeps its
-        // directory, and reading it under this one's name would name the wrong
-        // resources.
-        levels.clear();
-        // Only then are the running apps asked again, for the older instances.
-        let older: Vec<String> = self
-            .providers()
-            .await?
-            .1
-            .iter()
-            .rev()
-            .filter(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
-            .map(|(peer, _)| peer.clone())
-            .filter(|peer| *peer != newest)
-            .collect();
-        for provider in older {
-            let resolved = self
-                .resolve_in(
-                    parsed,
-                    app_id.clone(),
-                    provider,
-                    list,
-                    forms,
-                    levels,
-                    reaching,
-                )
-                .await;
-            if resolved.as_ref().is_ok_and(published) {
-                return resolved;
-            }
-        }
-        first
-    }
-
-    /// Resolve the segments of `parsed` in the running app `app_id`, whose
-    /// instance is `provider`. With `list`, what the target holds and the
-    /// actions on it are read too; without, a resource on the path is only
-    /// found (an action named on it is resolved by its address). `forms` is how
-    /// a path segment may name a type the way a program types it
-    /// (`tasks.Task`), as a listing names it. `reaching` is how far what an
-    /// app's own page merges from its containers is read: a listing's end and
-    /// one resource past it, or every one ([`Self::app_children_listed`]).
-    async fn resolve_in(
-        &self,
-        parsed: &Address,
-        app_id: String,
-        provider: String,
-        list: bool,
-        forms: Option<&ProgramForms>,
-        levels: &mut Levels,
-        reaching: usize,
-    ) -> Result<Resolved, String> {
-        let app = app_of(parsed).to_lowercase();
-        // What an action answered is a path the next call takes as it is:
-        // `tasks.tracker/issues/7` names one resource whole, where its parts
-        // named one at a time would name every kind that shares a word.
-        if kind_address(&app_of(parsed)).is_some() {
-            let address = parsed.resource();
-            if let Some(found) = self
-                .by_item_address(&app_id, &provider, &address, levels)
-                .await?
-            {
-                return Ok(found);
-            }
-        }
-        let mut chain: Vec<Node> = Vec::new();
-        // What each resource on the path was named among, and the revision
-        // the last of them was found at.
-        let mut among: Vec<Vec<Node>> = Vec::new();
-        let mut revision = String::new();
-        // The address each level is listed at, as the app's own listing writes
-        // it: what a name not found there is answered with.
-        let mut at = app.clone();
-        for segment in below_app(parsed) {
-            let (found, siblings) = self
-                .step(
-                    &provider,
-                    &at,
-                    chain.last(),
-                    &segment.written(),
-                    levels,
-                    forms,
-                )
-                .await?;
-            at = format!("{at}/{}", found.name(&siblings.children));
-            chain.push(found);
-            among.push(siblings.children);
-            revision = siblings.revision;
-        }
-        let mut here = match chain.last() {
-            Some(_) if !list => Level::default(),
-            Some(node) => self.level_near(&provider, &node.id, levels).await?,
-            None => {
-                // What the app's containers hold (a notebook's notes) is read for a listing.
-                // An action named on the app is found on the app's own level first
-                // ([`Self::pick_action_in`]): `notes#create-page` is the notebook's, and
-                // reading every note to find it would grow with the notebook.
-                let mut root = if list {
-                    self.app_children_listed(&provider, levels, reaching)
-                        .await?
-                } else {
-                    self.level(&provider, "", levels).await?
-                };
-                as_the_service(&provider, &mut root);
-                root
-            }
-        };
-        let mut written = app;
-        if let Some(owner) = chain.last() {
-            // Published beside the resource, not inside it, but its key says
-            // whose it is: listed as one of its children.
-            let token = owner.token().to_owned();
-            let related: Vec<Node> = levels
-                .values()
-                .flat_map(|level| level.children.iter())
-                .filter(|node| {
-                    token.len() >= 8
-                        && node.id != owner.id
-                        && node.key.contains(&token)
-                        && !here.children.iter().any(|child| child.id == node.id)
-                })
-                .cloned()
-                .collect();
-            here.children.extend(related);
-        }
-        let mut previous: Option<Node> = None;
-        for (node, siblings) in chain.iter().zip(&among) {
-            // Named against what it sits among and the resource it sits
-            // under, whose title it may share.
-            let mut named = siblings.clone();
-            named.extend(previous.clone());
-            written = format!("{written}/{}", node.name(&named));
-            previous = Some(node.clone());
-        }
-        Ok(Resolved {
-            app_id,
-            provider,
-            path: written,
-            node: chain.last().cloned(),
-            // A directory that hoists a resource's actions into its parent's
-            // listing lists them there, not under the resource.
-            actions: if here.own.is_empty() {
-                chain
-                    .last()
-                    .map(|node| node.actions.clone())
-                    .unwrap_or_default()
-            } else {
-                here.own
-            },
-            children: here.children,
-            chain,
-            levels: levels.clone(),
-            revision,
-        })
-    }
-
-    fn not_running_note(name: &str, opens: bool) -> String {
-        if opens {
-            format!(
-                "not_found: {name} is installed but not running; start it with tilo_do {}#open, or run one of its actions and it starts first",
-                path_name(name)
-            )
-        } else {
-            format!(
-                "not_found: {name} is installed but not running, and {}",
-                Self::may_not_open(name)
-            )
-        }
-    }
-
-    /// Why an installed app this agent may not open stays closed, and who
-    /// changes that.
-    fn may_not_open(name: &str) -> String {
-        format!(
-            "this agent may not open {name}: the person decides which apps an agent may use in this workspace"
-        )
-    }
-}
-
-/// Why `name` names no app: how a running app is addressed, and the apps
-/// running and installed.
-fn no_app_named(name: &str, running: &[(String, Value)], installed: &[InstalledApp]) -> String {
-    let running_ids = running
-        .iter()
-        .filter_map(|(_, app)| app["app_id"].as_str().map(str::to_owned))
-        .collect::<Vec<_>>();
-    let installed_ids = installed
-        .iter()
-        .map(|app| app.app_id.clone())
-        .collect::<Vec<_>>();
-    format!(
-        "unknown_app: no app {name}; name a running app by its id or last part, e.g. {}. Running {}; installed {}",
-        running_ids.first().map_or("<app_id>", String::as_str),
-        list_or_none(&app_names(&running_ids)),
-        list_or_none(&app_names(&installed_ids)),
-    )
-}
-
-/// The one installed app the listing shows by the name `name` (`Files` for
-/// `file-explorer`), any case.
-fn listed_as<'a>(installed: &'a [InstalledApp], name: &str) -> Option<&'a InstalledApp> {
-    let mut named = installed
-        .iter()
-        .filter(|app| app.label.eq_ignore_ascii_case(name));
-    named.next().filter(|_| named.next().is_none())
-}
-
-/// The app `name` means where no app is called exactly that: the name read once more as a
-/// model writes one (`word_processor`, `WordProcessor`, `Word`), among the installed apps as
-/// this caller is listed them and the apps of the providers it may use, and no others. What it
-/// finds is opened and acted in as the listing says this caller may. A word that still names
-/// none (`host` for the Browser, `so.tilo.browser`) is a guess, so the running apps are named
-/// as they are to be addressed.
-fn freely_named(
-    name: &str,
-    running: &[(String, Value)],
-    installed: &[InstalledApp],
-) -> Result<AppRef, String> {
-    let listed: Vec<(&str, &str)> = installed
-        .iter()
-        .map(|app| (app.app_id.as_str(), app.label.as_str()))
-        .chain(
-            running
-                .iter()
-                .filter_map(|(_, app)| Some((app["app_id"].as_str()?, ""))),
-        )
-        .collect();
-    let Some(app_id) = app_meant(name, &listed)? else {
-        return Err(no_app_named(name, running, installed));
-    };
-    // Its newest window, or else whatever answers for it without one.
-    let newest = |window: bool| {
-        running
-            .iter()
-            .rev()
-            .filter(|(provider, _)| {
-                (provider.parse::<u64>().is_ok()
-                    || tilo_actions::remote::is_resource_provider(provider))
-                    == window
-            })
-            .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
-            .map(|(provider, _)| provider.clone())
-    };
-    if let Some(app) = installed.iter().find(|app| app.app_id == app_id) {
-        return Ok(app.named(newest(true)));
-    }
-    let provider = newest(true).or_else(|| newest(false));
-    match provider {
-        Some(provider) => Ok(AppRef::Running {
-            app_id,
-            provider,
-            pinned: false,
-        }),
-        None => Err(no_app_named(name, running, installed)),
-    }
-}
-
-pub(super) fn app_names(ids: &[String]) -> Vec<String> {
-    let mut names: Vec<String> = ids
-        .iter()
-        .map(|id| id.rsplit('.').next().unwrap_or(id).to_lowercase())
-        .collect();
-    names.sort();
-    names.dedup();
-    names
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
@@ -1669,21 +542,72 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `structured` when the caller asked for typed answers
     /// (`_meta["so.tilo.mcp"].structured`): a read answers its
     /// [`ResourceRead`].
-    pub(super) async fn agent_call(&self, name: &str, mut args: Value, structured: bool) -> Value {
+    pub(super) async fn agent_call(&self, name: &str, args: Value, structured: bool) -> Value {
+        // A program may have run steps before the one refused: running it
+        // again would run them twice.
+        text_result(
+            self.agent_reply(name, args, structured).await,
+            structured,
+            name != "tilo",
+        )
+    }
+
+    /// One agent tool call's typed result, or its typed refusal: what a program reads, never
+    /// the words an agent reads. A program's run is its result however it ended.
+    pub(super) async fn agent_typed(
+        &self,
+        name: &str,
+        args: Value,
+    ) -> Result<Value, super::Refused> {
+        let program = name == "tilo";
+        match self.agent_reply(name, args, true).await {
+            Ok(Reply {
+                structured: Some(typed),
+                ..
+            }) if program || typed.get("status").and_then(Value::as_str) != Some("failed") => {
+                Ok(typed)
+            }
+            Ok(Reply {
+                structured: Some(typed),
+                ..
+            }) => Err(super::Refused {
+                error: typed.get("error").cloned().unwrap_or_default(),
+                action: typed.get("action").cloned(),
+            }),
+            // Said in words alone: what the path names holds nothing to type (an app installed
+            // and not running), or the call failed before anything ran.
+            Ok(reply) => Err(super::Refused::new(
+                if reply.failed { "failed" } else { "not_found" },
+                reply.text,
+            )),
+            Err(failure) if program => Ok(answer::refused(&failure, false)),
+            Err(failure) => Err(super::Refused {
+                error: answer::refused(&failure, true)
+                    .get("error")
+                    .cloned()
+                    .unwrap_or_default(),
+                action: None,
+            }),
+        }
+    }
+
+    /// What one agent tool call did: its words, and its typed result when `structured`.
+    pub(super) async fn agent_reply(
+        &self,
+        name: &str,
+        mut args: Value,
+        structured: bool,
+    ) -> Result<Reply, Failure> {
         // A path written as what a person types to name a resource (`#12`) is
         // read as the address the tools list it at before the call resolves
         // it, so an agent going on from a prompt's words reaches the resource.
         if let Some(path) = args.get("path").and_then(Value::as_str).map(str::to_owned) {
-            match self.expand_reference(&path).await {
-                Ok(expanded) => {
-                    if let Some(fields) = args.as_object_mut() {
-                        fields.insert("path".into(), Value::String(expanded));
-                    }
-                }
-                Err(error) => return text_result(Err(error), structured, true),
+            let expanded = self.expand_reference(&path).await?;
+            if let Some(fields) = args.as_object_mut() {
+                fields.insert("path".into(), Value::String(expanded));
             }
         }
-        let result = match name {
+        match name {
             "tilo_ls" => match parse(args) {
                 Ok(args) => self.agent_ls(args, structured).await,
                 Err(error) => Err(error.into()),
@@ -1725,10 +649,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Err(error) => Err(error.into()),
             },
             _ => Err("Unknown tool".into()),
-        };
-        // A program may have run steps before the one refused: running it
-        // again would run them twice.
-        text_result(result, structured, name != "tilo")
+        }
     }
 
     /// Note the record a call resolved `in`: the one its provider names when
@@ -1792,7 +713,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let mut reused = cursor
             .resume
             .as_ref()
-            .and_then(|(mark, _)| self.listing_resolution(path, &mark.revision));
+            .and_then(|(mark, _)| self.tree.listing_resolution(path, &mark.revision));
         let cached = reused.is_some();
         let mut resolved = match reused.take() {
             Some(resolved) => resolved,
@@ -1846,6 +767,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if want_resources && resolved.node.is_some() {
             let resumed = match (&cursor.resume, &resolved.node) {
                 (Some((mark, skip)), Some(node)) if offset > 0 => self
+                    .tree
                     .level_from(
                         &resolved.provider,
                         &node.id,
@@ -1882,6 +804,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 } else {
                     let reading = super::timing_start();
                     let level = self
+                        .tree
                         .level_reaching(&resolved.provider, &node.id, level, end)
                         .await?;
                     super::timing_done("ls.level", reading);
@@ -2070,7 +993,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if let Some(cursor) = &next
             && let Some((mark, _)) = &cursor.resume
         {
-            self.remember_listing_resolution(path, &mark.revision, &resolved);
+            self.tree
+                .remember_listing_resolution(path, &mark.revision, &resolved);
         }
         let next = next.map(|cursor| cursor.write());
         if let Some(next) = &next {
@@ -2112,40 +1036,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Ok(reply)
     }
 
-    /// The resolution `path` was listed by at the app's directory revision `revision`, when
-    /// this session listed one: a later page reads by it instead of resolving the path again.
-    fn listing_resolution(&self, path: &str, revision: &str) -> Option<ListingResolution> {
-        if revision.is_empty() {
-            return None;
-        }
-        self.listing_resolutions
-            .lock_recover()
-            .get(&(path.to_owned(), revision.to_owned()))
-            .cloned()
-    }
-
-    /// Keep the resolution `path` was listed by at `revision`, for the page that reads on
-    /// from it. The newest [`LISTING_RESOLUTIONS`] are kept; what a session listed before
-    /// those is resolved again when it is listed again.
-    fn remember_listing_resolution(
-        &self,
-        path: &str,
-        revision: &str,
-        resolved: &ListingResolution,
-    ) {
-        if revision.is_empty() {
-            return;
-        }
-        let mut kept = self.listing_resolutions.lock_recover();
-        if kept.len() >= LISTING_RESOLUTIONS {
-            kept.clear();
-        }
-        kept.insert(
-            (path.to_owned(), revision.to_owned()),
-            std::sync::Arc::clone(resolved),
-        );
-    }
-
     /// The surface `app_id` publishes, in the form it is kept by
     /// ([`collab_types::surface::canonical`]): the one this process runs it
     /// with, or the signed package the workspace has installed.
@@ -2153,7 +1043,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if let Some(bytes) = collab_types::app_surface::bytes_of(app_id) {
             return Some(bytes.to_vec());
         }
-        if let Ok(installed) = self.installed().await
+        if let Ok(installed) = self.tree.installed().await
             && let Some(surface) = installed
                 .iter()
                 .find(|app| app.app_id == app_id)
@@ -2203,7 +1093,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if structured
             && below_app(&parsed).is_empty()
             && let Ok(AppRef::Installed { app_id, .. } | AppRef::Running { app_id, .. }) =
-                self.app_ref(&app_of(&parsed)).await
+                self.tree.app_ref(&app_of(&parsed)).await
             && let Some(surface) = self.surface_bytes(&app_id).await
         {
             return Ok(Self::app_surface(&app_of(&parsed), &app_id, &surface));
@@ -2324,7 +1214,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return Ok(Some((owner, found)));
         }
         for ancestor in resolved.chain.iter().rev().skip(1) {
-            let level = self.level(&resolved.provider, &ancestor.id, levels).await?;
+            let level = self
+                .tree
+                .level(&resolved.provider, &ancestor.id, levels)
+                .await?;
             if let Some(found) = reads_action(&level.own) {
                 return Ok(Some((ancestor.id.clone(), found)));
             }
@@ -2344,7 +1237,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         {
             return Ok(known);
         }
-        let root = self.level(&resolved.provider, "", levels).await?;
+        let root = self.tree.level(&resolved.provider, "", levels).await?;
         let reading_item = |found: &ActionDescriptor| {
             resolved.node.is_none()
                 || found
@@ -2354,7 +1247,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         let mut found = None;
         for node in &root.children {
-            let level = self.level(&resolved.provider, &node.id, levels).await?;
+            let level = self
+                .tree
+                .level(&resolved.provider, &node.id, levels)
+                .await?;
             if let Some(reading) = reads_action(&level.own)
                 .or_else(|| reads_action(&node.actions))
                 .filter(reading_item)
@@ -2398,14 +1294,28 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 for (index, step) in calls.into_iter().enumerate() {
                     let invocation = batch_invocation(invocation_id.as_deref(), index)?;
                     let step_id = invocation.clone();
-                    let reply = Box::pin(
+                    // A step that did not run says why in its typed answer as well as in words.
+                    let (reply, refusal) = match Box::pin(
                         self.do_one(&step.path, step.args, invocation, wait_ms, structured),
                     )
                     .await
-                    .unwrap_or_else(|error| Reply::failed(format!("failed: {error}")));
-                    let mut typed = reply.structured.clone().unwrap_or_else(
-                        || json!({"status": if reply.failed {"failed"} else {"ok"}}),
-                    );
+                    {
+                        Ok(reply) => (reply, None),
+                        Err(error) => {
+                            let refusal = answer::refused(&error, false);
+                            (Reply::failed(format!("failed: {error}")), Some(refusal))
+                        }
+                    };
+                    let mut typed = reply.structured.clone().or(refusal).unwrap_or_else(|| {
+                        if reply.failed {
+                            json!({"status": "failed", "error": {
+                                "code": answer::coded(&reply.text).0,
+                                "message": answer::words(&reply.text),
+                            }})
+                        } else {
+                            json!({"status": "ok"})
+                        }
+                    });
                     if let (Some(fields), Some(id)) = (typed.as_object_mut(), step_id.as_ref()) {
                         fields
                             .entry("invocation_id")
@@ -2587,56 +1497,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
     }
 
-    /// The app a kind names (`tasks.tracker` is the Tasks app's tracker), as
-    /// the app id and the provider serving it: a kind begins with the app it
-    /// belongs to. `None` when the name is no kind or its app does not run.
-    async fn kind_app(&self, name: &str) -> Option<(String, String, bool)> {
-        let app = kind_address(name)?;
-        let AppRef::Running {
-            app_id,
-            provider,
-            pinned,
-        } = self.app_ref(app).await.ok()?
-        else {
-            return None;
-        };
-        if pinned {
-            return Some((app_id, provider, pinned));
-        }
-        // What the kind names, never one of the app's other documents that happens to be first:
-        // a kind's directory lists a resource of it (`tasks.issues` is the issues' chain, and
-        // `tasks.tracker` the tracker's own document). The app's documents are asked in turn,
-        // newest first, and the first that lists the kind answers.
-        let kind = name
-            .strip_prefix(app)
-            .and_then(|rest| rest.strip_prefix('.'))?
-            .to_owned();
-        let naming = |node: &Node| {
-            node.resource_type == kind || node.resource_type.starts_with(&format!("{kind}."))
-        };
-        let mut candidates = vec![provider.clone()];
-        if let Ok((_, running)) = self.providers().await {
-            candidates.extend(
-                running
-                    .iter()
-                    .rev()
-                    .filter(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
-                    .map(|(provider, _)| provider.clone()),
-            );
-        }
-        candidates.dedup();
-        for provider in candidates {
-            let mut levels = Levels::new();
-            let Ok(level) = self.level(&provider, "", &mut levels).await else {
-                continue;
-            };
-            if level.children.iter().any(naming) {
-                return Some((app_id, provider, false));
-            }
-        }
-        Some((app_id, provider, false))
-    }
-
     /// The app `parsed` names and the provider its `action` runs in, and
     /// whether the path pinned it; `None` for starting the app itself
     /// ([`Self::launch`]). One of an installed app's own actions
@@ -2648,21 +1508,25 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         action: &str,
         wait_ms: Option<u64>,
     ) -> Result<Option<(String, String, bool)>, String> {
-        let reference = match self.app_ref(&app_of(parsed)).await {
+        let reference = match self.tree.app_ref(&app_of(parsed)).await {
             Ok(reference) => reference,
             // An action's answer names the resource it made by its kind
             // (`tasks.tracker/issues/7`), which is a path the next command
             // takes as it is.
-            Err(why) => match self.kind_app(&app_of(parsed)).await {
+            Err(why) => match self.tree.app_of_type(&app_of(parsed)).await {
                 Some((app_id, provider, pinned)) => {
                     return Ok(Some((app_id, provider, pinned)));
                 }
-                None => return Err(why),
+                None => return Err(why.into()),
             },
         };
         match reference {
             AppRef::Installed { opens: false, .. } => {
-                Err(Self::not_running_note(&app_of(parsed), false))
+                Err(tilo_actions::tree::Unresolved::NotRunning {
+                    name: app_of(parsed),
+                    opens: false,
+                }
+                .to_string())
             }
             AppRef::Installed { .. } if starts_app(action) && below_app(parsed).is_empty() => {
                 Ok(None)
@@ -2671,7 +1535,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // window first and is then done where its path points: a fresh workspace's first
             // `notes/Notes#new-note` works the way the refusal for a read says it will.
             AppRef::Installed { app_id, .. } => {
-                let provider = self.started_provider(&app_id, wait_ms).await?;
+                let provider = self
+                    .tree
+                    .started_provider(&app_id, wait_ms.map(std::time::Duration::from_millis))
+                    .await?;
                 Ok(Some((app_id, provider, true)))
             }
             AppRef::Running {
@@ -2720,13 +1587,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // offers by that id (`notes#create-page` is the notebook's) is
             // found without reading what the containers hold, so finding it
             // costs the same however many notes there are.
-            let top = self.level(&resolved.provider, "", &mut levels).await?;
+            let top = self.tree.level(&resolved.provider, "", &mut levels).await?;
             if let Some((path, action)) =
                 only_by_id(name, &published_on(&top.children, &[], &levels))
             {
                 return Ok((format!("{}/{path}", resolved.path), action.clone()));
             }
-            let root = self.app_children(&resolved.provider, &mut levels).await?;
+            let root = self
+                .tree
+                .app_children(&resolved.provider, &mut levels)
+                .await?;
             // What a container publishes of its own, read with what it holds,
             // is the app's as its root's own actions are.
             if let Ok(action) = pick_action(name, &root.own, &resolved.path) {
@@ -2742,6 +1612,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 .filter(|node| node.container && node.parent.is_empty())
             {
                 let inside = self
+                    .tree
                     .level(&resolved.provider, &container.id, &mut levels)
                     .await?;
                 held.push((container.clone(), inside.children));
@@ -2826,67 +1697,43 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .map(super::refusal::not_allowed)
             .transpose()
     }
-    /// The provider of a running instance of the installed app `app_id`, starting the app in
-    /// the workspace when none runs yet, without a window: where an invocation of the app's own
-    /// API goes. The step shows nothing, so nothing is opened for it.
-    async fn started_provider(&self, app_id: &str, wait_ms: Option<u64>) -> Result<String, String> {
-        match self.app_ref(app_id).await? {
-            AppRef::Running { provider, .. } => Ok(provider),
-            AppRef::Installed { app_id, opens } => {
-                if !opens {
-                    return Err(Self::may_not_open(&app_id));
-                }
-                // A start still pending is followed under its own id, which
-                // answers how it went rather than starting the app again: a
-                // workspace starting many apps at once (hundreds of fresh ones
-                // on a host, each its first) takes longer than one wait, and
-                // the call waits for its app rather than failing.
-                let start = uuid::Uuid::new_v4().to_string();
-                let deadline = std::time::Instant::now()
-                    .checked_add(std::time::Duration::from_millis(super::MAX_WAIT_MS));
-                let mut value = Value::Null;
-                for first in [true].into_iter().chain(std::iter::repeat(false)) {
-                    value = self
-                        .app_in_workspace(
-                            &app_id,
-                            tilo_actions::remote::APPLICATION_START_ACTION,
-                            serde_json::Map::new(),
-                            Some(start.clone()),
-                            if first { wait_ms } else { None },
-                        )
-                        .await?;
-                    let pending = !matches!(
-                        value.pointer("/update/state").and_then(Value::as_str),
-                        Some("succeeded" | "failed" | "cancelled")
-                    );
-                    if !pending || deadline.is_none_or(|end| std::time::Instant::now() >= end) {
-                        break;
-                    }
-                }
-                if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
-                    return Err(format!("{app_id} did not start: {}", outcome(&value).text));
-                }
-                // The instance the workspace started, as it names it; a host serving the
-                // workspace's records names the record it started the app on.
-                value
-                    .pointer(super::OPENED_PEER)
-                    .and_then(Value::as_u64)
-                    .map(|peer| peer.to_string())
-                    .or_else(|| {
-                        value
-                            .pointer("/update/output/value/provider")
-                            .and_then(Value::as_str)
-                            .filter(|provider| tilo_actions::remote::is_resource_provider(provider))
-                            .map(str::to_owned)
-                    })
-                    .ok_or_else(|| format!("{app_id} started, but named no instance of it"))
-            }
+
+    /// Resolve a whole path in the tree. A segment written the way a program types a type
+    /// (`tasks.Task`) is read as that type first, by the names the task's programs give the
+    /// types: only a segment written that way asks them, so a path of titles (`notes/Todo`)
+    /// does not start a task's host to read a name already said.
+    ///
+    /// The resolution, or what the path names said instead (an app that is installed and not
+    /// running); with it the forms it was read by (`None` when it was read plainly), so a
+    /// caller that shows what it found names the type the same way without asking again.
+    async fn resolve(
+        &self,
+        parsed: &Address,
+    ) -> Result<(Result<Resolved, String>, Option<ProgramForms>), String> {
+        let forms = self.forms_named(parsed).await;
+        match self.tree.resolve(parsed, typed(forms.as_ref())).await {
+            Ok((resolved, by_type)) => Ok((Ok(resolved), forms.filter(|_| by_type))),
+            Err(note) if note.is_note() => Ok((Err(note.to_string()), None)),
+            Err(other) => Err(other.into()),
+        }
+    }
+
+    /// [`Tree::resolve_with`] as a listing reads it: the resolution, or what the path names
+    /// said instead.
+    async fn resolve_with(
+        &self,
+        parsed: &Address,
+        forms: Option<&ProgramForms>,
+        reaching: usize,
+    ) -> Result<Result<Resolved, String>, String> {
+        match self.tree.resolve_with(parsed, typed(forms), reaching).await {
+            Ok(resolved) => Ok(Ok(resolved)),
+            Err(note) if note.is_note() => Ok(Err(note.to_string())),
+            Err(other) => Err(other.into()),
         }
     }
 }
 
-/// Whether `action`, named on an app itself, starts it: `open` shows it in a window, `start`
-/// runs it without one.
 /// `why` naming `code`, unless it already names the documented code it was
 /// refused with.
 fn refused_as(code: &str, why: String) -> String {
@@ -2896,37 +1743,6 @@ fn refused_as(code: &str, why: String) -> String {
         why
     }
 }
-
-/// The one window `instance` (a provider an `open` or `tilo_ls` named) among `running`, which
-/// must be of the app `name`: the agent means that window, never another of the app's.
-fn pinned_window(
-    running: &[(String, Value)],
-    name: &str,
-    instance: &str,
-) -> Result<AppRef, String> {
-    let (provider, entry) = running
-        .iter()
-        .find(|(provider, _)| provider == instance)
-        .ok_or_else(|| format!("no running window {instance}; tilo_ls lists the running apps"))?;
-    let app_id = entry["app_id"]
-        .as_str()
-        .ok_or_else(|| format!("window {instance} names no app"))?
-        .to_owned();
-    if page::app_named(name, &[app_id.as_str()]).is_err() {
-        return Err(format!(
-            "window {instance} is {}, not {name}",
-            app_names(std::slice::from_ref(&app_id)).join("")
-        ));
-    }
-    Ok(AppRef::Running {
-        app_id,
-        provider: provider.clone(),
-        pinned: true,
-    })
-}
-
-#[path = "mcp_agent_level.rs"]
-mod level;
 
 #[path = "mcp_agent_resolved.rs"]
 pub(super) mod resolved;
@@ -2951,41 +1767,6 @@ fn no_read_action(resolved: &Resolved) -> Reply {
         text.push_str("; tilo_ls lists what is inside");
     }
     Reply::failed(text)
-}
-
-/// The top level `root` of the host service `provider`, as the service itself
-/// answers it.
-fn as_the_service(provider: &str, root: &mut Level) {
-    // A host service (the desktop's layout, on `desktop:session`)
-    // publishes everything on its one resource: its actions are
-    // the service's own, `desktop#<action>`. A resource's one
-    // container (Tasks' tracker) holds what the app offers more.
-    if provider.parse::<u64>().is_err()
-        && root.own.is_empty()
-        && let [only] = root.children.as_slice()
-        && !only.container
-    {
-        root.own = only.actions.clone();
-    }
-    // A host service's one top resource holding more (a workspace's
-    // governance, holding its servers and apps) is the service
-    // itself: its actions are the service's own (`workspace#member.list`),
-    // and what it holds is listed as the service's.
-    if provider.parse::<u64>().is_err()
-        && !tilo_actions::remote::is_resource_provider(provider)
-        && root.own.is_empty()
-        && let [only] = root
-            .children
-            .iter()
-            .filter(|node| node.parent.is_empty())
-            .collect::<Vec<_>>()
-            .as_slice()
-        && only.container
-    {
-        let only = (*only).clone();
-        root.own = only.actions;
-        root.children.retain(|node| node.id != only.id);
-    }
 }
 
 #[cfg(test)]

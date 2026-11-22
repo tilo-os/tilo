@@ -36,6 +36,9 @@ const PROBE: &str = "so.tilo.probe";
 /// The app of a saved window that is not on this machine.
 const GONE: &str = "so.tilo.gone";
 
+/// An app whose windows are the person's own, never on a workspace's shared desktop.
+const SETTINGS: &str = "so.tilo.settings";
+
 /// What a test names a strip it renames.
 const RENAMED: &str = "Sketches";
 
@@ -894,10 +897,24 @@ fn starts(started: &Path) -> usize {
 /// window as the app that opened it, and the next session opens that app, in the tab it was in.
 #[test]
 fn a_window_the_person_opened_opens_again_after_a_restart() {
+    opens_again_after_a_restart(PROBE);
+}
+
+/// A window of the person's own (Settings) is never in the workspace's layout, and opens again
+/// after a restart all the same: the device's view keeps it, and the next session asks its app.
+#[test]
+fn a_window_of_the_persons_own_opens_again_after_a_restart() {
+    opens_again_after_a_restart(SETTINGS);
+}
+
+/// The person opens `app`, its window maps into the tab the launch made, the session restarts, and
+/// the next session asks `app` for its window again, into that tab.
+fn opens_again_after_a_restart(app: &str) {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
-    let launcher = installed_probe(&mut home, &started);
+    crate::common::probe_app(&mut home, app, "Probe");
+    let launcher = launcher(&home, &started);
     let state = Device::in_home(&mut home).state;
 
     // The person opens the app from the layout, the compositor maps its window into the tab it made,
@@ -911,7 +928,7 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
             .expect("a workspace is in front");
         apps.start(
             &tilo_app_launch::Launch::Package {
-                app: PROBE.into(),
+                app: app.into(),
                 open: None,
             },
             &apps.workspace_named(&workspace),
@@ -922,7 +939,7 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
         });
         session
             .desktop()
-            .with_policy(|policy| policy.map(window(11, PROBE)))
+            .with_policy(|policy| policy.map(window(11, app)))
             .expect("the window maps");
         until(&mut session, "the window is in its tab", |session| {
             tabs(session).len() == 1
@@ -949,7 +966,7 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
         "the tab it was in is kept for it while the app starts"
     );
     next.desktop()
-        .with_policy(|policy| policy.map(window(12, PROBE)))
+        .with_policy(|policy| policy.map(window(12, app)))
         .expect("the window maps");
     until(&mut next, "the app's new window takes its tab", |session| {
         matches!(
@@ -962,6 +979,83 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
         before,
         "no second tab opens beside the saved one"
     );
+}
+
+/// The person opens an app before the session first laid out the workspace's layout, and the
+/// layout holds no window of it: the place the launch made is the person's, not one an earlier
+/// session left unfilled. It stays, and the window takes it.
+#[test]
+fn a_launch_before_the_first_layout_keeps_its_place() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("started");
+    let launcher = installed_probe(&mut home, &started);
+    let state = Device::with_layout(&mut home, &one_window(GONE, "Gone"))
+        .0
+        .state;
+
+    let apps = apps_at(&home, Some(launcher.path().to_owned()));
+    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    let workspace = session
+        .handle()
+        .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
+        .expect("a workspace is in front");
+    apps.start(
+        &tilo_app_launch::Launch::Package {
+            app: PROBE.into(),
+            open: None,
+        },
+        &apps.workspace_named(&workspace),
+    )
+    .expect("the person opens the app");
+    until(&mut session, "the app is started", |_| {
+        starts(&started) == 1
+    });
+    until(&mut session, "the saved layout is laid out", |session| {
+        tabs(session).iter().any(|(tab, _)| {
+            matches!(
+                tile_of(session, *tab),
+                Some(TileContent::LocalApp { ref app_id, .. }) if app_id == GONE
+            )
+        })
+    });
+    for _ in 0..100 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(
+        tabs(&session).len(),
+        2,
+        "the launch keeps its place beside the saved window"
+    );
+
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window(11, PROBE)))
+        .expect("the window maps");
+    until(
+        &mut session,
+        "the window takes the launch's place",
+        |session| {
+            tabs(session).iter().any(|(tab, _)| {
+                matches!(
+                    tile_of(session, *tab),
+                    Some(TileContent::Foreign { surface_id: 11, .. })
+                )
+            })
+        },
+    );
+    let probes = tabs(&session)
+        .iter()
+        .filter(|(tab, _)| {
+            matches!(
+                tile_of(&session, *tab),
+                Some(TileContent::Foreign { ref app_id, .. } | TileContent::LocalApp { ref app_id, .. })
+                    if app_id == PROBE
+            )
+        })
+        .count();
+    assert_eq!(probes, 1, "one place of the app, holding its window");
+    assert_eq!(starts(&started), 1, "the app is started once");
 }
 
 #[test]

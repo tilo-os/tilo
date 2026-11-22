@@ -311,7 +311,11 @@ impl ActionProvider for Latest {
         self.provider().session_state_changed(caller)
     }
 
-    fn changed(&self, caller: &Caller, scope: WatchScope) -> Option<Pending<()>> {
+    fn changed(
+        &self,
+        caller: &Caller,
+        scope: WatchScope,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
         self.provider().changed(caller, scope)
     }
 

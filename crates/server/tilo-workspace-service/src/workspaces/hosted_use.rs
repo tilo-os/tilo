@@ -63,7 +63,6 @@
 //! may be gone by then: it lets that agent's next fill of that item at that
 //! site through, once.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -402,21 +401,6 @@ pub struct AskedTurn {
     pub agent: String,
     /// The agent's name, as its person reads it.
     pub name: String,
-    /// The vault items the turn may use: `None` on a device of the person's own,
-    /// where every item of theirs is theirs to use, and otherwise the items
-    /// their delegation lets this server use. An item it does not name stays on
-    /// their own devices.
-    pub secrets: Option<BTreeSet<String>>,
-}
-
-impl AskedTurn {
-    /// Whether the turn may use the vault item `item`.
-    #[must_use]
-    pub fn may_use(&self, item: &str) -> bool {
-        self.secrets
-            .as_ref()
-            .is_none_or(|allowed| allowed.contains(item))
-    }
 }
 
 /// One use by reference this server carries out.
@@ -636,13 +620,6 @@ fn refused(reason: impl Into<String>) -> ActionCallError {
     }
 }
 
-/// Why a use of a vault item is refused on a server the member delegated their
-/// work to: the delegation names the items it lets the server use, and this is
-/// not one of them, so it stays on their own devices.
-fn not_delegated() -> &'static str {
-    "That vault item stays on your own devices: the work here was delegated without it"
-}
-
 /// The arguments `request` carries.
 fn arguments_of(request: &InvokeRequest) -> Map<String, Value> {
     match &request.argument {
@@ -764,31 +741,28 @@ impl Workspaces {
     /// check of everything of the workspace's that such a turn reaches.
     /// Unknown and forbidden are the same answer.
     ///
-    /// It holds where the caller is an agent on a turn, on an agent session
-    /// the asking person handed it, and no app; the caller's workspace is the
-    /// turn's; and the device the caller names is one the workspace admits
-    /// that person's work on now (one of their own, or this server's own
-    /// where they delegated that work to it as the actor the turn acts as).
-    /// What the turn may then reach is the workspace policy's word on the
-    /// agent ([`Self::turn_reaches`]), decided after this one.
+    /// It holds where the caller is one of this server's agents as its own
+    /// approved key, working on a turn for the person who asked, and no app;
+    /// the caller's workspace is the turn's; and the workspace admits that
+    /// person now. What the turn may then reach is the workspace policy's
+    /// word on the agent ([`Self::turn_reaches`]), decided after this one.
     ///
     /// # Errors
     /// [`UnknownAction`] for every other caller.
     pub async fn asked_turn(&self, turn: &HostedTurn<'_>) -> Result<AskedTurn, ActionCallError> {
         let caller = turn.caller;
         let acting = caller.acting();
-        // An agent a person's own session was handed to, inside a turn:
-        // nothing else is a turn this server carries out.
+        // This server's own agent, inside a turn: nothing else is a turn
+        // this server carries out.
         if acting.app().is_some()
             || !acting.is_agent()
-            || !caller.is_session_delegated()
+            || caller.roster_created_at().is_none()
             || caller.turn().is_none()
         {
             return Err(UnknownAction);
         }
-        let (Some(person), Some(device), Some(agent), Some(workspace)) = (
-            caller.user_public_key().copied(),
-            caller.device_public_key().copied(),
+        let (Some(person), Some(agent), Some(workspace)) = (
+            caller.turn_person().copied(),
             acting.agent_id(),
             caller.workspace(),
         ) else {
@@ -797,29 +771,15 @@ impl Workspaces {
         if WorkspaceId::parse(workspace) != Some(turn.workspace) {
             return Err(UnknownAction);
         }
-        // Whether the workspace admits the person's work now on the device the
-        // turn names: one of their own devices, or — where they delegated that
-        // work to this server as the actor this turn acts as — this server's
-        // own device, which their work is carried out on then. A person it no longer
-        // admits leaves the turns they asked nothing, on any device.
-        let Some(member) = acting.by.member_id().cloned() else {
-            return Err(UnknownAction);
-        };
-        if !self
-            .admits_work(turn.workspace, person, device, &member)
-            .await
-        {
+        // A person the workspace no longer admits leaves the turns they asked nothing.
+        if !self.admits_person(turn.workspace, person).await {
             return Err(UnknownAction);
         }
-        // What the turn may use: every item on a device of the asker's own,
-        // and only what their delegation names on this server.
-        let secrets = self.turn_secrets(turn.workspace, person, device).await;
         Ok(AskedTurn {
             person,
             workspace: workspace.to_owned(),
             agent: agent.to_owned(),
             name: caller.agent_name().unwrap_or(agent).to_owned(),
-            secrets,
         })
     }
 
@@ -929,9 +889,6 @@ impl Workspaces {
         let wanted = Use::read(&request.target, &arguments)?;
         let root = self.workspace_root(&using.workspace);
         let (item, kind, places) = wanted.wanted(&root).map_err(refused)?;
-        if !using.may_use(item.as_str()) {
-            return Err(refused(not_delegated()));
-        }
         let word = person_vault::use_word(&request.target);
         // Validate the item and places in the vault, then check the workspace's
         // `tilo-action-policy` grant instead of a bespoke per-item leave table.
@@ -1217,11 +1174,6 @@ impl Workspaces {
                 "Where the secret goes changed after it was asked about",
             ));
         }
-        // A delegation that no longer names the item, or was revoked, stops the
-        // use its person answered about.
-        if !using.may_use(item.as_str()) {
-            return Err(refused(not_delegated()));
-        }
         let always = answer == UseAnswer::Always && wanted.takes_leave();
         let scope = vault_use_scope(&using, &target, &item, &places);
         if always {
@@ -1354,73 +1306,37 @@ impl Workspaces {
         .flatten()
     }
 
-    /// Whether the workspace `workspace` admits `person`'s work on `device` for a
-    /// turn acting as `actor`: on one of their own devices, or on this server's
-    /// own device where they delegated that work to it as `actor`. A device that
-    /// is neither is no device their work is admitted on, whatever certificate it
-    /// holds. `false` for a workspace not governed here.
-    pub async fn admits_work(
-        &self,
-        workspace: WorkspaceId,
-        person: [u8; 32],
-        device: [u8; 32],
-        actor: &tilo_action_policy::MemberId,
-    ) -> bool {
+    /// Whether `workspace`, governed here, admits `person` on a device now.
+    async fn admits_person(&self, workspace: WorkspaceId, person: [u8; 32]) -> bool {
         let placed = &self.inner.host.environments;
         let now_ns = tilo_clock::unix_now_ns();
-        let server = self.governor().device_public_key;
         self.governing(workspace, |governance| {
-            let own = person_device_in(governance.peer, &person, |device| {
+            person_device_in(governance.peer, &person, |device| {
                 placed.of(device, now_ns).is_some()
-            });
-            own == Some(device)
-                || (device == server && delegated_in(governance.peer, &person, actor, &server))
+            })
+            .is_some()
         })
         .await
         .unwrap_or(false)
-    }
-
-    /// The vault items a turn taking `person`'s work on `device` in `workspace`
-    /// may use: `None` on a device of their own, where every item of theirs is
-    /// theirs to use, and otherwise the items their delegation lets this
-    /// server use. `None` for a workspace not governed here.
-    async fn turn_secrets(
-        &self,
-        workspace: WorkspaceId,
-        person: [u8; 32],
-        device: [u8; 32],
-    ) -> Option<BTreeSet<String>> {
-        let placed = &self.inner.host.environments;
-        let now_ns = tilo_clock::unix_now_ns();
-        let server = self.governor().device_public_key;
-        self.governing(workspace, |governance| {
-            let own = person_device_in(governance.peer, &person, |device| {
-                placed.of(device, now_ns).is_some()
-            });
-            if own == Some(device) || device != server {
-                return None;
-            }
-            governance
-                .peer
-                .workspace()
-                .work_delegation(&server, &person, tilo_clock::wall())
-                .map(|delegation| delegation.secrets.into_iter().collect())
-        })
-        .await
-        .flatten()
     }
 
     /// The device the workspace `workspace` admits `person`'s work on for a turn
     /// acting as `actor`: this server's own device where they delegated that work
     /// to it as `actor`, else the newest of their own devices it admits now.
     /// `None` for a workspace not governed here, or a person whose work no device
-    /// here is admitted on: a turn of theirs does not start.
+    /// here is admitted on: a turn of theirs does not start. On a device of the person's own, the
+    /// turn is this device's: what it writes for the agent is this device's member write.
     pub async fn work_device(
         &self,
         workspace: WorkspaceId,
         person: [u8; 32],
         actor: &tilo_action_policy::MemberId,
     ) -> Option<[u8; 32]> {
+        if let Ok(device) = self.member_identity()
+            && device.cert.user_public_key == person
+        {
+            return Some(device.cert.device_public_key);
+        }
         let placed = &self.inner.host.environments;
         let now_ns = tilo_clock::unix_now_ns();
         let server = self.governor().device_public_key;
@@ -1477,9 +1393,6 @@ impl Workspaces {
         let using = self.turn_uses_for(turn, &target).await?;
         let root = self.workspace_root(&using.workspace);
         let (item, site) = page_wanted(fill).map_err(refused)?;
-        if !using.may_use(item.as_str()) {
-            return Err(refused(not_delegated()));
-        }
         let kind = {
             let items = self
                 .open_vault(&using.workspace)
@@ -1550,9 +1463,6 @@ impl Workspaces {
         let fill: FillPage = serde_json::from_value(Value::Object(kept.arguments.clone()))
             .map_err(|_| "What was asked does not read as a page to fill".to_owned())?;
         let (item, site) = page_wanted(&fill)?;
-        if !using.may_use(item.as_str()) {
-            return Err(not_delegated().to_owned());
-        }
         {
             let items = self.open_vault(&using.workspace).await?.items();
             let facts = items

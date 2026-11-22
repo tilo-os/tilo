@@ -7,7 +7,6 @@
 )]
 // One test binary instead of one per file; #[path] keeps the files in place.
 
-
 #[path = "blob_reference.rs"]
 mod blob_reference;
 #[path = "concurrent_block_text.rs"]

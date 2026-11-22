@@ -58,27 +58,6 @@ fn agents_in(value: &Value, agents: &mut Vec<(String, String)>) {
     }
 }
 
-/// The first action `device` publishes that `wanted` picks, read page by page.
-fn published(device: &Device, wanted: impl Fn(&Value) -> bool) -> Option<Value> {
-    let mut cursor = Value::Null;
-    loop {
-        let page = device.ask(&json!({"op": "actions_enumerate", "cursor": cursor}));
-        let answer = &page["answer"];
-        if let Some(row) = answer["actions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|row| wanted(row))
-        {
-            return Some(row.clone());
-        }
-        match answer["next_cursor"].as_str() {
-            Some(next) if !next.is_empty() => cursor = Value::from(next),
-            _ => return None,
-        }
-    }
-}
-
 /// Wait until Chat's record of the workspace on `device` holds every one of `wanted` : what a
 /// send landed as.
 fn wait_for_chat_holding(device: &Device, wanted: &[&str]) {
@@ -127,24 +106,14 @@ fn send(device: &Device, to: &Value, text: &str) -> Value {
         Value::Array(_) => to.clone(),
         one => Value::Array(vec![one.clone()]),
     };
-    let row = tilo_test_env::wait_for(
+    let send = tilo_test_env::wait_for(
         Awaited(device, "publishes the session's send".into()),
-        || {
-            published(device, |row| {
-                row["id"].as_str() == Some("session:send-to\u{1f}send")
-            })
-        },
+        || device.offered("session:send-to", "send"),
     );
-    let answered = device.act_wait(
-        row["provider"].as_str().expect("a provider"),
-        row["id"].as_str().expect("an id"),
-        &json!({ "to": to, "text": text }),
-    );
+    let answered = device.act_wait(&send, &json!({ "to": to, "text": text }));
     // The send is answered when it is carried out: a receipt left accepted is an invocation
     // nothing settles, which a caller waits out rather than reads.
-    let state = answered["answer"]["receipt"]["update"]["state"]
-        .as_str()
-        .unwrap_or_default();
+    let state = answered["update"]["state"].as_str().unwrap_or_default();
     assert!(
         !matches!(state, "accepted" | "progress"),
         "the send settles: {answered}"

@@ -103,7 +103,7 @@ async fn once_on_the_page(page: &mut Browser, route: &DocumentRoute, line: &str)
 /// never again, holds it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_poem_is_written_then_shown_live_then_changed() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, actions, workspaces, workspace, page, served);
     let mut page = page;
     let person = caller_of(&root, &browser, &workspace);
 
@@ -116,7 +116,7 @@ async fn a_poem_is_written_then_shown_live_then_changed() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    answer_the_turn!(workspaces, actions, workspace, writes_the_poem(&asked));
+    answer_the_turn!(served, workspace, writes_the_poem(&asked));
     // Taken out whole: no lock is held while the test asks the server anything more.
     let asked = asked.lock().unwrap().clone();
     let wrote = told(&asked);
@@ -139,7 +139,7 @@ async fn a_poem_is_written_then_shown_live_then_changed() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    answer_the_turn!(workspaces, actions, workspace, shows_the_poem(&asked));
+    answer_the_turn!(served, workspace, shows_the_poem(&asked));
     let asked = asked.lock().unwrap().clone();
     let showed = told(&asked);
     assert!(
@@ -186,7 +186,7 @@ async fn a_poem_is_written_then_shown_live_then_changed() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    answer_the_turn!(workspaces, actions, workspace, adds_a_line(&asked));
+    answer_the_turn!(served, workspace, adds_a_line(&asked));
     let asked = asked.lock().unwrap().clone();
     let added = told(&asked);
     assert!(

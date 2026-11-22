@@ -429,7 +429,7 @@ impl GovernedWorkspace {
 
     /// [`Self::call_binding`] of a sealed Chat, opened with the channel's
     /// keys this server holds as a member.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     async fn sealed_call_binding(
         &self,
         app: &str,
@@ -446,7 +446,7 @@ impl GovernedWorkspace {
 
     /// A server built without the browser listener takes part in no channels, so
     /// it cannot read a sealed Chat.
-    #[cfg(not(any(feature = "agents", feature = "web")))]
+    #[cfg(not(feature = "device-keys"))]
     #[expect(
         clippy::unused_async,
         reason = "the same call as the build's that takes part in channels"

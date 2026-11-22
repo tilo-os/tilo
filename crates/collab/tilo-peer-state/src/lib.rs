@@ -19,6 +19,8 @@ pub mod join_log;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_transport;
 mod kept_states;
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+pub mod loopback;
 /// The workspace invitation and join contract (`tilo-workspace-join`).
 pub use tilo_workspace_join as join;
 // The wire message admission speaks; owned by `neighbour-wire`.
@@ -51,9 +53,6 @@ pub mod installation;
 /// to have it certified.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod new_device;
-/// Running an offloadable invocation on another device, through the offer
-/// round.
-pub mod offload;
 pub mod opening;
 mod ordered;
 mod postcard_sink;

@@ -8,7 +8,6 @@
 //! inside one app has its edit denied, and a grant to one person on one
 //! artifact extends a viewer's authority there only.
 
-
 use std::time::{Duration, SystemTime};
 
 use ed25519_dalek::SigningKey;

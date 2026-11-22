@@ -28,28 +28,55 @@ enum LocalFirst {
 }
 
 /// The join of a live window that joins its workspace, started: `None` for any other launch.
+///
+/// The join's worker wakes the app at each step it takes, and what arrives over it later (an
+/// invocation, the action surface it publishes) wakes the app the same way: so the join starts in the
+/// wake scope the app is built in, made here, before the app is.
 pub(super) fn start_join(spec: &LaunchSpec, args: &LaunchArgs) -> Option<Joining> {
     (live_native(spec, args) && spec.attaches_runtime(args)).then(|| {
-        crate::collaboration::native_initial::ensure_unoccupied()
-            .map_err(LaunchError::Operation)?;
-        crate::collaboration::CollaborationManager::join_native(
-            &spec.definition.resource_type,
-            native_connection(),
-        )
-        .map_err(LaunchError::from)
+        join_in_scope(|| {
+            crate::collaboration::native_initial::ensure_unoccupied()
+                .map_err(LaunchError::Operation)?;
+            crate::collaboration::CollaborationManager::join_native(
+                &spec.definition.resource_type,
+                native_connection(),
+            )
+            .map_err(LaunchError::from)
+        })
     })
 }
 
-type Joining = Result<crate::collaboration::CollaborationManager, LaunchError>;
+/// Start the join `join` makes in a wake scope of its own, the one the app is built in.
+fn join_in_scope(
+    join: impl FnOnce() -> Result<crate::collaboration::CollaborationManager, LaunchError>,
+) -> Joining {
+    let scope = crate::wake::WakeScope::new();
+    let manager = {
+        let _entered = scope.enter();
+        join()
+    };
+    Joining { scope, manager }
+}
+
+/// A started join and the wake scope it runs in.
+pub(super) struct Joining {
+    scope: crate::wake::WakeScope,
+    manager: Result<crate::collaboration::CollaborationManager, LaunchError>,
+}
+
+impl std::fmt::Debug for Joining {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Joining").finish_non_exhaustive()
+    }
+}
 
 /// Dispatch a launch: one that joins its workspace builds at once on the local replica while the join
 /// runs, or, where the record is not on this device, hands back the join to wait for.
 fn dispatch_local_first(spec: &LaunchSpec, args: &LaunchArgs, join: Option<Joining>) -> LocalFirst {
-    let Some(joining) = join else {
+    let Some(Joining { scope, manager }) = join else {
         return LocalFirst::Built(super::dispatch_definition(spec, args));
     };
-    let scope = crate::wake::WakeScope::new();
-    match dispatch_definition_in(spec, args, Some(scope), || joining) {
+    match dispatch_definition_in(spec, args, Some(scope), || manager) {
         Ok(dispatched) => LocalFirst::Built(Ok(dispatched)),
         Err(Unbuilt::Failed(error)) => LocalFirst::Built(Err(error)),
         // The join is waited for off this thread.
@@ -257,4 +284,44 @@ pub(super) fn construct_native(
             App::from_component(component, inputs)
         }
     })
+}
+
+#[cfg(all(test, unix, feature = "broker-transport"))]
+mod tests {
+    use super::*;
+
+    /// The join a launch starts before its window wakes the scope the app is then built in, at each
+    /// step it takes: a join whose wakes reached no scope completed, and nothing that arrived over it
+    /// (an invocation, the action surface to publish) ever woke the running app to answer.
+    #[test]
+    fn the_early_join_wakes_the_scope_the_app_is_built_in() {
+        use crate::application_test_support as probe;
+        let workspace: uuid::Uuid = "3f2b1c00-0000-4000-8000-00000000000e".parse().unwrap();
+        let mut broker = None;
+        let joining = join_in_scope(|| {
+            let (manager, probe) =
+                crate::collaboration::CollaborationManager::native_joining_fixture_for_test(
+                    crate::collaboration::RouteSpec::app(probe::APP, workspace),
+                    "probe",
+                    automerge::AutoCommit::new().save(),
+                    runtime_collab::WorkspaceStatus::Ready,
+                );
+            broker = Some(probe);
+            Ok(manager)
+        });
+        let broker = broker.unwrap();
+        let manager = joining.manager.as_ref().unwrap();
+        assert!(manager.is_joining());
+        let _ = joining.scope.take_unbound();
+
+        broker.answer();
+        let deadline = tilo_test_env::hang_deadline();
+        while !joining.scope.is_pending() {
+            assert!(
+                crate::time::now() < deadline,
+                "the join's answer never woke the app's scope"
+            );
+            std::thread::yield_now();
+        }
+    }
 }

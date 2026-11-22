@@ -8,7 +8,7 @@
 //! whether a trim a close asked for is still owed, how many ran, and whether startup's trim has
 //! run.
 //! It is published on the session's peer network like the shell and the session's controls, so the action
-//! model lists it: `tilo-control actions list session-diagnostics` , an agent through the broker,
+//! model lists it: `tilo action list session-diagnostics` , an agent through the broker,
 //! and the test-control socket all reach the same verbs, and `profile-status` answers the same
 //! reading the owner's `profile_status` request does.
 

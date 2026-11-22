@@ -252,7 +252,7 @@ fn boot_of(fabric: &PersonDevices, answer: &UnlockDecisionEntry) -> Boot {
             if enrolment.id() != Some(answer.boot_cert_digest) {
                 continue;
             }
-            let device = hex::encode(enrolment.cert.device_public_key);
+            let device = hex::encode(enrolment.device());
             let label = fabric
                 .devices()
                 .iter()

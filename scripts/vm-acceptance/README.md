@@ -116,7 +116,7 @@ check passes.
 ### MCP server (M01-M04) and input fidelity (I01-I08)
 
 M01-M04 (`checks/agent.py`) run `guest/mcp_client.py` in the guest, as Claude Code would run
-`tilo-runtime-mcp --connect`: the person's consent is answered through the control socket's
+`tilo-runtime --connect`: the person's consent is answered through the control socket's
 `permission-prompts` actions, the MCP server must offer the path-addressed agent tools, `tilo_ls`
 must list Notes as a running app (it is open), a note made with `notes#new-note` (the harness
 grants the test agent Notes for the session) is read back through the desktop, and refusals

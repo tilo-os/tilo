@@ -1,8 +1,8 @@
 //! What an owner does to their server from another of their devices.
 //!
-//! A server is headless: its person reaches it over the same owner-only
-//! management route they rename or remove it on
-//! (`HomePeerManagementRequest`), never over ssh. Each thing they may do is
+//! A server is headless: its person reaches it through its entry in their
+//! Servers workspace, where they also rename and retire it, never over ssh.
+//! Each thing they may do is
 //! one [`ServerOperation`], and each answers with a typed
 //! [`ServerOperationResult`]: read-only ones with the live answer (the
 //! server's health, what it holds and how its copies stand, a service's

@@ -1,5 +1,11 @@
 //! Fonts and images, as the service holds them for its apps.
 //!
+//! **The product font catalog** is the service's own copy, named by each
+//! file's pinned SHA-256: an app finds the catalog wherever its namespace put
+//! it (its runtime bundle, its package, the image), so a path would name a
+//! different file, or none, on this side. The service lists the digests it
+//! has in its welcome and maps each file once for every app.
+//!
 //! **Fonts from the shared view** are mapped once per path and shared by
 //! every app of the workspace: they are public, read-only files, so sharing
 //! them leaks nothing, and the glyph outlines vello caches for one app serve
@@ -26,21 +32,40 @@ use vello::peniko::{Blob, FontData, ImageAlphaType, ImageData};
 /// Largest font file the service maps from the shared view.
 const MAX_FONT_FILE: usize = 128 << 20;
 
-/// Fonts mapped from the shared read-only view, by canonical path.
+/// Fonts mapped from the catalog and the shared read-only view, by
+/// canonical path.
 pub struct FontFiles {
     roots: Vec<PathBuf>,
+    /// The catalog's files this service has, by their pinned SHA-256.
+    catalog: HashMap<String, PathBuf>,
     mapped: HashMap<PathBuf, Blob<u8>>,
 }
 
 impl FontFiles {
-    /// Fonts may come from beneath `roots` only. Roots that do not exist are
-    /// dropped; the rest are canonicalized once, now.
-    pub fn new(roots: &[PathBuf]) -> Self {
+    /// Fonts may come from beneath `roots` and from the catalog at `catalog`
+    /// only. Roots that do not exist are dropped; the rest are canonicalized
+    /// once, now. The catalog's files are those of its manifest present at
+    /// their pinned size: a staged catalog carries its scope's files only.
+    pub fn new(roots: &[PathBuf], catalog: Option<&Path>) -> Self {
+        let mut roots: Vec<PathBuf> = roots
+            .iter()
+            .filter_map(|root| std::fs::canonicalize(root).ok())
+            .collect();
+        let catalog_root = catalog.and_then(|root| std::fs::canonicalize(root).ok());
+        let mut files = HashMap::new();
+        if let (Some(root), Ok(manifest)) = (&catalog_root, tilo_font_catalog::manifest()) {
+            for asset in &manifest.font {
+                if let Ok(path) = asset.sized_in(root) {
+                    files.insert(asset.sha256.clone(), path);
+                }
+            }
+            if !roots.iter().any(|known| root.starts_with(known)) {
+                roots.push(root.clone());
+            }
+        }
         Self {
-            roots: roots
-                .iter()
-                .filter_map(|root| std::fs::canonicalize(root).ok())
-                .collect(),
+            roots,
+            catalog: files,
             mapped: HashMap::new(),
         }
     }
@@ -48,6 +73,28 @@ impl FontFiles {
     /// The directories fonts are read from, for the service's confinement.
     pub fn roots(&self) -> &[PathBuf] {
         &self.roots
+    }
+
+    /// The pinned SHA-256 of every catalog file this service has.
+    pub fn catalog(&self) -> Vec<String> {
+        let mut digests: Vec<String> = self.catalog.keys().cloned().collect();
+        digests.sort();
+        digests
+    }
+
+    /// Face `index` of the catalog file pinned as `sha256`.
+    pub fn open_catalog(&mut self, sha256: &str, index: u32) -> Result<FontData, WireError> {
+        let path = self.catalog.get(sha256).ok_or(WireError::Invalid(
+            "a catalog font this service does not have",
+        ))?;
+        let blob = if let Some(blob) = self.mapped.get(path) {
+            blob.clone()
+        } else {
+            let blob = map_file(path)?;
+            self.mapped.insert(path.clone(), blob.clone());
+            blob
+        };
+        checked_font(blob, index)
     }
 
     pub fn open(&mut self, path: &str, index: u32) -> Result<FontData, WireError> {

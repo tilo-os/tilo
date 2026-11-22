@@ -23,26 +23,75 @@ pub(super) fn succeeded(invocation: InvocationId, value: serde_json::Value) -> I
 /// hears that it waits for them.
 const APPROVING: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// What `work` answered within `wait` (until it ends without one), or `Err(asked)` while it is
-/// still under way, waiting for its person when `asked`. One its person was asked about
-/// (`asking`) is given a while for an answer at hand (a computer holding their root answers at
-/// once), and then its caller hears it waits for them; it goes on, and is done once they allow it.
+/// What `work` answered within `wait` (until it ends without one) and whether its person was
+/// asked on the way, or `Err(asked)` while it is still under way, waiting for its person when
+/// `asked`. One its person was asked about (`asking`) is given a while for an answer at hand (a
+/// computer holding their root answers at once), and then its caller hears it waits for them; it
+/// goes on, and is done once they allow it.
 pub(super) async fn answered_within(
     work: &mut tokio::task::JoinHandle<Result<serde_json::Value, ActionCallError>>,
     wait: Option<std::time::Duration>,
     asking: &tokio::sync::Notify,
-) -> Result<Result<Result<serde_json::Value, ActionCallError>, tokio::task::JoinError>, bool> {
+) -> Result<
+    (
+        Result<Result<serde_json::Value, ActionCallError>, tokio::task::JoinError>,
+        bool,
+    ),
+    bool,
+> {
+    let asked = std::sync::atomic::AtomicBool::new(false);
+    // The question is looked at first, so work that ends as its person answers is known to
+    // have asked them.
     tokio::select! {
+        biased;
+        () = async {
+            asking.notified().await;
+            asked.store(true, std::sync::atomic::Ordering::Relaxed);
+            tokio::time::sleep(APPROVING).await;
+        } => Err(true),
         ran = async {
             match wait {
                 Some(wait) => tokio::time::timeout(wait, &mut *work).await.map_err(|_| false),
                 None => Ok((&mut *work).await),
             }
-        } => ran,
-        () = async {
-            asking.notified().await;
-            tokio::time::sleep(APPROVING).await;
-        } => Err(true),
+        } => ran.map(|ran| (ran, asked.load(std::sync::atomic::Ordering::Relaxed))),
+    }
+}
+
+/// What `invocation` answers once its work `ran`, recorded as it ended: a success is kept for
+/// whoever follows it, and so is a no from its person, once `asked`, so the same invocation
+/// asked again answers their no rather than putting the question to them a second time.
+pub(super) fn ended(
+    actions: &Actions,
+    invocation: InvocationId,
+    ran: Result<Result<serde_json::Value, ActionCallError>, tokio::task::JoinError>,
+    asked: bool,
+) -> Result<InvocationReceipt, ActionCallError> {
+    match ran {
+        Ok(Ok(value)) => {
+            let state = succeeded(invocation, value);
+            let receipt = state.receipt();
+            actions.log().complete(&invocation, state);
+            Ok(receipt)
+        }
+        Ok(Err(error)) if asked => {
+            actions
+                .log()
+                .complete(&invocation, failed(invocation, &error.to_string()));
+            Err(error)
+        }
+        // Refused before anything changed, or answered from the workspace's request records
+        // on a retry: nothing to remember.
+        Ok(Err(error)) => {
+            actions.log().abandon(&invocation);
+            Err(error)
+        }
+        Err(stopped) => {
+            actions.log().abandon(&invocation);
+            Err(ActionCallError::Unavailable {
+                reason: format!("the host's operation stopped: {stopped}"),
+            })
+        }
     }
 }
 

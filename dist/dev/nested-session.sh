@@ -843,7 +843,6 @@ fi
 TILO_FS_FUSE_OWNER_ONLY=1 setsid "$bin/fs" serve --mount-point "$files_mount" --cache-dir "$files_state/cache" \
     --storage-sock "$runtime/tilo/files-storage/storage.sock" \
     --blob-sock "$files_runtime/fs-blobs.sock" \
-    --session-link "$files_runtime/fs-session-link" \
     --backend fuse > "$logs/files-workspace.log" 2>&1 &
 files_pid=$!
 children+=("$files_pid")
@@ -868,7 +867,7 @@ fi
 mkdir -p "$HOME/Remote" "$XDG_STATE_HOME/tilo/cloud" "$runtime/tilo-fs-cloud" "$runtime/tilo-fs-cloud-files"
 chmod 700 "$runtime/tilo-fs-cloud" "$runtime/tilo-fs-cloud-files"
 # What it does with each account is logged too: a cloud account that never shows its files says why.
-RUST_LOG="$RUST_LOG,fs::cloud=info" setsid "$bin/fs" cloud-service --mounts-root "$HOME/Remote" --state-root "$XDG_STATE_HOME/tilo/cloud" \
+RUST_LOG="$RUST_LOG,tilo_fs::cloud=info" setsid "$bin/fs" cloud-service --mounts-root "$HOME/Remote" --state-root "$XDG_STATE_HOME/tilo/cloud" \
     --fs-binary "$bin/fs" \
     --control-socket "$runtime/tilo-fs-cloud/control.sock" \
     --file-socket "$runtime/tilo-fs-cloud-files/files.sock" > "$logs/cloud.log" 2>&1 &

@@ -106,7 +106,6 @@ fn an_agent_starts_a_sub_agent_with_its_job_its_role_and_its_kind_of_work() {
             model: None,
             task: Some("tasks.issues/issues/i_7".to_owned()),
             id: None,
-            coding: None,
         }))
         .unwrap();
     let state = record.state().unwrap();
@@ -118,7 +117,6 @@ fn an_agent_starts_a_sub_agent_with_its_job_its_role_and_its_kind_of_work() {
         made.keeper, ADA,
         "it works for the person its starter works for"
     );
-    assert!(made.on_host, "the workspace's host works it");
     assert_eq!(made.state, AgentState::Active);
     assert_eq!(made.created_at, THEN);
     assert_eq!(made.told(), Some("Name the build each number comes from."));
@@ -681,7 +679,7 @@ const KEPT_OF_AGENTS: [&str; 4] = [
     "stop-sub-agent",
     "sub-agent-stands",
 ];
-const REFUSED_OF_AGENTS: [&str; 9] = [
+const REFUSED_OF_AGENTS: [&str; 8] = [
     "create-agent",
     "rename-agent",
     "set-agent-model",
@@ -691,7 +689,6 @@ const REFUSED_OF_AGENTS: [&str; 9] = [
     "set-sub-agent-limits",
     // Said of a sub-agent by whatever works it, on the list, and by no tool of its turn.
     "sub-agent-produced",
-    "sub-agent-coding",
 ];
 
 /// What the policy answers `agent`'s turn that carries `rules` in Chat, which keeps its
@@ -874,7 +871,6 @@ pub(super) fn kept(name: &str, started_by: &str, at: i64, stands: Stands) -> Age
         id: tilo_resource::Atom(name.to_owned()),
         name: name.to_owned(),
         keeper: ADA.to_owned(),
-        on_host: true,
         created_at: at,
         sub: Some(Sub {
             started_by: started_by.to_owned(),
@@ -993,7 +989,6 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
             "id": "find-the-deck",
             "name": "Find the deck",
             "keeper": ADA,
-            "on_host": true,
             "model": null,
             "mcp_client": null,
             "bound": [],
@@ -1015,7 +1010,6 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
                 "line": "",
                 "notes": [{"id": note_id, "by": MAIN, "text": "It may be in Files.", "at": THEN}],
                 "produced": [],
-                "coding": null,
             },
             "sub_depth": null,
             "sub_at_once": null,
@@ -1031,7 +1025,6 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
             "id": "claude",
             "name": "Claude",
             "keeper": "ada",
-            "on_host": false,
             "model": null,
             "mcp_client": null,
             "bound": [],

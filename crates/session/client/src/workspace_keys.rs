@@ -254,14 +254,33 @@ impl KeyLink {
             .map(|keys| keys.reader_groups_of(workspace))
             .unwrap_or_default();
         for (group, epoch) in std::iter::once((workspace, epoch)).chain(groups) {
-            if self.wanted.lock_recover().insert(group, epoch) == Some(epoch) {
-                continue;
-            }
-            self.tell_siblings(NeighbourMsg::MlsGovernanceWanted {
-                workspace: group.to_string(),
-                from_epoch: epoch,
-            });
+            self.want_group(group, epoch);
         }
+    }
+
+    /// This device holds `write` of `workspace` and could not open it: ask for the frames of
+    /// the group it is sealed under, which for a document sealed under its own group (the
+    /// workspace's vault) is no group of the workspace's, and for the workspace's own
+    /// ([`Self::want_frames`]).
+    pub fn want_write_frames(&self, workspace: ModelWorkspaceId, write: &collab_types::SignedOp) {
+        let group = write
+            .encryption
+            .map_or(workspace, |metadata| metadata.key_group(workspace));
+        if group != workspace {
+            self.want_group(group, 0);
+        }
+        self.want_frames(workspace, 0);
+    }
+
+    /// Ask the person's other devices for `group`'s frames from `epoch` on, once per epoch.
+    fn want_group(&self, group: ModelWorkspaceId, epoch: u64) {
+        if self.wanted.lock_recover().insert(group, epoch) == Some(epoch) {
+            return;
+        }
+        self.tell_siblings(NeighbourMsg::MlsGovernanceWanted {
+            workspace: group.to_string(),
+            from_epoch: epoch,
+        });
     }
 
     /// One of the person's devices came up: it hears what this device still waits for.
@@ -867,6 +886,58 @@ mod tests {
                 "a governance frame waits for the next settle"
             );
             assert!(link.take_inbound().is_empty(), "and is taken once");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_write_this_device_cannot_open_asks_for_the_group_it_is_sealed_under;
+
+        phase a_document_sealed_under_its_own_group_asks_for_that_group;
+        // A document sealed under a group of its own (the workspace's vault) is opened with that
+        // group's keys, not the workspace's: a device that lacks them asks the person's other
+        // devices for that group's frames, beside the workspace's own, and once per epoch.
+        {
+            let link = KeyLink::new();
+            let (outgoing, mut said) = tokio::sync::mpsc::unbounded_channel();
+            link.attach(Arc::new(outgoing));
+            let workspace = ModelWorkspaceId::new();
+            let vault = ModelWorkspaceId::new();
+            let mut write = collab_types::SignedOp::new_unsigned(
+                b"sealed".to_vec(),
+                collab_types::ArtifactId::new(),
+                Ed25519PublicKey::from_bytes([1; 32]),
+                collab_types::AttestationId::new(),
+                collab_types::OpKind::Change,
+                std::time::SystemTime::UNIX_EPOCH,
+                1,
+            );
+            write.encryption = Some(collab_types::EncryptionMetadata::content_group(
+                workspace,
+                vault,
+                3,
+                collab_types::ContentRetention::Delta,
+            ));
+            let wanted = |said: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>| {
+                let mut groups = Vec::new();
+                while let Ok(command) = said.try_recv() {
+                    if let Cmd::TellSiblings(message) = command
+                        && let NeighbourMsg::MlsGovernanceWanted { workspace, .. } = *message
+                    {
+                        groups.push(workspace);
+                    }
+                }
+                groups.sort();
+                groups
+            };
+            link.want_write_frames(workspace, &write);
+            let mut both = vec![vault.to_string(), workspace.to_string()];
+            both.sort();
+            assert_eq!(wanted(&mut said), both);
+            link.want_write_frames(workspace, &write);
+            assert!(
+                wanted(&mut said).is_empty(),
+                "what was asked for at an epoch is not asked again"
+            );
         }
     }
 

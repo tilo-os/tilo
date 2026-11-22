@@ -130,9 +130,6 @@ mod tests {
         fn manages(&self, _: &Workspace, _: &UserId) -> bool {
             true
         }
-
-        // A page's member list is its workspace host's to change.
-        fn add_agent(&self, _: &Workspace, _: &str, _: &UserId) {}
     }
 
     /// The names the tab lists.

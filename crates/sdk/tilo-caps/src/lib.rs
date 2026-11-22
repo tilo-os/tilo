@@ -236,17 +236,11 @@ impl Capability {
             Self::Camera | Self::Microphone | Self::ScreenCapture => [Prompt, Planned],
             // The session's settings service grants it, on Tilo OS, to the
             // settings app the image ships and to no other.
-            Self::SettingsSystem => [
-                Available,
-                Unsupported(TILO_OS_SETTINGS),
-            ],
+            Self::SettingsSystem => [Available, Unsupported(TILO_OS_SETTINGS)],
             // The app sandbox refuses io_uring unless the person grants it
             // (an app the image ships is granted what it declares); runtimes
             // fall back to epoll without it, so declare it optional.
-            Self::IoUring => [
-                Prompt,
-                Unsupported(LINUX_ONLY_IO_URING),
-            ],
+            Self::IoUring => [Prompt, Unsupported(LINUX_ONLY_IO_URING)],
         };
         row.get(target.column()).copied().unwrap_or(Planned)
     }

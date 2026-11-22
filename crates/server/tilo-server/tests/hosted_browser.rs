@@ -21,8 +21,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_server::certify::ConfirmationAnswer;
 use tilo_server::hosted_browser::{
-    BrowserMeter, BrowserSessions, HostedBrowsers, Material, PAGE_RESOURCE, Window,
-    no_payment_method,
+    BrowserMeter, BrowserSessions, HostedBrowsers, Material, Window, no_payment_method,
 };
 use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_server::{AppActionServer, Envelope, ServerClient};
@@ -36,6 +35,7 @@ use crate::common::{
     TestDevice, TestServer, TestUser, client_endpoint, device_endpoint, spawn_server_serving_apps,
 };
 use tilo_server::WorkspaceId;
+use tilo_workspace_service::agents::windows::PAGE_RESOURCE;
 
 const WS: WorkspaceId = WorkspaceId::from_u128(0x1111_1111_1111_4111_8111_1111_1111_1111);
 const OTHER_WS: WorkspaceId = WorkspaceId::from_u128(0x2222_2222_2222_4222_8222_2222_2222_2222);

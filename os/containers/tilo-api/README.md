@@ -23,7 +23,7 @@ the server's Caddy, which terminates TLS; the server serves plain HTTP.
   | `TILO_API_LISTEN` | `HOST:PORT` to listen on, e.g. `0.0.0.0:8080` |
   | `TILO_API_ORIGIN` | the origin agents reach, e.g. `https://mcp.tilo.sh` |
   | `TILO_API_WEB_ENTRY` | the person's Tilo on the web, e.g. `https://tilo.sh` |
-  | `TILO_API_HOST` | the public origin of the server their workspaces live on, e.g. `https://eu1.tilo.sh` |
+  | `TILO_API_HOST` | the host their workspaces live on, as the host writes it in `web-host.json`: its certificate, where it is dialled, and its HTTPS origin, which names it |
   | `TILO_API_STATE` | the state file, e.g. `/state/api.json` |
 
 | | |

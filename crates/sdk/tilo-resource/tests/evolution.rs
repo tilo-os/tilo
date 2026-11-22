@@ -1,4 +1,3 @@
-
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
 use tilo_resource::evolution::{self, VERSION_KEY};

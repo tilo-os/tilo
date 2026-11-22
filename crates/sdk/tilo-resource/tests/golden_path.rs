@@ -1,4 +1,3 @@
-
 use tilo_resource::{ActionCx, Collection, Id, Invoke, Model, Replica, Resource, resource};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]

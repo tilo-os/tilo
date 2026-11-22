@@ -3,7 +3,6 @@
 //! has installed (the session hands Views every one). Each capture is kept as a PNG at a
 //! desktop's and a phone's width, light and dark, for review against the design language.
 
-
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 

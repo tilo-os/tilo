@@ -601,6 +601,8 @@ if [ "$wake" = 1 ]; then
   source "$dev_dir/nearby-wake-phase.sh"
 fi
 if [ "$unlock" = 1 ]; then
+  # shellcheck source=os/dev/action-frame.sh
+  source "$dev_dir/action-frame.sh"
   # shellcheck source=os/dev/nearby-unlock-phase.sh
   source "$dev_dir/nearby-unlock-phase.sh"
 fi

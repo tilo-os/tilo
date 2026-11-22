@@ -20,7 +20,7 @@ use std::os::fd::AsFd as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::common::publisher;
+use crate::common::{press_control, publisher};
 use tilo_actions::ResourceSpec;
 use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::clipboard_history::TEXT_MIME;
@@ -1281,8 +1281,8 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
     );
     assert!(!session.ended(), "and the session runs on");
 
-    // Shutting down ends this session and nothing else: the person's own press on the row is their
-    // decision, and here it ends the session rather than the machine it runs on.
+    // Shutting down ends this session and nothing else: the row presses the published action, which
+    // asks first, and the yes ends the session rather than the machine it runs on.
     let row = session
         .power_menu()
         .expect("power menu")
@@ -1304,6 +1304,12 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
         },
     ] {
         session.compositor().input(event).unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert!(!session.ended(), "the row asks before it shuts down");
+    // The question stands where the menu was, and its yes is named for what it does.
+    press_control(&mut session, "Shut down");
+    for _ in 0..4 {
         session.step(Duration::from_millis(1)).unwrap();
     }
     assert!(session.ended(), "shutting down ends the session");

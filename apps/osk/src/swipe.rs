@@ -823,5 +823,4 @@ mod tests {
             "swipe accuracy regressed: top-1 {top1}, top-3 {top3} of {n}, floors {FLOOR_TOP1}/{FLOOR_TOP3}"
         );
     }
-
 }

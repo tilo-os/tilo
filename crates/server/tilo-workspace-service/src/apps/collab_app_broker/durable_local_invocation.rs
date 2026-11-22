@@ -1,78 +1,8 @@
 //! Durable local RPCs use the existing journal and invocation dispatcher.
 use super::invocation_journal::{InvocationJournal, InvocationKey};
-use super::{
-    AppBrokerState, BrokerActor, CallerInvocation, DurableInvocation, InvocationCaller,
-    InvocationEnvelope, InvocationOwner, PublishedAction, PublishedSurface, VerifiedActionCaller,
-    mpsc,
-};
+use super::{AppBrokerState, BrokerActor, DurableInvocation, InvocationCaller, InvocationOwner};
 use tilo_action_policy::MemberId;
 use tilo_actions::remote::Caller;
-
-/// Borrowed, genuine caller evidence; never constructed from an actor string.
-#[derive(Clone, Copy)]
-pub(super) enum DurableContext<'a> {
-    /// Only the durable admission tests build this caller kind: the action
-    /// api admits a device's request on its own path.
-    #[allow(
-        dead_code,
-        reason = "driven by the durable admission tests, which reach it through a test-only entrypoint"
-    )]
-    Peer(&'a VerifiedActionCaller, &'a CallerInvocation),
-}
-impl<'a> DurableContext<'a> {
-    pub(super) fn owner(self) -> Result<InvocationOwner, String> {
-        let Self::Peer(c, _) = self;
-        c.owner()
-    }
-    pub(super) fn time(self) -> Option<&'a crate::apps::policy_clock::PolicyTime> {
-        let Self::Peer(c, _) = self;
-        c.policy_time.as_ref()
-    }
-    pub(super) fn invocation(self) -> tilo_actions::InvocationId {
-        let Self::Peer(_, r) = self;
-        r.invocation
-    }
-    pub(super) fn intent(self) -> serde_json::Value {
-        let Self::Peer(_, r) = self;
-        r.intent()
-    }
-    pub(super) fn origin(self) -> InvocationCaller {
-        let Self::Peer(c, _) = self;
-        InvocationCaller::Certified {
-            caller: Box::new(c.clone()),
-            // This path has only the original signed device restriction.
-            foreign_restriction: false,
-        }
-    }
-    pub(super) fn before_admission(
-        self,
-        state: &AppBrokerState,
-        peer: u64,
-        offered: &(PublishedSurface, PublishedAction),
-        sender: &mpsc::UnboundedSender<InvocationEnvelope>,
-    ) -> Result<(), String> {
-        let Self::Peer(c, _) = self;
-        let current = state.current_action_caller(c)?;
-        state.require_current_stable_sender(peer, sender)?;
-        let now = state.checked_policy_time(self.time())?.1 / 1_000_000_000;
-        let target = (
-            offered.0.app_id.as_str(),
-            offered.1.resource_kind.as_str(),
-            offered.1.resource.as_str(),
-            offered.1.action.as_str(),
-        );
-        let need = offered.1.contract.need();
-        state.authorize_invocation_permission(
-            &offered.0.route.cluster_id,
-            target,
-            &need,
-            &current.broker_actor(),
-            now,
-        )?;
-        state.checked_policy_time(self.time())?;
-        Ok(())
-    }
-}
 
 /// The action check of one admission, decided on the caller's borrowed
 /// sample of exactly that workspace's committed workspace.
@@ -130,31 +60,6 @@ impl AppBrokerState {
                     now,
                 )
             })?
-    }
-    pub(super) fn require_current_stable_sender(
-        &self,
-        peer: u64,
-        sender: &mpsc::UnboundedSender<InvocationEnvelope>,
-    ) -> Result<(), String> {
-        if !self
-            .stable_invocation_subscribers
-            .lock()
-            .map_err(|_| "application capability unavailable")?
-            .contains(&peer)
-        {
-            return Err("application_stable_identity_unavailable".into());
-        }
-        if sender.is_closed()
-            || !self
-                .invocation_subscribers
-                .lock()
-                .map_err(|_| "application invocation stream unavailable")?
-                .get(&peer)
-                .is_some_and(|current| !current.is_closed() && current.same_channel(sender))
-        {
-            return Err("application invocation stream closed or replaced".into());
-        }
-        Ok(())
     }
 }
 

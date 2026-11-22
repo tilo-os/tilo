@@ -7,7 +7,6 @@
 //! A part the worker starts used to come to the host as a saved document, which
 //! the host loaded in a worker and again here; the load here is counted.
 
-
 use collab_types::DocumentMutation;
 use serde_json::{Value, json};
 use tilo_actions::MemberId;

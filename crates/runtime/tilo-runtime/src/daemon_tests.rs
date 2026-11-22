@@ -136,7 +136,7 @@ tilo_test_env::scenario! {
                             pid: 1,
                             workspace: "workspace".into(),
                         },
-                        &search,
+                        &std::sync::OnceLock::from(std::sync::Arc::clone(&search)),
                     )
                     .unwrap();
                 }
@@ -189,7 +189,7 @@ tilo_test_env::scenario! {
                         pid: 1,
                         workspace: "workspace".into(),
                     },
-                    &search,
+                    &std::sync::OnceLock::from(std::sync::Arc::clone(&search)),
                 )
             })
         };
@@ -835,7 +835,7 @@ tilo_test_env::scenario! {
             ])
             .unwrap()
             .forward,
-            Some(tilo_device_mcp::Forward {
+            Some(tilo_mcp::devices::Forward {
                 device: "Build box".into(),
                 workspace: None
             })

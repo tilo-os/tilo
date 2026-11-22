@@ -13,9 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tilo_service::notice::{Notice, Place};
-use tilolang::{
-    HOST_APP, NOTICE_BODY, NOTICE_OPENS, NOTICE_SEEN, NOTICE_TITLE, NOTICE_TO, NOTICE_TYPE,
-};
+use tilolang::{NOTICE_BODY, NOTICE_OPENS, NOTICE_SEEN, NOTICE_TITLE, NOTICE_TO, NOTICE_TYPE};
 use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::{ResourceRef, Value};
 
@@ -73,7 +71,7 @@ impl Notices {
     /// those to take back because the person has seen them on this or another device.
     pub fn step(&mut self, host: &Host) -> Told {
         let mut held: Vec<Held> = Vec::new();
-        for id in host.store().resources_of(HOST_APP, NOTICE_TYPE) {
+        for id in host.store().resources_of(NOTICE_TYPE).unwrap_or_default() {
             let Some(notice) = held_notice(host, &id) else {
                 continue;
             };
@@ -112,11 +110,20 @@ impl Notices {
     }
 
     /// The person at this device saw the notice `id`, by opening or dismissing it: it is marked
-    /// seen in the document, so every device of theirs takes it back. What is written waits for
-    /// the host to commit it (`Host::take_committed`).
+    /// seen, so every device of theirs takes it back.
     pub fn seen(&mut self, host: &Host, id: &str) -> Result<(), String> {
+        let at = ResourceRef::root(id.to_owned(), NOTICE_TYPE.to_owned());
+        let by = crate::runtime::Actor::Member(crate::runtime::ids::MemberId::person(
+            self.person.as_str(),
+        ));
         host.store()
-            .see(id, &self.person)
+            .set_register(
+                &at,
+                NOTICE_SEEN,
+                tilolang_runtime::store::Scalar::Bool(true),
+                SEEN_ACTION,
+                &by,
+            )
             .map_err(|error| error.to_string())
     }
 

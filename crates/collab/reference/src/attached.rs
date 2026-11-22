@@ -298,18 +298,14 @@ pub enum Attached {
     Image {
         name: String,
         blob: String,
-        #[serde(alias = "width")]
         w: u32,
-        #[serde(alias = "height")]
         h: u32,
     },
     /// A video held by its content hash, `w`/`h` its resolution when known.
     Video {
         name: String,
         blob: String,
-        #[serde(alias = "width")]
         w: u32,
-        #[serde(alias = "height")]
         h: u32,
         size: u64,
     },

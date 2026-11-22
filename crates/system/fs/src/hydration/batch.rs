@@ -1,49 +1,24 @@
-//! Batched, pipelined content fetches over one pooled connection per peer.
+//! Batched content fetches from the workspace's content source.
 //!
-//! A want list (manifests, chunks, whole small files) becomes as few
-//! iroh-blobs `GetMany` requests as possible: up to [`BATCH_BLOBS`] blobs or
-//! [`BATCH_BYTES`] per request, [`WINDOW_PER_PEER`] requests in flight on
-//! each peer's connection, and batches spread over every healthy peer, so a
-//! faster peer simply serves more of them. Throughput is then bounded by the
-//! link rather than by round trips per blob.
-//!
-//! Each request also names the manifests its chunks belong to, with empty
-//! ranges: the serving peer authorises a chunk as part of a readable
-//! manifest in the same request instead of searching for one. Everything
-//! received is BAO-verified by the protocol and hash-checked again before
-//! it is stored, one durability barrier per batch.
+//! A want list (manifests, chunks, whole small files) is asked of the source with up to
+//! [`WINDOW_PER_PEER`] asks in flight, so a thousand small files cost a handful of round trips'
+//! worth of waiting rather than one each. Everything received is hash-checked before it is kept.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
-use iroh::endpoint::Connection;
-use iroh_blobs::get::fsm::{self, EndBlobNext, RequestCounters};
-use iroh_blobs::protocol::{ChunkRanges, ChunkRangesSeq, GetManyRequest};
+use super::{Hash, Hydrator};
 
-use super::{Bytes, Duration, EndpointAddr, Hash, Hydrator, Instant, Result, anyhow};
-use tilo_lock::RwLockRecover as _;
-
-pub const BATCH_BLOBS: usize = 512;
-/// Bytes requested in one `GetMany`, by the callers' size hints.
+/// Bytes a prefetch asks for before it reports progress, by the callers' size hints.
 pub const BATCH_BYTES: u64 = 8 * 1024 * 1024;
-/// `GetMany` requests in flight per peer: with [`BATCH_BYTES`] up to 64 MiB
-/// outstanding, enough for a gigabit link at 500 ms round trip.
+/// Windows of [`BATCH_BYTES`] a prefetch keeps asked at once.
 pub const WINDOW_PER_PEER: usize = 8;
-/// Largest single blob accepted in a batch response.
-const MAX_BATCH_BLOB: u64 = 64 * 1024 * 1024;
-/// A batch that makes no progress for this long is abandoned for the next
-/// peer.
-const BATCH_TIMEOUT: Duration = Duration::from_secs(30);
-/// Connecting to a peer for the pool.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// One blob to fetch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Want {
     pub hash: Hash,
     pub size_hint: u64,
-    /// The manifest this blob is a chunk of, when it is one. The serving
-    /// peer authorises the chunk through it.
+    /// The manifest this blob is a chunk of, when it is one.
     pub root: Option<Hash>,
 }
 
@@ -77,283 +52,26 @@ pub struct FetchReport {
     pub missing: Vec<Hash>,
 }
 
-fn batches(wants: Vec<Want>) -> Vec<Vec<Want>> {
-    let mut out = Vec::new();
-    let mut current: Vec<Want> = Vec::new();
-    let mut bytes = 0_u64;
-    for want in wants {
-        let size = want.size_hint.max(1);
-        if !current.is_empty()
-            && (current.len() >= BATCH_BLOBS || bytes.saturating_add(size) > BATCH_BYTES)
-        {
-            out.push(std::mem::take(&mut current));
-            bytes = 0;
-        }
-        bytes = bytes.saturating_add(size);
-        current.push(want);
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    out
-}
-
 impl Hydrator {
-    /// The pooled blob-protocol connection to `peer`, opened on first use
-    /// and reused for every later request until it closes.
-    pub async fn blob_connection(&self, peer: &EndpointAddr) -> Result<Connection> {
-        self.pooled_blob_connection(peer, 0).await
-    }
-
-    /// Prepare the route to `peer` before anything is asked of it: certify this device and open
-    /// the connection a first read would otherwise set up itself, in the background. A person's
-    /// first open of a file they have never fetched should not also pay for the handshake. What
-    /// fails here the first read retries, so nothing depends on it having worked.
-    pub fn warm_peer(self: &Arc<Self>, peer: EndpointAddr) {
-        let hydrator = Arc::clone(self);
-        tokio::spawn(async move {
-            if let Err(error) = hydrator.blob_connection(&peer).await {
-                eprintln!(
-                    "could not prepare content from {}: {error:#}; the first read retries it",
-                    peer.id
-                );
-            }
-        });
-    }
-
-    /// The pooled connection number `number` to `peer`. One QUIC connection is
-    /// processed by one task on each side, which bounds its throughput;
-    /// large transfers therefore spread their requests over a few connections.
-    pub(super) async fn pooled_blob_connection(
-        &self,
-        peer: &EndpointAddr,
-        number: usize,
-    ) -> Result<Connection> {
-        let key = (peer.id, number);
-        {
-            let pool = self.blob_connections.lock().await;
-            if let Some(connection) = pool.get(&key)
-                && connection.close_reason().is_none()
-            {
-                return Ok(connection.clone());
-            }
-        }
-        // The provider decides who may ask when the connection arrives, so this device says who
-        // it is first: the same certificate exchange every sync connection starts with, on its
-        // own connection, ahead of the one that carries content.
-        let opening = Instant::now();
-        if let Some(identity) = &self.identity
-            && let crate::net::Net::Direct { endpoint, .. } = &self.net
-            && let Err(error) = crate::sync::certify_to_peer(endpoint, peer.clone(), identity).await
-        {
-            eprintln!("could not certify this device to {}: {error:#}", peer.id);
-        }
-        let certified_at = opening.elapsed();
-        let connection = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            self.net.connect(peer.clone(), iroh_blobs::ALPN),
-        )
-        .await
-        .map_err(|_| anyhow!("connecting to {} timed out", peer.id))??;
-        if super::tracing_reads() {
-            eprintln!(
-                "content route to {}: certificate in {certified_at:?}, connection in {:?}",
-                peer.id,
-                opening.elapsed()
-            );
-        }
-        // A first read that is slow because its route had to be set up says so: the
-        // certificate exchange and this connect are what a warm route was for.
-        if opening.elapsed() > Duration::from_millis(100) {
-            eprintln!(
-                "content connection to {} opened in {:?}",
-                peer.id,
-                opening.elapsed()
-            );
-        }
-        let mut pool = self.blob_connections.lock().await;
-        // Another caller may have connected meanwhile; keep one.
-        if let Some(existing) = pool.get(&key)
-            && existing.close_reason().is_none()
-        {
-            connection.close(0u32.into(), b"duplicate");
-            return Ok(existing.clone());
-        }
-        pool.insert(key, connection.clone());
-        drop(pool);
-        Ok(connection)
-    }
-
-    /// Drops the pooled connection to `peer` after a failure, so the next
-    /// request connects afresh.
-    pub(super) async fn forget_blob_connection(
-        &self,
-        peer: iroh_base::PublicKey,
-        failed: &Connection,
-    ) {
-        let mut pool = self.blob_connections.lock().await;
-        pool.retain(|(id, _), c| *id != peer || c.stable_id() != failed.stable_id());
-    }
-
-    /// Fetches every blob in `wants` that is not local yet, in batched,
-    /// pipelined `GetMany` requests spread across the known peers.
-    /// Best effort: what no peer serves is reported, not an error.
+    /// Fetches every blob in `wants` that is not local yet from the content source. Best
+    /// effort: what the source does not hand over is reported, not an error.
     pub async fn fetch_many(&self, wants: Vec<Want>) -> FetchReport {
         let mut seen = HashSet::with_capacity(wants.len());
         let mut todo = Vec::with_capacity(wants.len());
+        let mut bytes = 0_u64;
         for want in wants {
             if seen.insert(want.hash) && !self.store.has(want.hash).await {
-                todo.push(want);
+                bytes = bytes.saturating_add(want.size_hint);
+                todo.push(want.hash);
             }
         }
-        let mut report = FetchReport::default();
-        if todo.is_empty() {
-            return report;
+        let asked = todo.len();
+        let missing = self.fetch_from_source(todo).await;
+        FetchReport {
+            fetched: asked.saturating_sub(missing.len()),
+            bytes,
+            missing,
         }
-        let peers = self.known_peers();
-        if peers.is_empty() {
-            report.missing = self
-                .fetch_from_source(todo.iter().map(|w| w.hash).collect())
-                .await;
-            report.fetched = todo.len().saturating_sub(report.missing.len());
-            return report;
-        }
-        let window = WINDOW_PER_PEER.saturating_mul(peers.len());
-        let jobs = batches(todo).into_iter().enumerate().map(|(index, batch)| {
-            let peers = &peers;
-            async move { self.fetch_batch_any(peers, index, batch).await }
-        });
-        let results: Vec<(usize, u64, Vec<Hash>)> = futures_util::StreamExt::collect(
-            futures_util::StreamExt::buffer_unordered(futures_util::stream::iter(jobs), window),
-        )
-        .await;
-        for (fetched, bytes, missing) in results {
-            report.fetched = report.fetched.saturating_add(fetched);
-            report.bytes = report.bytes.saturating_add(bytes);
-            report.missing.extend(missing);
-        }
-        if !report.missing.is_empty() {
-            let asked = report.missing.len();
-            report.missing = self
-                .fetch_from_source(std::mem::take(&mut report.missing))
-                .await;
-            report.fetched = report
-                .fetched
-                .saturating_add(asked.saturating_sub(report.missing.len()));
-        }
-        report
-    }
-
-    /// One batch, from the peer `index` selects and then from the others
-    /// for whatever is still missing. Returns the blobs and bytes fetched and
-    /// the hashes nobody served.
-    async fn fetch_batch_any(
-        &self,
-        peers: &[EndpointAddr],
-        index: usize,
-        mut batch: Vec<Want>,
-    ) -> (usize, u64, Vec<Hash>) {
-        let mut fetched = 0_usize;
-        let mut bytes = 0_u64;
-        let (earlier, later) = peers.split_at(index.checked_rem(peers.len()).unwrap_or(0));
-        for peer in later.iter().chain(earlier) {
-            let started = Instant::now();
-            let Ok(connection) = self.blob_connection(peer).await else {
-                self.record_peer_result(peer.id, started.elapsed(), false);
-                continue;
-            };
-            let (got, got_bytes, error) = self.fetch_batch_from(&connection, peer, &batch).await;
-            fetched = fetched.saturating_add(got.len());
-            bytes = bytes.saturating_add(got_bytes);
-            batch.retain(|want| !got.contains(&want.hash));
-            let failed = error.is_some();
-            self.record_peer_result(peer.id, started.elapsed(), !failed);
-            if failed && connection.close_reason().is_some() {
-                self.forget_blob_connection(peer.id, &connection).await;
-            }
-            if batch.is_empty() {
-                break;
-            }
-        }
-        (fetched, bytes, batch.into_iter().map(|w| w.hash).collect())
-    }
-
-    /// One `GetMany` on `connection`. Whatever arrived before an error is
-    /// verified and stored; the error is returned alongside.
-    async fn fetch_batch_from(
-        &self,
-        connection: &Connection,
-        peer: &EndpointAddr,
-        batch: &[Want],
-    ) -> (HashSet<Hash>, u64, Option<anyhow::Error>) {
-        let wanted: HashSet<Hash> = batch.iter().map(|w| w.hash).collect();
-        let mut roots: Vec<Hash> = batch
-            .iter()
-            .filter_map(|w| w.root)
-            .filter(|root| !wanted.contains(root))
-            .collect();
-        roots.sort();
-        roots.dedup();
-        let mut hashes = roots.clone();
-        hashes.extend(batch.iter().map(|w| w.hash));
-        let ranges = std::iter::repeat_n(ChunkRanges::empty(), roots.len())
-            .chain(std::iter::repeat_n(ChunkRanges::all(), batch.len()));
-        let request = GetManyRequest::new(hashes.clone(), ChunkRangesSeq::from_ranges(ranges));
-        let _guards: Vec<_> = batch.iter().map(|w| self.mark_fetching(w.hash)).collect();
-        let mut received: Vec<(Hash, Bytes)> = Vec::with_capacity(batch.len());
-        let transfer = async {
-            let mut next =
-                fsm::start_get_many(connection.clone(), request, RequestCounters::default())
-                    .await
-                    .map_err(|e| anyhow!("{e}"))?;
-            loop {
-                match next {
-                    Ok(child) => {
-                        let offset = usize::try_from(child.offset()).unwrap_or(usize::MAX);
-                        let hash = *hashes
-                            .get(offset)
-                            .ok_or_else(|| anyhow!("response child {offset} out of range"))?;
-                        let (content, size) =
-                            child.next(hash).next().await.map_err(|e| anyhow!("{e}"))?;
-                        anyhow::ensure!(
-                            size <= MAX_BATCH_BLOB,
-                            "peer announced a {size} byte blob"
-                        );
-                        let (end, bytes) = content
-                            .concatenate_into_vec()
-                            .await
-                            .map_err(|e| anyhow!("{e}"))?;
-                        received.push((hash, Bytes::from(bytes)));
-                        next = match end.next() {
-                            EndBlobNext::MoreChildren(child) => Ok(child),
-                            EndBlobNext::Closing(closing) => Err(closing),
-                        };
-                    }
-                    Err(closing) => {
-                        closing.next().await.map_err(|e| anyhow!("{e}"))?;
-                        return Ok::<_, anyhow::Error>(());
-                    }
-                }
-            }
-        };
-        let error = match tokio::time::timeout(BATCH_TIMEOUT, transfer).await {
-            Ok(Ok(())) => None,
-            Ok(Err(error)) => Some(error),
-            Err(_) => Some(anyhow!("batch from {} timed out", peer.id)),
-        };
-        let bytes = received.iter().map(|(_, b)| b.len() as u64).sum();
-        self.count_blob_bytes(bytes);
-        let got: HashSet<Hash> = received.iter().map(|(h, _)| *h).collect();
-        if let Err(store_error) = self.store.store_fetched_batch(received).await {
-            return (HashSet::new(), 0, Some(store_error));
-        }
-        {
-            let mut sources = self.remote_sources.write_recover();
-            for hash in &got {
-                sources.insert(*hash, peer.clone());
-            }
-        }
-        (got, bytes, error)
     }
 
     /// Makes the complete content of every file in `files` local: missing
@@ -391,52 +109,5 @@ impl Hydrator {
         report.bytes = report.bytes.saturating_add(content.bytes);
         report.missing.extend(content.missing);
         report
-    }
-
-    /// Stores content an authenticated peer sent along with the records
-    /// naming it. Every blob is hash-checked before anything is stored, and
-    /// counts as fetched from `peer`, as a verified download does.
-    pub async fn accept_inline(
-        &self,
-        peer: &EndpointAddr,
-        blobs: Vec<(Hash, Bytes)>,
-    ) -> Result<()> {
-        let hashes: Vec<Hash> = blobs.iter().map(|(hash, _)| *hash).collect();
-        self.store.store_fetched_batch(blobs).await?;
-        let mut sources = self.remote_sources.write_recover();
-        for hash in hashes {
-            sources.insert(hash, peer.clone());
-        }
-        drop(sources);
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn want(n: u8, size: u64) -> Want {
-        Want::root(Hash::from([n; 32]), size)
-    }
-
-    #[test]
-    fn batches_respect_count_and_byte_bounds() {
-        let small: Vec<Want> = (0..=255u8).chain(0..=255u8).map(|n| want(n, 10)).collect();
-        let split = batches(small.clone());
-        assert_eq!(split.len(), 1, "512 small blobs fit one request");
-        let mut more = small;
-        more.push(want(1, 10));
-        assert_eq!(batches(more).len(), 2);
-
-        let big: Vec<Want> = (0..5u8).map(|n| want(n, 3 * 1024 * 1024)).collect();
-        let split = batches(big);
-        assert_eq!(
-            split.iter().map(Vec::len).collect::<Vec<_>>(),
-            vec![2, 2, 1],
-            "8 MiB per request"
-        );
-        let huge = vec![want(1, 100 * 1024 * 1024), want(2, 1)];
-        assert_eq!(batches(huge).len(), 2, "an oversized blob travels alone");
     }
 }

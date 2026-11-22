@@ -14,16 +14,14 @@ use super::*;
 use std::sync::Mutex;
 use tilo_actions::remote::person_telling::Kind;
 use tilo_actions::remote::{person_accounts, person_vault};
-use tilo_server::{
-    workspace_agents::ServerAgents as Agents,
-    workspaces::{
-        Workspaces,
-        person_model::{
-            ProviderProtocol,
-            scripted::{Linking, Reply, ScriptedProvider},
-        },
+use tilo_server::workspaces::{
+    Workspaces,
+    person_model::{
+        ProviderProtocol,
+        scripted::{Linking, Reply, ScriptedProvider},
     },
 };
+use tilo_workspace_service::agents::{ServerAgents as Agents, windows::Windows};
 use tilo_workspace_service::asks as tl_asks;
 use tilo_workspace_service::tl_records::runtime::Value as TlValue;
 /// What the person types into the protected field. Nothing but the server's sign-in may hold it.
@@ -111,9 +109,8 @@ pub(super) fn files_holding(dir: &Path, needle: &[u8]) -> Vec<std::path::PathBuf
 
 /// A server with one person, their assistant on it, and the workspace's own model.
 pub(super) struct Hosted {
-    /// The server itself, kept running until the test ends: a test that needs something of
-    /// the server's own reads it here.
-    server: Box<dyn std::any::Any>,
+    /// The server itself, kept running until the test ends.
+    server: crate::harness::hosted::Hosted,
     pub(super) actions: tilo_agent_session::workspace_actions::WorkspaceActions,
     pub(super) workspaces: Workspaces,
     pub(super) workspace: String,
@@ -374,21 +371,18 @@ impl Hosted {
             );
             env
         });
-        let (server, actions) = tilo_server::agents::start_serving_documents(
-            crate::harness::hosted::on_this_machine(state.path()),
-            tilo_server::daemon::ServerIdentity {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_signing_key: server_device.key.clone(),
-                device_cert: server_device.cert.clone(),
-                revocations: tilo_user_identity::RevocationList::new(),
+        let server = crate::harness::hosted::start(
+            &root,
+            &server_device,
+            state.path(),
+            crate::harness::hosted::Options {
+                browsers: browsers.clone(),
+                ..crate::harness::hosted::Options::offering(crate::common::catalogue)
             },
-            Some(Arc::new(crate::common::catalogue)),
-            None,
-            browsers.clone(),
         )
-        .await
-        .unwrap();
+        .await;
         drop(reached);
+        let actions = server.roster.actions.clone();
         let address = server.node_addr();
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -420,10 +414,13 @@ impl Hosted {
                 .push(format!("{account} with {password}"));
             Ok("signed in".into())
         });
-        let agents = Agents::for_test(workspaces.clone(), actions.clone(), None).placing(browsers);
+        let agents = server
+            .approving(&workspace, &[SCOUT])
+            .await
+            .placing(browsers.map(|browsers| browsers as Arc<dyn Windows>));
         let chat = InChat::new(&workspaces, &workspace, person).await;
         Self {
-            server: Box::new(server),
+            server,
             actions,
             workspaces,
             workspace,
@@ -442,6 +439,12 @@ impl Hosted {
 
     pub(super) fn person(&self) -> String {
         hex::encode(self.root.verifying_key().to_bytes())
+    }
+
+    /// The server stops and starts again: whatever ran its agents is gone, and what works them
+    /// now knows only what the workspace and the server's own store hold.
+    pub(super) async fn restart(&mut self) {
+        self.agents = self.server.approving(&self.workspace, &[SCOUT]).await;
     }
 
     /// The person writes `words` to their assistant in the channel they talk to it in.
@@ -489,17 +492,13 @@ impl Hosted {
         format!("{:?}", self.asked().await)
     }
 
-    /// The bytes the server keeps of Chat's record, where the asks and replies are.
+    /// The bytes the server keeps of the workspace's resources, where the asks and replies are.
     pub(super) async fn record_bytes(&self) -> Vec<u8> {
-        let packages = tl_asks::chat_packages().unwrap();
         self.workspaces
-            .tl_record(&self.workspace, packages.app())
+            .store_documents(&self.workspace)
             .await
             .unwrap()
-            .documents
-            .into_values()
-            .flatten()
-            .collect()
+            .concat()
     }
 
     /// One action of the person's own on the server, asked from their device over its link.
@@ -1060,13 +1059,9 @@ async fn another_persons_item_is_refused_by_the_use_and_stays_unused() {
         .unwrap()
         .workspace;
     admit(&hosted, &elsewhere, &his_device).await;
-    let server = hosted
-        .server
-        .downcast_ref::<tilo_server::daemon::Server>()
-        .expect("the server the test started");
     // A member joins a workspace from a page of their own: only a device of the server's own
     // person asks the server to govern a workspace first.
-    let peer = Browser::session(server, &his_device, &hosted.served_by);
+    let peer = Browser::session(&hosted.server, &his_device, &hosted.served_by);
     let events = peer.events();
     let joined = tilo_server_protocol::WorkspaceId::parse(&elsewhere).expect("the workspace's id");
     peer.send(tilo_session_client::Cmd::Join(joined))

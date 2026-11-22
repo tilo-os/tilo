@@ -6,10 +6,6 @@
 reason = "agent, contacts and disks gained code of their own since the budgets were measured, past what the model modules' raise accounted for"
 run = "rb55fae3ed4"
 
-# no model; 1,118,720 bytes in all, 1,114,112 budgeted.
-[apps."so.tilo.agent"]
-x86_64 = 65536
-
 # model 23,213 bytes; 2,048,000 bytes in all, 2,031,616 budgeted.
 [apps."so.tilo.contacts"]
 x86_64 = 65536

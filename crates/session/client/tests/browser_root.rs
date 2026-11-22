@@ -46,7 +46,7 @@ async fn a_page_root_certifies_its_node_and_then_itself() {
     .await;
 
     let browser = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let (cert, server_cert) = certify_with_root(&*host.https(), &root, &browser, "Browser")
+    let (cert, server_cert) = certify_with_root(&root, &browser, "Browser", &node_cert)
         .await
         .unwrap();
     assert_eq!(server_cert, node_cert);
@@ -59,7 +59,7 @@ async fn a_page_root_certifies_its_node_and_then_itself() {
     // that person is let in is for the workspaces they are a member of to decide.
     let (stranger, _) = UserIdentity::generate("Eve", 1);
     let other = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let (theirs, _) = certify_with_root(&*host.https(), &stranger, &other, "Browser")
+    let (theirs, _) = certify_with_root(&stranger, &other, "Browser", &node_cert)
         .await
         .unwrap();
     assert_eq!(theirs.user_public_key, stranger.device_public_key());

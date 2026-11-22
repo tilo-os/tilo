@@ -120,9 +120,7 @@ its own to read. `kinds` describes them once for each kind of row on the page
 (`{"notes.Page": [...]}`), so a page of a thousand notes does not repeat the same action rows a
 thousand times. An action row is `{"id", "label", "params": [{"name", "ty", "required",
 "description", "choices", "schema"}], "kind": "read"|"undoable"|"outside"}`. `next_cursor` is
-present while more rows follow; passed back as `cursor` it answers the next page. `text` is the
-same listing or read as a person reads it, one line per row: what `tilo ls` and `tilo read` print,
-and what an MCP client's `tilo_ls` and `tilo_read` answer.
+present while more rows follow; passed back as `cursor` it answers the next page.
 
 A read of a resource answers its lists a page at a time: 25 entries of each list by default,
 `pageSize` up to 200. A page that leaves entries out says how many each list holds (`totals`) and
@@ -253,11 +251,9 @@ folder; a folder past 10,000 goes in as several lists.
 
 | | |
 |---|---|
-| `GET /v1/workspaces/{workspace}/members` | the people in it, their roles, and the invitations still open |
-| `POST /v1/workspaces/{workspace}/members/invitations` `{role, email?}` | `201` `{"link"}` that signs them in and lands them there |
-| `POST /v1/workspaces/{workspace}/members` `{person, role, name?}` | holds the person whose user public key is `person` in it at `role` at once |
-| `PUT /v1/workspaces/{workspace}/members/{person}/role` `{role}` | moves a member to another role, as far as yours allows |
-| `DELETE /v1/workspaces/{workspace}/members/{person}` | removes a member and every device of theirs, as the workspace's governance lets you |
+| `workspace/members` `#list`, `#add {person, role, name?}`, `#role {person, role}`, `#remove {person}`, `#name {name}` | the people in it and their roles; holding a person by their user public key at a role at once, moving them, removing them and every device of theirs, and the name you go by there |
+| `workspace/invitations` `#invite {role, invitee_name?, wait_list_entry?}`, `#list`, `#cancel {invite}` | an invitation's `link`, which signs the person in and lands them there; the invitations still open, and taking one back |
+| `workspace/waiting` `#list`, `#unlist {entry}` | the addresses left at the workspace's entry while it takes people by invitation |
 | `POST /v1/workspaces/{workspace}/programs` `{program, confirm?, session?}` | runs a tilolang program as one step: `{"status": "ok"|"preview"|"failed", "output", "changed", "steps", "text", "session"}` |
 
 A program runs in a program session: the `let`s its programs bound, the references its answers

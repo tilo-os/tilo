@@ -1,7 +1,6 @@
-//! The per-user runtime without the Tilo desktop: persistent daemon, app
-//! attachment and stdio MCP entry point over the standalone services.
-use tilo_runtime::standalone::Standalone;
+//! This computer's one Tilo daemon (`--hold`, which `tilo` starts and the user service runs),
+//! app attachment, and the stdio MCP entry point an agent's client runs.
 
 fn main() -> std::process::ExitCode {
-    tilo_runtime::cli::host::<Standalone>("tilo-runtime")
+    tilo_runtime::cli::host("tilo-runtime")
 }

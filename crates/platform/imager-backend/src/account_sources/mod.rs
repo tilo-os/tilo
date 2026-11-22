@@ -443,10 +443,7 @@ pub fn rclone(text: &str, path: &Path, inventory: &mut Inventory) {
             .push("Encrypted rclone accounts");
         return;
     }
-    for (label, config) in sections(
-        text,
-        &["type", "url", "user", "vendor"],
-    ) {
+    for (label, config) in sections(text, &["type", "url", "user", "vendor"]) {
         let provider = match config.get("type").map(String::as_str) {
             Some("webdav") if config.get("vendor").is_some_and(|s| s == "nextcloud") => {
                 Provider::Nextcloud

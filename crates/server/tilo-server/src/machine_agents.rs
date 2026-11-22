@@ -44,8 +44,8 @@ pub use ush::hosted_vm::{AgentConnection, MachineAgents};
 
 use crate::WorkspaceId;
 use crate::certification::CertificationProtocol;
-use crate::workspace_agents::WorkspaceActionProvider;
 use crate::workspaces::Workspaces;
+use tilo_workspace_service::agents::WorkspaceActionProvider;
 
 /// How long the person has to answer whether a program may work in their workspace.
 const ANSWER_WAIT: Duration = Duration::from_secs(2 * 60);

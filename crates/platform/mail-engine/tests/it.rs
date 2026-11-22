@@ -14,7 +14,5 @@
 mod account_engine_loop;
 #[path = "host_mail_session.rs"]
 mod host_mail_session;
-#[path = "oauth_credentials.rs"]
-mod oauth_credentials;
 #[path = "recipient_headers.rs"]
 mod recipient_headers;

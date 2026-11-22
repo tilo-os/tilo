@@ -7,7 +7,8 @@
 use tilo_actions::remote::{
     ActionCallError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,
-    workspace_governance_resource,
+    WORKSPACE_INVITATIONS, workspace_governance_child, workspace_governance_resource,
+    workspace_member,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
@@ -273,7 +274,7 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
             .any(|pending| hex::encode(pending.invite_id) == invite_id)
     );
 
-    // The workspace offers its governance on its own resource.
+    // The workspace offers invitations on its invitations resource.
     let RemoteActionMessage::CatalogueResponse { result, .. } = ask(
         &owner,
         &host,
@@ -282,6 +283,7 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
             correlation: 1,
             query: CatalogueQuery {
                 provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
+                parent_resource: Some(workspace_governance_resource(&workspace.workspace)),
                 ..CatalogueQuery::default()
             },
         },
@@ -290,14 +292,18 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
     else {
         panic!("a catalogue request is answered with a page");
     };
-    let resource = format!("workspace.permissions:{}", workspace.workspace);
-    assert!(result.unwrap().rows.iter().any(|row| {
-        row.resource.id == resource
-            && row
-                .action
-                .as_ref()
-                .is_some_and(|action| action.address.action == "invite")
-    }));
+    let resource = workspace_governance_child(&workspace.workspace, Some(WORKSPACE_INVITATIONS));
+    let rows = result.unwrap().rows;
+    assert!(
+        rows.iter().any(|row| {
+            row.resource.id == resource
+                && row
+                    .action
+                    .as_ref()
+                    .is_some_and(|action| action.address.action == "invite")
+        }),
+        "{rows:#?}"
+    );
 
     // Bob, an Editor the workspace grants nothing, is not offered it.
     let member = subscribed(&server, &phone, workspace.workspace_id).await;
@@ -442,8 +448,9 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
     super::members::admit(&server, &host, &phone, &workspace.workspace).await;
     assert!(admitted(&server, &phone, workspace.workspace_id).await);
 
-    // The owner's own request is the confirmation removing asks for.
+    // Removing is published on the person it removes, and answers the people left.
     let owner = subscribed(&server, &laptop, workspace.workspace_id).await;
+    let bob_hex = hex::encode(bob.user_pk);
     let removed = outcome(
         ask(
             &owner,
@@ -451,18 +458,18 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
             workspace.workspace_id,
             invocation(
                 WORKSPACE_GOVERNANCE_PROVIDER,
-                workspace_governance_resource(&workspace.workspace),
-                "remove-member",
-                serde_json::json!({ "person": hex::encode(bob.user_pk) }),
+                workspace_member(&workspace.workspace, &bob_hex),
+                "remove",
+                serde_json::json!({}),
             ),
         )
         .await,
     )
     .unwrap();
     assert!(
-        removed["generation"]
-            .as_u64()
-            .is_some_and(|generation| generation > workspace.generation),
+        removed
+            .as_array()
+            .is_some_and(|people| people.iter().all(|row| row["member"]["person"] != bob_hex)),
         "{removed}"
     );
     assert!(!admitted(&server, &phone, workspace.workspace_id).await);

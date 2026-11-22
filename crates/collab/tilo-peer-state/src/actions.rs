@@ -50,7 +50,6 @@ use iroh::{Endpoint, EndpointAddr};
 use neighbour_wire::actions::{
     ActionReplayWindow, ActionServiceFrame, DeviceAction, SignedDeviceAction,
 };
-use neighbour_wire::offer::{Answer, Decline, Query, Route, Work};
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
@@ -63,7 +62,6 @@ use tilo_actions::remote::{
     RemoteActionMessage, UpdateMark,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_server_protocol::{Whose, WorkspaceId};
 use web_time::SystemTime;
 
 /// ALPN of the device-to-device action service.
@@ -85,12 +83,6 @@ pub const CHANGE_WAIT_MS: u32 = 10_000;
 /// How long an invocation is followed on another device before it is given
 /// up as unanswered.
 pub const FOLLOW_DEADLINE: Duration = Duration::from_secs(120);
-
-/// How long one offer round waits. Every device of the workspace is asked
-/// at once; one that has not answered by then is taken to be away, and the
-/// request runs where it was asked, or not at all. Nothing is kept for it
-/// (the fail-fast rule).
-pub const OFFER_DEADLINE: Duration = Duration::from_secs(2);
 
 /// How many changing requests one person may send per window, and how many
 /// at once. Reading (a catalogue, an observation) spends none: a caller that
@@ -191,8 +183,8 @@ impl Workspaces for crate::owner::NativeWorkspaceOwner {
 }
 
 /// A device that answers no app actions on its action service: one built to ask its
-/// workspaces' devices where work runs, which serves the action service for the asks it
-/// makes and the offers it answers. An app's action reaches a device through
+/// workspaces' devices to take work, which serves the action service for the asks it
+/// makes. An app's action reaches a device through
 /// the dispatcher it serves; a request that arrives on such an action service anyway is
 /// refused as one this device does not serve, so its caller learns at once
 /// instead of waiting.
@@ -244,27 +236,6 @@ impl ActionProvider for NoActions {
     }
 }
 
-/// What a device knows of itself when another device of its workspace offers
-/// it work ([`ActionService::offers`]).
-///
-/// The action service answers with what it knows without asking: that this device
-/// answered at all, that it holds the workspace the route names. An
-/// implementation says the rest — whether the app is installed here, its
-/// power level, the work already in hand, its operator's preference, and
-/// the choices its person made for it. An action service with no `Offering` says its
-/// app is not installed, so it never claims work it cannot run.
-pub trait Offering: Send + Sync {
-    /// What this device says of running `offer`'s route on `offer`'s work,
-    /// `whose` it is, asked by the device `from`: its own state and which of
-    /// the job's inputs it already holds, never another device's.
-    ///
-    /// An answer that takes the work remembers the offer under `from` and
-    /// [`Query::request_id`], which is the invocation it would run: the
-    /// invocation that follows names it, so the work run is the work this
-    /// device answered for, for the device that asked.
-    fn report(&self, from: [u8; 32], whose: &Whose, offer: &Query) -> Answer;
-}
-
 /// A device's action service: it serves the requests other devices of its
 /// workspaces make, and asks them through [`Self::remote`].
 #[derive(Clone)]
@@ -283,8 +254,6 @@ struct Inner {
     /// The scope a device with no certificate yet may call, and what answers it there
     /// ([`ActionService::admit_uncertified`]).
     uncertified: Mutex<Option<(String, Arc<dyn ActionProvider + Send + Sync>)>>,
-    /// What this device says of itself when another device offers it work.
-    offering: Mutex<Option<Arc<dyn Offering>>>,
     replay: Mutex<ActionReplayWindow>,
     bounds: Bounds,
     callers: Mutex<HashMap<[u8; 32], Bucket>>,
@@ -335,7 +304,6 @@ impl ActionService {
             workspaces: None,
             dispatcher,
             uncertified: Mutex::default(),
-            offering: Mutex::default(),
             replay: Mutex::default(),
             bounds,
             callers: Mutex::default(),
@@ -362,7 +330,6 @@ impl ActionService {
             workspaces: Some(workspaces),
             dispatcher,
             uncertified: Mutex::default(),
-            offering: Mutex::default(),
             replay: Mutex::default(),
             bounds: Bounds::default(),
             callers: Mutex::default(),
@@ -408,6 +375,16 @@ impl ActionService {
             .insert(replica.workspace(), replica);
     }
 
+    /// The certificates on `workspace`'s roster as this device holds it, the one it decides who
+    /// may ask by; `None` where it holds no such workspace.
+    pub async fn certificates(
+        &self,
+        workspace: &str,
+    ) -> Option<Vec<tilo_user_identity::DeviceCert>> {
+        self.read_workspace_for(None, workspace, crate::StatePeer::certificates)
+            .await
+    }
+
     /// Answer requests for the workspace `sync` syncs.
     pub fn share(&self, sync: &crate::direct::DirectSync) {
         self.hold(sync.replica());
@@ -423,12 +400,6 @@ impl ActionService {
         provider: Arc<dyn ActionProvider + Send + Sync>,
     ) {
         *self.0.uncertified.lock_recover() = Some((scope.into(), provider));
-    }
-
-    /// Say what this device knows of itself when another device of one of
-    /// its workspaces offers it work ([`Offering`]).
-    pub fn offering(&self, offering: impl Offering + 'static) {
-        *self.0.offering.lock_recover() = Some(Arc::new(offering));
     }
 
     /// Read one workspace's state, from wherever this device holds it: a
@@ -478,7 +449,21 @@ impl ActionService {
         addr: &EndpointAddr,
         workspace: &str,
     ) -> RemoteDevice {
-        RemoteDevice(self.device_at(endpoint, addr, workspace, None))
+        RemoteDevice(self.device_at(endpoint, addr, workspace, None, None))
+    }
+
+    /// [`Self::remote`] for `agent`, which this device's person handed the requests to: every
+    /// request names it, and the device that answers acts on each as that agent, for this
+    /// device's person, under the agent's grants there.
+    #[must_use]
+    pub fn remote_for_agent(
+        &self,
+        endpoint: &Endpoint,
+        addr: &EndpointAddr,
+        workspace: &str,
+        agent: neighbour_wire::actions::HandedAgent,
+    ) -> RemoteDevice {
+        RemoteDevice(self.device_at(endpoint, addr, workspace, None, Some(agent)))
     }
 
     /// [`Self::remote`] for a device this device places `workspace`'s work on: every request
@@ -493,23 +478,25 @@ impl ActionService {
         placement: &crate::join::TransportHint,
     ) -> RemoteDevice {
         let placement = postcard::to_allocvec(placement).ok();
-        RemoteDevice(self.device_at(endpoint, addr, workspace, placement))
+        RemoteDevice(self.device_at(endpoint, addr, workspace, placement, None))
     }
 
     /// The connection to one device, opened on first use and kept while it
-    /// lasts, as both actions and offers go over it.
+    /// lasts.
     fn device_at(
         &self,
         endpoint: &Endpoint,
         addr: &EndpointAddr,
         workspace: &str,
         placement: Option<Vec<u8>>,
+        agent: Option<neighbour_wire::actions::HandedAgent>,
     ) -> Arc<Device> {
         Arc::new(Device {
             endpoint: endpoint.clone(),
             addr: addr.clone(),
             workspace: workspace.to_owned(),
             placement,
+            agent,
             target: self.device_of(*addr.id.as_bytes()),
             key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
@@ -519,7 +506,7 @@ impl ActionService {
         })
     }
 
-    /// The devices of `workspace` that may be offered work, other than this
+    /// The devices of `workspace` that may be asked to take work, other than this
     /// one and any device's workspace service: certified, unrevoked and
     /// unexpired, its person a member, its delegation live ([`StatePeer::permissions`](crate::StatePeer::permissions)).
     pub async fn key_holders(&self, workspace: &str) -> Vec<[u8; 32]> {
@@ -542,110 +529,6 @@ impl ActionService {
         key_holders.sort_unstable();
         key_holders.dedup();
         key_holders
-    }
-
-    /// Ask each of `targets` whether it would run `route` in `workspace` on
-    /// `work`, and rank what they answered
-    /// ([`pick`](neighbour_wire::placement::pick)): the device to run it on, or —
-    /// nobody willing, or moving the inputs there no faster than the run here
-    /// — that it stays here.
-    ///
-    /// Every device is asked at once and given the whole of `within` to
-    /// answer; one that does not is ranked as absent. Answers are complete
-    /// when the round finishes, so a caller needs no state of its own
-    /// between asking and choosing. `invocation` names the offer: it is the
-    /// invocation the work would run, and it is what an answering device
-    /// keeps the work under.
-    #[must_use]
-    pub fn offers(
-        &self,
-        endpoint: &Endpoint,
-        targets: impl IntoIterator<Item = EndpointAddr>,
-        workspace: &str,
-        route: &Route,
-        work: &Work,
-        invocation: tilo_actions::InvocationId,
-        within: Duration,
-    ) -> tilo_actions::remote::Pending<neighbour_wire::placement::Choice> {
-        let (complete, answer) = tilo_actions::remote::pending();
-        let workspace = workspace.to_owned();
-        let route = route.clone();
-        let work = work.clone();
-        let device = self.device();
-        let asks = targets
-            .into_iter()
-            .filter(|addr| *addr.id.as_bytes() != device)
-            .map(|addr| {
-                let target = *addr.id.as_bytes();
-                let asker = self.device_at(endpoint, &addr, &workspace, None);
-                let (route, work) = (route.clone(), work.clone());
-                (
-                    target,
-                    self.0
-                        .runtime
-                        .spawn(async move { asker.consider(&route, &work, invocation).await }),
-                )
-            })
-            .collect::<Vec<_>>();
-        let started = tilo_clock::now();
-        let until = started.checked_add(within).unwrap_or(started);
-        self.0.runtime.spawn(async move {
-            let mut answers = Vec::with_capacity(asks.len());
-            for (target, mut ask) in asks {
-                let remaining = until.saturating_duration_since(tilo_clock::now());
-                let answer = tokio::time::timeout(remaining, &mut ask).await;
-                let heard = if let Ok(Ok(heard)) = answer {
-                    (target, heard)
-                } else {
-                    // A device still connecting when the round ends is away;
-                    // nothing keeps its answer for a later round.
-                    ask.abort();
-                    (target, away())
-                };
-                answers.push(heard);
-            }
-            complete.complete(neighbour_wire::placement::pick(answers, &work));
-        });
-        answer
-    }
-
-    /// Answer one offer: what this device says of itself, or `None` when
-    /// nothing is to be said — this device does not hold the workspace, it is
-    /// not a member of it, or the device that asked is not. Whose work it is,
-    /// as the workspace's roster says, is the device's work setting's to weigh.
-    async fn answer_offer(&self, remote: [u8; 32], query: &Query) -> Option<Answer> {
-        let now = tilo_clock::wall();
-        let device = self.device();
-        let (asker, own) = self
-            .read_workspace(&query.workspace, |peer| {
-                (
-                    peer.permissions(remote, now)
-                        .ok()
-                        .and_then(|asker| asker.person_id().map(str::to_owned)),
-                    peer.permissions(device, now)
-                        .ok()
-                        .and_then(|own| own.person_id().map(str::to_owned)),
-                )
-            })
-            .await?;
-        // An offer is answered as a member device, to one: a device the
-        // workspace's roster does not hold is told nothing about this one.
-        let (asker, own) = (asker?, own?);
-        let Some(offering) = self.0.offering.lock_recover().clone() else {
-            return Some(Answer::declining(Decline::AppNotInstalled));
-        };
-        let whose = Whose {
-            asker,
-            own,
-            workspace: WorkspaceId::parse(&query.workspace),
-        };
-        let mut answer = offering.report(remote, &whose, query);
-        // Only the inputs the job named, so no answer carries more than the
-        // question did.
-        answer
-            .holds
-            .retain(|digest| query.work.inputs.iter().any(|(input, _)| input == digest));
-        Some(answer)
     }
 
     /// Answer one request: what the device's dispatcher made of it.
@@ -738,6 +621,10 @@ impl ActionService {
             }
             _ => Caller::authenticated(certificate.user_public_key, source),
         };
+        let caller = match &action.agent {
+            None => caller,
+            Some(agent) => handed(caller, agent)?,
+        };
         Ok((
             caller
                 .in_workspace(action.workspace.clone())
@@ -797,6 +684,18 @@ impl ActionService {
                 Some(RemoteActionMessage::CancelResponse {
                     invocation: *invocation,
                     result,
+                })
+            }
+            // An agent the person's device handed its requests to asks its person here, where its
+            // session is, as an agent of this device does; a device itself confirms nothing here.
+            RemoteActionMessage::Confirm {
+                correlation,
+                request,
+            } if caller.is_session_delegated() && caller.acting().is_agent() => {
+                let result = await_answer(dispatcher.confirm(caller, request)).await;
+                Some(RemoteActionMessage::ConfirmResponse {
+                    correlation: *correlation,
+                    result: result.map(Box::new),
                 })
             }
             // A request this device does not answer is said so, never left
@@ -921,24 +820,12 @@ impl ActionService {
         };
         let frame: ActionServiceFrame =
             postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
-        match frame {
-            ActionServiceFrame::Action(signed) => {
-                if let Some(reply) = self.answer(remote, *signed).await {
-                    let bytes = RemoteActionFrame::new(reply)
-                        .encode()
-                        .map_err(|error| error.to_string())?;
-                    write_frame(&mut send, &bytes).await?;
-                }
-            }
-            // An offer this device may not be told about is left
-            // unanswered: the asking device takes it as away, and nothing
-            // about this one leaves with it.
-            ActionServiceFrame::Offer(query) => {
-                if let Some(state) = self.answer_offer(remote, &query).await {
-                    let bytes = postcard::to_allocvec(&state).map_err(|error| error.to_string())?;
-                    write_frame(&mut send, &bytes).await?;
-                }
-            }
+        let ActionServiceFrame::Action(signed) = frame;
+        if let Some(reply) = self.answer(remote, *signed).await {
+            let bytes = RemoteActionFrame::new(reply)
+                .encode()
+                .map_err(|error| error.to_string())?;
+            write_frame(&mut send, &bytes).await?;
         }
         send.finish().map_err(|error| error.to_string())
     }
@@ -1019,6 +906,40 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionCal
     }
 }
 
+/// `caller`, a person at their own device, as the agent the device says it handed the request
+/// to: that agent, for the person, held to what both the person and the agent's grants allow,
+/// under the id the person's device gives an agent of that client
+/// ([`tilo_actions::remote::device_agent_id`]). The claim only narrows, so the device's word is
+/// taken for it; a caller that is already not the person (an agent's or a bot's own device)
+/// hands nothing on.
+fn handed(
+    caller: Caller,
+    agent: &neighbour_wire::actions::HandedAgent,
+) -> Result<Caller, tilo_actions::remote::ActionCallError> {
+    use tilo_actions::remote::ActionCallError;
+    if !caller.acting().is_person() {
+        return Err(ActionCallError::NotPermitted);
+    }
+    let said = |text: &str| !text.trim().is_empty() && text.len() <= MAX_HANDED;
+    if !(said(&agent.client) && said(&agent.session)) {
+        return Err(ActionCallError::InvalidRequest {
+            reason: "the agent the request names has no client or session".into(),
+        });
+    }
+    let person = caller
+        .user_public_key()
+        .copied()
+        .ok_or(ActionCallError::NotPermitted)?;
+    let id = tilo_actions::remote::device_agent_id(&person, &agent.client);
+    Ok(caller
+        .delegated_to(id)
+        .named(&agent.client)
+        .in_agent_session(agent.session.clone()))
+}
+
+/// The longest client or session a handed agent is named by.
+const MAX_HANDED: usize = 256;
+
 /// The answer a dispatcher's pending gives, or the refusal of one it
 /// abandoned.
 async fn await_answer<T: Send + 'static>(
@@ -1030,11 +951,6 @@ async fn await_answer<T: Send + 'static>(
             reason: "the device's action provider abandoned the request".into(),
         }),
     }
-}
-
-/// What a device that never answered is taken to have said.
-fn away() -> Answer {
-    Answer::away()
 }
 
 /// One other device, as an [`ActionProvider`]: its actions through the same
@@ -1049,6 +965,9 @@ struct Device {
     /// What every request carries of where this device serves the workspace, when it places the
     /// workspace's work on the device ([`ActionService::placing`]).
     placement: Option<Vec<u8>>,
+    /// The agent this device's person handed every request to, when it is one
+    /// ([`ActionService::remote_for_agent`]).
+    agent: Option<neighbour_wire::actions::HandedAgent>,
     target: [u8; 32],
     key: Arc<dyn DeviceSigner>,
     runtime: tokio::runtime::Handle,
@@ -1172,6 +1091,7 @@ impl Device {
                 target: self.target,
                 message,
                 placement: self.placement.clone(),
+                agent: self.agent.clone(),
             },
             now_ns(),
             self.key.as_ref(),
@@ -1183,40 +1103,6 @@ impl Device {
         RemoteActionFrame::decode(&answer)
             .map(|frame| frame.message)
             .map_err(|error| unavailable(&error.to_string()))
-    }
-
-    /// Whether this device would run `route` on `work`: what it answered,
-    /// with the round trip this device measured, or — asked but silent —
-    /// what a device that is away is taken to have said.
-    async fn consider(
-        &self,
-        route: &Route,
-        work: &Work,
-        invocation: tilo_actions::InvocationId,
-    ) -> Answer {
-        let query = Query {
-            workspace: self.workspace.clone(),
-            request_id: invocation.0,
-            route: route.clone(),
-            work: work.clone(),
-        };
-        let started = tilo_clock::now();
-        let heard = async {
-            let bytes = postcard::to_allocvec(&ActionServiceFrame::Offer(Box::new(query))).ok()?;
-            let answer = self.exchange(&bytes).await.ok()?;
-            tilo_failure::ignored!(
-                "an answer that does not decode is no answer, and the caller answers `away`",
-                postcard::from_bytes::<Answer>(&answer).ok()
-            )
-        };
-        let Some(mut heard) = heard.await else {
-            return away();
-        };
-        // The round trip is the requester's own measurement, not the device's.
-        if let Ok(rank) = &mut heard.verdict {
-            rank.latency_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
-        }
-        heard
     }
 
     /// Write `bytes` on a stream of this device's own, and read the one
@@ -1512,6 +1398,28 @@ impl ActionProvider for RemoteDevice {
             RemoteActionMessage::Cancel { invocation: *id },
             |answer| match answer {
                 RemoteActionMessage::CancelResponse { result, .. } => result,
+                _ => Err(unexpected()),
+            },
+        )
+    }
+
+    /// The person put `request` to on the device, where an agent this device handed its requests
+    /// to works: that device asks them as it asks about any of its agents' steps.
+    fn confirm(
+        &self,
+        _caller: &Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionCallError>,
+    > {
+        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
+        self.ask(
+            RemoteActionMessage::Confirm {
+                correlation,
+                request: Box::new(request.clone()),
+            },
+            |answer| match answer {
+                RemoteActionMessage::ConfirmResponse { result, .. } => result.map(|answer| *answer),
                 _ => Err(unexpected()),
             },
         )

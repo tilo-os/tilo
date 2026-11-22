@@ -205,7 +205,7 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
     let (status, invited) = json_of(
         api.dispatch(
             &hyper::Method::POST,
-            &format!("/v1/workspaces/{workspace}/members/invitations"),
+            &format!("/v1/workspaces/{workspace}/resources/workspace/invitations/actions/invite"),
             "",
             &headers(&pairs),
             json!({"role": "viewer"}).to_string().as_bytes(),
@@ -214,7 +214,7 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
     )
     .await;
     assert!((200..300).contains(&status), "{invited}");
-    let link = invited["link"]
+    let link = invited["result"]["link"]
         .as_str()
         .unwrap_or_else(|| panic!("{invited}"))
         .to_owned();

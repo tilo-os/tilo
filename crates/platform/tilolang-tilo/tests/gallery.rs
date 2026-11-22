@@ -1,7 +1,7 @@
 //! The gallery app (`apps/tl/gallery`) as a window first opens it: a store with nothing in it
 //! shows the gallery's components, every group filled, from the first frame.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::UiNode;
 use tilolang_runtime::value::Value;
 
@@ -57,7 +57,7 @@ fn shows(shown: &[String], word: &str) -> bool {
 /// Open the gallery as its window does on a store that holds nothing: the root is made with what
 /// a new gallery starts with, one change committed before the view is drawn.
 fn window(ids: &str) -> Replica {
-    let (mut replica, _packages) = Replica::new("ada", AutoCommit::new(), &[(GALLERY, ids)]);
+    let (replica, _packages) = Replica::new("ada", Workspace::new(), &[(GALLERY, ids)]);
     let root = replica.host.root_of(APP).expect("the gallery's root");
     assert_eq!(
         replica.commit(),

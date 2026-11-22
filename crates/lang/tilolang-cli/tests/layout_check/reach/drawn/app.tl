@@ -13,6 +13,10 @@ type Note {
     name: Text
 }
 
+type Tag {
+    name: Text
+}
+
 root files: Shelf
 
 default view listing for Shelf
@@ -20,6 +24,8 @@ default view listing for Shelf
 row view note_row for Note
 
 place view shelf_place for Shelf
+
+default view tag_page for Tag
 
 /// The shelf's own window.
 view listing(s: Shelf) {
@@ -53,6 +59,12 @@ view note_row(n: Note) {
 /// The shelf as a place on the canvas shows it.
 view shelf_place(s: Shelf) {
     text("A shelf, placed")
+}
+
+/// A tag as the system opens one: no layout here shows a tag and no view calls this one, so it is
+/// the default view that says it can be drawn.
+view tag_page(t: Tag) {
+    text(t.name)
 }
 
 scenario "a folder and a note" {

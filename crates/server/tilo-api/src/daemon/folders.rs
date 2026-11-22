@@ -1,0 +1,363 @@
+//! Which of the person's workspaces this computer keeps a folder of, where,
+//! and whether it syncs: what `tilo folders` changes and the peer applies.
+//!
+//! Kept beside the device (`folders.json`); the peer reads it again on its
+//! next look, so a change takes effect within seconds without a restart.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization as _;
+
+/// The file, in the device's directory.
+pub const FILE: &str = "folders.json";
+
+/// This computer's synced folders.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Folders {
+    /// Whether a workspace of the person's own gets a folder as soon as this
+    /// computer learns of it.
+    #[serde(default = "yes")]
+    pub auto_own: bool,
+    /// Whether a workspace the person joined gets one too: on unless turned
+    /// off, since a workspace added on one of their devices is on all of them.
+    #[serde(default = "yes")]
+    pub auto_joined: bool,
+    /// By workspace id.
+    #[serde(default)]
+    pub workspaces: BTreeMap<String, Folder>,
+}
+
+impl Default for Folders {
+    fn default() -> Self {
+        Self {
+            auto_own: true,
+            auto_joined: true,
+            workspaces: BTreeMap::new(),
+        }
+    }
+}
+
+const fn yes() -> bool {
+    true
+}
+
+/// One workspace's folder here.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Folder {
+    /// The workspace's name when the folder was made.
+    pub name: String,
+    /// Where it is.
+    pub path: PathBuf,
+    /// Not syncing: changes made here wait, others' changes do not arrive.
+    #[serde(default)]
+    pub paused: bool,
+    /// Removed by the person: not shown here, and not added back by itself.
+    #[serde(default)]
+    pub removed: bool,
+}
+
+impl Folders {
+    /// The folders kept in `device_dir`; none yet when it has none.
+    ///
+    /// # Errors
+    /// The file exists but cannot be read.
+    pub fn load(device_dir: &Path) -> anyhow::Result<Self> {
+        match std::fs::read(device_dir.join(FILE)) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Keep these folders in `device_dir`.
+    ///
+    /// # Errors
+    /// They cannot be written.
+    pub fn save(&self, device_dir: &Path) -> anyhow::Result<()> {
+        let bytes = serde_json::to_vec_pretty(self)?;
+        tilo_files::native::atomic::write_with_mode(&device_dir.join(FILE), &bytes, 0o600)?;
+        Ok(())
+    }
+
+    /// Give `workspace`, called `name`, a folder when this computer has none
+    /// for it and the person did not remove it: of their own when `auto_own`,
+    /// one they joined when `auto_joined`. Whether one was added.
+    pub fn offer(&mut self, workspace: &str, name: &str, own: bool, home: &Path) -> bool {
+        if self.workspaces.contains_key(workspace)
+            || !(if own { self.auto_own } else { self.auto_joined })
+        {
+            return false;
+        }
+        let path = self.free_path(home, name);
+        self.workspaces.insert(
+            workspace.to_owned(),
+            Folder {
+                name: name.to_owned(),
+                path,
+                paused: false,
+                removed: false,
+            },
+        );
+        true
+    }
+
+    /// Follow `workspace`'s new name `name`: a folder still where this
+    /// computer put it (`~/<old name>`, or its suffixed spot) moves to
+    /// `~/<name>`, suffixed when that is taken; one the person moved keeps
+    /// its place and only takes the name. The folder's old and new path when
+    /// it moves.
+    pub fn follow_rename(
+        &mut self,
+        workspace: &str,
+        name: &str,
+        home: &Path,
+    ) -> Option<(PathBuf, PathBuf)> {
+        let folder = self.workspaces.get(workspace)?;
+        if folder.name == name {
+            return None;
+        }
+        let placed = folder.path.parent() == Some(home)
+            && folder.path.file_name().is_some_and(|file| {
+                let old = folder_name(&folder.name);
+                let file = file.to_string_lossy();
+                file == old.as_str()
+                    || file
+                        .strip_prefix(old.as_str())
+                        .is_some_and(|rest| rest.starts_with(" (Tilo") && rest.ends_with(')'))
+            });
+        let old = folder.path.clone();
+        let removed = folder.removed;
+        let new = if placed && !removed {
+            // The folder itself is not in the way of its own new name.
+            let mut others = self.clone();
+            others.workspaces.remove(workspace);
+            let free = others.free_path(home, name);
+            if free == old { None } else { Some(free) }
+        } else {
+            None
+        };
+        let folder = self.workspaces.get_mut(workspace)?;
+        name.clone_into(&mut folder.name);
+        let new = new?;
+        folder.path.clone_from(&new);
+        Some((old, new))
+    }
+
+    /// The folder a workspace called `name` gets below `home`: `~/<name>`,
+    /// unless that path is another folder's or holds the person's own files.
+    pub fn free_path(&self, home: &Path, name: &str) -> PathBuf {
+        let name = folder_name(name);
+        let taken = |path: &Path| {
+            self.workspaces
+                .values()
+                .any(|folder| !folder.removed && folder.path == path)
+                || holds_files(path)
+        };
+        let plain = home.join(&name);
+        if !taken(&plain) {
+            return plain;
+        }
+        (1..=1000_u32)
+            .map(|n| {
+                home.join(if n == 1 {
+                    format!("{name} (Tilo)")
+                } else {
+                    format!("{name} (Tilo {n})")
+                })
+            })
+            .find(|path| !taken(path))
+            .unwrap_or(plain)
+    }
+
+    /// Forget the folders of workspaces the person's list no longer has: a
+    /// workspace it no longer names was deleted, and no folder of it is left
+    /// to show or to bring back. `listed` is the whole list the host answered,
+    /// never one it could not. Whether anything went.
+    pub fn forget_unlisted(&mut self, listed: &[String]) -> bool {
+        let before = self.workspaces.len();
+        self.workspaces
+            .retain(|id, _| listed.iter().any(|held| held == id));
+        self.workspaces.len() != before
+    }
+
+    /// The workspace whose folder is `at` or holds it, or whose id or name is `at`.
+    pub fn find(&self, at: &str) -> Option<String> {
+        let path = std::path::absolute(at).ok();
+        self.workspaces
+            .iter()
+            .find(|(id, folder)| {
+                id.as_str() == at
+                    || folder.name == at
+                    || path
+                        .as_ref()
+                        .is_some_and(|path| path.starts_with(&folder.path))
+            })
+            .map(|(id, _)| id.clone())
+    }
+}
+
+/// A workspace's name as a folder name: one path component, composed as
+/// macOS and Linux both read it back (NFC), with what no folder name may hold
+/// replaced.
+pub fn folder_name(name: &str) -> String {
+    let name: String = name
+        .nfc()
+        .map(|c| {
+            if c == '/' || c == '\0' || c.is_control() {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let name = name.trim().trim_start_matches('.').trim();
+    if name.is_empty() {
+        "Workspace".to_owned()
+    } else {
+        name.to_owned()
+    }
+}
+
+/// Whether `path` is a folder with something in it (or a file): the
+/// person's, which a workspace is never mounted over.
+fn holds_files(path: &Path) -> bool {
+    match std::fs::read_dir(path) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_workspace_folder_lands_at_its_name_and_never_over_the_persons_files() {
+        let home = tempfile::tempdir().unwrap();
+        let mut folders = Folders::default();
+        assert!(folders.offer("w1", "Acme", true, home.path()));
+        assert_eq!(folders.workspaces["w1"].path, home.path().join("Acme"));
+        assert!(!folders.offer("w1", "Acme", true, home.path()), "once");
+        // Joined: as well, unless the person turned it off.
+        folders.auto_joined = false;
+        assert!(!folders.offer("w2", "Club", false, home.path()));
+        folders.auto_joined = true;
+        assert!(folders.offer("w2", "Club", false, home.path()));
+
+        // The person's own Documents folder is never mounted over; an empty one is fine.
+        std::fs::create_dir_all(home.path().join("Documents/old")).unwrap();
+        assert!(folders.offer("w3", "Documents", true, home.path()));
+        assert_eq!(
+            folders.workspaces["w3"].path,
+            home.path().join("Documents (Tilo)")
+        );
+        std::fs::create_dir_all(home.path().join("Empty")).unwrap();
+        assert_eq!(
+            folders.free_path(home.path(), "Empty"),
+            home.path().join("Empty")
+        );
+        // Two workspaces of one name.
+        assert!(folders.offer("w4", "Acme", true, home.path()));
+        assert_eq!(
+            folders.workspaces["w4"].path,
+            home.path().join("Acme (Tilo)")
+        );
+
+        // A removed folder is not offered again.
+        folders.workspaces.get_mut("w1").unwrap().removed = true;
+        assert!(!folders.offer("w1", "Acme", true, home.path()));
+
+        assert_eq!(folders.find("w2"), Some("w2".into()));
+        assert_eq!(folders.find("Club"), Some("w2".into()));
+        let inside = home.path().join("Documents (Tilo)/a/b.md");
+        assert_eq!(folders.find(inside.to_str().unwrap()), Some("w3".into()));
+
+        folders.save(home.path()).unwrap();
+        assert_eq!(Folders::load(home.path()).unwrap(), folders);
+        assert_eq!(
+            Folders::load(&home.path().join("none")).unwrap(),
+            Folders::default()
+        );
+    }
+
+    #[test]
+    fn a_renamed_workspace_moves_its_folder_unless_the_person_moved_it() {
+        let home = tempfile::tempdir().unwrap();
+        let mut folders = Folders::default();
+        assert!(folders.offer("w1", "Acme", true, home.path()));
+        assert!(folders.offer("w2", "Acme", true, home.path()));
+        assert_eq!(folders.follow_rename("w1", "Acme", home.path()), None);
+
+        // Renamed: the folder follows its name.
+        assert_eq!(
+            folders.follow_rename("w1", "Acme Legal", home.path()),
+            Some((home.path().join("Acme"), home.path().join("Acme Legal")))
+        );
+        assert_eq!(folders.workspaces["w1"].name, "Acme Legal");
+        // A suffixed one takes the plain name once it is free.
+        assert_eq!(
+            folders.follow_rename("w2", "Acme", home.path()),
+            None,
+            "same name"
+        );
+        assert_eq!(
+            folders.follow_rename("w2", "Acme Legal", home.path()),
+            Some((
+                home.path().join("Acme (Tilo)"),
+                home.path().join("Acme Legal (Tilo)")
+            ))
+        );
+        // Someone's own folder of that name is never taken over.
+        std::fs::create_dir_all(home.path().join("Books/mine")).unwrap();
+        assert_eq!(
+            folders.follow_rename("w1", "Books", home.path()),
+            Some((
+                home.path().join("Acme Legal"),
+                home.path().join("Books (Tilo)")
+            ))
+        );
+
+        // Moved by the person: it stays, and only takes the name.
+        let elsewhere = home.path().join("work/acme");
+        folders
+            .workspaces
+            .get_mut("w2")
+            .unwrap()
+            .path
+            .clone_from(&elsewhere);
+        assert_eq!(folders.follow_rename("w2", "Acme Inc", home.path()), None);
+        assert_eq!(folders.workspaces["w2"].path, elsewhere);
+        assert_eq!(folders.workspaces["w2"].name, "Acme Inc");
+    }
+
+    #[test]
+    fn a_folder_whose_workspace_left_the_persons_list_goes_with_it() {
+        let home = tempfile::tempdir().unwrap();
+        let mut folders = Folders::default();
+        assert!(folders.offer("w1", "Acme", true, home.path()));
+        assert!(folders.offer("w2", "Club", true, home.path()));
+        folders.workspaces.get_mut("w1").unwrap().removed = true;
+        // The host answered the person's list: one of the two is gone.
+        assert!(folders.forget_unlisted(&["w2".to_owned()]));
+        assert!(!folders.workspaces.contains_key("w1"));
+        assert!(folders.workspaces.contains_key("w2"));
+        assert!(!folders.forget_unlisted(&["w2".to_owned()]), "nothing left");
+        save_and_reload(&folders, home.path());
+    }
+
+    fn save_and_reload(folders: &Folders, dir: &Path) {
+        folders.save(dir).unwrap();
+        assert_eq!(&Folders::load(dir).unwrap(), folders);
+    }
+
+    #[test]
+    fn a_folder_name_is_one_composed_component() {
+        assert_eq!(folder_name("a/b"), "a-b");
+        assert_eq!(folder_name("..hidden"), "hidden");
+        assert_eq!(folder_name("  "), "Workspace");
+        // "é" decomposed (as macOS once stored it) comes back composed.
+        assert_eq!(folder_name("Caf\u{65}\u{301}"), "Caf\u{e9}");
+    }
+}

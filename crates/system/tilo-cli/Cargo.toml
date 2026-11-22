@@ -33,6 +33,7 @@ toml.workspace = true
 jiff.workspace = true
 # What is booted, staged and rolled back to, asked of the status socket (`tilo status`).
 tilo-deployment-status = { path = "../deployment-status" }
+# `tilo cleanup` takes its record's lock.
 tilo-advisory-lock = { path = "../advisory-lock" }
 # The cleanup record, replaced atomically and durably.
 tilo-files = { path = "../../platform/tilo-files" }
@@ -46,7 +47,6 @@ settings-store = { path = "../settings-store" }
 # `tilo login` and `tilo mcp`: this computer as one of the person's devices,
 # certified by the root their browser tab holds, in their workspace.
 tilo-session-client = { path = "../../session/client" }
-tilo-session-actions = { path = "../../session/session-actions" }
 # Documents are applied in a confined worker: this program started again as
 # it, which `main` hands over to first thing.
 tilo-automerge-isolate.workspace = true
@@ -55,12 +55,6 @@ iroh-base.workspace = true
 # HTTPS to a site and a host, as every client of the server makes its requests.
 tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tilo-server-client = { path = "../../server/tilo-server-client" }
-# The device's own workspace service and the key service beside it, which hold the login's
-# workspaces as member copies, the folders' trees among their records, and route the content of
-# the files those trees name.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys", "files"] }
-tilo-workspace-keys = { path = "../../collab/workspace-keys" }
-key-group = { path = "../../collab/key-group" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 # `tilo login <invitation link>` reads the signed invitation and the server's iroh address in it.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
@@ -73,10 +67,6 @@ postcard.workspace = true
 hex.workspace = true
 rand.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std", "signal"] }
-# The holder names its work and, when it stops answering, logs what held it with every
-# thread's stack: a folder that stalls for seconds says why rather than leaving a person
-# waiting in silence.
-tilo-rt = { path = "../../platform/tilo-rt" }
 # `tilo mcp`: the MCP projection of a workspace, its actions asked of the
 # workspace's host through this device's session, as the person their
 # workspaces name.
@@ -100,25 +90,16 @@ install-profile-model = { path = "../../session/install-profile-model" }
 # The one maker of a machine's plan and its single-use token, shared with the
 # Imager's window so both write the same document.
 install-plan = { path = "../../session/install-plan" }
-# The peer `tilo login` leaves running: the person's workspaces' file trees,
-# held over the device's session and mounted at ~/Tilo with the filesystem
-# Tilo OS mounts.
-tilo-fs = { package = "tilo-fs", path = "../fs", features = ["tree-sync"] }
+# `tilo migrate`'s cloud drives, opened as the filesystem opens them, and the folder marks
+# `tilo folders` sets on a file.
+tilo-fs = { package = "tilo-fs", path = "../fs" }
 fs-protocol = { path = "../fs-protocol" }
-# A workspace's records as this device's own service reads and writes them for the tree sync.
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-tilo-lock = { path = "../../platform/tilo-lock" }
-automerge.workspace = true
-bytes.workspace = true
 futures-util.workspace = true
 iroh.workspace = true
-iroh-blobs.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "registry", "std"] }
 # The person's workspace list, as the peer asks for the folders it keeps.
 tilo-server-session = { path = "../../server/tilo-server-session" }
-# A workspace's name as a folder name, composed as macOS and Linux read it back.
-unicode-normalization = "0.1.25"
 
 # `tilo migrate`: the migration sources the Tilo OS installer reads (Thunderbird, Outline,
 # Linear), brought into the workspace from this computer.
@@ -140,21 +121,19 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-fuser.workspace = true
-
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The folder states `tilo folders` describes, as the daemon's tree sync reports them.
+tilo-fs = { package = "tilo-fs", path = "../fs", features = ["tree-sync"] }
 # A scripted `/v1` server: the hosted commands' request mapping, without a host.
 test-http = { path = "../../dev/test-http" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
-# A server the login enters, whose workspace the device's own service holds as a member copy.
+# A server a ticket's computer enters, as the person's device.
 tilo-server = { path = "../../server/tilo-server" }
-tilo-desktop-model = { path = "../../session/desktop-model" }
 getrandom.workspace = true
 migration-sources = { path = "../../platform/migration-sources", features = ["fixture"] }
 # Fake cloud drives for `tilo migrate`'s cloud sources.

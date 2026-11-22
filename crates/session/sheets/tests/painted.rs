@@ -11,7 +11,6 @@
 //! each, every sheet paid for both. Here one renderer draws frame after
 //! frame, as a window's does.
 
-
 use tilo_sheets::dictation::DictationApp;
 use tilo_sheets::display_confirm::DisplayConfirmApp;
 use tilo_sheets::displays::DisplaysApp;

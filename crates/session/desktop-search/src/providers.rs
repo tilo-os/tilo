@@ -18,6 +18,7 @@ pub mod jobs;
 pub mod people;
 pub mod places;
 pub mod records;
+pub mod resource_options;
 #[cfg(feature = "settings")]
 pub mod settings;
 pub mod tree;
@@ -33,6 +34,7 @@ use crate::model::{ActionTarget, Hit, LaunchPlace, Source, Target};
 use crate::rank;
 pub use app_actions::Actions;
 pub use host_actions::HostActions;
+pub use resource_options::{LISTS, ResourceList, ResourceLists, ResourceOption, ResourceSource};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
 /// An application the desktop can open. A desktop lists only the apps it

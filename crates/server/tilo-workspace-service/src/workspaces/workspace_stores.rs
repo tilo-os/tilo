@@ -331,24 +331,26 @@ impl Workspaces {
         action: &str,
         effect: ActionKind,
     ) -> bool {
-        let acting = turn.caller.acting();
-        let (Some(agent), Some(person)) = (acting.agent_id(), acting.people().first().copied())
-        else {
+        let (Some(agent), Some(person)) = (
+            turn.caller.acting().agent_id(),
+            turn.caller.turn_person().map(hex::encode),
+        ) else {
             return false;
         };
         let Some(policy) = self.policy_of(&turn.workspace.to_string()).await else {
             return false;
         };
-        if policy.active_role(person).is_none() {
+        if policy.active_role(&person).is_none() {
             return false;
         }
         let bound = turn
             .bound
-            .map(|bound| tilo_action_policy::roles::agent_bound(agent, person, bound))
+            .map(|bound| tilo_action_policy::roles::agent_bound(agent, &person, bound))
             .unwrap_or_default();
-        let person = person.to_owned();
-        let Some(access) = tilo_action_policy::MemberAccess::person(policy, person.as_str())
-            .as_acting(acting.clone())
+        // The agent works on its asker's word: it reaches what they may, as its own member.
+        let acting = tilo_action_policy::Acting::handed_agent(agent, person.as_str());
+        let Some(access) =
+            tilo_action_policy::MemberAccess::person(policy, person.as_str()).as_acting(acting)
         else {
             return false;
         };

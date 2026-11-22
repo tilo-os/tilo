@@ -29,10 +29,6 @@ pub fn add_months(date: Date, delta: i32) -> Date {
         .unwrap_or(date)
 }
 
-pub fn month_title(anchor: Date) -> String {
-    ui::format::month_heading(anchor)
-}
-
 pub(crate) fn weekday_short(date: Date) -> String {
     ui::format::weekday_short(date.weekday())
 }
@@ -47,14 +43,6 @@ pub fn fmt_day_long(date: Date) -> String {
 
 pub fn fmt_day_short(date: Date) -> String {
     ui::format::month_day(date)
-}
-
-pub fn week_range_long(start: Date, end: Date) -> String {
-    ui::format::range(&fmt_day_long(start), &fmt_day_long(end))
-}
-
-pub fn week_range_short(start: Date, end: Date) -> String {
-    ui::format::day_range(start, end)
 }
 
 pub fn relative_label(due: Date, today: Date) -> String {

@@ -1,16 +1,16 @@
 //! The API, `/v1`: JSON over HTTP, resource-oriented, as
 //! `docs/developers/api.md` describes it.
 //!
-//! Every route is a call of the key's agent session ([`Session::call`]): the same tool
-//! calls an agent makes over MCP, answered typed. There is no second
-//! implementation underneath, only the mapping of routes to calls and of
-//! typed answers to HTTP:
+//! Every route is a typed call of the key's session in the workspace ([`Session::typed`]):
+//! the same walk of the published tree and the same calls an agent makes over MCP, answered
+//! typed, never as MCP. There is no second implementation underneath, only the mapping of
+//! routes to calls and of typed results to HTTP:
 //!
 //! - [`operations`]: every operation, the one table routing
 //!   ([`routing`]) and the `OpenAPI` description ([`openapi`]) both read;
 //! - [`answers`]: the types every answer goes out through, which the
 //!   description's schemas are made from;
-//! - [`lines`]: a listing's lines, which its answer carries as `text`;
+//! - [`lines`]: the lines `tilo` prints for a listing of workspaces, keys and people;
 //! - [`errors`]: the one refusal shape, and its statuses;
 //! - [`idempotency`]: retried mutating calls answer what the first did;
 //! - [`events`] and [`webhooks`]: what happens, as a stream and posted.
@@ -27,7 +27,7 @@ pub mod operations;
 pub mod routing;
 pub mod webhooks;
 
-use crate::session::{Call, Session};
+use crate::session::Session;
 use crate::store::Grant;
 use crate::{Body, Reply, Server, now_ms};
 use answers::typed;
@@ -389,47 +389,23 @@ impl<'a> Caller<'a> {
     }
 
     /// `tool` with `arguments`, in the route's workspace (`None` for the
-    /// account): its typed answer, a refusal when it says it failed.
+    /// account): its typed result, or its refusal.
     async fn call(&self, tool: &'static str, arguments: Value) -> Result<Value, ApiError> {
-        self.call_said(tool, arguments)
+        let workspace = self.workspace();
+        let workspace = Some(workspace.as_str()).filter(|workspace| !workspace.is_empty());
+        self.session
+            .typed(workspace, tool, arguments, self.group.clone())
             .await
-            .map(|(typed, _)| typed)
-    }
-
-    /// [`Self::call`], with what the tool said in words beside its typed
-    /// answer: the lines a listing or a read puts on a person's screen.
-    async fn call_said(
-        &self,
-        tool: &'static str,
-        arguments: Value,
-    ) -> Result<(Value, Option<String>), ApiError> {
-        let workspace = Some(self.workspace()).filter(|workspace| !workspace.is_empty());
-        call_in(
-            &self.session,
-            workspace,
-            self.group.clone(),
-            tool,
-            arguments,
-        )
-        .await
     }
 
     /// An account action: its `result`.
     async fn account(&self, path: &str, args: Value) -> Result<Value, ApiError> {
-        let answer = self
+        let arguments = json!({"path": path, "args": args});
+        let done = self
             .session
-            .call(Call {
-                workspace: None,
-                tool: "tilo_do",
-                arguments: json!({"path": path, "args": args}),
-                group: self.group.clone(),
-            })
+            .typed(None, "tilo_do", arguments, self.group.clone())
             .await?;
-        let typed = typed_answer(&answer)?;
-        match typed.get("status").and_then(Value::as_str) {
-            Some("failed") => Err(ApiError::of_answer(typed.get("error"), None)),
-            _ => Ok(typed.get("result").cloned().unwrap_or_default()),
-        }
+        Ok(done.get("result").cloned().unwrap_or_default())
     }
 
     async fn handle(self, operation: &Operation) -> Result<Answer, ApiError> {
@@ -483,8 +459,7 @@ impl<'a> Caller<'a> {
                     .await
                     .map_err(ApiError::from)?;
                 listed.retain(|workspace| crate::account::labelled(workspace, &labels));
-                shaped::<answers::WorkspaceList>(json!({"workspaces": listed}))
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::workspaces)))
+                shaped::<answers::WorkspaceList>(json!({"workspaces": listed})).map(Answer::ok)
             }
             "createWorkspace" => {
                 let new: answers::NewWorkspace = self.json_body()?;
@@ -512,8 +487,7 @@ impl<'a> Caller<'a> {
             }
             "listKeys" => {
                 let listed = self.account("account/keys#list", json!({})).await?;
-                shaped::<answers::KeyList>(listed)
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::keys)))
+                shaped::<answers::KeyList>(listed).map(Answer::ok)
             }
             "mintKey" => {
                 let new: answers::NewKey = self.json_body()?;
@@ -573,10 +547,8 @@ impl<'a> Caller<'a> {
                 for name in ["path", "cursor", "kind"] {
                     args = with(args, name, self.query(name));
                 }
-                let (listed, said) = self
-                    .call_said("tilo_ls", with(args, "limit", limit))
-                    .await?;
-                shaped::<answers::Listing>(with(listed, "text", said)).map(Answer::ok)
+                let listed = self.call("tilo_ls", with(args, "limit", limit)).await?;
+                shaped::<answers::Listing>(listed).map(Answer::ok)
             }
             "readResource" => {
                 self.check_surface(&self.workspace()).await?;
@@ -585,18 +557,13 @@ impl<'a> Caller<'a> {
                     "cursor",
                     self.query("cursor"),
                 );
-                let (read, said) = self.call_said("tilo_read", args).await?;
+                let read = self.call("tilo_read", args).await?;
                 let version = read
                     .get("app")
                     .and_then(Value::as_str)
                     .zip(read.get("surface").and_then(Value::as_str))
                     .map(|(app, surface)| surface_version(app, surface));
-                shaped::<answers::Resource>(with(
-                    with(read, "surface_version", version),
-                    "text",
-                    said,
-                ))
-                .map(Answer::ok)
+                shaped::<answers::Resource>(with(read, "surface_version", version)).map(Answer::ok)
             }
             "viewResource" => {
                 let path = self
@@ -624,11 +591,6 @@ impl<'a> Caller<'a> {
                     .and_then(|limit| limit.parse::<u64>().ok());
                 let args = with(json!({"query": query}), "app", self.query("app"));
                 let found = self.call("tilo_find", with(args, "limit", limit)).await?;
-                // A search that matched nothing says so in words: it ran, and its answer is
-                // no hits. A device that keeps no search refuses in words of its own, which stay.
-                if searched_nothing(&found) {
-                    return Ok(Answer::ok(json!({"hits": [], "query": query})));
-                }
                 shaped::<answers::SearchHits>(found).map(Answer::ok)
             }
             _ => {
@@ -710,83 +672,13 @@ impl<'a> Caller<'a> {
         let ws = self.workspace();
         match id {
             "exportWorkspace" => self.export().await,
-            "listMembers" => {
-                let listed = self
-                    .call("tilo_do", json!({"path": "workspace/members#list"}))
-                    .await?;
-                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::members)))
-            }
-            "addMember" => {
-                let new: answers::NewMember = self.json_body()?;
-                let added = json!({"path": "workspace/members#add", "args": new});
-                let listed = self.call("tilo_do", added).await?;
-                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::members)))
-            }
-            "setMemberRole" => {
-                let new: answers::MemberRole = self.json_body()?;
-                let person = self.params.get("person").to_owned();
-                let moved = json!({
-                    "path": "workspace/members#role",
-                    "args": {"person": person, "role": new.role},
-                });
-                let listed = self.call("tilo_do", moved).await?;
-                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::members)))
-            }
-            "revokeInvitation" => {
-                let invite = self.params.get("invite").to_owned();
-                let revoked =
-                    json!({"path": "workspace/members#revoke", "args": {"invite": invite}});
-                let listed = self.call("tilo_do", revoked).await?;
-                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::members)))
-            }
-            "removeMember" => {
-                let person = self.params.get("person").to_owned();
-                let removed =
-                    json!({"path": "workspace/members#remove", "args": {"person": person}});
-                let listed = self.call("tilo_do", removed).await?;
-                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::members)))
-            }
-            "listWaitList" => {
-                let listed = self
-                    .call("tilo_do", json!({"path": "workspace/members#wait-list"}))
-                    .await?;
-                shaped::<answers::WaitList>(listed.get("result").cloned().unwrap_or_default())
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::wait_list)))
-            }
-            "unlistWaiting" => {
-                let entry = self.params.get("entry").to_owned();
-                let unlisted =
-                    json!({"path": "workspace/members#unlist", "args": {"entry": entry}});
-                let listed = self.call("tilo_do", unlisted).await?;
-                shaped::<answers::WaitList>(listed.get("result").cloned().unwrap_or_default())
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::wait_list)))
-            }
-            "invitePerson" => {
-                let new: answers::NewInvitation = self.json_body()?;
-                let invite = json!({"path": "workspace/members#invite", "args": new});
-                let invited = self.call("tilo_do", invite).await?;
-                shaped::<answers::Invitation>(invited.get("result").cloned().unwrap_or_default())
-                    .map(Answer::created)
-            }
-            "namePerson" => {
-                let new: answers::NewName = self.json_body()?;
-                let named = json!({"path": "workspace/members#name", "args": new});
-                let listed = self.call("tilo_do", named).await?;
-                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::members)))
-            }
             "runProgram" => {
                 let program: answers::Program = self.json_body()?;
                 let arguments = json!({
                     "program": program.program,
                     "confirm": program.confirm.unwrap_or(false),
                 });
-                let (answer, session) = self
+                let (mut typed, session) = self
                     .session
                     .run_program(
                         &ws,
@@ -795,7 +687,6 @@ impl<'a> Caller<'a> {
                         self.group.clone(),
                     )
                     .await?;
-                let mut typed = typed_answer(&answer)?;
                 if let Some(fields) = typed.as_object_mut() {
                     // A program refused before it ran says why in the words a person reads.
                     if !fields.contains_key("text")
@@ -813,11 +704,14 @@ impl<'a> Caller<'a> {
             "upload" => {
                 let content = crate::content::put(&self.session, &ws, self.body)
                     .await
-                    .map_err(|refused| match refused.code {
+                    .map_err(|refused| {
                         // A revoked key is told so, and how its person approves another.
-                        "key_revoked" => ApiError::from(refused),
-                        _ => ApiError::new("unavailable", refused.message)
-                            .next("upload the file again"),
+                        if refused.body.code == "key_revoked" {
+                            refused
+                        } else {
+                            ApiError::new("unavailable", refused.body.message)
+                                .next("upload the file again")
+                        }
                     })?;
                 Ok(Answer::created(
                     json!({"content": content, "size": self.body.len()}),
@@ -1194,39 +1088,6 @@ impl<'a> Caller<'a> {
     }
 }
 
-/// `tool` with `arguments` in `workspace` (`None` for the account), in the
-/// invocation group `group`: its typed answer and what it said in words, a
-/// refusal when it says it failed.
-async fn call_in(
-    session: &Session,
-    workspace: Option<String>,
-    group: Option<Value>,
-    tool: &'static str,
-    arguments: Value,
-) -> Result<(Value, Option<String>), ApiError> {
-    let answer = session
-        .call(Call {
-            workspace,
-            tool,
-            arguments,
-            group,
-        })
-        .await?;
-    let typed = typed_answer(&answer)?;
-    if typed.get("status").and_then(Value::as_str) == Some("failed") {
-        return Err(ApiError::of_answer(typed.get("error"), typed.get("action")));
-    }
-    // A tool that answers typed says that answer as its text too, as JSON:
-    // carried as the text it would be the whole answer a second time, which
-    // made a page of a tracker's issues twice its size. Only words are text.
-    let said = answer
-        .pointer("/content/0/text")
-        .and_then(Value::as_str)
-        .filter(|text| serde_json::from_str::<Value>(text).ok().as_ref() != Some(&typed))
-        .map(str::to_owned);
-    Ok((typed, said))
-}
-
 /// Where an export reads: a key's session ([`SessionExport`]), or a test's
 /// own workspace.
 trait ExportSource: Send + Sync {
@@ -1279,6 +1140,15 @@ struct SessionExport {
     group: Option<Value>,
 }
 
+impl SessionExport {
+    async fn typed(&self, tool: &str, arguments: Value) -> Result<Value, ApiError> {
+        let workspace = self.workspace.as_deref();
+        self.session
+            .typed(workspace, tool, arguments, self.group.clone())
+            .await
+    }
+}
+
 impl ExportSource for SessionExport {
     async fn list(
         &self,
@@ -1293,15 +1163,8 @@ impl ExportSource for SessionExport {
         // A listing that answers why it has nothing (an app installed
         // but not running holds nothing to list) is named like a
         // resource that does not read, and the walk goes on.
-        call_in(
-            &self.session,
-            self.workspace.clone(),
-            self.group.clone(),
-            "tilo_ls",
-            args,
-        )
-        .await
-        .and_then(|(typed, _)| parsed::<answers::Listing>(typed))
+        let listed = self.typed("tilo_ls", args).await?;
+        parsed::<answers::Listing>(listed)
     }
 
     async fn read(
@@ -1310,15 +1173,7 @@ impl ExportSource for SessionExport {
         cursor: Option<String>,
     ) -> Result<answers::Resource, ApiError> {
         let args = with(json!({"path": path}), "cursor", cursor.as_ref());
-        let (typed, _) = call_in(
-            &self.session,
-            self.workspace.clone(),
-            self.group.clone(),
-            "tilo_read",
-            args,
-        )
-        .await?;
-        parsed::<answers::Resource>(typed)
+        parsed::<answers::Resource>(self.typed("tilo_read", args).await?)
     }
 }
 
@@ -1480,63 +1335,17 @@ fn with(mut object: Value, name: &str, value: Option<impl serde::Serialize>) -> 
     object
 }
 
-/// A tool's typed answer (`structuredContent`), or its refusal when it gave
-/// none.
-fn typed_answer(answer: &Value) -> Result<Value, ApiError> {
-    if let Some(typed) = answer.get("structuredContent") {
-        return Ok(typed.clone());
-    }
-    let text = answer
-        .pointer("/content/0/text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if answer.get("isError").and_then(Value::as_bool) == Some(true) {
-        return Err(ApiError::new("failed", text));
-    }
-    serde_json::from_str(text).map_err(|_| ApiError::malformed("an answer", text))
-}
-
-/// `value` as a `T`, or the refusal saying what the workspace answered
-/// instead: its words, when it said why in words ([`said_instead`]).
+/// `value` as a `T`, or the refusal that it was not.
 fn parsed<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ApiError> {
-    let said = said_instead(&value);
-    serde_json::from_value(value).map_err(|why| match said {
-        Some((failed, text)) => ApiError::new(if failed { "failed" } else { "not_found" }, text),
-        None => ApiError::malformed(std::any::type_name::<T>(), &why.to_string()),
-    })
+    serde_json::from_value(value)
+        .map_err(|why| ApiError::malformed(std::any::type_name::<T>(), &why.to_string()))
 }
 
-/// `value` as `T`, or the refusal that it was not.
-///
-/// A tool that had nothing of the kind to answer says why in words
-/// (`{"status": .., "text": ..}`, such as a listing of an app the workspace
-/// does not hold open): that is what the caller is told, not the shape.
+/// `value` as `T` answers it, or the refusal that it was not.
 fn shaped<T: serde::de::DeserializeOwned + serde::Serialize>(
     value: Value,
 ) -> Result<Value, ApiError> {
-    let said = said_instead(&value);
-    typed::<T>(value).map_err(|why| match said {
-        Some((failed, text)) => ApiError::new(if failed { "failed" } else { "not_found" }, text),
-        None => ApiError::malformed(std::any::type_name::<T>(), &why),
-    })
-}
-
-/// What a tool said in words in place of a typed answer, and whether it said
-/// it as a failure.
-fn said_instead(value: &Value) -> Option<(bool, String)> {
-    let fields = value.as_object()?;
-    if fields.len() != 2 {
-        return None;
-    }
-    let status = fields.get("status")?.as_str()?;
-    let text = fields.get("text")?.as_str()?;
-    Some((status == "failed", text.to_owned()))
-}
-
-/// Whether a search found nothing: it answered in words, and not as a failure. A device that
-/// keeps no search refuses as one, which is no answer of an empty page.
-fn searched_nothing(found: &Value) -> bool {
-    matches!(said_instead(found), Some((false, _)))
+    typed::<T>(value).map_err(|why| ApiError::malformed(std::any::type_name::<T>(), &why))
 }
 
 /// An action's answer as the API names it: `200` done, `202` pending with
@@ -1556,24 +1365,12 @@ async fn stream_content(
     use base64::Engine as _;
     let mut offset = from;
     loop {
-        let answer = session
-            .call(Call {
-                workspace: Some(workspace.clone()).filter(|workspace| !workspace.is_empty()),
-                tool: "tilo_get",
-                arguments: json!({"content": content, "offset": offset}),
-                group: None,
-            })
-            .await;
-        let piece = match answer {
-            Ok(answer) => match typed_answer(&answer) {
-                Ok(piece) => piece,
-                Err(error) => {
-                    tracing::warn!(why = %error.body.message, code = %error.body.code, %content, offset, "a file answered nothing typed");
-                    return;
-                }
-            },
+        let asked = json!({"content": content, "offset": offset});
+        let in_workspace = Some(workspace.as_str()).filter(|workspace| !workspace.is_empty());
+        let piece = match session.typed(in_workspace, "tilo_get", asked, None).await {
+            Ok(piece) => piece,
             Err(error) => {
-                tracing::warn!(why = %error.message, code = error.code, %content, offset, "a file stopped part way");
+                tracing::warn!(why = %error.body.message, code = %error.body.code, %content, offset, "a file stopped part way");
                 return;
             }
         };
@@ -1769,7 +1566,6 @@ mod export_tests {
                 actions: Vec::new(),
                 kinds: std::collections::BTreeMap::new(),
                 next_cursor: None,
-                text: None,
             })
         }
 
@@ -1834,7 +1630,6 @@ mod export_tests {
             app: None,
             surface: None,
             surface_version: None,
-            text: None,
         }
     }
 
@@ -2019,42 +1814,5 @@ mod export_tests {
         text.push_str(&String::from_utf8_lossy(&rest));
         let export = parse(text.as_bytes());
         assert_eq!(paths(&export), ["early", "late"]);
-    }
-}
-
-#[cfg(test)]
-mod shaped_tests {
-    use super::*;
-
-    /// A listing of something the workspace does not hold open is told as
-    /// what the host said of it, not as an answer of the wrong shape.
-    #[test]
-    fn a_tool_that_said_why_in_words_is_told_in_its_words() {
-        let note = json!({"status": "ok", "text": "browser is not open in this workspace"});
-        let error = shaped::<answers::Listing>(note).expect_err("a note is no listing");
-        let said = serde_json::to_value(&*error.body).expect("an error body");
-        assert_eq!(said["code"], "not_found", "{said}");
-        assert_eq!(
-            said["message"], "browser is not open in this workspace",
-            "{said}"
-        );
-        let wrong = shaped::<answers::Listing>(json!({"rows": 3})).expect_err("not a listing");
-        let said = serde_json::to_value(&*wrong.body).expect("an error body");
-        assert_eq!(said["code"], "unavailable", "{said}");
-    }
-
-    /// A search that matched nothing answers the hits it found, which are none; a device
-    /// that keeps no search is a refusal, not an empty page.
-    #[test]
-    fn a_search_that_matched_nothing_answers_no_hits() {
-        let nothing =
-            json!({"status": "ok", "text": "nothing matches passport in what you may read here"});
-        assert!(searched_nothing(&nothing));
-        let no_search = json!({"status": "failed", "text": "keeps no search of its workspace"});
-        assert!(!searched_nothing(&no_search));
-        assert!(!searched_nothing(&json!({"hits": [], "query": "passport"})));
-        let empty = json!({"hits": [], "query": "passport"});
-        let hits: answers::SearchHits = serde_json::from_value(empty).expect("an empty page");
-        assert!(hits.hits.is_empty() && hits.query == "passport");
     }
 }

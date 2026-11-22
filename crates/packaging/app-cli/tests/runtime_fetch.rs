@@ -1,7 +1,6 @@
 //! A registry build linked against a runtime build this device lacks: the app installs once its
 //! runtime does, and both are verified.
 
-
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};

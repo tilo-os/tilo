@@ -12,7 +12,9 @@ use super::*;
 /// it was written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_look_that_read_before_an_answer_does_not_ask_the_message_again() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -23,10 +25,11 @@ async fn a_look_that_read_before_an_answer_does_not_ask_the_message_again() {
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         looks_then_answers(1_000, Arc::clone(&asked)),
-    );
+    )
+    .await;
     // What a look reads: the turn her message is owed.
     let read = agents.turns(&workspace).await.unwrap();
     assert_eq!(read.len(), 1, "{read:?}");
@@ -64,7 +67,9 @@ async fn a_look_that_read_before_an_answer_does_not_ask_the_message_again() {
 /// stops it by naming that reply: their stop ends the turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
 
     // A turn their own message began.
     let first = write_to_agent(
@@ -78,15 +83,16 @@ async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn() {
     let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
     let _opens = Opens(Arc::clone(&hold));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         waits(
             vec![looks(), says("The launch is planned.")],
             1,
             &asked,
             &hold,
         ),
-    );
+    )
+    .await;
     agents.look(&workspace).await.unwrap();
     until("the turn reaches its second step", || {
         asked.lock().unwrap().len() == 2
@@ -142,7 +148,9 @@ async fn has_ended(workspaces: &Workspaces, workspace: &str, message: &Id) -> bo
 /// with the model's own answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_of_thirty_steps_ends_with_its_models_answer() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -153,10 +161,11 @@ async fn a_turn_of_thirty_steps_ends_with_its_models_answer() {
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         looks_then_says(30, "All thirty are tidied.", &asked),
-    );
+    )
+    .await;
     let read = agents.turns(&workspace).await.unwrap();
     assert_eq!(read.len(), 1, "{read:?}");
     agents.answer(&workspace, &read[0]).await.unwrap();
@@ -186,7 +195,9 @@ async fn a_turn_of_thirty_steps_ends_with_its_models_answer() {
 /// stop: her stop ends it at its next step, and no step follows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_that_never_answers_goes_on_until_its_person_stops_it() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -196,7 +207,7 @@ async fn a_turn_that_never_answers_goes_on_until_its_person_stops_it() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = worked(&workspaces, &actions, plays(&asked, |_| looks()));
+    let agents = worked(&served, &workspace, plays(&asked, |_| looks())).await;
     agents.look(&workspace).await.unwrap();
     // A server that counted its asks would have ended the turn by itself before this.
     let deadline = tilo_test_env::hang_deadline();

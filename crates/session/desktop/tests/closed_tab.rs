@@ -1,7 +1,6 @@
 //! The desktop's reopen chord on the real chrome: a window the person closed comes back where it
 //! was, and the close is undone once.
 
-
 use crate::support::group;
 use crate::support::hold;
 use crate::support::in_front;

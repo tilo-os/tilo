@@ -8,7 +8,6 @@
 //! fields a view reads are the fields the host holds — never a second reading
 //! of the record made by the app.
 
-
 use tilo_resource::{Replica, Resource, ResourceKind, state_from_reading};
 
 use crate::golden_path::Board;

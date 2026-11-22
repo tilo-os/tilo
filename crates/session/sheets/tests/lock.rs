@@ -2,7 +2,6 @@
 //! clock, whose session it is, the password field, what plays, and the
 //! controls each publishes.
 
-
 use std::sync::mpsc::Receiver;
 
 use tilo_sheets::SheetState as _;

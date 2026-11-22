@@ -392,6 +392,13 @@ enum Look {
 /// whole layout into that frame — the size a video of the desktop is streamed at — and every other
 /// keeps each display's own pixels.
 fn shell(compositor: &mut Compositor, look: Look) -> Result<Shell, String> {
+    // A screenshot is of what was last asked of the displays, with the shell's frames still
+    // drawing on other threads in it; a video frame is of what they show now, and never waits.
+    if !matches!(look, Look::Fitted(_)) {
+        compositor
+            .settle_surface_draws()
+            .map_err(|error| error.to_string())?;
+    }
     let displays: Vec<Layout> = compositor
         .outputs()
         .into_iter()

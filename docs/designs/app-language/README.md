@@ -208,6 +208,25 @@ it needs itself, and each item it inserts starts with its own type's initial con
 change. Content that would make itself again (a `Book` that starts with a `Book`) is refused.
 Nothing invokes an initial action by name, and no surface offers it.
 
+## Opening
+
+What opening a resource does is an `opened action` on its type. The system's one open path runs
+it whenever the resource is opened, from the app's own list, search, a link, an agent's `open` or
+another app, so an app never chains it after its own `open(x)`:
+
+```
+/// Opening a conversation reads it.
+opened action read_on_open(t: Thread) {
+    mark_read(t, false)
+}
+```
+
+It runs as the person who opened the resource, under their grants: a change it makes is theirs,
+in their history. Someone who may not change the resource opens it all the same, without the
+change; the open is never refused. A past version and a scenario's capture change nothing. A type
+has at most one, it takes the opened resource and nothing else and answers nothing, and nothing
+invokes it by name; no surface offers it.
+
 ## Triggers
 
 An action that runs without anyone pressing anything is a `trigger`: the package says when it

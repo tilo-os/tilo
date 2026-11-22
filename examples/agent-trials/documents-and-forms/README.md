@@ -106,11 +106,11 @@ Someone at the desktop does three things once.
 
 ## How the tester's agent connects
 
-The agent reaches the desktop through `tilo-runtime-mcp --connect` over ssh;
+The agent reaches the desktop through `tilo-runtime --connect` over ssh;
 the tester needs ssh access as `tester`. For Claude Code:
 
 ```bash
-claude mcp add tilo -- ssh -T tester@HOST tilo-runtime-mcp --connect
+claude mcp add tilo -- ssh -T tester@HOST tilo-runtime --connect
 ```
 
 Any MCP client that can run a command works the same way. The agent gets the

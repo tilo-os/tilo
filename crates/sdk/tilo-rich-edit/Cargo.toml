@@ -32,7 +32,6 @@ winit.workspace = true
 vello.workspace = true
 automerge.workspace = true
 rustc-hash.workspace = true
-fnv.workspace = true
 serde.workspace = true
 tracing.workspace = true
 uuid.workspace = true

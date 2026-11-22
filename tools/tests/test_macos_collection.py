@@ -124,7 +124,7 @@ class StageTests(unittest.TestCase):
             with patch('collection_native.run', side_effect=lambda cmd, **kw: calls.append(cmd)):
                 sign_bundle(Path(temp) / 'App with spaces.app', policy, {'sha1': '-'}, True)
             self.assertEqual(len(calls), 2)
-            self.assertTrue(str(calls[0][-1]).endswith('MacOS/tilo-runtime-mcp'))
+            self.assertTrue(str(calls[0][-1]).endswith('MacOS/tilo-runtime'))
             self.assertTrue(str(calls[1][-1]).endswith('.app'))
             self.assertFalse(any('--deep' in cmd for cmd in calls))
 
@@ -208,7 +208,7 @@ class BundleTests(unittest.TestCase):
                 'CFBundleShortVersionString': '1.0.0', 'CFBundlePackageType': 'APPL',
                 'CFBundleExecutable': 'fixture', 'LSMinimumSystemVersion': '13.0'}
         (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
-        for name in ['fixture', 'tilo-runtime-mcp']:
+        for name in ['fixture', 'tilo-runtime']:
             path = app / 'Contents/MacOS' / name
             path.write_bytes(bytes.fromhex('cffaedfe') + b'fixture')
             path.chmod(0o755)
@@ -233,7 +233,7 @@ class BundleTests(unittest.TestCase):
         from collection_native import inspect_bundle
         with tempfile.TemporaryDirectory() as temp:
             app, entry = self.fixture(temp)
-            (app / 'Contents/MacOS/tilo-runtime-mcp').unlink()
+            (app / 'Contents/MacOS/tilo-runtime').unlink()
             with self.assertRaisesRegex(ValueError, 'missing nested code'):
                 inspect_bundle(app, entry, 'arm64')
 

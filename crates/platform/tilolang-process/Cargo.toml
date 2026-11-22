@@ -21,23 +21,25 @@ path = "src/main.rs"
 test-support = []
 
 [dependencies]
-tilolang-tilo = { path = "../tilolang-tilo", features = ["document"] }
+tilolang-tilo = { path = "../tilolang-tilo" }
 # Each instance's connection to its workspace, opened by the session for that app's launch.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["native", "broker-transport"] }
+# The workspace's store, which every resource of an app is kept in: its commands and answers.
+tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
 # The API the session hands instances over.
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }
 # The patch connection to each instance's window, and the sealed memfd its module comes in.
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
-# The document diff an action's answer names the text it wrote by.
-tilo-doc = { path = "../../doc/tilo-doc" }
 # Dates and clocks as the person set them, which the session hands over the API: the toolkit
 # writes them the same way, so a sentence here and a view there read alike.
 tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
 tilo-wake.workspace = true
 # The platform's phrases the standard library's frames say, without the toolkit.
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
+# What an earlier, native app of a package's id kept on this device: read once, never written,
+# for the package's one-time conversion of its records.
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 # The person's date and time, read in their zone: what `today` is and what a day reads as.
@@ -54,9 +56,6 @@ tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # id, its document, and the changes that arrive for it.
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 automerge.workspace = true
-tilo-automerge.workspace = true
-# A document the API hands over travels as base64 on the program connection.
-base64.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
@@ -89,6 +88,7 @@ tilolang = { path = "../../lang/tilolang" }
 # The session's persistent search index, and the source a search reads it through: a tilolang
 # app's published entries are found by a word of their text through it.
 tilo-desktop-search = { path = "../../session/desktop-search", features = ["indexes"] }
+# The native app's data home a test grants the host, as the session does.
 tempfile.workspace = true
 # The replies the test's broker awaits from the instance's action directory.
 tokio = { workspace = true, features = ["sync"] }

@@ -122,7 +122,7 @@ mod tests {
 
     fn finish(widget: &mut crate::TerminalWidget, doc: &automerge::AutoCommit) {
         tilo_test_env::wait_until("the open to finish", || {
-            widget.update(doc, &automerge::ROOT);
+            ui::headless::frame_widget(widget, doc);
             !matches!(widget.session_state(), crate::sessions::OpenState::Opening)
         });
     }
@@ -150,7 +150,7 @@ mod tests {
         widget.sync(&doc, &automerge::ROOT);
         finish(&mut widget, &doc);
         tilo_test_env::wait_until("the window bar's listing", || {
-            widget.sync(&doc, &automerge::ROOT);
+            ui::headless::frame_widget(&mut widget, &doc);
             widget.sessions().directory != crate::sessions::Directory::Unasked
         });
         let request = serde_json::from_str(&supervisor.join().unwrap()).unwrap();

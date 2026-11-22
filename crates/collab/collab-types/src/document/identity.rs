@@ -194,6 +194,28 @@ pub fn founding(
     Some(doc)
 }
 
+/// The [`founding`] of `id` of `kind` in `workspace` that `doc` lacks, when `doc` holds that
+/// resource as a build wrote it before resources named themselves: content, and no meta map at
+/// all. Merged into `doc`, it names the document exactly as a founder on this build names it.
+/// Every holder derives the same change, so two holders naming one document at once write one
+/// identity: two meta maps made apart conflict, and a conflicting meta map names nothing
+/// ([`object_at`]). `None` for an empty document, and for one that has a meta map, which this
+/// never rewrites.
+#[must_use]
+pub fn founding_for_unnamed(
+    doc: &AutoCommit,
+    id: &DocumentId,
+    kind: &ResourceType,
+    workspace: &str,
+) -> Option<AutoCommit> {
+    if doc.keys(&ROOT).next().is_none()
+        || !matches!(object_at(doc, &ROOT, META, ObjType::Map), ObjectAt::Missing)
+    {
+        return None;
+    }
+    founding(id, kind, workspace, workspace)
+}
+
 /// The key of the resource identity naming the surface its changes are
 /// decided against: the content hash of its app's surface in the form it is
 /// kept by.

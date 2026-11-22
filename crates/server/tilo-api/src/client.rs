@@ -1143,6 +1143,7 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
             Some(address) => Some(crate::server::ServerInfo {
                 server_cert: device.server_cert.clone(),
                 address: Some(address.clone()),
+                origin: Some(device.host_origin.clone()),
             }),
             None => None,
         },
@@ -1359,9 +1360,7 @@ mod tests {
             fn enter(
                 &self,
                 workspace: &str,
-                _session: &str,
-                _label: &str,
-            ) -> std::result::Result<Box<dyn crate::session::Answering>, String> {
+            ) -> std::result::Result<crate::session::Reached, String> {
                 Err(format!("no workspace {workspace} here"))
             }
         }

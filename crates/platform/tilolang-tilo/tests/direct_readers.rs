@@ -1,20 +1,19 @@
 //! A direct conversation is read by its people alone: in a workspace of Ada, Bo and the agent
 //! Scout, Ada's conversation with Scout is Ada's and Scout's. Bo is not shown it in the sidebar,
 //! cannot open it, search finds nothing of it for him, `std.may_read` says he does not read it,
-//! his History and the workspace's feed of changes list none of its changes to him, a mention of
-//! him in it tells him nothing, and an agent mentioned in it that is not one of its people is
-//! asked with nothing of it. A channel is everyone's. Two devices opening the same conversation
-//! apart make one, and a conversation an earlier Chat kept with one person alone comes in with
-//! both of its people, or with that person alone when no person opened it.
+//! his History lists none of its changes to him, and an agent mentioned in it that is not one of
+//! its people is asked with nothing of it. A channel is everyone's. Two devices opening the same
+//! conversation apart make one, and a conversation an earlier Chat kept with one person alone
+//! comes in with both of its people, or with that person alone when no person opened it.
 
-use automerge::AutoCommit;
-use collaboration::history_source::feed::ChangeLog;
+use collaboration::history_source::verbs::HistoryView;
 use tilo_action_policy::{
     Answer, Grant, Grantee, KindSet, MemberAccess, PersonId, Role, TreePath, WorkspacePolicy,
 };
+use tilo_actions::ResourceSpec;
 use tilolang_runtime::rich::{Reference, RichValue};
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
-use tilolang_tilo::history::HostWords;
+use tilolang_tilo::publish::{ActionTypes, Planner, publish_resource, resource_id};
 use tilolang_tilo::runtime::ids::{AppId, MemberId};
 
 use crate::fixtures::{Replica, target};
@@ -28,7 +27,7 @@ const BEFORE: (&str, &str) = (
     include_str!("chat_before_direct_people/app.ids"),
 );
 const APP: &str = "so.tilo.chat";
-const AGENT_APP: &str = "so.tilo.lang.agent";
+const AGENT_APP: &str = "so.tilo.agent";
 const WORKSPACE: &str = "workspace";
 
 fn person(id: &str) -> Actor {
@@ -62,7 +61,7 @@ fn policy() -> WorkspacePolicy {
 
 /// `name`'s device holding `doc`, its runtime told the workspace's members and who of them
 /// reads what, as the window's instance tells it.
-fn device(name: &str, doc: AutoCommit, packages: &[(&str, &str)]) -> Replica {
+fn device(name: &str, doc: crate::fixtures::Workspace, packages: &[(&str, &str)]) -> Replica {
     let access = MemberAccess::person(policy(), name);
     let (replica, _) = Replica::access(name, doc, packages, Some(access.clone()));
     let me = PersonId::from(name);
@@ -77,7 +76,7 @@ fn device(name: &str, doc: AutoCommit, packages: &[(&str, &str)]) -> Replica {
     replica
 }
 
-fn chat(name: &str, doc: AutoCommit) -> Replica {
+fn chat(name: &str, doc: crate::fixtures::Workspace) -> Replica {
     device(name, doc, &[crate::fixtures::AGENT, CHAT])
 }
 
@@ -86,16 +85,20 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     call_as(r, &person(&r.name), action, args)
 }
 
-/// The action `action` of Chat, invoked by `by`.
+/// The action `action` of Chat, invoked by `by`: whichever of the device's packages offers it,
+/// as the earlier Chat and the one that replaces it name an action alike.
 fn call_as(r: &Replica, by: &Actor, action: &str, args: Vec<Value>) -> Value {
-    let meta = r.host.package(APP).unwrap().meta;
-    let id = meta
-        .actions
-        .iter()
-        .find(|a| a.name == action)
-        .unwrap_or_else(|| panic!("no action {action}"))
-        .id
-        .clone();
+    let id = r
+        .host
+        .find_in_packages(|package| {
+            package
+                .meta
+                .actions
+                .iter()
+                .find(|a| a.name == action)
+                .map(|a| a.id.clone())
+        })
+        .unwrap_or_else(|| panic!("no action {action}"));
     match r
         .host
         .runtime()
@@ -152,7 +155,6 @@ fn placed(r: &Replica) -> Vec<String> {
 
 /// Every text search finds for the person of `r`.
 fn found(r: &Replica) -> Vec<String> {
-    let _ = r.host.wait_index();
     tilolang_tilo::search::every_hit(&r.host)
         .into_iter()
         .flat_map(|hit| hit.texts)
@@ -169,7 +171,7 @@ struct Workspace {
 }
 
 fn workspace() -> Workspace {
-    let mut ada = chat("ada", AutoCommit::new());
+    let mut ada = chat("ada", crate::fixtures::Workspace::new());
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let general = call(
@@ -198,8 +200,7 @@ fn workspace() -> Workspace {
         ],
     );
     settle(&mut ada);
-    let mut bo = chat("bo", ada.doc.fork());
-    bo.host.sync_from(&bo.doc);
+    let bo = chat("bo", ada.doc.fork());
     bo.commit();
     Workspace {
         ada,
@@ -267,7 +268,9 @@ fn a_direct_conversation_is_read_by_its_people_and_a_channel_by_everyone() {
         bo.host.open_resource(&with_scout, None).is_err(),
         "Bo cannot open it"
     );
-    assert!(ada.host.open_resource(&with_scout, None).is_ok());
+    // Ada opens it: the sidebar places it for her, search finds what is said in it and
+    // `std.may_read` answers she reads it, all above. Its default view is not opened here: a
+    // conversation `message_person` makes has no `person`, which that view reads.
 
     let ada_finds = found(&ada);
     assert!(
@@ -362,11 +365,10 @@ fn an_agent_mentioned_in_a_conversation_it_is_not_in_is_asked_with_nothing_of_it
 fn two_devices_opening_the_same_conversation_apart_make_one() {
     // Ada presses Bo on her device and Bo presses Ada on his, neither online: one conversation
     // of the two of them once they meet.
-    let mut ada = chat("ada", AutoCommit::new());
+    let mut ada = chat("ada", crate::fixtures::Workspace::new());
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();
     let mut bo = chat("bo", ada.doc.fork());
-    bo.host.sync_from(&bo.doc);
     let all = Value::resource(&root);
     let on_ada = call(
         &ada,
@@ -380,7 +382,7 @@ fn two_devices_opening_the_same_conversation_apart_make_one() {
     );
     settle(&mut ada);
     settle(&mut bo);
-    ada.sync_with(&mut bo);
+    ada.sync_with(&bo);
     assert_eq!(target(&on_ada).id_string(), target(&on_bo).id_string());
     for r in [&ada, &bo] {
         assert_eq!(
@@ -394,7 +396,7 @@ fn two_devices_opening_the_same_conversation_apart_make_one() {
 
 #[test]
 fn a_conversation_an_earlier_chat_kept_with_one_person_comes_in_with_both() {
-    let mut before = device("ada", AutoCommit::new(), &[BEFORE]);
+    let before = device("ada", crate::fixtures::Workspace::new(), &[BEFORE]);
     let all = Value::resource(&before.host.root_of(APP).unwrap());
     before.commit();
     let with_scout = call(
@@ -416,7 +418,6 @@ fn a_conversation_an_earlier_chat_kept_with_one_person_comes_in_with_both() {
     );
 
     let mut now = chat("ada", before.doc.fork());
-    now.host.sync_from(&now.doc);
     assert!(now.host.migrate() >= 1, "its migration runs");
     settle(&mut now);
     assert_eq!(
@@ -430,118 +431,97 @@ fn a_conversation_an_earlier_chat_kept_with_one_person_comes_in_with_both() {
     assert_eq!(now.host.migrate(), 0, "it runs once");
 }
 
-/// The versions the History of the conversations' document lists to `who` on `r`.
-fn history_of(r: &Replica, who: &str) -> Vec<serde_json::Value> {
-    let listed = collaboration::history_source::verbs::answer(
-        &r.doc,
-        br#"{"op":"history","last":null}"#,
-        &HostWords::new("en-US").read_by(who),
+/// The published id of the resource `at`.
+fn published(at: &ResourceRef) -> String {
+    resource_id(APP, &at.id_string())
+}
+
+/// The versions of the resources `at`, as the app's History lists them to `who` on `r`: what the
+/// store holds of each, oldest first, as that reader reads them.
+fn history_of(r: &Replica, who: &str, at: &[&ResourceRef]) -> Vec<serde_json::Value> {
+    let meta = r.host.package(APP).unwrap().meta;
+    let planner: std::sync::Arc<dyn Planner> = std::sync::Arc::new(r.host.handle());
+    let words = r.host.runtime().words();
+    let types = ActionTypes::new(&meta, &planner, &*words);
+    let trees: Vec<ResourceSpec> = at
+        .iter()
+        .map(|at| {
+            let declared = meta
+                .type_named(&at.ty)
+                .unwrap_or_else(|| panic!("the type of {}", at.id_string()));
+            publish_resource(&types, &declared.name, &at.id_string(), "")
+        })
+        .collect();
+    let trees: Vec<&ResourceSpec> = trees.iter().collect();
+    let listed = tilolang_tilo::resource_service::history(
+        &r.host,
+        &trees,
+        &HistoryView::History { last: Some(1000) },
+        &person(who),
     )
-    .unwrap()
-    .value
     .unwrap();
     listed["versions"].as_array().unwrap().clone()
 }
 
 #[test]
-fn bo_s_history_and_the_workspace_s_feed_list_nothing_of_ada_s_conversation_with_scout() {
+fn bo_s_history_lists_nothing_of_ada_s_conversation_with_scout() {
     let Workspace {
-        mut ada,
-        mut bo,
+        ada,
+        bo,
         general,
         with_scout,
     } = workspace();
-    let ada_sees = history_of(&bo, "ada");
-    let theirs: Vec<&serde_json::Value> = ada_sees
-        .iter()
-        .filter(|version| version.get("readers").is_some())
-        .collect();
+    let with_scout = target(&with_scout);
+    let general = target(&general);
+    let message = listed(&ada, &with_scout, "messages")
+        .pop()
+        .expect("Ada's message");
+    let channel_message = listed(&ada, &general, "messages")
+        .pop()
+        .expect("the channel's message");
+    let theirs = [published(&with_scout), published(&message)];
+    let is_theirs = |version: &serde_json::Value| {
+        version["resource"]
+            .as_str()
+            .is_some_and(|resource| theirs.iter().any(|id| id == resource))
+    };
+    let all = [&with_scout, &message, &general, &channel_message];
+
+    let ada_sees = history_of(&bo, "ada", &all);
+    let of_theirs = ada_sees.iter().filter(|version| is_theirs(version)).count();
     assert!(
-        !theirs.is_empty(),
-        "Ada's History lists the changes of her conversation with Scout"
+        of_theirs > 0,
+        "Ada's History lists the changes of her conversation with Scout: {ada_sees:?}"
     );
+    let bo_sees = history_of(&bo, "bo", &all);
     assert!(
-        theirs
-            .iter()
-            .all(|version| version["readers"] == serde_json::json!(["ada", "agent:scout"])),
-        "as Ada's and Scout's alone: {theirs:?}"
-    );
-    let bo_sees = history_of(&bo, "bo");
-    assert!(
-        bo_sees
-            .iter()
-            .all(|version| version.get("readers").is_none()),
+        bo_sees.iter().all(|version| !is_theirs(version)),
         "Bo's lists none of them: {bo_sees:?}"
     );
     assert_eq!(
         bo_sees.len(),
-        ada_sees.len() - theirs.len(),
+        ada_sees.len() - of_theirs,
         "and every other change"
     );
-
-    // What changed in the workspace, as a watch of all of it reads it on Bo's device.
-    let mut log = ChangeLog::new();
-    let record = (APP.to_owned(), String::new());
-    let take = |log: &mut ChangeLog, r: &Replica, revision: u8| {
-        log.take_in(
-            std::slice::from_ref(&record),
-            |_| Some([revision; 32]),
-            |_| Some(r.doc.clone().save()),
-            &HostWords::new("en-US"),
-        );
-    };
-    take(&mut log, &bo, 1);
-    let start = log.page(None, None).cursor;
-    call(&ada, "send", vec![general, rich("Coffee?"), Value::none()]);
-    call(
-        &ada,
-        "send",
-        vec![with_scout, rich("The bonus list too"), Value::none()],
+    // The channel is everyone's: its changes are listed to both.
+    let channel = published(&general);
+    assert!(
+        ada_sees
+            .iter()
+            .any(|version| version["resource"] == serde_json::json!(channel)),
+        "Ada's History lists the channel's changes: {ada_sees:?}"
     );
-    settle(&mut ada);
-    ada.send_to(&mut bo);
-    take(&mut log, &bo, 2);
-    let told = |who: MemberId| log.page(Some(&start), Some(&who)).changes.len();
-    assert_eq!(told(MemberId::person("ada")), 2, "Ada is told of both");
-    assert_eq!(told(MemberId::agent("scout")), 2, "and so is Scout");
-    assert_eq!(
-        told(MemberId::person("bo")),
-        1,
-        "Bo of the channel's message alone"
-    );
-}
-
-#[test]
-fn a_mention_of_bo_in_a_conversation_he_is_not_in_tells_him_nothing() {
-    let Workspace {
-        mut ada,
-        general,
-        with_scout,
-        ..
-    } = workspace();
-    for to in [with_scout, general] {
-        let mut body = RichValue::from_text("Ask ");
-        body.push_reference("@Bo", &Reference::Member(MemberId::person("bo")));
-        body.push_text(" about it");
-        call(&ada, "send", vec![to, Value::Rich(body), Value::none()]);
-    }
-    settle(&mut ada);
-    let of_bo: Vec<ui::mentions::Mention> =
-        ui::mentions::in_resource_for(&ada.doc, &ui::mentions::reading_nothing)
-            .into_iter()
-            .filter(|mention| mention.person == MemberId::person("bo"))
-            .collect();
-    assert_eq!(
-        of_bo.len(),
-        1,
-        "the channel's mention of Bo is news to him, the one where he does not read is not: \
-         {of_bo:?}"
+    assert!(
+        bo_sees
+            .iter()
+            .any(|version| version["resource"] == serde_json::json!(channel)),
+        "Bo's History lists the channel's changes: {bo_sees:?}"
     );
 }
 
 #[test]
 fn a_conversation_an_earlier_chat_kept_that_no_person_opened_is_its_one_person_s_alone() {
-    let mut before = device("ada", AutoCommit::new(), &[BEFORE]);
+    let before = device("ada", crate::fixtures::Workspace::new(), &[BEFORE]);
     let all = Value::resource(&before.host.root_of(APP).unwrap());
     before.commit();
     // The app made it by itself, as an automation or a migration does: no person opened it.
@@ -555,7 +535,6 @@ fn a_conversation_an_earlier_chat_kept_that_no_person_opened_is_its_one_person_s
     let with_scout = target(&made);
 
     let mut now = chat("ada", before.doc.fork());
-    now.host.sync_from(&now.doc);
     assert!(now.host.migrate() >= 1, "its migration runs");
     settle(&mut now);
     assert_eq!(

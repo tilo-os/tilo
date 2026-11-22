@@ -87,6 +87,8 @@ pub struct PermissionPrompt {
     /// request is not the usual capability one ([`Self::with_choices`]).
     own_choices: Option<OwnChoices>,
     icon: Option<crate::icons::Icon>,
+    /// How it is pressed: a button is never shorter than its smallest target.
+    interaction: crate::interaction::InteractionEnvironment,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
@@ -127,6 +129,7 @@ impl PermissionPrompt {
             local_input: None,
             own_choices: None,
             icon: None,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -245,30 +248,28 @@ impl PermissionPrompt {
     }
 
     pub fn apply_layout_helper(&mut self) {
-        let by = self.rect.y0 + (self.rect.height() - BUTTON_HEIGHT) / 2.0;
-        let by1 = by + BUTTON_HEIGHT;
-        let right_edge = self.rect.x1 - PADDING_X;
-        let deny_x1 = right_edge;
-        let deny_x0 = deny_x1 - BUTTON_WIDTH;
-        let always_x1 = deny_x0 - BUTTON_GAP;
-        let always_x0 = always_x1 - BUTTON_WIDTH;
-        let session_x1 = always_x0 - BUTTON_GAP;
-        let session_x0 = session_x1 - BUTTON_WIDTH;
-        let allow_x1 = session_x0 - BUTTON_GAP;
-        let allow_x0 = allow_x1 - BUTTON_WIDTH;
-        self.allow_rect = Rect::new(allow_x0, by, allow_x1, by1);
-        self.session_rect = Rect::new(session_x0, by, session_x1, by1);
-        self.always_rect = Rect::new(always_x0, by, always_x1, by1);
-        self.deny_rect = Rect::new(deny_x0, by, deny_x1, by1);
+        let height = BUTTON_HEIGHT.max(f64::from(self.interaction.minimum_target()));
+        let by = self.rect.y0 + (self.rect.height() - height) / 2.0;
+        let slot = |n: f64| {
+            let x1 = self.rect.x1 - PADDING_X - n * (BUTTON_WIDTH + BUTTON_GAP);
+            Rect::new(x1 - BUTTON_WIDTH, by, x1, by + height)
+        };
+        // From the right: Deny, Always, This session, Allow.
+        let slots = [slot(0.0), slot(1.0), slot(2.0), slot(3.0)];
+        [
+            self.deny_rect,
+            self.always_rect,
+            self.session_rect,
+            self.allow_rect,
+        ] = slots;
         if let Some(own) = &self.own_choices {
             // The offered choices fill the slots from the right, in order;
             // the others take no space and no clicks.
-            let slots = [deny_x0, always_x0, session_x0, allow_x0];
             let mut rects = [Rect::ZERO; 4];
             for (slot, choice) in slots.iter().zip(own.visible.iter().rev()) {
-                let rect = Rect::new(*slot, by, *slot + BUTTON_WIDTH, by1);
-                if let Some(target) = rects.get_mut(Self::slot_of(*choice)) {
-                    *target = rect;
+                let at = CHOICES.iter().position(|offered| offered == choice);
+                if let Some(target) = at.and_then(|at| rects.get_mut(at)) {
+                    *target = *slot;
                 }
             }
             [
@@ -280,22 +281,12 @@ impl PermissionPrompt {
             return;
         }
         if self.local_input.is_some() {
-            self.allow_rect = Rect::new(always_x0, by, always_x1, by1);
+            [_, self.allow_rect, ..] = slots;
             self.session_rect = Rect::ZERO;
             self.always_rect = Rect::ZERO;
             if !self.visible_choices().contains(&PromptChoice::Allow) {
                 self.allow_rect = Rect::ZERO;
             }
-        }
-    }
-
-    /// The index of `choice` among [`CHOICES`].
-    fn slot_of(choice: PromptChoice) -> usize {
-        match choice {
-            PromptChoice::Allow => 0,
-            PromptChoice::Session => 1,
-            PromptChoice::Always => 2,
-            PromptChoice::Deny => 3,
         }
     }
 
@@ -662,6 +653,17 @@ impl Widget for PermissionPrompt {
     /// A host that shows the prompt among its own parts takes the person's choice from it.
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction != environment {
+            self.interaction = environment;
+            self.apply_layout_helper();
+            self.dirty = true;
+        }
     }
 
     fn needs_redraw(&self) -> bool {

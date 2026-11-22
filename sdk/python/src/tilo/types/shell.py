@@ -321,7 +321,7 @@ QueryRetryArgs = TypedDict("QueryRetryArgs", {
 
 class Shell(Resource):
     """Shell — `tl.so.tilo.shell.Shell`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     qsrjrjkd: ChromePreset  # preset
     @property
     def _2se66uzq(self) -> ChromePreset:
@@ -706,14 +706,14 @@ class Shell(Resource):
 
 class BarPart(Resource):
     """BarPart — `tl.so.tilo.shell.BarPart`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     fjzbw5un: BarPartKind  # kind
     pbly7ymy: bool  # shown
 
 
 class DockItem(Resource):
     """DockItem — `tl.so.tilo.shell.DockItem`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     rfsefuzv: str  # key
     qsnrl2gk: str  # title
     @property
@@ -739,7 +739,7 @@ class DockItem(Resource):
 
 class Layout(Resource):
     """Layout — `tl.so.tilo.shell.Layout`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     uykuo63i: str  # person
     yb7sokzs: list[Entry[LayoutPerson]]  # people
     @property
@@ -845,7 +845,7 @@ class Layout(Resource):
 
 class LayoutQuery(Resource):
     """LayoutQuery — `tl.so.tilo.shell.LayoutQuery`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     @property
     def _6jget5cg(self) -> str:
         """key (`6jget5cg` on the wire)."""
@@ -863,7 +863,7 @@ class LayoutQuery(Resource):
 
 class LayoutRef(Resource):
     """LayoutRef — `tl.so.tilo.shell.LayoutRef`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     k652vouu: str  # key
     vdsinb5l: str  # query
     vj5mgxi6: str  # address
@@ -880,7 +880,7 @@ class LayoutRef(Resource):
 
 class LayoutWorkspace(Resource):
     """LayoutWorkspace — `tl.so.tilo.shell.LayoutWorkspace`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     @property
     def _5zibpqs6(self) -> str:
         """key (`5zibpqs6` on the wire)."""
@@ -895,7 +895,7 @@ class LayoutWorkspace(Resource):
 
 class LayoutPerson(Resource):
     """LayoutPerson — `tl.so.tilo.shell.LayoutPerson`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     @property
     def _3rpmhtjf(self) -> str:
         """key (`3rpmhtjf` on the wire)."""
@@ -916,7 +916,7 @@ class LayoutPerson(Resource):
 
 class LayoutRow(Resource):
     """LayoutRow — `tl.so.tilo.shell.LayoutRow`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     @property
     def _3xc5xbon(self) -> str:
         """key (`3xc5xbon` on the wire)."""
@@ -933,7 +933,7 @@ class LayoutRow(Resource):
 
 class LayoutStrip(Resource):
     """LayoutStrip — `tl.so.tilo.shell.LayoutStrip`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     dufcke3u: str  # key
     x42tiiqe: str  # workspace
     dvberkpa: str  # row
@@ -972,7 +972,7 @@ class LayoutStrip(Resource):
 
 class LayoutPlace(Resource):
     """LayoutPlace — `tl.so.tilo.shell.LayoutPlace`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     ba3kyokq: str  # key
     @property
     def _7dno3n47(self) -> str:
@@ -993,7 +993,7 @@ class LayoutPlace(Resource):
 
 class Viewing(Resource):
     """Viewing — `tl.so.tilo.shell.Viewing`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     kna5sco4: str  # style
     @property
     def _6b2coqll(self) -> str:
@@ -1047,7 +1047,7 @@ class Viewing(Resource):
 
 class TiloShell(Resource):
     """Shell — `tl.so.tilo.shell`."""
-    __surface__ = "so.tilo.shell@5eeb639dc8b1788c"
+    __surface__ = "so.tilo.shell@1055dac19a014096"
     def size_place(self,
         *,
         key: str,

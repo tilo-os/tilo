@@ -52,8 +52,9 @@ pub const CHANGED_UNAVAILABLE: &str =
     "this provider cannot tell when the workspace's records or its people changed";
 
 /// The next time what `scope` follows may have changed, as `provider` tells it
-/// ([`ActionProvider::changed`]), answered for `correlation`: a provider that cannot tell says so, and a
-/// waiter then waits until its own deadline rather than on a signal that never comes.
+/// ([`ActionProvider::changed`]), answered for `correlation`: a provider that cannot tell says so,
+/// and the device that asked tells its waiter why rather than leaving it to a signal that never
+/// comes.
 pub(super) fn noticed<H: ActionProvider>(
     provider: &H,
     caller: &Caller,
@@ -65,7 +66,7 @@ pub(super) fn noticed<H: ActionProvider>(
         result,
     };
     match provider.changed(caller, scope) {
-        Some(changed) => changed.map(move |()| respond(Ok(()))),
+        Some(changed) => changed.map(respond),
         None => Pending::ready(respond(Err(ActionCallError::Unavailable {
             reason: CHANGED_UNAVAILABLE.into(),
         }))),

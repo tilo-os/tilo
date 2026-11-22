@@ -15,13 +15,14 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
 ///
-/// 16 leaves which hosts hold a workspace to its owners' own actions (`tilo
-/// workspace servers add` and `remove`); 15 leaves bringing people in to the
+/// 17 has a started host name its own certificate and address; 16 leaves which hosts hold a
+/// workspace to its owners' own
+/// actions (`tilo workspace servers add` and `remove`); 15 leaves bringing people in to the
 /// workspace's own actions (`tilo workspace people add` and `tilo workspace people invite`,
 /// which its owners and administrators ask with their keys): the operator
 /// names its first owner at start. A reader of another version decodes no
 /// line of this.
-pub const VERSION: u16 = 16;
+pub const VERSION: u16 = 17;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.
@@ -168,6 +169,9 @@ pub enum OperatorEvent {
         allowed_origins: Vec<String>,
         /// The governed workspace's UUID; `None` for a short-lived workspace.
         workspace: Option<String>,
+        /// Who this host is and where its endpoint is dialled, as `/host` answers it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host_info: Option<Box<crate::web::ServerInfo>>,
     },
     /// The browser that displayed `pairing_code` was certified.
     MemberCertified {
@@ -452,6 +456,7 @@ mod tests {
                 certificate_sha256: None,
                 allowed_origins: vec!["https://workspaces.example".into()],
                 workspace: None,
+                host_info: None,
             },
             OperatorEvent::MemberCertified {
                 device: "cd".repeat(32),
@@ -483,6 +488,7 @@ mod tests {
                 certificate_sha256: None,
                 allowed_origins: vec![],
                 workspace: Some("6f1c3b0e-58a1-4c2e-9d55-0b3c1f6a2e10".into()),
+                host_info: None,
             },
             OperatorEvent::Online {
                 people: 3,
@@ -548,9 +554,9 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_operator_protocol_round_trips_pins_and_refuses_its_lines;
 
-        phase protocol_sixteen_round_trips_and_pins_its_wire_form;
+        phase protocol_seventeen_round_trips_and_pins_its_wire_form;
         {
-            assert_eq!(VERSION, 16);
+            assert_eq!(VERSION, 17);
             assert_eq!(InviteRole::parse("administrator"), Some(InviteRole::Administrator));
             assert_eq!(InviteRole::parse("Owner"), None);
             assert!(

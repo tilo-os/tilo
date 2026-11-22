@@ -291,7 +291,7 @@ fn revoked(identity: &str, grant: &[u8; 32]) -> bool {
 /// Certify `grant` as an agent's grant of the person `person` (their root key in hex), or find it
 /// certified for long enough already, or revoked.
 fn certify(grant: [u8; 32], person: &str) -> Result<GrantState, String> {
-    let registry = tilo_identity::registry::IdentityRegistryStore::from_env()
+    let registry = tilo_identity::store::IdentityRegistryStore::from_env()
         .and_then(|store| store.load_reconciled())
         .map_err(|error| format!("the person's identities could not be read: {error}"))?;
     let profile = registry

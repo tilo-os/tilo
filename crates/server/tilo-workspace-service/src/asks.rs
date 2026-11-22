@@ -10,9 +10,9 @@
 //!
 //! Everything an agent's turn writes goes through the package's own actions, invoked as the
 //! agent: [`answer`] starts its reply, [`say`] appends to the reply's body, [`step`] records an
-//! action it called and what it answered, [`finish`] ends the turn, [`claim`] takes the turn
-//! for a device ([`crate::work::takes_turn`] decides who holds it) and [`supersede`] marks a
-//! reply another device's answer stands in place of. [`ask`] makes an ask outright, keyed by its
+//! action it called and what it answered, [`finish`] ends the turn (which device takes it
+//! [`crate::work::takes_turn`] decides) and [`supersede`] marks a reply another device's answer
+//! stands in place of. [`ask`] makes an ask outright, keyed by its
 //! cause: what a reminder, an event or a sub-agent asks. [`show`] puts the thing the agent worked
 //! on into the reply's body as a card of it, live.
 
@@ -23,7 +23,6 @@ use tilolang_tilo::runtime::store::Store as _;
 use tilolang_tilo::runtime::value::EnumValue;
 
 use crate::tl_records::{Opened, Packages};
-use crate::work::Claim;
 
 /// Who made a resource, and a resource of a record, as the agent package names them.
 pub use tilolang_tilo::runtime::{Actor, ResourceRef};
@@ -109,7 +108,6 @@ pub struct Asked {
     /// The mention, or the cause, that names the ask with what it is made from.
     pub mention: String,
     pub state: AskState,
-    pub claims: Vec<Claim>,
     /// Who asked.
     pub who: Option<Actor>,
     /// What it is about.
@@ -293,13 +291,6 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
             }
             _ => (None, Vec::new()),
         };
-        let claims = items(opened, &at, "claims")
-            .iter()
-            .map(|claim| Claim {
-                device: text(read(opened, claim, "device")),
-                at: int(read(opened, claim, "at").as_ref()),
-            })
-            .collect();
         let made = opened
             .host()
             .store()
@@ -353,7 +344,6 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
             refers,
             mention: text(read(opened, &at, "mention")),
             state: state_of(&meta, read(opened, &at, "state")),
-            claims,
             who: made.as_ref().and_then(|made| made.who.clone()),
             from: made.as_ref().and_then(|made| made.from.clone()),
             asked_at: made.map(|made| made.at).unwrap_or_default(),
@@ -377,10 +367,7 @@ pub fn around(opened: &Opened, about: &ResourceRef, most: usize) -> Around {
             items: vec![said(opened, about, true)],
         };
     };
-    let title = store
-        .first_text(&holder)
-        .map(|(text, _)| text)
-        .unwrap_or_default();
+    let title = store.first_text(&holder).unwrap_or_default();
     let mut all = items(opened, &holder, &field);
     if let Some(at) = all.iter().position(|item| item.same(about)) {
         all.truncate(at.saturating_add(1));
@@ -407,12 +394,7 @@ fn said(opened: &Opened, at: &ResourceRef, asked_about: bool) -> Said {
     Said {
         at: at.clone(),
         who: made.as_ref().and_then(|made| made.who.clone()),
-        text: opened
-            .host()
-            .store()
-            .first_text(at)
-            .map(|(text, _)| text)
-            .unwrap_or_default(),
+        text: opened.host().store().first_text(at).unwrap_or_default(),
         when: made.map(|made| made.at).unwrap_or_default(),
         asked_about,
     }
@@ -690,30 +672,6 @@ pub fn finish(
             &self::agent(agent),
             (AGENT_APP, "finish"),
             vec![Value::resource(reply), state],
-            None,
-        )
-        .map(drop)
-}
-
-/// Claim `ask`'s turn for the device `device` at `at` (milliseconds since 1970), as `agent`.
-///
-/// # Errors
-/// The ask is no longer owed, or the package refused it.
-pub fn claim(
-    opened: &mut Opened,
-    agent: &MemberId,
-    ask: &ResourceRef,
-    (device, at): (&str, i64),
-) -> Result<(), String> {
-    opened
-        .invoke(
-            &self::agent(agent),
-            (AGENT_APP, "claim"),
-            vec![
-                Value::resource(ask),
-                Value::Text(device.into()),
-                Value::Int(at),
-            ],
             None,
         )
         .map(drop)

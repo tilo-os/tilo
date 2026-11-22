@@ -115,42 +115,6 @@ tilo_test_env::scenario! {
             );
         }
         {
-            let mut legacy = Namespace::new("legacy").unwrap();
-            legacy
-                .create_file(ROOT_INO, "old.txt", Some(&h(2)), 2, 1)
-                .unwrap();
-            let ids: Vec<_> = legacy.doc.sorted_node_ids();
-            let _ = legacy.doc.delete(&Obj::index(), ROOT_DOCUMENT_ID_KEY);
-            for id in ids {
-                let node = legacy.node(&id).unwrap();
-                let _ = legacy.doc.delete(&node, DOCUMENT_ID_KEY);
-            }
-            let legacy_bytes = legacy.save();
-
-            let mut first = Namespace::from_bytes("first", &legacy_bytes).unwrap();
-            let mut second = Namespace::from_bytes("second", &legacy_bytes).unwrap();
-            let first_ino = first.lookup(ROOT_INO, "old.txt").unwrap().ino.0;
-            let second_ino = second.lookup(ROOT_INO, "old.txt").unwrap().ino.0;
-            assert_eq!(
-                first.document_id_for(ROOT_INO),
-                second.document_id_for(ROOT_INO),
-                "root migration must not depend on the loading peer"
-            );
-            assert_eq!(
-                first.document_id_for(first_ino),
-                second.document_id_for(second_ino),
-                "node migration must not depend on the loading peer"
-            );
-
-            let expected_root = first.document_id_for(ROOT_INO).unwrap();
-            let expected_file = first.document_id_for(first_ino).unwrap();
-            let migrated_bytes = first.save();
-            let mut persisted = Namespace::from_bytes("third", &migrated_bytes).unwrap();
-            let persisted_ino = persisted.lookup(ROOT_INO, "old.txt").unwrap().ino.0;
-            assert_eq!(persisted.document_id_for(ROOT_INO), Some(expected_root));
-            assert_eq!(persisted.document_id_for(persisted_ino), Some(expected_file));
-        }
-        {
             let mut ns = Namespace::new("a").unwrap();
             let original = ns.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
             let original_document = ns.document_id_for(original).unwrap();
@@ -163,7 +127,6 @@ tilo_test_env::scenario! {
             let mut ns = Namespace::new("a").unwrap();
             ns.create_file(ROOT_INO, "x", Some(&h(1)), 1, 1).unwrap();
             let mut copy = ns.clone_doc();
-            assert!(copy.document_ids_complete);
             let copied = copy.lookup(ROOT_INO, "x").unwrap().ino.0;
             let original = ns.lookup(ROOT_INO, "x").unwrap().ino.0;
             assert_eq!(copy.document_id_for(copied), ns.document_id_for(original));
@@ -978,6 +941,49 @@ fn mounts_of_one_workspace_that_found_its_tree_apart_hold_one_identity_and_every
 }
 
 #[test]
+fn mounts_that_name_a_tree_an_earlier_build_wrote_hold_one_identity() {
+    use collab_types::document::DocumentId;
+
+    let workspace = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
+    // A mount of a build before mounts named the tree's documents wrote them naming nothing.
+    let mut earlier = Namespace::new(MountAuthor::device("laptop")).unwrap();
+    earlier
+        .create_file(ROOT_INO, "contract.txt", Some(&h(1)), 6, 1)
+        .unwrap();
+    let written: Vec<(TreeChunk, Vec<u8>)> = earlier
+        .document_writes(&BTreeMap::new())
+        .into_iter()
+        .map(|w| (w.chunk, w.changes))
+        .collect();
+    assert_eq!(written.len(), 2, "the tree's own document and its chunk");
+    // Two computers on this build take that tree in and each names it as it next writes, before
+    // either hears of the other's name.
+    let mount = |device: &str| MountAuthor::device(device).in_workspace(workspace);
+    let mut laptop = Namespace::from_records(mount("laptop"), written.clone()).unwrap();
+    let mut desktop = Namespace::from_records(mount("desktop"), written).unwrap();
+    let from_laptop = laptop.document_writes(&BTreeMap::new());
+    let from_desktop = desktop.document_writes(&BTreeMap::new());
+    for (into, from) in [(&mut laptop, from_desktop), (&mut desktop, from_laptop)] {
+        into.take_documents(from.into_iter().map(|w| (w.chunk, w.changes)).collect())
+            .unwrap();
+    }
+    for ns in [&mut laptop, &mut desktop] {
+        for chunk in [0, 1] {
+            let doc = AutoCommit::load(&ns.save_document(chunk).unwrap()).unwrap();
+            assert_eq!(
+                collab_types::document::identity::identity(&doc).map(|found| found.id),
+                DocumentId::parse(&fs_protocol::tree::chunk_document_id(chunk)),
+                "document {chunk} names itself once, not as two computers' competing names"
+            );
+            assert_eq!(
+                collab_types::document::identity::workspace_scope(&doc).as_deref(),
+                Some(workspace)
+            );
+        }
+    }
+}
+
+#[test]
 fn the_folder_reads_as_changed_with_its_newest_entry() {
     let mut ns = Namespace::new("laptop").unwrap();
     let opened = ns.getattr(ROOT_INO).unwrap().mtime;
@@ -1234,7 +1240,6 @@ fn the_trees_own_document_names_its_changes_as_the_making_they_are_part_of() {
 
 /// Each chunk's heads, the tree's own document first.
 fn chunk_heads(ns: &mut Namespace) -> BTreeMap<fs_protocol::TreeChunk, Vec<automerge::ChangeHash>> {
-    ns.note_change();
     ns.doc.heads()
 }
 

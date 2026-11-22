@@ -2,8 +2,7 @@ use ed25519_dalek::SigningKey;
 use tilo_seal::SecretKey;
 use tilo_unlock_protocol::{Half, open_release, seal_sibling_half};
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
-    sign_revocation_entry,
+    RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
 
 use super::*;
@@ -52,18 +51,18 @@ fn slot() -> SlotId {
     }
 }
 
-fn boot_cert(attestation_key: Option<Vec<u8>>) -> BootKeyCert {
-    let mut cert = BootKeyCert {
-        version: PROTOCOL_VERSION,
+fn boot_cert() -> DeviceCert {
+    let mut cert = DeviceCert {
         user_public_key: root().verifying_key().to_bytes(),
-        device_public_key: device(),
-        boot_public_key: boot_key().verifying_key().to_bytes(),
-        slot: slot(),
-        attestation_key,
+        device_public_key: boot_key().verifying_key().to_bytes(),
+        device_label: "Boot key".into(),
+        capabilities: DeviceCapabilities::nothing(),
         issued_at_ns: 2,
+        expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
-    cert.sign(&root()).unwrap();
+    sign_device_cert(&mut cert, &root()).unwrap();
     cert
 }
 
@@ -82,7 +81,7 @@ struct World {
 }
 
 impl World {
-    fn new(cert: &BootKeyCert) -> Self {
+    fn new(cert: &DeviceCert, attestation_key: Option<Vec<u8>>) -> Self {
         let mut fleet = CertifiedFleet::new(root().verifying_key().to_bytes());
         fleet.certify(device_cert(device())).unwrap();
         fleet.certify(device_cert(sibling())).unwrap();
@@ -91,7 +90,10 @@ impl World {
             seal_sibling_half(&secret_sync.public_key().unwrap(), cert, &half()).unwrap();
         let enrolment = UnlockEnrolment {
             cert: cert.clone(),
+            device_public_key: device(),
             sealed_half,
+            slot: slot(),
+            attestation_key,
             stamp: FabricStamp {
                 counter: 1,
                 device: DeviceId::new(hex::encode(device())).unwrap(),
@@ -156,7 +158,7 @@ struct Boot {
 }
 
 impl Boot {
-    fn new(cert: BootKeyCert, boot_id: u8) -> Self {
+    fn new(cert: DeviceCert, boot_id: u8) -> Self {
         Self {
             hello: UnlockHello {
                 version: PROTOCOL_VERSION,
@@ -171,6 +173,7 @@ impl Boot {
         UnlockRequest::sign(
             &boot_key(),
             &self.hello.boot_cert,
+            slot(),
             challenge,
             self.id,
             &self.ephemeral.public_key().unwrap(),
@@ -204,8 +207,8 @@ fn pending_code(frame: &SiblingFrame) -> String {
 
 #[test]
 fn an_approved_request_releases_the_half_to_that_boot_only() {
-    let cert = boot_cert(None);
-    let world = World::new(&cert);
+    let cert = boot_cert();
+    let world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert, 7);
     let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
@@ -253,8 +256,8 @@ fn an_approved_request_releases_the_half_to_that_boot_only() {
 
 #[test]
 fn a_denied_or_unanswered_request_releases_nothing() {
-    let cert = boot_cert(None);
-    let mut world = World::new(&cert);
+    let cert = boot_cert();
+    let mut world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert.clone(), 7);
     let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
@@ -316,8 +319,8 @@ fn a_denied_or_unanswered_request_releases_nothing() {
 
 #[test]
 fn replayed_exchanges_are_refused() {
-    let cert = boot_cert(None);
-    let world = World::new(&cert);
+    let cert = boot_cert();
+    let world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert, 7);
     let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
@@ -381,8 +384,8 @@ fn replayed_exchanges_are_refused() {
 
 #[test]
 fn requests_are_rate_limited_per_device() {
-    let cert = boot_cert(None);
-    let world = World::new(&cert);
+    let cert = boot_cert();
+    let world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert, 7);
     for n in 0..MAX_REQUESTS_PER_WINDOW {
@@ -399,8 +402,8 @@ fn requests_are_rate_limited_per_device() {
 
 #[test]
 fn a_device_removed_from_the_fleet_is_refused() {
-    let cert = boot_cert(None);
-    let mut world = World::new(&cert);
+    let cert = boot_cert();
+    let mut world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert, 7);
     // Removed while its request waits for the owner: approval releases nothing.
@@ -442,14 +445,14 @@ fn a_device_removed_from_the_fleet_is_refused() {
     world.enrolments.clear();
     assert_eq!(
         service.hello(&boot.hello, &world.view(), [11; 32], NOW),
-        SiblingFrame::Refused(RefusalReason::Revoked)
+        SiblingFrame::Refused(RefusalReason::NotEnrolled)
     );
 }
 
 #[test]
 fn wrong_slot_unknown_key_and_non_key_holders_are_refused() {
-    let cert = boot_cert(None);
-    let mut world = World::new(&cert);
+    let cert = boot_cert();
+    let mut world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert.clone(), 7);
     let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
@@ -460,10 +463,10 @@ fn wrong_slot_unknown_key_and_non_key_holders_are_refused() {
         SiblingFrame::Refused(RefusalReason::WrongSlot)
     );
 
-    // A certificate for another slot that was never enrolled.
+    // A root-signed boot key that was never enrolled.
     let mut other_slot = cert.clone();
-    other_slot.slot.keyslot = 7;
-    other_slot.sign(&root()).unwrap();
+    other_slot.device_label = "Another boot key".into();
+    sign_device_cert(&mut other_slot, &root()).unwrap();
     let hello = UnlockHello {
         version: PROTOCOL_VERSION,
         boot_cert: other_slot,
@@ -475,7 +478,7 @@ fn wrong_slot_unknown_key_and_non_key_holders_are_refused() {
 
     // A boot key the person never certified.
     let mut forged = cert;
-    forged.boot_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
+    forged.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
     let hello = UnlockHello {
         version: PROTOCOL_VERSION,
         boot_cert: forged.clone(),
@@ -486,7 +489,7 @@ fn wrong_slot_unknown_key_and_non_key_holders_are_refused() {
     );
     let other_root = SigningKey::from_bytes(&[9; 32]);
     forged.user_public_key = other_root.verifying_key().to_bytes();
-    forged.sign(&other_root).unwrap();
+    sign_device_cert(&mut forged, &other_root).unwrap();
     let hello = UnlockHello {
         version: PROTOCOL_VERSION,
         boot_cert: forged,
@@ -510,8 +513,8 @@ fn auto_approval_needs_the_owner_setting_and_an_attested_boot_chain() {
 
     let tpm = TpmKey::from_slice(&[9_u8; 32]).unwrap();
     let ak = tpm.verifying_key().to_sec1_bytes().to_vec();
-    let cert = boot_cert(Some(ak));
-    let mut world = World::new(&cert);
+    let cert = boot_cert();
+    let mut world = World::new(&cert, Some(ak));
     let mut service = UnlockSibling::new(sibling());
     let pcrs = [(4_u8, [1_u8; 32]), (7, [2; 32])];
     let chain = attest::pcr_composite(&pcrs);
@@ -624,8 +627,8 @@ fn attest_bytes(extra: &[u8], pcrs: &[(u8, [u8; 32])]) -> Vec<u8> {
 
 #[test]
 fn a_denied_boot_hears_it_again_without_a_second_question() {
-    let cert = boot_cert(None);
-    let mut world = World::new(&cert);
+    let cert = boot_cert();
+    let mut world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert.clone(), 7);
     let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
@@ -693,8 +696,8 @@ fn a_denied_boot_hears_it_again_without_a_second_question() {
 
 #[test]
 fn an_allowed_boot_that_reconnects_gets_a_half_for_its_own_key() {
-    let cert = boot_cert(None);
-    let mut world = World::new(&cert);
+    let cert = boot_cert();
+    let mut world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert.clone(), 7);
     let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
@@ -742,8 +745,8 @@ fn an_allowed_boot_that_reconnects_gets_a_half_for_its_own_key() {
 
 #[test]
 fn boots_whose_handlers_died_do_not_refuse_later_boots() {
-    let cert = boot_cert(None);
-    let world = World::new(&cert);
+    let cert = boot_cert();
+    let world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     // Seventeen boots asked, and every handler died before the person
     // answered. Each question is spent by the time the next boot asks, so a
@@ -771,8 +774,8 @@ fn boots_whose_handlers_died_do_not_refuse_later_boots() {
 
 #[test]
 fn a_boot_that_went_away_gives_its_question_up() {
-    let cert = boot_cert(None);
-    let world = World::new(&cert);
+    let cert = boot_cert();
+    let world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert, 7);
     let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
@@ -798,8 +801,8 @@ fn a_boot_that_went_away_gives_its_question_up() {
 
 #[test]
 fn answers_merge_from_the_person_devices_only_while_they_hold() {
-    let cert = boot_cert(None);
-    let world = World::new(&cert);
+    let cert = boot_cert();
+    let world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert, 7);
     let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));

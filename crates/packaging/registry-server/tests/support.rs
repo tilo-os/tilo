@@ -1,6 +1,5 @@
 //! Helpers shared by the test modules of this binary.
 
-
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::process::{Command, Output};

@@ -78,9 +78,10 @@ pub(super) fn delegate_item_use(
 
 /// Answer an account's password kept or released
 /// ([`runtime_collab::BrowserServiceSessionCommand::account_secret`]) from an app's own route,
-/// once the service read or wrote the workspace's vault on this device. The app asking is
-/// decided before and again after, as every account-secret request is; what the service
-/// answers leaves only as the answer to that same request.
+/// once the service read or wrote the workspace's vault on this device. The vault decides the
+/// app and the device asking ([`crate::workspaces::Workspaces::account_secret`]); the
+/// connection is checked before and again after, and what the service answers leaves only as
+/// the answer to that same request.
 fn delegate_account_secret(
     service: Option<&Arc<dyn crate::apps::services::BrowserServiceSessionServices>>,
     context: &crate::apps::services::BrowserServiceSessionRequestContext,
@@ -99,9 +100,6 @@ fn delegate_account_secret(
     let service = service
         .cloned()
         .ok_or_else(|| refused(NO_VAULT_HERE.to_owned()))?;
-    service
-        .authorize_command(context, &command)
-        .map_err(refused)?;
     let answering = service.account_secret(context, command.clone());
     let context = context.clone();
     Ok(Box::pin(async move {
@@ -112,9 +110,6 @@ fn delegate_account_secret(
         // What the service says is said to the app: a refusal designed for its person.
         let reply = answering.await.map_err(BrokerError::failed)?;
         context.revalidate().map_err(refused)?;
-        service
-            .authorize_command(&context, &command)
-            .map_err(refused)?;
         if !reply.matches(&command) {
             return Err(refused(NO_VAULT_HERE.to_owned()));
         }

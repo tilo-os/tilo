@@ -826,10 +826,14 @@ fn authorize_replay_now(
     source: &StateSource,
     authority: &crate::persistence::ReplayAuthority,
 ) -> Result<(), StoreError> {
-    // The in-memory set while the membership watch vouches for it; otherwise
-    // the file, as a fresh membership reload would read it.
+    // The in-memory set while the membership watch vouches for it or an
+    // access write is under way (the file may lag governance's additions);
+    // otherwise the file, as a fresh membership reload would read it.
     let locking = crate::timing::start();
-    let current = workspace.blocking_lock().membership_is_current();
+    let current = {
+        let runtime = workspace.blocking_lock();
+        runtime.membership_is_current() || runtime.authorization.writing()
+    };
     crate::timing::window("replay.authorize_lock", locking);
     let members = if current {
         None
@@ -842,6 +846,8 @@ fn authorize_replay_now(
     let locking = crate::timing::start();
     let runtime = workspace.blocking_lock();
     crate::timing::window("replay.authorize_lock", locking);
+    // A projection queued during the read is in memory and not in the file.
+    let members = members.filter(|_| !runtime.authorization.writing());
     let workspace = members.as_deref().map_or_else(
         || workspace_access::WorkspaceFacts::current(&runtime),
         |listed| workspace_access::WorkspaceFacts::with_listed(&runtime, listed),

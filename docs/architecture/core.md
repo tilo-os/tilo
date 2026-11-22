@@ -156,6 +156,27 @@ is sealed for Ada and the agent, never for Ada alone. A device that runs the
 agent, the tilo.sh server included, holds the agent's keys and so opens
 exactly the records the agent reads, and no others. A device that cannot
 open the record an ask is about is not eligible to take its turn.
+A sub-agent or coding agent that an agent starts acts as its starter's
+approved key, narrowed to its own conversation: a grant only narrows what
+its giver holds. Any device of the person an agent acts for may approve
+that agent. A turn that has no approved caller writes its refusal into the
+conversation, with the reason, and ends. It is written as the device that took
+the turn, whose grant is that one notice on that one ask. A handed node
+for a sub-agent is decided together with its signer and only narrows it.
+
+A member change (add, role, remove) is an ordinary action on
+`workspace/members`, run and signed by the device that writes it. That
+device admits the call itself with `admit_invocation` over its synced
+grants and asks its person through the Confirm frame. A workspace always keeps
+one owner, and a server's person has no special place in it. A member may
+remove themselves or someone ranked below them, and an agent may do what its person may once
+its person says yes.
+
+A server runs an app's code for the person at the page, under that
+person's grants, never as a person of its own. Carrying an app's old data
+into its resources is an invocation by a member: it waits until a device
+of a member who may write those resources connects, which signs that one
+declared action as its person, and it runs once.
 
 An agent sandbox on tilo.sh is one workspace. Whether that workspace also
 has a machine for terminal commands, Browser tabs, or Linux and Windows apps
@@ -253,8 +274,8 @@ credentials in `key-group` are a separate layer and stay.
 
 There are four device lists: `CertifiedFleet` (`tilo-user-identity`
 `fleet.rs`, a verifier), `DeviceFleetStore` (`tilo-identity` `device_fleet/`,
-on disk at `<identity_dir>/fleets/<id>.json`), the `fleet.json` and
-`registry.json` that `tilo-enrollment` `install.rs` writes itself, and the
+on disk at `<identity_dir>/fleets/<id>.json`), the `fleet.json` that
+`tilo-enrollment` `install.rs` writes itself, and the
 per-workspace `WorkspaceDirectory` (`tilo-user-identity` `directory.rs`).
 Revocation has a defect: `tilo-server` `admin.rs` `persist_fleet_revocation`
 defaults to `$XDG_CONFIG_HOME/tilo/identities`, while every other reader
@@ -284,8 +305,13 @@ There are seven ways to add a device:
   bytes. The CLI login keeps only `site`, `workspace` and `server_cert` as a
   `login.json` beside `device/`, and signs with the device key that is
   already there.
-- **One certificate format.** `DeviceCert`, with capabilities. A boot-only
-  capability replaces `BootKeyCert`.
+- **One certificate format.** `DeviceCert`, checked by `verify_device_cert`
+  for every caller. Before a disk is unlocked the device key is inside it,
+  so the unlock request is signed by a boot key on the unencrypted
+  partition. That key holds an ordinary `DeviceCert` with no capabilities.
+  The signed request names the volume and slot, and the approving device
+  checks them against what it recorded when unlock was set up. There is no
+  `BootKeyCert` and no second verifier.
 - **One device list.** `DeviceFleetStore` persists it, and `CertifiedFleet`
   verifies it. A workspace's device view is derived from the fleet, not
   stored a second time. Revocation is an entry in the fleet and reaches every
@@ -305,7 +331,7 @@ There are seven ways to add a device:
 | Enrolment logic in the `tilo-enroll` and `tilo-approve` binaries (thin CLIs over `tilo-enrollment`) | ~800 |
 | `tilo-auth` `PeerRegistrar` enrolment (moves onto the enrolment transport) | ~400 |
 | `tilo-device-admin` `install_cert` (duplicates `tilo-enroll install-cert`) | ~200 |
-| Direct `fleet.json` and `registry.json` writes in `tilo-enrollment` `install.rs` | ~300 |
+| Direct `fleet.json` writes in `tilo-enrollment` `install.rs` | ~300 |
 
 Owner: **One identity** session.
 
@@ -318,18 +344,14 @@ A person's identity root is kept in more than one place:
 | Store | Code | Location | Size |
 |---|---|---|---|
 | Native person records | `tilo-identity` `store/` (`unix.rs`, `backup.rs`, `recovery_words.rs`, `secure_store.rs`) | `$XDG_CONFIG_HOME/tilo/identity/{<id>.json,active,secrets/}` | 4,986 |
-| Record format | `tilo-identity-ceremony` `IdentityRecord`, `MemoryIdentityStore` | the same JSON | 315 |
-| Onboarding writer | `onboarding-session` `identity_provisioning.rs` `DiskIdentityStore` | `$XDG_CONFIG_HOME/tilo/identity/primary.json` | 562 |
-| Registry | `tilo-identity` `registry/` `IdentityRegistryStore` | `<identity_dir>/registry.json` | 1,061 |
 | Browser root | `tilo-browser-runtime` `root_identity.rs`, `web/identity.mjs` `RootEnvelope`, wrapped by a passkey PRF | IndexedDB | 1,466 |
 | Old CLI location | `tilo-cli` `identity.rs` `earlier()` | `$XDG_STATE_HOME/tilo/identity/user-identity/pubkey.bin` | ~20 |
 
-`tilo-identity` as a whole is 22,760 lines, with `registry/`,
-`identity_store`, `device_fleet/`, `certificates` and `local_person` layered
+`tilo-identity` as a whole is 22,760 lines, with `store/`, `identity_store`,
+`device_fleet/`, `certificates` and `local_person` layered
 over each other. `DeviceIdentity` means two different things: public
 metadata in `tilo-user-identity` `lib.rs`, and a certificate plus signer in
-`tilo-identity` `identity_store.rs`. `resolve_active_identity` exists in both
-`tilo-identity` and `tilo-identity-client`.
+`tilo-identity` `identity_store.rs`.
 
 There are three recovery formats (the 24 words, the browser `RecoveryKey`,
 and `tilo-auth`'s modhex on disk). There are five sign-in paths: the greeter
@@ -343,9 +365,10 @@ used.
 
 - **One identity root type**, `tilo-user-identity` (`RootEnvelope`,
   `DeviceCert`, `SignInProof`), shared by the OS, the CLI and the browser.
-- **One person store**, `tilo_identity::store` with `IdentityRegistryStore`,
-  holding `IdentityRecord`. The browser keeps its wrapped root in IndexedDB,
-  in the same record format.
+- **One person store**, `tilo_identity::store`: the `IdentityRecord` files,
+  the `active` selection, and the profiles derived from them. Nothing else
+  indexes them. The browser keeps its wrapped root in IndexedDB, in the same
+  record format.
 - **One recovery format**: the 24 words.
 - **One sign-in proof**, `SignInProof`. The greeter, the web page, the API
   and `tilo login` all prove the same thing (a current device of this
@@ -356,10 +379,7 @@ used.
 
 | Delete | Size |
 |---|---|
-| `tilo-identity-ceremony` (its `IdentityRecord` moves into `tilo_identity::store`) | 315 |
-| Onboarding's `DiskIdentityStore` (calls `tilo_identity::provisioning::create_person`) | ~250 |
 | The old `$XDG_STATE_HOME/tilo/identity` probe, after one migration | ~20 |
-| The second `resolve_active_identity` | ~100 |
 | The browser `RecoveryKey` and `tilo-auth` modhex recovery formats | ~400 |
 | `threshold-identity` paths with no caller, until a product needs them | ~2,000 |
 | Overlapping layers inside `tilo-identity` `store/` | to be measured as they fold |
@@ -641,16 +661,15 @@ daemon, the person's servers).
 ### Hosting
 
 A server is a device that stores more. Today the server side is
-`tilo-server` (122,096: the daemon with `init`, `run`, `dev`, `workspace`,
-`page-host` and `status`, its own iroh relay, the web entry, and agents and
-bots in `workspace_agents` (13,311) and `workspace_bots` (15,464)), with the
+`tilo-server` (122,096: the daemon with `init`, `run`, `workspace`, its own
+iroh relay, the web entry, and bots in `workspace_bots` (15,464)), with the
 `tilo-server-admin`, `tilo-enroll`, `tilo-approve` and
 `tilo-home-peer-control` binaries beside it. `tilo-api` (21,745) is the MCP
 and OAuth endpoint with its own grant and token store. A device without a
-desktop is a third copy of the same job: `tilo-runtime` (17,096) with
-`tilo-runtime-mcp`, and the CLI's held device (`tilo-cli` `mcp/held.rs` and
-`own_device`). All three open the same `tilo-workspace-service` through
-`own_device`, but each has its own wrapper around it.
+desktop runs one daemon, `tilo-runtime --hold`, which serves its apps, `tilo
+mcp` and the CLI's workspace commands over the device's one session. Both open
+the same `tilo-workspace-service` through `own_device`, but each has its own
+wrapper around it.
 
 What survives: **one daemon per device**, the workspace service opened
 through `own_device`. On a desktop the session is that daemon. Elsewhere it
@@ -658,17 +677,16 @@ is one binary that the CLI, a server and tilo.sh all run, with one MCP socket
 locally and `device-mcp` as its remote face. A server differs only in its
 what it keeps and which work it takes, set per workspace.
 The relay is a mode of that daemon. `tilo-api` reads grants from the
-workspace, not from its own file. The agent and bot runner
-(`tilo-server` `workspace_agents` and `workspace_bots`, the only copy) moves
-into the workspace service, so any device that takes agent work
-runs it. A device's first run needs no server: it creates the person's
-identity and their first workspace, an ordinary workspace whose signed member
-list names them as owner.
+workspace, not from its own file. The agent runner is in the workspace
+service (`agents`, under its `agents` feature) and reaches what only a server
+has today (its Browser windows, its coding runner, its signing sessions and
+its bot runner) through traits; the bot runner (`tilo-server`
+`workspace_bots`) follows it, so any device that takes agent work runs it. A
+device's first run needs no server: it creates the person's identity and
+their first workspace, an ordinary workspace whose signed member list names
+them as owner.
 
-What goes: `tilo-runtime`'s `Standalone` with its self-governed profile
-workspace, `ProfileGrants`, its own device provisioning, `--join` and
-`tilo-runtime-mcp` (the CLI holder moves into `tilo-runtime` as the one
-daemon); `tilo-api`'s grant file; the separate binaries once their verbs are
+What goes: `tilo-api`'s grant file; the separate binaries once their verbs are
 actions of the daemon. Owner:
 **hosting** session.
 
@@ -702,6 +720,7 @@ The entry points on top of it:
 | Rust REST client | `tilo-api` `client.rs` (1,515), hand-written | HTTPS |
 | TypeScript SDK | `sdk/typescript` (26,401): 18,871 of types generated by `tilo sdk gen`, about 3,500 of hand-written runtime (`models.ts`, `routes.ts` repeating `operations.rs`, `endpoint.ts`, `client.ts`) | HTTPS, or napi into `tilo_api::direct` |
 | Python SDK | `sdk/python` (32,350): 25,299 generated, about 3,450 hand-written | the same |
+| Legacy readers | the `principal` alias (old history is pinned to surfaces that say it; it goes with that history) and the `legacy-guest` image name (goes in the first stable release that publishes `linux-guest`) | nothing | none: the lane is done |
 | Agents | `agent-turn` (2,275) through MCP `tools/list`; `agent-session` serves the catalogue | in process |
 | tilolang CLI | `tilolang-cli` `session.rs` | tilo-control and the REST client |
 
@@ -781,7 +800,7 @@ any of them is added.
 | hosted workspace, `-w`, page-host | a workspace on a server treated as another thing | a workspace; some device holds it |
 | relay runtime | a server mode that forwards without being a device | a device that keeps sealed changes |
 | fleet, `DeviceFleetStore`, `CertifiedFleet` | the person's device list under a third name | the person's devices |
-| ceremony, `tilo-identity-ceremony` | a crate for a record format | the identity store |
+| ceremony | a crate for a record format | the identity store |
 | threshold identity | key generation across devices with no product use | nothing until a product needs it |
 | enrolment, pairing, certification ceremony, handoff | seven ways to add a device | adding a device: a code one of your devices approves |
 | document (as the unit), `workspace_documents`, document host | the storage format named as the thing | a resource |
@@ -819,14 +838,14 @@ waits on, if anything.
 
 | Piece | Left on main | On a branch now | Session |
 |---|---|---|---|
-| Devices, identity | ceremony crate, onboarding's `DiskIdentityStore`, `BootKeyCert` copies, `tilo-device-admin`, `threshold-identity`, the old-login key reader, the browser root and `device-key.mjs` | person store (2 person stores left) | One identity |
-| Sync | host retained store (`store/`, `persistence.rs`, `compaction.rs`, `tilo-server-store`), delta and co-edit envelopes, second file path, broker overlap, `settings-store` document layer, `app-state` `FsStore`, `content-device` | one store −33k, one file path −15k, broker step 2 | One engine |
-| tilolang store | `index/` (10.6k), `TiloStore` and its mirror, chunks; then the redb pager into resource-store | store move −50.5k | tilolang onto the resource store |
-| App framework | Rust Chat (71k), Rust Tasks (13.5k), `apps/tilolang` (21k), 65 `*-model` crates, `tilo-view`, `tilo-app` `framework/` (64k) after the ports, the Rust shell, the toolkit's second action path | Chat −80k (three agent branches, one deletion), Tasks with Notes on the web −11.7k, shell context menu | Delete Rust Chat; Rust apps to tilolang; cleanup; legacy readers |
+| Devices, identity | `tilo-enroll` and `tilo-approve` (first boot still enrols with a token), `tilo-device-admin`, `threshold-identity`, `https::server_info`, the browser root and `device-key.mjs` (2 person stores left: `tilo_identity::store` and the browser's) | `server_info` alone (one `TILO_API_HOST` names the host); then one push: `tilo device add` and `tilo login` as daemon actions, first boot and onboarding's existing-identity card on tickets, the imager's pairing call gone, `tilo-enroll`, `tilo-approve` and the browser store deleted. The boot key is an ordinary device certificate since 3ec9b6ef0b1 | One identity |
+| Sync | host retained store (`store/`, `persistence.rs`, `compaction.rs`, `tilo-server-store`), delta and co-edit envelopes, the file path's tail (the second `tree_put`; the Files daemon's keys from the identity service; `kept_documents`, which goes because a mount write is durable once it is in the device's one store; `runtime-fs` blobs and `content-device`, after apps read content through the broker; `DISCOVERY_ALPN` at the next peer-version bump), broker overlap, `settings-store` document layer, `app-state` `FsStore` | one store −40k (waits on the company move's OK), the file path's tail; one file path landed in c4f20cecac1 (−15.1k) | One engine |
+| tilolang store | the redb pager outside resource-store; open, switch and scroll above their bars after the move (465, 108 and 43 ms against 289, 60 and 25) | the costs first, then the pager into resource-store; the store move landed in e39e9557706 (−49.7k) | tilolang onto the resource store |
+| App framework | Rust Chat (71k), Rust Tasks (13.5k), `apps/tilolang` (21k), 65 `*-model` crates, `tilo-view`, `tilo-app` `framework/` (64k) after the ports, the Rust shell, the toolkit's second action path, `PreparedIdentity` in the imager (an identity prepared on the install media) and the in-Tilo imager app; the standalone writer and the installer stay programs that run before Tilo exists and write no identity; a capture before the wipe goes to a folder on the new encrypted disk, which `tilo migrate` reads after login | Chat deletion −145k on one branch, Tasks with Notes on the web −14k, shell context menu | Delete Rust Chat; Rust apps to tilolang; cleanup |
 | Agents | `coding_agents` (4k) and every Claude-specific path, the other agent engines | C −6k | Agent engines |
 | Workspace | `PersonalStore`, `AccountStore` and the `accounts` crate, the second workspace list, the person document of `settings-store`, governor role, `Membership`/`WorkspaceRuntime` | `one-workspace-stores` −11.8k | one workspace |
-| Hosting | `Standalone`, `tilo-runtime-mcp`, the CLI holder, `tilo-api`'s grant file, the separate binaries | one daemon | hosting |
-| Actions | device-mcp and `OnDevice`, the REST-to-MCP bridge and intercepts, tilo-control's row dialect, the hand-typed vocabularies, the hand-written REST clients | none since invocations landed (54797d6eb39) | actions everywhere |
+| Hosting | `tilo-server` as a second host wrapping the workspace service (it becomes the one daemon keeping more; stack.sh still runs it), `tilo-api`'s grant file, the separate binaries, the VM placer (`linux-vm` placement and `tilo-server` `placed_*`) and a member device's second `tilo-actions/1` handler for shell work, the server's `carries_migrations` flag, which moves onto `takes_turn` | `tilo-server`'s management protocol (AdmitServer moves onto `tilo device add` tickets); `tilo-server` onto the one daemon after the store deletion, taking the VM placer and the second handler with it; agent asks onto `takes_turn` once c-one and the Rust-apps push land. One worker and one `work::takes_turn` on the workspace leases since 9e73c6e787f (−2.7k) | hosting |
+| Actions | four ways in: the frame, MCP over the one walk (`tilo_actions::tree`), `tilo-api`'s unattended and account/keys intercepts, console-control's rows for the greeter and installer; our own REST client (`tilo do -w`, `tilo-api` `client.rs`); the hand-typed vocabularies | members.rs gone (member changes as actions, admitted for now by the server, then by the device that writes); console-control onto the frame; the CLI's `-w` onto frames with `client.rs` deleted; then the device's own admission with the grant move. The session's local actions are frames since f5dced4ef5e | actions everywhere |
 
 Progress is measured as net lines removed on `origin/main` in each piece's
 crates since `d81cc1750ff`, and as copies of each concept left.

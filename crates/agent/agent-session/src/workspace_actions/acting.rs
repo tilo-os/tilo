@@ -159,11 +159,6 @@ impl Worker {
         // with a row of it ([`direct`]).
         let withheld = self.kept_from_caller(caller, &route, &state);
         if let Some(package) = packaged {
-            if caller.roster_created_at().is_some()
-                && !collab_types::is_store_document(&route.document)
-            {
-                return Err(Outcome::Rejected(ActionCallError::NotPermitted));
-            }
             if state.stale(request.revision.as_deref()) {
                 return Err(Outcome::Rejected(ActionCallError::StaleRevision));
             }

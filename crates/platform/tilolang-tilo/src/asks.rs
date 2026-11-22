@@ -1,6 +1,6 @@
 //! Asking an agent by mentioning it: a run of rich text marked `mention` with an agent's id, in
 //! any app's resource, asks that agent about the item the text is in, through the agent
-//! package's own actions (`so.tilo.lang.agent`). No app writes code for it.
+//! package's own actions (`so.tilo.agent`). No app writes code for it.
 //!
 //! An ask is named by the item and the mention (an `Ask`'s `mention`): the item's text
 //! mentioning an agent makes one ask however often it is edited, undone or redone. When the
@@ -21,11 +21,11 @@ use tilolang_runtime::store::{LinkHow, Store as _};
 use tilolang_runtime::value::{ResourceRef, Value};
 
 use crate::host::Host;
+use crate::resources::Watch;
 use crate::runtime::Actor;
-use crate::store::Watch;
 
 /// The package asks are made in.
-pub const AGENT_APP: &str = "so.tilo.lang.agent";
+pub const AGENT_APP: &str = "so.tilo.agent";
 
 /// What the asks from mentions follow of the store.
 pub(crate) struct Asking {
@@ -58,12 +58,12 @@ pub(crate) fn run(host: &Host, asking: &Asking) -> usize {
     let changes = asking.moved.take();
     // What the store derives of a change (`$versions`, `$updated`) is no text.
     let mut items: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for key in changes.docs.values().flatten() {
-        if !key.field.starts_with('$') {
+    for (resource, field) in changes.fields.values().flatten() {
+        if !field.starts_with('$') {
             items
-                .entry(key.resource.clone())
+                .entry(resource.clone())
                 .or_default()
-                .insert(key.field.clone());
+                .insert(field.clone());
         }
     }
     if items.is_empty() {
@@ -200,7 +200,7 @@ fn made_from(host: &Host, agent: &Meta, at: &ResourceRef) -> BTreeMap<String, Ma
         return BTreeMap::new();
     };
     let mut out = BTreeMap::new();
-    let Ok(links) = host.store().linked(at) else {
+    let Ok(links) = host.store().linked_by(at, &ask.id) else {
         return out;
     };
     for link in links {

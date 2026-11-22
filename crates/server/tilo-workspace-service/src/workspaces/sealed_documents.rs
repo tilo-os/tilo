@@ -29,7 +29,7 @@ use super::{CollaborationError, GovernedWorkspace, SystemTime, Workspaces};
 /// record whose history does not merge yet does not compact; trying on every
 /// write opened and merged its whole history each time.
 #[cfg_attr(
-    not(any(feature = "agents", feature = "web")),
+    not(feature = "device-keys"),
     allow(
         dead_code,
         reason = "sealed histories are followed only where they are read"
@@ -183,7 +183,7 @@ impl GovernedWorkspace {
     /// Whether this host holds the workspace's keys: it can then read sealed
     /// writes.
     #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
+        not(feature = "device-keys"),
         allow(
             dead_code,
             reason = "sealed histories are followed only where they are read"
@@ -248,7 +248,7 @@ impl GovernedWorkspace {
     ///
     /// The keys cannot be read, or the write does not open with them.
     #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
+        not(feature = "device-keys"),
         allow(
             dead_code,
             reason = "sealed histories are followed only where they are read"
@@ -302,13 +302,6 @@ impl GovernedWorkspace {
 /// # Errors
 ///
 /// As [`GovernedWorkspace::readable_document`].
-#[cfg_attr(
-    not(any(feature = "agents", feature = "web")),
-    allow(
-        dead_code,
-        reason = "sealed documents are read only where a page or an agent reads them"
-    )
-)]
 pub(super) async fn readable_now(
     reading: &super::readings::Reading,
     (app, resource): (&str, &str),
@@ -379,13 +372,6 @@ struct OpenedState {
     reads: u64,
 }
 
-#[cfg_attr(
-    not(any(feature = "agents", feature = "web")),
-    allow(
-        dead_code,
-        reason = "sealed documents are read only where a page or an agent reads them"
-    )
-)]
 impl MergedDocuments {
     /// Documents whose merged state is kept.
     const MERGED: usize = 8;
@@ -836,7 +822,7 @@ impl Workspaces {
     /// part in no group of the workspace. Asked before the workspace is locked,
     /// since the ask waits on the key service for the group to admit this device.
     #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
+        not(feature = "device-keys"),
         allow(
             dead_code,
             reason = "sealed histories are followed only where they are read"
@@ -1053,7 +1039,7 @@ impl Workspaces {
     /// for their record, they kept every reader from the record, and no fold since left them
     /// out. Each such record's channel is folded without them now, as its next fold would
     /// ([`crate::compaction::Compactor::repair`]). Runs once as the host starts.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     pub(crate) async fn fold_away_unsent(&self, compactor: &crate::compaction::Compactor) {
         let workspaces: Vec<_> = self
             .inner
@@ -1126,7 +1112,7 @@ impl Workspaces {
     /// device does not hold yet is tried again while they arrive; one it holds none of waits for
     /// a device that does, and its readers are told so
     /// ([`tilo_peer_state::WaitingForUpdate`]). Called as the server starts.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     pub(crate) async fn reseal_before_reader_sets(&self) {
         const TRIES: usize = 60;
         const BETWEEN: std::time::Duration = std::time::Duration::from_secs(5);
@@ -1238,7 +1224,7 @@ impl Workspaces {
     /// compactions. A record whose history does not merge yet (a write it
     /// depends on has not arrived) waits for a later call.
     #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
+        not(feature = "device-keys"),
         allow(
             dead_code,
             reason = "sealed histories are followed only where they are read"

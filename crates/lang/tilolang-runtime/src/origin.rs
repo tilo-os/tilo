@@ -176,10 +176,27 @@ impl Runtime {
         at: Option<String>,
         step: impl FnOnce(&mut OriginChange<'_>) -> Result<T, RuntimeError>,
     ) -> Result<T, RuntimeError> {
+        self.write_origin_for(origin, None, at, step)
+    }
+
+    /// As [`Self::write_origin`], for the person `invoker` when the origin writes what is
+    /// theirs: what a person brings in of their own (the items of a workspace they move in) is
+    /// their change, which nobody catches up on, where what a service sends is news to everyone.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::write_origin`].
+    pub fn write_origin_for<T>(
+        &self,
+        origin: &str,
+        invoker: Option<crate::ids::Actor>,
+        at: Option<String>,
+        step: impl FnOnce(&mut OriginChange<'_>) -> Result<T, RuntimeError>,
+    ) -> Result<T, RuntimeError> {
         let note = ChangeNote {
-            action: "$origin".into(),
+            action: crate::store::ORIGIN_ACTION.into(),
             args: serde_json::Value::String(origin.to_owned()),
-            invoker: None,
+            invoker,
             chain: Vec::new(),
             module: "origin".into(),
             at,

@@ -126,6 +126,14 @@ KEY
       || fail "$archive holds no plain tilolang-process"
     beside=tilolang-process
   fi
+  # The daemon `tilo login` and `tilo mcp` start (tilo-runtime), beside tilo, where they look
+  # for it. A release from before it was packed holds none.
+  tar -xzf "$work/$archive" -C "$work/unpacked" tilo-runtime 2>/dev/null || :
+  if [ -e "$work/unpacked/tilo-runtime" ] || [ -L "$work/unpacked/tilo-runtime" ]; then
+    [ -f "$work/unpacked/tilo-runtime" ] && [ ! -L "$work/unpacked/tilo-runtime" ] \
+      || fail "$archive holds no plain tilo-runtime"
+    beside="$beside tilo-runtime"
+  fi
   mkdir -p "$dir"
   # Each replaced in one rename, so a tilo running now keeps working; the program beside it
   # first, so a new tilo never starts an old one.

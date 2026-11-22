@@ -407,16 +407,16 @@ tilo_test_env::scenario! {
             "org.example.canvas",
         ];
         assert_eq!(
-            page::app_named("so.tilo.word-processor", &running).unwrap(),
+            tilo_actions::tree::app_named("so.tilo.word-processor", &running).unwrap(),
             "so.tilo.word-processor"
         );
         assert_eq!(
-            page::app_named("Word-Processor", &running).unwrap(),
+            tilo_actions::tree::app_named("Word-Processor", &running).unwrap(),
             "so.tilo.word-processor"
         );
-        let both = page::app_named("canvas", &running).unwrap_err();
+        let both = tilo_actions::tree::app_named("canvas", &running).unwrap_err();
         assert!(both.contains("several"), "{both}");
-        let none = page::app_named("sheets", &running[..1]).unwrap_err();
+        let none = tilo_actions::tree::app_named("sheets", &running[..1]).unwrap_err();
         assert!(none.contains("running: so.tilo.canvas"), "{none}");
     }
 
@@ -426,7 +426,7 @@ tilo_test_env::scenario! {
     // may point at a running app rather than only open one.
     {
         let running = ["so.tilo.browser"];
-        let guessed = page::app_named("host", &running).unwrap_err();
+        let guessed = tilo_actions::tree::app_named("host", &running).unwrap_err();
         assert!(
             guessed.contains("running: so.tilo.browser (browser)"),
             "{guessed}"
@@ -436,7 +436,7 @@ tilo_test_env::scenario! {
             "{guessed}"
         );
         assert_eq!(
-            page::app_named("browser", &running).unwrap(),
+            tilo_actions::tree::app_named("browser", &running).unwrap(),
             "so.tilo.browser"
         );
     }

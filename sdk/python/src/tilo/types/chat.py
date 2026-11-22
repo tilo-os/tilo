@@ -22,22 +22,57 @@ from tilo import Entry, Invocation, Resource
 __all__ = [
     "Conversations",
     "Category",
+    "VoiceChannel",
     "TextChannel",
     "Message",
+    "Report",
     "Thread",
     "Direct",
+    "Attached",
     "Part",
     "Chat",
+    "DeleteChannelArgs",
+    "DeleteCategoryArgs",
+    "MoveChannelArgs",
+    "MoveCategoryArgs",
+    "CategoryDeleteChannelArgs",
     "DeleteArgs",
     "PinArgs",
     "ReactArgs",
+    "DecideArgs",
     "ThreadDeleteArgs",
     "DirectDeleteArgs",
-    "ChatDeleteArgs",
 ]
 
+DeleteChannelArgs = TypedDict("DeleteChannelArgs", {
+    "ch": "TextChannel",
+})
+"""The arguments of `delete_channel`."""
+
+DeleteCategoryArgs = TypedDict("DeleteCategoryArgs", {
+    "c": "Category",
+})
+"""The arguments of `delete_category`."""
+
+MoveChannelArgs = TypedDict("MoveChannelArgs", {
+    "ch": "TextChannel | VoiceChannel",
+    "category": NotRequired["Category | None"],
+    "at": NotRequired["int | None"],
+})
+"""The arguments of `move_channel`."""
+
+MoveCategoryArgs = TypedDict("MoveCategoryArgs", {
+    "c": "Category",
+    "at": NotRequired["int | None"],
+})
+"""The arguments of `move_category`."""
+
+CategoryDeleteChannelArgs = TypedDict("CategoryDeleteChannelArgs", {
+    "ch": "TextChannel",
+})
+"""The arguments of `delete_channel`."""
+
 DeleteArgs = TypedDict("DeleteArgs", {
-    "to": "Direct | TextChannel | Thread",
     "m": "Message",
 })
 """The arguments of `delete`."""
@@ -52,44 +87,44 @@ ReactArgs = TypedDict("ReactArgs", {
 })
 """The arguments of `react`."""
 
+DecideArgs = TypedDict("DecideArgs", {
+    "decision": "str",
+})
+"""The arguments of `decide`."""
+
 ThreadDeleteArgs = TypedDict("ThreadDeleteArgs", {
-    "to": "Direct | TextChannel | Thread",
     "m": "Message",
 })
 """The arguments of `delete`."""
 
 DirectDeleteArgs = TypedDict("DirectDeleteArgs", {
-    "to": "Direct | TextChannel | Thread",
-    "m": "Message",
-})
-"""The arguments of `delete`."""
-
-ChatDeleteArgs = TypedDict("ChatDeleteArgs", {
-    "to": "Direct | TextChannel | Thread",
     "m": "Message",
 })
 """The arguments of `delete`."""
 
 class Conversations(Resource):
     """Conversations — `tl.so.tilo.chat.Conversations`."""
-    __surface__ = "so.tilo.chat@578cacfaf7ce6125"
+    __surface__ = "so.tilo.chat@ec213427e7b94842"
     @property
-    def _5kzdptyg(self) -> list[Entry[Category | Direct | TextChannel]]:
+    def _5kzdptyg(self) -> list[Entry[Category | Direct | TextChannel | VoiceChannel]]:
         """channels (`5kzdptyg` on the wire)."""
         return self.fields["5kzdptyg"]
 
     @_5kzdptyg.setter
-    def _5kzdptyg(self, value: list[Entry[Category | Direct | TextChannel]]) -> None:
+    def _5kzdptyg(self, value: list[Entry[Category | Direct | TextChannel | VoiceChannel]]) -> None:
         self.edit("5kzdptyg", value=value)
 
     def new_channel(self,
         *,
         name: str | None = None,
+        topic: str | None = None,
     ) -> TextChannel:
-        """Adds a text channel to the sidebar."""
+        """Adds a text channel to the sidebar, about `topic` when it is given."""
         args: dict[str, Any] = {}
         if name is not None:
             args["name"] = name
+        if topic is not None:
+            args["topic"] = topic
         return self.action("new_channel", **args)
 
     def new_category(self,
@@ -102,8 +137,22 @@ class Conversations(Resource):
             args["name"] = name
         return self.action("new_category", **args)
 
+    def new_voice_channel(self,
+        *,
+        name: str | None = None,
+    ) -> VoiceChannel:
+        """Adds a voice channel to the sidebar."""
+        args: dict[str, Any] = {}
+        if name is not None:
+            args["name"] = name
+        return self.action("new_voice_channel", **args)
+
+    def report_problem(self, *, body: str) -> Message:
+        """Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback channel, which the first report opens. The people who read the reports there answer, react and start a thread under one as under any message. The channel is made under one key on every device, so reports filed apart open one."""
+        return self.action("report_problem", body=body)
+
     def message_person(self, *, who: str) -> Direct:
-        """Opens the direct message with `who`, in the sidebar, or the one already open with them: a person has one conversation, not a new empty one each time."""
+        """Opens the direct message between the invoker and `who`, in the sidebar, or the one already open between the two of them: two people have one conversation, not a new empty one each time. With yourself it is your notes to self."""
         return self.action("message_person", who=who)
 
     def write_to(self,
@@ -114,84 +163,191 @@ class Conversations(Resource):
         """Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the one already open, else a new one in the sidebar. The message is sent as every message is."""
         return self.action("write_to", who=who, body=body)
 
+    def delete_channel(self, *, ch: TextChannel) -> None:
+        """Deletes a channel and what was said in it, from the sidebar or the category it is in."""
+        return self.action("delete_channel", ch=ch)
+
+    def delete_channel_many(self, items: list[DeleteChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_channel", items)
+
+    def delete_category(self, *, c: Category) -> None:
+        """Deletes a category that holds no channel."""
+        return self.action("delete_category", c=c)
+
+    def delete_category_many(self, items: list[DeleteCategoryArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_category", items)
+
+    def move_channel(self,
+        *,
+        ch: TextChannel | VoiceChannel,
+        category: Category | None = None,
+        at: int | None = None,
+    ) -> None:
+        """Moves a channel to a place in the sidebar: under `category`, or outside any, at `at` among the channels listed there (the end when it is negative). A move keeps the channel and what was written in it."""
+        args: dict[str, Any] = {}
+        args["ch"] = ch
+        if category is not None:
+            args["category"] = category
+        if at is not None:
+            args["at"] = at
+        return self.action("move_channel", **args)
+
+    def move_channel_many(self, items: list[MoveChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `move_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move_channel", items)
+
+    def move_category(self,
+        *,
+        c: Category,
+        at: int | None = None,
+    ) -> None:
+        """Moves a category to a place in the sidebar, at `at` among the categories and channels listed there (the end when it is negative). Its own channels move with it."""
+        args: dict[str, Any] = {}
+        args["c"] = c
+        if at is not None:
+            args["at"] = at
+        return self.action("move_category", **args)
+
+    def move_category_many(self, items: list[MoveCategoryArgs]) -> list[dict[str, Any]]:
+        """Runs `move_category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move_category", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_channel", "new_category", "message_person", "write_to"})
+    __actions__ = frozenset({"new_channel", "new_category", "new_voice_channel", "report_problem", "message_person", "write_to", "delete_channel", "delete_channel_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many"})
 
 
 class Category(Resource):
     """Category — `tl.so.tilo.chat.Category`."""
-    __surface__ = "so.tilo.chat@578cacfaf7ce6125"
+    __surface__ = "so.tilo.chat@ec213427e7b94842"
     hbhrds5c: str  # name
-    hvqgmwrk: list[Entry[TextChannel]]  # channels
+    hvqgmwrk: list[Entry[TextChannel | VoiceChannel]]  # channels
 
     def add_channel(self,
         *,
         name: str | None = None,
+        topic: str | None = None,
     ) -> TextChannel:
-        """Adds a text channel to a category."""
+        """Adds a text channel to a category, about `topic` when it is given."""
         args: dict[str, Any] = {}
         if name is not None:
             args["name"] = name
+        if topic is not None:
+            args["topic"] = topic
         return self.action("add_channel", **args)
+
+    def add_voice_channel(self,
+        *,
+        name: str | None = None,
+    ) -> VoiceChannel:
+        """Adds a voice channel to a category."""
+        args: dict[str, Any] = {}
+        if name is not None:
+            args["name"] = name
+        return self.action("add_voice_channel", **args)
+
+    def delete_channel(self, *, ch: TextChannel) -> None:
+        """Deletes a channel and what was said in it, from the sidebar or the category it is in."""
+        return self.action("delete_channel", ch=ch)
+
+    def delete_channel_many(self, items: list[CategoryDeleteChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_channel", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"add_channel"})
+    __actions__ = frozenset({"add_channel", "add_voice_channel", "delete_channel", "delete_channel_many"})
+
+
+class VoiceChannel(Resource):
+    """VoiceChannel — `tl.so.tilo.chat.VoiceChannel`."""
+    __surface__ = "so.tilo.chat@ec213427e7b94842"
+    olqjezxu: str  # name
 
 
 class TextChannel(Resource):
     """TextChannel — `tl.so.tilo.chat.TextChannel`."""
-    __surface__ = "so.tilo.chat@578cacfaf7ce6125"
+    __surface__ = "so.tilo.chat@ec213427e7b94842"
     x3haugpo: str  # name
     u6b35mgm: str  # topic
     ksuxpopi: list[Entry[Message]]  # messages
     ztou5nin: list[Entry[Thread]]  # threads
+    kgihivmr: list[Entry[Report]]  # reports
 
     def send(self,
         *,
-        to: Direct | TextChannel | Thread,
         body: str,
         reply_to: Message | None = None,
+        attachments: list[Any] | None = None,
     ) -> Message:
         """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds."""
         args: dict[str, Any] = {}
-        args["to"] = to
         args["body"] = body
         if reply_to is not None:
             args["reply_to"] = reply_to
+        if attachments is not None:
+            args["attachments"] = attachments
         return self.action("send", **args)
 
     def send_view(self,
         *,
-        to: Direct | TextChannel | Thread,
         title: str,
         definition: str,
     ) -> Message:
         """Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views."""
-        return self.action("send_view", to=to, title=title, definition=definition)
+        return self.action("send_view", title=title, definition=definition)
 
-    def delete(self,
+    def relay(self,
         *,
-        to: Direct | TextChannel | Thread,
-        m: Message,
-    ) -> None:
-        """Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable."""
-        return self.action("delete", to=to, m=m)
+        body: str,
+        by: str,
+        written_in: str,
+        written: int | None = None,
+        attachments: list[Any] | None = None,
+        reply_to: Message | None = None,
+    ) -> Message:
+        """Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when. A bridge relays another service's conversation this way; the message's history names the bridge, and the message says whom it relays."""
+        args: dict[str, Any] = {}
+        args["body"] = body
+        args["by"] = by
+        args["written_in"] = written_in
+        if written is not None:
+            args["written"] = written
+        if attachments is not None:
+            args["attachments"] = attachments
+        if reply_to is not None:
+            args["reply_to"] = reply_to
+        return self.action("relay", **args)
+
+    def delete(self, *, m: Message) -> None:
+        """Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable. Its reports stay, saying it was deleted."""
+        return self.action("delete", m=m)
 
     def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
         """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete", items)
 
+    def report(self,
+        *,
+        m: Message,
+        reason: str | None = None,
+    ) -> Report:
+        """Reports a message of a conversation to the workspace's moderators, saying why when the reporter does. Who reported it is the report's history's, so moderators see who asked; the conversation keeps it, with who wrote the message and what it said, after the message is deleted."""
+        args: dict[str, Any] = {}
+        args["m"] = m
+        if reason is not None:
+            args["reason"] = reason
+        return self.action("report", **args)
+
     def start_thread(self,
         *,
-        c: Direct | TextChannel,
         m: Message,
         name: str | None = None,
     ) -> Thread:
         """Starts a thread from a message of a channel or a direct conversation, named after what the message says."""
         args: dict[str, Any] = {}
-        args["c"] = c
         args["m"] = m
         if name is not None:
             args["name"] = name
@@ -199,12 +355,12 @@ class TextChannel(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"send", "send_view", "delete", "delete_many", "start_thread"})
+    __actions__ = frozenset({"send", "send_view", "relay", "delete", "delete_many", "report", "start_thread"})
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.chat.Message`."""
-    __surface__ = "so.tilo.chat@578cacfaf7ce6125"
+    __surface__ = "so.tilo.chat@ec213427e7b94842"
     xfrqdy3y: str  # body
     @property
     def _4uwxpnw2(self) -> Message | None:
@@ -227,8 +383,17 @@ class Message(Resource):
     ofad24rc: dict[str, list[str]]  # reactions
     dh6346no: str  # sent_view
     tz5yw5dt: str  # by
+    @property
+    def _4da5gcom(self) -> str:
+        """written_in (`4da5gcom` on the wire)."""
+        return self.fields["4da5gcom"]
+
+    @_4da5gcom.setter
+    def _4da5gcom(self, value: str) -> None:
+        self.edit("4da5gcom", value=value)
     mmlcexsa: int  # written
     jcgolgdf: str  # reacted
+    n7d27huf: list[Entry[Attached]]  # attachments
 
     # the app's `edit` action is the SDK's own: run it with `action("edit")`.
     def pin(self,
@@ -258,9 +423,38 @@ class Message(Resource):
     __actions__ = frozenset({"pin", "pin_many", "react", "react_many"})
 
 
+class Report(Resource):
+    """Report — `tl.so.tilo.chat.Report`."""
+    __surface__ = "so.tilo.chat@ec213427e7b94842"
+    jqcabz2h: Message | None  # message
+    e3zqz33a: str | None  # person
+    adip7bw4: str  # said
+    bmfbgqt6: str  # reason
+    @property
+    def _3oner4zg(self) -> str:
+        """decision (`3oner4zg` on the wire)."""
+        return self.fields["3oner4zg"]
+
+    @_3oner4zg.setter
+    def _3oner4zg(self, value: str) -> None:
+        self.edit("3oner4zg", value=value)
+
+    def decide(self, *, decision: str) -> None:
+        """Settles a report: what a moderator, or the moderation agent, decided about it."""
+        return self.action("decide", decision=decision)
+
+    def decide_many(self, items: list[DecideArgs]) -> list[dict[str, Any]]:
+        """Runs `decide` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("decide", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"decide", "decide_many"})
+
+
 class Thread(Resource):
     """Thread — `tl.so.tilo.chat.Thread`."""
-    __surface__ = "so.tilo.chat@578cacfaf7ce6125"
+    __surface__ = "so.tilo.chat@ec213427e7b94842"
     xuvfifa5: str  # name
     ijy454g6: list[Entry[Message]]  # messages
     @property
@@ -271,50 +465,81 @@ class Thread(Resource):
     @_2ki7h2z5.setter
     def _2ki7h2z5(self, value: bool) -> None:
         self.edit("2ki7h2z5", value=value)
+    ep7fvntj: list[Entry[Report]]  # reports
 
     def send(self,
         *,
-        to: Direct | TextChannel | Thread,
         body: str,
         reply_to: Message | None = None,
+        attachments: list[Any] | None = None,
     ) -> Message:
         """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds."""
         args: dict[str, Any] = {}
-        args["to"] = to
         args["body"] = body
         if reply_to is not None:
             args["reply_to"] = reply_to
+        if attachments is not None:
+            args["attachments"] = attachments
         return self.action("send", **args)
 
     def send_view(self,
         *,
-        to: Direct | TextChannel | Thread,
         title: str,
         definition: str,
     ) -> Message:
         """Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views."""
-        return self.action("send_view", to=to, title=title, definition=definition)
+        return self.action("send_view", title=title, definition=definition)
 
-    def delete(self,
+    def relay(self,
         *,
-        to: Direct | TextChannel | Thread,
-        m: Message,
-    ) -> None:
-        """Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable."""
-        return self.action("delete", to=to, m=m)
+        body: str,
+        by: str,
+        written_in: str,
+        written: int | None = None,
+        attachments: list[Any] | None = None,
+        reply_to: Message | None = None,
+    ) -> Message:
+        """Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when. A bridge relays another service's conversation this way; the message's history names the bridge, and the message says whom it relays."""
+        args: dict[str, Any] = {}
+        args["body"] = body
+        args["by"] = by
+        args["written_in"] = written_in
+        if written is not None:
+            args["written"] = written
+        if attachments is not None:
+            args["attachments"] = attachments
+        if reply_to is not None:
+            args["reply_to"] = reply_to
+        return self.action("relay", **args)
+
+    def delete(self, *, m: Message) -> None:
+        """Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable. Its reports stay, saying it was deleted."""
+        return self.action("delete", m=m)
 
     def delete_many(self, items: list[ThreadDeleteArgs]) -> list[dict[str, Any]]:
         """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete", items)
 
+    def report(self,
+        *,
+        m: Message,
+        reason: str | None = None,
+    ) -> Report:
+        """Reports a message of a conversation to the workspace's moderators, saying why when the reporter does. Who reported it is the report's history's, so moderators see who asked; the conversation keeps it, with who wrote the message and what it said, after the message is deleted."""
+        args: dict[str, Any] = {}
+        args["m"] = m
+        if reason is not None:
+            args["reason"] = reason
+        return self.action("report", **args)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"send", "send_view", "delete", "delete_many"})
+    __actions__ = frozenset({"send", "send_view", "relay", "delete", "delete_many", "report"})
 
 
 class Direct(Resource):
     """Direct — `tl.so.tilo.chat.Direct`."""
-    __surface__ = "so.tilo.chat@578cacfaf7ce6125"
+    __surface__ = "so.tilo.chat@ec213427e7b94842"
     @property
     def _5stv6ro7(self) -> str:
         """name (`5stv6ro7` on the wire)."""
@@ -323,6 +548,7 @@ class Direct(Resource):
     @_5stv6ro7.setter
     def _5stv6ro7(self, value: str) -> None:
         self.edit("5stv6ro7", value=value)
+    wph25aa5: list[str]  # people
     ycadyqh5: str  # person
     y65whtrn: list[Entry[Message]]  # messages
     @property
@@ -333,51 +559,80 @@ class Direct(Resource):
     @_3p73kpuw.setter
     def _3p73kpuw(self, value: list[Entry[Thread]]) -> None:
         self.edit("3p73kpuw", value=value)
+    doiukw5i: list[Entry[Report]]  # reports
 
     def send(self,
         *,
-        to: Direct | TextChannel | Thread,
         body: str,
         reply_to: Message | None = None,
+        attachments: list[Any] | None = None,
     ) -> Message:
         """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds."""
         args: dict[str, Any] = {}
-        args["to"] = to
         args["body"] = body
         if reply_to is not None:
             args["reply_to"] = reply_to
+        if attachments is not None:
+            args["attachments"] = attachments
         return self.action("send", **args)
 
     def send_view(self,
         *,
-        to: Direct | TextChannel | Thread,
         title: str,
         definition: str,
     ) -> Message:
         """Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views."""
-        return self.action("send_view", to=to, title=title, definition=definition)
+        return self.action("send_view", title=title, definition=definition)
 
-    def delete(self,
+    def relay(self,
         *,
-        to: Direct | TextChannel | Thread,
-        m: Message,
-    ) -> None:
-        """Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable."""
-        return self.action("delete", to=to, m=m)
+        body: str,
+        by: str,
+        written_in: str,
+        written: int | None = None,
+        attachments: list[Any] | None = None,
+        reply_to: Message | None = None,
+    ) -> Message:
+        """Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when. A bridge relays another service's conversation this way; the message's history names the bridge, and the message says whom it relays."""
+        args: dict[str, Any] = {}
+        args["body"] = body
+        args["by"] = by
+        args["written_in"] = written_in
+        if written is not None:
+            args["written"] = written
+        if attachments is not None:
+            args["attachments"] = attachments
+        if reply_to is not None:
+            args["reply_to"] = reply_to
+        return self.action("relay", **args)
+
+    def delete(self, *, m: Message) -> None:
+        """Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable. Its reports stay, saying it was deleted."""
+        return self.action("delete", m=m)
 
     def delete_many(self, items: list[DirectDeleteArgs]) -> list[dict[str, Any]]:
         """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete", items)
 
+    def report(self,
+        *,
+        m: Message,
+        reason: str | None = None,
+    ) -> Report:
+        """Reports a message of a conversation to the workspace's moderators, saying why when the reporter does. Who reported it is the report's history's, so moderators see who asked; the conversation keeps it, with who wrote the message and what it said, after the message is deleted."""
+        args: dict[str, Any] = {}
+        args["m"] = m
+        if reason is not None:
+            args["reason"] = reason
+        return self.action("report", **args)
+
     def start_thread(self,
         *,
-        c: Direct | TextChannel,
         m: Message,
         name: str | None = None,
     ) -> Thread:
         """Starts a thread from a message of a channel or a direct conversation, named after what the message says."""
         args: dict[str, Any] = {}
-        args["c"] = c
         args["m"] = m
         if name is not None:
             args["name"] = name
@@ -385,12 +640,21 @@ class Direct(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"send", "send_view", "delete", "delete_many", "start_thread"})
+    __actions__ = frozenset({"send", "send_view", "relay", "delete", "delete_many", "report", "start_thread"})
+
+
+class Attached(Resource):
+    """Attached — `tl.so.tilo.chat.Attached`."""
+    __surface__ = "so.tilo.chat@ec213427e7b94842"
+    qsdc77jc: str  # name
+    h5lqkkjt: str  # media
+    g7nx7a7g: int  # size
+    wu2n7dpm: str  # blob
 
 
 class Part(Resource):
     """Part — `tl.so.tilo.chat.Part`."""
-    __surface__ = "so.tilo.chat@578cacfaf7ce6125"
+    __surface__ = "so.tilo.chat@ec213427e7b94842"
     zevnbs3i: str  # kind
     @property
     def _3hkzkqvr(self) -> str:
@@ -404,58 +668,5 @@ class Part(Resource):
 
 class Chat(Resource):
     """Chat — `tl.so.tilo.chat`."""
-    __surface__ = "so.tilo.chat@578cacfaf7ce6125"
-    def send(self,
-        *,
-        to: Direct | TextChannel | Thread,
-        body: str,
-        reply_to: Message | None = None,
-    ) -> Message:
-        """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds."""
-        args: dict[str, Any] = {}
-        args["to"] = to
-        args["body"] = body
-        if reply_to is not None:
-            args["reply_to"] = reply_to
-        return self.action("send", **args)
-
-    def send_view(self,
-        *,
-        to: Direct | TextChannel | Thread,
-        title: str,
-        definition: str,
-    ) -> Message:
-        """Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views."""
-        return self.action("send_view", to=to, title=title, definition=definition)
-
-    def delete(self,
-        *,
-        to: Direct | TextChannel | Thread,
-        m: Message,
-    ) -> None:
-        """Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable."""
-        return self.action("delete", to=to, m=m)
-
-    def delete_many(self, items: list[ChatDeleteArgs]) -> list[dict[str, Any]]:
-        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete", items)
-
-    def start_thread(self,
-        *,
-        c: Direct | TextChannel,
-        m: Message,
-        name: str | None = None,
-    ) -> Thread:
-        """Starts a thread from a message of a channel or a direct conversation, named after what the message says."""
-        args: dict[str, Any] = {}
-        args["c"] = c
-        args["m"] = m
-        if name is not None:
-            args["name"] = name
-        return self.action("start_thread", **args)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"send", "send_view", "delete", "delete_many", "start_thread"})
-
+    __surface__ = "so.tilo.chat@ec213427e7b94842"
 

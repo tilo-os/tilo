@@ -21,6 +21,7 @@
 //! session ([`serve_current`]), so no program of its opens a second one.
 
 use crate::grant_key::GrantKey;
+use crate::server::Connection;
 use crate::store::{GrantKind, Store};
 use crate::{Body, Config, Reply, Server, now_ms};
 use http_body_util::BodyExt as _;
@@ -76,6 +77,14 @@ impl KeyFile {
             ),
             reached_at: None,
         }
+    }
+
+    /// This file, reaching its host as `info` says (`web-host.json`): where a login
+    /// this computer kept names it, and what a call dials instead of asking its web origin.
+    #[must_use]
+    pub fn reaching_at(mut self, info: crate::server::ServerInfo) -> Self {
+        self.reached_at = Some(info);
+        self
     }
 
     /// The key `token` carries (`tilo_sk_…`, as an approved key is answered),
@@ -228,6 +237,24 @@ impl Direct {
         Self::as_key(server, &key, &file.name)
     }
 
+    /// The connection [`Self::over`] answers over, without an API of its own: the daemon's
+    /// workspaces are answered locally, and the account's own actions still go to the server the
+    /// login reaches, over this one session.
+    ///
+    /// # Errors
+    /// The key or its certificate is not one, or names no server.
+    pub fn held_for(
+        file: &KeyFile,
+        device: tilo_session_client::device::Device,
+    ) -> Result<Arc<Connection>, String> {
+        let (server, key) = Self::server_for(file)?;
+        server
+            .hosts
+            .first()
+            .map(|first| Arc::new(first.held(&key, device)))
+            .ok_or_else(|| "the key names no server".to_owned())
+    }
+
     /// The server `file`'s key reaches, and the key.
     fn server_for(file: &KeyFile) -> Result<(Arc<Server>, GrantKey), String> {
         let secret = hex::decode(&file.key).map_err(|_| "the key is not hex".to_owned())?;
@@ -256,15 +283,13 @@ impl Direct {
             &Config {
                 issuer: host.to_owned(),
                 web_entry: site.to_owned(),
-                invite_entry: None,
-                hosts: vec![host.to_owned()],
+                // A login this computer kept names where its host is dialled; one it did not
+                // dials nothing, and a call that needs a host says so.
+                hosts: file.reached_at.iter().cloned().collect(),
             },
             Store::in_memory(),
         )
         .map_err(|error| error.to_string())?;
-        if let (Some(info), Some(first)) = (&file.reached_at, server.hosts.first()) {
-            first.reached_at(info.clone());
-        }
         Ok((server, key))
     }
 
@@ -316,9 +341,8 @@ impl Direct {
     }
 
     /// Answer one MCP request (a `tools/call`) as the API's MCP endpoint
-    /// answers it, on this key's own session for the API's calls: its answer. What
-    /// a person's account and a workspace's people do (`account/…`,
-    /// `workspace/members#…`) is answered here as for any key of theirs.
+    /// answers it, on this key's own session for the API's calls: its answer. What a
+    /// person's account does (`account/…`) is answered here as for any key of theirs.
     ///
     /// # Errors
     /// The key cannot act now, or the call was not answered.
@@ -468,141 +492,50 @@ async fn next_data(body: &mut Option<Body>) -> Option<Bytes> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Answer, AnswerBody, Direct, KeyFile};
+    use super::{Answer, AnswerBody, Direct};
     use http_body_util::{BodyExt as _, StreamBody};
     use hyper::body::{Bytes, Frame};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
-    /// A site's shelf: an invitation left on it is kept, and anything else
-    /// is not the shelf's.
-    async fn shelf_site() -> String {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                let mut request = [0u8; 8192];
-                let read = stream.read(&mut request).await.unwrap_or_default();
-                let kept = String::from_utf8_lossy(&request[..read]).starts_with("POST /i/");
-                let status = if kept {
-                    "204 No Content"
-                } else {
-                    "404 Not Found"
-                };
-                let _ = stream
-                    .write_all(
-                        format!(
-                            "HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-                        )
-                        .as_bytes(),
-                    )
-                    .await;
-            }
-        });
-        origin
+    /// A desktop holding one workspace, whose actions are the app it publishes, and the
+    /// workspaces it was entered for.
+    #[derive(Default)]
+    struct Desktop {
+        actions: tilo_mcp::test_hosts::StubHost,
+        entered: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
-
-    /// The key file a device's login makes knows the site it logged in with,
-    /// so a link it asks the host for is built on that site — the one the
-    /// person's page builds its invitations on — and never on the server the
-    /// key reaches.
-    #[tokio::test]
-    async fn a_link_a_key_asks_for_is_built_on_its_site() {
-        crate::session::members::tests::local_site_stands_for_public();
-        let site = shelf_site().await;
-        let (person, _) = UserIdentity::generate("Ada", 1);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let now = tilo_clock::unix_now_ns();
-        let mut cert = DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Ada's laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: now.saturating_sub(60_000_000_000),
-            expires_at_ns: Some(now.saturating_add(30 * 24 * 3600 * 1_000_000_000)),
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
-        // A server no test listens on: a link built on it would be one nothing
-        // can open, so the site's own address is what says the site was used.
-        let server = "http://127.0.0.1:9";
-        let direct = Direct::new(&KeyFile::new(
-            server,
-            Some(&site),
-            "Ada's laptop",
-            &key,
-            &cert,
-        ))
-        .unwrap();
-
-        let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
-        let link = direct
-            .server
-            .invitation_link(workspace, b"signed", now.saturating_add(600_000_000_000))
-            .await;
-        assert!(
-            link.starts_with(&format!("{site}/i/")),
-            "the link is built on the site the device logged in with: {link}"
-        );
-        assert!(!link.contains(server), "{link}");
-        assert!(
-            link.contains('#'),
-            "the key it opens with is in the fragment: {link}"
-        );
-    }
-
-    /// A desktop holding one workspace, which answers every program with what it was asked
-    /// and the name of the session it was entered for.
-    struct Desktop;
 
     const WORKSPACE: &str = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
-
-    struct Echo(String);
-
-    impl crate::session::Answering for Echo {
-        fn handle(
-            &self,
-            request: serde_json::Value,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send + '_>,
-        > {
-            let program = request
-                .pointer("/params/arguments/program")
-                .cloned()
-                .unwrap_or_default();
-            let text = format!("{} in {}", program.as_str().unwrap_or_default(), self.0);
-            Box::pin(async move {
-                Some(
-                    serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": {
-                        "structuredContent": {"status": "ok", "output": [text.clone()], "text": text},
-                    }}),
-                )
-            })
-        }
-    }
 
     impl crate::session::Here for Desktop {
         fn workspaces(&self) -> Vec<crate::session::Workspace> {
             vec![crate::session::held(WORKSPACE.into(), "Release".into())]
         }
 
-        fn enter(
-            &self,
-            workspace: &str,
-            _session: &str,
-            label: &str,
-        ) -> Result<Box<dyn crate::session::Answering>, String> {
+        fn enter(&self, workspace: &str) -> Result<crate::session::Reached, String> {
             if workspace != WORKSPACE {
                 return Err(format!("no workspace {workspace} here"));
             }
-            Ok(Box::new(Echo(label.to_owned())))
+            self.entered.lock().unwrap().push(workspace.to_owned());
+            let provider: crate::session::Provider = std::sync::Arc::new(self.actions.clone());
+            let catalogue = tilo_mcp::task_hosts::WorkspaceCatalogue::new(
+                std::sync::Arc::clone(&provider),
+                tilo_actions::remote::Caller::local_person("ada"),
+            );
+            Ok(crate::session::Reached {
+                provider,
+                person: "ada".into(),
+                tasks: std::sync::Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
+                    Some("ada"),
+                    std::sync::Arc::new(catalogue),
+                )),
+            })
         }
     }
 
     /// A program on this computer reaches the desktop's API at its socket, as the desktop's own
-    /// device, with no key of its own: it lists the workspaces the desktop holds and has a
-    /// program done in one, which the desktop answers. The account's own actions are not answered.
+    /// device, with no key of its own: it lists the workspaces the desktop holds and lists
+    /// what one holds, which the desktop's own actions answer. The account's own actions are not answered.
     #[tokio::test]
     async fn a_desktop_serves_its_persons_programs_at_its_socket() {
         let (person, _) = UserIdentity::generate("Ada", 1);
@@ -619,7 +552,9 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
-        let direct = Direct::here(std::sync::Arc::new(Desktop), key, cert, "Ada's laptop").unwrap();
+        let desktop = Desktop::default();
+        let entered = std::sync::Arc::clone(&desktop.entered);
+        let direct = Direct::here(std::sync::Arc::new(desktop), key, cert, "Ada's laptop").unwrap();
         let dir = std::env::temp_dir().join(format!("tilo-api-here-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("api.sock");
@@ -631,21 +566,15 @@ mod tests {
         let listed = client.get("/v1/workspaces").await.unwrap();
         assert_eq!(listed["workspaces"][0]["id"], WORKSPACE, "{listed}");
         assert_eq!(listed["workspaces"][0]["name"], "Release", "{listed}");
-        let ran = client
-            .post(
-                &format!("/v1/workspaces/{WORKSPACE}/programs"),
-                &serde_json::json!({"program": "notes.notebook.notes.len()"}),
-            )
+        let apps = client
+            .get(&format!("/v1/workspaces/{WORKSPACE}/resources"))
             .await
             .unwrap();
-        assert_eq!(ran["status"], "ok", "{ran}");
+        assert!(apps["rows"].is_array(), "{apps}");
         assert_eq!(
-            ran["text"], "notes.notebook.notes.len() in Ada's laptop #1",
-            "the program acts as the desktop's own device: {ran}"
-        );
-        assert!(
-            !ran["session"].as_str().unwrap_or_default().is_empty(),
-            "{ran}"
+            *entered.lock().unwrap(),
+            [WORKSPACE],
+            "the desktop's own actions answer the listing: {apps}"
         );
         let refused = client
             .post("/v1/workspaces", &serde_json::json!({"name": "Another"}))
@@ -680,7 +609,13 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
-        let direct = Direct::here(std::sync::Arc::new(Desktop), key, cert, "Ada's laptop").unwrap();
+        let direct = Direct::here(
+            std::sync::Arc::new(Desktop::default()),
+            key,
+            cert,
+            "Ada's laptop",
+        )
+        .unwrap();
         let dir = std::env::temp_dir().join(format!("tilo-api-here-bare-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("api.sock");
@@ -748,7 +683,13 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
-        let direct = Direct::here(std::sync::Arc::new(Desktop), key, cert, "Ada's laptop").unwrap();
+        let direct = Direct::here(
+            std::sync::Arc::new(Desktop::default()),
+            key,
+            cert,
+            "Ada's laptop",
+        )
+        .unwrap();
         let hooks = format!("/v1/workspaces/{WORKSPACE}/webhooks");
 
         let new = serde_json::json!({"url": "http://127.0.0.1:9/hook"}).to_string();

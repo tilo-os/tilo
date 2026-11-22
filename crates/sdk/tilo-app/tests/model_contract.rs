@@ -1,4 +1,3 @@
-
 //! The resource/action/view contract on the production host path.
 //!
 //! A document action whose `apply` writes an outside queue is undone by

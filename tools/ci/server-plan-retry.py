@@ -52,6 +52,8 @@ DIRECT = (
     "tools/ci/server-plan-base.env",
     "tools/ci/install-packages.sh",
     "tools/ci/packages/",
+    # The image the proof's guests boot in, not one the base holds.
+    "os/Containerfile.os-vm",
 )
 # The OS images' own sources; a change there is part of the base.
 OS_BASE = ("os/", "keys/")

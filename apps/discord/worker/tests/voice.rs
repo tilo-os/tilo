@@ -205,9 +205,12 @@ impl Host {
         );
     }
 
-    /// Send `frames` as `speaker` in real time.
+    /// Send `frames` as `speaker` in real time. A late tick delays the rest
+    /// rather than replaying the cadence it missed: audio arrives at the
+    /// wall clock's pace, never as a burst the jitter buffer would shed.
     async fn say(&self, speaker: &str, frames: &[Vec<u8>]) {
         let mut tick = tokio::time::interval(Duration::from_millis(20));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         for frame in frames {
             tick.tick().await;
             self.to_worker
@@ -405,6 +408,7 @@ async fn two_tilo_speakers_are_mixed_and_speaking_follows_the_audio() {
 
     let (a, b) = (tone::sine(440.0, 50), tone::sine(660.0, 50));
     let mut tick = tokio::time::interval(Duration::from_millis(20));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     for (x, y) in a.iter().zip(&b) {
         tick.tick().await;
         for (speaker, frame) in [("tilo-grace", x), ("tilo-linus", y)] {

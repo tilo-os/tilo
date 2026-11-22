@@ -82,10 +82,6 @@ pub struct UnattendedChange {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceList {
     pub workspaces: Vec<Workspace>,
-    /// The listing as a person reads it ([`super::lines`]): what `tilo`
-    /// prints.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -167,10 +163,6 @@ pub struct KeyRow {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct KeyList {
     pub keys: Vec<KeyRow>,
-    /// The listing as a person reads it ([`super::lines`]): what `tilo`
-    /// prints.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -288,10 +280,6 @@ pub struct Listing {
     /// Passed back as `cursor` for the rest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
-    /// The listing as a person reads it, one line per row: the same lines an
-    /// MCP client's `tilo_ls` prints, for a caller with no surface of its own.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
 }
 
 /// A list of what a resource holds, one entry of it.
@@ -328,10 +316,6 @@ pub struct Resource {
     /// For an app: its surface's version, `<app>@<digest>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_version: Option<String>,
-    /// The read as a person reads it: the same text an MCP client's
-    /// `tilo_read` prints, for a caller with no surface of its own.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
 }
 
 /// What the person is asked before an action runs.
@@ -457,71 +441,12 @@ pub struct View {
     pub picture: Option<String>,
 }
 
-/// The workspace's people, each with their role, and the invitations still
-/// open, with `text`: the listing as a person reads it.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Members(pub Map<String, Value>);
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewInvitation {
-    /// `viewer`, `commenter`, `editor`, `administrator` or `owner`.
-    pub role: String,
-    /// The address the invitation names; no mail is sent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
-    /// The address on the wait list it is for (its `entry`): mailed to it
-    /// where the workspace's entry sends mail, and it leaves the list once
-    /// someone joins with it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub waiting: Option<String>,
-}
-
-/// A person the workspace holds by their key from now on.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewMember {
-    /// Their user public key, 64 hex characters.
-    pub person: String,
-    /// `viewer`, `commenter`, `editor`, `moderator`, `administrator` or
-    /// `owner`; never more than yours to give. A member already is moved
-    /// there.
-    pub role: String,
-    /// How the workspace names them until they name themselves.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
-/// The addresses left at the workspace's entry while it takes people by
-/// invitation, oldest first, and whether the entry mails invitations, with
-/// `text`: the listing as a person reads it.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WaitList(pub Map<String, Value>);
-
 /// What the workspace is called from now on, by every list and device of it.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceName {
     /// 1 to 80 characters.
     pub name: String,
 }
-
-/// Where a member of the workspace is held from now on.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct MemberRole {
-    /// `viewer`, `commenter`, `editor`, `moderator`, `administrator` or
-    /// `owner`; never more than yours to give.
-    pub role: String,
-}
-
-/// How the key's person goes by in the workspace from now on.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewName {
-    /// The name the workspace's member list and the invitations they make
-    /// show for them.
-    pub name: String,
-}
-
-/// A link that signs the person in and lands them in the workspace.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Invitation(pub Map<String, Value>);
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Program {
@@ -727,14 +652,7 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         SearchHits,
         Link,
         View,
-        Members,
-        NewInvitation,
-        NewMember,
-        WaitList,
-        Invitation,
-        NewName,
         WorkspaceName,
-        MemberRole,
         Program,
         ProgramAnswer,
         Uploaded,

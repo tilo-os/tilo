@@ -1,7 +1,7 @@
 //! An installed bundle runs the packages it uses: their types resolve, their views draw and
 //! their actions run on the resources of theirs it holds, as Today draws the todo list's rows.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, UiNode, Value};
 use tilolang_tilo::bundle::Bundle;
 
@@ -59,7 +59,7 @@ fn lists(node: &UiNode, out: &mut Vec<String>) {
 
 #[test]
 fn a_bundle_draws_the_rows_of_the_packages_it_uses() {
-    let (mut replica, _) = crate::fixtures::Replica::new("ada", AutoCommit::new(), &[]);
+    let (replica, _) = crate::fixtures::Replica::new("ada", Workspace::new(), &[]);
     let bundle = today();
     replica.host.load_bundle(&bundle).unwrap();
     let ada = Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"));

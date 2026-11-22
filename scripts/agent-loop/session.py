@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """An isolated session for testing what an agent experiences in a Tilo app.
 
-The agent's only way in is the ordinary one: `tilo-runtime-mcp` over the app's
+The agent's only way in is the ordinary one: `tilo-runtime` over the app's
 published actions, and the app's window as a person uses it: the `computer`
 tool with `app_id` clicks, drags, types and scrolls in the window, in the
 window's pixels, and answers with what the window then shows. This script
@@ -58,7 +58,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 TARGET = REPO / "target"
 SESSION = TARGET / "debug" / "tilo-session"
 CONTROL = TARGET / "debug" / "tilo-control"
-RUNTIME_HOST = TARGET / "debug" / "tilo-runtime-mcp"
+RUNTIME_HOST = TARGET / "debug" / "tilo-runtime"
 TILO_APP = TARGET / "debug" / "tilo-app"
 
 

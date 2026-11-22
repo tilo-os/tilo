@@ -3,7 +3,6 @@
 //! The app's environment is meant to be a closed set — a list of variables the launcher
 //! puts there, beside the binds that make each mean something.
 
-
 use std::path::PathBuf;
 use tilo_test_env::SpawnUnderEnvLock as _;
 

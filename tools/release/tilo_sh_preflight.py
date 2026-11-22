@@ -294,9 +294,9 @@ class Pod:
         infra = podman("pod", "inspect", "-f", "{{.InfraContainerID}}", self.pod)
         return podman("inspect", "-f", "{{.State.Pid}}", infra)
 
-    def get(self, port: int, path: str) -> tuple[int, str]:
+    def get(self, port: int, path: str, method: str = "GET") -> tuple[int, str]:
         result = run(*PODMAN, "unshare", "nsenter", f"--net=/proc/{self.pid()}/ns/net",
-                     "curl", "-s", "-m", "5", "-w", "\n%{http_code}", f"http://127.0.0.1:{port}{path}",
+                     "curl", "-s", "-m", "5", "-X", method, "-w", "\n%{http_code}", f"http://127.0.0.1:{port}{path}",
                      capture_output=True, check=False)
         body, _, code = result.stdout.rpartition("\n")
         return (int(code) if code.isdigit() else 0), body
@@ -354,15 +354,13 @@ class Pod:
         podman("pod", "rm", "-f", "-t", "20", self.pod, check=False)
 
 
-def identity(volumes: Path) -> dict[str, str]:
-    """The Lounge's identity on the volume: its device key's digest and its workspace's id,
-    wherever the build that wrote them keeps them."""
-    found = {}
-    for key in volumes.rglob("host-device.key"):
-        found["device key"] = hashlib.sha256(key.read_bytes()).hexdigest()[:16]
-    for id_file in volumes.rglob("workspace-id"):
-        found["workspace"] = id_file.read_text().strip()
-    return found
+def identity(volumes: Path) -> tuple[set[str], set[str]]:
+    """The Lounge's identity on the volume: the digests of the device keys it holds and the ids
+    of the workspaces it names, wherever the builds that wrote them keep them (a release that
+    starts its state afresh leaves the earlier one where it lay)."""
+    keys = {hashlib.sha256(key.read_bytes()).hexdigest()[:16] for key in volumes.rglob("host-device.key")}
+    workspaces = {id_file.read_text().strip() for id_file in volumes.rglob("workspace-id")}
+    return keys, workspaces
 
 
 def shape(value):
@@ -384,14 +382,14 @@ def env_of(docs: dict[str, list[dict]], deployment: str, container: str, name: s
 
 
 def host_info(pod: Pod) -> dict:
-    """What the running Lounge's own server prints for the web entry's TILO_WEB_HOME_HOST_INFO."""
+    """What the running Lounge's server wrote for the web entry's TILO_WEB_HOME_HOST_INFO."""
     container = f"{pod.pod}-room-service"
-    for program in ("tilo-server", "tilo-relay"):
-        result = run(*PODMAN, "exec", container, f"/usr/local/bin/{program}", "page-host", "http://127.0.0.1:9780",
-                     capture_output=True, check=False)
-        if result.returncode == 0:
-            return json.loads(result.stdout.strip().splitlines()[-1])
-    die(f"the Lounge's server printed no page-host line: {result.stderr.strip()[-2000:]}")
+    result = run(*PODMAN, "exec", container, "sh", "-c",
+                 'cat "${TILO_WORKSPACES_STATE:-/run/tilo-workspaces}/$TILO_WORKSPACES_PERSISTENT/server/web-host.json"',
+                 capture_output=True, check=False)
+    if result.returncode != 0:
+        die(f"the Lounge's server wrote no web-host.json: {result.stderr.strip()[-2000:]}")
+    return json.loads(result.stdout.strip().splitlines()[-1])
 
 
 def step(name: str, docs: dict[str, list[dict]], secrets_: Secrets, work: Path, real_state: bool) -> None:
@@ -416,6 +414,17 @@ def step(name: str, docs: dict[str, list[dict]], secrets_: Secrets, work: Path, 
                     f"  pinned  {json.dumps(pinned)}\n  printed {json.dumps(printed)}")
             say(f"{name}: the web entry's host line has the form the server prints"
                 + (", and names this host" if real_state else ""))
+        entry = env_of(docs, "tilo-web", "web-entry", "TILO_WEB_HOME_ENTRY")
+        if relay and entry and real_state:
+            # The entry names the Lounge's workspace by id: a Lounge started afresh has a new
+            # one, and a web entry left on the old one turns every newcomer away.
+            code, body = relay.get(9780, "/peer/v1/directory", method="POST")
+            listed = {w.get("entry", "").strip("/").rsplit("/", 1)[-1] for w in json.loads(body).get("workspaces", [])} if code == 200 else set()
+            named = entry.rstrip("/").rsplit("/", 1)[-1]
+            if named not in listed:
+                die(f"{name}: the web entry's TILO_WEB_HOME_ENTRY names workspace {named}, which this server "
+                    f"does not list (it lists {sorted(listed)}): set it to the Lounge's entry")
+            say(f"{name}: the web entry's TILO_WEB_HOME_ENTRY is the Lounge's entry ({named})")
     finally:
         for pod in pods:
             pod.down()
@@ -447,12 +456,16 @@ def main() -> None:
     if not a.no_base:
         base = render(tree_at(infra, a.base, work / "base-tree"))
         step("live", base, secrets_, work, bool(a.state))
-    before = identity(work / "volumes")
+    (keys, workspaces) = identity(work / "volumes")
     step("release", release, secrets_, work, bool(a.state))
-    after = identity(work / "volumes")
-    if before and before != after:
-        die(f"the Lounge's identity changed across the upgrade: before {before}, after {after}")
-    say(f"the release serves on the volume the live pods left, as itself ({after})")
+    (keys_after, workspaces_after) = identity(work / "volumes")
+    # The device key is the Lounge's address: the web entry dials it and the VM hosts take work
+    # from it, so it is the one thing every release keeps. Its workspace may start afresh.
+    if keys and keys_after != keys:
+        die(f"the Lounge's device key changed across the upgrade: before {sorted(keys)}, after {sorted(keys_after)}")
+    if workspaces_after - workspaces:
+        say(f"the Lounge's workspace is new: {sorted(workspaces)} before, {sorted(workspaces_after - workspaces)} now")
+    say(f"the release serves on the volume the live pods left, with the same device key ({sorted(keys_after)})")
 
 
 if __name__ == "__main__":

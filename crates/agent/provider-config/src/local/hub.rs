@@ -1019,10 +1019,7 @@ pub enum UserModelSource {
     /// A GGUF file the person chose on this device, copied into the store
     /// from the handle the file chooser gave. `name` is its file name, for
     /// display: the service never opens a path it was told.
-    File {
-        #[serde(alias = "path")]
-        name: String,
-    },
+    File { name: String },
 }
 
 /// A model a person picked themselves, as the model manager records it.

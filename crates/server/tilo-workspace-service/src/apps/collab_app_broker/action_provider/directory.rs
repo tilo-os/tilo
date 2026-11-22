@@ -159,7 +159,7 @@ impl AppBrokerState {
     ) -> Option<ActionDirectoryRoot> {
         let peer_id = request.target.provider.parse::<u64>().ok()?;
         let address = &request.target.address;
-        let eager = self.surfaces.lock().is_ok_and(|surfaces| {
+        let eager = self.publishers.surfaces.lock().is_ok_and(|surfaces| {
             surfaces.get(&peer_id).is_some_and(|surface| {
                 surface.live
                     && surface.actions.iter().any(|action| {
@@ -380,7 +380,6 @@ impl AppBrokerState {
                 context: request.context.clone(),
             },
             super::super::AdmissionProvenance {
-                durable: None,
                 revision: Some(&revision),
                 origin: origin.cloned(),
                 retained_time: None,

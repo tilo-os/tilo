@@ -12,8 +12,8 @@
 #include "local_runtime_config.h"
 
 #ifndef TILO_LAUNCH_NAME
-#define TILO_LAUNCH_NAME "tilo-runtime-mcp"
-#define TILO_EXEC_NAME "tilo-runtime-mcp.real"
+#define TILO_LAUNCH_NAME "tilo-runtime"
+#define TILO_EXEC_NAME "tilo-runtime.real"
 #endif
 
 static void fail(void) {

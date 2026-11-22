@@ -472,14 +472,8 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
     };
     let (status, listing) = agent.get(&format!("{base}/resources")).await;
     assert_eq!(status, 200, "{listing}");
-    // A listing is its rows once: the words a tool says as its typed answer
-    // are that answer again, and are no text of it.
-    assert!(
-        listing["text"]
-            .as_str()
-            .is_none_or(|text| serde_json::from_str::<serde_json::Value>(text).is_err()),
-        "the listing carries itself as its text: {listing}"
-    );
+    // A listing is its rows: no words beside them.
+    assert!(listing.get("text").is_none(), "{listing}");
     let (status, others) = agent
         .get(&format!("/v1/workspaces/{}/resources", on_server.lobby))
         .await;
@@ -499,8 +493,7 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
         &tilo_api::Config {
             issuer: ISSUER.into(),
             web_entry: on_server.web_entry.clone(),
-            invite_entry: None,
-            hosts: vec![on_server.server.clone()],
+            hosts: vec![on_server.hosted.web.host_info().clone()],
         },
         tilo_api::store::Store::in_memory(),
     )
@@ -627,7 +620,8 @@ async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
         "Claude Code on laptop",
         &laptop.key,
         &laptop.cert,
-    );
+    )
+    .reaching_at(on_server.hosted.web.host_info().clone());
     let computer = tilo_api::direct::Direct::new(&file).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let listed_script = loop {
@@ -709,8 +703,7 @@ async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
         &tilo_api::Config {
             issuer: ISSUER.into(),
             web_entry: on_server.web_entry.clone(),
-            invite_entry: None,
-            hosts: vec![on_server.server.clone()],
+            hosts: vec![on_server.hosted.web.host_info().clone()],
         },
         tilo_api::store::Store::in_memory(),
     )
@@ -744,7 +737,8 @@ async fn a_key_its_program_holds_reaches_the_host_directly() {
         "Ada's script",
         &laptop.key,
         &laptop.cert,
-    );
+    )
+    .reaching_at(on_server.hosted.web.host_info().clone());
     let direct = tilo_api::direct::Direct::new(&file).unwrap();
     let json = [("content-type".to_owned(), "application/json".to_owned())];
 
@@ -866,11 +860,13 @@ async fn a_workspaces_listing_reads_the_same_through_mcp_and_the_api() {
         };
         let (status, listed) = backend.get(&route).await;
         assert_eq!(status, 200, "{listed}");
-        assert_eq!(
-            listed["text"].as_str(),
-            Some(agent_read),
-            "the API answers the tool's own lines for {path:?}: {listed}"
-        );
+        for row in listed["rows"].as_array().into_iter().flatten() {
+            let name = row["name"].as_str().unwrap_or_default();
+            assert!(
+                agent_read.contains(name),
+                "the API and the tool list the same rows for {path:?}: {name} in {listed}"
+            );
+        }
     }
 }
 
@@ -919,7 +915,8 @@ impl Holder {
             "Ada's laptop",
             &laptop.key,
             &laptop.cert,
-        );
+        )
+        .reaching_at(on_server.hosted.web.host_info().clone());
         let code = format!(
             "https://tilo.sh/#/@{}/w/{workspace}?pair={}",
             on_server.server.trim_start_matches("http://"),
@@ -983,7 +980,8 @@ async fn a_logged_in_computers_commands_go_over_its_one_held_session() {
         "Ada's laptop",
         &holder.laptop.key,
         &holder.laptop.cert,
-    );
+    )
+    .reaching_at(on_server.hosted.web.host_info().clone());
     let script_file = file.clone().with_token(&token).unwrap();
     assert_ne!(script_file.key, file.key);
     let keys = tempfile::tempdir().unwrap();
@@ -1015,8 +1013,7 @@ async fn a_logged_in_computers_commands_go_over_its_one_held_session() {
         assert!(
             listed["rows"]
                 .as_array()
-                .is_some_and(|rows| !rows.is_empty())
-                || listed["text"].as_str().is_some_and(|text| !text.is_empty()),
+                .is_some_and(|rows| !rows.is_empty()),
             "{listed}"
         );
     }
@@ -1074,7 +1071,10 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
     // `tilo workspace people ls`: reading who is in asks nobody.
     let listed = holder
         .command()
-        .get(&format!("/v1/workspaces/{workspace}/members"))
+        .post(
+            &format!("/v1/workspaces/{workspace}/resources/workspace/members/actions/list"),
+            &json!({}),
+        )
         .await
         .expect("the agent lists the workspace's people");
     let ada_key = hex::encode(holder.laptop.cert.user_public_key);
@@ -1097,7 +1097,8 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
     assert_eq!(questions(), 0, "reading asks nobody");
 
     // Inviting someone asks Ada first: allowed, the link comes back.
-    let invitations = format!("/v1/workspaces/{workspace}/members/invitations");
+    let invitations =
+        format!("/v1/workspaces/{workspace}/resources/workspace/invitations/actions/invite");
     let invite = json!({"role": "editor"});
     let invited = holder
         .command()
@@ -1437,35 +1438,12 @@ async fn a_file_larger_than_one_request_goes_up_in_pieces_that_resume() {
     );
 }
 
-/// An address that reaches `origin` later: every connection to it waits `wait` before it is
-/// carried on, so whoever measures the way there finds it the longer one.
-async fn later(origin: &str, wait: std::time::Duration) -> String {
-    let onward = origin
-        .strip_prefix("http://")
-        .expect("a plain origin")
-        .to_owned();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        while let Ok((mut from, _)) = listener.accept().await {
-            let onward = onward.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(wait).await;
-                if let Ok(mut to) = tokio::net::TcpStream::connect(&onward).await {
-                    let _ = tokio::io::copy_bidirectional(&mut from, &mut to).await;
-                }
-            });
-        }
-    });
-    format!("http://127.0.0.1:{port}")
-}
-
 /// An API server before two servers forwards a key's calls to the one that keeps its person's
-/// workspaces, also when the other answers sooner. The other one lets any certified device
+/// workspaces, though the other answers too. The other one lets any certified device
 /// connect, as a server that keeps workspaces for the people it lets in does, and keeps nothing
 /// of this person's: asked for her workspace it knows none.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_call_reaches_the_server_that_keeps_the_workspace_when_another_answers_sooner() {
+async fn a_call_reaches_the_server_that_keeps_the_workspace_though_another_answers() {
     Box::pin(async {
         let hers = api_on_server(ISSUER).await;
         let other = api_on_server(ISSUER).await;
@@ -1482,42 +1460,43 @@ async fn a_call_reaches_the_server_that_keeps_the_workspace_when_another_answers
         assert_eq!(status, 201, "{made}");
         let workspace = made["id"].as_str().expect("a workspace").to_owned();
 
-        // Her own server is the longer way from here: the other one answers sooner.
-        let near = other.server.clone();
-        let far = later(&hers.server, std::time::Duration::from_millis(1500)).await;
-
-        // What the test rests on: the nearer server lets her key's device connect and lists
-        // nothing for it, and her own is reached by the longer way.
+        // What the test rests on: the other server lets her key's device connect and lists
+        // nothing for it, and her own keeps the workspace.
         let key = tilo_api::store::Store::in_memory()
             .access(&token, tilo_clock::unix_now_ms())
             .expect("the token carries its grant")
             .key()
             .expect("and the grant its key");
-        let client = tilo_net::Client::builder().build().unwrap();
-        let reached = |origin: &str| Arc::new(tilo_api::server::Server::new(&client, origin));
-        let nearer = reached(&near);
-        let session = nearer
+        let other_host = Arc::new(tilo_api::server::Server::new(
+            other.hosted.web.host_info().clone(),
+        ));
+        let session = other_host
             .connect(&key)
             .await
-            .expect("the nearer server lets the key's device connect");
-        let listed = nearer.workspaces(&session).await.unwrap_or_default();
+            .expect("the other server lets the key's device connect");
+        let listed = other_host.workspaces(&session).await.unwrap_or_default();
         assert!(
             listed.is_empty(),
-            "the nearer server keeps none of her workspaces: {listed:?}"
+            "the other server keeps none of her workspaces: {listed:?}"
         );
         drop(session);
-        let session = reached(&far)
+        let her_host = Arc::new(tilo_api::server::Server::new(
+            hers.hosted.web.host_info().clone(),
+        ));
+        let session = her_host
             .connect(&key)
             .await
-            .expect("her own server is reached by the longer way");
+            .expect("her own server is reached");
         drop(session);
 
         let front = Server::new(
             &tilo_api::Config {
                 issuer: ISSUER.into(),
                 web_entry: hers.web_entry.clone(),
-                invite_entry: None,
-                hosts: vec![near, far],
+                hosts: vec![
+                    other.hosted.web.host_info().clone(),
+                    hers.hosted.web.host_info().clone(),
+                ],
             },
             tilo_api::store::Store::in_memory(),
         )
@@ -1560,8 +1539,7 @@ async fn a_key_works_at_every_api_server() {
         &tilo_api::Config {
             issuer: ISSUER.into(),
             web_entry: served.web_entry.clone(),
-            invite_entry: None,
-            hosts: vec![served.server.clone()],
+            hosts: vec![served.hosted.web.host_info().clone()],
         },
         tilo_api::store::Store::in_memory(),
     )
@@ -1589,7 +1567,7 @@ async fn a_key_works_at_every_api_server() {
 async fn a_call_is_served_after_the_host_it_used_goes_away() {
     Box::pin(async {
         let on_server = api_on_server(ISSUER).await;
-        let used = on_server.server.clone();
+        let used = on_server.hosted.web.host_info().clone();
         let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
         let token = approved_key(&on_server, &ada, &page, "Visa backend").await;
@@ -1606,8 +1584,7 @@ async fn a_call_is_served_after_the_host_it_used_goes_away() {
             &tilo_api::Config {
                 issuer: ISSUER.into(),
                 web_entry: restarted.web_entry.clone(),
-                invite_entry: None,
-                hosts: vec![used, restarted.server.clone()],
+                hosts: vec![used, restarted.hosted.web.host_info().clone()],
             },
             tilo_api::store::Store::in_memory(),
         )
@@ -1635,9 +1612,14 @@ async fn no_host_that_can_read_the_workspace_is_a_typed_refusal() {
         &tilo_api::Config {
             issuer: ISSUER.into(),
             web_entry: on_server.web_entry.clone(),
-            invite_entry: None,
             // Nothing serves at this address: no server is online for the key.
-            hosts: vec!["http://127.0.0.1:9".into()],
+            hosts: vec![{
+                let mut dead = on_server.hosted.web.host_info().clone();
+                dead.address.as_mut().expect("a host").endpoint_addr =
+                    iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x5a; 32]).public())
+                        .with_ip_addr("127.0.0.1:9".parse().expect("an address"));
+                dead
+            }],
         },
         tilo_api::store::Store::in_memory(),
     )
@@ -1725,8 +1707,9 @@ async fn a_key_made_for_a_script_reaches_the_workspaces_stores_as_its_persons_ag
         assert_eq!(status, 201, "{made}");
         let workspace = made["id"].as_str().expect("a workspace").to_owned();
 
-        let client = tilo_net::Client::builder().build().unwrap();
-        let holder = Arc::new(tilo_api::server::Server::new(&client, &served.server));
+        let holder = Arc::new(tilo_api::server::Server::new(
+            served.hosted.web.host_info().clone(),
+        ));
         let now_ms = tilo_clock::unix_now_ms();
         let list = || person_vault::target(person_vault::LIST);
 

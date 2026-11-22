@@ -1,7 +1,6 @@
 //! The power menu as a person, a screen reader and an agent meet it: where
 //! it hangs, what it offers, what a choice asks the shell for.
 
-
 use tilo_sheets::SheetState as _;
 use tilo_sheets::power::{Offers, PowerApp, PowerEffect, PowerState};
 use ui::a11y::Action as A11yAction;
@@ -153,15 +152,25 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_press_asks_the_shell_and_closes_the_menu;
+    phase a_press_runs_the_rows_action_which_asks_first_then_asks_the_shell;
     {
         let (mut app, state) = mounted(Offers::default());
         app.harness()
             .perform_named("power_shut_down", &A11yAction::Activate)
             .unwrap();
         app.settle();
-        assert_eq!(state.take_asked(), [PowerEffect::ShutDown]);
+        assert!(state.take_asked().is_empty(), "shutting down asks first");
         assert!(!state.presentation().is_open(), "the menu took itself down");
+        assert!(app.harness().asking().is_some(), "and its question stands");
+        assert!(app.harness().confirm_asked().is_some());
+        app.settle();
+        assert_eq!(state.take_asked(), [PowerEffect::ShutDown]);
+        let (mut app, state) = mounted(Offers::default());
+        app.harness()
+            .perform_named("power_lock", &A11yAction::Activate)
+            .unwrap();
+        app.settle();
+        assert_eq!(state.take_asked(), [PowerEffect::Lock], "locking asks nothing");
     }
 
     phase an_agent_invoking_an_action_reaches_the_same_api;
@@ -186,10 +195,12 @@ tilo_test_env::scenario! {
         key(&mut app, "ArrowDown");
         key(&mut app, "Enter");
         assert_eq!(
-            state.take_asked(),
-            [PowerEffect::LogOut],
-            "from the first row, one step down is Log out"
+            app.harness().asking().map(|(address, _)| address.action),
+            Some("log-out".to_owned()),
+            "from the first row, one step down is Log out, which asks first"
         );
+        key(&mut app, "Escape");
+        assert!(state.take_asked().is_empty(), "Escape answers no");
 
         state.presentation().open(true);
         app.settle();

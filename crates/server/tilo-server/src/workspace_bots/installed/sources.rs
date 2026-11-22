@@ -432,7 +432,7 @@ impl BotRunner {
         // What a message says is handed to its person's assistant, so only
         // the mail the workspace's policy lets that person read is read, and
         // only where they have an assistant to hand it to.
-        let assistant = match super::super::assistant::assistant_of(
+        let assistant = match tilo_workspace_service::agents::assistant::assistant_of(
             &self.workspaces,
             &self.workspace,
             &person,

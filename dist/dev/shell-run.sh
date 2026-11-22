@@ -70,11 +70,9 @@ tl_apps=(shell discussion notes tasks chat mail tube)
 # The Rust apps it installs beside them, by the directory under `apps/`: Chat's record
 # (`so.tilo.chat`) is the one the session's agents answer in and the one the canvas's ask
 # conversation is a channel of (`docs/designs/app-language/shell.md` §8.1), so a session
-# that asks must have it, as a person's device has the app installed. The agent
-# (`so.tilo.agent`) is the app the session starts to answer those conversations
-# (`Apps::start_agent`): without it installed, asking on the canvas makes a turn no process
-# answers, so a session that asks installs the app that answers.
-rust_apps=(chat agent)
+# that asks must have it, as a person's device has the app installed. The turns asked there are
+# answered by the agent engine this device's workspace service runs.
+rust_apps=(chat)
 build=1
 size=1280x800
 scale=
@@ -439,9 +437,9 @@ printf 'site = ""\n' > "$community_file"
 # The session's model gateway, started the way a workspace image starts it: as
 # its user unit does, at the socket the launcher hands to every app of the
 # session (`tilo-model-gateway.service`: `serve --socket %t/tilo/services/`).
-# A kept agent's turn is planned through it (`so.tilo.agent` requires the
-# service), and the model it asks is the person's own on their workspace's
-# server, through this computer's `tilo login` session. A session that plans no
+# The session's own model calls go through it, and the model it asks is the
+# person's own on their workspace's server, through this computer's `tilo login`
+# session. A session that plans no
 # turn runs no gateway, and starts as before.
 gateway_socket=$runtime/tilo/services/model-gateway.sock
 start_gateway() {

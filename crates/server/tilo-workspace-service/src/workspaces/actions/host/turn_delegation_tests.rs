@@ -1,7 +1,6 @@
-//! A member delegates their own work to this server: a turn the server carries
-//! out for their agent acts on the server's own device — the device their work
-//! is admitted on then — and nothing else is one it acts on. The delegation is
-//! their own device's, so their device takes it back by signing it again.
+//! A member delegates their own work to a server: their own device admits that
+//! server's work as theirs under the delegation it signed, and takes it back by
+//! signing it again.
 
 #![allow(
     clippy::unwrap_used,
@@ -12,56 +11,24 @@
 
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
-use tilo_actions::remote::ActionCallError::UnknownAction;
-use tilo_actions::remote::Caller;
 use tilo_user_identity::DeviceCert;
 
-use super::super::tests::{admit_device, caller, governed};
-use serde_json::json;
-
-use super::turn_use_tests::{a_mail_login, add_mail, asked, proving};
+use super::super::tests::{admit_device, governed};
+use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::test_host_taking_part as test_host;
-use crate::workspaces::hosted_use::{HostedTurn, UseAnswer};
 use crate::workspaces::tests::governor;
-use crate::workspaces::{WorkspaceId, Workspaces};
 use collab_types::work_delegation::WorkDelegation;
-use tilo_actions::remote::ActionCallError::Refused;
 
 const AGENT: &str = "scout";
 
-/// The caller a turn's tools act as when the server carries it out for `person`'s
-/// agent `agent`: the caller names `device`, this server's own, where the person
-/// delegated the work to it.
-fn on_server(person: &DeviceCert, device: &DeviceCert, workspace: &str) -> Caller {
-    Caller::authenticated(person.user_public_key, device.device_public_key)
-        .in_workspace(workspace)
-        .delegated_to(AGENT)
-        .named("Scout")
-        .in_agent_session("agent-session:test")
-        .on_turn(
-            tilo_action_policy::turn::Turn::new("conversation-1", "message-1"),
-            Vec::new(),
-        )
-}
-
-/// The turn of `AGENT`, its person, and the workspace it works in.
-fn turn(workspace_id: WorkspaceId, caller: &Caller) -> HostedTurn<'_> {
-    HostedTurn {
-        workspace: workspace_id,
-        caller,
-        bound: None,
-    }
-}
-
-/// The member's delegation of undoable work in `app` to `server`, letting it use
-/// the vault items `secrets`, signed by their own device `key`.
+/// The member's delegation of undoable work in `app` to `server`, signed by their
+/// own device `key`.
 fn delegating(
     key: &SigningKey,
     person: &DeviceCert,
     server: [u8; 32],
     workspace: &str,
     app: &str,
-    secrets: Vec<String>,
 ) -> WorkDelegation {
     let member = Grantee::Member(tilo_action_policy::MemberId::agent(AGENT));
     let grant = Grant::new(
@@ -80,7 +47,7 @@ fn delegating(
         workspace,
         Some(AGENT.to_owned()),
         vec![grant],
-        secrets,
+        Vec::new(),
         (now.saturating_sub(1), now.saturating_add(600_000_000_000)),
     )
     .unwrap()
@@ -98,94 +65,6 @@ async fn author(
         .author_work_delegation(workspace, delegation, key)
         .await
         .unwrap();
-}
-
-/// A turn for a member acts on this server's own device only while the member's
-/// delegation of that work to it is live: without one, and once they revoke it,
-/// it is refused. Their own device is one their work is admitted on all the same.
-#[tokio::test]
-async fn a_turn_acts_on_the_server_only_under_the_members_live_delegation() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let (workspace, workspace_id, _service) = governed(workspaces).await;
-    let (ada_key, ada) = admit_device(workspaces, &workspace, &owner, 1).await;
-    let hers = on_server(&ada, &owner, &workspace);
-    let theirs = on_server(&ada, &ada, &workspace);
-    let by_server = turn(workspace_id, &hers);
-    let by_her_device = turn(workspace_id, &theirs);
-
-    // Nothing delegated yet: the server's own device is no device her work is
-    // admitted on, and her own device is.
-    assert_eq!(workspaces.asked_turn(&by_server).await, Err(UnknownAction));
-    assert!(workspaces.asked_turn(&by_her_device).await.is_ok());
-    assert_eq!(
-        workspaces
-            .work_device(
-                workspace_id,
-                ada.user_public_key,
-                &tilo_action_policy::MemberId::agent(AGENT)
-            )
-            .await,
-        Some(ada.device_public_key),
-        "a turn acts on her own device where she delegated nothing"
-    );
-
-    // Her device delegates the work to the server as her agent, and from then on
-    // the server's device is the one her work is admitted on.
-    let delegation = delegating(
-        &ada_key,
-        &ada,
-        owner.device_public_key,
-        &workspace,
-        "so.tilo.mail",
-        Vec::new(),
-    );
-    author(workspaces, &workspace, &ada_key, &delegation).await;
-    assert!(
-        workspaces.asked_turn(&by_server).await.is_ok(),
-        "the server takes her work on its own device under her delegation"
-    );
-    assert!(workspaces.asked_turn(&by_her_device).await.is_ok());
-    assert_eq!(
-        workspaces
-            .work_device(
-                workspace_id,
-                ada.user_public_key,
-                &tilo_action_policy::MemberId::agent(AGENT)
-            )
-            .await,
-        Some(owner.device_public_key),
-        "a delegated turn acts on the server"
-    );
-
-    // A turn of another agent of hers is not covered: the delegation names the
-    // actor the server acts as, and nobody else.
-    let another = Caller::authenticated(ada.user_public_key, owner.device_public_key)
-        .in_workspace(&workspace)
-        .delegated_to("someone-else")
-        .in_agent_session("agent-session:other")
-        .on_turn(
-            tilo_action_policy::turn::Turn::new("conversation-1", "message-1"),
-            Vec::new(),
-        );
-    let theirs_agent = turn(workspace_id, &another);
-    assert_eq!(
-        workspaces.asked_turn(&theirs_agent).await,
-        Err(UnknownAction)
-    );
-
-    // Her device revokes it, and the server takes nothing of hers from then on.
-    let revoked = delegation
-        .revoked(&ada_key, tilo_clock::unix_now_ns())
-        .unwrap();
-    author(workspaces, &workspace, &ada_key, &revoked).await;
-    assert_eq!(
-        workspaces.asked_turn(&by_server).await,
-        Err(UnknownAction),
-        "a revocation stops the server's turn at once"
-    );
 }
 
 /// Another person's server, named among the workspace's key-holding holders. The
@@ -282,7 +161,6 @@ async fn the_members_device_admits_the_servers_work_under_their_delegation() {
         other.device_public_key,
         &workspace,
         "so.tilo.mail",
-        Vec::new(),
     );
     author(workspaces, &workspace, &ada_key, &delegation).await;
     take(&mut hers, &workspaces.state(&workspace).await.unwrap());
@@ -339,111 +217,4 @@ async fn the_members_device_admits_the_servers_work_under_their_delegation() {
         hers.permissions(other.device_public_key, now).is_err(),
         "the revocation stops the server's work at once"
     );
-}
-
-/// A server uses a member's vault item only where their delegation names it:
-/// an item it does not name is refused before the vault is opened and stays on
-/// their own devices, a named one is asked about and used, and their
-/// revocation stops both at once again.
-#[tokio::test]
-async fn a_server_uses_only_the_vault_items_the_members_delegation_names() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
-    let (ada_key, ada) = admit_device(workspaces, &workspace, &owner, 1).await;
-    let as_ada = caller(&ada);
-    let login = a_mail_login(&service, workspace_id, (&ada, &as_ada)).await;
-    let item = login
-        .as_str()
-        .unwrap()
-        .trim_start_matches("vault.item:")
-        .to_owned();
-    let proved = proving(workspaces);
-    let asker = hex::encode(ada.user_public_key);
-    let on_its_device = on_server(&ada, &owner, &workspace);
-    let by_server = turn(workspace_id, &on_its_device);
-    let with = |address: &str| add_mail(address, "imap.example.test", &login);
-
-    // Her delegation names the work and no item of hers: the server is refused
-    // before the vault is opened, and nobody is asked about it.
-    let unnamed = delegating(
-        &ada_key,
-        &ada,
-        owner.device_public_key,
-        &workspace,
-        "so.tilo.mail",
-        Vec::new(),
-    );
-    author(workspaces, &workspace, &ada_key, &unnamed).await;
-    let adding = with("ada@example.test");
-    let refused = workspaces
-        .use_for_turn(&by_server, &adding, json!({}))
-        .await;
-    assert!(
-        matches!(&refused, Err(Refused { reason }) if reason.contains("stays on your own devices")),
-        "{refused:?}"
-    );
-    assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
-    assert!(
-        workspaces.open_use_asks(&workspace).is_empty(),
-        "nobody is asked"
-    );
-
-    // A device of her own is not the server's: everything of hers is hers to use
-    // there, and the same use asks her there.
-    let on_hers = on_server(&ada, &ada, &workspace);
-    let by_her_device = turn(workspace_id, &on_hers);
-    let later = with("later@example.test");
-    let hers = asked(
-        workspaces
-            .use_for_turn(&by_her_device, &later, json!({}))
-            .await,
-    );
-    assert_eq!(hers.person, asker);
-
-    // Named, the server's turn is asked about it, and what she allows is made.
-    let named = delegating(
-        &ada_key,
-        &ada,
-        owner.device_public_key,
-        &workspace,
-        "so.tilo.mail",
-        vec![item],
-    );
-    author(workspaces, &workspace, &ada_key, &named).await;
-    let open = asked(
-        workspaces
-            .use_for_turn(&by_server, &adding, json!({}))
-            .await,
-    );
-    assert_eq!(open.agent, AGENT);
-    assert_eq!(open.person, asker);
-    let account = workspaces
-        .answer_use(&by_server, &open.ask, &open.detail, UseAnswer::Always)
-        .await
-        .expect("allowed, it is made")
-        .expect("it answers the account");
-    assert_eq!(account["address"], "ada@example.test");
-    assert_eq!(proved.lock().unwrap().len(), 1, "it signed in once");
-
-    // Her revocation stops it at once: the server is no device her work is on.
-    assert!(
-        workspaces
-            .revoke_work_delegation(
-                &workspace,
-                &owner.device_public_key,
-                &ada.user_public_key,
-                &ada_key,
-            )
-            .await
-            .unwrap()
-    );
-    let other = with("other@example.test");
-    assert_eq!(
-        workspaces.use_for_turn(&by_server, &other, json!({})).await,
-        Err(UnknownAction)
-    );
-    server.shutdown().await;
 }

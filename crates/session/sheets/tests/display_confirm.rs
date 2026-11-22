@@ -2,7 +2,6 @@
 //! agent meet it: a card on every display, Keep with the keyboard, and the
 //! answer going back to the shell.
 
-
 use tilo_sheets::display_confirm::{ConfirmEffect, ConfirmState, DisplayConfirmApp, Question};
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;

@@ -1,18 +1,16 @@
-//! Read-only binding preflight: never repairs a namespace, mints identity or contacts a peer.
+//! Read-only startup preflight: never repairs a tree, mints identity or contacts the network.
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use fs::Ticket;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 pub(super) struct WorkspaceStatus {
     schema_version: u8,
-    /// A signed authority was saved by initialization, recovery or a mount.
-    saved_authority: bool,
+    /// The tree was kept here by an earlier mount.
     saved_namespace: bool,
-    local_workspace_id: Option<uuid::Uuid>,
-    discovered_workspace_id: Option<uuid::Uuid>,
+    /// This device's workspace service serves the trees of the workspaces it belongs to.
+    workspace_service: bool,
     can_resume_existing: bool,
 }
 
@@ -20,34 +18,25 @@ impl WorkspaceStatus {
     pub(super) fn require_existing(&self) -> Result<()> {
         anyhow::ensure!(
             self.can_resume_existing,
-            "no saved Files authority or discovered remote workspace; recover the existing workspace first, or explicitly initialize a new workspace (not recovered data)"
+            "no saved Files tree and no workspace to sync one from; sign this computer in to a workspace first"
         );
         Ok(())
-    }
-}
-
-fn regular_file(path: &Path) -> Result<bool> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            anyhow::ensure!(
-                metadata.is_file(),
-                "workspace metadata must be a regular file"
-            );
-            Ok(true)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error).context("inspect workspace metadata"),
     }
 }
 
 /// Whether the tree's kept documents are there: the directory exists and holds a document or a
 /// journal of one.
 fn kept_documents(dir: &Path) -> Result<bool> {
-    let mut entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
+    let metadata = match std::fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error).context("inspect the kept workspace tree"),
     };
+    anyhow::ensure!(
+        metadata.is_dir(),
+        "the kept workspace tree must be a directory"
+    );
+    let mut entries = std::fs::read_dir(dir).context("inspect the kept workspace tree")?;
     match entries.next() {
         Some(entry) => {
             entry.context("inspect the kept workspace tree")?;
@@ -57,282 +46,75 @@ fn kept_documents(dir: &Path) -> Result<bool> {
     }
 }
 
-pub(super) fn inspect(cache: &Path) -> Result<WorkspaceStatus> {
-    let saved_authority = regular_file(&cache.join("workspace-authority.bin"))?;
+/// What `cache` and the workspace service at `tree_socket` offer a mount that must not start
+/// empty.
+pub(super) fn inspect(cache: &Path, tree_socket: &Path) -> Result<WorkspaceStatus> {
     let saved_namespace = kept_documents(&cache.join("namespace"))?;
-    let ticket_path = cache.join("workspace-ticket");
-    let local_workspace_id = if regular_file(&ticket_path)? {
-        let metadata = std::fs::metadata(&ticket_path)?;
-        anyhow::ensure!(metadata.len() <= 64 * 1024, "workspace ticket is too large");
-        let encoded = std::fs::read_to_string(ticket_path).context("read workspace binding")?;
-        Some(
-            Ticket::decode(&encoded)
-                .context("invalid workspace binding")?
-                .workspace_id(),
-        )
-    } else {
-        None
-    };
-    let discovered = super::persisted_remote_workspace_ticket(Some(cache))?;
-    let discovered_workspace_id = discovered.as_ref().map(Ticket::workspace_id);
-    anyhow::ensure!(
-        !(saved_namespace && discovered_workspace_id.is_some() && local_workspace_id.is_none()),
-        "saved namespace lacks its workspace binding; recover the binding before remote bootstrap"
-    );
-    if saved_namespace
-        && let (Some(local), Some(remote)) = (local_workspace_id, discovered_workspace_id)
-    {
-        anyhow::ensure!(
-            local == remote,
-            "saved namespace and discovered workspace disagree; use a separate cache"
-        );
-    }
+    let workspace_service = std::fs::symlink_metadata(tree_socket).is_ok_and(|metadata| {
+        use std::os::unix::fs::FileTypeExt as _;
+        metadata.file_type().is_socket()
+    });
     Ok(WorkspaceStatus {
-        schema_version: 1,
-        saved_authority,
+        schema_version: 2,
         saved_namespace,
-        local_workspace_id,
-        discovered_workspace_id,
-        can_resume_existing: saved_authority || saved_namespace || discovered.is_some(),
+        workspace_service,
+        can_resume_existing: saved_namespace || workspace_service,
     })
-}
-
-/// Reuse the validated, signed authority the person's identity published (`tilo-server
-/// files-workspace-initialize` or `publish-authority`): the person's root is never here, so no
-/// policy is signed or synthesized by the daemon.
-pub(super) fn owner_authority(
-    cache: &Path,
-    workspace: uuid::Uuid,
-    person: [u8; 32],
-    members: Vec<tilo_action_policy::MemberId>,
-) -> Result<Option<std::sync::Arc<fs::workspace_authority::WorkspaceAuthority>>> {
-    use fs::workspace_authority::WorkspaceAuthority;
-    let path = cache.join("workspace-authority.bin");
-    if !regular_file(&path)? {
-        return Ok(None);
-    }
-    let authority = std::sync::Arc::new(WorkspaceAuthority::open(
-        path, workspace, person, person, members,
-    )?);
-    anyhow::ensure!(
-        authority.current().is_some(),
-        "saved Files authority is unavailable"
-    );
-    Ok(Some(authority))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fs::workspace_authority::PersistedContentPeer;
 
-    tilo_test_env::scenario! {
-        fn a_saved_signed_authority_is_what_resumes_a_workspace;
-
-        phase saved_signed_authority_resumes_without_a_raw_root_key;
-        {
-            use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
-            let dir = tempfile::tempdir().unwrap();
-            let root = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-            let person = root.verifying_key().to_bytes();
-            let workspace = ticket(2).workspace_id();
-            let envelope =
-                WorkspaceAuthorityEnvelope::sign(workspace, 7, Vec::new(), false, &root).unwrap();
-            let existing = WorkspaceAuthority::open(
-                dir.path().join("workspace-authority.bin"),
-                workspace,
-                person,
-                person,
-                Vec::new(),
-            )
-            .unwrap();
-            existing.apply(envelope.clone()).unwrap();
-            drop(existing);
-            let resumed = owner_authority(dir.path(), workspace, person, Vec::new())
+    #[test]
+    fn a_kept_tree_or_the_workspace_service_resumes_a_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("files-tree.sock");
+        let missing = dir.path().join("absent-cache");
+        assert!(
+            inspect(&missing, &socket)
                 .unwrap()
-                .unwrap();
-            assert_eq!(resumed.current(), Some(envelope));
-            assert!(!dir.path().join("user-identity").exists());
-            assert!(
-                owner_authority(
-                    dir.path(),
-                    ticket(3).workspace_id(),
-                    person,
-                    Vec::new()
-                )
+                .require_existing()
                 .is_err()
-            );
-            let other = ed25519_dalek::SigningKey::from_bytes(&[43; 32])
-                .verifying_key()
-                .to_bytes();
-            assert!(owner_authority(dir.path(), workspace, other, Vec::new()).is_err());
-        }
+        );
+        assert!(!missing.exists());
 
-        phase missing_or_invalid_authority_cannot_be_replaced_without_a_signer;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let person = ed25519_dalek::SigningKey::from_bytes(&[42; 32])
-                .verifying_key()
-                .to_bytes();
-            assert!(
-                owner_authority(
-                    dir.path(),
-                    ticket(2).workspace_id(),
-                    person,
-                    Vec::new()
-                )
+        std::fs::create_dir_all(dir.path().join("namespace")).unwrap();
+        assert!(
+            inspect(dir.path(), &socket)
                 .unwrap()
-                .is_none()
-            );
-            assert!(!dir.path().join("workspace-authority.bin").exists());
-            std::fs::write(
-                dir.path().join("workspace-authority.bin"),
-                b"invalid saved authority",
-            )
-            .unwrap();
-            assert!(
-                owner_authority(
-                    dir.path(),
-                    ticket(2).workspace_id(),
-                    person,
-                    Vec::new()
-                )
+                .require_existing()
                 .is_err()
-            );
-            assert_eq!(
-                std::fs::read(dir.path().join("workspace-authority.bin")).unwrap(),
-                b"invalid saved authority"
-            );
-        }
-
-        phase a_saved_signed_authority_resumes_a_workspace_with_no_tree_yet;
-        {
-            use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
-            let dir = tempfile::tempdir().unwrap();
-            let root = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-            let person = root.verifying_key().to_bytes();
-            let workspace = Ticket::workspace_id_for_topic(person);
-            let envelope =
-                WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &root).unwrap();
-            WorkspaceAuthority::open(
-                dir.path().join("workspace-authority.bin"),
-                workspace,
-                person,
-                person,
-                Vec::new(),
-            )
+        );
+        std::fs::write(dir.path().join("namespace/0.automerge"), b"kept").unwrap();
+        inspect(dir.path(), &socket)
             .unwrap()
-            .apply(envelope)
+            .require_existing()
             .unwrap();
-            assert!(!dir.path().join("namespace").exists());
-            inspect(dir.path()).unwrap().require_existing().unwrap();
-            assert_eq!(inspect(dir.path()).unwrap().discovered_workspace_id, None);
-        }
+
+        let fresh = dir.path().join("fresh");
+        std::fs::write(&socket, b"not a socket").unwrap();
+        assert!(
+            inspect(&fresh, &socket)
+                .unwrap()
+                .require_existing()
+                .is_err()
+        );
+        std::fs::remove_file(&socket).unwrap();
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        inspect(&fresh, &socket)
+            .unwrap()
+            .require_existing()
+            .unwrap();
+        assert!(!fresh.exists());
     }
 
-    fn ticket(topic: u8) -> Ticket {
-        Ticket {
-            node: iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[topic; 32]).public()),
-            workspace: [topic; 32],
-        }
-    }
-
-    fn discover(cache: &Path, ticket: &Ticket) {
-        let peers = [PersistedContentPeer {
-            endpoint: ticket.node.clone(),
-            ticket: Some(ticket.encode().unwrap()),
-            server_service_id: Some([9; 32]),
-        }];
-        std::fs::write(
-            cache.join("content-peers.json"),
-            serde_json::to_vec(&peers).unwrap(),
-        )
-        .unwrap();
-    }
-
-    tilo_test_env::scenario! {
-        fn startup_inspection_binds_one_workspace_or_fails_closed;
-
-        phase missing_workspace_is_not_initialized_and_old_ticket_is_not_recovery;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let missing = dir.path().join("absent-cache");
-            assert!(inspect(&missing).unwrap().require_existing().is_err());
-            assert!(!missing.exists());
-            std::fs::write(
-                dir.path().join("workspace-ticket"),
-                ticket(1).encode().unwrap(),
-            )
+    #[test]
+    fn a_kept_tree_that_is_not_a_directory_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("elsewhere"), b"tree").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("elsewhere"), dir.path().join("namespace"))
             .unwrap();
-            assert!(inspect(dir.path()).unwrap().require_existing().is_err());
-            assert!(!dir.path().join("namespace").exists());
-        }
-
-        phase discovered_binding_is_resumeable_and_output_never_contains_ticket;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let binding = ticket(2);
-            discover(dir.path(), &binding);
-            let status = inspect(dir.path()).unwrap();
-            status.require_existing().unwrap();
-            assert_eq!(status.discovered_workspace_id, Some(binding.workspace_id()));
-            let json = serde_json::to_string(&status).unwrap();
-            assert!(!json.contains(&binding.encode().unwrap()));
-            assert!(!dir.path().join("namespace").exists());
-        }
-
-        phase saved_namespace_cannot_be_rebound_to_another_workspace;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::create_dir_all(dir.path().join("namespace")).unwrap();
-            std::fs::write(
-                dir.path().join("namespace/0.automerge"),
-                b"existing durable state",
-            )
-            .unwrap();
-            std::fs::write(
-                dir.path().join("workspace-ticket"),
-                ticket(3).encode().unwrap(),
-            )
-            .unwrap();
-            inspect(dir.path()).unwrap().require_existing().unwrap();
-            discover(dir.path(), &ticket(4));
-            assert!(inspect(dir.path()).is_err());
-            assert_eq!(
-                std::fs::read(dir.path().join("namespace/0.automerge")).unwrap(),
-                b"existing durable state"
-            );
-        }
-
-        phase malformed_and_ambiguous_bindings_fail_closed;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("workspace-ticket"), b"invalid").unwrap();
-            assert!(inspect(dir.path()).is_err());
-            std::fs::remove_file(dir.path().join("workspace-ticket")).unwrap();
-            let peers: Vec<_> = [ticket(5), ticket(6)]
-                .into_iter()
-                .map(|t| PersistedContentPeer {
-                    endpoint: t.node,
-                    ticket: Some(
-                        Ticket {
-                            node: iroh_base::EndpointAddr::new(
-                                iroh::SecretKey::from_bytes(&[8; 32]).public(),
-                            ),
-                            workspace: t.workspace,
-                        }
-                        .encode()
-                        .unwrap(),
-                    ),
-                    server_service_id: None,
-                })
-                .collect();
-            std::fs::write(
-                dir.path().join("content-peers.json"),
-                serde_json::to_vec(&peers).unwrap(),
-            )
-            .unwrap();
-            assert!(inspect(dir.path()).is_err());
-        }
+        assert!(inspect(dir.path(), &dir.path().join("absent.sock")).is_err());
     }
 }

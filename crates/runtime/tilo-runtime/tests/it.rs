@@ -16,10 +16,10 @@
 // entry every module's tests start.
 tilo_automerge_isolate::test_worker!();
 
+#[path = "device_actions.rs"]
+mod device_actions;
 #[path = "device_host.rs"]
 mod device_host;
-#[path = "device_mcp.rs"]
-mod device_mcp;
 #[path = "runtime_daemon_process.rs"]
 mod runtime_daemon_process;
 #[path = "session_api_connect.rs"]

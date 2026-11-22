@@ -83,7 +83,7 @@ async fn invite(
 ) -> Device {
     let invited = account
         .tilo_do(
-            json!({"path": "workspace/members#invite", "workspace": workspace,
+            json!({"path": "workspace/invitations#invite", "workspace": workspace,
                         "args": {"role": "editor"}}),
         )
         .await;

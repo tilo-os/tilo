@@ -75,7 +75,7 @@ impl Sheet {
         Self {
             questions,
             sessions,
-            unasked: crate::device_mcp::DeviceAgents::acts_without_asking,
+            unasked: crate::device_agents::acts_without_asking,
             workspaces,
         }
     }

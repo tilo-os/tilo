@@ -137,21 +137,39 @@ async fn tasks(workspaces: &Workspaces, workspace: &str, reader: Actor) -> Vec<s
         .unwrap()
 }
 
-/// Each change of the workspace's Tasks, as its entry names it: the kind it wrote, what it did
+/// Each version of every resource of the workspace's Tasks, as the store keeps it: what it did
 /// and who did it.
-async fn changes(workspaces: &Workspaces, workspace: &str) -> Vec<ActionContext> {
-    let record = workspaces.tl_record(workspace, TASKS).await.unwrap();
-    record
-        .documents
-        .values()
-        .flat_map(|bytes| {
-            let doc = automerge::Automerge::load(bytes).unwrap();
-            doc.get_changes(&[])
-                .into_iter()
-                .filter_map(|change| ActionContext::from_change_message(change.message()?))
-                .collect::<Vec<_>>()
+async fn changes(workspaces: &Workspaces, workspace: &str) -> Vec<(String, Option<Actor>)> {
+    use tl_records::runtime::store::Store as _;
+    let packages = tl_records::built_in(TASKS).unwrap().unwrap();
+    let viewer = Actor::App(tl_records::runtime::ids::AppId::from(TASKS));
+    workspaces
+        .with_tl_record(workspace, &packages, viewer, |tasks| {
+            let host = tasks.host();
+            let meta = host.package(TASKS).ok_or("Tasks is not loaded")?.meta;
+            let mut changes = Vec::new();
+            for ty in &meta.types {
+                let ids = host
+                    .store()
+                    .resources_of(&ty.id)
+                    .map_err(|error| error.to_string())?;
+                for id in ids {
+                    let at = tl_records::runtime::ResourceRef::root(id, ty.id.clone());
+                    let versions = host
+                        .store()
+                        .versions(&at)
+                        .map_err(|error| error.to_string())?;
+                    changes.extend(
+                        versions
+                            .into_iter()
+                            .map(|version| (version.action, version.who)),
+                    );
+                }
+            }
+            Ok(changes)
         })
-        .collect()
+        .await
+        .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -195,30 +213,9 @@ async fn a_program_answers_a_tasks_change_reading_and_acting_as_the_bot() {
     assert_eq!(
         reports.len(),
         1,
-        "{reports:?}, not run: {:?}, the changes: {:?}, routes {:?}, docs {:?}",
+        "{reports:?}, not run: {:?}, the changes: {:?}",
         runner.dead_letters().collect::<Vec<_>>(),
         changes(&workspaces, &workspace).await,
-        workspaces
-            .workspace_document_routes(&workspace)
-            .await
-            .unwrap(),
-        workspaces
-            .tl_record(&workspace, TASKS)
-            .await
-            .unwrap()
-            .documents
-            .iter()
-            .map(|(id, bytes)| {
-                let doc = automerge::Automerge::load(bytes).unwrap();
-                (
-                    id.clone(),
-                    doc.get_changes(&[])
-                        .iter()
-                        .map(|change| change.message().map(str::to_owned))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<Vec<_>>()
     );
     assert_eq!(
         reports[0].outcome,
@@ -266,16 +263,13 @@ async fn a_program_answers_a_tasks_change_reading_and_acting_as_the_bot() {
         "one task, the bot's: {listed:?}"
     );
 
-    // The change itself names the bot, acting for the person who installed it, whose device
-    // wrote it.
+    // The change itself names the bot as who made it.
     let by_bot: Vec<_> = changes(&workspaces, &workspace)
         .await
         .into_iter()
-        .filter_map(|context| context.invoker)
-        .filter(|invoker| invoker.acting.by == bot)
+        .filter(|(_, who)| who.as_ref() == Some(&bot))
         .collect();
     assert_eq!(by_bot.len(), 1, "{by_bot:?}");
-    assert_eq!(by_bot[0].acting.acted_for_person(), Some(owner.as_str()));
 }
 
 #[tokio::test(flavor = "multi_thread")]

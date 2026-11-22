@@ -18,6 +18,10 @@ struct Key {
 #[derive(Default)]
 pub(crate) struct ImageCache {
     entries: HashMap<Key, (Arc<Pixmap>, u64)>,
+    /// The pixmaps held, by a hash of what they hold: an image handed over again in a blob of its
+    /// own (a view that makes its picture anew each frame) is the pixmap already here, so a scene
+    /// that draws it is the same draw as before and the picture is not drawn again for it.
+    by_pixels: HashMap<u64, Vec<Arc<Pixmap>>>,
     frame: u64,
 }
 
@@ -33,6 +37,11 @@ impl ImageCache {
         let frame = self.frame;
         self.entries
             .retain(|_, (_, last)| frame - *last <= MAX_IDLE_FRAMES);
+        // A pixmap no blob names any more, and no scene draws, goes with them.
+        self.by_pixels.retain(|_, held| {
+            held.retain(|pixmap| Arc::strong_count(pixmap) > 1);
+            !held.is_empty()
+        });
     }
 
     /// The premultiplied RGBA8 pixmap for `image`; `None` when it is empty,
@@ -65,13 +74,36 @@ impl ImageCache {
         // Knowing an image is opaque lets a move of it be a move of pixels;
         // one pass when the image is first seen.
         let opaque = data.chunks_exact(4).all(|px| px[3] == u8::MAX);
-        let pixmap = Arc::new(Pixmap::from_parts(
+        let pixmap = Pixmap::from_parts(
             data,
             width,
             height,
             PixelMetadata::new(image.alpha_type, !opaque),
-        ));
+        );
+        let held = self.by_pixels.entry(content_hash(&pixmap)).or_default();
+        let pixmap = if let Some(other) = held.iter().find(|other| same_pixels(other, &pixmap)) {
+            Arc::clone(other)
+        } else {
+            let pixmap = Arc::new(pixmap);
+            held.push(Arc::clone(&pixmap));
+            pixmap
+        };
         self.entries.insert(key, (pixmap.clone(), frame));
         Some(pixmap)
     }
+}
+
+fn content_hash(pixmap: &Pixmap) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (pixmap.width(), pixmap.height()).hash(&mut hasher);
+    pixmap.data_as_u8_slice().hash(&mut hasher);
+    hasher.finish()
+}
+
+fn same_pixels(a: &Pixmap, b: &Pixmap) -> bool {
+    a.width() == b.width()
+        && a.height() == b.height()
+        && a.may_have_transparency() == b.may_have_transparency()
+        && a.data_as_u8_slice() == b.data_as_u8_slice()
 }

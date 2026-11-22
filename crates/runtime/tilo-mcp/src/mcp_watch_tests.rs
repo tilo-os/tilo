@@ -51,6 +51,10 @@ struct Watched {
     roster: Wakes,
     /// The changes the workspace's feed reports, oldest first.
     feed: Arc<Mutex<Vec<ResourceChanged>>>,
+    /// Why the host refuses to tell when the workspace's records change, when it does.
+    refuses_records: Option<String>,
+    /// How many times a watch asked when the records change.
+    records_asked: Arc<Mutex<usize>>,
 }
 
 impl Watched {
@@ -60,6 +64,16 @@ impl Watched {
             records: Wakes::default(),
             roster: Wakes::default(),
             feed: Arc::default(),
+            refuses_records: None,
+            records_asked: Arc::default(),
+        }
+    }
+
+    /// A host that refuses to tell when the workspace's records change, saying `why`.
+    fn refusing_records(why: &str) -> Self {
+        Self {
+            refuses_records: Some(why.to_owned()),
+            ..Self::new()
         }
     }
 
@@ -130,10 +144,24 @@ impl ActionProvider for Watched {
     }
 
     /// What a watch of this workspace follows, listened for before it reads.
-    fn changed(&self, _caller: &Caller, scope: WatchScope) -> Option<Pending<()>> {
+    fn changed(
+        &self,
+        _caller: &Caller,
+        scope: WatchScope,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
         Some(match scope {
-            WatchScope::Records => self.records.woken(),
-            WatchScope::Here => self.roster.woken(),
+            WatchScope::Records => {
+                let mut asked = self.records_asked.lock().unwrap();
+                *asked = asked.saturating_add(1);
+                drop(asked);
+                match &self.refuses_records {
+                    Some(why) => Pending::ready(Err(ActionCallError::Unavailable {
+                        reason: why.clone(),
+                    })),
+                    None => self.records.woken().map(Ok),
+                }
+            }
+            WatchScope::Here => self.roster.woken().map(Ok),
         })
     }
 }
@@ -318,6 +346,49 @@ tilo_test_env::scenario! {
                     .iter()
                     .any(|member| member["name"] == "Bea"),
                 "{here}"
+            );
+        });
+    }
+
+    phase a_source_the_host_refuses_to_follow_is_told_at_once_and_not_asked_again;
+    // A host that refuses to tell when the workspace's records change says why, and the watch
+    // answers with that at once rather than holding for a signal that never comes. Told once:
+    // the next watch does not ask again, and holds to its own wait instead of asking in a loop.
+    {
+        let host = Watched::refusing_records("this session carries no records of the workspace");
+        run(async {
+            let server = Arc::new(agent(&host));
+            let started = std::time::Instant::now();
+            let (watched, failed) = answer(&server, "tilo_watch", json!({"wait_ms": HELD})).await;
+            assert!(!failed, "{watched}");
+            assert!(
+                started.elapsed() < PROMPTLY,
+                "the watch answered {} ms after it began, not on the refusal",
+                started.elapsed().as_millis()
+            );
+            assert_eq!(
+                watched["events"],
+                json!([{
+                    "kind": "unwatched",
+                    "source": "records",
+                    "reason": "remote actions are unavailable: this session carries no records of the workspace",
+                }]),
+                "the refusal is told with why"
+            );
+            let cursor = watched["cursor"].as_str().unwrap_or_default().to_owned();
+            let started = std::time::Instant::now();
+            let (again, failed) =
+                answer(&server, "tilo_watch", json!({"cursor": cursor, "wait_ms": 300})).await;
+            assert!(!failed, "{again}");
+            assert_eq!(again["events"], json!([]), "the refusal is told once");
+            assert!(
+                started.elapsed() >= Duration::from_millis(300),
+                "a watch whose source was refused holds to its own wait"
+            );
+            assert_eq!(
+                *host.records_asked.lock().unwrap(),
+                1,
+                "a refused source is not asked again"
             );
         });
     }

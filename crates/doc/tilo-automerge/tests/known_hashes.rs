@@ -5,7 +5,6 @@
 //! afterwards. Hashes that cannot stand for the document's changes are
 //! ignored and the changes rebuilt.
 
-
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, Author, AutoCommit, ChangeHash, LoadOptions, ObjType, ROOT, ScalarValue};

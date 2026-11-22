@@ -10,10 +10,6 @@ use tilo_workspace_service::tl_records::runtime::Value;
 use ui::tilo_resource::{Invoke, NonBlank, Replica};
 use ui::tilo_workspace_agent::{Agent, NewSubAgent, Stands, workspace_agents};
 
-/// A coding agent: a sub-agent whose work a coding program does in the workspace's machine.
-#[path = "hosted_coding_agents.rs"]
-mod hosted_coding_agents;
-
 /// A model whose answer to each call is `play`'s. Every call is kept, in the order asked.
 struct Plays {
     play: Arc<dyn Fn(&ModelRequest) -> ModelResponse + Send + Sync>,
@@ -51,13 +47,13 @@ fn plays(
     })
 }
 
-/// The agents the server works for `workspaces`, answered by `model`.
-fn worked(
-    workspaces: &Workspaces,
-    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+/// The agents `served` works in `workspace`, answered by `model`.
+async fn worked(
+    served: &crate::harness::hosted::Hosted,
+    workspace: &str,
     model: Model,
 ) -> ServerAgents {
-    ServerAgents::for_test(workspaces.clone(), actions.clone(), Some(model))
+    served.approving(workspace, &[SCOUT]).await.scripted(model)
 }
 
 /// Whether `request` is a call of a sub-agent's turn: what it is told before everything says so.
@@ -366,7 +362,7 @@ async fn mentions(
 async fn answers(
     agents: &ServerAgents,
     workspace: &str,
-    turn: &tilo_server::workspace_agents::Turn,
+    turn: &tilo_workspace_service::agents::Turn,
 ) {
     tokio::time::timeout(Duration::from_secs(60), agents.answer(workspace, turn))
         .await
@@ -389,11 +385,11 @@ async fn a_sub_agent_answers_its_job_as_its_reply_and_its_starter_reads_it_there
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &host,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
     let workspaces = server.workspaces().unwrap().clone();
@@ -404,8 +400,8 @@ async fn a_sub_agent_answers_its_job_as_its_reply_and_its_starter_reads_it_there
 
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &server,
+        &workspace,
         plays(&asked, |request| {
             if of_sub_agent(request) {
                 answer(
@@ -425,7 +421,8 @@ async fn a_sub_agent_answers_its_job_as_its_reply_and_its_starter_reads_it_there
                 )
             }
         }),
-    );
+    )
+    .await;
 
     starts(
         &workspaces,
@@ -539,11 +536,11 @@ async fn a_note_asks_it_again_and_a_stop_takes_back_what_waits() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &host,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
     let workspaces = server.workspaces().unwrap().clone();
@@ -553,10 +550,11 @@ async fn a_note_asks_it_again_and_a_stop_takes_back_what_waits() {
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &server,
+        &workspace,
         looks_then_answers(1_000, Arc::clone(&asked)),
-    );
+    )
+    .await;
 
     starts(
         &workspaces,

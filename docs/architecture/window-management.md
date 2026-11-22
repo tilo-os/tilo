@@ -57,7 +57,7 @@ most visible, so a swipe followed by typing goes where you are looking.
 ## Every operation, on every device
 
 Each row is one operation, published on the action API, so the palette,
-`tilo-control actions invoke`, a screen reader, an agent and the chord are the
+`tilo do`, a screen reader, an agent and the chord are the
 same action API. Actions come in two forms:
 
 - **relative**, on the shell provider (`window.focus-next`,

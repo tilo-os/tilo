@@ -297,6 +297,21 @@ pub fn day_range(start: Date, end: Date, words: &dyn Words) -> String {
     )
 }
 
+/// A span of days in a tight space, numbers only: `6/29–7/5` (de `29.6.–5.7.`).
+#[must_use]
+pub fn day_range_numeric(start: Date, end: Date, words: &dyn Words) -> String {
+    let number = |n: i16| n.to_string().into();
+    words.word(
+        "format-day-range-numeric",
+        &[
+            ("day", number(start.day().into())),
+            ("month", number(start.month().into())),
+            ("day2", number(end.day().into())),
+            ("month2", number(end.month().into())),
+        ],
+    )
+}
+
 /// A month in a tight space: `Jun 2026`.
 #[must_use]
 pub fn month_heading_short(day: Date, words: &dyn Words) -> String {

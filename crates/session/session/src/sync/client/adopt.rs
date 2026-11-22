@@ -100,13 +100,13 @@ pub(super) async fn redeem(
                 .ok_or("the native invitation link is malformed")?;
             (client, hosted_here, invitation)
         }
-        tilo_workspace_directory::Way::Entry(entry) => {
+        tilo_workspace_directory::Way::Entry { host, .. } => {
             let hint = tokio::time::timeout(
                 REDEEM_WITHIN,
                 through_entry(
                     endpoint.clone(),
                     &identity,
-                    &entry,
+                    host.map(|host| *host),
                     request.workspace_id,
                     &request.name,
                 ),
@@ -178,9 +178,9 @@ pub(super) async fn redeem(
 /// itself: the connection takes some.
 const ENTRY_ANSWER_SLACK: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Enter `workspace` through `entry`, as this computer's person named `name`: the entry's host (at
-/// the entry's own origin) says who it is, and this device's session with it asks to enter in its
-/// first message, as every device enters a workspace through its entry
+/// Enter `workspace` through its entry, as this computer's person named `name`: the host the site
+/// published for the entry (`host`) says who it is, and this device's session with it asks to enter
+/// in its first message, as every device enters a workspace through its entry
 /// ([`tilo_server_protocol::entering`]). The entry decides there by the workspace's own rules, and the
 /// workspace admits this device's own certificate. Answers the host's signed address for the
 /// workspace, where this device then takes its state as a member's device does; the session itself
@@ -188,20 +188,14 @@ const ENTRY_ANSWER_SLACK: std::time::Duration = std::time::Duration::from_secs(1
 async fn through_entry(
     endpoint: iroh::Endpoint,
     identity: &DeviceIdentity,
-    entry: &url::Url,
+    host: Option<tilo_server_protocol::web::PageHost>,
     workspace: InviteWorkspaceId,
     name: &str,
 ) -> Result<tilo_peer_state::join::TransportHint, String> {
     use tilo_server_protocol::entering::{Entered, Entering, Through};
     let topic = workspace;
-    let client =
-        tilo_workspace_directory::client().map_err(|error| tilo_sheets::directory::said(&error))?;
-    let origin = entry.origin().ascii_serialization();
-    let host = tilo_server_client::https::Origin::new(&client, &origin);
-    let info = tilo_server_client::https::server_info(&host)
-        .await
-        .map_err(|error| format!("the workspace's host could not be reached: {error}"))?;
-    let address = info
+    let host = host.ok_or("the site names no host certificate and address")?;
+    let address = host
         .address
         .ok_or("the workspace's host takes no device sessions")?;
     let (cert, _) = identity.current_material(topic)?;
@@ -219,8 +213,8 @@ async fn through_entry(
     let session = tilo_server_session::ServerClient::connect_with_signer(
         endpoint,
         address.endpoint_addr,
-        Some(info.server_cert.user_public_key),
-        Some(info.server_cert.device_public_key),
+        Some(host.server_cert.user_public_key),
+        Some(host.server_cert.device_public_key),
         tilo_server_session::ClientCredentials {
             cert,
             signer: identity.signer.as_ref(),
@@ -230,7 +224,7 @@ async fn through_entry(
                 // This device's channels ask for the workspace's keys as a member, once it holds
                 // the workspace.
                 access: None,
-                server_cert: info.server_cert,
+                server_cert: host.server_cert,
             }),
         },
     )

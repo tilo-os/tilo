@@ -8,12 +8,18 @@
 //! The identity is never handed to an app: the [`broker`](crate::broker)
 //! reads its public metadata and signs on the app's behalf.
 
+mod registry;
 mod unix;
 
 pub mod connected;
 #[cfg(test)]
 pub(crate) mod test_wire;
 
+pub(crate) use registry::DirStamp;
+pub use registry::{
+    IdentityProfile, IdentityRegistry, IdentityRegistryStore, identity_for_workspace,
+    selected_actor_id_prompt, selected_identity_path,
+};
 pub use unix::*;
 
 /// Why a device that holds only part of the identity's key signs nothing as

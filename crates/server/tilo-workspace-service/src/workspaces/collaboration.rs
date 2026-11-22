@@ -1180,32 +1180,27 @@ impl Workspaces {
         Ok(completion)
     }
 
-    /// Commit `command`, a membership change `device` makes itself, in
-    /// `workspace` on its behalf, as the workspace's governor: for the device whose
-    /// own host this is. That device and this host sign with one key, so
-    /// the workspace's history has one writer under it, this host, and the
-    /// device's own replica only ever receives what is written here. The
-    /// workspace's policy decides the change against `device`'s grants, as it
-    /// decides any member's.
+    /// Commit `command`, a membership change this host's own device makes, in `workspace` as the
+    /// workspace's governor, with `receipt`, what the workspace's history says of it, in the
+    /// same change. The host writes the workspace's history, so its history has one
+    /// writer, and the device's own replica only ever receives what is written here. The
+    /// workspace's policy decides the change against the host's grants, as it decides any
+    /// member's.
     ///
     /// Answers the workspace's generation that carries the change, and the
     /// changes it added to the workspace's document, for the device's replica
     /// to take in at once (none when the workspace carried it already).
     ///
     /// # Errors
-    /// Refuses a device other than this host's own, a change the workspace's
-    /// rules do not let `device` make, and a change that could not commit.
+    /// Refuses a change the workspace's rules do not let this host make, and a change that
+    /// could not commit.
     pub async fn commit_own_membership(
         &self,
         workspace: &str,
-        device: &DeviceCert,
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+        receipt: Option<&tilo_desktop_model::WorkspaceEffectReceipt>,
     ) -> Result<(GovernanceCompletion, Vec<Vec<u8>>), CollaborationError> {
-        if device.device_public_key != self.inner.host.cert.device_public_key {
-            return Err(CollaborationError::new(
-                "a membership change is committed here only for this host's own device",
-            ));
-        }
+        let device = &self.inner.host.cert;
         command.validate()?;
         let now = tilo_clock::unix_now_ns();
         let workspace = self.workspace(workspace).await?;
@@ -1224,6 +1219,12 @@ impl Workspaces {
                 },
                 Vec::new(),
             ));
+        }
+        if let Some(receipt) = receipt {
+            changed
+                .workspace_mut()
+                .apply_own_effect_receipt(device, receipt, system_time(now))
+                .map_err(CollaborationError::new)?;
         }
         let before = workspace.peer().workspace_heads().unwrap_or_default();
         // A member removed takes every way in the workspace handed them with

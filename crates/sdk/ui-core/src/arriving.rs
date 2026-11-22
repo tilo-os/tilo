@@ -171,6 +171,33 @@ pub fn frame_budget() -> Duration {
     FRAME_BUDGET.with(std::cell::Cell::get)
 }
 
+thread_local! {
+    static STILL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While the guard lives, this thread's views are drawn as still frames: a page read when its
+/// person's browser asks for it, with no later frame of its own. An answer then shows in the
+/// frame it landed for, never held behind a skeleton or faded in: the skeleton's minimum time
+/// keeps a live screen from flashing, and a page that held the answer would show its
+/// placeholder until something else made it lay out again.
+#[must_use]
+pub fn still_frames() -> StillFrames {
+    StillFrames(STILL.with(|still| still.replace(true)))
+}
+
+/// [`still_frames`]'s guard: dropping it restores what the thread drew before.
+pub struct StillFrames(bool);
+
+impl Drop for StillFrames {
+    fn drop(&mut self) {
+        STILL.with(|still| still.set(self.0));
+    }
+}
+
+fn drawn_still() -> bool {
+    STILL.with(std::cell::Cell::get)
+}
+
 /// The window's display refreshes every `interval`: the frame budget local reads get.
 pub fn set_frame_budget(interval: Duration) {
     if !interval.is_zero() {
@@ -267,7 +294,7 @@ impl ArrivalClock {
     #[must_use]
     pub fn shows_at(&self) -> Option<Instant> {
         let arrived = self.arrived?;
-        if arrived >= self.skeleton_at() {
+        if arrived >= self.skeleton_at() && !drawn_still() {
             let held = self.skeleton_at().checked_add(MIN_SHOWN).unwrap_or(arrived);
             Some(arrived.max(held))
         } else {
@@ -293,6 +320,9 @@ impl ArrivalClock {
     /// the space without it.
     #[must_use]
     pub fn arrives_with_motion(&self) -> bool {
+        if drawn_still() {
+            return false;
+        }
         match self.arrived {
             Some(arrived) => !(self.from.is_local() && arrived <= self.after(self.budget)),
             None => true,
@@ -341,11 +371,20 @@ impl ArrivalClock {
 
 type Retry<T, E> = Arc<dyn Fn(&Arriving<T, E>) + Send + Sync>;
 
+/// What a failure that is no fault is titled ([`Arriving::failure_as_notice`]).
+type NoticeTitle<E> = Arc<dyn Fn(&E) -> String + Send + Sync>;
+
 /// A read whose answer arrives later.
 pub struct Arriving<T, E = String> {
     task: LatestTask<Arrival<T, E>>,
     began: Arc<Mutex<Instant>>,
     retry: Arc<Mutex<Option<Retry<T, E>>>>,
+    /// What the reader can do without the answer, once the read failed
+    /// ([`Self::on_continue_without`]).
+    without: Arc<Mutex<Option<Retry<T, E>>>>,
+    /// How a failure that is no fault is titled, said as a notice rather than an error
+    /// ([`Self::failure_as_notice`]).
+    notice: Arc<Mutex<Option<NoticeTitle<E>>>>,
 }
 
 impl<T, E> Clone for Arriving<T, E> {
@@ -354,6 +393,8 @@ impl<T, E> Clone for Arriving<T, E> {
             task: self.task.clone(),
             began: Arc::clone(&self.began),
             retry: Arc::clone(&self.retry),
+            without: Arc::clone(&self.without),
+            notice: Arc::clone(&self.notice),
         }
     }
 }
@@ -370,6 +411,8 @@ impl<T, E> Arriving<T, E> {
             task: LatestTask::new(initial),
             began: Arc::new(Mutex::new(crate::time::now())),
             retry: Arc::new(Mutex::new(None)),
+            without: Arc::new(Mutex::new(None)),
+            notice: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -470,6 +513,45 @@ impl<T, E> Arriving<T, E> {
     #[must_use]
     pub fn on_retry(self, retry: impl Fn(&Self) + Send + Sync + 'static) -> Self {
         *self.retry.lock_recover() = Some(Arc::new(retry));
+        self
+    }
+
+    /// Whether, once the read failed, the reader may go on without its answer
+    /// ([`Self::on_continue_without`]).
+    #[must_use]
+    pub fn can_continue_without(&self) -> bool {
+        self.without.lock_recover().is_some()
+    }
+
+    /// Go on without the answer, after the read failed.
+    pub fn continue_without(&self) {
+        let without = self.without.lock_recover().clone();
+        if let Some(without) = without {
+            without(self);
+        }
+    }
+
+    /// A failure of this read is no fault, only something that has not arrived yet: it is said as a
+    /// notice titled by `title`, not as an error.
+    #[must_use]
+    pub fn failure_as_notice(self, title: impl Fn(&E) -> String + Send + Sync + 'static) -> Self {
+        *self.notice.lock_recover() = Some(Arc::new(title));
+        self
+    }
+
+    /// The notice's title of the failure standing now, when the read says it as one
+    /// ([`Self::failure_as_notice`]).
+    #[must_use]
+    pub fn failure_notice(&self) -> Option<String> {
+        let title = self.notice.lock_recover().clone()?;
+        self.with(|arrival| arrival.failure().map(|error| title(error)))
+    }
+
+    /// What the reader can do without the answer once the read failed: `without` answers the read
+    /// with what stands for a missing answer, so what waited for it goes on, reading it as missing.
+    #[must_use]
+    pub fn on_continue_without(self, without: impl Fn(&Self) + Send + Sync + 'static) -> Self {
+        *self.without.lock_recover() = Some(Arc::new(without));
         self
     }
 

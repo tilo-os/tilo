@@ -18,10 +18,6 @@
 #   2. The store opens: `tilo-server-admin status` opens every durable workspace
 #      store on the state root and reads its membership and retained changes.
 #      A generation whose store cannot be opened is one no workspace can reach.
-#   3. The filesystem replica, when this machine runs one (/etc/tilo/home-peer.toml
-#      names its binding), is active and reports complete content: it publishes
-#      its endpoints only with a ready, fresh proof, so peers get the files they
-#      ask for rather than a server address that serves none of them.
 #
 # A server that has not been paired yet has no server: tilo-server-firstboot waits
 # on the console for the pairing token from the person's own device, and until
@@ -35,7 +31,6 @@ warn() { printf 'tilo-server-health: WARNING: %s\n' "$*" >&2; }
 
 SERVER_CONFIG="${TILO_SERVER_HEALTH_SERVER_CONFIG:-/etc/tilo/server.toml}"
 CERT="${TILO_SERVER_HEALTH_CERT:-/var/lib/tilo/device/cert.bin}"
-HOME_PEER="${TILO_SERVER_HEALTH_HOME_PEER:-/etc/tilo/home-peer.toml}"
 ADMIN="${TILO_SERVER_HEALTH_ADMIN:-/usr/libexec/tilo/tilo-server-admin}"
 # tilo-server.service's own default state root (os/usr/lib/systemd/system/
 # tilo-server.service reads /etc/tilo/server.toml; this is the image's default).
@@ -55,7 +50,7 @@ if [ -r "$SERVER_CONFIG" ]; then
 fi
 
 final_state() {
-  systemctl status --no-pager --lines=20 tilo-server.service tilo-fs-replica.service 2>&1 \
+  systemctl status --no-pager --lines=20 tilo-server.service 2>&1 \
     | sed 's/^/tilo-server-health:   /' >&2
 }
 
@@ -77,9 +72,6 @@ if [ ! -e "$CERT" ]; then
   exit 1
 fi
 
-replica=no
-[ -e "$HOME_PEER" ] && replica=yes
-
 # The verdict written as one line per part, so a failed boot's journal says which
 # part failed rather than only that the boot did.
 serving() {
@@ -92,10 +84,6 @@ serving() {
     reason="the server's metrics snapshot in $STATE_ROOT is older than ${FRESH}s: it is not serving now"
   elif ! applies="$("$ADMIN" --config "$SERVER_CONFIG" status 2>&1)"; then
     reason="tilo-server-admin status cannot open this state root: $applies"
-  elif [ "$replica" = yes ] && ! systemctl is-active --quiet tilo-fs-replica.service; then
-    reason="tilo-fs-replica.service is not active, so the filesystem this machine publishes is not served"
-  elif [ "$replica" = yes ] && ! grep -qx 'full_content_replication: true' <<<"$applies"; then
-    reason="the filesystem replica serves no complete content yet: $(grep -m1 'full_content_replication:' <<<"$applies")"
   fi
   if [ -n "$reason" ]; then
     warn "$reason"
@@ -103,11 +91,6 @@ serving() {
   fi
   log 'the server is serving'
   log 'the store opens (tilo-server-admin status read every durable workspace)'
-  if [ "$replica" = yes ]; then
-    log 'the filesystem replica publishes complete content to peers'
-  else
-    log 'this machine runs no filesystem replica, so there is no content endpoint to publish'
-  fi
   return 0
 }
 

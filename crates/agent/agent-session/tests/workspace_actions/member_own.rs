@@ -179,7 +179,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
             .expect("the governor holds the Discord record");
         let mut doc = automerge::AutoCommit::load(&saved).unwrap();
         let governors =
-            tilo_server::workspace_bots::opened::<discord::guild::Guild>(&mut doc).unwrap();
+            tilo_workspace_service::agents::opened::<discord::guild::Guild>(&mut doc).unwrap();
         let people: Vec<_> = governors
             .connects
             .iter()

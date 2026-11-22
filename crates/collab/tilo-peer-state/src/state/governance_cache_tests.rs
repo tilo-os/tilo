@@ -232,19 +232,6 @@ fn sync_resp_decodes_each_receipt_once() {
     assert_eq!(receipt_decodes(), 1, "only the new receipt is decoded");
     assert_eq!(replica.core.receipts.len(), first.len() + 1);
 
-    // A log row an older version stored re-encoded is still the same
-    // evidence: it is compared by value once and then kept as received.
-    let legacy: serde_json::Value = serde_json::from_slice(&first[0].1).unwrap();
-    replica
-        .core
-        .receipts
-        .insert(first[0].0.clone(), serde_json::to_vec(&legacy).unwrap());
-    let message = publish_receipts(
-        &mut governor,
-        &[("invocation-6", br#"{"outcome":"later"}"#)],
-    );
-    replica.receive(source, message, now).unwrap();
-    assert_eq!(replica.core.receipts.get(&first[0].0), Some(&first[0].1));
     crate::workspace::RECEIPT_DECODES.with(|count| count.set(0));
     replica
         .receive(source, governor.workspace_message(), now)

@@ -9,12 +9,11 @@ const PROJECTS: &str =
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_a_server_answers_with_a_view_it_wrote() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, _actions, workspaces, workspace, page, served);
     asks_scout(&workspaces, &workspace, &root, "Which projects are there?").await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     answer_the_turn!(
-        workspaces,
-        actions,
+        served,
         workspace,
         calls_then_answers(
             vec![(
@@ -105,7 +104,7 @@ async fn an_agent_on_a_server_answers_with_a_view_it_wrote() {
 /// told to the model as a failure, and the reply carries no view.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_view_a_model_may_not_post_is_refused_and_told_to_it() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, _actions, workspaces, workspace, page, served);
     asks_scout(&workspaces, &workspace, &root, "Which projects are there?").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let refused: Vec<(serde_json::Value, &str)> = vec![
@@ -125,8 +124,7 @@ async fn a_view_a_model_may_not_post_is_refused_and_told_to_it() {
     ];
     let asked = Arc::new(Mutex::new(Vec::new()));
     answer_the_turn!(
-        workspaces,
-        actions,
+        served,
         workspace,
         calls_then_answers(
             refused

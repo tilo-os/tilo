@@ -279,6 +279,8 @@ pub struct ItemFacts {
     pub id: ItemId,
     pub kind: ItemKind,
     pub places: Vec<Place>,
+    /// What it is called: the entry's title, as Passwords shows it.
+    pub title: String,
     /// When it was added, in seconds since the Unix epoch.
     pub added_unix: u64,
     /// When it was last handed to something that signs in.
@@ -642,6 +644,7 @@ impl Sealed {
             id,
             kind: self.kind,
             places: self.places.iter().cloned().collect(),
+            title: String::new(),
             added_unix: self.added_unix,
             last_used_unix: self.last_used_unix,
         }
@@ -768,7 +771,9 @@ impl VaultItems {
             .entries
             .iter()
             .filter_map(|(id, (entry, uses))| {
-                Some(Sealed::of_entry(entry, uses)?.facts(id.clone()))
+                let mut facts = Sealed::of_entry(entry, uses)?.facts(id.clone());
+                facts.title.clone_from(&entry.title);
+                Some(facts)
             })
             .collect();
         facts.sort_by(|a, b| {
@@ -779,12 +784,22 @@ impl VaultItems {
         facts
     }
 
+    /// What is safe to say of the item `sealed` was written as, titled as its entry is: the
+    /// entry's own title, which Passwords shows.
+    fn written(&self, id: &ItemId, sealed: &Sealed) -> ItemFacts {
+        let mut facts = sealed.facts(id.clone());
+        if let Some((entry, _)) = self.entries.get(id) {
+            facts.title.clone_from(&entry.title);
+        }
+        facts
+    }
+
     /// Keep `item`, answering what is safe to say of it, its id included.
     pub fn add(&mut self, item: NewItem) -> Result<ItemFacts, ItemError> {
         let sealed = Sealed::checked(item)?;
         let id = ItemId::new();
         self.write(&id, &sealed);
-        Ok(sealed.facts(id))
+        Ok(self.written(&id, &sealed))
     }
 
     /// Keep `item` as the entry `id` names, titled `title` where the vault has no entry at
@@ -819,7 +834,7 @@ impl VaultItems {
                 kept.title.clone_from(&entry.title);
             }
         }
-        Ok(sealed.facts(id))
+        Ok(self.written(&id, &sealed))
     }
 
     /// [`Self::add`] for a key that says where it rides in a request to its
@@ -834,7 +849,7 @@ impl VaultItems {
         sealed.sent_in = sent_in.kept();
         let id = ItemId::new();
         self.write(&id, &sealed);
-        Ok(sealed.facts(id))
+        Ok(self.written(&id, &sealed))
     }
 
     /// Keep `item` as the own sign-in of `account` (a mail or calendar account's id, or a model
@@ -865,7 +880,7 @@ impl VaultItems {
             None => ItemId::new(),
         };
         self.write(&id, &sealed);
-        Ok(sealed.facts(id))
+        Ok(self.written(&id, &sealed))
     }
 
     /// The account the entry `id` names was kept for as its own sign-in ([`Self::keep_for`]),

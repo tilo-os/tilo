@@ -1,4 +1,3 @@
-
 use std::path::PathBuf;
 
 use word_processor::actions::{AttrVal, RegionKind, RichTextAction};

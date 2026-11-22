@@ -29,8 +29,8 @@ pub fn private_windows_hints(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::windows_inventory::RootRole;
     use crate::windows_accounts::parse_profiles;
+    use crate::windows_inventory::RootRole;
 
     tilo_test_env::scenario! {
         fn windows_account_hints_come_only_from_exact_grants;

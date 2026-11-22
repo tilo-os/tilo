@@ -24,7 +24,7 @@ mod eager_bridge_tests {
     }
 
     fn offer(fixture: &LocalDirectoryFixture) {
-        fixture.state.surfaces.lock().unwrap().insert(
+        fixture.state.publishers.surfaces.lock().unwrap().insert(
             fixture.peer_id,
             PublishedSurface {
                 peer_id: fixture.peer_id,

@@ -193,7 +193,7 @@ fn a_native_mailbox_is_carried_over_once() {
         .iter()
         .map(|(_, doc)| doc.clone().get_heads())
         .collect();
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[MAIL]);
+    let (ada, _) = Replica::new("ada", crate::fixtures::Workspace::new(), &[MAIL]);
     ada.host.runtime().set_earlier(MAIL_APP, &documents);
     let mail = ada.host.root_of(MAIL_APP).expect("the mailbox");
     ada.commit();
@@ -226,7 +226,7 @@ fn a_native_mailbox_is_carried_over_once() {
 
 #[test]
 fn a_mailbox_opened_before_the_native_documents_arrived_receives_them_once_they_do() {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[MAIL]);
+    let (ada, _) = Replica::new("ada", crate::fixtures::Workspace::new(), &[MAIL]);
     let mail = ada.host.root_of(MAIL_APP).expect("the mailbox");
     ada.commit();
     assert_eq!(ada.host.migrate(), 0, "nothing to carry has arrived");

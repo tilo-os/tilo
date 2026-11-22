@@ -182,6 +182,8 @@ mod tests {
             .put_object(&automerge::ROOT, "blocks", ObjType::List)
             .unwrap();
         let block = doc.insert_object(&blocks, 0, ObjType::Map).unwrap();
+        doc.put(&block, "id", "3f2a9c1e-4b6d-4a1f-9e2c-8d7b6a5c4d3e")
+            .unwrap();
         doc.put(&block, "kind", "paragraph").unwrap();
         let text = doc.put_object(&block, "text", ObjType::Text).unwrap();
         doc.splice_text(&text, 0, 0, body).unwrap();

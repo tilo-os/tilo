@@ -69,7 +69,7 @@ EndSearchArgs = TypedDict("EndSearchArgs", {
 
 class Channel(Resource):
     """Channel — `tl.so.tilo.tube.Channel`."""
-    __surface__ = "so.tilo.tube@41f6ed9219cc5295"
+    __surface__ = "so.tilo.tube@06fb932bb91d5abe"
     @property
     def _26ctwf34(self) -> str:
         """key (`26ctwf34` on the wire)."""
@@ -134,7 +134,7 @@ class Channel(Resource):
 
 class Video(Resource):
     """Video — `tl.so.tilo.tube.Video`."""
-    __surface__ = "so.tilo.tube@41f6ed9219cc5295"
+    __surface__ = "so.tilo.tube@06fb932bb91d5abe"
     irzy3c7m: str  # key
     fpxk5w7b: str  # title
     mhkply6c: str  # channel_key
@@ -236,7 +236,7 @@ class Video(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.tube.Playlist`."""
-    __surface__ = "so.tilo.tube@41f6ed9219cc5295"
+    __surface__ = "so.tilo.tube@06fb932bb91d5abe"
     ow7glfos: str  # key
     ljyc7mx2: str  # title
     bzfmd6pg: str  # channel_key
@@ -262,14 +262,14 @@ class Playlist(Resource):
 
 class Subscription(Resource):
     """Subscription — `tl.so.tilo.tube.Subscription`."""
-    __surface__ = "so.tilo.tube@41f6ed9219cc5295"
+    __surface__ = "so.tilo.tube@06fb932bb91d5abe"
     slhmwv67: str  # key
     ynf67l6e: str  # name
 
 
 class WatchEntry(Resource):
     """WatchEntry — `tl.so.tilo.tube.WatchEntry`."""
-    __surface__ = "so.tilo.tube@41f6ed9219cc5295"
+    __surface__ = "so.tilo.tube@06fb932bb91d5abe"
     noppuxpb: str  # key
     stuii7l7: str  # title
     j37y2bbw: str  # channel_name
@@ -279,7 +279,7 @@ class WatchEntry(Resource):
 
 class YouTube(Resource):
     """YouTube — `tl.so.tilo.tube.YouTube`."""
-    __surface__ = "so.tilo.tube@41f6ed9219cc5295"
+    __surface__ = "so.tilo.tube@06fb932bb91d5abe"
     olrung72: str  # title
     ihhzrm3f: list[Entry[Channel]]  # channels
     qnfjkti5: list[Entry[Video]]  # videos
@@ -338,5 +338,5 @@ class YouTube(Resource):
 
 class Tube(Resource):
     """YouTube — `tl.so.tilo.tube`."""
-    __surface__ = "so.tilo.tube@41f6ed9219cc5295"
+    __surface__ = "so.tilo.tube@06fb932bb91d5abe"
 

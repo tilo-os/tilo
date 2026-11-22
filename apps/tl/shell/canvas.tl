@@ -150,6 +150,7 @@ view composer(typed: State<Text>, pointed: State<List<Int>>, seen: State<List<In
                 role: .primary,
                 size: .small,
                 enabled: typed != "",
+                description: "Type what you want first",
             ) {
                 on press: session
                     .place_found(

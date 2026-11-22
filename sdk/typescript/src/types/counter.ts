@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.counter@66ec89f1ef1e00a7";
+export const SURFACE = "so.tilo.lang.counter@1ebc300b39503b32";
 
 /** The arguments of `increment`. */
 export interface IncrementArgs {

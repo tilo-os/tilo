@@ -43,9 +43,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fs::kept_documents::KeptDocuments;
-use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO};
-use iroh::{Endpoint, endpoint::presets, protocol::Router};
+use tilo_fs::kept_documents::KeptDocuments;
+use tilo_fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO};
 
 const SMALL_BYTES: u64 = 4096;
 const RANGE_BYTES: u64 = 1024 * 1024;
@@ -467,10 +466,6 @@ async fn measure_rung(
 
     // A second device joins: the record mesh gives a fresh joiner each chunk whole, which is
     // the tree's state and not the history that built it.
-    let source = Endpoint::bind(presets::Minimal).await.unwrap();
-    let source_router = Router::builder(source.clone())
-        .accept(iroh_blobs::ALPN, store_a.blobs_protocol(None))
-        .spawn();
     let mut peer = Namespace::new("rung-peer").unwrap();
     let started = Instant::now();
     let chunks = namespace.records();
@@ -495,9 +490,9 @@ async fn measure_rung(
     // Reading through a mount on the joined device, content it has never
     // fetched: one small file whole, then a mebibyte in the middle of a huge
     // one, from the device that has it.
-    let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-    let hydrator = Arc::new(Hydrator::new(endpoint, Arc::clone(&store_b)));
-    hydrator.add_peer(source.addr());
+    let hydrator = Arc::new(Hydrator::new(Arc::clone(&store_b)).with_source(Arc::new(
+        tilo_fs::hydration::StoreSource(Arc::clone(&store_a)),
+    )));
     let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
     let peer_namespace = Arc::new(std::sync::Mutex::new(peer));
     let mount = QuickFS::new(
@@ -541,7 +536,6 @@ async fn measure_rung(
         "ladder: {total_mib} MiB rung: unfetched reads took {read_small:?} and {read_huge:?}"
     );
     drop(mount);
-    source_router.shutdown().await.unwrap();
 
     Rung {
         total_mib,

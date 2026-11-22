@@ -102,6 +102,15 @@ fn until_waiting(served: &Served, count: usize) {
     }
 }
 
+/// `answering`, answering a sign-in this device refuses as it first decides it: the test's
+/// device holds what it ever will as it asks.
+fn refusing_at_once(answering: super::Answering) -> super::Answering {
+    super::Answering {
+        sign_in_wait: Duration::ZERO,
+        ..answering
+    }
+}
+
 /// The workspace's accounts record keeping `account`, as Settings writes it.
 fn accounts_keeping(account: &accounts::Account) -> automerge::AutoCommit {
     let document = accounts_document();
@@ -159,6 +168,7 @@ fn a_held_ask_is_answered_once_the_workspace_keeps_a_file_account() {
         WORKSPACE,
         (ACCOUNTS_OWNER, &accounts_document()),
         accounts_keeping(&account),
+        &|doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
     );
     let held = std::cell::RefCell::new(None);
     served.device.until(|| {
@@ -182,6 +192,45 @@ fn a_held_ask_is_answered_once_the_workspace_keeps_a_file_account() {
         other => panic!("the accounts, not {other:?}"),
     }
     until_waiting(&served, 0);
+    drop(served);
+}
+
+/// A connector whose person said yes to a sign-in hurries the ask for accounts the session holds:
+/// it is answered at once with the accounts as they are, and so is one asked just after a hurry
+/// that came first.
+#[test]
+fn a_hurry_lets_the_ask_for_accounts_go_at_once() {
+    let served = served();
+    let before = revision(&served.socket);
+    let quick = sign_ins::LONGEST_WAIT.checked_div(5).unwrap();
+    let client = connect(&served.socket);
+    let mut hurrier = client.hurrier().unwrap();
+    let (answered, answer) = mpsc::channel();
+    let after = before.clone();
+    let asking = std::thread::spawn(move || {
+        let mut client = client;
+        answered
+            .send(client.ask(&Ask::Accounts { after: Some(after) }))
+            .unwrap();
+        client
+    });
+    until_waiting(&served, 1);
+    hurrier.hurry().unwrap();
+    match answer.recv_timeout(quick).unwrap() {
+        Ok(Answer::Accounts { revision, .. }) => assert_eq!(revision, before),
+        other => panic!("the accounts, not {other:?}"),
+    }
+    let mut client = asking.join().unwrap();
+
+    hurrier.hurry().unwrap();
+    let started = Instant::now();
+    match client.ask(&Ask::Accounts {
+        after: Some(before.clone()),
+    }) {
+        Ok(Answer::Accounts { revision, .. }) => assert_eq!(revision, before),
+        other => panic!("the accounts, not {other:?}"),
+    }
+    assert!(started.elapsed() < quick, "let go as it came");
     drop(served);
 }
 
@@ -221,6 +270,7 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
         WORKSPACE,
         (ACCOUNTS_OWNER, &accounts_document()),
         accounts_keeping(&account),
+        &|doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
     );
     let (session, connector) = std::os::unix::net::UnixStream::pair().unwrap();
     let (workspaces, changes) = (served.device.workspaces(), served.device.changes());
@@ -229,7 +279,7 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
         let stream = tokio::net::UnixStream::from_std(session).unwrap();
         let by = Caller::authenticated([0x30; 32], [0x31; 32]);
         let scope = super::Scope::connector(MAIL, WORKSPACE);
-        let answering = super::Answering::here(workspaces, by, changes);
+        let answering = refusing_at_once(super::Answering::here(workspaces, by, changes));
         super::connection(stream, &answering, &scope).await
     });
     let connector = std::cell::RefCell::new(Client::over(connector).unwrap());
@@ -262,6 +312,7 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
     match connector.ask(&Ask::SignIn {
         workspace: ELSEWHERE.into(),
         item: entry.clone(),
+        confirmed: false,
     }) {
         Ok(Answer::Refused { error }) => assert_eq!(error, super::OTHER_WORKSPACE),
         other => panic!("a refusal, not {other:?}"),
@@ -269,8 +320,126 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
     match connector.ask(&Ask::SignIn {
         workspace: WORKSPACE.into(),
         item: entry,
+        confirmed: false,
     }) {
         Ok(Answer::Refused { error }) => assert!(!error.is_empty(), "said in words"),
         other => panic!("a refusal, not {other:?}"),
+    }
+}
+
+/// The person's agent, bound off Mail or Files, may use the vault but not read the app asking: it
+/// gets no password through a connector or the cloud service, as the app's own route gets it none.
+/// Bound off nothing, the ask goes on to the account.
+#[test]
+fn whoever_may_not_read_the_app_asking_gets_no_password() {
+    const MAIL: &str = "so.tilo.mail";
+    let served = served();
+    let entry = "vault.item:0123456789abcdef0123456789abcdef";
+    let refused = |denied: &[&str], scope: super::Scope| {
+        let read = tilo_action_policy::KindSet::of(tilo_action_policy::ActionKind::Read);
+        let rules = denied.iter().map(|app| {
+            let node = tilo_action_policy::TreePath::workspace(WORKSPACE).app(*app);
+            tilo_action_policy::Rule::new(node, read, tilo_action_policy::Answer::Deny)
+        });
+        let key = |seed| ed25519_dalek::SigningKey::from_bytes(&[seed; 32]).verifying_key();
+        let agent = Caller::authenticated(key(0x30).to_bytes(), key(0x31).to_bytes())
+            .delegated_to("scout".to_owned())
+            .on_turn(
+                tilo_action_policy::turn::Turn::new("chat", "1"),
+                rules.collect(),
+            );
+        let (workspaces, changes) = (served.device.workspaces(), served.device.changes());
+        let item = entry.to_owned();
+        let ask = Ask::SignIn {
+            workspace: WORKSPACE.into(),
+            item,
+            confirmed: false,
+        };
+        served.runtime.block_on(async {
+            let answering = refusing_at_once(super::Answering::here(workspaces, agent, changes));
+            match super::answer(&answering, &scope, ask).await {
+                Answer::Refused { error } => error,
+                other => panic!("a refusal, not {other:?}"),
+            }
+        })
+    };
+    let read_app = tilo_workspace_service::workspaces::account_logins::MAY_NOT_READ_APP;
+    let mail = || super::Scope::connector(MAIL, WORKSPACE);
+    assert_eq!(refused(&[MAIL], mail()), read_app);
+    let files = tilo_app_id::apps::FILE_EXPLORER;
+    assert_eq!(refused(&[files], super::Scope::cloud_service()), read_app);
+    let reading = refused(&[], mail());
+    assert_ne!(
+        reading, read_app,
+        "reading Mail, the account decides: {reading}"
+    );
+}
+
+/// Mail's connector, holding an ask for its workspace's accounts that changed, is told the email
+/// account Settings adds once the workspace keeps it, well before the ask's longest wait: the
+/// account reaches a mailbox that is already open, with no reload.
+#[test]
+fn a_connector_is_told_an_account_added_while_it_waits() {
+    const MAIL: &str = "so.tilo.mail";
+    let served = served();
+    let (session, connector) = std::os::unix::net::UnixStream::pair().unwrap();
+    let (workspaces, changes) = (served.device.workspaces(), served.device.changes());
+    served.runtime.spawn(async move {
+        session.set_nonblocking(true).unwrap();
+        let stream = tokio::net::UnixStream::from_std(session).unwrap();
+        let by = Caller::authenticated([0x30; 32], [0x31; 32]);
+        let scope = super::Scope::connector(MAIL, WORKSPACE);
+        let answering = super::Answering::here(workspaces, by, changes);
+        super::connection(stream, &answering, &scope).await
+    });
+    let mut connector = Client::over(connector).unwrap();
+    let before = match connector.ask(&Ask::Accounts { after: None }) {
+        Ok(Answer::Accounts { revision, accounts }) => {
+            assert!(accounts.is_empty(), "the workspace keeps no account yet");
+            revision
+        }
+        other => panic!("the accounts, not {other:?}"),
+    };
+    let (answered, answer) = mpsc::channel();
+    let asked = Instant::now();
+    std::thread::spawn(move || {
+        let held = connector.ask(&Ask::Accounts {
+            after: Some(before),
+        });
+        answered.send(held.unwrap()).ok();
+    });
+    until_waiting(&served, 1);
+
+    let mut account = accounts::Account::new(
+        accounts::AccountId::from("lab@story.example"),
+        accounts::email::TYPE_ID,
+    );
+    account.display_name = "Ada".into();
+    served.device.keep(
+        WORKSPACE,
+        (ACCOUNTS_OWNER, &accounts_document()),
+        accounts_keeping(&account),
+        &|doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
+    );
+    let held = std::cell::RefCell::new(None);
+    served.device.until(|| {
+        if let Ok(answered) = answer.try_recv() {
+            *held.borrow_mut() = Some(answered);
+        }
+        held.borrow().is_some()
+    });
+    assert!(
+        asked.elapsed() < sign_ins::LONGEST_WAIT,
+        "told when the account was kept, not when the wait ran out"
+    );
+    match held.into_inner() {
+        Some(Answer::Accounts { accounts, .. }) => assert_eq!(
+            accounts
+                .iter()
+                .map(|held| (held.workspace.as_str(), held.account.id.as_str()))
+                .collect::<Vec<_>>(),
+            [(WORKSPACE, "lab@story.example")],
+        ),
+        other => panic!("the accounts, not {other:?}"),
     }
 }

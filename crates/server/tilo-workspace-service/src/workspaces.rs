@@ -52,12 +52,11 @@ mod surfaces;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
 mod desktop_writes;
 mod device_actions;
-#[cfg(test)]
-mod device_actions_tests;
 mod follow;
 mod founding;
 mod removals;
-pub use device_actions::{HostJobs, Offer};
+#[cfg(test)]
+mod work_tests;
 pub use follow::ResourceWrite;
 #[cfg(test)]
 mod device_rejoin_tests;
@@ -97,6 +96,7 @@ mod packaged_model_tests;
 mod pages;
 mod peer_parts;
 mod reads;
+mod tree_identity;
 mod writes;
 // The person's mail accounts and model providers, kept where their
 // workspace runs: a page has no mail connection and no vault of its own.
@@ -339,7 +339,7 @@ struct GovernedWorkspace {
     /// again, after a compaction failed: each attempt opens and merges the
     /// whole history.
     #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
+        not(feature = "device-keys"),
         allow(
             dead_code,
             reason = "sealed histories are followed only where they are read"
@@ -359,7 +359,7 @@ struct GovernedWorkspace {
     /// is asking to admit it, by app and record: a burst of writes to a
     /// record the host holds no keys of yet asks once
     /// ([`Workspaces::join_soon`]).
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     asking: std::collections::BTreeSet<(String, String)>,
     /// The workspace's document started over from a base at an admission, and
     /// what the server retains of it from before is still to be archived,
@@ -533,7 +533,7 @@ impl GovernedWorkspace {
             desktop_segments: collab_types::DocumentReassembler::default(),
             unkept: false,
             keeping: false,
-            #[cfg(any(feature = "agents", feature = "web"))]
+            #[cfg(feature = "device-keys")]
             asking: std::collections::BTreeSet::new(),
             rebased: false,
             since_base: SinceBase::Withdrew,
@@ -1022,6 +1022,11 @@ struct WorkspacesInner {
     /// `0` keeps the link's own.
     #[cfg(test)]
     link_heard_capacity: std::sync::atomic::AtomicUsize,
+    /// Whether this service answers the catch-up a device keeping one of its
+    /// workspaces asks for as a build before the ask does: not at all
+    /// ([`Workspaces::speak_no_catch_up`]).
+    #[cfg(any(test, feature = "test-support"))]
+    speaks_no_catch_up: std::sync::atomic::AtomicBool,
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
@@ -1293,20 +1298,6 @@ impl Workspaces {
             .map(|channels| Arc::clone(&channels.keys))
     }
 
-    /// Set what this host offers its workspaces, as the entry its person keeps
-    /// of it in their admin workspace says: whether it runs their actions and jobs,
-    /// how much storage it offers and how many machines it runs. What devices
-    /// offering it work are answered with follows it.
-    pub fn set_offer(&self, offer: Offer) {
-        self.inner.jobs.set_offer(offer);
-    }
-
-    /// What this host offers its workspaces ([`Self::set_offer`]).
-    #[must_use]
-    pub fn offer(&self) -> Offer {
-        self.inner.jobs.offer()
-    }
-
     /// Every record this host holds of `workspace`, by the app whose document
     /// it is and its id: what its members' pages and agents may name there,
     /// whether or not a device's session has been sent it. A public workspace
@@ -1334,11 +1325,8 @@ impl Workspaces {
         // renamed since serves with the record's own, verified.
         let host = record_authority::host_serving(host, &dir);
         let workspaces = Arc::new(device_actions::WorkspacesMap::default());
-        let (action_service, jobs) = device_actions::action_service(
-            Arc::clone(&workspaces),
-            host.key.clone(),
-            host.work.clone(),
-        );
+        let (action_service, jobs) =
+            device_actions::action_service(Arc::clone(&workspaces), host.key.clone());
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -1347,6 +1335,8 @@ impl Workspaces {
             inner: Arc::new(WorkspacesInner {
                 #[cfg(test)]
                 link_heard_capacity: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(any(test, feature = "test-support"))]
+                speaks_no_catch_up: std::sync::atomic::AtomicBool::new(false),
                 draining: std::sync::atomic::AtomicBool::new(false),
                 store: Arc::new(store),
                 direct: tilo_peer_state::direct::Serving::new(),
@@ -1408,6 +1398,7 @@ impl Workspaces {
         if let Some(device) = this.inner.host.member.clone() {
             this.inner.member.set_device(device);
         }
+        this.inner.jobs.claim_in(this.downgrade());
         let workspaces = Box::pin(this.open_kept(&dir)).await?;
         *this.inner.workspaces.lock().await = workspaces;
         let kept = this.served_kept().await;
@@ -1420,6 +1411,8 @@ impl Workspaces {
         // Before any member's session reaches them: what a member reads of
         // the workspace's agents is already all of them.
         this.move_agent_rosters().await;
+        // And what a member's Files reads of the workspace's file tree is all of it.
+        this.name_kept_trees().await;
         this.serve_kept_members().await;
         this.adopt_listings_file().await?;
         this.start_following();
@@ -1429,6 +1422,10 @@ impl Workspaces {
     /// Serve each workspace this host kept from its last run: bring it up,
     /// settle its governance, name this host's address in it, and recall what
     /// it left running.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "each workspace stays locked through its whole start, up to its revocations"
+    )]
     async fn serve_kept(
         &self,
         workspaces: &[Arc<AsyncMutex<GovernedWorkspace>>],
@@ -1452,7 +1449,7 @@ impl Workspaces {
             if let Err(error) = self.hand_kept_workspace_over(&mut workspace).await {
                 tracing::error!(workspace = %workspace.workspace(), %error, "a workspace this host keeps for a person was not handed to them");
             }
-            self.keep_link_history(&workspace).await;
+            Box::pin(self.keep_link_history(workspace.workspace(), workspace.workspace_id())).await;
             self.recall(&mut workspace)
                 .await
                 .map_err(|e| format!("recall: {e}"))?;
@@ -1651,6 +1648,12 @@ impl Workspaces {
         &self.inner.host.cert
     }
 
+    /// The work this device takes: whether it runs its workspaces' agents among it.
+    #[must_use]
+    pub fn work(&self) -> &tilo_server_protocol::WorkSetting {
+        &self.inner.host.work
+    }
+
     /// Whether this server's own person governs `governed`: they own it, or
     /// its governance keeps them as an administrator of a workspace that is
     /// no person's own here. A workspace a deployment handed to its owner is
@@ -1701,11 +1704,10 @@ impl Workspaces {
         self.inner.action_service.clone()
     }
 
-    /// Run the transform an offloadable action declares for the workspaces
-    /// governed here as a compute job on `jobs`: the host then answers the
-    /// offers of its workspaces' devices with what `jobs` knows of itself, and
-    /// runs the invocations it won through it ([`HostJobs`]).
-    pub fn run_jobs(&self, jobs: Arc<dyn HostJobs>) {
+    /// Run the turns of work this device takes for its workspaces' devices on
+    /// `jobs` ([`crate::work`]): whether a turn is this device's is
+    /// [`takes_turn`](crate::work::takes_turn)'s to say, live, each time.
+    pub fn run_jobs(&self, jobs: Arc<dyn crate::work::HostJobs>) {
         self.inner.jobs.serve(jobs);
     }
 
@@ -1715,8 +1717,8 @@ impl Workspaces {
         self.inner.jobs.govern_with(governance);
     }
 
-    /// What this host answers a device of its workspaces on the device action service: the work
-    /// it was offered, and the workspaces' governance. A device whose session answers that
+    /// What this device answers a device of its workspaces on the device action service: the
+    /// turns of work it takes, and the workspaces' governance. A device whose session answers that
     /// service in the host's place hands these requests here.
     #[must_use]
     pub fn device_actions(&self) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
@@ -1774,12 +1776,9 @@ impl Workspaces {
             None => None,
         }
         .ok_or_else(|| CollaborationError::new("this server does not hold that workspace"))?;
-        #[cfg(any(feature = "agents", feature = "web"))]
-        return sealed_documents::readable_now(&reading, (app, record))
+        sealed_documents::readable_now(&reading, (app, record))
             .await
-            .map_err(CollaborationError::new);
-        #[cfg(not(any(feature = "agents", feature = "web")))]
-        Ok(reading.replica.read(|peer| peer.document(app, record)))
+            .map_err(CollaborationError::new)
     }
 
     /// The `(app, record)` of every record of `workspace` the governor's copy
@@ -2145,7 +2144,7 @@ impl Workspaces {
                 return;
             }
         };
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "device-keys")]
         self.found_retained(workspace, &state, &retained).await;
         let mut governed = state.lock().await;
         self.recall_retained(&mut governed, retained).await;
@@ -2159,7 +2158,7 @@ impl Workspaces {
     /// one's queue included. Once it is admitted, what the server retains of
     /// the record is replayed ([`Self::replay_soon`]), so its copy starts
     /// from its first write. Asked once per record until the first answer.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     fn join_soon(&self, workspace: &mut GovernedWorkspace, app: String, record: String) {
         // A store of the workspace's ciphertext is never let into its group.
         if self.holds_as_store(workspace) {
@@ -2200,9 +2199,9 @@ impl Workspaces {
             return;
         };
         let mut governed = state.lock().await;
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "device-keys")]
         self.join_soon(&mut governed, app.to_owned(), record.to_owned());
-        #[cfg(not(any(feature = "agents", feature = "web")))]
+        #[cfg(not(feature = "device-keys"))]
         {
             let _ = (&mut governed, app, record);
         }
@@ -2220,13 +2219,13 @@ impl Workspaces {
             return false;
         };
         let governed = state.lock().await;
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "device-keys")]
         let waits = governed.seals()
             && (governed
                 .asking
                 .contains(&(app.to_owned(), record.to_owned()))
                 || !governed.holds_keys().await);
-        #[cfg(not(any(feature = "agents", feature = "web")))]
+        #[cfg(not(feature = "device-keys"))]
         let waits = {
             let _ = (&governed, app, record);
             false
@@ -2369,12 +2368,12 @@ impl Workspaces {
         // read and holds no keys of yet is joined, and the write is taken in
         // when the group admits this host's device: the record's copy starts
         // from its first write, so it is not kept by not asking.
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "device-keys")]
         let readable = !sealed || workspace.holds_keys().await;
-        #[cfg(not(any(feature = "agents", feature = "web")))]
+        #[cfg(not(feature = "device-keys"))]
         let readable = !sealed;
         if !readable {
-            #[cfg(any(feature = "agents", feature = "web"))]
+            #[cfg(feature = "device-keys")]
             self.join_soon(&mut workspace, app_id, document_id);
             return Ok(());
         }
@@ -2742,7 +2741,7 @@ impl Workspaces {
         // sealed frame it cannot read, and a replay takes it once they are. Asking to be let
         // into the record's channel is what brings them here.
         if followed.behind == Some(follow::BehindRefusal::Keys) {
-            #[cfg(any(feature = "agents", feature = "web"))]
+            #[cfg(feature = "device-keys")]
             self.join_soon(workspace, app.clone(), record.clone());
             return followed.refused;
         }
@@ -2759,7 +2758,7 @@ impl Workspaces {
             tracing::warn!(workspace = %workspace.workspace(), %reason, %error, "the governor did not publish a refusal of a record write");
         }
         crate::timing::window("workspace.follow", following);
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "device-keys")]
         if compact {
             let compacting = crate::timing::start();
             if let Err(error) = self.compact_sealed_histories(workspace).await {
@@ -2767,7 +2766,7 @@ impl Workspaces {
             }
             crate::timing::window("workspace.compact", compacting);
         }
-        #[cfg(not(any(feature = "agents", feature = "web")))]
+        #[cfg(not(feature = "device-keys"))]
         let _ = compact;
         self.tell_followers(workspace, author, (app, record), &message, false)
             .await;

@@ -8,7 +8,6 @@
 //! **document content** rather than on a return value — a revert that reported
 //! success while leaving the text alone fails these tests.
 
-
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 

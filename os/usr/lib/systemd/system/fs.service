@@ -71,12 +71,6 @@ Type=simple
 # /var/lib/tilo/fs-capabilities.json actually bites, and so a mount joined
 # from a peer's ticket has somewhere to put a narrower policy.
 #
-# `--session-link` is how the mount reaches the network: through the
-# session's endpoint, which holds the device key, rather than an endpoint of
-# its own under the same key (a server keeps one connection per endpoint id).
-# The daemon writes where it listens on loopback there, beside the blob
-# socket, where the session finds it. With no session the mount is offline.
-#
 # The backend. With a store volume mounted, tilo-store-volume.service
 # writes `--backend=auto --store=/var/lib/tilo/store --native-owner=UID:GID`
 # to /run/tilo-store/fs.env on every boot: the daemon then serves the native
@@ -88,7 +82,6 @@ Environment=TILO_FS_BACKEND_ARGS=--backend=fuse
 EnvironmentFile=-/run/tilo-store/fs.env
 ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs \
     --storage-sock /run/tilo/fs-storage/storage.sock --blob-sock /run/tilo/fs-blobs.sock \
-    --session-link /run/tilo/fs-session-link \
     --acl /var/lib/tilo/fs-capabilities.json --member person:local \
     $TILO_FS_BACKEND_ARGS
 # No ExecStop=: the daemon ends its own mount. systemd's SIGTERM takes the

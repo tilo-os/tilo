@@ -161,7 +161,8 @@ pub trait DeviceWrites: collab_types::signer::MaybeSendSync + 'static {
     ///
     /// Answers the write as this device's apps take a member's: the signed op its holder admitted,
     /// and the author's access in the workspace.
-    fn write(&self, workspace: &str, changes: &[u8], writing: DocumentWriting<'_>) -> DocumentWrite;
+    fn write(&self, workspace: &str, changes: &[u8], writing: DocumentWriting<'_>)
+    -> DocumentWrite;
 
     /// The wait for the device serving `workspace` to answer every write this device made to
     /// `documents` — each an app and a document of it — before this call: the wait answers `Ok`

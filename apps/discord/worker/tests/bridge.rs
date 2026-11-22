@@ -119,7 +119,7 @@ impl Workspace {
     async fn chat(&self) -> discord::tilo::ChatRead {
         use tilo_agent_session::bot::held::TilolangRecord as _;
         let packages = tilo_server::tl_chat::packages().unwrap();
-        let record = self.workspaces.tl_record(&self.id, CHAT).await.unwrap();
+        let record = self.workspaces.tl_record(&self.id, CHAT).unwrap();
         let held = ProgramRecord::new(packages, record, None);
         let reader = Actor::App(AppId::from(CHAT));
         let tree = held.read("tree", &reader).unwrap();
@@ -578,10 +578,7 @@ impl Bridge {
         // of the bridge runs.
         let packet_relay = tilo_test_env::relay::relay().await;
         let server = tilo_server::daemon::Server::start_with_relay_mode(
-            tilo_server::ServerConfig {
-                state_root: scratch.path().join("server"),
-                ..Default::default()
-            },
+            tilo_server::ServerConfig::loopback(scratch.path().join("server")),
             tilo_server::daemon::ServerIdentity {
                 user_public_key: cert.user_public_key,
                 device_signing_key: key.clone(),

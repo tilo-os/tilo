@@ -1,7 +1,6 @@
 //! The panel as a person meets it, headless: what each page shows, where
 //! things sit, and which effect each control invokes on the device.
 
-
 use std::rc::Rc;
 
 use crate::common::{click, drawn_on_each_other, has, hosted_at, target};

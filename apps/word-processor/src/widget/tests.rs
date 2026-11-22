@@ -31,9 +31,7 @@ use ui::testing::Dispatch;
 mod harness;
 mod images;
 
-pub(super) use harness::{
-    Lent, editor, mount, mount_themed, on_editor, pipeline_draw, split,
-};
+pub(super) use harness::{Lent, editor, mount, mount_themed, on_editor, pipeline_draw, split};
 
 pub(super) const TEST_PNG: &[u8] = &[
     137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2, 0,

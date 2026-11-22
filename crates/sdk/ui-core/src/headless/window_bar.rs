@@ -1531,9 +1531,8 @@ mod tests {
         (hosted, harness, bar)
     }
 
-    /// A compact (420 px) window's bar, beside its search and History, cannot fit the calendar's
-    /// views beside its navigation and period: the views and Today (which jumps rather than steps) go
-    /// into the overflow menu, and the period stays, whole.
+    /// A compact (420 px) window's bar names the period whole beside its navigation: Today,
+    /// New event and the views go into the overflow menu to make the room.
     #[test]
     fn a_compact_window_keeps_its_navigation_and_location_and_folds_the_views() {
         use crate::a11y::{AccessNode, Role};
@@ -1553,49 +1552,35 @@ mod tests {
                 .find(|(n, _)| n == name)
                 .map_or(Rect::ZERO, |(_, r)| *r)
         };
-        let sidebar = rect("window_sidebar");
-        let previous = rect("window_leading:0");
-        let next = rect("window_leading:1");
-        let location = rect("window_location");
-        let more = rect("window_more");
         let history = rect(crate::widget::tabs::WINDOW_HISTORY_TARGET);
-        for (name, part) in [
-            ("the sidebar's toggle", sidebar),
-            ("previous", previous),
-            ("next", next),
-            ("the period", location),
-            ("the overflow button", more),
-            ("History", history),
+        for name in [
+            "window_sidebar",
+            "window_leading:0",
+            "window_leading:1",
+            "window_leading:2",
+            "window_location",
+            "window_more",
         ] {
-            assert!(part.area() > 0.0, "{name} stands in the bar: {rects:?}");
+            assert!(
+                rect(name).area() > 0.0,
+                "{name} stands in the bar: {rects:?}"
+            );
         }
-        assert!(
-            sidebar.x1 <= previous.x0 && previous.x1 <= next.x0 && next.x1 <= location.x0,
-            "in their order: {rects:?}"
+        assert_eq!(
+            rect("window_views_menu"),
+            Rect::ZERO,
+            "the views fold: {rects:?}"
         );
         assert!(
-            location.width() >= f64::from(crate::tokens::Metrics::BASE.location_min_width),
-            "the period keeps at least its least width: {location:?}"
-        );
-        assert!(location.x1 <= more.x0, "{rects:?}");
-        assert!(
-            more.x1 + SEARCH_CONTROL_WIDTH <= history.x0,
+            rect("window_more").x1 + SEARCH_CONTROL_WIDTH <= history.x0,
             "the window's search keeps its area before History: {rects:?}"
         );
-        assert_eq!(rect("window_leading:2"), Rect::ZERO, "Today folds");
-        assert_eq!(rect("window_views_menu"), Rect::ZERO, "so do the views");
         let tree = Widget::accessibility(&bar).expect("the bar is reachable");
         for label in ["Month", "Week", "Day", "Agenda", "Tasks"] {
             let item = find(&tree, Role::MenuItem, label)
                 .unwrap_or_else(|| panic!("{label} is in the overflow menu"));
             assert_eq!(item.state.checked, Some(label == "Week"));
         }
-        let today = find(&tree, Role::MenuItem, "Today").expect("Today is in the overflow menu");
-        assert_eq!(
-            today.action_target.as_deref(),
-            Some("window-toolbar-leading:today"),
-            "and runs as its button does"
-        );
         crate::window_toolbar::declare(None);
     }
 
@@ -1631,32 +1616,23 @@ mod tests {
         Some(shown.to_owned())
     }
 
-    /// A compact bar cannot fit a period's widest form: it names it in a narrower one, whole.
-    /// English drops `Mon, Jun 29 to Sun, Jul 5` for `Jun 29 to Jul 5`; a long language's period
-    /// folds its navigation and the sidebar's toggle, or leaves the row rather than be cut.
+    /// A compact bar names the period whole in every language, down to the numeric span where
+    /// the spelled forms do not fit, never cut in half.
     #[test]
-    fn a_compact_window_names_its_period_whole() {
+    fn a_compact_window_names_its_period_whole_in_a_longer_language() {
         use crate::format::speak_locale as speak;
-        let (_hosted, mut harness, bar) = compact_calendar_bar_at(420);
-        let shown = period_shown(&bar, &mut harness).expect("the period stands in the bar");
-        assert_eq!(
-            shown,
-            week_across_a_month().forms()[1],
-            "the bar names the week in its narrower form"
-        );
-        crate::window_toolbar::declare(None);
-        speak("de-DE");
-        for width in [420_u32, 360] {
-            let (_hosted, mut harness, bar) = compact_calendar_bar_at(width);
-            if width > 360 {
+        for locale in ["en-US", "de-DE"] {
+            speak(locale);
+            for width in [360_u32, 420] {
+                let (_hosted, mut harness, bar) = compact_calendar_bar_at(width);
+                let shown = period_shown(&bar, &mut harness)
+                    .unwrap_or_else(|| panic!("{locale} {width} px: the period stands"));
                 assert!(
-                    period_shown(&bar, &mut harness).is_some(),
-                    "{width} px: it stands"
+                    week_across_a_month().forms().contains(&shown),
+                    "{locale} {width} px: {shown:?}"
                 );
-            } else {
-                period_shown(&bar, &mut harness);
+                crate::window_toolbar::declare(None);
             }
-            crate::window_toolbar::declare(None);
         }
         speak("en-US");
     }

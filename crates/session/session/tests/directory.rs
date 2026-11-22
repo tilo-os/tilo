@@ -135,6 +135,7 @@ fn said(session: &Session) -> Vec<String> {
 
 fn page_of(entries: Vec<DirectoryEntry>) -> String {
     serde_json::to_string(&DirectoryPage {
+        host: None,
         workspaces: entries,
     })
     .expect("a directory page")
@@ -994,10 +995,7 @@ impl LoungeHost {
         let (server, workspaces, workspace) =
             block_on_within(runtime, "the lounge's host to start", async {
                 let server = tilo_server::daemon::Server::start_with_relay_mode(
-                    tilo_server::ServerConfig {
-                        state_root: state.join("host"),
-                        ..tilo_server::ServerConfig::default()
-                    },
+                    tilo_server::ServerConfig::loopback(state.join("host")),
                     tilo_server::daemon::ServerIdentity {
                         user_public_key: owner_key.verifying_key().to_bytes(),
                         device_signing_key: host_key.clone(),

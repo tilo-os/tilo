@@ -404,7 +404,6 @@ pub(super) fn admit(
                     context: None,
                 },
                 AdmissionProvenance {
-                    durable: None,
                     revision: Some(&request.revision),
                     origin: Some(InvocationCaller::Local {
                         route: route.clone(),

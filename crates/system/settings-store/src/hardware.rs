@@ -123,9 +123,6 @@ pub struct OutputDescriptor {
     /// card-qualified key only when another card exposes the same label.
     pub connector: String,
     /// Raw connector label exposed by DRM, e.g. `eDP-1` or `HDMI-A-1`.
-    /// Older compositor snapshots omit this field; consumers must then use
-    /// [`Self::connector`] as the user-facing fallback.
-    #[serde(default)]
     pub connector_label: String,
     pub modes: Vec<OutputMode>,
     pub hdr: bool,
@@ -2237,42 +2234,6 @@ fn default_chord(modifiers: &[&str], key: &str) -> KeyChord {
     }
 }
 
-/// Chords that used to be an action's default, as `(action, modifiers in
-/// sorted order, key)`. Never remove an entry: a settings file written by
-/// any earlier release may still carry it.
-const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
-    (ShortcutAction::ReopenClosedTab, &["Shift", "Super"], "t"),
-    (ShortcutAction::PreviousStrip, &["Shift", "Super"], "up"),
-    (ShortcutAction::NextStrip, &["Shift", "Super"], "down"),
-    (ShortcutAction::ToggleMaximize, &["Super"], "up"),
-    (ShortcutAction::Search, &["Super"], "k"),
-    (ShortcutAction::ReopenClosedTab, &["Shift", "Super"], "t"),
-    (ShortcutAction::PreviousStrip, &["Super"], "up"),
-    (ShortcutAction::NextStrip, &["Super"], "down"),
-    (
-        ShortcutAction::MoveGroupToPreviousStrip,
-        &["Shift", "Super"],
-        "up",
-    ),
-    (
-        ShortcutAction::MoveGroupToNextStrip,
-        &["Shift", "Super"],
-        "down",
-    ),
-    (ShortcutAction::FocusGroup1, &["Super"], "1"),
-    (ShortcutAction::FocusGroup2, &["Super"], "2"),
-    (ShortcutAction::FocusGroup3, &["Super"], "3"),
-    (ShortcutAction::FocusGroup4, &["Super"], "4"),
-    (ShortcutAction::FocusGroup5, &["Super"], "5"),
-    (ShortcutAction::FocusGroup6, &["Super"], "6"),
-    (ShortcutAction::FocusGroup7, &["Super"], "7"),
-    (ShortcutAction::FocusGroup8, &["Super"], "8"),
-    (ShortcutAction::FocusGroup9, &["Super"], "9"),
-    (ShortcutAction::PreviousTab, &["Ctrl", "Shift"], "tab"),
-    (ShortcutAction::NextTab, &["Ctrl"], "tab"),
-    (ShortcutAction::ReopenClosedTab, &["Ctrl", "Shift"], "t"),
-];
-
 impl ShortcutConfig {
     /// Validate an already assembled table before it becomes live runtime
     /// state.  Unlike [`Self::load`], this rejects rather than repairs so a
@@ -2410,27 +2371,11 @@ impl ShortcutConfig {
     /// defaults, then accept a stored override only when it is a valid,
     /// non-reserved, non-conflicting chord.  Bad entries fall back to their
     /// default instead of leaving ambiguous client ownership.
-    ///
-    /// A stored chord that was once the default for its action
-    /// (`RETIRED_DEFAULTS`) was saved because [`Self::save`] writes the
-    /// whole table, not because the person chose it; it yields to the
-    /// current default.
     #[must_use]
     pub fn normalise(loaded: Self) -> Self {
         let defaults = Self::default();
         let mut effective = defaults.clone();
         for (action, chord) in loaded.bindings {
-            if RETIRED_DEFAULTS.iter().any(|(retired, modifiers, key)| {
-                *retired == action
-                    && chord.key == *key
-                    && chord
-                        .modifiers
-                        .iter()
-                        .map(String::as_str)
-                        .eq(modifiers.iter().copied())
-            }) {
-                continue;
-            }
             if !chord.is_valid_configurable() || defaults.shadows(action, &chord) {
                 continue;
             }
@@ -2468,8 +2413,27 @@ impl ShortcutConfig {
         source.update_section("shortcuts", self.section()?)
     }
 
+    /// What a settings file keeps of the table: the bindings the person moved
+    /// off their current default, and the chords that run published actions.
+    /// Loading puts these over the defaults ([`Self::normalise`]), so a release
+    /// that changes a default reaches everyone who did not pick another chord,
+    /// and an untouched default is never pinned in a file.
+    #[must_use]
+    pub fn stored(&self) -> Self {
+        let defaults = Self::default();
+        Self {
+            bindings: self
+                .bindings
+                .iter()
+                .filter(|(action, chord)| defaults.bindings.get(*action) != Some(*chord))
+                .map(|(action, chord)| (*action, chord.clone()))
+                .collect(),
+            actions: self.actions.clone(),
+        }
+    }
+
     pub fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
-        let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
+        let value = serde_json::to_value(self.stored()).map_err(std::io::Error::other)?;
         Ok(value.as_object().cloned().unwrap_or_default())
     }
 }
@@ -2596,14 +2560,6 @@ mod tests {
                 assert!(config.output_for(&second.connector).is_none());
                 assert_eq!(first.label(), "HDMI-A-1");
                 assert_eq!(first.card_qualifier(), Some("pci:0000:01:00.0"));
-
-                let legacy: OutputDescriptor = serde_json::from_value(serde_json::json!({
-                    "connector": "HDMI-A-1",
-                    "modes": [], "hdr": false, "vrr": false, "color_profiles": []
-                }))
-                .expect("old snapshot remains compatible");
-                assert_eq!(legacy.label(), "HDMI-A-1");
-                assert_eq!(legacy.card_qualifier(), None);
             }
             {
                 let mut cfg = DisplayConfig::default();
@@ -2743,7 +2699,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn shortcut_tables_keep_their_defaults_migrate_and_stay_conflict_free;
+        fn shortcut_tables_keep_their_defaults_and_stay_conflict_free;
 
         phase tab_chords_default_to_super_and_leave_the_ctrl_chords_to_apps;
         {
@@ -2760,31 +2716,6 @@ mod tests {
                 );
             }
             assert!(cfg.validate().is_ok(), "no other default claims the chords");
-        }
-
-        phase saved_tab_defaults_migrate_without_overwriting_a_custom_chord;
-        {
-            for (action, saved) in [
-                (ShortcutAction::ReopenClosedTab, "Super+Shift+T"),
-                (ShortcutAction::ReopenClosedTab, "Ctrl+Shift+T"),
-                (ShortcutAction::NextTab, "Ctrl+Tab"),
-                (ShortcutAction::PreviousTab, "Ctrl+Shift+Tab"),
-            ] {
-                let mut old = ShortcutConfig::default();
-                old.bindings.insert(action, KeyChord::parse(saved).unwrap());
-                let migrated = ShortcutConfig::normalise(old);
-                assert_eq!(
-                    migrated.bindings[&action],
-                    ShortcutConfig::default().bindings[&action],
-                    "{saved} was a default and follows the new one"
-                );
-                assert!(migrated.validate().is_ok());
-            }
-            let action = ShortcutAction::ReopenClosedTab;
-            let custom = KeyChord::parse("Ctrl+Alt+Shift+T").unwrap();
-            let mut edited = ShortcutConfig::default();
-            edited.set(action, custom.clone()).unwrap();
-            assert_eq!(ShortcutConfig::normalise(edited).bindings[&action], custom);
         }
 
         phase standard_desktop_chords_have_their_conventional_defaults;
@@ -2966,41 +2897,6 @@ mod tests {
                 assert!(repaired.validate().is_ok());
             }
             {
-                let mut saved_by_an_older_release = ShortcutConfig::default();
-                for action in [
-                    ShortcutAction::MoveGroupToPreviousStrip,
-                    ShortcutAction::MoveGroupToNextStrip,
-                ] {
-                    saved_by_an_older_release.bindings.remove(&action);
-                }
-                for (action, chord) in [
-                    (ShortcutAction::PreviousStrip, "Super+Shift+Up"),
-                    (ShortcutAction::NextStrip, "Super+Shift+Down"),
-                    (ShortcutAction::ToggleMaximize, "Super+Up"),
-                ] {
-                    saved_by_an_older_release
-                        .bindings
-                        .insert(action, KeyChord::parse(chord).unwrap());
-                }
-                assert_eq!(
-                    ShortcutConfig::normalise(saved_by_an_older_release.clone()),
-                    ShortcutConfig::default(),
-                    "an untouched older table is today's defaults"
-                );
-
-                saved_by_an_older_release.bindings.insert(
-                    ShortcutAction::NextStrip,
-                    KeyChord::parse("Super+J").unwrap(),
-                );
-                let repaired = ShortcutConfig::normalise(saved_by_an_older_release);
-                assert_eq!(
-                    repaired.bindings[&ShortcutAction::NextStrip].display(),
-                    "Super+j",
-                    "a chord the person chose is kept"
-                );
-                assert!(repaired.validate().is_ok());
-            }
-            {
                 let dir = crate::test_dir();
                 let store = crate::profile(dir.path());
 
@@ -3009,9 +2905,13 @@ mod tests {
                     .set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap())
                     .unwrap();
                 saved.save_in(&*store).unwrap();
+                assert_eq!(
+                    crate::SettingsSource::load(&*store)["shortcuts"]["bindings"],
+                    serde_json::json!({"next_tab": {"modifiers": ["Ctrl"], "key": "j"}}),
+                    "the file keeps only the chord the person changed"
+                );
                 let reloaded = ShortcutConfig::load_in(&*store);
-
-                assert_eq!(reloaded, saved);
+                assert_eq!(reloaded, saved, "the defaults plus that one chord");
                 assert!(reloaded.validate().is_ok());
             }
             {
@@ -3040,61 +2940,6 @@ mod tests {
                     "Super+Ctrl+Shift+Right"
                 );
             }
-        }
-
-        phase a_table_saved_when_super_arrows_switched_strips_takes_the_new_scheme;
-        {
-            let mut saved = ShortcutConfig::default();
-            for action in [
-                ShortcutAction::MaximizeWindow,
-                ShortcutAction::RestoreWindow,
-                ShortcutAction::FocusStrip1,
-                ShortcutAction::FocusStrip2,
-                ShortcutAction::FocusStrip3,
-                ShortcutAction::FocusStrip4,
-                ShortcutAction::FocusStrip5,
-                ShortcutAction::FocusStrip6,
-                ShortcutAction::FocusStrip7,
-                ShortcutAction::FocusStrip8,
-                ShortcutAction::FocusStrip9,
-            ] {
-                saved.bindings.remove(&action);
-            }
-            for (action, chord) in [
-                (ShortcutAction::PreviousStrip, "Super+Up"),
-                (ShortcutAction::NextStrip, "Super+Down"),
-                (ShortcutAction::MoveGroupToPreviousStrip, "Super+Shift+Up"),
-                (ShortcutAction::MoveGroupToNextStrip, "Super+Shift+Down"),
-                (ShortcutAction::FocusGroup1, "Super+1"),
-                (ShortcutAction::FocusGroup5, "Super+5"),
-                (ShortcutAction::FocusGroup9, "Super+9"),
-            ] {
-                saved
-                    .bindings
-                    .insert(action, KeyChord::parse(chord).unwrap());
-            }
-            let section = saved.section().unwrap();
-            assert_eq!(
-                ShortcutConfig::from_section(section),
-                ShortcutConfig::default(),
-                "an untouched table from before is today's defaults"
-            );
-
-            saved.bindings.insert(
-                ShortcutAction::FocusGroup2,
-                KeyChord::parse("Alt+Shift+2").unwrap(),
-            );
-            let repaired = ShortcutConfig::normalise(saved);
-            assert_eq!(
-                repaired.bindings[&ShortcutAction::FocusGroup2].display(),
-                "Alt+Shift+2",
-                "a chord the person chose is kept"
-            );
-            assert_eq!(
-                repaired.bindings[&ShortcutAction::FocusStrip2].display(),
-                "Super+2"
-            );
-            assert!(repaired.validate().is_ok());
         }
 
         phase a_chord_runs_any_published_action_but_never_takes_a_desktop_chord;

@@ -643,7 +643,8 @@ mod tests {
                 state_root: dir.path().join("state"),
                 identity_root: dir.path().join("identity"),
                 ..Default::default()
-            },
+            }
+            .on_loopback(),
             crate::daemon::ServerIdentity {
                 user_public_key: tilo_device_identity::persist::read_public_key(&paths.user_pubkey)
                     .unwrap(),

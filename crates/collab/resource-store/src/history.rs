@@ -154,7 +154,11 @@ impl Touches {
         last: bool,
     ) -> Option<Version> {
         self.read(doc, doc_id);
-        let made = self.made_in.get(parent).map(Vec::as_slice).unwrap_or_default();
+        let made = self
+            .made_in
+            .get(parent)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         let steps = made.iter().map(|(step, ..)| *step).chain(
             removed
                 .iter()
@@ -192,7 +196,9 @@ impl Touches {
         }
         picked.sort_by_key(|(at, _)| *at);
         let mut version = self.steps.get(step)?.clone();
-        version.nested.extend(picked.into_iter().map(|(_, nested)| nested));
+        version
+            .nested
+            .extend(picked.into_iter().map(|(_, nested)| nested));
         Some(version)
     }
 

@@ -108,6 +108,13 @@ pub struct Connector {
     send_of: HashMap<Request, String>,
     /// The device came online again.
     online: Arc<AtomicBool>,
+    /// The accounts whose sign-in waits on the person's yes, as last said.
+    asks: Vec<String>,
+    /// The accounts signing in to no server for want of a password, as last seen: one that gets
+    /// its password is watched and tried again.
+    unsigned: BTreeSet<String>,
+    /// Hands the person's yes to an account's sign-in to the session's account sign-ins.
+    allow: Box<dyn Fn(&str)>,
 }
 
 fn shared(source: &Rc<AccountSource>) -> AccountSource {
@@ -142,9 +149,19 @@ impl Connector {
             sends: HashMap::new(),
             send_of: HashMap::new(),
             online,
+            asks: Vec::new(),
+            unsigned: BTreeSet::new(),
+            allow: Box::new(|_| {}),
         };
         connector.follow_accounts();
         connector
+    }
+
+    /// The connector handing the person's yes to an account's sign-in to `allow`.
+    #[must_use]
+    pub fn allowing(mut self, allow: impl Fn(&str) + 'static) -> Self {
+        self.allow = Box::new(allow);
+        self
     }
 
     /// Run until `wakeups` ends; `woken` sends one for each attaching instance's requests.
@@ -226,6 +243,9 @@ impl Connector {
             asked: HashMap::new(),
         };
         let mut first = vec![FromConnector::Accounts(self.accounts.clone())];
+        if !self.asks.is_empty() {
+            first.push(FromConnector::Asks(self.asks.clone()));
+        }
         // What the servers said while nobody was attached: given up only once it is told.
         for account in &self.arrived {
             first.push(FromConnector::Event(Event::Arrived {
@@ -305,6 +325,10 @@ impl Connector {
                 if self.watched.insert(account.clone()) {
                     self.own.watch(&account);
                 }
+                return;
+            }
+            ToConnector::Allow { account } => {
+                (self.allow)(&account);
                 return;
             }
             ToConnector::Send { .. } => return,
@@ -508,18 +532,49 @@ impl Connector {
     }
 
     /// Follow the workspace's accounts: say them again when they changed, and watch each inbox.
+    /// Say which wait on the person's yes to sign in, and try again those that got their
+    /// password.
     fn follow_accounts(&mut self) {
         let accounts = self.own.accounts();
-        if accounts == self.accounts {
+        if accounts != self.accounts {
+            for account in &accounts {
+                if self.watched.insert(account.id.clone()) {
+                    self.own.watch(&account.id);
+                }
+            }
+            self.accounts.clone_from(&accounts);
+            self.broadcast(&FromConnector::Accounts(accounts));
+        }
+        let signing = (self.source)();
+        let asks: Vec<String> = signing
+            .iter()
+            .filter(|account| account.asks.is_some())
+            .map(|account| account.config.email.clone())
+            .collect();
+        if asks != self.asks {
+            self.asks.clone_from(&asks);
+            self.broadcast(&FromConnector::Asks(asks));
+        }
+        let unsigned: BTreeSet<String> = signing
+            .iter()
+            .filter(|account| account.refused.is_some() || account.asks.is_some())
+            .map(|account| account.config.email.clone())
+            .collect();
+        let signed: Vec<String> = signing
+            .iter()
+            .map(|account| account.config.email.clone())
+            .filter(|email| self.unsigned.contains(email) && !unsigned.contains(email))
+            .collect();
+        self.unsigned = unsigned;
+        if signed.is_empty() {
             return;
         }
-        for account in &accounts {
-            if self.watched.insert(account.id.clone()) {
-                self.own.watch(&account.id);
-            }
+        // Its watch found no password: it is watched again, and what could not reach its
+        // server is asked for again.
+        for account in &signed {
+            self.own.watch(account);
         }
-        self.accounts.clone_from(&accounts);
-        self.broadcast(&FromConnector::Accounts(accounts));
+        self.broadcast(&FromConnector::Online);
     }
 }
 
@@ -535,10 +590,11 @@ pub fn serve(sign_ins: UnixStream, attachments: impl Iterator<Item = UnixStream>
     });
     let online = Arc::new(AtomicBool::new(false));
     crate::follow_the_network(Arc::clone(&online), Arc::clone(&wake));
-    let accounts = {
+    let sign_ins = {
         let wake = Arc::clone(&wake);
         crate::sign_ins::follow(sign_ins, move || wake())
     };
+    let accounts = sign_ins.source();
     let (requests, events) = mail_engine::engine::spawn(tilo_content::ContentStore::memory(), wake);
     let attaching = woken.clone();
     let spawned = std::thread::Builder::new()
@@ -554,7 +610,8 @@ pub fn serve(sign_ins: UnixStream, attachments: impl Iterator<Item = UnixStream>
         tracing::error!(%error, "the mail connector takes no instances");
         return;
     }
-    let connector = Connector::new(accounts, requests, events, online);
+    let connector = Connector::new(accounts, requests, events, online)
+        .allowing(move |account| sign_ins.allow(account));
     connector.run(&wakeups, &woken);
 }
 
@@ -795,6 +852,7 @@ mod tests {
                     ..AccountConfig::default()
                 },
                 refused: Some(NO_GRANT.into()),
+                asks: None,
             }]
         }));
         // The connector watches the account's inbox, and that is all it asks of the engine.

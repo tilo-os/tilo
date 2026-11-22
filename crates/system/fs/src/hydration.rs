@@ -1,22 +1,17 @@
-//! Content hydration: serve file bytes locally, fetching from peers on demand.
+//! Content hydration: serve file bytes locally, fetching what is missing from the workspace.
 //!
 //! A `read()` resolves an inode to its content id through the namespace, then asks the
-//! [`Hydrator`]. Small content is loose blobs, fetched in batched `GetMany` requests; file-backed
-//! content is read from the store's area, and its missing byte ranges are fetched into it with
-//! ranged, BAO-verified `GET`s of the content id.
-//!
-//! A workspace whose bytes travel beside its record rather than between daemons names a
-//! [`ContentSource`] instead: what no peer serves is asked of it, one blob at a time.
+//! [`Hydrator`]. Small content is loose blobs; file-backed content is read from the store's area,
+//! and the chunks its missing byte ranges overlap are fetched into it. Every byte this device
+//! lacks comes from one place, the workspace's [`ContentSource`]: the bytes travel beside the
+//! tree's records, and are checked against their hash before anything keeps them.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
-use futures_util::StreamExt;
-use futures_util::stream::FuturesUnordered;
-use iroh_base::EndpointAddr;
 use iroh_blobs::Hash;
 use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
@@ -35,11 +30,6 @@ pub use ranges::Priority;
 type FetchResult = std::result::Result<Bytes, String>;
 type FetchCell = Arc<OnceCell<FetchResult>>;
 type FetchMap = HashMap<Hash, FetchCell>;
-
-const PEER_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
-const PEER_FETCH_TIMEOUT: Duration = Duration::from_secs(4);
-const FETCH_DEADLINE: Duration = Duration::from_secs(6);
-const HEDGE_DELAY: Duration = Duration::from_millis(150);
 
 /// Longest a blocked read waits for bytes a peer must supply, through FUSE and through native
 /// placeholders alike. Past it the read fails with `EIO` and the fetch keeps going, so a retry finds
@@ -60,16 +50,8 @@ where
     }
 }
 
-#[derive(Clone)]
-struct PeerHealth {
-    addr: EndpointAddr,
-    last_seen: Instant,
-    consecutive_failures: u8,
-    retry_after: Instant,
-    latency: Option<Duration>,
-}
-
-/// Where blobs come from when no peer of the sync protocol serves them.
+/// Where the blobs this device lacks come from: the workspace, through the device's workspace
+/// service.
 pub trait ContentSource: Send + Sync {
     /// The bytes named `hash`, when the source can hand them over; they are checked against `hash`
     /// before anything keeps them.
@@ -77,34 +59,25 @@ pub trait ContentSource: Send + Sync {
 }
 
 pub struct Hydrator {
-    /// Where peers are dialled from.
-    pub net: crate::net::Net,
     pub store: Arc<ContentStore>,
-    peers: Arc<RwLock<Vec<PeerHealth>>>,
     /// Number of hydration fetches in flight for each blob, refcounted rather than a set: two
     /// overlapping guards for the same hash keep the file `downloading` until the final fetch ends.
     in_flight: Arc<Mutex<HashMap<Hash, usize>>>,
-    /// Per-blob single-flight cells: concurrent reads and prefetches await the same peer request
-    /// instead of downloading identical bytes.
+    /// Per-blob single-flight cells: concurrent reads and prefetches await the same ask
+    /// instead of fetching identical bytes.
     fetches: Arc<AsyncMutex<FetchMap>>,
-    remote_sources: Arc<RwLock<HashMap<Hash, EndpointAddr>>>,
+    /// The blobs this process received from the workspace: they are kept elsewhere too.
+    received: Arc<RwLock<std::collections::HashSet<Hash>>>,
     /// Decoded manifests with their offset tables, bounded by total chunk count.
     manifests: moka::sync::Cache<Hash, Arc<Manifest>>,
     flights: ranges::Flights,
     scheduler: ranges::Scheduler,
     ranged_bytes: std::sync::atomic::AtomicU64,
     blob_bytes: std::sync::atomic::AtomicU64,
-    /// Pooled blob-protocol connections per peer, by number: batches use connection 0, large content spreads
-    /// over several.
-    blob_connections:
-        AsyncMutex<HashMap<(iroh_base::PublicKey, usize), iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
     source: Option<Arc<dyn ContentSource>>,
     file_keys: Option<FileKeys>,
     scoped_file_keys: Option<file_keys::ScopedFileKeys>,
-    /// This device's certified identity: presented to a peer before the first content request on
-    /// a connection, so a device whose documents arrived another way is known before it asks.
-    identity: Option<Arc<crate::sync::FsTransportIdentity>>,
 }
 
 /// Chunk entries held by the manifest cache: roughly 40 bytes each, so about 20 MiB.
@@ -130,14 +103,12 @@ impl Drop for FetchGuard {
 }
 
 impl Hydrator {
-    pub fn new(net: impl Into<crate::net::Net>, store: Arc<ContentStore>) -> Self {
+    pub fn new(store: Arc<ContentStore>) -> Self {
         Self {
-            net: net.into(),
             store,
-            peers: Arc::new(RwLock::new(Vec::new())),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             fetches: Arc::new(AsyncMutex::new(HashMap::new())),
-            remote_sources: Arc::new(RwLock::new(HashMap::new())),
+            received: Arc::new(RwLock::new(std::collections::HashSet::new())),
             manifests: moka::sync::Cache::builder()
                 .max_capacity(MANIFEST_CHUNK_BUDGET)
                 .weigher(|_, manifest: &Arc<Manifest>| {
@@ -148,22 +119,20 @@ impl Hydrator {
             scheduler: ranges::Scheduler::default(),
             ranged_bytes: std::sync::atomic::AtomicU64::new(0),
             blob_bytes: std::sync::atomic::AtomicU64::new(0),
-            blob_connections: AsyncMutex::new(HashMap::new()),
             runtime_handle: tokio::runtime::Handle::current(),
             source: None,
             file_keys: None,
             scoped_file_keys: None,
-            identity: None,
         }
     }
 
-    /// Certify this device to every peer this hydrator fetches from.
+    /// Whether content this device lacks has somewhere to come from.
     #[must_use]
-    pub fn with_identity(mut self, identity: Arc<crate::sync::FsTransportIdentity>) -> Self {
-        self.identity = Some(identity);
-        self
+    pub fn has_source(&self) -> bool {
+        self.source.is_some()
     }
 
+    /// Where the content this device lacks is asked for.
     #[must_use]
     pub fn with_source(mut self, source: Arc<dyn ContentSource>) -> Self {
         self.source = Some(source);
@@ -194,6 +163,7 @@ impl Hydrator {
                 match self.store.store_fetched(hash, bytes).await {
                     Ok(()) => {
                         self.count_blob_bytes(length);
+                        self.received.write_recover().insert(hash);
                         Ok(())
                     }
                     Err(error) => {
@@ -268,84 +238,8 @@ impl Hydrator {
         }
     }
 
-    /// Register a peer we can hydrate blobs from. Idempotent per endpoint id.
-    pub fn add_peer(&self, addr: EndpointAddr) {
-        let mut peers = self.peers.write_recover();
-        let now = Instant::now();
-        if let Some(peer) = peers.iter_mut().find(|peer| peer.addr.id == addr.id) {
-            // A stable node id can acquire new direct or relay hints after a network move: keep the
-            // health history but use the fresh address.
-            peer.addr = addr;
-            peer.last_seen = now;
-        } else {
-            peers.push(PeerHealth {
-                addr,
-                last_seen: now,
-                consecutive_failures: 0,
-                retry_after: now,
-                latency: None,
-            });
-        }
-    }
-
-    /// Forget a peer removed from authenticated discovery or local policy.
-    pub fn remove_peer(&self, id: iroh_base::PublicKey) -> bool {
-        let mut peers = self.peers.write_recover();
-        let before = peers.len();
-        peers.retain(|peer| peer.addr.id != id);
-        before != peers.len()
-    }
-
-    pub fn known_peers(&self) -> Vec<EndpointAddr> {
-        let now = Instant::now();
-        let mut peers = self.peers.write_recover();
-        peers.retain(|peer| now.duration_since(peer.last_seen) <= PEER_STALE_AFTER);
-        let any_ready = peers.iter().any(|peer| peer.retry_after <= now);
-        let mut ranked: Vec<_> = peers
-            .iter()
-            .filter(|peer| !any_ready || peer.retry_after <= now)
-            .cloned()
-            .collect();
-        ranked.sort_by_key(|peer| {
-            (
-                peer.consecutive_failures,
-                peer.latency.unwrap_or(Duration::from_secs(60)),
-                peer.addr.id,
-            )
-        });
-        drop(peers);
-        ranked.into_iter().map(|peer| peer.addr).collect()
-    }
-
-    fn record_peer_result(&self, id: iroh_base::PublicKey, elapsed: Duration, success: bool) {
-        let now = Instant::now();
-        let mut peers = self.peers.write_recover();
-        let Some(peer) = peers.iter_mut().find(|peer| peer.addr.id == id) else {
-            drop(peers);
-            return;
-        };
-        if success {
-            peer.last_seen = now;
-            peer.consecutive_failures = 0;
-            peer.retry_after = now;
-            peer.latency = Some(peer.latency.map_or(elapsed, |old| {
-                old.saturating_mul(3)
-                    .saturating_add(elapsed)
-                    .checked_div(4)
-                    .unwrap_or(Duration::ZERO)
-            }));
-        } else {
-            peer.consecutive_failures = peer.consecutive_failures.saturating_add(1);
-            let exponent = peer.consecutive_failures.min(6);
-            let delay =
-                250_u64.saturating_mul(1_u64.checked_shl(u32::from(exponent)).unwrap_or(u64::MAX));
-            peer.retry_after = now.checked_add(Duration::from_millis(delay)).unwrap_or(now);
-        }
-        drop(peers);
-    }
-
     /// Local residency and the exact physical blobs that make up one file. `remotely_durable` is
-    /// strict: every present component must have been bao-verified from a peer in this process.
+    /// strict: every present component must have been received from the workspace in this process.
     pub async fn residency(&self, manifest_hash: Hash) -> ContentResidency {
         let mut result = ContentResidency {
             remote_only: true,
@@ -361,14 +255,12 @@ impl Hydrator {
         result.remote_only = false;
         result.hydrated_bytes = bytes.len() as u64;
         result.blobs.push(manifest_hash);
-        let sources = self.remote_sources.read_recover().clone();
-        result.remotely_durable = sources.contains_key(&manifest_hash);
-        result.remote_source = sources.get(&manifest_hash).cloned();
+        let received = self.received.read_recover().clone();
+        result.remotely_durable = received.contains(&manifest_hash);
         if content::is_file_backed(&manifest) {
-            // Fetched ranges are verified per group but not attributed to a peer, so file-backed
-            // content never counts as remotely durable here; receipts are the durability proof.
+            // Fetched ranges fill the area chunk by chunk, so file-backed content never counts
+            // as remotely durable here; receipts are the durability proof.
             result.remotely_durable = false;
-            result.remote_source = None;
             if let Some(entry) = self.store.files().entry(manifest_hash.as_bytes()) {
                 result.hydrated_bytes = result.hydrated_bytes.saturating_add(entry.resident);
             }
@@ -380,10 +272,7 @@ impl Hydrator {
             if self.store.has(hash).await {
                 result.hydrated_bytes = result.hydrated_bytes.saturating_add(u64::from(chunk.len));
                 result.blobs.push(hash);
-                result.remotely_durable &= sources.contains_key(&hash);
-                if result.remote_source.as_ref().map(|p| p.id) != sources.get(&hash).map(|p| p.id) {
-                    result.remote_source = None;
-                }
+                result.remotely_durable &= received.contains(&hash);
             } else {
                 result.remotely_durable = false;
             }
@@ -405,54 +294,17 @@ impl Hydrator {
         };
         let fetched = cell
             .get_or_init(|| async {
-                let peers = self.known_peers();
-                if peers.is_empty() {
-                    return Err(format!("no peers available to hydrate {hash}"));
-                }
-                let mut attempts = FuturesUnordered::new();
-                for (index, peer) in peers.into_iter().enumerate() {
-                    attempts.push(async move {
-                        if index > 0 {
-                            let delay = u32::try_from(index)
-                                .map_or(Duration::MAX, |index| HEDGE_DELAY.saturating_mul(index));
-                            tokio::time::sleep(delay).await;
-                        }
-                        self.fetch_from(hash, peer).await
-                    });
-                }
-                let result = tokio::time::timeout(FETCH_DEADLINE, async {
-                    let mut last_err = format!("hydration failed for {hash}");
-                    while let Some(result) = attempts.next().await {
-                        match result {
-                            Ok(bytes) => return Ok(bytes),
-                            Err(error) => last_err = error.to_string(),
-                        }
-                    }
-                    Err(last_err)
-                })
-                .await;
-                match result {
-                    Ok(result) => result,
-                    Err(_) => Err(format!("hydration deadline exceeded for {hash}")),
-                }
-            })
-            .await
-            .clone();
-        let fetched = match fetched {
-            Err(_) if self.source.is_some() => {
                 if self.fetch_from_source(vec![hash]).await.is_empty() {
                     self.store
                         .local(hash)
                         .await
                         .ok_or_else(|| format!("{hash} was evicted as it arrived"))
                 } else {
-                    Err(format!(
-                        "neither a peer nor the content source holds {hash}"
-                    ))
+                    Err(format!("the workspace did not hand over {hash}"))
                 }
-            }
-            fetched => fetched,
-        };
+            })
+            .await
+            .clone();
 
         // Remove only our completed cell. A later caller may already have
         // installed a new retry cell after a failed request.
@@ -480,10 +332,9 @@ impl Hydrator {
         }
         self.fetch_many(vec![Want::chunk(hash, len, manifest_hash)])
             .await;
-        self.store
-            .local(hash)
-            .await
-            .ok_or_else(|| anyhow!("no peer served chunk {hash} of {manifest_hash}"))
+        self.store.local(hash).await.ok_or_else(|| {
+            anyhow!("the workspace did not hand over chunk {hash} of {manifest_hash}")
+        })
     }
 
     /// Read a byte range of a file given its content id: fetch the manifest, then only what
@@ -880,40 +731,6 @@ impl Hydrator {
         let bytes = self.read_blob(manifest_hash, 0, u64::MAX).await?;
         Ok(Manifest::decode(&bytes)?)
     }
-
-    /// Fetch a whole blob from a specific peer, verify, persist and return it. `get_blob` streams
-    /// bao-verified content, so a corrupt blob fails the stream instead of returning bad bytes.
-    pub async fn fetch_from(&self, hash: Hash, peer: EndpointAddr) -> Result<Bytes> {
-        let _guard = self.mark_fetching(hash);
-        let started = Instant::now();
-        let peer_id = peer.id;
-        let result = match tokio::time::timeout(PEER_FETCH_TIMEOUT, async {
-            let conn = self.blob_connection(&peer).await?;
-            let asking = Instant::now();
-            let (bytes, _stats) = iroh_blobs::get::request::get_blob(conn, hash)
-                .bytes_and_stats()
-                .await?;
-            if tracing_reads() {
-                eprintln!(
-                    "fetch of {hash} from {}: asked in {:?}, {} bytes",
-                    peer_id,
-                    asking.elapsed(),
-                    bytes.len()
-                );
-            }
-            self.count_blob_bytes(bytes.len() as u64);
-            self.store.store_fetched(hash, bytes.clone()).await?;
-            self.remote_sources.write_recover().insert(hash, peer);
-            Ok::<_, anyhow::Error>(bytes)
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(anyhow!("hydration from peer timed out")),
-        };
-        self.record_peer_result(peer_id, started.elapsed(), result.is_ok());
-        result
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -923,7 +740,6 @@ pub struct ContentResidency {
     pub in_flight: bool,
     pub remotely_durable: bool,
     pub blobs: Vec<Hash>,
-    pub remote_source: Option<EndpointAddr>,
 }
 
 fn slice(bytes: &[u8], offset: u64, size: u64) -> Vec<u8> {
@@ -941,34 +757,35 @@ fn slice(bytes: &[u8], offset: u64, size: u64) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-#[cfg(test)]
-pub(crate) mod test_peers {
-    use iroh::endpoint::Connection;
-    use iroh::protocol::{AcceptError, ProtocolHandler, Router};
+/// Another content store on this device as the source: what a test reads one mount's bytes
+/// from in another, as the workspace would hand them over.
+#[doc(hidden)]
+pub struct StoreSource(pub Arc<ContentStore>);
 
-    #[derive(Debug)]
-    struct Silent;
-
-    impl ProtocolHandler for Silent {
-        async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-            connection.closed().await;
-            Ok(())
-        }
+impl ContentSource for StoreSource {
+    fn fetch(&self, hash: Hash) -> futures_util::future::BoxFuture<'static, Option<Bytes>> {
+        let store = Arc::clone(&self.0);
+        Box::pin(async move { store.local(hash).await })
     }
+}
 
-    pub(crate) async fn silent() -> Router {
-        let endpoint = test_server::direct_endpoint().await;
-        Router::builder(endpoint)
-            .accept(iroh_blobs::ALPN, Silent)
-            .spawn()
-    }
+/// Whether reads and their fetches say where their time went (`TILO_FS_TRACE_READS=1`): read
+/// once, so a read's hot path costs no environment lookup.
+pub(crate) fn tracing_reads() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TILO_FS_TRACE_READS").is_some())
+}
+
+/// Whether a commit says where its time went (`TILO_FS_TRACE_WRITES=1`).
+pub(crate) fn tracing_writes() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TILO_FS_TRACE_WRITES").is_some())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iroh::endpoint::{Endpoint, presets};
-    use iroh::protocol::Router;
+    use std::time::Instant;
 
     #[tokio::test]
     async fn a_read_that_cannot_arrive_fails_at_its_bound_and_keeps_fetching() {
@@ -1010,18 +827,8 @@ mod tests {
         }
     }
 
-    pub(super) async fn local_endpoint() -> Endpoint {
-        Endpoint::builder(presets::Minimal)
-            .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-            .unwrap()
-            .bind()
-            .await
-            .unwrap()
-    }
-
     #[tokio::test]
-    async fn content_no_peer_serves_arrives_from_the_content_source() {
+    async fn content_this_device_lacks_arrives_from_the_content_source() {
         for length in [11_usize, 300_000, 3 * 1024 * 1024] {
             let written: Vec<u8> = (0..length)
                 .map(|i| {
@@ -1030,25 +837,22 @@ mod tests {
                 .collect();
             let there = Arc::new(ContentStore::memory());
             let content = there.write_content(&written).await.unwrap().unwrap();
-            let there = Arc::new(Hydrator::new(local_endpoint().await, there));
+            let there = Arc::new(Hydrator::new(there));
             let blobs = there.content_blobs(content).await.unwrap();
             assert_eq!(blobs[0], content, "the manifest comes first");
             for blob in &blobs {
                 assert!(there.local_content_blob(content, *blob).await.is_some());
             }
 
-            let here = Hydrator::new(local_endpoint().await, Arc::new(ContentStore::memory()))
+            let here = Hydrator::new(Arc::new(ContentStore::memory()))
                 .with_source(Arc::new(OtherDevice(Arc::clone(&there), content)));
             let read = here.read(content, 0, length as u64).await.unwrap();
             assert!(read == written, "{length} bytes read back as written");
         }
 
-        let nowhere = Hydrator::new(local_endpoint().await, Arc::new(ContentStore::memory()))
-            .with_source(Arc::new(OtherDevice(
-                Arc::new(Hydrator::new(
-                    local_endpoint().await,
-                    Arc::new(ContentStore::memory()),
-                )),
+        let nowhere =
+            Hydrator::new(Arc::new(ContentStore::memory())).with_source(Arc::new(OtherDevice(
+                Arc::new(Hydrator::new(Arc::new(ContentStore::memory()))),
                 Hash::from([3; 32]),
             )));
         assert!(
@@ -1058,13 +862,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_content_is_read_without_peers() {
+    async fn local_content_is_read_without_a_source() {
         {
-            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let hash = store.write_content(b"hello local").await.unwrap().unwrap();
 
-            let hydrator = Hydrator::new(endpoint, store);
+            let hydrator = Hydrator::new(store);
             let got = hydrator.read(hash, 0, 11).await.unwrap();
             assert_eq!(&got, b"hello local");
 
@@ -1072,13 +875,12 @@ mod tests {
             assert_eq!(&mid, b"local");
         }
         {
-            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let data: Vec<u8> = (0..200_000_u32)
                 .map(|i| u8::try_from(i % 251).unwrap())
                 .collect();
             let hash = store.write_content(&data).await.unwrap().unwrap();
-            let hydrator = Hydrator::new(endpoint, store);
+            let hydrator = Hydrator::new(store);
             assert_eq!(
                 hydrator.read_local(hash, 70_000, 50_000).await.unwrap(),
                 data[70_000..120_000]
@@ -1094,9 +896,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chunked_ranges_read_locally_and_missing_blobs_error_without_peers() {
+    async fn chunked_ranges_read_locally_and_missing_blobs_error_without_a_source() {
         {
-            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let data: Vec<u8> = (0..300_000u32)
                 .map(|i| u8::try_from((i.wrapping_mul(2_654_435_761) >> 13) & 0xff).unwrap())
@@ -1104,7 +905,7 @@ mod tests {
             let mh = store.write_content(&data).await.unwrap().unwrap();
             assert!(store.local(mh).await.is_some(), "manifest stored");
 
-            let hyd = Hydrator::new(endpoint, store);
+            let hyd = Hydrator::new(store);
             assert_eq!(hyd.content_len(mh).await.unwrap(), data.len() as u64);
 
             assert_eq!(hyd.read(mh, 0, data.len() as u64).await.unwrap(), data);
@@ -1121,9 +922,8 @@ mod tests {
             }
         }
         {
-            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
-            let hydrator = Hydrator::new(endpoint, store);
+            let hydrator = Hydrator::new(store);
             let absent = Hash::from([9u8; 32]);
             assert!(hydrator.read(absent, 0, 16).await.is_err());
         }
@@ -1136,13 +936,12 @@ mod tests {
     )]
     async fn sync_state_reports_local_projected_and_downloading_content() {
         {
-            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let data: Vec<u8> = (0..250_000u32)
                 .map(|i| u8::try_from((i.wrapping_mul(2_654_435_761) >> 11) & 0xff).unwrap())
                 .collect();
             let mh = store.write_content(&data).await.unwrap().unwrap();
-            let hyd = Hydrator::new(endpoint, store);
+            let hyd = Hydrator::new(store);
             assert_eq!(
                 hyd.sync_state(mh).await,
                 SyncState::Local,
@@ -1150,9 +949,8 @@ mod tests {
             );
         }
         {
-            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
-            let hyd = Hydrator::new(endpoint, store);
+            let hyd = Hydrator::new(store);
             let absent = Hash::from([7u8; 32]);
             assert_eq!(
                 hyd.sync_state(absent).await,
@@ -1161,7 +959,6 @@ mod tests {
             );
         }
         {
-            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let present = store
                 .ingest(Bytes::from_static(b"chunk that exists"))
@@ -1182,7 +979,7 @@ mod tests {
                 ],
             );
             let mh = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
-            let hyd = Hydrator::new(endpoint, store);
+            let hyd = Hydrator::new(store);
             assert_eq!(
                 hyd.sync_state(mh).await,
                 SyncState::Projected,
@@ -1190,13 +987,12 @@ mod tests {
             );
         }
         {
-            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let data: Vec<u8> = (0..200_000u32)
                 .map(|i| u8::try_from((i.wrapping_mul(40_503) >> 9) & 0xff).unwrap())
                 .collect();
             let mh = store.write_content(&data).await.unwrap().unwrap();
-            let hyd = Hydrator::new(endpoint, store);
+            let hyd = Hydrator::new(store);
             assert_eq!(hyd.sync_state(mh).await, SyncState::Local);
 
             let guard = hyd.mark_fetching(mh);
@@ -1215,14 +1011,13 @@ mod tests {
             );
         }
         {
-            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let mh = store
                 .write_content(b"already local")
                 .await
                 .unwrap()
                 .unwrap();
-            let hyd = Hydrator::new(endpoint, store);
+            let hyd = Hydrator::new(store);
 
             let first = hyd.mark_fetching(mh);
             let second = hyd.mark_fetching(mh);
@@ -1245,11 +1040,10 @@ mod tests {
             assert_eq!(hyd.sync_state(mh).await, SyncState::Local);
         }
         {
-            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let a = Hash::from([0xA1; 32]);
             let b = Hash::from([0xB2; 32]);
-            let hyd = Hydrator::new(endpoint, store);
+            let hyd = Hydrator::new(store);
 
             let a1 = hyd.mark_fetching(a);
             let a2 = hyd.mark_fetching(a);
@@ -1265,129 +1059,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peers_hydrate_real_bytes_and_unhealthy_peers_are_backed_off() {
-        async fn failed_peer_is_backed_off_behind_a_healthy_peer() {
-            let endpoint = test_server::direct_endpoint().await;
-            let store = Arc::new(ContentStore::memory());
-            let hydrator = Hydrator::new(endpoint, store);
-            let failed = iroh::SecretKey::from_bytes(&[0x51; 32]).public();
-            let healthy = iroh::SecretKey::from_bytes(&[0x52; 32]).public();
-            hydrator.add_peer(EndpointAddr::new(failed));
-            hydrator.add_peer(EndpointAddr::new(healthy));
-
-            hydrator.record_peer_result(failed, Duration::from_secs(2), false);
-            assert_eq!(hydrator.known_peers()[0].id, healthy);
-            assert!(hydrator.remove_peer(healthy));
-            assert_eq!(hydrator.known_peers()[0].id, failed);
+    async fn the_source_hydrates_real_bytes_once_for_concurrent_readers() {
+        let there = Arc::new(ContentStore::memory());
+        let payload = Bytes::from_static(b"collaborative filesystem payload");
+        let hash = there
+            .write_content(payload.as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+        let here = Arc::new(ContentStore::memory());
+        let hydrator =
+            Arc::new(Hydrator::new(Arc::clone(&here)).with_source(Arc::new(StoreSource(there))));
+        assert!(!here.has(hash).await, "precondition: nothing here yet");
+        let readers: Vec<_> = (0..8)
+            .map(|_| {
+                let hydrator = Arc::clone(&hydrator);
+                let len = payload.len() as u64;
+                tokio::spawn(async move { hydrator.read(hash, 0, len).await.unwrap() })
+            })
+            .collect();
+        for reader in readers {
+            assert_eq!(reader.await.unwrap().as_slice(), payload.as_ref());
         }
-        {
-            let endpoint = test_server::direct_endpoint().await;
-            let store = Arc::new(ContentStore::memory());
-            let hydrator = Hydrator::new(endpoint, store);
-            let key = iroh::SecretKey::from_bytes(&[0x41; 32]).public();
-            let old = EndpointAddr::new(key).with_ip_addr("127.0.0.1:4101".parse().unwrap());
-            let fresh = EndpointAddr::new(key).with_ip_addr("127.0.0.1:4102".parse().unwrap());
-
-            hydrator.add_peer(old);
-            hydrator.add_peer(fresh.clone());
-            assert_eq!(hydrator.known_peers(), vec![fresh]);
-
-            hydrator
-                .peers
-                .write()
-                .unwrap()
-                .first_mut()
-                .unwrap()
-                .last_seen = Instant::now()
-                .checked_sub(PEER_STALE_AFTER.saturating_add(Duration::from_secs(1)))
-                .expect("test monotonic clock has sufficient range");
-            assert!(hydrator.known_peers().is_empty());
-        }
-        failed_peer_is_backed_off_behind_a_healthy_peer().await;
-        {
-            let server_ep = test_server::direct_endpoint().await;
-            let server_store = ContentStore::memory();
-            let payload = Bytes::from_static(b"collaborative filesystem payload");
-            let hash = server_store
-                .write_content(payload.as_ref())
-                .await
-                .unwrap()
-                .unwrap();
-            let _router = Router::builder(server_ep.clone())
-                .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
-                .spawn();
-            let server_addr = server_ep.addr();
-
-            let client_ep = test_server::direct_endpoint().await;
-            let client_store = Arc::new(ContentStore::memory());
-            let hydrator = Hydrator::new(client_ep, client_store.clone());
-
-            assert!(
-                !client_store.has(hash).await,
-                "precondition: B must not have the blob yet"
-            );
-            hydrator.add_peer(server_addr);
-
-            let got = hydrator.read(hash, 0, payload.len() as u64).await.unwrap();
-            assert_eq!(
-                got.as_slice(),
-                payload.as_ref(),
-                "B must read A's real bytes"
-            );
-
-            assert!(
-                client_store.has(hash).await,
-                "fetched blob must be cached on B"
-            );
-        }
-        {
-            let server_ep = test_server::direct_endpoint().await;
-            let server_store = ContentStore::memory();
-            let payload = Bytes::from_static(b"healthy replica wins the hedge");
-            let hash = server_store.ingest(payload.clone()).await.unwrap();
-            let _router = Router::builder(server_ep.clone())
-                .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
-                .spawn();
-
-            let client_ep = test_server::direct_endpoint().await;
-            let client_store = Arc::new(ContentStore::memory());
-            let hydrator = Hydrator::new(client_ep, client_store);
-            let ghost = iroh::SecretKey::from_bytes(&[0x61; 32]).public();
-            hydrator.add_peer(EndpointAddr::new(ghost));
-            let server_addr = server_ep.addr();
-            let server_id = server_addr.id;
-            hydrator.add_peer(server_addr);
-            hydrator.record_peer_result(ghost, Duration::from_millis(1), true);
-            hydrator.record_peer_result(server_id, Duration::from_millis(2), true);
-            assert_eq!(hydrator.known_peers()[0].id, ghost);
-
-            let started = Instant::now();
-            let got = hydrator.read_blob(hash, 0, u64::MAX).await.unwrap();
-            assert_eq!(got.as_slice(), payload.as_ref());
-            eprintln!(
-                "a healthy second peer answered {:?} after a dead first one was asked",
-                started.elapsed()
-            );
-        }
+        assert!(here.has(hash).await, "the fetched blob is kept here");
+        assert!(
+            hydrator.residency(hash).await.remotely_durable,
+            "what the workspace handed over is kept elsewhere too"
+        );
     }
 
     #[tokio::test]
     async fn prefetch_hydrates_every_chunk_within_the_policy_limit() {
         {
-            let server_ep = test_server::direct_endpoint().await;
-            let server_store = ContentStore::memory();
+            let server_store = Arc::new(ContentStore::memory());
             let payload: Vec<u8> = (0..400_000u32)
                 .map(|i| (i.wrapping_mul(2_654_435_761) >> 11).to_le_bytes()[0])
                 .collect();
             let manifest_hash = server_store.write_content(&payload).await.unwrap().unwrap();
-            let _router = Router::builder(server_ep.clone())
-                .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
-                .spawn();
-
-            let client_ep = test_server::direct_endpoint().await;
-            let client_store = Arc::new(ContentStore::memory());
-            let hydrator = Hydrator::new(client_ep, client_store);
-            hydrator.add_peer(server_ep.addr());
+            let hydrator = Hydrator::new(Arc::new(ContentStore::memory()))
+                .with_source(Arc::new(StoreSource(server_store)));
 
             assert_eq!(
                 hydrator.sync_state(manifest_hash).await,
@@ -1414,25 +1124,11 @@ mod tests {
             );
         }
         {
-            let endpoint = test_server::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let payload = vec![7u8; 1024];
             let manifest_hash = store.write_content(&payload).await.unwrap().unwrap();
-            let hydrator = Hydrator::new(endpoint, store);
+            let hydrator = Hydrator::new(store);
             assert!(!hydrator.prefetch(manifest_hash, 512).await.unwrap());
         }
     }
-}
-
-/// Whether reads and their fetches say where their time went (`TILO_FS_TRACE_READS=1`): read
-/// once, so a read's hot path costs no environment lookup.
-pub(crate) fn tracing_reads() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("TILO_FS_TRACE_READS").is_some())
-}
-
-/// Whether a commit says where its time went (`TILO_FS_TRACE_WRITES=1`).
-pub(crate) fn tracing_writes() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("TILO_FS_TRACE_WRITES").is_some())
 }

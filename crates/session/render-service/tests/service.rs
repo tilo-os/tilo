@@ -27,7 +27,9 @@ use tilo_render_protocol::control::{
 use tilo_render_protocol::frame::{FrameWriter, LayerUpdate, Rect};
 use tilo_render_protocol::scene::ResourceIds;
 use tilo_render_protocol::shm::{Mapping, RingWriter, sealed_blob};
-use tilo_render_protocol::{FontId, ImageId, LayerId, Limits, SurfaceId, WireError};
+use tilo_render_protocol::{
+    FontId, ImageId, LayerId, Limits, PROTOCOL_VERSION, SurfaceId, WireError,
+};
 use tilo_render_service::broker::{FromService, ToService};
 use tilo_render_service::{Config, serve};
 use vello::Scene;
@@ -48,6 +50,7 @@ fn start(limits: Limits) -> Channel {
     let config = Config {
         render_node: None,
         font_roots: vec![tilo_font_catalog::checkout_root()],
+        font_catalog: Some(tilo_font_catalog::checkout_root()),
         limits,
         confine: false,
     };
@@ -60,11 +63,25 @@ fn start(limits: Limits) -> Channel {
     broker
 }
 
+/// How the test app names its fonts to the service.
+enum FontsBy {
+    /// The test font, by its path in the shared view.
+    Path,
+    /// Catalog files by their pinned SHA-256, keyed by the blob holding the file.
+    Digest(HashMap<u64, String>),
+    /// Every font's bytes, in a sealed memfd.
+    Upload,
+}
+
 /// What an app's toolkit keeps: its channel, its ring, its registrations.
 struct App {
     channel: Channel,
     ring: RingWriter,
-    fonts: HashMap<u64, FontId>,
+    /// The catalog files the service's welcome listed.
+    catalog: Vec<String>,
+    fonts_by: FontsBy,
+    /// Each face registered, by the blob holding its file and its index there.
+    fonts: HashMap<(u64, u32), FontId>,
     images: HashMap<u64, ImageId>,
     sequence: u64,
     size: (u32, u32),
@@ -72,21 +89,40 @@ struct App {
 
 impl ResourceIds for App {
     fn font(&mut self, font: &FontData) -> Result<FontId, WireError> {
-        if let Some(id) = self.fonts.get(&font.data.id()) {
+        if let Some(id) = self.fonts.get(&(font.data.id(), font.index)) {
             return Ok(*id);
         }
         let id = FontId(self.fonts.len() as u32);
-        self.channel
-            .send(
+        match &self.fonts_by {
+            FontsBy::Path => self.channel.send(
                 &AppMessage::RegisterFontFile {
                     font: id,
                     path: font_path().display().to_string(),
                     index: font.index,
                 },
                 &[],
-            )
-            .unwrap();
-        self.fonts.insert(font.data.id(), id);
+            ),
+            FontsBy::Digest(digests) => self.channel.send(
+                &AppMessage::RegisterCatalogFont {
+                    font: id,
+                    sha256: digests[&font.data.id()].clone(),
+                    index: font.index,
+                },
+                &[],
+            ),
+            FontsBy::Upload => {
+                let fd = sealed_blob("test-font", font.data.data()).unwrap();
+                self.channel.send(
+                    &AppMessage::RegisterFontData {
+                        font: id,
+                        index: font.index,
+                    },
+                    &[fd.as_fd()],
+                )
+            }
+        }
+        .unwrap();
+        self.fonts.insert((font.data.id(), font.index), id);
         Ok(id)
     }
 
@@ -127,12 +163,18 @@ fn connect(broker: &Channel, connection: u64, app_id: &str) -> App {
         .unwrap();
     drop(service);
     let ring = RingWriter::create(1 << 20).unwrap();
-    app.send(&AppMessage::Hello { version: 1 }, &[ring.fd()])
-        .unwrap();
+    app.send(
+        &AppMessage::Hello {
+            version: PROTOCOL_VERSION,
+        },
+        &[ring.fd()],
+    )
+    .unwrap();
     let welcome = app.recv::<ServiceMessage>().unwrap().message;
     let ServiceMessage::Welcome {
-        version: 1,
+        version: PROTOCOL_VERSION,
         renderer,
+        catalog,
         ..
     } = welcome
     else {
@@ -154,6 +196,8 @@ fn connect(broker: &Channel, connection: u64, app_id: &str) -> App {
     App {
         channel: app,
         ring,
+        catalog,
+        fonts_by: FontsBy::Path,
         fonts: HashMap::new(),
         images: HashMap::new(),
         sequence: 0,
@@ -465,6 +509,129 @@ fn a_partial_frame_lands_where_the_buffer_shows_it_and_paints_no_black() {
     assert_eq!(pixel(now, 41, 31), [0, 255, 0, 255], "the green square");
     assert_eq!(pixel(now, 57, 5), [0, 255, 255, 255], "the yellow square");
     assert_eq!(pixel(now, 21, 41), [255, 0, 255, 255], "the magenta square");
+}
+
+/// Every face of the catalog files a line of CJK text with emoji is set in, each file read once
+/// as the toolkit maps it, with the digest its manifest pins.
+fn cjk_and_emoji_faces() -> Vec<(String, FontData)> {
+    let manifest = tilo_font_catalog::manifest().unwrap();
+    let root = tilo_font_catalog::checkout_root();
+    let mut faces = Vec::new();
+    for file in ["NotoSansCJK-VF.ttc", "Noto-COLRv1.ttf"] {
+        let asset = manifest
+            .font
+            .iter()
+            .find(|asset| asset.file == file)
+            .unwrap();
+        let blob = Blob::new(Arc::new(
+            std::fs::read(asset.path_in(&root).unwrap()).unwrap(),
+        ));
+        for face in &asset.faces {
+            faces.push((
+                asset.sha256.clone(),
+                FontData::new(blob.clone(), face.index),
+            ));
+        }
+    }
+    faces
+}
+
+/// White glyphs of every face in `faces`, one row each, on black.
+fn glyph_rows(faces: &[(String, FontData)]) -> Scene {
+    let mut scene = filled(
+        Color::BLACK,
+        KRect::new(0.0, 0.0, f64::from(W), f64::from(H)),
+    );
+    for (row, (_, font)) in faces.iter().enumerate() {
+        scene
+            .draw_glyphs(font)
+            .font_size(16.0)
+            .transform(Affine::translate((0.0, 14.0 + (row % 3) as f64 * 14.0)))
+            .brush(Color::WHITE)
+            .draw(
+                Fill::NonZero,
+                (0..4).map(|i| vello::Glyph {
+                    id: 1200 + i,
+                    x: i as f32 * 16.0,
+                    y: 0.0,
+                }),
+            );
+    }
+    scene
+}
+
+/// An app whose text needs the catalog's CJK collection and its colour emoji names their files
+/// by digest: the service maps its own copy, so not one byte of them is the app's to send or to
+/// count, and the frame is drawn. The limit on uploaded font bytes is zero here, so any byte
+/// the app sent would be refused.
+#[test]
+fn catalog_faces_are_named_by_digest_and_drawn_without_their_bytes() {
+    let broker = start(Limits {
+        font_bytes: 0,
+        ..Limits::default()
+    });
+    let mut app = connect(&broker, 1, "so.tilo.gallery");
+    let faces = cjk_and_emoji_faces();
+    assert!(faces.len() > 2, "the CJK collection has a face per region");
+    for (digest, _) in &faces {
+        assert!(
+            app.catalog.contains(digest),
+            "the welcome lists the catalog file {digest}"
+        );
+    }
+    app.fonts_by = FontsBy::Digest(
+        faces
+            .iter()
+            .map(|(digest, font)| (font.data.id(), digest.clone()))
+            .collect(),
+    );
+    let sequence = app.frame(&glyph_rows(&faces), None);
+    let Received { message, fds } = app.recv();
+    let ServiceMessage::Buffers { .. } = message else {
+        panic!("every face registered and the frame drawn, got {message:?}");
+    };
+    let ServiceMessage::FrameReady {
+        sequence: ready,
+        buffer,
+        ..
+    } = app.recv().message
+    else {
+        panic!("frame ready");
+    };
+    assert_eq!(ready, sequence);
+    let shown = Mapping::map_sealed(
+        &fds[buffer as usize],
+        false,
+        (W * H * 4) as usize,
+        (W * H * 4) as usize,
+    )
+    .unwrap();
+    let inked = (0..H)
+        .flat_map(|y| (0..W).map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(&shown, x, y)[..3] != [0, 0, 0])
+        .count();
+    assert!(inked > 20, "the glyphs drew ink: {inked} pixels");
+}
+
+/// The same faces sent as bytes, as an app named them before catalog files had a digest on the
+/// wire: the 32 MB collection counted once per face drawn from it, past the limit on what an app
+/// uploads. The service refuses them, and says why.
+#[test]
+fn catalog_faces_sent_as_bytes_are_over_the_upload_limit() {
+    let broker = start(Limits::default());
+    let mut app = connect(&broker, 1, "so.tilo.gallery");
+    app.fonts_by = FontsBy::Upload;
+    let faces = cjk_and_emoji_faces();
+    app.frame(&glyph_rows(&faces), None);
+    let refused = std::iter::from_fn(|| match app.recv().message {
+        ServiceMessage::Refused { why } => Some(why),
+        _ => None,
+    })
+    .collect::<Vec<_>>();
+    assert!(
+        refused.contains(&Refusal::OverLimit("font bytes".to_owned())),
+        "uploads past the limit are refused: {refused:?}"
+    );
 }
 
 #[test]

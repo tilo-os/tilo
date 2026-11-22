@@ -2,7 +2,6 @@
 //! would be a circular workspace dependency) and driven through the built binary with
 //! `XDG_CONFIG_HOME` and `XDG_DATA_HOME` in a tempdir.
 
-
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signer, SigningKey};

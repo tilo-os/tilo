@@ -2,8 +2,9 @@
 """A newcomer finds their way around the desktop, in a Tilo shell.
 
 Someone new to Tilo opens their workspace, adds a strip, switches to another workspace and back,
-and finds their settings, all through what the bar and the workspace show: the controls the shell
-publishes, pressed where they stand. No keyboard chord a newcomer would not know is used to find
+finds their settings and picks a light and a dark look there, all through what the bar and the
+workspace show: the controls the shell publishes, pressed where they stand. Then they come back to
+their desk the next day: what they arranged is where they left it. No keyboard chord a newcomer would not know is used to find
 anything, so what is recorded is that each thing was findable.
 
 Every step's pass or fail is read off the shell's own state: the state dump (the workspaces it
@@ -21,11 +22,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from mail_provider import press_in, window_named  # noqa: E402
 from story import PROFILE, SWITCHER, Failed, Person, Story, front, until, walk, workspaces  # noqa: E402
 
 SETTINGS = "so.tilo.settings"
 STRIPS = "Show strips, now on "
 APPS = "tasks file-explorer settings"
+# Settings' page with the look, as Settings names it, and its light-or-dark choice.
+APPEARANCE_PAGE = "Appearance"
+MODE = "Light or dark"
 
 
 def bar_workspace(one: Person) -> str | None:
@@ -47,6 +52,30 @@ def press_bar(one: Person, prefix: str, what: str) -> str:
         (label for label in one.names() if label.startswith(prefix)), None), 30, 0.2)
     one.press(found, what)
     return found[len(prefix):]
+
+
+def drawn(one: Person, app_id: str) -> dict | None:
+    """The window of `app_id` the shell places and has drawn: a tab with no window in it, or one
+    that never drew, shows the person nothing, whatever its accessible names say."""
+    window = window_named(one, app_id)
+    return window if window and window.get("frames") else None
+
+
+def picks_mode(one: Person, mode: str) -> None:
+    """Pick the `mode` look on the Appearance page of the Settings window that is open, as a person
+    goes on from the settings they just found."""
+    settings = until("Settings, where the look is picked, drawn",
+                     lambda: drawn(one, SETTINGS), 30, 0.25)
+    if not one.target(MODE, exact=False):
+        press_in(one, APPEARANCE_PAGE, settings, f"the {APPEARANCE_PAGE} page in Settings")
+    until(f"the {MODE} setting", lambda: one.target(MODE, exact=False), 30, 0.2)
+    if not one.target(mode):
+        # The modes are a choice that opens to show them.
+        press_in(one, MODE, settings, f"the {MODE} setting", exact=False)
+        until(f"the {mode} look among the modes", lambda: one.target(mode), 10, 0.2)
+    press_in(one, mode, settings, f"the {mode} look")
+    # The look changes through the shell's motion: the shot is of where it came to rest.
+    time.sleep(1.0)
 
 
 def steps(story: Story) -> None:
@@ -113,13 +142,38 @@ def steps(story: Story) -> None:
         robin.press(PROFILE, "their own face in the bar", exact=False)
         took = time.monotonic()
         robin.press("Settings", "Settings on their own card")
-        until("Settings' window", lambda: next(
-            (w for w in robin.session.windows() if w.get("app_id") == SETTINGS), None), 60, 0.25)
+        until("Settings' window, placed and drawn", lambda: drawn(robin, SETTINGS), 60, 0.25)
         # Its own pages, so what opened is Settings and not a window named after it.
         until("Settings' own pages", lambda: robin.shows("Settings categories"), 30, 0.25)
         story.timing("Settings, from the press to its window", (time.monotonic() - took) * 1000)
 
     story.step("They find their settings", finds_settings, people=[robin])
+
+    def picks_looks():
+        for mode in ("Light", "Dark"):
+            picks_mode(robin, mode)
+            story.shot(robin, f"the {mode.lower()} look")
+
+    story.step("They pick a light and a dark look", picks_looks, people=[robin])
+
+    def comes_back():
+        # Their computer starts again with what it kept: the workspaces, the strip they made, and
+        # the one they were in, as they left them.
+        made = [w.get("id") for w in workspaces(robin)]
+        robin.stop()
+        took = robin.start(apps=APPS, fresh=False)
+        until("the workspace they were in, named in the bar",
+              lambda: bar_workspace(robin) == first["workspace"], 60, 0.25)
+        until("both their workspaces",
+              lambda: sorted(w.get("id") for w in workspaces(robin)) == sorted(made), 30, 0.25)
+        # The bar names the strip they were on, without anything being opened over the desk, and
+        # the Settings window they left there opens again and draws.
+        until("the Writing strip they made, named in the bar",
+              lambda: bar_strip(robin) == "Writing", 15, 0.2)
+        until("Settings' window again, placed and drawn", lambda: drawn(robin, SETTINGS), 60, 0.25)
+        return {"tookMs": took["tookMs"]}
+
+    story.step("They come back to their desk", comes_back, people=[robin])
 
 
 if __name__ == "__main__":

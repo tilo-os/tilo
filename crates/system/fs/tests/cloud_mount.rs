@@ -16,14 +16,14 @@ use std::time::Duration;
 use cloud_source::{CloudSource, Credential, StaticCredential};
 use cloud_source_dav::DavSource;
 use cloud_source_dav::fake::{FakeDav, PASSWORD, USER};
-use fs::cloud::credential::{MountReply, ToMount};
-use fs::cloud::service::dispatch;
-use fs::cloud::volume::{DEFAULT_IDLE_POLL_MAX, ROOT_INO};
-use fs::cloud::{CloudService, CloudVolume, InProcessLauncher, ServiceConfig, VolumeConfig};
 use runtime_fs::cloud::{
     CloudClient, CloudMount, CloudRequest, CloudResponse, CloudSocket, FileReply, FileRequest,
     MountHealth,
 };
+use tilo_fs::cloud::credential::{MountReply, ToMount};
+use tilo_fs::cloud::service::dispatch;
+use tilo_fs::cloud::volume::{DEFAULT_IDLE_POLL_MAX, ROOT_INO};
+use tilo_fs::cloud::{CloudService, CloudVolume, InProcessLauncher, ServiceConfig, VolumeConfig};
 
 fn credential() -> Credential {
     Credential::Basic {
@@ -869,7 +869,7 @@ fn service_config(root: &Path, home: &Path) -> ServiceConfig {
         config_root: Some(root.to_path_buf()),
         mounts_root: home.join("Remote"),
         state_root: home.join("state"),
-        accounts: Arc::new(fs::cloud::SessionAccounts::new(session(root).socket())),
+        accounts: Arc::new(tilo_fs::cloud::SessionAccounts::new(session(root).socket())),
         control_socket: None,
         file_socket: None,
     }
@@ -1435,7 +1435,7 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
 
     let mut service = CloudService::new(
         service_config(root, home.path()),
-        Box::new(fs::cloud::ProcessLauncher {
+        Box::new(tilo_fs::cloud::ProcessLauncher {
             executable: tilo_test_env::package_binary!("fs"),
             ready_timeout: Duration::from_secs(30),
         }),

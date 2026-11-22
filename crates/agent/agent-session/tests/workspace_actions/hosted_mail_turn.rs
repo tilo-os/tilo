@@ -21,15 +21,12 @@ use tilo_actions::remote::person_accounts::{
     FetchMail, FetchedMail, FetchedMessage, FoundFolder, FoundMail, MailAttachment, MarkMail,
     ReadMail, SearchMail, SendMail, SentMail,
 };
-use tilo_server::{
-    workspace_agents::ServerAgents,
-    workspaces::{
-        fixtures::mail::{
-            Attachment, InboxHeard, InboxSeen, Leaving, MailSession, Recipient, Watching,
-            begun_message, held_message,
-        },
-        person_model::scripted::Reply,
+use tilo_server::workspaces::{
+    fixtures::mail::{
+        Attachment, InboxHeard, InboxSeen, Leaving, MailSession, Recipient, Watching,
+        begun_message, held_message,
     },
+    person_model::scripted::Reply,
 };
 
 const ACCOUNT: &str = "ada@example.test";
@@ -448,7 +445,7 @@ async fn only_her_own_answer_lets_it_leave_once(hosted: &mut Hosted, servers: &S
 
     // The server restarts: whatever worked its agents is gone, and no turn starts before she
     // answers.
-    hosted.agents = ServerAgents::for_test(hosted.workspaces.clone(), hosted.actions.clone(), None);
+    hosted.restart().await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     assert!(servers.asked("send").is_empty(), "a restart sends nothing");
 
@@ -459,7 +456,7 @@ async fn only_her_own_answer_lets_it_leave_once(hosted: &mut Hosted, servers: &S
     assert_eq!(servers.asked("send"), [left.as_str()], "what she was shown");
 
     hosted.agents.look(&hosted.workspace).await.unwrap();
-    hosted.agents = ServerAgents::for_test(hosted.workspaces.clone(), hosted.actions.clone(), None);
+    hosted.restart().await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(

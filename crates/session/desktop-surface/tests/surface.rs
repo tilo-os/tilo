@@ -1,7 +1,6 @@
 //! The desktop surface inside the toolkit's real frame pipeline: navigation commands move the model
 //! and the live widgets together.
 
-
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;

@@ -956,7 +956,7 @@ pub(crate) async fn seed_apps(
     let seeded = settled_in(workspaces, workspace, "seeded").await?;
     let catalogue = tilo_agent_session::AppCatalogue::native();
     for app in apps.iter().filter(|app| !seeded.contains(*app)) {
-        let record = tilo_server::workspace_bots::workspace_resource(&catalogue, app);
+        let record = tilo_workspace_service::agents::workspace_resource(&catalogue, app);
         workspaces
             .prepare_application(workspace, cert, &catalogue, app, &record)
             .await
@@ -1540,6 +1540,7 @@ pub(crate) async fn run(
                 certificate_sha256: web.certificate_sha256.clone(),
                 allowed_origins: args.web.allowed_origins.clone(),
                 workspace: Some(workspace.clone()),
+                host_info: Some(Box::new(web.host_info().clone())),
             }
             .to_line()
         );
@@ -2208,7 +2209,8 @@ mod tests {
                 state_root: dir.join("server"),
                 identity_root: dir.join("identity"),
                 ..Default::default()
-            },
+            }
+            .on_loopback(),
             ServerIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host,
@@ -2239,7 +2241,8 @@ mod tests {
                 state_root: server_state.to_path_buf(),
                 identity_root: state.join("identity"),
                 ..Default::default()
-            },
+            }
+            .on_loopback(),
             identity,
         )
         .await

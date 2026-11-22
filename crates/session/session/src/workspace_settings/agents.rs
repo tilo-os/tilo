@@ -33,10 +33,9 @@ use ui::resource::workspace::WorkspaceResources;
 
 /// How workspace settings' history names where a change came from.
 const SETTINGS_APP: (&str, &str) = ("tilo-session", "Workspace settings");
-/// Whether an agent made here runs on the workspace's host: a page runs no agent, so one made in a
-/// browser works on the host around the clock; one made on a computer runs on a device of the
-/// workspace.
-const RUNS_ON_HOST: bool = cfg!(target_arch = "wasm32");
+/// Whether this is a page: a page keeps no model settings of its own, so it offers no model to
+/// choose for an agent.
+const ON_A_PAGE: bool = cfg!(target_arch = "wasm32");
 
 /// Where the tab opens the workspace's records, and what it knows of the person there: a
 /// computer's copy of its workspaces, or a page's.
@@ -51,10 +50,6 @@ pub trait Host {
 
     /// Whether `person` looks after `workspace`'s agents: makes, bounds and retires them.
     fn manages(&self, workspace: &Workspace, person: &UserId) -> bool;
-
-    /// Make `agent` a member of `workspace` acting for `person`, signed by this device
-    /// ([`tilo_action_policy::Change::add_agent`]): the agent's whole membership.
-    fn add_agent(&self, workspace: &Workspace, agent: &str, person: &UserId);
 }
 
 /// A computer's copy of its workspaces: their records, decided by the grants the workspace's
@@ -82,24 +77,6 @@ impl Host for crate::engine_records::EngineRecords {
     fn manages(&self, workspace: &Workspace, person: &UserId) -> bool {
         use tilo_desktop::authority::WorkspaceAuthority as _;
         workspace.may_administer(person)
-    }
-
-    fn add_agent(&self, workspace: &Workspace, agent: &str, person: &UserId) {
-        let Some(engine) = self.engine() else {
-            return;
-        };
-        let (workspace_id, agent) = (workspace.id(), agent.to_owned());
-        let change = tilo_action_policy::Change::add_agent(agent.clone(), person.clone(), None);
-        // The member list's change lands when the workspace takes it; until then the agent
-        // answers that it is not a member yet.
-        drop(crate::landing::off_loop(async move {
-            if let Err(error) = crate::membership::Membership::of(&engine, workspace_id)
-                .commit(&change)
-                .await
-            {
-                tracing::warn!(%agent, %error, "the workspace did not take the agent as a member");
-            }
-        }));
     }
 }
 
@@ -255,11 +232,7 @@ impl Agents {
                 name: agent.name.clone(),
                 status: added_by(names, workspace, record, &agent.keeper),
                 spend: spend_line(agent),
-                model: if agent.on_host {
-                    t("workspace-settings-agent-on-host")
-                } else {
-                    model_line(&config, &agent.id.0, agent.model.as_deref())
-                },
+                model: model_line(&config, &agent.id.0, agent.model.as_deref()),
             })
             .collect();
         let count = agents.len();
@@ -295,9 +268,9 @@ impl Agents {
             name: t("workspace-settings-agent-name"),
             model: t("workspace-settings-agent-model"),
             model_default: t("workspace-settings-agent-model-default-choice"),
-            // An agent made here runs on the workspace's server, on its model: nothing to choose.
+            // A page keeps no models of its own: nothing to choose.
             models: agent_access::agent_models(&config, "")
-                .filter(|_| !RUNS_ON_HOST)
+                .filter(|_| !ON_A_PAGE)
                 .map(|models| {
                     models
                         .offered
@@ -449,7 +422,7 @@ impl Agents {
             custom: t("workspace-settings-agent-access-set-here"),
             apps: Self::access_apps(&rows),
             // A page runs no agent, so it offers no model of its own to choose.
-            models: (!RUNS_ON_HOST).then_some(models),
+            models: (!ON_A_PAGE).then_some(models),
             limit: Some(limit),
             use_model: t("workspace-settings-agent-model-use"),
             in_use: t("workspace-settings-agent-model-in-use"),
@@ -744,17 +717,6 @@ impl Agents {
                 mcp_client: mcp_client.map(str::to_owned),
             }))
             .map_err(|error| error.to_string())?;
-        if let Some(workspace) = workspace {
-            self.host.add_agent(workspace, &id, person);
-        }
-        if RUNS_ON_HOST && mcp_client.is_none() {
-            record
-                .invoke(&Record::SET_AGENT_ON_HOST.with(actions::SetAgentOnHost {
-                    agent: Id::from_raw(id.clone()),
-                    on_host: true,
-                }))
-                .map_err(|error| error.to_string())?;
-        }
         Ok((id, name.as_str().to_owned()))
     }
 

@@ -721,9 +721,10 @@ impl<'a> Parser<'a> {
             Tok::Ident(n) if n == "destructive" => ActionRole::Destructive,
             Tok::Ident(n) if n == "migration" => ActionRole::Migration,
             Tok::Ident(n) if n == "initial" => ActionRole::Initial,
+            Tok::Ident(n) if n == "opened" => ActionRole::Opened,
             _ => return None,
         };
-        let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if matches!(n.as_str(), "primary" | "destructive" | "migration" | "initial"));
+        let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if matches!(n.as_str(), "primary" | "destructive" | "migration" | "initial" | "opened"));
         (matches!(self.peek_at(1), Tok::Kw("action" | "flow")) || next_is_role).then_some(role)
     }
 

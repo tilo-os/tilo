@@ -10,7 +10,6 @@
 //! - Different authors maintaining independent seq spaces — author B
 //!   can use seq=1 even after author A has used seq=1.
 
-
 use std::time::{Duration, SystemTime};
 
 use collab_types::{

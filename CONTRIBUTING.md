@@ -164,28 +164,30 @@ git push -u origin my-change
 ```
 
 The push is linted first. The hook works out which packages the pushed commits
-touch (Rust and Cargo files, against the ref being updated, or against where a
-new branch forked from `main`), and runs `cargo fmt --check` and Clippy over
-every target of the host for those packages, plus Clippy for
-`wasm32-unknown-unknown` on the ones that build for the page. A crate can
-compile here and still break the browser, which is what that second run
-catches. Only the touched packages are linted and both runs start together, so
-a one-crate change costs about the build of that crate; a push without Rust
-files passes immediately. Every failure prints the command that reruns it.
-Each package is linted as its default build; CI's wider matrix also covers the
-features a package's tests turn on.
+touch (Rust and Cargo files, against the ref being updated), checks the changed
+files' formatting with rustfmt, and runs Clippy over every target of the host for
+those packages, with the features the workspace's whole build gives them. Only
+the touched packages are linted; a push without Rust files passes immediately.
+Every failure prints the command that reruns it. The crates that use what you
+changed, the packages as they ship and the page's wasm32 build are linted by t's
+clippy families on `main`.
 
-When `main` moved while the lint ran, the push is refused: rebase and push
-again. Commits that passed are not linted a second time when the rebase left
-them as they were and you push again within twenty minutes, so the retry takes
-seconds; what the commits `main` gained in between do to yours is linted on
-`main`.
+With [t](https://code.tilo.so/tilo/t) installed, the lint is t's own checks
+(`clippy/<package>` and the like), which t answers from its result cache when
+nothing that package's build reads has changed: a push retried after a rebase
+onto unrelated commits passes in seconds, and a package the new commits of
+`main` reach, through a dependency too, is linted again. When `main` moved
+while the lint ran, the push is refused: rebase and push again.
 
-The lint compiles with the `cargo` on your `PATH`, or with the drop-in named in
-`CARGO` when you set one (`CARGO` may build on another machine). The wasm32
-pass needs that target installed: `rustup target add wasm32-unknown-unknown`.
-Without it the hook says the page build was skipped, so CI is the first to lint
-that target.
+A lint that passed stands for the same change after such a rebase. The hook
+remembers a pass by the push's own patch and the trees of the linted packages'
+own directories, so a retry whose rebase resolved no conflict, onto commits
+that touch none of those directories, is sent without linting again, however
+wide the push. What only the combination with `main`'s new commits breaks is
+found by t's clippy families on `main` and fixed by the next commit.
+
+Without t, or with `CARGO` naming a cargo drop-in (which may build on another
+machine), the lint compiles with that cargo, or the `cargo` on your `PATH`.
 
 Then [open a pull request](https://code.tilo.so/tilo/tilo/pulls) from your
 fork's branch into `tilo/tilo`'s `main`. Say what changed, why, and what you

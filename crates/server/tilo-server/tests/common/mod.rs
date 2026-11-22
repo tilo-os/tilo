@@ -7,6 +7,7 @@
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 
+#[cfg(target_os = "linux")]
 pub mod compute;
 
 use std::path::PathBuf;
@@ -178,10 +179,7 @@ async fn spawn_server_with(
             .with_writer(|| PhaseWriter)
             .try_init();
     }
-    let mut cfg = ServerConfig {
-        state_root: state_root.to_path_buf(),
-        ..Default::default()
-    };
+    let mut cfg = ServerConfig::loopback(state_root.to_path_buf());
     let identity = ServerIdentity {
         user_public_key: user.user_pk,
         device_signing_key: server_dev.sk.clone(),
@@ -228,7 +226,7 @@ pub fn start_server_serving(
 > {
     Box::pin(async move {
         Server::start_with_app_serving_and_relay_mode(
-            cfg,
+            cfg.on_loopback(),
             identity,
             server,
             test_server::relay_mode(),

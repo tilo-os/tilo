@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use base64::Engine as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;

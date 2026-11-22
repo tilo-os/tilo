@@ -14,8 +14,9 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    scripted client (guest/agent.py, clientInfo `claude-code`) runs exactly the command it
    registered.
 3. A's own server lists B as reachable (`tilo_devices`).
-4. With B's "Accept agents from my other devices" off and nobody at B, the agent is not
-   admitted; the person approving B's sheet admits it; their Stop on B ends A's connection.
+4. With B's "Accept agents from my other devices" off, the agent's calls are refused on B,
+   saying which setting would let it in, with nobody asked and nothing registered there. With
+   it on, the agent works on B; B's person's Stop refuses its calls from then on, saying so.
 5. With the setting on (turned on through its own action), the agent is let in on B without a
    question: it lists B's apps, opens Notes and makes a note there, registered in B's shell with
    A's device beside its name (its whole key and its label as the server caps it) and with no
@@ -83,7 +84,7 @@ GUEST_DIR = ".cache/e2e-remote"
 MARK = "E2E-MCP "
 SLOT = "me"
 # What the boxes' sessions log of the MCP server, its remote side and the questions it asks.
-SERVER_LOG = ("info,tilo_session::mcp_server=debug,tilo_session::device_mcp=debug,"
+SERVER_LOG = ("info,tilo_session::mcp_server=debug,tilo_session::device_agents=debug,"
             "tilo_session::questions=debug,tilo_session::agent_sessions=debug")
 # Each box: guest memory and CPUs. Three fit beside each other in the micro-VM.
 # A, B and D run side by side; C runs beside B once A and D have stopped. A box takes 3 GiB: with less its
@@ -116,7 +117,6 @@ ALLOW_SESSION = "Allow for this session"
 # The Browser, as the shell names the app.
 BROWSER = "so.tilo.browser"
 # How long the person is not there to answer B's sheet.
-UNANSWERED_S = 45
 # The sheet's choice that lets an agent go on unasked while it works here, as its label starts.
 ALWAYS_ALLOW = "Always allow"
 # The form box B serves on its own loopback for the agents to answer, and where.
@@ -366,7 +366,7 @@ class Run:
         kept = [l for l in text.splitlines() if not any(n in l for n in noise)]
         self.write(f"logs-{box.letter}.txt", "\n".join(kept))
         # A failed run keeps no outputs: what matters of it goes to the log.
-        telling = ("MCP server", "mcp_server", "device_mcp", "questions", "lan:", "onboarding",
+        telling = ("MCP server", "mcp_server", "device_agents", "questions", "lan:", "onboarding",
                    "identity", "personal", "ERROR", "WARN", "panicked", "refused", "branch")
         excerpt = ([l for l in kept if any(t in l for t in telling)][-200:]
                    + ["  (its last lines)"] + kept[-40:])
@@ -525,10 +525,11 @@ class Run:
                       lambda res: self.register(a, b, res, facts), "E03")
             self.step("E05", "A's server lists B as reachable (tilo_devices)",
                       lambda res: self.reachable(a, b, res), "E04")
-            self.step("E06", "With B's setting off and nobody at B, the agent is not admitted",
-                      lambda res: self.unanswered(a, b, res, facts), "E05")
-            self.step("E07", "Approving B's sheet admits it; B's Stop ends A's connection",
-                      lambda res: self.approve_and_stop(a, b, res, facts), "E05")
+            self.step("E06", "With B's setting off, B refuses the agent's calls, naming the setting, "
+                             "with nobody asked",
+                      lambda res: self.not_accepted(a, b, res, facts), "E05")
+            self.step("E07", "With B's setting on, the agent works on B until B's Stop refuses it",
+                      lambda res: self.accept_and_stop(a, b, res, facts), "E05")
             self.step("E08", "With only B's first setting on, the agent is let in unasked and registered "
                              "with A's device (key and capped label) and no environment; its "
                              "terminal#run is put to B's person, allowed once, and runs",
@@ -704,7 +705,7 @@ class Run:
 
     def server(self, a: Box) -> list[str]:
         """The command `tilo agent connect claude` registers for this desktop's own server."""
-        return ["tilo-runtime-mcp", "--connect"]
+        return ["tilo-runtime", "--connect"]
 
     def reachable(self, a: Box, b: Box, res: Result) -> None:
         key = (b.identity.get("this_device") or {}).get("device")
@@ -738,33 +739,30 @@ class Run:
         except VmError:
             return []
 
-    def unanswered(self, a: Box, b: Box, res: Result, facts: dict) -> None:
+    def not_accepted(self, a: Box, b: Box, res: Result, facts: dict) -> None:
         self.set_accept(b, False)
-        thread, holder = self.agent_beside(a, "unanswered", facts["command"],
-                                           E2E_WAIT_S=str(UNANSWERED_S))
-        asked = wait_until(lambda: self.sheet_targets(b), UNANSWERED_S, 1.0)
-        res.facts["asked"] = asked
-        t = self.finish(thread, holder)
+        t = self.agent(a, "not_accepted", facts["command"])
         res.facts["initialize"] = t.get("initialize")
-        if t.get("initialize") != "timeout":
-            raise Failed(f"nobody answered B, yet the agent's initialize was answered: {t.get('initialize')}")
-        if not asked:
-            raise Failed("B's person was never asked about the agent")
-        gone = wait_until(lambda: not self.sheet_targets(b), 30, 1.0)
-        if not gone:
-            raise Failed("B's question stayed up after the agent left")
+        res.facts["apps"] = t.get("apps")
+        apps = t.get("apps")
+        if not isinstance(apps, dict) or (apps.get("result") or {}).get("isError") is not True:
+            raise Failed(f"B answered the agent's call although its setting is off: {apps}")
+        if "accept agents from your other devices" not in text_of(apps):
+            raise Failed(f"B's refusal does not name the setting that would let the agent in: {apps}")
+        if self.sheet_targets(b):
+            raise Failed("B asked its person about the agent")
         if self.agent_sessions(b):
             raise Failed(f"an agent is registered on B: {self.agent_sessions(b)}")
 
-    def approve_and_stop(self, a: Box, b: Box, res: Result, facts: dict) -> None:
+    def accept_and_stop(self, a: Box, b: Box, res: Result, facts: dict) -> None:
+        res.facts["setting"] = self.set_accept(b, True)
         ready = f"$HOME/{GUEST_DIR}/stop-ready"
         a.vm.exec(f'rm -f "{ready}"')
         thread, holder = self.agent_beside(a, "stop", facts["command"], E2E_READY=ready, E2E_WAIT_S="90")
-        self.answer_when_asked(b, res, thread)
-        sessions = wait_until(lambda: [s for s in self.agent_sessions(b) if s.get("stoppable")], 60, 1.0)
+        sessions = wait_until(lambda: self.agent_sessions(b), 60, 1.0)
         res.facts["sessions"] = sessions
         if not sessions:
-            raise Failed("B registers no agent after its person allowed it")
+            raise Failed("B registers no agent although its setting lets it in")
         agent = sessions[0]["key"]
         if not wait_until(lambda: "yes" in a.vm.exec(f'test -e "{ready}" && echo yes || echo no'), 120, 1.0):
             raise Failed("the agent never got through its first calls on B")
@@ -773,10 +771,12 @@ class Run:
         res.facts["initialize"] = t.get("initialize")
         res.facts["after_stop"] = t.get("after_stop")
         last = (t.get("after_stop") or [{}])[-1].get("reply")
-        if last not in (None,) and not (isinstance(last, dict) and "error" in last):
-            raise Failed(f"A's connection did not end after B's Stop: {t.get('after_stop')}")
-        if [s for s in self.agent_sessions(b) if s.get("stoppable")]:
+        if not isinstance(last, dict) or "stopped this agent" not in json.dumps(last):
+            raise Failed(f"B did not refuse the agent after its Stop: {t.get('after_stop')}")
+        if self.agent_sessions(b):
             raise Failed(f"B still registers the agent after its Stop: {self.agent_sessions(b)}")
+        # The person lets agents from their other devices in again for the steps that follow.
+        self.set_accept(b, True)
 
     def unasked(self, res: Result, names: list[str]) -> None:
         """Nobody sits at B and both its settings are on, so no sheet may be up on it: neither
@@ -804,7 +804,7 @@ class Run:
         thread, holder = self.agent_beside(a, "work", facts["command"], E2E_READY=ready, E2E_GO=go,
                                            E2E_ASKING=asking, E2E_TITLE=title, E2E_WAIT_S="60",
                                            E2E_COMMAND=f"echo e2e-remote-asked-{int(time.time())}")
-        sessions = wait_until(lambda: [s for s in self.agent_sessions(b) if s.get("stoppable")], 90, 1.0)
+        sessions = wait_until(lambda: self.agent_sessions(b), 90, 1.0)
         res.facts["sessions"] = sessions
         if not sessions:
             names = [t.get("name") for t in self.targets(b)]
@@ -860,7 +860,7 @@ class Run:
             raise Failed(f"E08 did not show in this run that terminal#run is asked with the second "
                          f"setting off: {before}")
         self.no_sheet_before(b)
-        if wait_until(lambda: not [s for s in self.agent_sessions(b) if s.get("stoppable")], 60, 1.0) is None:
+        if wait_until(lambda: not self.agent_sessions(b), 60, 1.0) is None:
             raise Failed(f"E08's agent is still registered on B: {self.agent_sessions(b)}")
         res.facts["setting"] = self.set_accept(b, True)
         res.facts["unasked"] = self.set_unasked(b, True)
@@ -879,7 +879,7 @@ class Run:
 
         def sessions_now() -> list:
             watch()
-            return [s for s in self.agent_sessions(b) if s.get("stoppable")]
+            return self.agent_sessions(b)
 
         sessions = wait_until(sessions_now, 90, 1.0)
         res.facts["sessions"] = sessions
@@ -1143,7 +1143,7 @@ class Run:
                 if not reads():
                     raise Failed(f"the agent on {box.letter.upper()} never read the form in B's tab: "
                                  f"{json.dumps(held, ensure_ascii=False)[:600]}")
-            sessions = [s for s in self.agent_sessions(b) if s.get("stoppable")]
+            sessions = self.agent_sessions(b)
             res.facts["sessions"] = sessions
             # Every agent is in B's tab now: how B's shell registers each of them is E12's to judge.
             self.tab_sessions.append({
@@ -2321,19 +2321,19 @@ class Run:
             raise Failed("C is the same person as B")
         key = (b.identity.get("this_device") or {}).get("device")
         self.put_agent(c)
-        t = self.agent(c, "refused", ["tilo-runtime-mcp", "--connect", "--device", key], E2E_WAIT_S="60")
+        t = self.agent(c, "refused", ["tilo-runtime", "--connect", "--device", key], E2E_WAIT_S="60")
         res.facts["transcript"] = t
         init = t.get("initialize")
         if isinstance(init, dict) and "result" in init:
             raise Failed(f"B's server admitted another person's device: {init}")
         said = json.dumps(t)
-        if "someone else" not in said and "refus" not in said.lower():
+        if "someone else" not in said and "refus" not in said.lower() and "did not let" not in said:
             raise Failed(f"C was not told B's server refused it: {said[:1500]}")
         # B's shell says of each agent it registers which device it came from: none came from C's.
         from_c = (sc.get("this_device") or {}).get("device", "")
         if len(from_c) != 64:
             raise Failed(f"C's identity names no device: {sc}")
-        if [s for s in self.agent_sessions(b) if s.get("stoppable") and s.get("device") == from_c]:
+        if [s for s in self.agent_sessions(b) if s.get("device") == from_c]:
             raise Failed(f"B registers C's agent: {self.agent_sessions(b)}")
 
 

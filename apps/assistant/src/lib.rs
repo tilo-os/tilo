@@ -162,17 +162,9 @@ impl Hands {
             .invoke(
                 &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                     name,
-                    id: Some(id.clone()),
+                    id: Some(id),
                     model: None,
                     mcp_client: None,
-                }),
-            )
-            .map_err(|error| error.to_string())?;
-        agents
-            .invoke(
-                &WorkspaceAgents::SET_AGENT_ON_HOST.with(workspace_agents::SetAgentOnHost {
-                    agent: Id::from_raw(id),
-                    on_host: true,
                 }),
             )
             .map_err(|error| error.to_string())?;

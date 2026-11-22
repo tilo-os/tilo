@@ -6,6 +6,7 @@
 use std::rc::Rc;
 
 use tilo_resource::Resource;
+use ui_core::application::Capture;
 use ui_core::headless::FrameHarness;
 use ui_core::permissions::Role;
 
@@ -14,6 +15,10 @@ use super::{
     AUTHOR, Launch, Opening, Profile, ResourceApp, ResourceRoot, TEST_DEVICE, TEST_WORKSPACE,
     open_app, operation, profile_directory,
 };
+
+/// The longest a document the view opened may take to arrive in the report's own workspace,
+/// which holds every one it is asked for.
+const OPENS_WITHIN: ui_core::time::Duration = ui_core::time::Duration::from_secs(15);
 
 /// What `A` publishes and how its view binds to it, as `tilo-app surface`
 /// commits it and `tilo-app check` compares it: the resource's
@@ -97,7 +102,12 @@ fn report_surface(
                 arguments: &[],
                 file: None,
                 handoff: None,
-                capture: None,
+                // The report is what the code publishes, so the view is built as a
+                // capture: its scene comes from the app's fixtures, and nothing it
+                // starts — a worker, a fetch, a clock — reaches outside the process.
+                // A surface is written from source, not from what a window that sits
+                // in a workspace happens to open.
+                capture: Some((Capture::new(None), (opening.shot_viewport)(None))),
             },
             None,
             &mut |_| {},
@@ -112,6 +122,21 @@ fn report_surface(
     let mut offers = Vec::new();
     match built {
         Ok(mut opened) => {
+            // What the view asked for while it was on its way (the workspace had not delivered
+            // it, or its store was in use) is waited for as a window waits for it: opened as it
+            // arrives, in a frame, and published from then on. A report written before would
+            // differ from one written after.
+            let storage = opened
+                .harness
+                .with_widget_mut(|root: &mut ResourceRoot| Rc::clone(&root.storage));
+            let arrived = opened.harness.wait_until(OPENS_WITHIN, |_| {
+                !storage.as_ref().is_some_and(|storage| storage.opening())
+            });
+            if !arrived {
+                view = Some(format!(
+                    "what the view opened did not arrive within {OPENS_WITHIN:?}"
+                ));
+            }
             declared = published(&mut opened.harness);
             offers = offers_of(&opened.harness.resources());
         }
@@ -154,7 +179,9 @@ fn report_surface(
 /// Left out: what the framework publishes on every app (its undo, its
 /// `open`), save the link a scheme the app takes is opened with; what the
 /// shell publishes into the view (its search, its controls); the person's own
-/// documents and those the workspace keeps for all its apps; the items of a list, which a closed app has none of; what acts
+/// documents and those the workspace keeps for all its apps; the items of a
+/// list, which a closed app has none of — an item is a resource the app's own
+/// resources hold, and what it holds is the window's; what acts
 /// on one document (`…@…`), whose address names the document a window opens, so
 /// an offer of it would hold that window's id; and Settings' pages and
 /// settings, save its link, which the shell's own search finds on every
@@ -172,6 +199,11 @@ fn offers_of(resources: &[tilo_actions::ResourceSpec]) -> Vec<serde_json::Value>
         if !contract.offered_to_people()
             || !contract.availability.is_available()
             || (reserved.iter().any(|framework| framework == id) && !opens_links)
+            // An address that names an item rather than its kind: the app's
+            // own resources' ids are the kinds they publish, so one that is
+            // not names a record a window opened, which a closed app has none
+            // of.
+            || action.resource_kind != resource
             || resource.starts_with("tilo.")
             || resource.starts_with("person:")
             || collab_types::workspace_document_of_kind(resource).is_some()

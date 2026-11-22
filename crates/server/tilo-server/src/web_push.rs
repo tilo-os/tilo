@@ -392,7 +392,7 @@ impl crate::certification::QuestionNotifier for WebPush {
 /// subscribed. A push message is encrypted for the browser it goes to, so
 /// the push service between reads none of it.
 #[cfg(feature = "agents")]
-impl crate::workspace_telling::Outside for WebPush {
+impl tilo_workspace_service::agents::telling::Outside for WebPush {
     fn name(&self) -> &'static str {
         "web-push"
     }
@@ -404,7 +404,7 @@ impl crate::workspace_telling::Outside for WebPush {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = u32> + Send>> {
         let push = self.clone();
         Box::pin(async move {
-            let (title, body) = crate::workspace_telling::words_outside(&told);
+            let (title, body) = tilo_workspace_service::agents::telling::words_outside(&told);
             // One notification a thing: telling it again takes its place.
             let tag = format!("tilo-told-{}", told.id);
             let delivered = push

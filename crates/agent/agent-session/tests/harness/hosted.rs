@@ -31,6 +31,10 @@ pub struct Hosted {
     pub roster: tilo_server::agents::RosterServices,
     /// The host's own device key, whose records the workspace holds too.
     pub device: [u8; 32],
+    /// The host's own device.
+    host: Device,
+    /// The root of the host's own person, who keeps its agents.
+    root: SigningKey,
 }
 
 /// What a host is set up with: the catalogue its workspace actions open records in, and the
@@ -68,8 +72,142 @@ impl Options {
     }
 }
 
+impl std::ops::Deref for Hosted {
+    type Target = Server;
+
+    fn deref(&self) -> &Server {
+        &self.server
+    }
+}
+
+impl Hosted {
+    /// The agents this host runs, each of `agents` of `workspace` approved for every app the
+    /// way the host's own person, their keeper, approves one: asked for from their page and
+    /// decided on their laptop through the host's approval, and joined under its own key before
+    /// this returns. An agent joined already is left as it is.
+    pub async fn approving(
+        &self,
+        workspace: &str,
+        agents: &[&str],
+    ) -> tilo_workspace_service::agents::ServerAgents {
+        Box::pin(self.approving_for(workspace, agents, &[])).await
+    }
+
+    /// [`Self::approving`], each of `agents` approved for `apps` alone; none names every app.
+    pub async fn approving_for(
+        &self,
+        workspace: &str,
+        agents: &[&str],
+        apps: &[&str],
+    ) -> tilo_workspace_service::agents::ServerAgents {
+        let root = &self.root;
+        let laptop = crate::support::enrol(
+            root,
+            "laptop",
+            tilo_user_identity::DeviceCapabilities::primary(),
+        );
+        let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .bind()
+            .await
+            .unwrap();
+        let mut approver = Approver::connect(
+            &endpoint,
+            self.server.node_addr(),
+            laptop.cert.clone(),
+            &laptop.key,
+            &RevocationList::new(),
+        )
+        .await
+        .unwrap();
+        let mut page =
+            crate::harness::page::Page::open_at(&self.server, &laptop, &self.host, workspace).await;
+        let workspace_id = tilo_server_protocol::WorkspaceId::parse(workspace).unwrap();
+        let keeper = root.verifying_key().to_bytes();
+        let link = self.server.agent_link();
+        let sessions = &self.roster.sessions;
+        for agent in agents {
+            let joined = || link.roster_session_device(sessions, workspace_id, agent, &keeper);
+            if joined().await.is_some() {
+                continue;
+            }
+            let asked = page.invoke(grant_request(agent, workspace, apps)).await;
+            assert!(
+                matches!(
+                    asked.status,
+                    tilo_actions::remote::ReceiptStatus::Completed { .. }
+                ),
+                "{agent}'s grant is asked for: {asked:?}"
+            );
+            let proposal = approver
+                .list_agent_proposals()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|proposal| proposal.proposal.delegate.agent_id() == Some(*agent))
+                .unwrap();
+            let pending = approver
+                .list_pending()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.request_digest == proposal.request_digest)
+                .unwrap();
+            assert_eq!(
+                approver
+                    .decide(
+                        proposal.request_digest,
+                        issue_delegate(root, &pending, &proposal.proposal),
+                    )
+                    .await
+                    .unwrap(),
+                ApproverReply::Decided
+            );
+            let deadline = tilo_test_env::hang_deadline();
+            while joined().await.is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{agent} did not join under its approved key"
+                );
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+        tilo_workspace_service::agents::ServerAgents::with_sessions(
+            self.server.workspaces().unwrap().clone(),
+            self.roster.actions.clone(),
+            std::sync::Arc::new(self.server.agent_link()),
+            self.roster.sessions.clone(),
+        )
+    }
+}
+
+/// What the keeper `root` decides on `pending`, the key `proposal` asks for: the agent's
+/// certificate and the delegation of exactly what was proposed.
+pub fn issue_delegate(
+    root: &SigningKey,
+    pending: &tilo_server_protocol::certify::PendingCertification,
+    proposal: &tilo_server_protocol::delegation::DelegateProposal,
+) -> ApproverDecision {
+    let now = tilo_clock::unix_now_ns();
+    let cert = issue_device_cert(
+        &pending.request,
+        root,
+        &CertificationPolicy::agent(),
+        &RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    let delegation = proposal
+        .sign(root, pending.request.device_public_key, now)
+        .unwrap();
+    ApproverDecision::IssueDelegate { cert, delegation }
+}
+
 /// Start a host for `root`'s person on `host`'s device.
 pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Options) -> Hosted {
+    Box::pin(started(root, host, state, options)).await
+}
+
+async fn started(root: &SigningKey, host: &Device, state: &Path, options: Options) -> Hosted {
     let cfg = tilo_server::ServerConfig {
         state_root: state.join("server"),
         web_entry: options.web_entry,
@@ -119,6 +257,11 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
         agents,
         roster,
         device: host.cert.device_public_key,
+        host: Device {
+            key: host.key.clone(),
+            cert: host.cert.clone(),
+        },
+        root: root.clone(),
     }
 }
 
@@ -318,5 +461,45 @@ impl Laptop {
         match self.unlisted {
             Unlisted::Deny | Unlisted::Pending => ConfirmationAnswer::Deny,
         }
+    }
+}
+
+/// The page's ask for `agent`'s grant in `workspace`, for `apps` (every app where none).
+fn grant_request(
+    agent: &str,
+    workspace: &str,
+    apps: &[&str],
+) -> tilo_actions::remote::InvokeRequest {
+    use tilo_server_protocol::agents::{
+        AGENTS_PROVIDER, REQUEST_GRANT_ACTION, SUPERVISOR_RESOURCE,
+    };
+
+    tilo_actions::remote::InvokeRequest {
+        on_behalf_of: None,
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: AGENTS_PROVIDER.into(),
+            address: tilo_actions::api::ActionAddress::new(
+                SUPERVISOR_RESOURCE,
+                REQUEST_GRANT_ACTION,
+            ),
+        },
+        argument: tilo_actions::remote::InvokeArgument::Json(
+            serde_json::json!({
+                "agentId": agent,
+                "workspaces": [workspace],
+                "apps": apps,
+                "expiresInSecs": 3600,
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
     }
 }

@@ -6,7 +6,6 @@
 //! panic or loop forever. Each must be rejected (or accepted) while this
 //! process lives on and keeps admitting good input.
 
-
 use std::io::Write as _;
 use std::time::Duration;
 

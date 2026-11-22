@@ -8,9 +8,10 @@
 # (`clippy`, `clippy-{arch}`, `clippy-shipped`, `clippy-page`) on every change
 # (`t main` names the one that broke it): run here, those rebuilds took minutes
 # and lost the race to main's next commit on every retry.
-# tools/ci/pre_push_lint.py selects the packages and runs the lint; a run that
-# passed is not repeated while nothing it reads has changed, so a push retried
-# after a rebase onto unrelated commits does not lint again.
+# tools/ci/pre_push_lint.py selects the packages and, where t is installed,
+# asks t for its per-package clippy checks of them: t answers a package whose
+# build reads nothing a rebase changed from its result cache, so a push retried
+# after a rebase onto unrelated commits takes seconds.
 #
 # It is Git's own hook: this clone runs it through core.hooksPath (see
 # CONTRIBUTING.md). There is no environment variable to skip it; the escape is

@@ -61,23 +61,19 @@ SWITCH_WORKSPACE = "desktop:chrome\x1fswitch-workspace"
 
 def invoke(ctx, provider: str, action_id: str, args: dict | None = None, *, confirmed: bool = False,
            name: str = "invoke", timeout: float = 60):
-    """Invoke an action as the person does, `confirmed` when they confirm it as they ask (the
-    request's own `confirmed`, which `tilo-control actions invoke` does not say), and follow it
-    to its end: its output's value."""
+    """Invoke an action as the person does, `confirmed` when they confirm it as they ask, and
+    follow it to its end: its output's value."""
     (ctx.out / "data").mkdir(parents=True, exist_ok=True)
-    request = {"op": "actions_invoke", "provider": provider, "id": action_id, "args": args or {}}
-    if confirmed:
-        request["confirmed"] = True
-    reply = ctx.vm.raw(request)
-    if isinstance(reply, dict) and reply.get("err"):
-        raise CheckFailed(f"{name}: {action_id.split(chr(31))[-1]} was refused: {reply['err']}")
-    answer = reply.get("answer", reply) if isinstance(reply, dict) else {}
-    receipt = answer.get("receipt") or {}
-    update = receipt.get("update") or {}
-    if receipt.get("broker_invocation_id") is None:
-        if update.get("state") == "succeeded":
-            return (update.get("output") or {}).get("value")
-        raise CheckFailed(f"{name}: no job for {action_id.split(chr(31))[-1]}: {str(reply)[:300]}")
+    try:
+        answer = ctx.vm.invoke(provider, action_id, args or {}, confirmed=confirmed)
+    except VmError as exc:
+        raise CheckFailed(f"{name}: {action_id.split(chr(31))[-1]} was refused: {exc}") from exc
+    update = answer["receipt"]["update"]
+    if update["state"] == "succeeded":
+        return (update.get("output") or {}).get("value")
+    if update["state"] != "accepted":
+        raise CheckFailed(f"{name}: {action_id.split(chr(31))[-1]} ended {update['state']}: "
+                          f"{str(update)[:300]}")
     return PendingJob(ctx.vm, answer, ctx.out / "data", name).finish(timeout)
 
 
@@ -450,7 +446,7 @@ def agent_sessions(ctx) -> list[dict]:
 
 
 def session_keys(ctx) -> list[str]:
-    return sorted(a.get("key", "") for a in agent_sessions(ctx) if a.get("stoppable", True))
+    return sorted(a.get("key", "") for a in agent_sessions(ctx))
 
 
 # What the shell says beside each agent's name of where it works from: the other device it came
@@ -461,7 +457,7 @@ WHERE = ("device", "device_name", "environment", "environment_id")
 def sessions_in(ctx, env: dict) -> list[dict]:
     """The agents the shell registers as come in by `env`'s socket: by the environment's id beside
     their names, the one its shell reads as TILO_ENVIRONMENT. Never by the words of a name."""
-    return [a for a in agent_sessions(ctx) if a.get("stoppable", True) and env["environment"]
+    return [a for a in agent_sessions(ctx) if env["environment"]
             and a.get("environment_id") == env["environment"]]
 
 
@@ -641,7 +637,7 @@ def person_note(ctx, env: dict, title: str) -> None:
     try:
         invoke(ctx, rows[0]["provider"], rows[0]["id"], {"title": title}, name=f"{env['name']}-person-note")
     except CheckFailed as exc:
-        if "needs_confirmation" not in str(exc):
+        if "action_confirmation_required" not in str(exc):
             raise
         invoke(ctx, rows[0]["provider"], rows[0]["id"], {"title": title}, confirmed=True,
                name=f"{env['name']}-person-note")
@@ -957,15 +953,15 @@ print("E2E-HOST " + json.dumps(out))
 
 
 # A program of the login, outside every environment, coming in by the session's own server as
-# Claude Code on the host does (`tilo-runtime-mcp --connect`): admitted, it stays connected until
+# Claude Code on the host does (`tilo-runtime --connect`): admitted, it stays connected until
 # the harness writes the file named first, then leaves.
 HOST_AGENT = r'''
 import json, os, select, shutil, subprocess, sys, time
 done = sys.argv[1]
 out = {}
-mcp = shutil.which("tilo-runtime-mcp") or "/usr/libexec/tilo/tilo-runtime-mcp"
+mcp = shutil.which("tilo-runtime") or "/usr/libexec/tilo/tilo-runtime"
 if not os.path.exists(mcp):
-    out["missing"] = "tilo-runtime-mcp"
+    out["missing"] = "tilo-runtime"
     print("E2E-HOST-AGENT " + json.dumps(out))
     sys.exit(0)
 proc = subprocess.Popen([mcp, "--connect"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -1031,7 +1027,7 @@ def host_agent_registered(ctx, res) -> None:
         res.metrics["host_agent_sheet"] = dialog
 
         def new_agents():
-            fresh = [a for a in agent_sessions(ctx) if a.get("stoppable", True) and a.get("key") not in before]
+            fresh = [a for a in agent_sessions(ctx) if a.get("key") not in before]
             return fresh or None
 
         fresh = wait_until(new_agents, 30, interval=0.5) or []

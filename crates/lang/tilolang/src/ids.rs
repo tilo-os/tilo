@@ -185,7 +185,8 @@ impl IdsLock {
     }
 
     /// Renames a declaration and everything under it (`Album` also renames `Album.title`), keeping every
-    /// id.
+    /// id. The names it left move to the retired section with the ids they kept: what an earlier
+    /// version wrote under them is read as the declaration those ids name now.
     pub fn rename(&mut self, old: &str, new: &str) -> Result<(), IdsError> {
         if !self.entries.contains_key(old) {
             return Err(IdsError::UnknownName(old.to_string()));
@@ -212,10 +213,11 @@ impl IdsLock {
         let mut taken = Vec::new();
         for (from, _) in &renames {
             if let Some(id) = self.entries.remove(from) {
-                taken.push(id);
+                taken.push((from.clone(), id));
             }
         }
-        for ((_, to), id) in renames.into_iter().zip(taken) {
+        for ((from, to), (_, id)) in renames.into_iter().zip(taken) {
+            self.retired.insert((from, id.clone()));
             self.entries.insert(to, id);
         }
         Ok(())

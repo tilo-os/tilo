@@ -158,7 +158,7 @@ impl Desktop {
     }
 
     /// Where this desktop's own service holds the workspace.
-    async fn own_holder(&self) -> TransportHint {
+    async fn own_address(&self) -> TransportHint {
         self.holders()
             .await
             .into_iter()
@@ -257,22 +257,44 @@ impl Desktop {
             .expect("this device takes part in the workspace")
     }
 
+    /// The resource `resource` as this device has it.
+    fn loaded(&self, resource: &str) -> Option<AutoCommit> {
+        let doc = self.link().read(|peer| peer.document(APP, resource))?;
+        Some(AutoCommit::load(&doc).unwrap())
+    }
+
     /// What this device's copy of the document holds under `field`.
     fn value(&self, field: &str) -> Option<String> {
-        let doc = self.link().read(|peer| peer.document(APP, DOCUMENT))?;
-        let doc = AutoCommit::load(&doc).unwrap();
+        let doc = self.loaded(DOCUMENT)?;
         doc.get(ROOT, field)
             .unwrap()
             .map(|(value, _)| value.into_string().unwrap_or_default())
     }
 
+    /// Every change of the resource `resource` this device has, each as its
+    /// bytes: the resource as it stands, byte for byte.
+    fn changes_of(&self, resource: &str) -> Option<std::collections::BTreeSet<Vec<u8>>> {
+        let mut doc = self.loaded(resource)?;
+        Some(
+            doc.get_changes(&[])
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect(),
+        )
+    }
+
     /// Start the document the group writes to, as this device.
     fn starts_document(&self) {
+        self.starts(DOCUMENT);
+    }
+
+    /// Start the resource `resource`, as this device.
+    fn starts(&self, resource: &str) {
         self.link()
             .publish(|peer| {
                 peer.publication_mut().publish_document(
                     APP,
-                    DOCUMENT,
+                    resource,
                     AutoCommit::new().save(),
                     &self.key,
                     SystemTime::now(),
@@ -283,10 +305,13 @@ impl Desktop {
 
     /// Write `value` under `field` as this device, and publish it on its link.
     fn write(&self, field: &str, value: &str) {
-        let mut edit = match self.link().read(|peer| peer.document(APP, DOCUMENT)) {
-            Some(bytes) => AutoCommit::load(&bytes).unwrap(),
-            None => AutoCommit::new(),
-        };
+        self.writes(DOCUMENT, field, value);
+    }
+
+    /// Write `value` under `field` of the resource `resource` as this device,
+    /// and send it on its link.
+    fn writes(&self, resource: &str, field: &str, value: &str) {
+        let mut edit = self.loaded(resource).unwrap_or_default();
         edit.set_actor(automerge::ActorId::from(
             self.key.verifying_key().to_bytes().to_vec(),
         ));
@@ -298,7 +323,7 @@ impl Desktop {
             .publish(|peer| {
                 peer.publication_mut().publish_incremental(
                     APP,
-                    DOCUMENT,
+                    resource,
                     change,
                     &self.key,
                     SystemTime::now(),
@@ -554,7 +579,7 @@ async fn the_desktop_a_workspace_was_made_on_founds_its_key_group() {
     ];
     let [a1, a2] = &desktops;
     a1.founds().await;
-    a2.enters_as_member(a1.own_holder().await).await;
+    a2.enters_as_member(a1.own_address().await).await;
     assert!(
         a1.founds_group(),
         "the desktop it was made on founds the group"
@@ -642,8 +667,8 @@ async fn the_rest_keep_the_workspace_when_the_desktop_it_was_made_on_leaves() {
     // links to a holder still up: A's desktops to their own service, B's to
     // one of A's.
     a1.leaves().await;
-    let at_a2 = a2.own_holder().await;
-    let at_a3 = a3.own_holder().await;
+    let at_a2 = a2.own_address().await;
+    let at_a3 = a3.own_address().await;
     for (desktop, at) in [
         (&mut a2, &at_a2),
         (&mut a3, &at_a3),
@@ -666,6 +691,137 @@ async fn the_rest_keep_the_workspace_when_the_desktop_it_was_made_on_leaves() {
     for desktop in [a2, a3, b1, b2] {
         desktop.leaves().await;
     }
+}
+
+/// The desktop a workspace was made on hands it to another desktop of its
+/// person and goes away at once, with no other copy of the workspace up. The
+/// desktop it was handed to has every resource as it stood: a desktop that
+/// enters the workspace after reads each of them, change for change, from it
+/// alone, and still does once that desktop starts again from its files.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "each desktop keeps its service up until the test has it leave"
+)]
+async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed_it_leaves_at_once()
+{
+    const RESOURCES: [&str; 3] = [DOCUMENT, "tab:2", "tab:3"];
+    let directory = tempfile::tempdir().unwrap();
+    let root = SigningKey::from_bytes(&[0x81; 32]);
+    let (a1_key, a1_cert) = device(&root, 0x82);
+    let (a2_key, a2_cert) = device(&root, 0x83);
+    let mut a1 = Desktop::start(directory.path(), "a1", a1_key, a1_cert).await;
+    let a2 = Desktop::start(directory.path(), "a2", a2_key.clone(), a2_cert.clone()).await;
+    a1.founds().await;
+    a1.takes_part().await;
+    for (at, resource) in RESOURCES.iter().enumerate() {
+        a1.starts(resource);
+        a1.writes(resource, "title", &format!("resource {at}"));
+        a1.writes(resource, "body", &format!("what resource {at} says"));
+    }
+    let made: Vec<_> = RESOURCES
+        .iter()
+        .map(|resource| a1.changes_of(resource).expect("the resource is written"))
+        .collect();
+    let has_all = |desktop: &Desktop| {
+        RESOURCES
+            .iter()
+            .zip(&made)
+            .all(|(resource, made)| desktop.changes_of(resource).as_ref() == Some(made))
+    };
+
+    // Another desktop of the person reads every resource from the desktop it
+    // was made on, whose service has them all. It goes away then.
+    let (seen_key, seen_cert) = device(&root, 0x84);
+    let mut seen = Desktop::start(directory.path(), "seen", seen_key, seen_cert).await;
+    seen.enters_as_member(a1.own_address().await).await;
+    seen.takes_part().await;
+    until(
+        &[&seen],
+        "the desktop it was made on serves all of it",
+        has_all,
+    )
+    .await;
+    seen.leaves().await;
+
+    // The desktop it was made on hands it to the person's other desktop and
+    // goes away straight after: no copy of the workspace but the one handed
+    // over is up.
+    a1.service
+        .workspaces()
+        .attach_server(
+            WORKSPACE,
+            a2.service
+                .workspaces()
+                .serving_certificate()
+                .device_public_key,
+            a2.service.node_addr(),
+            CopyRole::KeyHolder,
+        )
+        .await
+        .expect("the person's other desktop takes the workspace");
+    a1.leaves().await;
+
+    // What a page reads from the desktop handed the workspace, its service's
+    // own copy, is all of it too, before it ever starts again.
+    let served = a2.service.workspaces();
+    let mut writes = served.document_writes();
+    tilo_test_env::within(
+        "the copy of the desktop handed the workspace holds all of it",
+        async {
+            loop {
+                let mut all = true;
+                for (resource, made) in RESOURCES.iter().zip(&made) {
+                    let changes = served
+                        .resource_document(WORKSPACE, APP, resource)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|doc| {
+                            AutoCommit::load(&doc)
+                                .unwrap()
+                                .get_changes(&[])
+                                .into_iter()
+                                .map(|change| change.raw_bytes().to_vec())
+                                .collect::<std::collections::BTreeSet<_>>()
+                        });
+                    all &= changes.as_ref() == Some(made);
+                }
+                if all {
+                    return;
+                }
+                // A write missed while this read is in the copy: read again.
+                assert!(
+                    writes.recv().await != Err(tokio::sync::broadcast::error::RecvError::Closed),
+                    "the service stays up"
+                );
+            }
+        },
+    )
+    .await;
+
+    let (later_key, later_cert) = device(&root, 0x85);
+    let mut later = Desktop::start(directory.path(), "later", later_key, later_cert).await;
+    later.enters_as_member(a2.own_address().await).await;
+    later.takes_part().await;
+    until(
+        &[&later],
+        "the desktop handed the workspace serves all of it",
+        has_all,
+    )
+    .await;
+    later.leaves().await;
+
+    // From its files alone, after a restart, it serves all of it still.
+    a2.leaves().await;
+    let a2 = Desktop::start(directory.path(), "a2", a2_key, a2_cert).await;
+    let (after_key, after_cert) = device(&root, 0x86);
+    let mut after = Desktop::start(directory.path(), "after", after_key, after_cert).await;
+    after.enters_as_member(a2.own_address().await).await;
+    after.takes_part().await;
+    until(&[&after], "the restarted desktop serves all of it", has_all).await;
+    after.leaves().await;
+    a2.leaves().await;
 }
 
 /// A holder that hears why its hold dials no holder of the workspace, and

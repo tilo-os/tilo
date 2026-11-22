@@ -2,9 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_seal::{Label, PublicKey, SecretKey};
+use tilo_user_identity::{DeviceCert, device_cert_signing_digest};
 use zeroize::Zeroizing;
-
-use crate::cert::BootKeyCert;
 
 /// Length of each half.
 pub const HALF_LEN: usize = 32;
@@ -86,8 +85,8 @@ pub fn derive_slot_key(
 }
 
 /// A sibling half sealed to the person's secret-sync key and bound to one
-/// boot key certificate. This is what every sibling stores and replicates;
-/// it opens only on a device that holds the person's root.
+/// boot key certificate. This is what every device of theirs stores and
+/// replicates; it opens only on a device that holds the person's root.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SealedSiblingHalf {
@@ -106,11 +105,10 @@ pub struct SealedSiblingHalf {
 /// When the certificate cannot be encoded or sealing fails.
 pub fn seal_sibling_half(
     secret_sync: &PublicKey,
-    cert: &BootKeyCert,
+    cert: &DeviceCert,
     half: &Half,
 ) -> Result<SealedSiblingHalf, tilo_seal::Error> {
-    let aad = cert
-        .signing_digest()
+    let aad = device_cert_signing_digest(cert)
         .map_err(|_| tilo_seal::Error::Malformed("boot key certificate"))?;
     let sealed =
         tilo_seal::hpke::seal_to_bytes(secret_sync, Label::UnlockSiblingHalf, &aad, half.expose())?;
@@ -124,14 +122,13 @@ pub fn seal_sibling_half(
 /// any other certificate than the one it was sealed for.
 pub fn open_sibling_half(
     secret_sync: &SecretKey,
-    cert: &BootKeyCert,
+    cert: &DeviceCert,
     sealed: &SealedSiblingHalf,
 ) -> Result<Half, tilo_seal::Error> {
     if sealed.version != SEALED_HALF_VERSION {
         return Err(tilo_seal::Error::UnsupportedVersion(sealed.version));
     }
-    let aad = cert
-        .signing_digest()
+    let aad = device_cert_signing_digest(cert)
         .map_err(|_| tilo_seal::Error::Malformed("boot key certificate"))?;
     let plain =
         tilo_seal::hpke::open_bytes(secret_sync, Label::UnlockSiblingHalf, &aad, &sealed.sealed)?;

@@ -8,16 +8,16 @@
 //! - `TILO_API_ORIGIN`: the server's public origin, as agents reach it.
 //! - `TILO_API_WEB_ENTRY`: the person's Tilo on the web, which signs them in.
 //! - `TILO_API_STATE`: the file the server keeps clients and grants in.
-//! - `TILO_API_INVITE_ENTRY` (optional): the page invitation links point at
-//!   (`https://tilo.sh`) when the workspace's server is reached only over
-//!   iroh: each link carries the signed invitation itself.
-//! - `TILO_API_HOST`: the public origins, comma-separated, of the Tilo hosts
-//!   the person's workspaces may live on. The server forwards each call to
-//!   the host that serves it best and keeps no workspace of its own
-//!   ([`tilo_api::hosts`]).
+//! - `TILO_API_HOST`: the Tilo hosts the person's workspaces may live on,
+//!   each as the host writes it (`web-host.json`): its certificate, where it
+//!   is dialled, and its HTTPS origin, which names it. One object, or a JSON
+//!   array of them. The server forwards each call to the host that serves it best and
+//!   keeps no workspace of its own ([`tilo_api::hosts`]); it never asks a
+//!   host's web origin who it is.
 
 use std::path::PathBuf;
 use tilo_api::{Config, Server, store::Store};
+use tilo_server_protocol::web::ServerInfo;
 
 fn var(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("{name} is required"))
@@ -32,20 +32,9 @@ fn origin(name: &str) -> Result<String, String> {
     Ok(value.trim_end_matches('/').to_owned())
 }
 
-/// The origins `name` names, comma-separated.
-fn origins(name: &str) -> Result<Vec<String>, String> {
-    var(name)?
-        .split(',')
-        .map(str::trim)
-        .filter(|host| !host.is_empty())
-        .map(|host| {
-            let parsed = url::Url::parse(host).map_err(|error| format!("{name}: {error}"))?;
-            if !tilo_net::secure_origin(&parsed) {
-                return Err(format!("{name} must be https, or http on this machine"));
-            }
-            Ok(host.trim_end_matches('/').to_owned())
-        })
-        .collect()
+/// The hosts `name` names ([`tilo_api::hosts::read`]).
+fn hosts(name: &str) -> Result<Vec<ServerInfo>, String> {
+    tilo_api::hosts::read(&var(name)?).map_err(|error| format!("{name}: {error}"))
 }
 
 fn main() -> Result<(), String> {
@@ -66,12 +55,7 @@ fn main() -> Result<(), String> {
     let config = Config {
         issuer: origin("TILO_API_ORIGIN")?,
         web_entry: origin("TILO_API_WEB_ENTRY")?,
-        hosts: origins("TILO_API_HOST")?,
-        invite_entry: std::env::var("TILO_API_INVITE_ENTRY")
-            .ok()
-            .filter(|entry| !entry.trim().is_empty())
-            .map(|_| origin("TILO_API_INVITE_ENTRY"))
-            .transpose()?,
+        hosts: hosts("TILO_API_HOST")?,
     };
     let store = Store::open(PathBuf::from(var("TILO_API_STATE")?))
         .map_err(|error| format!("TILO_API_STATE: {error}"))?;

@@ -1,6 +1,7 @@
 //! The Discord bridge program mirroring a guild into the workspace's Chat.
 
 use super::*;
+use tilo_workspace_service::agents::workspace_resource;
 
 /// The Discord bridge as a workspace installs it.
 pub(super) fn discord_bridge() -> installed::InstalledBot {

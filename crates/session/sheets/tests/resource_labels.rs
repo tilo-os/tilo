@@ -6,7 +6,6 @@
 //! up on a German desktop is published as the German name — and keeps its
 //! declared one where a catalogue has no entry for it.
 
-
 use tilo_sheets::add_app::AddToApps;
 use tilo_sheets::dictation::Dictation;
 use tilo_sheets::directory::WorkspaceDirectory;

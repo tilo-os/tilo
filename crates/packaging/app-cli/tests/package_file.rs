@@ -1,7 +1,6 @@
 //! `app install <file>` and `app update <app> --from <file>`: a package file from an unverified
 //! publisher asks first, and is refused when there is nobody to ask.
 
-
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use tilo_test_env::SpawnUnderEnvLock as _;

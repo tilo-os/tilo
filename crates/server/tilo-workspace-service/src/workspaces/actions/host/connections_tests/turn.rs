@@ -32,6 +32,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_user_identity::DeviceCert;
 
+use super::super::turn_use_tests::on_turn;
 use super::super::vault_tests::ask_at;
 use super::{Refused, Served, admit, caller, governed, governor, start_serving};
 use crate::connections::DEFINED_ANEW;
@@ -42,20 +43,6 @@ use crate::workspaces::person_asking::kept_asks::{CARRIED_OUT, KeptAsk, NewAsk};
 use crate::workspaces::person_asking::policy_node;
 
 const SCOUT: &str = "scout";
-
-/// The caller a turn's tools act as: `person`'s session in `workspace`,
-/// handed to `agent` on a turn.
-fn on_turn(person: &DeviceCert, workspace: &str, agent: &str) -> Caller {
-    Caller::authenticated(person.user_public_key, person.device_public_key)
-        .in_workspace(workspace)
-        .delegated_to(agent)
-        .named("Scout")
-        .in_agent_session("agent-session:test")
-        .on_turn(
-            tilo_action_policy::turn::Turn::new("conversation-1", "message-1"),
-            Vec::new(),
-        )
-}
 
 fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
     let argument = match argument {

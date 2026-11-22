@@ -942,16 +942,15 @@ impl Workspaces {
     }
 
     /// Answer an app's read `command` from the store of the workspace `state` holds, with only
-    /// what `device`'s person may read.
-    #[cfg(feature = "apps")]
+    /// the resources whose reader set `may_read` admits.
+    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn resource_read(
         &self,
         state: &tokio::sync::Mutex<GovernedWorkspace>,
-        device: &super::MemberDevice,
+        may_read: &(dyn Fn(&str) -> bool + Sync),
         command: &tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
         use tilo_resource_store::wire::{Command, Reply, read};
-        let may_read = may_read(hex::encode(device.cert.user_public_key));
         let mut governed = state.lock().await;
         let store = governed.store_with_surfaces(&self.inner.host.surfaces);
         let answer = match command {
@@ -973,7 +972,7 @@ impl Workspaces {
             }
             // A record the caller may not read has no versions for them.
             Command::Versions { .. } | Command::VersionEnd { .. } => Reply::Versions(Vec::new()),
-            _ => read(store, command, &may_read).unwrap_or(Reply::Written),
+            _ => read(store, command, may_read).unwrap_or(Reply::Written),
         };
         drop(governed);
         Ok(answer)
@@ -981,7 +980,7 @@ impl Workspaces {
 
     /// Commit `command` as an update of the fields of a resource every member reads that stays
     /// where it is, when it is one: `false` for any other command, which is drafted whole.
-    #[cfg(feature = "apps")]
+    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn put_in_place(
         &self,
         governed: &mut GovernedWorkspace,
@@ -1060,7 +1059,8 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         if !writing {
-            return self.resource_read(&state, &device, &command).await;
+            let may_read = may_read(hex::encode(device.cert.user_public_key));
+            return self.resource_read(&state, &may_read, &command).await;
         }
         let governed = state.lock_owned().await;
         self.write_resources(governed, device, context.app_id(), command)
@@ -1069,7 +1069,7 @@ impl Workspaces {
 
     /// Carry out the write `command` of `app` on the workspace `governed` holds, as `device`,
     /// holding the workspace until the last of its frames is kept.
-    #[cfg(feature = "apps")]
+    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn write_resources(
         &self,
         mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
@@ -1172,9 +1172,66 @@ impl Workspaces {
             crate::apps::services::ResourceRequestContext::authenticated(app, workspace, caller);
         self.resource_command(&context, command).await
     }
+
+    /// Carry out `command` of `app`'s record of `workspace` for one of this device's own roles
+    /// (the agent engine, a bot, a bridge), with no window and no broker between them.
+    ///
+    /// A read answers everything the device holds, as the role's own runtime then decides what
+    /// each member it reads for may see. A write is signed by the device the service signs its
+    /// own roles' writes as, and keeps the invoker the role's runtime stamped on it: the member
+    /// whose action wrote it (an agent, a bot, a person whose event ran), decided under that
+    /// member's own grants before it reached here. Only code in this process reaches this; a
+    /// caller from outside comes through [`Self::resource_command`], which stamps who it is.
+    ///
+    /// # Errors
+    /// The workspace is not held here, the store refused the write, or the workspace refused a
+    /// document's write.
+    #[cfg(feature = "agents")]
+    pub async fn record_command(
+        &self,
+        workspace: &str,
+        app: &str,
+        command: tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !command.writes() {
+            return self.resource_read(&state, &|_| true, &command).await;
+        }
+        let governed = state.lock_owned().await;
+        self.write_resources(governed, self.signing_device(), app, command)
+            .await
+    }
 }
 
 impl Workspaces {
+    /// Every document `workspace`'s resource store keeps, whole, history and all: what a check
+    /// that something was never kept anywhere in the workspace reads.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    #[cfg(feature = "test-support")]
+    pub async fn store_documents(&self, workspace: &str) -> Result<Vec<Vec<u8>>, String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut governed = state.lock().await;
+        let documents: Vec<String> = governed
+            .resources
+            .store_mut()
+            .index()
+            .documents()
+            .map(str::to_owned)
+            .collect();
+        Ok(documents
+            .iter()
+            .filter_map(|doc| governed.resources.document(doc))
+            .collect())
+    }
+
     /// Holds `query` open for the app `context` names, in its workspace: its first page, then
     /// each page a write here or a member's change makes different, as this device's person
     /// may read it.
@@ -1215,6 +1272,7 @@ fn stamp_resource_invoker(command: &mut tilo_resource_store::wire::Command, invo
         | Command::Count { .. }
         | Command::Content { .. }
         | Command::Versions { .. }
+        | Command::VersionEnd { .. }
         | Command::At { .. }
         | Command::Grouped { .. }
         | Command::Removed { .. }
@@ -1222,14 +1280,13 @@ fn stamp_resource_invoker(command: &mut tilo_resource_store::wire::Command, invo
         | Command::Newest { .. }
         | Command::Position { .. }
         | Command::PageAt { .. }
-        | Command::VersionEnd { .. }
         | Command::Contents { .. }
         | Command::Fields { .. } => {}
     }
 }
 
 /// Whether the reader set `readers` names `reader`: `*` names everyone.
-#[cfg(feature = "apps")]
+#[cfg(any(feature = "apps", feature = "agents"))]
 fn may_read(reader: String) -> impl Fn(&str) -> bool {
     move |readers| readers == "*" || readers.split(',').any(|person| person == reader)
 }

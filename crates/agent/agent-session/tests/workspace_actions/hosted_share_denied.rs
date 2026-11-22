@@ -59,7 +59,7 @@ async fn admit(
 /// reads on. A card gives nobody a reading the workspace does not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_card_opens_nothing_to_a_member_the_workspace_denies_reading() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, actions, workspaces, workspace, page, served);
     let (bo_root, _) = tilo_user_identity::UserIdentity::generate("Bo", 1);
     let bo_browser = enrol(&bo_root, "bo-browser", DeviceCapabilities::member());
     admit(&workspaces, &workspace, &bo_browser).await;
@@ -74,7 +74,7 @@ async fn a_card_opens_nothing_to_a_member_the_workspace_denies_reading() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    answer_the_turn!(workspaces, actions, workspace, writes_then_shows(&asked));
+    answer_the_turn!(served, workspace, writes_then_shows(&asked));
     let shown = cards(&reply(&workspaces, &workspace, &root).await);
     assert_eq!(shown.len(), 1, "one card: {shown:?}");
     let document = shown[0].1.clone().unwrap_or_default();

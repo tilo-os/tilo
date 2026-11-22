@@ -130,13 +130,13 @@ fn a_person_on_a_fresh_profile_plans_a_machine_and_is_answered() {
     // step of it: the command asks the same cheap one until the person's own
     // workspace is the one in front, then plans.
     let asking = |step: &'static str, args: serde_json::Value| {
-        serde_json::json!({
-            "op": "actions_invoke",
-            "provider": "tilo.machines",
-            "id": tilo_actions::ActionAddress::new("machines", step).encode(),
-            "args": args,
-            "wait_ms": 5_000,
-        })
+        let target = tilo_actions::remote::RemoteActionTarget {
+            provider: "tilo.machines".to_owned(),
+            address: tilo_actions::ActionAddress::new("machines", step),
+        };
+        crate::common::action_frame(tilo_actions::remote::RemoteActionMessage::Invoke(
+            crate::common::invocation(&target, &args, None, Some(5_000)),
+        ))
     };
     let sent = Instant::now();
     let mut listed = None;
@@ -149,7 +149,7 @@ fn a_person_on_a_fresh_profile_plans_a_machine_and_is_answered() {
         );
         let refused = answer
             .as_ref()
-            .is_none_or(|answer| answer.get("err").is_some());
+            .is_none_or(|answer| crate::common::refused(answer).is_some());
         if !refused {
             listed = answer;
             break;
@@ -157,12 +157,9 @@ fn a_person_on_a_fresh_profile_plans_a_machine_and_is_answered() {
         last = answer;
         session.step(Duration::from_millis(50)).expect("a frame");
     }
-    let listed = listed.unwrap_or_else(|| {
-        panic!("the session never answered listing machines; its last answer was {last:?}")
-    });
     assert!(
-        listed.get("answer").is_some(),
-        "the person's own step is answered: {listed}"
+        listed.is_some(),
+        "the session never answered listing machines; its last answer was {last:?}"
     );
     let answer = ask_once(
         &mut session,
@@ -178,13 +175,10 @@ fn a_person_on_a_fresh_profile_plans_a_machine_and_is_answered() {
         ),
     );
     let answer = answer.expect("the action answered");
-    assert!(
-        answer.get("err").is_none(),
+    assert_eq!(
+        crate::common::refused(&answer),
+        None,
         "the person's own action is not refused after {:?}: {answer}",
         sent.elapsed()
-    );
-    assert!(
-        answer.get("answer").is_some(),
-        "the action answered a receipt: {answer}"
     );
 }

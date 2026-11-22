@@ -151,14 +151,53 @@ pub(crate) fn answer_form(asked: &Asked, proof: &SignInProof, cert: &DeviceCert)
         .finish()
 }
 
+/// A host's info as the host writes it (`web-host.json`): the fixture the image check hands the
+/// server, with `origin` where it names its HTTPS origin.
+fn host_info(origin: &str) -> tilo_server_protocol::web::ServerInfo {
+    let json = include_str!("../../../../os/containers/tilo-api/host-info.json")
+        .replace("https://server.example.test", origin);
+    serde_json::from_str::<tilo_server_protocol::web::PageHost>(&json)
+        .unwrap()
+        .into()
+}
+
+/// A host is named by its HTTPS origin, as its grants' devices and its links are, even where its
+/// WebTransport listener answers at another name and port (tilo.sh's `link-eu1.tilo.sh:4443`
+/// beside `eu1.tilo.sh`): naming it by the listener would move every grant to another device.
+/// `TILO_API_HOST` takes the bytes the host writes in `web-host.json`, as they are.
+#[test]
+fn a_host_is_named_by_its_https_origin_not_its_link() {
+    let mut info = host_info("https://eu1.tilo.sh");
+    if let Some(web) = info
+        .address
+        .as_mut()
+        .and_then(|address| address.web.as_mut())
+    {
+        web.origin = "https://link-eu1.tilo.sh:4443".into();
+    }
+    let written = String::from_utf8(info.web_host_json().unwrap()).unwrap();
+    let read = crate::hosts::read(&written).unwrap();
+    assert_eq!(read, vec![info.clone()]);
+    let server = crate::server::Server::new(read.into_iter().next().unwrap());
+    assert_eq!(server.name(), "eu1.tilo.sh");
+    assert_eq!(server.origin(), "https://eu1.tilo.sh");
+
+    // A host's info that names no https origin of its own names no host.
+    info.origin = None;
+    let unnamed = String::from_utf8(info.web_host_json().unwrap()).unwrap();
+    assert!(crate::hosts::read(&unnamed).is_err());
+    info.origin = Some("http://eu1.tilo.sh".into());
+    let plain = String::from_utf8(info.web_host_json().unwrap()).unwrap();
+    assert!(crate::hosts::read(&plain).is_err());
+}
+
 fn server() -> Arc<Server> {
     Server::new(
         &Config {
             issuer: ISSUER.into(),
             web_entry: WEB_ENTRY.into(),
-            invite_entry: None,
             // Nothing here reaches a workspace, so nothing dials it.
-            hosts: vec!["https://server.tilo.test".into()],
+            hosts: vec![host_info("https://server.tilo.test")],
         },
         Store::in_memory(),
     )
@@ -1150,8 +1189,7 @@ fn server_in_front_of(site: &str) -> Arc<Server> {
         &Config {
             issuer: ISSUER.into(),
             web_entry: site.into(),
-            invite_entry: None,
-            hosts: vec!["https://server.tilo.test".into()],
+            hosts: vec![host_info("https://server.tilo.test")],
         },
         Store::in_memory(),
     )
@@ -1277,69 +1315,6 @@ fn a_person_the_server_does_not_know_reads_why_and_what_to_do() {
     assert!(
         message.contains(&hex::encode(person)) && message.contains("owner"),
         "{answered}"
-    );
-}
-
-/// Where the site keeps no invitation, the link carries the invitation's
-/// text after a route that names the server, as the site's own workspace
-/// links do, so following it reaches the workspace's server.
-#[tokio::test]
-async fn an_invitation_the_site_keeps_not_names_the_relay_in_its_link() {
-    crate::session::members::tests::local_site_stands_for_public();
-    let (site, _) = site_answering("404 Not Found").await;
-    let server = server_in_front_of(&site);
-    let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
-    let link = server.invitation_link(workspace, b"signed", u64::MAX).await;
-    assert!(
-        link.starts_with(&format!("{site}/#/@server.tilo.test/w/{workspace}?invite=")),
-        "{link}"
-    );
-}
-
-/// A server reached only over iroh has its invitations carry themselves:
-/// the link names the page that redeems it and the invitation's own text,
-/// and no site of the server's, so nothing is fetched from it.
-#[tokio::test]
-async fn an_invitation_to_a_server_reached_over_iroh_carries_itself() {
-    let (site, _) = site_answering("200 OK").await;
-    let server = Server::new(
-        &Config {
-            issuer: ISSUER.into(),
-            web_entry: site.clone(),
-            invite_entry: Some("https://tilo.test/".into()),
-            hosts: vec!["https://server.tilo.test".into()],
-        },
-        Store::in_memory(),
-    )
-    .unwrap();
-    let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
-    let link = server.invitation_link(workspace, b"signed", u64::MAX).await;
-    assert_eq!(
-        link,
-        format!("https://tilo.test/#/w/{workspace}?invite=c2lnbmVk"),
-        "the link carries the invitation, with no server to ask"
-    );
-}
-
-/// An invitation made where the person's site is their own computer's page (the local stack's
-/// `http://tilo.localhost`) is never shelved there, where nobody else could fetch it: its link
-/// carries the invitation under tilo.sh's page, so it opens wherever it is sent, and nothing is
-/// asked of the site.
-#[tokio::test]
-async fn an_invitation_made_on_a_local_site_carries_itself_to_a_public_page() {
-    let (site, asked) = site_answering("204 No Content").await;
-    let server = server_in_front_of(&site);
-    let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
-    let link = server.invitation_link(workspace, b"signed", u64::MAX).await;
-    assert_eq!(
-        link,
-        format!("https://tilo.sh/#/w/{workspace}?invite=c2lnbmVk"),
-        "the link opens anywhere"
-    );
-    assert_eq!(
-        asked.load(std::sync::atomic::Ordering::Relaxed),
-        0,
-        "nothing was shelved on the local site"
     );
 }
 

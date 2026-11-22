@@ -36,7 +36,7 @@ mod providers;
 mod put;
 #[path = "mcp_step.rs"]
 mod step;
-use catalogue_ask::NOT_SERVED_WAIT;
+use tilo_actions::tree::ANSWER_WAIT as NOT_SERVED_WAIT;
 #[path = "mcp_timing.rs"]
 mod timing;
 use step::batch_invocation;
@@ -86,6 +86,10 @@ pub(crate) use session::Session;
 pub struct McpServer<H> {
     /// Shared with the blocking threads synchronous broker work runs on.
     host: std::sync::Arc<H>,
+    /// The workspace's published tree as this session walks it, over the host asked
+    /// patiently: every path a tool names is resolved here, and what it read is kept for the
+    /// calls after.
+    tree: tilo_actions::tree::Tree<std::sync::Arc<H>>,
     retire_execution: fn(&H, &Caller),
     /// Told of each look at an invocation this session makes, when a turn
     /// times what its tools waited for.
@@ -172,27 +176,11 @@ pub struct McpServer<H> {
     /// or moved is refused by the server, and resolved again then.
     resolved_paths:
         std::sync::Mutex<std::collections::HashMap<String, agent::resolved::ResolvedAction>>,
-    /// The app each name this session named means, as it found it: a call
-    /// naming a resource in an app the session already works in asks the
-    /// workspace for nothing but the call. A call the app refuses as one it
-    /// does not offer drops it, and the app is looked up again.
-    apps: std::sync::Mutex<std::collections::HashMap<String, agent::AppRef>>,
-    /// The directory levels this session read, by the provider that serves
-    /// them and the resource they hold: a write on a resource the app's
-    /// directory already answered is resolved from what was read, not read
-    /// again. What a level names is checked by the workspace when the call
-    /// reaches it, so a stale one costs a refusal, never a wrong write.
-    dirs: std::sync::Mutex<std::collections::HashMap<String, agent::Levels>>,
     /// The root resource whose read answers a path an app's directory holds
     /// none of its own for, by the app and the revision its directory was read
     /// at: reading every root resource to find it is done once, not once a
     /// call.
     swept_reads: std::sync::Mutex<std::collections::HashMap<(String, String), SweptRead>>,
-    /// The paths this session's listings resolved, by the path as written and the app's
-    /// directory revision they were resolved at: a listing's later pages list by one of these
-    /// instead of resolving the path again ([`McpServer::agent_ls`]).
-    listing_resolutions:
-        std::sync::Mutex<std::collections::HashMap<(String, String), agent::ListingResolution>>,
     /// The documents whose window this session's changes showed the person
     /// ([`McpServer::changed_shown`]).
     showed: std::sync::Mutex<std::collections::HashSet<String>>,
@@ -203,6 +191,9 @@ pub struct McpServer<H> {
     /// Who waits for the next run event of this session: one of its invocations
     /// starting, being held for its person, or ending ([`McpServer::invocations_moved`]).
     pub(crate) invocation_waiters: std::sync::Mutex<Vec<tilo_actions::remote::Completer<()>>>,
+    /// The sources a watch of this session no longer follows because the host refused to tell
+    /// when they change, each with why ([`McpServer::agent_watch`]).
+    pub(crate) unfollowed: std::sync::Arc<std::sync::Mutex<Vec<agent::watch::Unfollowed>>>,
     /// Whether a call that names no wait is held until its action has ended, however long
     /// that takes ([`McpServer::for_turn`]). Any other server answers such a call `pending`
     /// after [`DEFAULT_WAIT_MS`].
@@ -302,6 +293,24 @@ impl OpenFiles {
 mod failure;
 pub(crate) use failure::Failure;
 
+/// Why a typed call ([`McpServer::typed`]) has no result: the refusal as a program reads it
+/// (`{code, message, next_steps?}`), and the action it refused, with what that takes, when it
+/// names one.
+#[derive(Clone, Debug)]
+pub struct Refused {
+    pub error: Value,
+    pub action: Option<Value>,
+}
+
+impl Refused {
+    fn new(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            error: json!({"code": code, "message": message.into()}),
+            action: None,
+        }
+    }
+}
+
 /// Why a step of this bridge did not happen: the action host's refusal,
 /// kept typed so the bridge decides by its variant and never by its
 /// wording, or the bridge's own words. It becomes text only where an MCP
@@ -321,6 +330,15 @@ impl From<String> for BridgeError {
 impl From<&str> for BridgeError {
     fn from(message: &str) -> Self {
         Self::Bridge(message.to_owned())
+    }
+}
+
+impl From<tilo_actions::tree::Unresolved> for BridgeError {
+    fn from(unresolved: tilo_actions::tree::Unresolved) -> Self {
+        match unresolved {
+            tilo_actions::tree::Unresolved::Asked(refused) => Self::Host(refused),
+            other => Self::Bridge(other.to_string()),
+        }
     }
 }
 
@@ -629,8 +647,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     fn from_caller(host: H, workspace: String, actor: String, caller: Caller) -> Self {
+        let host = std::sync::Arc::new(host);
         Self {
-            host: std::sync::Arc::new(host),
+            tree: Self::tree_of(&host, &caller, &workspace),
+            host,
             retire_execution: H::retire_execution,
             watched: None,
             workspace,
@@ -659,13 +679,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             acted: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             resolved_paths: std::sync::Mutex::default(),
-            apps: std::sync::Mutex::default(),
-            dirs: std::sync::Mutex::default(),
             swept_reads: std::sync::Mutex::default(),
-            listing_resolutions: std::sync::Mutex::default(),
             showed: std::sync::Mutex::default(),
             invocations: std::sync::Mutex::default(),
             invocation_waiters: std::sync::Mutex::default(),
+            unfollowed: std::sync::Arc::default(),
             until_ended: false,
         }
     }
@@ -725,7 +743,23 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn agent_named(mut self, name: &str) -> Self {
         self.caller = self.caller.clone().named(name);
+        self.tree = Self::tree_of(&self.host, &self.caller, &self.workspace);
         self
+    }
+
+    /// The published tree of `workspace` as `caller` walks it over `host`.
+    fn tree_of(
+        host: &std::sync::Arc<H>,
+        caller: &Caller,
+        workspace: &str,
+    ) -> tilo_actions::tree::Tree<std::sync::Arc<H>> {
+        tilo_actions::tree::Tree::new(
+            std::sync::Arc::clone(host),
+            caller.clone(),
+            workspace.to_owned(),
+            std::sync::Arc::new(catalogue_ask::TokioPause::new()),
+        )
+        .asking(Box::new(catalogue_ask::off_the_runtime))
     }
 
     /// The caller this connection's actions run as: the agent it is, acting
@@ -1438,6 +1472,60 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Err(e) => Err(e),
         }
     }
+    /// Call the tool `name` with `arguments` as a program does: its typed result, or its typed
+    /// refusal, never words. `invocation` is the invocation group the call is a step of
+    /// (`{"id", "title"}`). The same turn, undo step and resolution a `tools/call` takes, without
+    /// the JSON-RPC around it: what the REST API answers its routes with.
+    ///
+    /// # Errors
+    /// The call was refused or did not run.
+    pub async fn typed(
+        &self,
+        name: &str,
+        arguments: Value,
+        invocation: Option<Value>,
+    ) -> Result<Value, Refused> {
+        if self.caller.execution_id().is_some() && !self.caller.execution_is_live() {
+            return Err(Refused::new("unavailable", "execution session ended"));
+        }
+        let _turn = self
+            .turn("tools/call", &json!({"name": name}))
+            .await
+            .map_err(|why| Refused::new("unavailable", why))?;
+        let mut meta = serde_json::Map::new();
+        meta.insert("structured".into(), json!(true));
+        if let Some(invocation) = invocation {
+            meta.insert("invocation".into(), invocation);
+        }
+        let metadata = json!({ "so.tilo.mcp": meta });
+        let invalid = |why: String| Refused::new("invalid_request", why);
+        let asked = arguments
+            .get("invocation_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let step = self
+            .step_gesture(Some(&metadata), asked.as_deref())
+            .map_err(invalid)?;
+        let declared = Self::step_invocation(Some(&metadata)).map_err(invalid)?;
+        let failed = |why: String| Refused::new("failed", why);
+        let called = async {
+            if put::is_put_tool(name) {
+                self.put_value(name, arguments).await.map_err(failed)
+            } else if get::is_get_tool(name) {
+                Ok(self.get_value(name, arguments).await.map_err(failed)?.0)
+            } else if agent::tool_definitions()
+                .iter()
+                .any(|definition| definition["name"].as_str() == Some(name))
+            {
+                self.agent_typed(name, arguments).await
+            } else {
+                Err(invalid("Unknown tool".into()))
+            }
+        };
+        STEP.scope(step, STEP_INVOCATION.scope(declared, called))
+            .await
+    }
+
     /// The turn a request of this session works in: at most [`MAX_WORKING`]
     /// work at once, and at most [`MAX_ADMITTED`] work or wait, beyond which
     /// a request is refused rather than queued. A request that only reads
@@ -1652,13 +1740,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     .iter()
                     .filter_map(|(_, app)| app["app_id"].as_str())
                     .collect::<Vec<_>>();
-                let app_id = page::app_named(app_id, &ids)?;
+                let app_id = tilo_actions::tree::app_named(app_id, &ids)?;
                 let peer = running
                     .iter()
                     .rev()
                     .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
                     .map(|(peer, _)| peer.to_string())
-                    .ok_or_else(|| page::not_running(&app_id, &ids))?;
+                    .ok_or_else(|| tilo_actions::tree::not_running(&app_id, &ids))?;
                 Ok(Addressed {
                     provider: peer,
                     app_id: Some(app_id),
@@ -2870,12 +2958,6 @@ const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 const CONFIRMATION_PATIENCE: std::time::Duration = std::time::Duration::from_secs(300);
 /// What `instances` asks: no provider and no rows, which a host answers with
 /// its publishers alone instead of assembling every row it offers.
-fn instances_query() -> CatalogueQuery {
-    CatalogueQuery {
-        max_results: 0,
-        ..CatalogueQuery::default()
-    }
-}
 /// What an invocation this caller may not observe answers.
 const UNOWNED: &str = "Unknown or unowned invocation";
 /// Invocation `id`, observed, as `tilo_status` and `tilo_do` answer it:

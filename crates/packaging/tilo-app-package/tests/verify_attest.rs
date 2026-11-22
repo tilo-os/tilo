@@ -12,7 +12,6 @@
 //! The signature covers `(payload_root_hash, publisher_pubkey)`,
 //! which we compute via a preliminary pack pass.
 
-
 use crate::fixtures;
 use ed25519_dalek::{Signer, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};

@@ -1,4 +1,3 @@
-
 //! The framework on the real component runtime: controls invoke actions,
 //! undo reverts them, viewers are refused, state survives a relaunch, and
 //! the history of every action is attributed.

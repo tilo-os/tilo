@@ -209,7 +209,7 @@ impl Clock {
 /// registry answer, each with whether its subdirectories are watched too.
 #[cfg(target_os = "linux")]
 fn identity_directories() -> Vec<(std::path::PathBuf, bool)> {
-    crate::registry::IdentityRegistryStore::from_env()
+    crate::store::IdentityRegistryStore::from_env()
         .map(|registry| (registry.identity_dir().to_path_buf(), true))
         .into_iter()
         .collect()

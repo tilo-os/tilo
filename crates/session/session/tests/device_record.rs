@@ -23,14 +23,10 @@ use tilo_actions::remote::identity_admin;
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_server_protocol::workspaces::Role;
 
-/// The Devices step of the person's identity administration, as Settings asks
-/// it: `resource␟action`, as the action API spells an address.
-const DEVICES: &str = "identity\u{1f}devices";
-
 /// The devices Settings lists on `device`.
 fn listed(device: &Device) -> Vec<Value> {
-    let answer = device.act_wait(identity_admin::PROVIDER, DEVICES, &json!({}));
-    answer["answer"]["receipt"]["update"]["output"]["value"]
+    let answer = device.act_wait(&identity_admin::target(identity_admin::DEVICES), &json!({}));
+    answer["update"]["output"]["value"]
         .as_array()
         .cloned()
         .unwrap_or_else(|| {

@@ -1,4 +1,3 @@
-
 //! The chain's storage of an app's items at 1,000, 10,000 and 25,000 items:
 //! a change to one item writes about the same bytes, finding an item by its
 //! id takes about as long, and a page of the listing reads about as fast,

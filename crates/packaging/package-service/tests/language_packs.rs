@@ -2,7 +2,6 @@
 //! calls, with progress before the answer, and each app may make only its own
 //! calls.
 
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 

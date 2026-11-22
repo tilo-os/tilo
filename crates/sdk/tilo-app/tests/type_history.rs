@@ -1,4 +1,3 @@
-
 //! What History answers for one version, per resource type, through the read
 //! API every app publishes: the type's own adapter, exactly as it answers the
 //! live record, and the three distinct refusals — unsupported, unavailable,

@@ -1,6 +1,10 @@
 #!/usr/bin/bash
 set -euo pipefail
 
+# Older images kept a full copy of the Files tree here for a replica service that
+# no longer exists; a workspace's files now sync through the workspace itself.
+rm -rf --one-file-system /var/lib/tilo/full-replica
+
 marker=/var/lib/tilo/.server-unprivileged-v1
 if [ -e "$marker" ] || [ -L "$marker" ]; then
     [ -f "$marker" ] && [ ! -L "$marker" ] \
@@ -9,7 +13,7 @@ if [ -e "$marker" ] || [ -L "$marker" ]; then
     exit 0
 fi
 
-for state in /var/lib/tilo-server /var/lib/tilo/full-replica; do
+for state in /var/lib/tilo-server; do
     [ -d "$state" ] && [ ! -L "$state" ] \
         || { echo "tilo-server-state-migrate: unsafe state root: $state" >&2; exit 1; }
     chown -R --no-dereference --one-file-system tilo-server:tilo-server "$state"

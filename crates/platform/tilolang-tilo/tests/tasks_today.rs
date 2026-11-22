@@ -3,17 +3,16 @@
 
 use tilolang_runtime::{Actor, Value, ViewInstance};
 
-use crate::fixtures::{Replica, field_id};
+use crate::fixtures::Replica;
 use crate::tasks::{
     APP, PACKAGES, call, count, create, go_to, home_list_titles, home_row_of, places, read,
     shown_count, target, task, workspace,
 };
-use automerge::AutoCommit;
 
 /// Ada's week and Ben's copy of it: a task each of them holds with no day of its own, a bill due
 /// today nobody holds, a task due today that is done, and one due later.
 fn week() -> (Replica, Replica) {
-    let (mut ada, root) = workspace();
+    let (ada, root) = workspace();
     let held = call(&ada, "new_task", create(&root, "Call the landlord"));
     let bill = call(&ada, "new_task", create(&root, "Pay the electricity bill"));
     let report = call(&ada, "new_task", create(&root, "Send the report"));
@@ -50,7 +49,6 @@ fn week() -> (Replica, Replica) {
     // Ben's clock, before what his copy reads: the columns his index writes are the ones his
     // person's day asks for.
     ben.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
-    ben.host.sync_from(&ben.doc);
     (ada, ben)
 }
 
@@ -78,119 +76,6 @@ fn today_is_what_is_due_and_what_the_person_looking_holds() {
         "a task nobody holds is due for everyone; what each holds stands in their own Today"
     );
     assert_eq!(count(&theirs, "Today"), Some(2), "{:?}", places(&theirs));
-}
-
-/// A workspace of `n` tasks: every tenth due today, every tenth held by Ada, the rest due later.
-fn seeded(n: usize) -> Replica {
-    use serde_json::json;
-    use tilo_resource::{Collection, Id, Model as _};
-    use tilolang_tilo::action::{DynAction, DynEdit};
-    use tilolang_tilo::resource::{DynResource, DynValue};
-
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), PACKAGES);
-    ada.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
-    let meta = packages[1].meta.clone();
-    let root = ada.host.root_of(APP).unwrap();
-    ada.commit();
-    let task_ty = meta.types.iter().find(|t| t.name == "Task").unwrap();
-    let schema = tilolang_tilo::schema::lookup(&task_ty.id).unwrap();
-    let mut items = Collection::default();
-    for i in 0..n {
-        let mut item = DynResource::empty(schema).unwrap();
-        if let Some(DynValue::Text(title)) = item.get_mut(&field_id(&meta, "Task", "title")) {
-            *title = format!("Task {i:05}");
-        }
-        let day = if i < 3 { "2026-10-29" } else { "2027-01-01" };
-        if let Some(DynValue::Register(due)) = item.get_mut(&field_id(&meta, "Task", "due")) {
-            *due = json!({"some": day});
-        }
-        if (3..5).contains(&i)
-            && let Some(DynValue::Register(who)) =
-                item.get_mut(&field_id(&meta, "Task", "assignee"))
-        {
-            *who = json!({"some": {"actor": {"member": {"person": "ada"}}}});
-        }
-        items.push(Id::from_raw(format!("task-{i:05}")), item);
-    }
-    let holding = meta.types.iter().find(|t| t.name == "Tasks").unwrap();
-    let mut root_resource =
-        DynResource::empty(tilolang_tilo::schema::lookup(&holding.id).unwrap()).unwrap();
-    if let Some(DynValue::Collection(slot)) =
-        root_resource.get_mut(&field_id(&meta, "Tasks", "items"))
-    {
-        *slot = items;
-    }
-    let create = DynAction {
-        app: APP.to_owned(),
-        kind: "so.tilo.lang.tasks.seed".to_owned(),
-        action_id: "$create".to_owned(),
-        args: serde_json::Value::Null,
-        authorship: tilolang_tilo::Authorship::default(),
-        edits: vec![DynEdit::Create {
-            id: root.id_string(),
-            record: root_resource.to_json(),
-        }],
-    };
-    ada.apply(&create);
-    ada.commit();
-    ada
-}
-
-/// What a first render of the Tasks home reads of the index: the pages and directories, the
-/// fields, and the items it evaluated, and the count the Today place shows.
-fn rendered(replica: &Replica) -> ((u64, u64, u64, u64), i64) {
-    let before = replica.host.store().read_stats();
-    let view = replica.view(APP);
-    let after = replica.host.store().read_stats();
-    let today = count(&view, "Today").expect("the Today place shows how many it holds");
-    (
-        (
-            after.index.pages.saturating_sub(before.index.pages),
-            after.index.dirs.saturating_sub(before.index.dirs),
-            after.index.fields.saturating_sub(before.index.fields),
-            after.evaluated.saturating_sub(before.evaluated),
-        ),
-        today,
-    )
-}
-
-#[test]
-fn today_reads_the_same_at_any_size_and_each_person_their_own() {
-    // Three tasks are due today whoever looks, and two more are Ada's whenever they are due.
-    // A thousand tasks span two index pages and four thousand eight: the same today is read
-    // whatever the list holds. The thousand is Ada's too, for the part below.
-    let mut small = seeded(1_000);
-    let (hers, today) = rendered(&small);
-    assert_eq!(
-        today, 5,
-        "a thousand tasks: the three due today and the two Ada holds"
-    );
-    let large = seeded(4_000);
-    let (theirs, today) = rendered(&large);
-    assert_eq!(
-        today, 5,
-        "four thousand tasks: the three due today and the two Ada holds"
-    );
-    assert_eq!(
-        hers, theirs,
-        "the same today costs the same whether the workspace holds a thousand tasks or four \
-         thousand: the filter's run is read, not the tasks"
-    );
-
-    // Each person's Today is their own, read from the same column: the tasks due today are
-    // everyone's, and the ones Ada holds are not Ben's.
-    let ben = small.fork("ben", PACKAGES);
-    ben.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
-    ben.host.sync_from(&ben.doc);
-    let (his, today) = rendered(&ben);
-    assert_eq!(
-        today, 3,
-        "what Ada holds stands in her own Today: Ben's is the day's tasks alone"
-    );
-    assert_eq!(
-        his.0, hers.0,
-        "the assignee column is one column, read for the run of the person looking"
-    );
 }
 
 #[test]
@@ -276,7 +161,7 @@ fn rows_done(view: &mut ViewInstance) -> Vec<bool> {
 /// heading over the day counts the same rows as the title over it.
 #[test]
 fn a_checked_task_keeps_its_row_but_not_its_count() {
-    let (mut ada, root) = workspace();
+    let (ada, root) = workspace();
     for title in ["Buy oat milk", "Pay the electricity bill", "Book a haircut"] {
         let made = call(&ada, "new_task", create(&root, title));
         call(

@@ -2,8 +2,8 @@
 
 Scripts for controlling the headless compositor through the `TILO_TEST_CONTROL` Unix socket.
 
-For app automation, begin with `tilo-control actions list QUERY --json`, then
-invoke the chosen `(provider, id)`. The [search selection guide](../../docs/headless-testing.md#select-search-results-by-identity)
+For app automation, begin with `real_apps.Session.actions(QUERY)` (the
+session's catalogue, as action frames), then `invoke_row` the chosen row. The [search selection guide](../../docs/headless-testing.md#select-search-results-by-identity)
 explains how to distinguish same-named native and host apps and verify execution
 without opening the palette. Use the input examples below when testing input or
 rendering itself.
@@ -21,6 +21,7 @@ it. `tools/ci/session-proofs.sh PROOF` runs one on the session build
 |---|---|
 | `tilolang-e2e.py` (`e2e/tilolang`) | The tilolang apps installed and run as real apps: their registry entries, sandboxes, hosts, windows, actions and routes. |
 | `hosted-names-proof.py` (`e2e/two-people`) | Two people in one workspace, in two sessions, read each other by name in tilolang Chat: "Ada is typing…", her message under her name, and her own window naming her. |
+| `mail-two-members-proof.py` (`e2e/mail-two-members`) | Two members of one workspace, in two sessions, both list a message brought into the workspace's mailbox through the tilolang Mail's own action, and each opens it and presses Reply to a composer answering its sender under "Re:" its subject. |
 | `agent-sessions-proof.py` (`e2e/agent-sessions`) | Two agents at the session's MCP server, each admitted as itself through the workspace's governance, each served its own tools, the shell's Stop ending one of their connections alone. |
 | `session-lock-proof.py` (`e2e/session-lock`) | The shell's own lock action locks the session, the lock screen's own frame covers the shell, a password that is not the person's is refused, and the person's own password brings the shell back. |
 

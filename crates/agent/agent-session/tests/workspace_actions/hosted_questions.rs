@@ -8,8 +8,8 @@
 //! action stand for them, so the next one goes ahead unasked. "No" does nothing. Anything else
 //! they write is no answer: it asks the agent as ever, and the question still waits.
 use super::hosted_secret_use::{Hosted, does};
-use tilo_server::workspace_agents::ServerAgents;
 use tilo_server::workspaces::person_model::scripted::Reply;
+use tilo_workspace_service::agents::ServerAgents;
 use tilo_workspace_service::asks::AskState;
 
 /// What the agent is told when its person is asked first.

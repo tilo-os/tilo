@@ -152,7 +152,7 @@ impl DocumentSync {
         if heads.is_empty() {
             return self.merge(store, checkout, mutation);
         }
-        let (changed, _) = store.merge_replica_at(checkout, mutation, &heads)?;
+        let (changed, _) = store.merge_at(checkout, mutation, &heads)?;
         // Every change the mutation carried lies under the heads it stands at.
         self.frontier.hold(heads);
         self.snapshotted = true;

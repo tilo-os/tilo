@@ -1,4 +1,4 @@
-app so.tilo.lang.chat "Chat" (icon: .message_circle, category: .network)
+app so.tilo.chat "Chat" (icon: .message_circle, category: .network)
 
 /// The Chat whose direct conversation kept only the one person it was opened with, and so was
 /// read by every member: what the Chat of direct conversations read by their people alone

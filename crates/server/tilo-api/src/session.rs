@@ -35,13 +35,13 @@
 //! server says nothing of it itself.
 
 pub mod keys;
-pub mod members;
 pub mod models;
 pub mod unattended;
 
 pub use crate::server::Workspace;
 use crate::server::{Connection, ServerError};
 use crate::store::Scope;
+use crate::v1::errors::ApiError;
 use serde_json::{Map, Value, json};
 use std::{
     collections::HashMap,
@@ -83,24 +83,26 @@ impl Reply {
     }
 }
 
-/// The session in one workspace: the agent surface over the grant's session
-/// there, and the agent present in it.
+/// A workspace's actions, as one session reaches them.
+pub type Provider = Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>;
+
+/// The session in one workspace: the workspace's published tree as the session walks it, over
+/// the workspace's actions. The API's routes call it typed; the MCP endpoint speaks MCP over it.
 struct Served {
-    server: Box<dyn Answering>,
+    server: McpServer<Provider>,
+    /// One of the person's devices keeps the workspace, and answers its actions
+    /// itself: the server holds nothing of it.
+    on_device: bool,
 }
 
-/// What answers a workspace's MCP JSON-RPC for one session.
-pub trait Answering: Send + Sync {
-    /// The answer to `request`; `None` for a notification.
-    fn handle(&self, request: Value) -> BoxFuture<'_, Option<Value>>;
-}
-
-type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
-
-impl<A: tilo_actions::remote::ActionProvider + Send + Sync + 'static> Answering for McpServer<A> {
-    fn handle(&self, request: Value) -> BoxFuture<'_, Option<Value>> {
-        Box::pin(Self::handle(self, request))
-    }
+/// A workspace as the desktop here reaches it.
+pub struct Reached {
+    /// Its actions, as the person.
+    pub provider: Provider,
+    /// The person, as the workspace names them.
+    pub person: String,
+    /// Where its programs run.
+    pub tasks: Arc<dyn tilo_mcp::TaskHosts>,
 }
 
 /// The Tilo desktop a server is part of, answering its person's workspaces itself: a desktop
@@ -108,16 +110,17 @@ impl<A: tilo_actions::remote::ActionProvider + Send + Sync + 'static> Answering 
 pub trait Here: Send + Sync {
     /// The workspaces it holds.
     fn workspaces(&self) -> Vec<Workspace>;
-    /// What answers `workspace` for the session `session`, named `label` in History.
+    /// `workspace`'s actions, as its person reaches them here.
     ///
     /// # Errors
     /// It holds no such workspace, or cannot serve it now.
-    fn enter(
-        &self,
-        workspace: &str,
-        session: &str,
-        label: &str,
-    ) -> Result<Box<dyn Answering>, String>;
+    fn enter(&self, workspace: &str) -> Result<Reached, String>;
+
+    /// The connection the account's own actions go over, when this host forwards them to the
+    /// server its login reaches: `None` for a desktop, which answers no account action itself.
+    fn connection(&self) -> Option<Arc<crate::server::Connection>> {
+        None
+    }
 }
 
 /// A workspace a desktop holds, as the account lists it: the person's own.
@@ -146,11 +149,6 @@ pub(crate) enum Reach {
 type Refusal = ServerError;
 type Labels = tilo_server_session::workspaces::WorkspaceLabels;
 
-/// A session in a workspace one of the person's devices hosts, entered at
-/// that device's MCP server: the device serves the whole session, its people
-/// and its windows included, and shows the agent there itself.
-struct OnDevice(tilo_device_mcp::enter::Entered);
-
 /// One workspace's session, once whoever entered it holds it: a lock per
 /// workspace, so entering one does not hold another's requests.
 type Entered<Run> = Arc<tokio::sync::Mutex<Option<Arc<Run>>>>;
@@ -170,11 +168,9 @@ pub struct Session {
     reach: Reach,
     /// The server, which answers the account's own actions.
     server: std::sync::Weak<crate::Server>,
-    /// The sessions in workspaces the server hosts, by [`queue`], each entered
+    /// The sessions in the workspaces it reaches, by [`queue`], each entered
     /// under its own lock.
     served: tokio::sync::Mutex<HashMap<String, Entered<Served>>>,
-    /// The sessions in workspaces the person's devices host, by [`queue`].
-    on_devices: tokio::sync::Mutex<HashMap<String, Entered<OnDevice>>>,
     /// The program sessions, `(workspace, id)`, the most recently used last.
     programs: tokio::sync::Mutex<Vec<(String, String)>>,
     /// The workspace tools, once a workspace served them.
@@ -182,71 +178,9 @@ pub struct Session {
     pub(crate) last_used: Mutex<Instant>,
 }
 
-/// One tool call of a session: what an MCP client's `tools/call` and every
-/// route of the API make ([`Session::call`]).
-#[derive(Debug)]
-pub struct Call {
-    /// The workspace it acts in; `None` for the account, or for the one
-    /// workspace a session for one workspace acts in.
-    pub workspace: Option<String>,
-    /// The tool: `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_status`, …
-    pub tool: &'static str,
-    pub arguments: Value,
-    /// The invocation group it is a step of, `{"id", "title"}`, when the
-    /// caller names one.
-    pub group: Option<Value>,
-}
-
-/// Why a call answered nothing typed: the request itself was refused, before
-/// any tool ran.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CallError {
-    /// The typed code: `not_found`, `beyond_scope`, `invalid_request`,
-    /// `key_revoked` or `unavailable`.
-    pub code: &'static str,
-    pub message: String,
-}
-
-impl CallError {
-    fn beyond_scope() -> Self {
-        Self {
-            code: "beyond_scope",
-            message: "this key reaches another workspace only".into(),
-        }
-    }
-
-    /// A call the workspace could not finish, for `message`.
-    pub(crate) fn unavailable(message: String) -> Self {
-        Self {
-            code: "unavailable",
-            message,
-        }
-    }
-
-    fn unanswered() -> Self {
-        Self {
-            code: "unavailable",
-            message: "your workspace didn't answer; try again in a minute".into(),
-        }
-    }
-
-    /// The JSON-RPC `error` a session answered, typed.
-    fn of(error: &Value) -> Self {
-        let message = error
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("the call was refused")
-            .to_owned();
-        let code = match error.get("code").and_then(Value::as_i64) {
-            _ if error.pointer("/data/code").and_then(Value::as_str) == Some("key_revoked") => {
-                "key_revoked"
-            }
-            Some(-32602) if message.contains("no such workspace") => "not_found",
-            Some(-32602 | -32600 | -32700 | -32601) => "invalid_request",
-            _ => "unavailable",
-        };
-        Self { code, message }
-    }
+/// A call outside the one workspace a key for one reaches.
+fn beyond_scope() -> ApiError {
+    ApiError::new("beyond_scope", "this key reaches another workspace only")
 }
 
 /// A JSON-RPC error reply.
@@ -309,7 +243,6 @@ impl Session {
             reach,
             server,
             served: tokio::sync::Mutex::default(),
-            on_devices: tokio::sync::Mutex::default(),
             programs: tokio::sync::Mutex::default(),
             tools: Mutex::default(),
             last_used: Mutex::new(Instant::now()),
@@ -331,10 +264,10 @@ impl Session {
     }
 
     /// The grant's own connection, for the account's own actions.
-    pub(crate) fn connection(&self) -> Result<&Arc<Connection>, Refusal> {
+    pub(crate) fn connection(&self) -> Result<Arc<Connection>, Refusal> {
         match &self.reach {
-            Reach::Forwarded(connection) => Ok(connection),
-            Reach::Here(_) => Err(Refusal::NoAccountHere),
+            Reach::Forwarded(connection) => Ok(Arc::clone(connection)),
+            Reach::Here(here) => here.connection().ok_or(Refusal::NoAccountHere),
         }
     }
 
@@ -388,42 +321,98 @@ impl Session {
         }
         let connection = match &self.reach {
             Reach::Forwarded(connection) => connection,
+            // The desktop here answers as its person, in a group of the session's own.
             Reach::Here(here) => {
                 if !here.workspaces().iter().any(|held| held.id == workspace) {
                     return Err(Refusal::NotFound);
                 }
-                let session = format!("{}-{}", self.id, program.unwrap_or_default());
-                let server = here
-                    .enter(workspace, &session, &self.label)
-                    .map_err(Refusal::Unavailable)?;
-                let held = Arc::new(Served { server });
+                let reached = here.enter(workspace).map_err(Refusal::Unavailable)?;
+                let server =
+                    McpServer::for_person(reached.provider, workspace.to_owned(), &reached.person)
+                        .with_work_group(tilo_actions::WorkGroup {
+                            id: format!("{}-{}", self.id, program.unwrap_or_default()),
+                            label: Some(self.label.clone()),
+                            kind: "api".into(),
+                            declared_id: None,
+                            session: None,
+                        })
+                        .with_task_hosts(Some(reached.tasks));
+                let held = Arc::new(Served {
+                    server,
+                    on_device: false,
+                });
                 *entered = Some(Arc::clone(&held));
                 drop(entered);
                 return Ok(held);
             }
         };
-        let id = connection.server().enter(connection, workspace).await?;
-        let device = &connection.device;
-        let actions = device.actions(id);
-        let catalogue =
-            tilo_mcp::task_hosts::WorkspaceCatalogue::new(actions.clone(), self.caller());
-        let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())
-            .with_agent_session(&self.id)
-            .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
-                Some(&self.person),
-                Arc::new(catalogue),
-            ))));
-        let held = Arc::new(Served {
-            server: Box::new(server),
-        });
+        // One of the person's devices keeps it: its actions are asked of that device over its
+        // action service, signed by this key, and the device's members and policy decide them.
+        let held = if let Some(address) = self.device_address(workspace).await {
+            let device = address.address().map_err(Refusal::Unavailable)?;
+            if device.workspace_id.to_string() != workspace {
+                return Err(Refusal::Unavailable(
+                    "that address is another workspace's".to_owned(),
+                ));
+            }
+            let endpoint = connection.endpoint().await?;
+            let actions = tilo_peer_state::actions::ActionService::new(
+                connection.key.key().clone(),
+                Arc::new(tilo_peer_state::actions::NoActions),
+            )
+            .remote(&endpoint, &device.endpoint_addr, workspace);
+            Served {
+                server: self.agent_surface(Arc::new(actions), workspace),
+                on_device: true,
+            }
+        } else {
+            let id = connection.server().enter(connection, workspace).await?;
+            Served {
+                server: self
+                    .agent_surface(Arc::new(connection.device.workspace_actions(id)), workspace),
+                on_device: false,
+            }
+        };
+        let held = Arc::new(held);
         *entered = Some(Arc::clone(&held));
         drop(entered);
         Ok(held)
     }
 
+    /// The agent surface over `actions`, the actions of `workspace`, in this session.
+    fn agent_surface(&self, actions: Provider, workspace: &str) -> McpServer<Provider> {
+        let catalogue =
+            tilo_mcp::task_hosts::WorkspaceCatalogue::new(Arc::clone(&actions), self.caller());
+        McpServer::new(actions, workspace.to_owned(), self.person.clone())
+            .with_agent_session(&self.id)
+            .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
+                Some(&self.person),
+                Arc::new(catalogue),
+            ))))
+    }
+
+    /// Whether one of the person's devices keeps `workspace`, as the session entered it, or as
+    /// their list says before it does.
+    async fn on_device(&self, workspace: &str, program: Option<&str>) -> bool {
+        if !matches!(self.reach, Reach::Forwarded(_)) {
+            return false;
+        }
+        let slot = self
+            .served
+            .lock()
+            .await
+            .get(&queue(workspace, program))
+            .cloned();
+        if let Some(entered) = slot.as_ref().and_then(|slot| slot.try_lock().ok())
+            && let Some(held) = entered.as_ref()
+        {
+            return held.on_device;
+        }
+        self.device_address(workspace).await.is_some()
+    }
+
     /// Answer `request` in `workspace`'s session, showing the person what a
-    /// tool call did beside the agent. The workspace's people
-    /// (`workspace/members`) are answered here ([`members`]).
+    /// tool call did beside the agent.
     async fn serve(&self, workspace: &str, request: Value) -> Reply {
         self.serve_in(workspace, None, request).await
     }
@@ -433,22 +422,12 @@ impl Session {
     async fn serve_in(&self, workspace: &str, program: Option<&str>, request: Value) -> Reply {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let looking = timing_start();
-        match self.on_device(workspace, program).await {
-            Ok(Some(held)) => {
-                let handling = timing_start();
-                let answer = held
-                    .0
-                    .handle(request)
-                    .await
-                    .map_or_else(Reply::accepted, Reply::one);
-                timing_done("api.handle_on_device", handling);
-                return answer;
-            }
-            Ok(None) => {}
-            Err(refused) => return Reply::one(error(&id, -32000, &refused)),
-        }
+        let on_device = self.on_device(workspace, program).await;
         timing_done("api.device", looking);
-        if matches!(self.reach, Reach::Forwarded(_))
+        // The server answers the unattended runs of a workspace it keeps; a device
+        // that keeps one answers them itself.
+        if !on_device
+            && matches!(self.reach, Reach::Forwarded(_))
             && request.get("method").and_then(Value::as_str) == Some("tools/call")
         {
             let tool = request
@@ -460,10 +439,6 @@ impl Session {
                 .pointer("/params/_meta/so.tilo.mcp/structured")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            if members::addresses(tool, arguments) {
-                let answered = self.members(workspace, tool, arguments, structured).await;
-                return Reply::one(result(&id, &answered));
-            }
             if unattended::addresses(tool, arguments) {
                 let answered = self
                     .unattended(workspace, tool, arguments, structured)
@@ -493,54 +468,6 @@ impl Session {
             .map_or_else(Reply::accepted, Reply::one);
         timing_done("api.handle", handling);
         answer
-    }
-
-    /// The session in `workspace` when one of the person's devices hosts it, as
-    /// their list says, entering it at that device's MCP server the first
-    /// time (and again once the device closed it); `None` for a workspace the
-    /// server keeps. As [`Self::served`], each workspace's entry has a lock of
-    /// its own.
-    async fn on_device(
-        &self,
-        workspace: &str,
-        program: Option<&str>,
-    ) -> Result<Option<Arc<OnDevice>>, String> {
-        let Reach::Forwarded(connection) = &self.reach else {
-            return Ok(None);
-        };
-        let queue = queue(workspace, program);
-        // A workspace the session already works in on the server is the server's.
-        if self.served.lock().await.contains_key(&queue) {
-            return Ok(None);
-        }
-        let slot = {
-            let mut runs = self.on_devices.lock().await;
-            let slot = Arc::clone(runs.entry(queue).or_default());
-            drop(runs);
-            slot
-        };
-        let mut entered = slot.lock().await;
-        if let Some(known) = entered.as_ref().filter(|known| known.0.is_live()) {
-            return Ok(Some(Arc::clone(known)));
-        }
-        let Some(address) = self.device_address(workspace).await else {
-            return Ok(None);
-        };
-        let endpoint = connection
-            .endpoint()
-            .await
-            .map_err(|error| error.to_string())?;
-        let on_device = tilo_device_mcp::enter::enter(
-            &endpoint,
-            &connection.entering_key(),
-            workspace,
-            &address,
-        )
-        .await?;
-        let session = Arc::new(OnDevice(on_device));
-        *entered = Some(Arc::clone(&session));
-        drop(entered);
-        Ok(Some(session))
     }
 
     /// Where `workspace` is hosted when one of the person's devices hosts it,
@@ -785,47 +712,97 @@ impl Session {
         Reply::one(answer)
     }
 
-    /// Answer `call` with its typed answer: the one way every call is made,
-    /// whether an MCP client's `tools/call` or a route of the API (`crate::v1`).
+    /// Call `tool` with `arguments` in `workspace` (`None` for the account, or for the one
+    /// workspace a session for one acts in), as a step of the invocation group `group`
+    /// (`{"id", "title"}`): its typed result. Every route of the API calls this.
     ///
     /// # Errors
-    /// The session reaches no such workspace, or the call was malformed.
-    pub async fn call(&self, call: Call) -> Result<Value, CallError> {
-        let mut arguments = match call.arguments {
+    /// The session reaches no such workspace, the call was malformed, or the tool refused it.
+    pub async fn typed(
+        &self,
+        workspace: Option<&str>,
+        tool: &str,
+        arguments: Value,
+        group: Option<Value>,
+    ) -> Result<Value, ApiError> {
+        self.touch();
+        let arguments = match arguments {
             Value::Null => json!({}),
             arguments => arguments,
         };
-        match (self.pinned(), call.workspace.as_deref()) {
+        let workspace = match (self.pinned(), workspace) {
             (Some(pinned), Some(asked)) if pinned != asked => {
-                return Err(CallError::beyond_scope());
+                return Err(beyond_scope());
             }
-            (None, Some(workspace)) => {
-                if let Some(fields) = arguments.as_object_mut() {
-                    fields.insert(WORKSPACE_ARGUMENT.into(), json!(workspace));
+            (Some(pinned), _) => {
+                // Its workspace answers a call in it; the account answers the keys it holds
+                // there.
+                if let Some(refused) = crate::account::beyond_workspace(tool, &arguments, true) {
+                    return structured(&refused);
                 }
+                if crate::account::on_account(tool, &arguments) {
+                    return self.account_typed(tool, &arguments).await;
+                }
+                pinned.to_owned()
             }
-            _ => {}
-        }
-        let mut meta = Map::new();
-        meta.insert("structured".into(), json!(true));
-        if let Some(group) = call.group {
-            meta.insert("invocation".into(), group);
-        }
-        let request = json!({"jsonrpc": "2.0", "id": "api", "method": "tools/call",
-            "params": {"name": call.tool, "arguments": arguments, "_meta": {"so.tilo.mcp": meta}}});
-        let reply = Box::pin(self.handle(request)).await;
-        let Some(message) = reply.messages.into_iter().last() else {
-            return Err(CallError::unanswered());
+            (None, Some(named)) => self
+                .workspace_id(named)
+                .await
+                .unwrap_or_else(|| named.to_owned()),
+            (None, None) if crate::account::addresses(tool, &arguments) => {
+                return self.account_typed(tool, &arguments).await;
+            }
+            (None, None) => {
+                return Err(ApiError::new(
+                    "invalid_request",
+                    "name the workspace this acts in; only paths under `account` need none",
+                ));
+            }
         };
-        if let Some(error) = message.get("error") {
-            return Err(CallError::of(error));
+        self.typed_in(&workspace, None, tool, arguments, group)
+            .await
+    }
+
+    /// [`Self::typed`] in `workspace`, on the queue of the program session `program` when it
+    /// names one.
+    async fn typed_in(
+        &self,
+        workspace: &str,
+        program: Option<&str>,
+        tool: &str,
+        arguments: Value,
+        group: Option<Value>,
+    ) -> Result<Value, ApiError> {
+        // The server answers the unattended runs of a workspace it keeps; a device
+        // that keeps one answers them itself.
+        if unattended::addresses(tool, &arguments)
+            && matches!(self.reach, Reach::Forwarded(_))
+            && !self.on_device(workspace, program).await
+        {
+            return structured(&self.unattended(workspace, tool, &arguments, true).await);
         }
-        Ok(message.get("result").cloned().unwrap_or_default())
+        let served = self.served(workspace, program).await?;
+        Box::pin(served.server.typed(tool, arguments, group))
+            .await
+            .map_err(|refused| ApiError::of_answer(Some(&refused.error), refused.action.as_ref()))
+    }
+
+    /// The account's own answer to `tool`: what it typed.
+    async fn account_typed(&self, tool: &str, arguments: &Value) -> Result<Value, ApiError> {
+        let server = self
+            .server
+            .upgrade()
+            .ok_or_else(|| ApiError::new("unavailable", "the server is shutting down"))?;
+        structured(
+            &server
+                .account_call(&self.grant, self, tool, arguments, true)
+                .await,
+        )
     }
 
     /// Run `arguments` (the `tilo` tool's: `{program, confirm}`) in
     /// `workspace`, in the program session `session` names, or a new one
-    /// when it names none: the tool's result, and the session it ran in.
+    /// when it names none: the run, and the session it ran in.
     ///
     /// # Errors
     /// The run reaches no such workspace, or `session` names a session that
@@ -836,27 +813,16 @@ impl Session {
         session: Option<&str>,
         arguments: Value,
         group: Option<Value>,
-    ) -> Result<(Value, String), CallError> {
+    ) -> Result<(Value, String), ApiError> {
         if self.pinned().is_some_and(|pinned| pinned != workspace) {
-            return Err(CallError::beyond_scope());
+            return Err(beyond_scope());
         }
         self.touch();
         let session = self.program_session(workspace, session).await?;
-        let mut meta = Map::new();
-        meta.insert("structured".into(), json!(true));
-        if let Some(group) = group {
-            meta.insert("invocation".into(), group);
-        }
-        let request = json!({"jsonrpc": "2.0", "id": "api", "method": "tools/call",
-            "params": {"name": "tilo", "arguments": arguments, "_meta": {"so.tilo.mcp": meta}}});
-        let reply = Box::pin(self.serve_in(workspace, Some(&session), request)).await;
-        let Some(message) = reply.messages.into_iter().last() else {
-            return Err(CallError::unanswered());
-        };
-        if let Some(error) = message.get("error") {
-            return Err(CallError::of(error));
-        }
-        Ok((message.get("result").cloned().unwrap_or_default(), session))
+        let ran = self
+            .typed_in(workspace, Some(&session), "tilo", arguments, group)
+            .await?;
+        Ok((ran, session))
     }
 
     /// The program session `asked` names in `workspace`, now the most
@@ -866,18 +832,19 @@ impl Session {
         &self,
         workspace: &str,
         asked: Option<&str>,
-    ) -> Result<String, CallError> {
+    ) -> Result<String, ApiError> {
         let mut sessions = self.programs.lock().await;
         let id = match asked {
             Some(asked) => {
                 let at = sessions
                     .iter()
                     .position(|(known, id)| known == workspace && id == asked)
-                    .ok_or_else(|| CallError {
-                        code: "not_found",
-                        message: "that program session ended: its lets and references are gone; \
-                                  leave `session` out to start a new one"
-                            .into(),
+                    .ok_or_else(|| {
+                        ApiError::new(
+                            "not_found",
+                            "that program session ended: its lets and references are gone; \
+                             leave `session` out to start a new one",
+                        )
                     })?;
                 sessions.remove(at).1
             }
@@ -892,32 +859,8 @@ impl Session {
         drop(sessions);
         for queue in &ended {
             self.served.lock().await.remove(queue);
-            self.on_devices.lock().await.remove(queue);
         }
         Ok(id)
-    }
-
-    /// Call the workspace tool `name` with `arguments` in `workspace`, in
-    /// this session: the tool's result, or why there is none.
-    pub(crate) async fn call_in(
-        &self,
-        workspace: &str,
-        name: &str,
-        arguments: Value,
-    ) -> Result<Value, CallError> {
-        self.touch();
-        let reply = self
-            .serve(
-                workspace,
-                json!({"jsonrpc":"2.0","id":"tilo-api-call","method":"tools/call",
-                        "params":{"name":name,"arguments":arguments}}),
-            )
-            .await;
-        let message = reply.messages.last().ok_or_else(CallError::unanswered)?;
-        if let Some(error) = message.get("error") {
-            return Err(CallError::of(error));
-        }
-        Ok(message.get("result").cloned().unwrap_or_default())
     }
 
     /// End the run: the agent leaves every workspace. The grant's session
@@ -925,7 +868,6 @@ impl Session {
     /// them, or when the grant is revoked.
     pub(crate) async fn close(&self) {
         self.served.lock().await.clear();
-        self.on_devices.lock().await.clear();
     }
 }
 
@@ -933,6 +875,34 @@ impl Session {
 /// one program session there.
 fn queue(workspace: &str, program: Option<&str>) -> String {
     program.map_or_else(|| workspace.to_owned(), |id| format!("{workspace} {id}"))
+}
+
+/// The typed result in a tool result made as MCP (the account's own answers, the workspace's
+/// people, a workspace a device of the person's hosts), or its refusal. A result said in words
+/// alone (`{status, text}`) typed nothing: the words are why.
+fn structured(answer: &Value) -> Result<Value, ApiError> {
+    let said = answer
+        .pointer("/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let typed = answer
+        .get("structuredContent")
+        .ok_or_else(|| ApiError::new("failed", said))?;
+    let status = typed.get("status").and_then(Value::as_str);
+    match typed.get("text").and_then(Value::as_str) {
+        Some(words) if typed.as_object().is_some_and(|fields| fields.len() == 2) => {
+            let code = if status == Some("failed") {
+                "failed"
+            } else {
+                "not_found"
+            };
+            Err(ApiError::new(code, words))
+        }
+        _ if status == Some("failed") => {
+            Err(ApiError::of_answer(typed.get("error"), typed.get("action")))
+        }
+        _ => Ok(typed.clone()),
+    }
 }
 
 /// What an account session is told first: how to reach the account and its
@@ -955,13 +925,10 @@ is the confirmation, so delete only what you were asked to). Every other call ac
 named by id in its `workspace` argument. To give another agent one workspace and nothing else \
 (one workspace per customer), `tilo_do {path: \"account/keys#mint\", args: {workspace}}` answers \
 an `mcp_url` and a `token` for it; revoking this key ends every key it minted. \
-To bring another person in (a reviewer, say), `tilo_do {path: \"workspace/members#invite\", \
-args: {role, email?}, workspace}` answers a `link` that signs them in and lands them there as \
-`role` (viewer, commenter, editor or administrator); `workspace/members#list` names who is in it, and \
-`workspace/members#name {name}` sets how it names the key's own person, which is what their \
-invitations say. \
 `tilo_ls workspace` (with `workspace`) lists the workspace's governance beside its apps, as any \
-path lists: the servers keeping it (`workspace/servers`), the versions of apps and the bots it \
+path lists: its people (`workspace/members`), its open invitations (`workspace/invitations`, whose \
+`invite {role}` answers the `link` that brings a person in), its wait list (`workspace/waiting`), \
+the servers keeping it (`workspace/servers`), the versions of apps and the bots it \
 uses (`workspace/apps`) and its mail accounts (`workspace/mail-accounts`). \
 A command an agent runs in a workspace's Linux machine (`terminal#run`) asks the person each \
 time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}` asks them once \

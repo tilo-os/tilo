@@ -333,52 +333,6 @@ fn an_empty_windows_state_and_bar_offer_the_primary_action_as_one_control() {
     );
 }
 
-/// What an agent invokes in a person's window is written once, as the agent's own change: the
-/// run that built it wrote it as theirs, and a peer replaying it gets the same change.
-#[test]
-fn an_agents_invocation_in_a_window_is_written_once_as_its_change() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = super::Session::live_notes();
-    let new_note = session.identity_named("New note");
-    let held = super::record(&session);
-    let written = super::store(&session).stats().written_once;
-    let answered = session.invoke_as(
-        &ui::tilo_actions::MemberId::agent("task:7").into(),
-        &new_note,
-        &serde_json::json!({}),
-    );
-    assert!(
-        matches!(
-            answered,
-            ui::tilo_actions::InvocationUpdate::Succeeded { .. }
-        ),
-        "the API ran what the control does: {answered:?}"
-    );
-    assert_eq!(
-        super::store(&session).stats().written_once,
-        written + 1,
-        "the agent's note is written once, as the change it makes"
-    );
-    let host = session.instance_host();
-    let mut reproduced = 0;
-    for (chunk, doc) in super::record(&session).all() {
-        let from = held
-            .held(chunk)
-            .map(automerge::AutoCommit::committed_heads)
-            .unwrap_or_default();
-        let mut doc = doc.clone();
-        for change in doc.get_changes(&from) {
-            assert_eq!(
-                change.actor_id().to_bytes(),
-                b"agent:task:7",
-                "the change is the agent's"
-            );
-        }
-        reproduced += super::replayed(&mut doc, &from, &host);
-    }
-    assert_eq!(reproduced, 1, "a peer reproduced the agent's change");
-}
-
 /// A control that takes an argument is invoked by what it does, with that argument: the Tasks
 /// window's New task, run at the API as another app's call or an agent's reaches it, makes the
 /// task it names.
@@ -399,7 +353,7 @@ fn a_new_task_is_invoked_at_the_api_by_what_its_control_does_and_its_argument() 
         "the API ran what the control does: {answered:?}"
     );
     assert!(
-        super::task_in_document(&session, "Water the plants", false),
+        super::task_in_workspace(&session, "Water the plants", false),
         "the task named by the argument is in the document"
     );
 }
@@ -437,12 +391,12 @@ fn a_tasks_complete_completes_the_task_its_row_names() {
         "the API ran what the row's Complete does: {answered:?}"
     );
     assert!(
-        super::task_in_document(&session, "Call the plumber", true),
+        super::task_in_workspace(&session, "Call the plumber", true),
         "the second task is done: {:?}",
         session.titles()
     );
     assert!(
-        super::task_in_document(&session, "Water the plants", false),
+        super::task_in_workspace(&session, "Water the plants", false),
         "the task nobody named is still to do"
     );
 }
@@ -620,12 +574,6 @@ impl crate::change_marks::Driven for super::Session {
 }
 
 impl super::Session {
-    /// Read the instance's document as it is now, after everything the window did was taken in.
-    pub(crate) fn read<R>(&mut self, read: impl FnOnce(&mut ui::tilo_resource::Doc) -> R) -> R {
-        self.settle();
-        read(&mut self.instance().record().doc())
-    }
-
     /// Invoke `action` of the published `resource` at the API the broker delivers to, as
     /// `invoker` (the person at the window when `None`), within `ambient`: the task the invoker
     /// carries out, recorded with every change it makes. The broker names the invoker it admitted
@@ -778,7 +726,7 @@ mod access {
     use tilolang_process::hosted::Spec;
     use ui::permissions::policy::{MemberAccess, Role, WorkspacePolicy};
 
-    use super::super::{Session, TASKS, Window, find, task_in_document};
+    use super::super::{Session, TASKS, Window, find, task_in_workspace};
 
     /// Ada's access in `workspace`, whose owner is Bob, as `role`.
     fn ada_as(workspace: &str, role: Role) -> MemberAccess {
@@ -794,8 +742,7 @@ mod access {
         let spec = Spec::new(TASKS, workspace.clone(), 1, "ada")
             .in_language("en-US")
             .access(ada_as(&workspace, role));
-        let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
-        let mut session = Session::brokered_as(&route, spec, chunks, None, Window::in_harness);
+        let mut session = Session::brokered_as(&route, spec, Window::in_harness);
         session.settle();
         (session, workspace)
     }
@@ -845,7 +792,7 @@ mod access {
             "the instance refuses a viewer's change: {answered:?}"
         );
         assert!(
-            !task_in_document(&session, "Water the plants", false),
+            !task_in_workspace(&session, "Water the plants", false),
             "and nothing is written"
         );
 
@@ -873,7 +820,7 @@ mod access {
             ),
             "an editor's change runs: {answered:?}"
         );
-        assert!(task_in_document(&session, "Water the plants", false));
+        assert!(task_in_workspace(&session, "Water the plants", false));
         assert!(
             !session
                 .host

@@ -1889,6 +1889,17 @@ fn last_ident(ty: &Type) -> Option<(String, Option<&Type>)> {
 /// when `schema` (the type implements `JsonSchema`), else an object.
 /// The parameter type of `ty` when its name says it, and whether it is
 /// optional; `None` for a type whose schema says it.
+/// Whether `ty` is a resource's address (`String`, `Id`, ...) rather than a reference record:
+/// what a parameter picking one of an existing resource declares when the verb stores its
+/// address.
+fn is_address_type(ty: &Type) -> bool {
+    match last_ident(ty) {
+        Some((name, None)) => matches!(name.as_str(), "String" | "Id" | "Uuid" | "Atom"),
+        Some((name, Some(inner))) if name == "Option" => is_address_type(inner),
+        _ => false,
+    }
+}
+
 fn known_param_type(ty: &Type) -> (Option<Tokens>, bool) {
     let krate = krate();
     let pt = quote!(#krate::__private::ParamType);

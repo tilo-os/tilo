@@ -115,11 +115,11 @@ pub(crate) fn settle_threads(
 mod tests {
     use super::*;
     use tilo_actions::MemberId;
-    use tilo_workspace_service::tl_records::RecordBytes;
+    use tilo_workspace_service::tl_records::ResourceStore;
 
     fn empty_chat() -> Opened {
         Opened::open(
-            &RecordBytes::default(),
+            ResourceStore::in_memory(),
             &tl_chat::packages().unwrap(),
             tl_chat::viewer(),
             None,

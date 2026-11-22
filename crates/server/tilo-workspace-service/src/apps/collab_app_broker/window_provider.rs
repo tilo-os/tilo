@@ -20,7 +20,7 @@ impl AppBrokerState {
         workspace: &str,
         record: Option<&str>,
     ) -> Option<u64> {
-        let surfaces = self.surfaces.lock().ok()?;
+        let surfaces = self.publishers.surfaces.lock().ok()?;
         surfaces
             .values()
             .filter(|surface| {

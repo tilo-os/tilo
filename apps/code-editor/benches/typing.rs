@@ -191,7 +191,7 @@ fn single_character_to_scene(mut fixture: Box<TypingFixture>) -> Box<TypingFixtu
             if !fixture.app.harness().frame_schedule().queued_work {
                 break;
             }
-            assert!(fixture.app.frame(), "a queued frame must complete");
+            assert!(fixture.app.frame_if_owed(), "a queued frame must complete");
         }
         fixture.pending_work_at_boundary = Some(fixture.app.harness().frame_schedule().queued_work);
     });

@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use hex_editor::HexEditor;
 use hex_editor::HexEditorShell;
 use hex_editor::actions::HexEffect;

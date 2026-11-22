@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.today@e31bf94ae910f654";
+export const SURFACE = "so.tilo.lang.today@ba279a57a0a0b870";
 
 /** Today — `tl.so.tilo.lang.today.Today`. */
 export interface Today extends tilo.Resource {

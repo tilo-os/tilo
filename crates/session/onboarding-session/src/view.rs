@@ -171,7 +171,7 @@ fn import_identity(
     source: &Path,
     passphrase: &[u8],
 ) -> Result<MintedIdentity, String> {
-    let store = tilo_identity::registry::IdentityRegistryStore::at(import_dir);
+    let store = tilo_identity::store::IdentityRegistryStore::at(import_dir);
     let profile = if passphrase.is_empty() {
         // Explicit compatibility path for schema-1 exports from
         // older Tilo builds. New backups always require a
@@ -678,7 +678,7 @@ impl OnboardingView {
                 && !view.flow.is_done()
                 && let Some(directory) = view.identity_dir.as_ref()
             {
-                let active = tilo_identity_client::resolve_active_identity(directory)
+                let active = tilo_identity::store::resolve_active_identity(directory)
                     .unwrap_or_else(|| directory.join("primary.json"));
                 if let Ok(identity) = crate::identity::existing_identity_at(&active) {
                     view.flow.resume_created(identity);
@@ -976,7 +976,7 @@ impl OnboardingView {
     ///
     /// Refuses missing, changed or completed declarations and unusable identities.
     pub fn new_for_migration_resume(identity_dir: PathBuf) -> Result<Self, String> {
-        let active = tilo_identity_client::resolve_active_identity(&identity_dir)
+        let active = tilo_identity::store::resolve_active_identity(&identity_dir)
             .ok_or_else(|| t("onboarding-portable-home-unavailable"))?;
         let identity = crate::identity::existing_identity_at(&active)
             .map_err(|_| t("onboarding-portable-home-unavailable"))?;
@@ -1043,7 +1043,7 @@ impl OnboardingView {
             Ok(None) => return,
             Err(error) => (PersistedStage::IdentityReady, Some(error.to_string())),
         };
-        let identity_path = tilo_identity_client::resolve_active_identity(identity_dir)
+        let identity_path = tilo_identity::store::resolve_active_identity(identity_dir)
             .unwrap_or_else(|| identity_dir.join("primary.json"));
         match crate::identity::existing_identity_at(&identity_path) {
             Ok(identity) => {
@@ -3152,7 +3152,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
-    use tilo_identity_ceremony::{IdentityRecord, SerializableIdentity};
+    use tilo_identity::store::{IdentityRecord, SerializableIdentity};
     use tilo_onboarding::copy::{codecs_note, host_desktop_intro_body};
     use ui::widget::Scrollable;
     use winit::event::ElementState;
@@ -3582,7 +3582,7 @@ mod tests {
                 threshold: 1,
                 total_shares: 1,
                 share_index: 1,
-                secret_bytes: vec![0x42; 32],
+                secret_bytes: Zeroizing::new(vec![0x42; 32]),
             },
             created_at: "2026-01-01T00:00:00Z".into(),
             schema_version: 1,

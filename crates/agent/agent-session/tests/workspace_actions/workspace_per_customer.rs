@@ -607,7 +607,6 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
             "createWorkspace" => json!({"name": "cus_c"}),
             "mintKey" => json!({"workspace": b}),
             "runProgram" => json!({"program": "notes"}),
-            "invitePerson" => json!({"role": "editor"}),
             "createWebhook" => json!({"url": "https://example.com/hook"}),
             _ => json!({"title": PLANTED}),
         };

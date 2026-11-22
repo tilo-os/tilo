@@ -86,7 +86,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # The session this checks and the tools that act in it: one harness for every
 # check of a desktop with the tree's apps (scripts/headless-examples/real_apps.py).
-from real_apps import BUILD, TARGET, Failed, Session, prepare, run, until  # noqa: E402
+from real_apps import BUILD, TARGET, Failed, Session, address, prepare, run, until  # noqa: E402
 
 
 def app_id(name: str) -> str:
@@ -306,15 +306,15 @@ def check_registry(session: Session) -> dict:
     for name in APPS:
         hits = until(f"{app_id(name)} among the session's applications", lambda: [
             a for a in session.actions(app_id(name))
-            if a.get("provider") == "applications" and a.get("id") == app_id(name)
+            if address(a) == (f"app.{app_id(name)}", "open")
         ], 30, 0.5)
-        found[app_id(name)] = {"title": hits[0]["title"], "category": hits[0].get("subtitle")}
+        found[app_id(name)] = {"title": hits[0]["resource"]["label"]}
     return found
 
 
 def launch_all(session: Session) -> dict:
     for name in APPS:
-        session.invoke("applications", app_id(name))
+        session.open(app_id(name))
     def admitted():
         windows = {w.get("app_id"): w for w in session.windows()}
         return windows if all(app_id(n) in windows for n in APPS) else None
@@ -863,8 +863,8 @@ def menu_complete(session: Session, title: str) -> dict:
 
 
 def invoke_found(session: Session, found: dict, args: dict | None = None) -> dict:
-    """Invoke the action the listing printed, as the tools do: its own provider and id."""
-    return session.invoke(found["provider"], found["id"], args)
+    """Invoke the action the listing printed, as the tools do: its own provider and address."""
+    return session.invoke_row(found, args)
 
 
 def history_total(session: Session, name: str) -> int:
@@ -872,7 +872,7 @@ def history_total(session: Session, name: str) -> int:
                     lambda: app_operation(session, app_id(name), "history"))
     answer = invoke_found(session, history)
     try:
-        return answer["receipt"]["update"]["output"]["value"]["total"]
+        return answer["Completed"]["output"]["value"]["total"]
     except (KeyError, TypeError):
         raise Failed(f"{app_id(name)}'s history answered without a total: {json.dumps(answer)}") from None
 
@@ -884,23 +884,24 @@ def check_actions(session: Session) -> dict:
     for name in APPS:
         published = until(
             f"{app_id(name)}'s actions",
-            lambda: [a for a in session.actions(app_id(name)) if a.get("application") == app_id(name)],
+            lambda: [a for a in session.actions(app_id(name))
+                     if a.get("app_id") == app_id(name) and address(a)],
         )
         out[app_id(name)] = {"published": len(published)}
     for name, title in news.items():
         action = until(f"{app_id(name)}'s {title!r}",
                        lambda: app_action(session, app_id(name), title, "Document"))
         before = history_total(session, name)
-        state = invoke_found(session, action)["receipt"]["update"]["state"]
+        state = invoke_found(session, action)
         after = until(f"{title!r} in {app_id(name)}'s history",
                       lambda: (lambda t: t if t > before else None)(history_total(session, name)), 15)
         out[app_id(name)].update(invoked=title, state=state, history=[before, after])
     return out
 
 
-def value_of(answer: dict):
+def value_of(answer: dict | str):
     try:
-        return answer["receipt"]["update"]["output"]["value"]
+        return answer["Completed"]["output"]["value"]
     except (KeyError, TypeError):
         raise Failed(f"an answer without a value: {json.dumps(answer)[:2000]}") from None
 
@@ -910,10 +911,11 @@ def app_operation(session: Session, app: str, operation: str, resource: str | No
     publishes, by the operation it names whatever language its title reads in. Its application is
     `app` exactly; with `resource`, it is the one published on that resource, as an agent picks
     among the reads an app offers on each of its resources."""
-    for action in session.actions(""):
-        if (action.get("application") == app and action.get("operation") == operation
-                and resource in (None, action.get("resource"))):
-            return action
+    for row in session.actions(""):
+        at = address(row)
+        if (row.get("app_id") == app and at is not None and at[1] == operation
+                and resource in (None, at[0])):
+            return row
     return None
 
 
@@ -923,10 +925,11 @@ def app_action(session: Session, app: str, declared: str, kind: str | None = Non
     found by the name the app publishes it under — as a native app's verb, which an agent at the
     api calls it by — never by the words its title reads in. Its application is `app` exactly:
     so.tilo.notes never matches so.tilo.notes."""
-    for action in session.actions(""):
-        if (action.get("application") == app and action.get("operation") == declared
-                and kind in (None, action.get("operation_kind"))):
-            return action
+    for row in session.actions(""):
+        at = address(row)
+        if (row.get("app_id") == app and at is not None and at[1] == declared
+                and kind in (None, row["action"].get("kind"))):
+            return row
     return None
 
 
@@ -937,15 +940,15 @@ def doing(session: Session, name: str, declared: str) -> str:
     composition draws it and in whatever language."""
     app = app_id(name)
     listed = until(f"{app}'s {declared}", lambda: app_action(session, app, declared))
-    wanted = f"{listed['resource']}\x1f{declared}"
-    target = until(f"a control doing {app}'s {declared} on {listed['resource']}", lambda: next(
+    wanted = f"{address(listed)[0]}\x1f{declared}"
+    target = until(f"a control doing {app}'s {declared} on {address(listed)[0]}", lambda: next(
         (t for t in session.targets() if t.get("identity") == wanted), None), 30)
     return target["identity"]
 
 
 def focus(session: Session, window: dict) -> None:
     """Bring the tab of `window` to the front, as the shell's own verb does."""
-    session.invoke("so.tilo.session", f"{SHELL_RESOURCE}\u001ffocus", {"tab": str(window["tab"])})
+    session.invoke("so.tilo.session", SHELL_RESOURCE, "focus", {"tab": str(window["tab"])})
 
 
 def check_activation(session: Session) -> dict:
@@ -964,7 +967,8 @@ def own_read(session: Session, app: str) -> dict:
     app's own. An app publishes a read on each of its records too (Notes' notebook among them),
     so an agent picks the read by the resource it reads, never by where the listing puts it."""
     own = until(f"{app}'s 'Show this window'",
-                lambda: app_operation(session, app, "activate-window"))["resource"]
+                lambda: app_operation(session, app, "activate-window"))
+    own = address(own)[0]
     return until(f"{app}'s 'Read the content' on {own}",
                  lambda: app_operation(session, app, "read", own))
 

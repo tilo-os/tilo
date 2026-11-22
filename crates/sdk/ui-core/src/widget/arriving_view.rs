@@ -380,6 +380,10 @@ trait ArrivalRead {
     fn failure(&self) -> Option<String>;
     fn can_retry(&self) -> bool;
     fn retry(&self);
+    fn can_continue_without(&self) -> bool;
+    fn continue_without(&self);
+    /// The title of a failure that is no fault, said as a notice; `None` for an error.
+    fn failure_notice(&self) -> Option<String>;
 }
 
 impl<T, E: std::fmt::Display> ArrivalRead for Arriving<T, E> {
@@ -421,6 +425,18 @@ impl<T, E: std::fmt::Display> ArrivalRead for Arriving<T, E> {
 
     fn retry(&self) {
         Arriving::retry(self);
+    }
+
+    fn can_continue_without(&self) -> bool {
+        Arriving::can_continue_without(self)
+    }
+
+    fn continue_without(&self) {
+        Arriving::continue_without(self);
+    }
+
+    fn failure_notice(&self) -> Option<String> {
+        Arriving::failure_notice(self)
     }
 }
 
@@ -522,9 +538,13 @@ impl ArrivingView {
 }
 
 /// The reserved box as the error, with a retry when the read offers one: a banner where the box
-/// holds one, a row of the box's own kind where it is a row's (or a line's).
+/// holds one, a row of the box's own kind where it is a row's (or a line's). The banner also
+/// offers to go on without the answer when the read says how.
 fn failure(read: &Rc<dyn ArrivalRead>, message: String, shape: SkeletonShape) -> Element {
-    let failed = crate::i18n::I18nManager::lookup_plain("arriving-failed");
+    let notice = read.failure_notice();
+    let failed = notice
+        .clone()
+        .unwrap_or_else(|| crate::i18n::I18nManager::lookup_plain("arriving-failed"));
     let retry = read.can_retry().then(|| {
         let again = Rc::clone(read);
         Button::new("arriving.retry", "arriving-retry").on_view(move || again.retry())
@@ -548,9 +568,22 @@ fn failure(read: &Rc<dyn ArrivalRead>, message: String, shape: SkeletonShape) ->
         }
         return Box::new(row);
     }
-    let mut banner = super::arrival_failure(failed, message);
+    // Something that has not arrived yet is no fault: a notice, not an error.
+    let mut banner = match notice {
+        Some(_) => super::Banner::warning(failed).with_message(message),
+        None => super::arrival_failure(failed, message),
+    };
     if let Some(retry) = retry {
         banner = banner.with_action(retry);
+    }
+    // What the reader can do without the answer stands beside the retry: a box this large is
+    // what a window or a pane shows, which can go on reading the answer as missing.
+    if read.can_continue_without() {
+        let without = Rc::clone(read);
+        banner = banner.with_secondary_action(
+            Button::new("arriving.without", "arriving-continue-without")
+                .on_view(move || without.continue_without()),
+        );
     }
     Box::new(banner)
 }

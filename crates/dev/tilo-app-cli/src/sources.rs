@@ -25,14 +25,13 @@ pub(crate) fn shipped_sources(app_dir: &Path) -> Result<Vec<(PathBuf, TokenStrea
 /// its manifest or `src/bin` declares.
 fn roots(app_dir: &Path) -> Result<Vec<PathBuf>> {
     let path = app_dir.join("Cargo.toml");
-    let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let manifest: toml::Table =
         toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
     let mut roots = vec![
-        app_dir.join(
-            table_path(manifest.get("lib"))
-                .unwrap_or_else(|| PathBuf::from("src/lib.rs")),
-        ),
+        app_dir
+            .join(table_path(manifest.get("lib")).unwrap_or_else(|| PathBuf::from("src/lib.rs"))),
         app_dir.join("src/main.rs"),
     ];
     roots.extend(

@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 use tilo_server_protocol::workspaces::Role;
 
 use crate::common::people::{
-    Device, Person, Site, join_together, log_sessions_at, share_the_fleet,
+    Device, Person, Site, at, join_together, log_sessions_at, new_workspace, share_the_fleet,
     two_devices_of_one_person,
 };
 use crate::common::window::Client;
@@ -319,8 +319,7 @@ fn bring_to_front(device: &Device, workspace: &str) {
         device.held().iter().any(|held| held == workspace)
     });
     let shown = device.act(
-        SESSION,
-        "desktop:chrome\u{1f}switch-workspace",
+        &at(SESSION, "desktop:chrome", "switch-workspace"),
         &json!({"workspace": workspace}),
     );
     assert!(
@@ -479,9 +478,9 @@ fn keys_at_rest(workspace: &str, one: &Device, other: &Device) {
 /// from the person's list and holds: its id.
 fn made_on(maker: &Device, other: &Device) -> String {
     let before = maker.on_shell();
-    let made = maker.act_wait("actions", "workspace.create", &json!({}));
+    let made = maker.act_wait(&new_workspace(), &json!({}));
     assert_eq!(
-        made["answer"]["receipt"]["update"]["state"],
+        made["update"]["state"],
         json!("succeeded"),
         "{} makes a workspace: {made}\n{}",
         maker.label,
@@ -585,8 +584,7 @@ fn the_window_shared(
 /// `sharer` shares the window its shell holds in `tab`, which shows `shows`.
 fn share_tab(sharer: &Device, tab: &str, shows: &str) {
     let asked = sharer.act(
-        SESSION,
-        "session:window-share\u{1f}share",
+        &at(SESSION, "session:window-share", "share"),
         &json!({"tab": tab}),
     );
     assert!(
@@ -1014,8 +1012,7 @@ fn the_share_stays_live(
 fn the_share_stops(share: &Running<'_>) {
     let both = [share.sharer, share.viewer];
     let asked = share.sharer.act(
-        SESSION,
-        "session:window-share\u{1f}stop",
+        &at(SESSION, "session:window-share", "stop"),
         &json!({"tab": share.tab}),
     );
     assert!(

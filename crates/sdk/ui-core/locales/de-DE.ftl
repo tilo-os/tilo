@@ -226,6 +226,7 @@ arriving-received-of = { $received } von { $total }
 arriving-received = { $received } empfangen
 arriving-failed = Konnte nicht geladen werden
 arriving-retry = Erneut versuchen
+arriving-continue-without = Ohne fortfahren
 content-unavailable = Keines der verbundenen Geräte hat es
 workspace-sync-connecting = Verbinde mit { $workspace }…
 workspace-sync-connecting-unnamed = Verbinde…
@@ -237,6 +238,9 @@ workspace-sync-host-needs-update-body = Bis dahin wird hier nichts synchronisier
 workspace-sync-device-needs-update = Tilo muss aktualisieren, um diesen Arbeitsbereich zu synchronisieren
 workspace-sync-device-needs-update-body = Die Aktualisierung kommt. Bis dahin bleiben deine Änderungen auf diesem Gerät.
 workspace-sync-shell-gone = Dieses Fenster hat die Verbindung zu Tilo verloren, daher kann der Inhalt dieses Arbeitsbereichs es nicht erreichen. Öffne es erneut.
+workspace-record-not-here-title = { $record } ist noch nicht angekommen
+workspace-record-not-here = { $record } aus { $app } ist noch nicht auf diesem Gerät angekommen.
+workspace-record-not-here-unnamed = { $record } ist noch nicht auf diesem Gerät angekommen.
 workspace-sync-no-identity = Dieses Gerät ist nicht bei Tilo angemeldet und kann diesen Arbeitsbereich daher nicht öffnen. Melde dich an und versuche es erneut.
 workspace-sync-not-renewed = Dieser Arbeitsbereich lässt dieses Gerät nicht mehr herein, und der Zugang konnte nicht erneuert werden.
 workspace-sync-holders-unreadable = Dieses Gerät konnte nicht lesen, welche Geräte und Server diesen Arbeitsbereich speichern.
@@ -499,6 +503,8 @@ format-day-heading-short = { $weekday }, { $day }. { $month }
 format-day-range-in-month = { $start }.–{ $end }. { $month }
 # Any span between two dates or times: "29. Juni bis 5. Juli".
 format-range = { $start } bis { $end }
+# A span between two days in a tight space, numbers only: "29.6.–5.7.".
+format-day-range-numeric = { $day }.{ $month }.–{ $day2 }.{ $month2 }.
 # Two already-formatted values in a list: "verschlüsselt, 134 GB frei".
 format-list-join = { $head }, { $tail }
 # The top of a month grid: "June 2026".

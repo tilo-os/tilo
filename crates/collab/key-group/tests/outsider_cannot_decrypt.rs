@@ -5,7 +5,6 @@
 //! pins that from several angles — a fresh standalone `KeyGroup`, a
 //! different-workspace group, and a tampered ciphertext.
 
-
 use collab_types::WorkspaceId;
 use key_group::{KeyGroup, MemberKey};
 

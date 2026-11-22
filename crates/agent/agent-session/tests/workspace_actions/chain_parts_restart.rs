@@ -9,7 +9,7 @@
 use super::*;
 use serde_json::{Value, json};
 use tilo_actions::remote::Caller;
-use tilo_server::workspace_agents::{WorkspaceActionProvider, invoke_named};
+use tilo_workspace_service::agents::{WorkspaceActionProvider, invoke_named};
 
 const TASKS: &str = "so.tilo.tasks";
 /// A part holds 1,000 issues: these fill three.
@@ -25,7 +25,7 @@ async fn a_restarted_server_holds_every_part_and_writes_under_the_oldest_issue()
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let catalogue = crate::common::catalogue();
-    let tracker = tilo_server::workspace_bots::workspace_resource(&catalogue, TASKS);
+    let tracker = tilo_workspace_service::agents::workspace_resource(&catalogue, TASKS);
     let issues = ui::resource::chain_resource_id(&tasks::issue_list::chain());
     let person = Caller::authenticated(
         root.verifying_key().to_bytes(),

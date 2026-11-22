@@ -1113,7 +1113,6 @@ fn agents_present(session: &Session) -> Vec<String> {
         .and_then(|agents| agents.get("sessions").and_then(Value::as_array).cloned())
         .unwrap_or_default()
         .into_iter()
-        .filter(|agent| agent["stoppable"] == true)
         .map(|agent| agent["name"].as_str().unwrap_or_default().to_owned())
         .collect()
 }

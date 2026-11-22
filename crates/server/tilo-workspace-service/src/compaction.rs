@@ -298,7 +298,7 @@ impl Compactor {
 
     /// Fold the sealed history of the channels `keys` names, as one of their
     /// key holders, instead of asking a member to.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     pub(crate) fn with_group_keys(&self, keys: Arc<dyn GroupKeys>) {
         let _ = self.0.group_keys.set(keys);
     }
@@ -753,7 +753,7 @@ impl Compactor {
     /// ([`GroupKeys::unsent`]), whatever its tail: a store that already holds such writes
     /// (written before a page's writes waited for their record) is repaired when its host starts,
     /// rather than at the next fold its writes bring.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "device-keys")]
     pub(crate) async fn repair(
         &self,
         workspace: &SharedWorkspace,

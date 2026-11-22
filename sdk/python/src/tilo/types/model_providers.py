@@ -25,5 +25,13 @@ __all__ = [
 
 class Root(Resource):
     """Model providers — `model-providers.root`."""
-    __surface__ = "so.tilo.model-providers@87aa287e492c7c4a"
+    __surface__ = "so.tilo.model-providers@2c7db227df1fba96"
+    def list_presets(self) -> None:
+        """Runs the app's action."""
+        return self.action("list-presets")
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"list_presets"})
+
 

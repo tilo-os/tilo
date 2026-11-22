@@ -27,9 +27,36 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tilo_server_protocol::web::{PageHost, ServerInfo};
 
 /// How long one host may take to answer with a session.
 const ANSWERING: Duration = Duration::from_secs(12);
+
+/// The hosts `value` names, each as the host writes it ([`ServerInfo::web_host_json`]): one
+/// object, or a JSON array of them.
+///
+/// # Errors
+/// `value` is not that, or a host in it names no https origin, which names the host.
+pub fn read(value: &str) -> Result<Vec<ServerInfo>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(value).map_err(|error| error.to_string())?;
+    let hosts: Vec<PageHost> = match value {
+        serde_json::Value::Array(_) => serde_json::from_value(value),
+        one => serde_json::from_value(one).map(|host| vec![host]),
+    }
+    .map_err(|error| format!("{error} (what the host writes in `web-host.json`)"))?;
+    for host in &hosts {
+        let names_itself = host.origin.as_deref().is_some_and(|origin| {
+            url::Url::parse(origin).is_ok_and(|origin| tilo_net::secure_origin(&origin))
+        });
+        if !names_itself {
+            return Err(
+                "a host names no https origin (what the host writes in `web-host.json`)".into(),
+            );
+        }
+    }
+    Ok(hosts.into_iter().map(ServerInfo::from).collect())
+}
 
 /// The hosts an API server may forward to, in the order it was configured.
 pub struct Hosts {
@@ -37,14 +64,14 @@ pub struct Hosts {
 }
 
 impl Hosts {
-    /// The hosts at `origins`, reached over `client`.
+    /// The hosts each `info` names.
     #[must_use]
-    pub fn new(client: &tilo_net::Client, origins: &[String]) -> Self {
+    pub fn new(infos: &[ServerInfo]) -> Self {
         Self {
-            relays: origins
+            relays: infos
                 .iter()
-                .filter(|origin| !origin.trim().is_empty())
-                .map(|origin| Arc::new(Server::new(client, origin)))
+                .cloned()
+                .map(|info| Arc::new(Server::new(info)))
                 .collect(),
         }
     }
@@ -61,18 +88,6 @@ impl Hosts {
     /// The first configured one.
     pub(crate) fn first(&self) -> Option<&Arc<Server>> {
         self.relays.first()
-    }
-
-    /// The first configured one's name and origin: what a link that admits
-    /// into it names.
-    #[must_use]
-    pub fn first_named(&self) -> (Option<String>, Option<String>) {
-        self.relays.first().map_or((None, None), |first| {
-            (
-                Some(first.name().to_owned()),
-                Some(first.origin().to_owned()),
-            )
-        })
     }
 
     /// A session with the host that serves `key`'s workspace best right now:
@@ -148,7 +163,6 @@ fn choose(answers: &[([u8; 32], Answer)]) -> Option<[u8; 32]> {
         // Moving no input beats any run here, so every host that answered is
         // a candidate and rank alone chooses.
         local_wall_ms: Some(u64::MAX),
-        offload: None,
     };
     let choice = placement::pick(answers.iter().cloned(), &work);
     tracing::debug!(%choice, "an API server chose the host serving a key");

@@ -1855,7 +1855,6 @@ impl crate::Shared {
         if personal.kept.as_ref() == Some(&list) && (personal.kept_on_hosts || hosted.is_none()) {
             return;
         }
-        self.device_agents.show_list(list.clone());
         if let (Some(engine), Some(hosted)) = (&self.engine, hosted) {
             crate::hosted_workspaces::keep_on_hosts(hosted, engine, &list);
         }

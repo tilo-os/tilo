@@ -26,6 +26,9 @@ use crate::{MemoryPeerStore, PeerStore};
 use tilo_server_protocol::WorkspaceId;
 use tilo_session_actions::SessionActions;
 
+mod members;
+pub use members::DeviceActions;
+
 /// How long joining a workspace waits for its host to admit this device.
 const ADMITTING: Wait = Wait::from_secs(20);
 /// How long a workspace's host has to answer an operation of its own.
@@ -546,7 +549,10 @@ impl Device {
     ///
     /// # Errors
     /// The host did not answer, does not hold the person's workspace, or refused.
-    pub async fn take_into_person_workspace(&self, endpoint: &iroh_base::EndpointAddr) -> Result<(), DeviceRefusal> {
+    pub async fn take_into_person_workspace(
+        &self,
+        endpoint: &iroh_base::EndpointAddr,
+    ) -> Result<(), DeviceRefusal> {
         let mut arguments = Map::new();
         arguments.insert(
             "endpoint".to_owned(),

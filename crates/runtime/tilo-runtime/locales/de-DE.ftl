@@ -16,3 +16,10 @@ agent-confirm-allow = Erlauben
 agent-confirm-deny = Nicht erlauben
 app-grant-question = Darf { $asker } „{ $action }“ in { $app } verwenden?
 app-grant-detail = Das gilt ab jetzt in diesem Arbeitsbereich. Du kannst es unter Apps in Datenschutz & Sicherheit widerrufen.
+
+# Wo ein Agent dieser Anmeldung auf einem anderen Gerät der Person arbeitet: $device, wie es
+# genannt wurde, $devices die hier bekannten.
+other-devices-none = Hier ist keines deiner anderen Geräte bekannt.
+other-devices-unknown = Keines deiner Geräte hier heißt { $device }. Deine Geräte hier: { $devices }.
+other-devices-name-workspace = { $device } ist hier in mehr als einem deiner Arbeitsbereiche. Nenne einen mit --workspace.
+other-devices-not-connected = gerade nicht mit diesem Gerät verbunden

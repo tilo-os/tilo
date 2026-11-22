@@ -8,7 +8,6 @@
 //! socket its variable names, sends one line and prints the line it is
 //! answered.
 
-
 use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::Path;

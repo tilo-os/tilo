@@ -52,6 +52,11 @@ impl ResourceApp for PasswordsShell {
         let window = if cx.mode() == RunMode::Past {
             PasswordsWindow::new(crate::PasswordsModel::closed())
         } else if cx.fixture::<DemoVault>().is_some() {
+            // The fixture stands in for the entries the window reads, not for the workspace's
+            // vault document it reads them from: that is opened as a workspace's window opens it.
+            let _ = cx
+                .resource_opener::<passwords_model::WorkspaceVaultEntries>(Self::ID)
+                .open(crate::workspace_vault::WORKSPACE_VAULT_DOCUMENT);
             PasswordsWindow::demo()
         } else if in_workspace {
             PasswordsWindow::new(crate::PasswordsModel::workspace(

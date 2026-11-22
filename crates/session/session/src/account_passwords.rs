@@ -9,9 +9,9 @@
 //! (`collaboration::browser_service_sessions::AccountSecrets`): it is released for an enabled
 //! account that names the entry, only at the servers that account names now, and the use is
 //! written into the entry first, saying which app signed in. Both are decided for the person
-//! on the app's connection: their role must let them use Passwords in that workspace
-//! ([`Workspaces::may_use_vault`]). Any member's device signs in with the same entry; none
-//! keeps a copy of its own.
+//! on the app's connection: their role must let them use Passwords in that workspace and, for a
+//! sign-in, read the app asking ([`Workspaces::account_secret`]), as the account sign-ins of the
+//! cloud service and the origin connectors are. Any member's device signs in with the same entry.
 
 use accounts::email::password_item;
 use runtime_collab::{
@@ -35,11 +35,12 @@ pub(crate) const NO_VAULT_YET: &str = "This device is still opening its workspac
      Try again in a moment.";
 
 /// Answer `command`, an account's password kept or released, that `app` sent on `by`'s own
-/// connection in `workspace`.
+/// connection in `workspace`; `confirmed` when the person said yes to a release the workspace's
+/// rules ask about first.
 pub(crate) async fn answer(
     workspaces: &Workspaces,
     workspace: &str,
-    app: &str,
+    (app, confirmed): (&str, bool),
     by: &Caller,
     command: Command,
 ) -> Result<Reply, String> {
@@ -49,7 +50,7 @@ pub(crate) async fn answer(
         "release"
     };
     tracing::info!(target: LOG, app, asked, "an app asked for an account's password to be kept or released");
-    let answered = answering(workspaces, workspace, app, by, command).await;
+    let answered = answering(workspaces, workspace, (app, confirmed), by, command).await;
     if let Err(error) = &answered {
         tracing::warn!(target: LOG, app, asked, %error, "an account's password was not kept or released");
     }
@@ -59,7 +60,7 @@ pub(crate) async fn answer(
 async fn answering(
     workspaces: &Workspaces,
     workspace: &str,
-    app: &str,
+    (app, confirmed): (&str, bool),
     by: &Caller,
     command: Command,
 ) -> Result<Reply, String> {
@@ -107,7 +108,9 @@ async fn answering(
         }
         Command::ReleaseAccountSecret { item } => {
             let item = ItemRef::parse(&item).ok_or(REFUSED)?;
-            let released = workspaces.account_secret(workspace, by, app, &item).await?;
+            let released = workspaces
+                .account_secret(workspace, by, (app, confirmed), &item)
+                .await?;
             tracing::info!(target: LOG, %item, app, "released an account's sign-in from the workspace's vault");
             Ok(Reply::AccountSecret {
                 item: item.to_string(),

@@ -1,13 +1,13 @@
 //! Frames of the boot-time exchange and the request signature.
 
-use ed25519_dalek::{Signature, Signer as _, SigningKey};
+use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_seal::{Label, PublicKey, SecretKey};
+use tilo_user_identity::{DeviceCert, device_cert_signing_digest};
 
 use crate::attest::Quote;
-use crate::cert::BootKeyCert;
 use crate::half::{HALF_LEN, Half};
 use crate::{BootId, MAX_FRAME_BYTES, PROTOCOL_VERSION, SlotId, digest};
 
@@ -20,8 +20,9 @@ const RELEASE_VERSION: u8 = 1;
 pub struct UnlockHello {
     /// [`PROTOCOL_VERSION`].
     pub version: u16,
-    /// The boot key certificate issued at enrolment.
-    pub boot_cert: BootKeyCert,
+    /// The root's certificate for the boot key, issued at enrolment. It
+    /// grants nothing: only the request's signature makes it act.
+    pub boot_cert: DeviceCert,
 }
 
 /// A sibling's single-use challenge.
@@ -46,7 +47,8 @@ pub struct UnlockRequest {
     pub version: u16,
     /// This boot's random id.
     pub boot_id: BootId,
-    /// The slot to unlock; must equal the certificate's.
+    /// The slot to unlock; the answering device checks it against the
+    /// enrolment it recorded.
     pub slot: SlotId,
     /// X25519 public key drawn for this request alone; the half is released
     /// sealed to it.
@@ -81,7 +83,8 @@ impl UnlockRequest {
     /// [`RefusalReason::Malformed`] when the request cannot be encoded.
     pub fn sign(
         boot_key: &SigningKey,
-        cert: &BootKeyCert,
+        cert: &DeviceCert,
+        slot: SlotId,
         challenge: &Challenge,
         boot_id: BootId,
         ephemeral_public: &PublicKey,
@@ -90,7 +93,7 @@ impl UnlockRequest {
         let mut request = Self {
             version: PROTOCOL_VERSION,
             boot_id,
-            slot: cert.slot,
+            slot,
             ephemeral_public: ephemeral_public.to_bytes(),
             nonce: challenge.nonce,
             attestation,
@@ -110,14 +113,12 @@ impl UnlockRequest {
     /// [`RefusalReason::Malformed`] when the request cannot be encoded.
     pub fn digest(
         &self,
-        cert: &BootKeyCert,
+        cert: &DeviceCert,
         sibling_public_key: &[u8; 32],
     ) -> Result<[u8; 32], RefusalReason> {
         let view = RequestView {
             version: self.version,
-            cert: cert
-                .signing_digest()
-                .map_err(|_| RefusalReason::Malformed)?,
+            cert: device_cert_signing_digest(cert).map_err(|_| RefusalReason::Malformed)?,
             sibling_public_key,
             nonce: &self.nonce,
             boot_id: &self.boot_id,
@@ -129,8 +130,9 @@ impl UnlockRequest {
     }
 
     /// Check this request against the certificate (already verified by the
-    /// caller) and the challenge the sibling issued on this stream, at
-    /// `now_ns`. Returns the request digest.
+    /// caller), the slot the answering device recorded for this enrolment,
+    /// and the challenge it issued on this stream, at `now_ns`. Returns the
+    /// request digest.
     ///
     /// Whether the challenge was already answered, the boot id already
     /// served, or the device removed is the sibling's state to check.
@@ -140,14 +142,15 @@ impl UnlockRequest {
     /// The [`RefusalReason`] to answer with.
     pub fn verify(
         &self,
-        cert: &BootKeyCert,
+        cert: &DeviceCert,
+        expected_slot: SlotId,
         challenge: &Challenge,
         now_ns: u64,
     ) -> Result<[u8; 32], RefusalReason> {
         if self.version != PROTOCOL_VERSION {
             return Err(RefusalReason::UnsupportedVersion);
         }
-        if self.slot != cert.slot {
+        if self.slot != expected_slot {
             return Err(RefusalReason::WrongSlot);
         }
         if self.nonce != challenge.nonce {
@@ -157,7 +160,7 @@ impl UnlockRequest {
             return Err(RefusalReason::ChallengeExpired);
         }
         let digest = self.digest(cert, &challenge.sibling_public_key)?;
-        cert.boot_key()
+        VerifyingKey::from_bytes(&cert.device_public_key)
             .map_err(|_| RefusalReason::BadCertificate)?
             .verify_strict(&digest, &Signature::from_bytes(&self.signature))
             .map_err(|_| RefusalReason::BadSignature)?;

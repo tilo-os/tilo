@@ -341,12 +341,12 @@ pub fn resolve(
                 let (id, ty) = (f.id.clone(), f.ty.clone());
                 let names_people = match &ty {
                     Ty::Actor => true,
-                    Ty::Option(inner) | Ty::Set(inner) => **inner == Ty::Actor,
+                    Ty::Option(inner) | Ty::Set(inner) | Ty::List(inner) => **inner == Ty::Actor,
                     _ => false,
                 };
                 if !names_people {
                     let msg = format!(
-                        "`people {}`: the field is {}, not an Actor or a set of them",
+                        "`people {}`: the field is {}, not an Actor, a set or a list of them",
                         field.name,
                         ty.display(&env.app)
                     );

@@ -730,9 +730,7 @@ pub fn immutable_receipts(before: Option<&AutoCommit>, after: &AutoCommit) -> bo
 /// peer has admitted for the workspace's lifetime. A receipt the log already holds
 /// byte-for-byte costs one comparison; a new one is decoded once (an unreadable
 /// receipt is not evidence and is not recorded) and stored as received, never
-/// re-encoded. Log rows written in the older re-encoded form are compared
-/// by value and replaced by the received bytes, so they take the fast path next
-/// time.
+/// re-encoded.
 ///
 /// # Errors
 ///
@@ -750,16 +748,9 @@ pub(crate) fn admit_receipts(
             }
             return Ok(());
         };
-        if prior.as_slice() == bytes {
-            return Ok(());
-        }
-        let Some(value) = decode_receipt(bytes) else {
-            return Ok(());
-        };
-        if decode_receipt(prior).is_none_or(|prior| prior != value) {
+        if receipt_rewritten(prior, bytes) {
             return Err(WorkspaceRefusal::ReceiptImmutable);
         }
-        log.insert(key.to_owned(), bytes.to_vec());
         Ok(())
     })
 }

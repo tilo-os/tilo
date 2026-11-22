@@ -26,8 +26,8 @@
 use std::time::Instant;
 
 use crate::common::people::{
-    Device, Person, Site, joined_within, shared_invitation, show, two_devices_of_one_person,
-    wait_shown,
+    Device, Person, Site, at, joined_within, new_workspace, shared_invitation, show,
+    two_devices_of_one_person, wait_shown,
 };
 use serde_json::json;
 use tilo_server_protocol::workspaces::Role;
@@ -107,9 +107,9 @@ fn a_workspace_made_on_another_device_arrives_without_taking_the_front() {
     // Made on the phone while the laptop shows the site's workspace: the phone hosts it, the
     // person's list names it, and the laptop enters it there as their further device.
     let before = phone.on_shell();
-    let made = phone.act_wait("actions", "workspace.create", &json!({}));
+    let made = phone.act_wait(&new_workspace(), &json!({}));
     assert_eq!(
-        made["answer"]["receipt"]["update"]["state"],
+        made["update"]["state"],
         json!("succeeded"),
         "{} makes a workspace: {made}\n{}",
         phone.label,
@@ -268,7 +268,7 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     laptop.wait_for_window(PASSWORDS);
     // Admitted, Passwords runs what it is asked.
     let answer = laptop.app_act(PASSWORDS, LIST_LOGINS, &serde_json::json!({}));
-    let state = answer["answer"]["receipt"]["update"]["state"].as_str();
+    let state = answer["update"]["state"].as_str();
     assert!(
         matches!(state, Some("succeeded" | "failed")),
         "the laptop's Passwords did not run its action: {answer}"
@@ -293,7 +293,7 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     assert_eq!(row["hosted_here"], false, "{row}");
     // Opening an app meanwhile is refused at once, saying why.
     let asked = std::time::Instant::now();
-    let opened = copy.act("applications", PASSWORDS, &serde_json::json!({}));
+    let opened = copy.act(&copy.open_target(PASSWORDS), &serde_json::json!({}));
     assert!(
         opened.to_string().contains("hasn't been admitted to"),
         "an open while the host is away is refused with the reason: {opened}"
@@ -301,9 +301,9 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     assert!(asked.elapsed() < std::time::Duration::from_secs(10));
     // What the copy's shell offers of Passwords, whose window the laptop left open, is refused at
     // once, with the reason.
-    let (provider, id) = action_row(&copy, PASSWORDS, LIST_LOGINS);
+    let passwords = copy.app_action(PASSWORDS, LIST_LOGINS);
     let started = std::time::Instant::now();
-    let refused = copy.act(&provider, &id, &serde_json::json!({}));
+    let refused = copy.act(&passwords, &serde_json::json!({}));
     let said = refused["err"]["message"].as_str().unwrap_or_default();
     assert_eq!(
         refused["err"]["code"], "remote_actions_unavailable",
@@ -329,26 +329,6 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     );
 }
 
-/// A row the shell lists of `app`'s `operation`, by its provider and id.
-fn action_row(device: &Device, app: &str, operation: &str) -> (String, String) {
-    let mut found = None;
-    tilo_test_env::wait_until(format!("{} listing {app}'s actions", device.label), || {
-        found = device.actions()["answer"]["actions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|row| row["application"] == app && row["operation"] == operation)
-            .map(|row| {
-                (
-                    row["provider"].as_str().unwrap_or_default().to_owned(),
-                    row["id"].as_str().unwrap_or_default().to_owned(),
-                )
-            });
-        found.is_some()
-    });
-    found.expect("a row of the app's")
-}
-
 /// Passwords' action that lists the logins of the vault.
 const LIST_LOGINS: &str = "list-logins";
 /// Passwords, as the person's devices install it.
@@ -364,7 +344,7 @@ fn logins(device: &Device) -> Vec<String> {
     let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
     let answer = loop {
         let answer = device.app_act(PASSWORDS, LIST_LOGINS, &serde_json::json!({}));
-        if answer["answer"]["receipt"]["update"]["state"] == "succeeded" {
+        if answer["update"]["state"] == "succeeded" {
             break answer;
         }
         assert!(
@@ -375,7 +355,7 @@ fn logins(device: &Device) -> Vec<String> {
         );
         std::thread::sleep(std::time::Duration::from_millis(250));
     };
-    answer["answer"]["receipt"]["update"]["output"]["value"]["logins"]
+    answer["update"]["output"]["value"]["logins"]
         .as_array()
         .into_iter()
         .flatten()
@@ -416,7 +396,7 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
         }),
     );
     assert_eq!(
-        saved["answer"]["receipt"]["update"]["state"],
+        saved["update"]["state"],
         "succeeded",
         "save-login: {saved}\n{}",
         laptop.warnings()
@@ -428,7 +408,7 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
     // and answers a read of them; adding a provider is the panel a server's gateway answers.
     let providers = laptop.app_act(MODEL_PROVIDERS, "read-providers", &serde_json::json!({}));
     assert!(
-        providers["answer"]["receipt"]["update"]["state"].is_string(),
+        providers["update"]["state"].is_string(),
         "the laptop's Model Providers ran its action: {providers}"
     );
 
@@ -453,7 +433,7 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
     copy.wait_for_window(MODEL_PROVIDERS);
     let providers = copy.app_act(MODEL_PROVIDERS, "read-providers", &serde_json::json!({}));
     assert!(
-        providers["answer"]["receipt"]["update"]["state"].is_string(),
+        providers["update"]["state"].is_string(),
         "the copy's Model Providers ran its action: {providers}\n{}",
         copy.warnings()
     );
@@ -538,7 +518,7 @@ fn a_copy_opens_the_windows_its_source_left_once_its_host_admits_it() {
         }),
     );
     assert_eq!(
-        saved["answer"]["receipt"]["update"]["state"],
+        saved["update"]["state"],
         "succeeded",
         "save-login: {saved}\n{}",
         laptop.warnings()
@@ -565,8 +545,7 @@ fn show_held(device: &Device, workspace: &str) {
     let held = || device.held().iter().any(|held| held == workspace);
     tilo_test_env::wait_until(format!("{} holds {workspace}", device.label), held);
     let shown = device.act(
-        "so.tilo.session",
-        "desktop:chrome\u{1f}switch-workspace",
+        &at("so.tilo.session", "desktop:chrome", "switch-workspace"),
         &json!({"workspace": workspace}),
     );
     assert!(
@@ -710,12 +689,8 @@ fn a_workspace_its_source_hosts_and_a_copy_edit_each_other_after_every_restart()
     laptop.start();
     // A workspace the laptop makes and hosts before it is copied, as box hosts "Branch e2e".
     let before = laptop.on_shell();
-    let made = laptop.act_wait("actions", "workspace.create", &json!({}));
-    assert_eq!(
-        made["answer"]["receipt"]["update"]["state"],
-        json!("succeeded"),
-        "{made}"
-    );
+    let made = laptop.act_wait(&new_workspace(), &json!({}));
+    assert_eq!(made["update"]["state"], json!("succeeded"), "{made}");
     tilo_test_env::wait_until("the laptop's session holds the workspace it made", || {
         laptop.on_shell().len() > before.len()
     });
@@ -766,12 +741,8 @@ fn a_copy_keeps_reaching_the_workspace_its_source_hosts_past_what_its_ownership_
     let mut laptop = ada.device("Ada's laptop");
     laptop.start();
     let before = laptop.on_shell();
-    let made = laptop.act_wait("actions", "workspace.create", &json!({}));
-    assert_eq!(
-        made["answer"]["receipt"]["update"]["state"],
-        json!("succeeded"),
-        "{made}"
-    );
+    let made = laptop.act_wait(&new_workspace(), &json!({}));
+    assert_eq!(made["update"]["state"], json!("succeeded"), "{made}");
     tilo_test_env::wait_until("the laptop's session holds the workspace it made", || {
         laptop.on_shell().len() > before.len()
     });

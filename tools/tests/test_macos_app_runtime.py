@@ -111,7 +111,7 @@ class AppRuntimeTests(unittest.TestCase):
 
     def test_sdk_entitlements_follow_real_app_not_helpers(self):
         real = 'Contents/MacOS/remote.real'
-        helper = 'Contents/MacOS/tilo-runtime-mcp.real'
+        helper = 'Contents/MacOS/tilo-runtime.real'
         facts = {'real_app': real, 'runtime': {real: image('EXECUTE'), helper: image('EXECUTE')}}
         inventory = apps.signing_inventory(Path('Remote.app'), Path('Remote.entitlements'), facts)
         self.assertEqual(inventory['nested_process_entitlements'], {real: 'Remote.entitlements'})

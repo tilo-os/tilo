@@ -22,15 +22,16 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.model-providers@87aa287e492c7c4a";
+export const SURFACE = "so.tilo.model-providers@2c7db227df1fba96";
 
 /** Model providers — `model-providers.root`. */
 export interface Root extends tilo.Resource {
+  listPresets(): Promise<void>;
 }
 
 /** The actions `Root` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ROOT_ACTIONS = [] as const;
+export const ROOT_ACTIONS = ["listPresets"] as const;
 
 /** The `model-providers.root` kind at `path`. */
 export function root(ws: tilo.Workspace, path: string): Root {

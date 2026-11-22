@@ -1,4 +1,3 @@
-
 //! Effects on the real component runtime: a typed vocabulary published on
 //! the resource, answered by the view or surface that registered it, its
 //! jobs reporting progress and finishing with actions; and the outbox the

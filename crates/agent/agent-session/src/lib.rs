@@ -41,6 +41,7 @@ pub mod record_actions;
 pub mod render;
 pub mod search;
 pub mod service;
+pub mod transform;
 mod web_apps;
 pub mod worker;
 pub mod workspace_actions;

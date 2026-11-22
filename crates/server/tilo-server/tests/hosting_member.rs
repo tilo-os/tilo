@@ -995,6 +995,71 @@ async fn a_workspace_moves_from_one_server_to_another() {
     made_on.stop().await;
 }
 
+/// A workspace handed to a server on a build that does not take in the
+/// changes the handing device keeps stays where it was: the handing device
+/// never hears that the server keeps them, so it keeps the workspace, names
+/// the server no more and says why, and a move to that server leaves the old
+/// one keeping it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes each server after the assertions; the suggested earlier drop would use a moved value"
+)]
+async fn a_server_that_does_not_take_the_changes_in_is_not_handed_the_workspace() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let site = TestUser::fresh("Site");
+    let made_on = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = made_on.host.workspaces();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    let behind = site.enrol("behind", DeviceCapabilities::member());
+    let behind_server = serve_on(&site, &behind, WorkSetting::own_person()).await;
+    let at_site = behind_server.host.workspaces();
+    assert!(
+        at_site
+            .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
+                "site.test"
+            ))
+            .unwrap()
+    );
+    let home = at_site.create("Home").await.unwrap();
+    assert!(at_site.admit_own_through(&home.workspace));
+    at_site
+        .declare_owner(&home.workspace, alice.user_pk, None)
+        .await
+        .unwrap();
+    at_site.speak_no_catch_up();
+
+    let refused = workspaces
+        .attach_server(
+            &workspace.workspace,
+            behind.device_pubkey(),
+            behind_server.host.node_addr(),
+            CopyRole::KeyHolder,
+        )
+        .await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.contains("this device keeps the workspace")),
+        "{refused:?}"
+    );
+    let keeping: Vec<String> = workspaces
+        .keeping_devices(&workspace.workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|server| server.device)
+        .collect();
+    assert!(
+        keeping.len() == 1 && !keeping.contains(&hex::encode(behind.device_pubkey())),
+        "only the device it was made on keeps the workspace: {keeping:?}"
+    );
+
+    behind_server.stop().await;
+    made_on.stop().await;
+}
+
 /// A device that is handed a workspace keeps its files under the
 /// workspace's id. A hand-over that names its workspace by anything else (a
 /// path that climbs out of the folder, an absolute path, a name with a

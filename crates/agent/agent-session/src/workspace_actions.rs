@@ -72,6 +72,7 @@ mod invocation_log;
 mod invocations;
 mod job;
 pub mod jobs;
+mod joining;
 mod keys;
 mod layout_window;
 mod link;
@@ -131,6 +132,7 @@ use catch_up::caught_up_with_own;
 use collab_types::DocumentMutation;
 use invocation_log::InvocationLog;
 use jobs::Jobs;
+use joining::Waiting;
 use keys::{Keys, catalogue_keys};
 use naming::{is_part, named, named_document};
 use outcome::{
@@ -422,9 +424,6 @@ impl WorkspaceActions {
     /// their own current access, and refuses what it does not allow.
     fn admits(&self, caller: &Caller, request: &InvokeRequest) -> bool {
         let on_resource = resource_of(&request.target.provider, "").is_some();
-        if caller.roster_created_at().is_some() {
-            return on_resource;
-        }
         let link_request =
             request.target.address.action == ui::tilo_resource::share::SHARE_LINK && on_resource;
         let on_workspace = provider_workspace(&request.target.provider).is_some();
@@ -1291,17 +1290,6 @@ impl Workspace {
     }
 }
 
-/// A request held off the service's thread until its workspace is ready for
-/// it: joined, and holding the keys of what the request reads.
-struct Waiting {
-    /// When it arrived: the wait it reports, and what its deadline is counted
-    /// from.
-    queued: Instant,
-    /// When it runs in any case, and says how far it got.
-    deadline: Instant,
-    job: Job,
-}
-
 struct Worker {
     own_device: HostDevice,
     catalogue: AppCatalogue,
@@ -1623,48 +1611,24 @@ impl Worker {
             JOIN_WAIT
         };
         let deadline = queued.checked_add(bound).unwrap_or(queued);
-        self.joining
-            .entry(workspace_id)
-            .or_default()
-            .push_back(Waiting {
+        joining::hold(
+            self,
+            workspace_id,
+            Waiting {
                 queued,
                 deadline,
                 job,
-            });
-        // A change that landed before the workspace was asked to wake this
-        // thread woke nobody; `resume` looks again now that it is.
-        self.resume(workspace_id);
+            },
+        );
+        // A write waiting for its part looks again: the change may be the part.
+        self.try_parts_again(Some(workspace_id));
     }
 
     /// Invocation the requests waiting for `workspace_id`, its change just arrived:
     /// those that are ready run here, and those still waiting for keys are
     /// held again with what they have waited so far.
     fn resume(&mut self, workspace_id: WorkspaceId) {
-        let Some(waiting) = self.joining.remove(&workspace_id) else {
-            return;
-        };
-        self.awaiting(workspace_id, true);
-        for Waiting {
-            queued,
-            deadline,
-            job,
-        } in waiting
-        {
-            let keys = self.keys(&job);
-            if job.workspace() == Some(workspace_id) && !self.ready(workspace_id, &keys) {
-                self.joining
-                    .entry(workspace_id)
-                    .or_default()
-                    .push_back(Waiting {
-                        queued,
-                        deadline,
-                        job,
-                    });
-                continue;
-            }
-            self.timed(queued, job);
-        }
-        self.stop_waiting_if_idle(workspace_id);
+        joining::resume(self, workspace_id);
         // A write waiting for its part looks again: the change may be the part.
         self.try_parts_again(Some(workspace_id));
     }
@@ -1749,16 +1713,7 @@ impl Worker {
     /// Stop asking to be woken for `workspace_id` once nothing waits for it: no request held
     /// for its join, its keys or a part it changes, and nobody waiting for a change of it.
     fn stop_waiting_if_idle(&self, workspace_id: WorkspaceId) {
-        let watched = self
-            .workspaces
-            .get(&workspace_id)
-            .is_some_and(|workspace| workspace.watchers.any());
-        if !self.joining.contains_key(&workspace_id)
-            && !self.part_waits.any_in(workspace_id)
-            && !watched
-        {
-            self.awaiting(workspace_id, false);
-        }
+        joining::stop_waking_if_idle(self, workspace_id);
     }
 
     /// When the request that waited longest runs in any case: a join gives up
@@ -2454,6 +2409,41 @@ impl Worker {
             rows,
             query,
         ))
+    }
+}
+
+/// The service's thread holds a workspace's requests until it is ready for them ([`joining`]).
+impl joining::Holder for Worker {
+    type Job = Job;
+
+    fn joining(&self) -> &HashMap<WorkspaceId, VecDeque<Waiting>> {
+        &self.joining
+    }
+
+    fn joining_mut(&mut self) -> &mut HashMap<WorkspaceId, VecDeque<Waiting>> {
+        &mut self.joining
+    }
+
+    fn wake_on_change(&self, workspace_id: WorkspaceId, waiting: bool) {
+        self.awaiting(workspace_id, waiting);
+    }
+
+    fn ready_for(&mut self, workspace_id: WorkspaceId, job: &Job) -> bool {
+        let keys = self.keys(job);
+        job.workspace() != Some(workspace_id) || self.ready(workspace_id, &keys)
+    }
+
+    fn run(&mut self, queued: Instant, job: Job) {
+        self.timed(queued, job);
+    }
+
+    /// A write waiting for a part it changes, or someone waiting for a change of it.
+    fn waits_besides(&self, workspace_id: WorkspaceId) -> bool {
+        self.part_waits.any_in(workspace_id)
+            || self
+                .workspaces
+                .get(&workspace_id)
+                .is_some_and(|workspace| workspace.watchers.any())
     }
 }
 

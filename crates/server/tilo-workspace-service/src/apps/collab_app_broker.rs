@@ -119,10 +119,10 @@ pub use committed_document::{
     AwaitingDocument, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
     NativeDocumentReadContext, NativeDocumentReads, ResourceRead,
 };
-use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
 use invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
 
+pub use action_provider::delivering::LaunchOrigin;
 pub use native_media::{
     AudioOutputFuture, AudioOutputServices, NativeMediaFuture, NativeMediaRequestContext,
     NativeMediaServices,
@@ -131,7 +131,7 @@ pub use published_invocation::OriginalInvocation;
 use published_invocation::{InvocationCaller, OriginalInvocationData};
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
@@ -322,15 +322,13 @@ struct InvocationInputs<'a> {
     confirmation_token: Option<&'a str>,
     context: Option<tilo_actions::ActionContext>,
 }
-/// Who an admission is held for and where it came from: genuine durable
-/// caller evidence, the directory revision the target was admitted at (the
+/// Who an admission is held for and where it came from: the directory revision the target was admitted at (the
 /// one the caller chose it at or, when it named none, the one its owner
 /// resolved it against; `None` only for an action no directory resolved), a
 /// private owner and original caller, the original policy time a retained
 /// invocation keeps, and a task-owned durable identity. Each call site names
 /// every field, so no ownership input is filled implicitly.
 struct AdmissionProvenance<'a> {
-    durable: Option<DurableContext<'a>>,
     revision: Option<&'a str>,
     origin: Option<InvocationCaller>,
     retained_time: Option<&'a crate::apps::policy_clock::PolicyTime>,
@@ -346,7 +344,6 @@ struct IntentInputs<'a> {
     argument: Option<&'a str>,
     revision: Option<&'a str>,
     original_request: Option<&'a tilo_actions::remote::InvokeRequest>,
-    durable: Option<DurableContext<'a>>,
     local_report: Option<&'a crate::apps::local_document_action::Request>,
     typed_local_arguments: Option<&'a serde_json::Map<String, serde_json::Value>>,
     receipt_context: &'a tilo_actions::ActionContext,
@@ -383,22 +380,15 @@ pub struct AppBrokerState {
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     certificate_authority:
         std::sync::OnceLock<Arc<dyn super::certificate_authority::CertificateAuthority>>,
-    /// Latest complete action surface per live connection, kept in the order
-    /// the connections came: the catalogue lists them in it, so a caller is
-    /// offered the same list each time it asks.
-    surfaces: Mutex<BTreeMap<u64, PublishedSurface>>,
+    /// What each live connection publishes, and the invocation stream of each that takes
+    /// invocations.
+    publishers: tilo_broker_core::delivery::Publishers<InvocationEnvelope>,
     /// Per-connection incarnations, independent of unrelated discovery churn.
     approval_publications: Mutex<HashMap<u64, (u64, u64)>>,
     next_approval_publication: AtomicU64,
     /// Each connection's surface as `publishActionSurface` deltas built it:
     /// the shapes and bindings the next delta applies to.
     surface_tables: Mutex<HashMap<u64, runtime_collab::SurfaceTable>>,
-    /// Monotonic generation for shell-side retained action projections.
-    /// Every change to a published surface moves it; a change to an
-    /// application's invocation stream notifies its receivers without
-    /// moving it. A launch waiting for an app to publish an action and open
-    /// its stream wakes on either.
-    surface_changes: tokio::sync::watch::Sender<u64>,
     /// Last published surface per app, workspace and record, kept across
     /// restarts. Catalogue state, never an executable capability by itself.
     launchable: launchable::LaunchableCatalogue,
@@ -416,8 +406,6 @@ pub struct AppBrokerState {
     canonical_directories: Mutex<canonical_route::CanonicalDirectories>,
     native_checkouts: Mutex<HashMap<u64, native_checkout::NativeCheckout>>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
-    /// Directed invocation stream registered by each application connection.
-    invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     /// Builds the catalogue its subscribers follow, off the connection thread.
     catalogue_refresh: surface_publication::CatalogueRefresh,
@@ -491,10 +479,6 @@ pub struct AppBrokerState {
     /// Admitted offloadable invocations waiting for the turn to ask
     /// [`ProcessServices::action_offload`] where they run.
     offloads: Mutex<Vec<offload_api::QueuedOffload>>,
-    /// Offloadable invocations the route sent back here, by wire id: what
-    /// was asked and when the app was handed it.
-    offloaded_here:
-        Mutex<HashMap<u64, (tilo_actions::offload::OffloadRequest, std::time::Instant)>>,
     /// The worker connections' admitted joins, by connection and route
     /// ([`host_workers`]); never reconstructed from surfaces.
     host_workers: Mutex<host_workers::HostWorkers>,
@@ -604,35 +588,12 @@ impl AppBrokerState {
         self.gone.clone()
     }
 
-    /// Wake every launch waiting for its app's invocation stream after one
-    /// opened or closed. Retained projections do not depend on streams, so
-    /// the generation stays.
-    fn invocation_streams_changed(&self) {
-        self.surface_changes.send_modify(|_| {});
-    }
-
     /// `peer_id`'s invocation stream while it takes invocations: opened, not
     /// ended by its app, and still read.
     fn invocation_stream(&self, peer_id: u64) -> Option<mpsc::UnboundedSender<InvocationEnvelope>> {
-        open_stream(&*self.invocation_subscribers.lock().ok()?, peer_id).cloned()
+        tilo_broker_core::delivery::open_stream(&*self.publishers.streams.lock().ok()?, peer_id)
+            .cloned()
     }
-
-    /// A receiver that sees every later surface or invocation-stream change;
-    /// what exists so far counts as seen, so check readiness after taking it.
-    pub(crate) fn publisher_changes(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.surface_changes.subscribe()
-    }
-}
-
-/// `peer_id`'s stream among `subscribers` while it takes invocations: one its
-/// app ended is gone from them, and one nobody reads any more is closed.
-fn open_stream(
-    subscribers: &HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>,
-    peer_id: u64,
-) -> Option<&mpsc::UnboundedSender<InvocationEnvelope>> {
-    subscribers
-        .get(&peer_id)
-        .filter(|sender| !sender.is_closed())
 }
 
 /// What ends one invocation stream once its app asks for no more: the broker
@@ -653,7 +614,8 @@ impl InvocationFeedEnd {
         };
         let removed = self
             .state
-            .invocation_subscribers
+            .publishers
+            .streams
             .lock()
             .ok()
             .and_then(|mut subscribers| {
@@ -665,7 +627,7 @@ impl InvocationFeedEnd {
             .is_some();
         drop(sender);
         if removed {
-            self.state.invocation_streams_changed();
+            self.state.publishers.streams_changed();
         }
     }
 }

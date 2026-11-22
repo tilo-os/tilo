@@ -293,7 +293,7 @@ pub async fn start_host_serving(
     } else {
         iroh::RelayMode::Disabled
     };
-    let server = Server::start_with_relay_mode(cfg, identity, mode)
+    let server = Server::start_with_relay_mode(cfg.on_loopback(), identity, mode)
         .await
         .unwrap();
     let web = server
@@ -368,9 +368,10 @@ pub async fn start_workspace_host_relaying(
     // of its host, which would otherwise be a relay and an address out on
     // the internet, and the test would stand on whether those answer.
     let server = if packet_relay {
-        Server::start(config, identity).await
+        Server::start(config.on_loopback(), identity).await
     } else {
-        Server::start_with_relay_mode(config, identity, iroh::RelayMode::Disabled).await
+        Server::start_with_relay_mode(config.on_loopback(), identity, iroh::RelayMode::Disabled)
+            .await
     }
     .unwrap();
     let web = server
@@ -707,9 +708,8 @@ pub fn holder(
     }) {
         return Some(Arc::clone(holder));
     }
-    let holder = Arc::new(tilo_workspace_service::documents::session_page::page_holder(
-        engine, id,
-    )?);
+    let holder =
+        Arc::new(tilo_workspace_service::documents::session_page::page_holder(engine, id)?);
     holders.push((Arc::downgrade(engine), Arc::clone(&holder)));
     Some(holder)
 }

@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tilo_actions::remote::{ActorPlace, InvocationReceipt, InvocationState};
+use tilo_actions::remote::{ActorPlace, Caller, InvocationReceipt, InvocationState, InvokeRequest};
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
@@ -435,6 +435,31 @@ impl super::WorkspaceActions {
     pub fn attach_agent_sessions(&self, sessions: crate::grants::AgentSessions) {
         let _ = self.shared.agent_sessions.set(sessions);
     }
+
+    /// Sign `request` as the agent `caller` is, with that agent's own
+    /// key, where `caller` is one of this device's agents and its session is open here:
+    /// whatever the host asks in an agent's name it asks under that key alone. Anything else
+    /// is left as it is.
+    ///
+    /// # Errors
+    /// `caller` is such an agent and its session is not open here, or its key does not sign.
+    pub fn sign_for(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        request: &mut InvokeRequest,
+    ) -> Result<(), String> {
+        if caller.roster_created_at().is_none() {
+            return Ok(());
+        }
+        let (sessions, device) = self
+            .shared
+            .agent_sessions
+            .get()
+            .zip(caller.device_public_key())
+            .ok_or("the agent's signing session is not open here")?;
+        sessions.sign_as(device, workspace, request)
+    }
 }
 
 impl Worker {
@@ -448,15 +473,11 @@ impl Worker {
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Result<(), String> {
-        let is_roster = self
-            .writing_as
-            .as_ref()
-            .is_some_and(|caller| caller.roster_created_at().is_some());
         // Named once: what it carries is read off its bytes, and a whole document's
         // heads off its stored form, never by loading it.
         let written = Written::of(route, mutation, self.writer(workspace_id, route)?);
         let handing = super::timing_start();
-        self.hand_over(workspace_id, route, mutation, &written, is_roster)?;
+        self.hand_over(workspace_id, route, mutation, &written)?;
         super::timing_done("commit.hand_over", handing);
         // A write this service hands the workspace's store is kept there before the request
         // answers, and what a find keeps is read from that store: it is read again as of now,
@@ -470,9 +491,7 @@ impl Worker {
         self.handed.entry(workspace_id).or_default().push(written);
         // The workspace holds the record by its index naming it, as a
         // window opening the record names it there.
-        if !is_roster {
-            self.index_document(workspace_id, route);
-        }
+        self.index_document(workspace_id, route);
         Ok(())
     }
 
@@ -494,17 +513,16 @@ impl Worker {
                 .device_public_key()
                 .and_then(|device| sessions?.link(device)));
         }
-        let refused = || "the roster signing session is no longer authorized".to_owned();
         self.shared
             .link
             .get()
             .and_then(|link| {
                 link.roster_policy(workspace, caller, Some((&route.app_id, &route.document)))
             })
-            .ok_or_else(refused)?;
+            .ok_or_else(|| format!("this agent was not approved to change {}", route.app_id))?;
         let (link, _) = sessions
             .and_then(|sessions| sessions.live_roster(workspace, caller))
-            .ok_or_else(refused)?;
+            .ok_or_else(|| "the roster signing session is no longer authorized".to_owned())?;
         Ok(Some(link))
     }
 
@@ -517,7 +535,6 @@ impl Worker {
         route: &DocumentRoute,
         mutation: &DocumentMutation,
         written: &Written,
-        is_roster: bool,
     ) -> Result<(), String> {
         let by = written.by.as_ref();
         if !self.workspaces.contains_key(&workspace_id) {
@@ -530,7 +547,6 @@ impl Worker {
         let founding = snapshot && self.shared.reads().is_none_or(|reads| !reads.holds(route));
         let link = self.shared.link.get().cloned();
         let sealed = match &link {
-            _ if is_roster => None,
             // A record the service starts has a channel of its own: opened here
             // and sealed under from its first change.
             Some(link) => match link.serving_keys(route, founding) {

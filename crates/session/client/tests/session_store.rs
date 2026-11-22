@@ -7,7 +7,6 @@
 //! into one record made that record anew for every file, faster than the computer could give the
 //! memory back, until the holder of the session ran out of it.
 
-
 use std::sync::Arc;
 
 use automerge::{AutoCommit, transaction::Transactable as _};

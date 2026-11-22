@@ -12,9 +12,8 @@ use fs_protocol::FileDocumentId;
 use uuid::Uuid;
 
 use super::{
-    DOCUMENT_ID_KEY, DocumentIndexDigest, IndexedDocument, NODES_KEY, Namespace, NodeKind, NodeRow,
-    NodeWalk, Obj, RECORD_ID_MIGRATION_DOMAIN, ROOT_DOCUMENT_ID_KEY, ROOT_ID, TreeIndex, read_name,
-    str_at,
+    DOCUMENT_ID_KEY, DocumentIndexDigest, IndexedDocument, Namespace, NodeKind, NodeRow, NodeWalk,
+    Obj, ROOT_DOCUMENT_ID_KEY, ROOT_ID, TreeIndex, read_name, str_at,
 };
 
 impl Namespace {
@@ -150,14 +149,9 @@ impl Namespace {
     /// ([`ChangeTrackedDoc::arm_patches`]) and disarms.
     pub(super) fn index_after_apply(&mut self, touched: &HashSet<String>) {
         if self.root_document_id().is_none() {
-            // A tree whose own record carries no root identity yet: the nodes' ids are derived
-            // for the whole tree, which is the load path.
-            self.ensure_document_ids();
+            // A tree whose own record carries no root identity yet: the load path.
             self.rebuild_document_index();
             return;
-        }
-        for id in touched {
-            self.ensure_document_id(id);
         }
         self.index_nodes(touched);
     }
@@ -245,21 +239,6 @@ impl Namespace {
         str_at(&self.doc, &self.node(id)?, DOCUMENT_ID_KEY)
             .and_then(|value| Uuid::parse_str(&value).ok())
             .map(FileDocumentId)
-    }
-
-    pub(super) fn ensure_document_id(&mut self, id: &str) {
-        let Some(node) = self.node(id) else { return };
-        if str_at(&self.doc, &node, DOCUMENT_ID_KEY)
-            .and_then(|value| Uuid::parse_str(&value).ok())
-            .is_some()
-        {
-            return;
-        }
-        let document_id = Self::deterministic_document_id(id);
-        let _ = self
-            .doc
-            .put(&node, DOCUMENT_ID_KEY, document_id.0.to_string());
-        self.tree.bind_document(id, document_id);
     }
 
     /// Snapshot one bounded canonical page, ordered by stable row id, cloning at most `limit`
@@ -435,40 +414,5 @@ impl Namespace {
     pub fn node_entry_read_count(&self) -> u64 {
         self.node_entry_reads
             .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(super) fn deterministic_document_id(id: &str) -> FileDocumentId {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(RECORD_ID_MIGRATION_DOMAIN);
-        // The nodes-map object id is minted once with the namespace and stays stable across
-        // save/load and replica merges; including it keeps legacy ids such as `alice/0` from
-        // colliding across workspaces.
-        hasher.update(NODES_KEY.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(id.as_bytes());
-        let mut bytes = [0; 16];
-        bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-        // Mark deterministic migrations as RFC 4122, version-5-shaped UUIDs.
-        bytes[6] = (bytes[6] & 0x0f) | 0x50;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        FileDocumentId(Uuid::from_bytes(bytes))
-    }
-
-    /// Populate snapshots written before record-scoped replication; peers migrating the same
-    /// legacy namespace independently derive the same ids.
-    pub(super) fn ensure_document_ids(&mut self) {
-        if self.root_document_id().is_none() {
-            let document_id = Self::deterministic_document_id(ROOT_ID);
-            let _ = self.doc.put(
-                &Obj::index(),
-                ROOT_DOCUMENT_ID_KEY,
-                document_id.0.to_string(),
-            );
-        }
-        let ids: Vec<_> = self.doc.sorted_node_ids().into_iter().collect();
-        for id in ids {
-            self.ensure_document_id(&id);
-        }
-        self.document_ids_complete = true;
     }
 }

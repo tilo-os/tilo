@@ -213,14 +213,8 @@ pub fn renew_due_device_certificates() -> std::io::Result<()> {
 }
 
 /// The directory this session's identity is kept in, as its environment
-/// names it: what [`crate::identity_provisioning::DiskIdentityStore::from_env`]
-/// resolves, else the environment's identity root.
+/// names it.
 fn this_device_identity_dir() -> Option<std::path::PathBuf> {
-    if let Ok(store) = crate::identity_provisioning::DiskIdentityStore::from_env()
-        && let Some(dir) = store.path().parent()
-    {
-        return Some(dir.to_path_buf());
-    }
     // A test session may keep its identity's keys under TILO_IDENTITY_ROOT
     // and its record under XDG_CONFIG_HOME: the record's directory is the
     // session's.

@@ -9,7 +9,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ed25519_dalek::SigningKey;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{InvokeArgument, ReceiptStatus};
 use tilo_peer_state::join::Role;
@@ -19,31 +18,13 @@ use tilo_server_protocol::agents::{
     AGENT_RESOURCE_PREFIX, AGENTS_PROVIDER, GrantState, REQUEST_GRANT_ACTION, REVOKE_ACTION,
     SUPERVISOR_RESOURCE,
 };
-use tilo_user_identity::{CertificationPolicy, RevocationList, issue_device_cert};
+use tilo_user_identity::RevocationList;
+
+use crate::harness::hosted::issue_delegate;
 
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::{Browser, Device, DeviceCapabilities, DocumentRoute, SHEETS, enrol, request};
 use tilo_server_protocol::WorkspaceId;
-
-fn issue_delegate(
-    root: &SigningKey,
-    pending: &tilo_server_protocol::certify::PendingCertification,
-    proposal: &tilo_server_protocol::delegation::DelegateProposal,
-) -> ApproverDecision {
-    let now = tilo_clock::unix_now_ns();
-    let cert = issue_device_cert(
-        &pending.request,
-        root,
-        &CertificationPolicy::agent(),
-        &RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    let delegation = proposal
-        .sign(root, pending.request.device_public_key, now)
-        .unwrap();
-    ApproverDecision::IssueDelegate { cert, delegation }
-}
 
 /// The laptop: a root holder denying the named proposal and approving the others
 /// with the agent's certificate and the delegation of exactly what was proposed.
@@ -97,13 +78,14 @@ impl Direct<'_> {
         request: tilo_actions::remote::InvokeRequest,
         signed: bool,
     ) -> ReceiptStatus {
-        let mut message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+        let mut request = request;
         if signed {
             self.sessions
-                .sign_as(&self.device, self.workspace, &mut message)
+                .sign_as(&self.device, self.workspace, &mut request)
                 .unwrap();
         }
-        self.send(message).await
+        self.send(tilo_actions::remote::RemoteActionMessage::Invoke(request))
+            .await
     }
 
     async fn send(&self, message: tilo_actions::remote::RemoteActionMessage) -> ReceiptStatus {
@@ -189,8 +171,8 @@ async fn a_hosted_roster_turn() {
         TASKS, answered_to, does_then_answers, file_issue, make_agent,
     };
     use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
-    use tilo_server::workspace_agents::ServerAgents;
     use tilo_session_client::Outbox as _;
+    use tilo_workspace_service::agents::ServerAgents;
     use ui::tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents, workspace_agents::RetireAgent};
 
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -248,8 +230,7 @@ async fn a_hosted_roster_turn() {
         guest.invoke(ask()).await.status,
         ReceiptStatus::Rejected {
             error: tilo_actions::remote::ActionCallError::Refused { reason },
-        } if reason == "This server can't run an agent you bring as a guest yet. \
-            Ask the person who runs this server to set up an agent for this workspace."
+        } if reason == "only the active keeper of this hosted roster agent can manage its grant here"
     ));
     let standalone = page
         .invoke(request(
@@ -501,7 +482,7 @@ async fn a_hosted_roster_turn() {
     let runner = ServerAgents::with_sessions(
         workspaces.clone(),
         roster.actions.clone(),
-        &hosted.server,
+        Arc::new(hosted.server.agent_link()),
         roster.sessions.clone(),
     )
     .scripted(model);
@@ -517,7 +498,7 @@ async fn a_hosted_roster_turn() {
         let refused = answered_to(final_request, "call-2");
         assert!(!success.1, "{success:?}");
         assert!(
-            refused.1 && refused.0.contains("not_permitted"),
+            refused.1 && refused.0.contains("may not invoke this action"),
             "{refused:?}"
         );
         let denied = answered_to(final_request, "call-3");
@@ -548,6 +529,7 @@ async fn a_hosted_roster_turn() {
         .on_roster_turn(
             tilo_action_policy::turn::Turn::new(String::new(), String::new()),
             created_at,
+            keeper,
         );
     let direct = Direct {
         actions: &roster.actions,
@@ -582,10 +564,7 @@ async fn a_hosted_roster_turn() {
         }
     );
     // Signed now, sent once its grant is withdrawn ([`REVOKE_ACTION`] below).
-    let mut late = tilo_actions::remote::RemoteActionMessage::Invoke(sheet_request(
-        &workbook,
-        "After the grant is withdrawn",
-    ));
+    let mut late = sheet_request(&workbook, "After the grant is withdrawn");
     sessions
         .sign_as(&device, workspace.workspace_id, &mut late)
         .unwrap();
@@ -729,7 +708,9 @@ async fn a_hosted_roster_turn() {
         InvokeArgument::None,
     )
     .await;
-    let after = direct.send(late).await;
+    let after = direct
+        .send(tilo_actions::remote::RemoteActionMessage::Invoke(late))
+        .await;
     assert!(
         matches!(after, ReceiptStatus::Rejected { .. }),
         "a withdrawn grant runs nothing its key signed: {after:?}"

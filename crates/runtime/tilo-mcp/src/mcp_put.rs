@@ -214,7 +214,16 @@ fn refusal(error: ActionCallError) -> String {
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Answer one put tool, as this session's surface answers.
     pub(super) async fn put_call(&self, name: &str, args: Value) -> Value {
-        let result = match name {
+        let (text, failed) = match self.put_value(name, args).await {
+            Ok(value) => (value.to_string(), false),
+            Err(message) => (message, true),
+        };
+        json!({"content":[{"type":"text","text":text}],"isError":failed})
+    }
+
+    /// One put tool's typed result, or why it put nothing.
+    pub(super) async fn put_value(&self, name: &str, args: Value) -> Result<Value, String> {
+        match name {
             BEGIN => match parse(args) {
                 Ok(args) => self.put_begin(args).await,
                 Err(error) => Err(error),
@@ -236,12 +245,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Err(error) => Err(error),
             },
             _ => Err("Unknown tool".to_owned()),
-        };
-        let (text, failed) = match result {
-            Ok(value) => (value.to_string(), false),
-            Err(message) => (message, true),
-        };
-        json!({"content":[{"type":"text","text":text}],"isError":failed})
+        }
     }
 
     /// The session's content puts, when its workspace keeps any.

@@ -151,9 +151,13 @@ impl BotRunner {
             return Ok(Vec::new());
         };
         // What an entry says is handed to its person's assistant: none, nothing read.
-        if super::super::assistant::assistant_of(&self.workspaces, &self.workspace, &person)
-            .await?
-            .is_none()
+        if tilo_workspace_service::agents::assistant::assistant_of(
+            &self.workspaces,
+            &self.workspace,
+            &person,
+        )
+        .await?
+        .is_none()
         {
             return Ok(Vec::new());
         }

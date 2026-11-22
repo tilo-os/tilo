@@ -1,15 +1,14 @@
 [Unit]
 Description=Tilo primary Files workspace on a host desktop
 PartOf=tilo-graphical-session.target
-# Never create an empty workspace merely because the desktop was installed:
-# only a cache the person already prepared (a signed authority, a saved tree
-# or a discovered workspace) runs.
+# Never show an empty workspace merely because the desktop was installed:
+# only a saved tree, or a workspace service to sync one from, runs.
 ExecCondition=/usr/bin/fs workspace-status --cache-dir %S/tilo/files --require-existing
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/fs serve-primary
-# Tickets remain in the existing private Files cache, never in the journal.
+# What the daemon prints stays out of the journal.
 StandardOutput=null
 Restart=on-failure
 RestartPreventExitStatus=78

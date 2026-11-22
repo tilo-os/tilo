@@ -171,16 +171,6 @@ fn creating_the_assistant_makes_an_agent_of_the_workspace_the_person_keeps() {
     assert_eq!(made[0].0, "assistant", "the id its actor works under");
     assert_eq!(made[0].1, "Assistant");
     assert_eq!(made[0].2, None, "no client of its own connects as it");
-    let hosted = app
-        .shared_workspace::<WorkspaceAgents>(workspace_agent::OWNER)
-        .expect("the workspace's agents")
-        .get()
-        .active()
-        .all(|agent| agent.on_host);
-    assert!(
-        hosted,
-        "the workspace's host runs it, so it answers while every device is off"
-    );
     // The window shows it at once: the conversation is Chat's, and there is someone to hand
     // a job to.
     assert!(!shows(&mut app, "assistant-create"));
@@ -271,24 +261,31 @@ fn agents_document() -> DocumentId {
         .expect("the id of the workspace's agents")
 }
 
+/// The window while the workspace's agents are on their way: it shows them neither as not
+/// here nor as none, offers no first assistant, and has no place to go yet.
+fn on_their_way(app: &mut TestApp<App>) {
+    assert!(
+        !shows(app, "assistant-agents-not-here"),
+        "not taken for missing"
+    );
+    assert!(!shows(app, "assistant-create"), "nor for none");
+    assert!(!shows(app, "assistant-open-in-chat"));
+    assert!(!shows(app, "assistant-supervision"));
+}
+
 #[test]
 fn a_window_opened_before_the_agents_arrive_shows_them_when_they_do() {
     english();
     let mut app = TestApp::<App>::awaiting_the_workspace(WORKSPACE, workspace_agent::OWNER)
         .expect("the window");
     app.frame();
-    // On their way, the agents are neither read nor taken for none: nothing offers to make
-    // an assistant the workspace may already hold.
-    assert!(shows(&mut app, "assistant-agents-not-here"));
-    assert!(!shows(&mut app, "assistant-create"));
+    // On their way, the agents are neither taken for missing nor for none: the window waits
+    // for them, and nothing offers to make an assistant the workspace may already hold.
+    on_their_way(&mut app);
     assert!(
         app.wanted_resources().contains(&agents_document()),
         "the workspace is asked for them"
     );
-    // The person looks at the supervision meanwhile.
-    app.harness().click_named("assistant-supervision").unwrap();
-    app.frame();
-    assert!(shows(&mut app, "assistant-agents-not-here"));
 
     // The workspace delivers its agents, the person's assistant among them.
     app.workspace_delivers::<WorkspaceAgents>(workspace_agent::OWNER, |agents| {
@@ -307,18 +304,10 @@ fn a_window_opened_before_the_agents_arrive_shows_them_when_they_do() {
     for _ in 0..4 {
         app.frame();
     }
-    // The window shows them with nobody opening it again, where the person was: the
-    // supervision is the assistant's now.
+    // The window shows them with nobody opening it again: the conversation is Chat's, and
+    // there is someone to hand a job to.
     assert!(!shows(&mut app, "assistant-agents-not-here"));
-    assert!(
-        shows(&mut app, "assistant-supervision-facts"),
-        "the place the person had open reads the assistant"
-    );
     assert!(!shows(&mut app, "assistant-create"));
-    // Back on the main chat: the conversation is Chat's, and there is someone to hand a
-    // job to.
-    app.harness().click_named("assistant-supervision").unwrap();
-    app.frame();
     assert!(shows(&mut app, "assistant-open-in-chat"));
     assert!(says(&mut app, "The conversation with Assistant is in Chat"));
     assert!(shows(&mut app, "assistant-start-sub-agent"));
@@ -331,8 +320,7 @@ fn a_window_opened_before_the_workspace_answered_offers_the_first_assistant_once
     let mut app = TestApp::<App>::awaiting_the_workspace(WORKSPACE, workspace_agent::OWNER)
         .expect("the window");
     app.frame();
-    assert!(shows(&mut app, "assistant-agents-not-here"));
-    assert!(!shows(&mut app, "assistant-create"));
+    on_their_way(&mut app);
 
     // The workspace holds no agents yet: their document is new here, and the one step that
     // makes the first assistant stands where the sentence was.

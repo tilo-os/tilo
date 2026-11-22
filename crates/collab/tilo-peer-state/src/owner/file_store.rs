@@ -362,8 +362,7 @@ pub fn open_file_with(
     path: &Path,
     host: Arc<dyn FileHost>,
 ) -> Result<NativeWorkspaceOwner, String> {
-    let (mut authority, held, journals) = read_resource(path)?;
-    let migrated = crate::owner::enrollment::migrate_intents(&mut authority)?;
+    let (authority, held, journals) = read_resource(path)?;
     let store = Arc::new(FileStore::at(path, host, held));
     let pending = serde_json::to_vec(&authority.pending).map_err(|error| error.to_string())?;
     let owner = NativeWorkspaceOwner::restore(
@@ -371,26 +370,15 @@ pub fn open_file_with(
         authority,
         tilo_clock::wall(),
     )?;
-    if !migrated {
-        // What the index read names: a write that changes neither it nor the
-        // workspaces held appends to the journal it read.
-        let mut kept = journals;
-        kept.retain(|workspace, journal| owner.resume_journal(*workspace, &mut journal.written));
-        *store.journals.lock() = kept;
-        *store.pending.lock() = Some(pending);
-    }
-    if migrated {
-        // The form of records already there changes neither a workspace nor
-        // its server workspace, so it goes straight to the files rather than
-        // through a publication of the store: nothing a host follows has
-        // changed.
-        let record = owner.0.authority.read();
-        store.write_all(&record)?;
-    } else {
-        // A publication that stopped between a workspace's file and the index
-        // left a file the record does not name.
-        store.prune_parts(&owner.0.authority.read());
-    }
+    // What the index read names: a write that changes neither it nor the
+    // workspaces held appends to the journal it read.
+    let mut kept = journals;
+    kept.retain(|workspace, journal| owner.resume_journal(*workspace, &mut journal.written));
+    *store.journals.lock() = kept;
+    *store.pending.lock() = Some(pending);
+    // A publication that stopped between a workspace's file and the index
+    // left a file the record does not name.
+    store.prune_parts(&owner.0.authority.read());
     Ok(owner)
 }
 
@@ -436,23 +424,6 @@ impl FileStore {
             healthy: AtomicBool::new(true),
             uncertain: RwLock::new(BTreeSet::new()),
         }
-    }
-
-    /// Make `record` durable whole: every workspace's file at the record's
-    /// revision, then the index that names them.
-    fn write_all(&self, record: &NativeAuthorityStorage) -> Result<(), String> {
-        let held = record
-            .workspaces
-            .keys()
-            .map(|workspace| (*workspace, record.revision))
-            .collect::<Held>();
-        for (workspace, stored) in &record.workspaces {
-            self.write_part(*workspace, record.revision, stored, record)?;
-        }
-        self.write_index(record, &held)?;
-        *self.held.write() = held;
-        self.prune_parts(record);
-        Ok(())
     }
 
     fn write_part(

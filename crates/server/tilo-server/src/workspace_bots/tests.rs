@@ -21,6 +21,7 @@ use tilo_agent_session::bot::host_steps::{
     HostStepError, HostSteps, Instruction, Judgement, Question,
 };
 use tilo_app_id::apps::CHAT;
+use tilo_workspace_service::agents::assistant;
 
 use crate::tl_chat;
 
@@ -1999,7 +2000,6 @@ fn membership_changes_fire_a_bots_workspace_triggers_as_governance_verbs() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     use crate::workspaces::sealed_fixtures::{SealingMember, governor_published, member_device};
-    use tilo_workspace_service::tl_records::{Opened, RecordBytes};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = crate::workspaces::fixtures::governor_with(
         tilo_user_identity::DeviceCapabilities::member(),
@@ -2020,33 +2020,21 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     .await;
     assert!(runner.step().await.unwrap().is_empty());
 
-    // The guest's post is written sealed, as their page writes one: through Chat's own `send`,
-    // on the record the workspace holds.
-    let sealed = {
-        let record = RecordBytes {
-            documents: std::collections::BTreeMap::from([(String::new(), guest.document().save())]),
-        };
-        let mut chat = Opened::open(
-            &record,
+    // The guest's post, as their page writes one: through Chat's own `send`, as the guest.
+    let who = tl_chat::member(MemberId::person(hex::encode(guest_cert.user_public_key)));
+    let in_general = general.clone();
+    workspaces
+        .with_tl_record(
+            &workspace,
             &tl_chat::packages().unwrap(),
             tl_chat::viewer(),
-            None,
+            move |chat| {
+                let to = tl_chat::resource(chat, "TextChannel", &in_general)?;
+                tl_chat::send(chat, &who, &to, "hello", None).map(drop)
+            },
         )
+        .await
         .unwrap();
-        let who = tl_chat::member(MemberId::person(hex::encode(guest_cert.user_public_key)));
-        let to = tl_chat::resource(&chat, "TextChannel", &general).unwrap();
-        tl_chat::send(&mut chat, &who, &to, "hello", None).unwrap();
-        chat.written()
-            .into_iter()
-            .find(|written| written.document.is_empty())
-            .expect("the post changed the chat's record")
-            .changes
-    };
-    guest
-        .writes(&workspaces, &workspace, |doc| {
-            tilo_automerge::ApplyIncoming::load_incoming(doc, &sealed).unwrap();
-        })
-        .await;
     let reports = runner.step().await.unwrap();
     assert!(
         matches!(reports[..], [ref report] if report.outcome == tilo_automation::InvocationOutcome::Completed),

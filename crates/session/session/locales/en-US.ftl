@@ -14,6 +14,10 @@ idle-inhibit-unnamed-app = An app
 ## of their devices.
 remote-use-hold = Remote use from another of your devices
 
+## An agent on another of the person's devices that works here.
+device-agents-not-accepted = This device doesn’t accept agents from your other devices. Turn on “Accept agents from my other devices” in its Settings, under Devices.
+device-agent-stopped = You stopped this agent on that device.
+
 storage-app-name = Storage
 storage-volume-home = your files
 storage-volume-system = the system
@@ -237,6 +241,7 @@ session-tray = Tray
 session-invite = Invite
 session-agents = Agents
 session-styles = Styles
+session-folders = Folders
 session-notifications-dismiss = Dismiss the notification
 session-notifications-act = Run the notification's action
 session-notifications-clear = Clear the notification centre

@@ -210,7 +210,7 @@ impl PeerGovernance<'_> {
 impl PeerGovernanceMut<'_> {
     /// Admit the certified agent device `cert` to this workspace as a delegated
     /// agent of its person, bound to `delegation`. Only the pinned workspace
-    /// authority may, and only an agent of its owner or an administrator: one
+    /// authority may, and only an agent of one of the workspace's members: one
     /// whose certificate holds no capability and whose delegation verifies
     /// against that root, names this device and this workspace, and is current.
     /// A newer delegation of the same agent replaces the one recorded; a
@@ -228,11 +228,8 @@ impl PeerGovernanceMut<'_> {
         if delegation.delegate.agent_id().is_none() {
             return Err("the delegation is not an agent's".into());
         }
-        if !self.peer.governs_history(&cert.user_public_key) {
-            return Err(
-                "only the agents of the workspace's owner and its administrators are admitted"
-                    .into(),
-            );
+        if !self.peer.is_member(&cert.user_public_key) {
+            return Err("only an agent of one of the workspace's members is admitted".into());
         }
         if !holds_no_power(&cert) {
             return Err("an agent's certificate holds no capability".into());

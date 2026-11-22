@@ -32,6 +32,9 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from real_apps import address, catalogue, invocation, receipt  # noqa: E402
+
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The one place that picks a session's private runtime directory.
 SESSION = REPO / "dist" / "dev" / "nested-session.sh"
@@ -172,11 +175,8 @@ class Shell:
 
     def lock_action(self) -> dict | None:
         """The session's own lock action, as the shell publishes it."""
-        rows = (self.call({"op": "actions_enumerate", "query": "lock"}).get("answer")
-                or {}).get("actions") or []
-        return next((row for row in rows
-                     if row.get("resource") == "session:screen"
-                     and row.get("operation") == "lock"), None)
+        return next((row for row in catalogue(self.call, "lock")
+                     if address(row) == ("session:screen", "lock")), None)
 
 
 def until(check, timeout: float = 30.0) -> bool:
@@ -211,9 +211,8 @@ def main() -> int:
         print("\n[1] the shell locks itself, and its lock screen stands over it")
         lock = shell.lock_action()
         check("the shell publishes its own lock action", lock is not None)
-        shell.call({"op": "actions_invoke",
-                   "provider": (lock or {}).get("provider", ""),
-                   "id": (lock or {}).get("id", "")})
+        if lock is not None:
+            receipt(shell.call(invocation(lock["provider"], *address(lock))))
         check("the session is locked", until(shell.locked))
         # What a person sees: not the shell's last frame, but the lock screen's
         # own, on every display. Read off the compositor, which only says so

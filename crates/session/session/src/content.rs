@@ -27,17 +27,20 @@ use tilo_content::{ContentStore, hash_bytes};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId};
-use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, WorkspaceMedia};
+use tilo_runtime::offload::{BlobScope, MediaFuture, WorkspaceMedia};
 use tilo_workspace_service::content::{
     ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, ContentSources,
     ContentState, RouteContent,
 };
+use tilo_workspace_service::files::socket::Daemons;
 
 use crate::sync::{Cmd, HostOutbox};
 
 /// Where record content is kept under the session's state: beside the engine's records, apart from
 /// the blocks their history keeps.
 const CONTENT_DIR: &str = "record-content";
+/// The app whose records are a workspace's file tree: its content is the files' bytes.
+const FILES_APP: &str = fs_protocol::tree::FILES_APP;
 /// The longest a workspace or app name may be, as a content store names one.
 const MAX_SCOPE_COMPONENT: usize = 128;
 /// Record scopes whose store this device keeps open at once. Content itself stays on disk; this is
@@ -59,6 +62,8 @@ pub(crate) struct ContentService {
     /// The store of each record the session keeps itself, by workspace and app
     /// ([`ContentService::store`]).
     kept: Mutex<HashMap<(String, String), Arc<Kept>>>,
+    /// Who may read and write the workspaces' files now, as the Files mounts enforce it.
+    files_access: tokio::sync::watch::Sender<Option<String>>,
 }
 
 impl ContentService {
@@ -69,7 +74,20 @@ impl ContentService {
         let shelf = Arc::new(Shelf {
             root: state.map(|state| state.join("tilo").join(CONTENT_DIR)),
             stores: Mutex::default(),
+            files: Arc::default(),
         });
+        {
+            // The bytes of a workspace's files are kept in the one store its Files mount keeps;
+            // what this session kept of them before moves there the first time it connects.
+            let root = shelf.root.clone();
+            shelf
+                .files
+                .on_connect(std::sync::Arc::new(move |workspace, keep| {
+                    if let Some(root) = &root {
+                        move_files_content(&root.join(workspace).join(FILES_APP), keep);
+                    }
+                }));
+        }
         let peers = Arc::new(Peers::default());
         let route = RouteContent::new(
             Arc::clone(&shelf) as Arc<dyn ContentShelf>,
@@ -89,7 +107,38 @@ impl ContentService {
             peers,
             inbound,
             kept: Mutex::default(),
+            files_access: tokio::sync::watch::channel(None).0,
         })
+    }
+
+    /// What the workspace trees' socket offers the Files mounts beside their trees: this
+    /// device's one store of file bytes, the trees' keys `keys` reads, and who may read and
+    /// write the files ([`Self::tell_files_access`]).
+    pub(crate) fn files_offers(
+        &self,
+        keys: tilo_workspace_service::files::socket::Keys,
+    ) -> tilo_workspace_service::files::socket::Offers {
+        tilo_workspace_service::files::socket::Offers {
+            daemons: Arc::clone(&self.shelf.files),
+            keys,
+            access: self.files_access.subscribe(),
+        }
+    }
+
+    /// Tell the Files mounts who may read and write the workspaces' files now: each enforces it
+    /// from its next operation on. An unchanged list is not told again.
+    pub(crate) fn tell_files_access(&self, access: &collab_types::caps::FsAuthority) {
+        let Ok(json) = serde_json::to_string(access) else {
+            return;
+        };
+        self.files_access.send_if_modified(|told| {
+            if told.as_deref() == Some(json.as_str()) {
+                false
+            } else {
+                *told = Some(json);
+                true
+            }
+        });
     }
 
     /// What the broker's `offerBlob` , `wantBlob` and `subscribeBlobs` answer through.
@@ -176,18 +225,6 @@ impl ContentService {
         ContentShelf::read(self.shelf.as_ref(), &scope, hash)
     }
 
-    /// Whether this device keeps `digest` of `app` 's content in `workspace` : what this session
-    /// says of itself when another of the person's devices offers it work reading that content.
-    pub(crate) fn holds(&self, workspace: &str, app: &str, digest: [u8; 32]) -> bool {
-        let scope = ContentScope {
-            workspace: workspace.to_owned(),
-            app: app.to_owned(),
-        };
-        self.shelf
-            .store(&scope)
-            .is_some_and(|store| store.has(&hex::encode(digest)))
-    }
-
     /// `digest` of `app` 's content in `workspace` , once it is here: what this device keeps
     /// already, else what the workspace's other devices hand over within `within` . `None` when it
     /// does not arrive in time.
@@ -242,8 +279,9 @@ impl ContentService {
         workspace: &str,
         from: EndpointId,
         msg: &NeighbourMsg,
+        may_read: &dyn Fn(&str) -> bool,
     ) -> bool {
-        let Some(entry) = inbound(ws, workspace, from, msg, &self.peers) else {
+        let Some(entry) = inbound(ws, workspace, from, msg, &self.peers, may_read) else {
             return false;
         };
         // A full queue drops what a member said here; the devices that could answer are told again
@@ -276,6 +314,7 @@ fn inbound(
     from: EndpointId,
     msg: &NeighbourMsg,
     peers: &Peers,
+    may_read: &dyn Fn(&str) -> bool,
 ) -> Option<Inbound> {
     let entry = match msg {
         NeighbourMsg::DocumentContentWant {
@@ -297,6 +336,7 @@ fn inbound(
             Inbound::Want {
                 on: CrdtRoute::app(app_id.clone(), cluster_id.clone()),
                 peer: *requester,
+                may_read: may_read(app_id),
                 hash: hash.clone(),
                 have: have.clone(),
             }
@@ -366,6 +406,8 @@ enum Inbound {
     Want {
         on: CrdtRoute,
         peer: ContentPeer,
+        /// Whether the asking device's person may read the record the content belongs to.
+        may_read: bool,
         hash: String,
         have: Vec<Span>,
     },
@@ -390,14 +432,13 @@ fn serve(content: &RouteContent, arriving: &Receiver<Inbound>) {
     loop {
         match arriving.recv_timeout(Duration::from_millis(PIECE_PATIENCE_MS)) {
             Ok(entry) => match entry {
-                // A member that reached here was admitted to the workspace by its policy, which lets it
-                // read the records the content belongs to.
                 Inbound::Want {
                     on,
                     peer,
+                    may_read,
                     hash,
                     have,
-                } => content.peer_wants(&on, peer, true, &hash, &have),
+                } => content.peer_wants(&on, peer, may_read, &hash, &have),
                 Inbound::Piece { on, piece } => content.peer_piece(&on, &piece),
                 Inbound::NoContent {
                     on,
@@ -423,6 +464,39 @@ struct Shelf {
     /// Where the stores live, or `None` on a session that keeps no state.
     root: Option<PathBuf>,
     stores: Mutex<HashMap<ContentScope, ContentStore>>,
+    /// The Files mounts, whose store keeps the bytes of the workspaces' files.
+    files: Arc<Daemons>,
+}
+
+/// Move the content a store at `dir` kept into the store `keep` reaches, then remove `dir`: once
+/// every piece of it was handed over, the bytes live in one store only. A piece not handed over
+/// leaves `dir` for the next time.
+fn move_files_content(dir: &Path, keep: &dyn Fn(&[u8]) -> bool) {
+    let Ok(shards) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut moved = true;
+    for shard in shards.flatten() {
+        let Ok(entries) = std::fs::read_dir(shard.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                continue;
+            }
+            match std::fs::read(entry.path()) {
+                Ok(bytes) if blake3::hash(&bytes).to_hex().as_str() == name => {
+                    moved &= keep(&bytes);
+                }
+                _ => {}
+            }
+        }
+    }
+    if moved && let Err(error) = std::fs::remove_dir_all(dir) {
+        tracing::debug!(%error, dir = %dir.display(), "the files' earlier content store stays");
+    }
 }
 
 impl Shelf {
@@ -453,10 +527,16 @@ impl ContentShelf for Shelf {
     fn read(&self, scope: &ContentScope, hash: &str) -> Option<Vec<u8>> {
         // What this device keeps, never a fetch of what it lacks: a peer's ask must not set this
         // device looking for bytes nowhere has yet.
+        if scope.app == FILES_APP {
+            return self.files.read(&scope.workspace, hash);
+        }
         self.store(scope)?.read(hash)
     }
 
     fn keep(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) -> Result<(), String> {
+        if scope.app == FILES_APP {
+            return self.files.keep(&scope.workspace, hash, bytes);
+        }
         let store = self
             .store(scope)
             .ok_or("this workspace and app name no content of theirs")?;
@@ -482,40 +562,6 @@ fn scoped(scope: &BlobScope) -> ContentScope {
 }
 
 impl WorkspaceMedia for Media {
-    fn len<'a>(
-        &'a self,
-        scope: &'a BlobScope,
-        digest: [u8; 32],
-    ) -> MediaFuture<'a, Result<u64, BindError>> {
-        let scope = scoped(scope);
-        Box::pin(async move {
-            let bytes = self
-                .0
-                .read(&scope, &hex::encode(digest))
-                .ok_or(BindError::NotLocal)?;
-            Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
-        })
-    }
-
-    fn read<'a>(
-        &'a self,
-        scope: &'a BlobScope,
-        digest: [u8; 32],
-    ) -> MediaFuture<'a, Result<Vec<u8>, BindError>> {
-        let scope = scoped(scope);
-        Box::pin(async move {
-            let bytes = self
-                .0
-                .read(&scope, &hex::encode(digest))
-                .ok_or(BindError::NotLocal)?;
-            if hash_bytes(&bytes) == hex::encode(digest) {
-                Ok(bytes)
-            } else {
-                Err(BindError::Integrity)
-            }
-        })
-    }
-
     fn keep<'a>(
         &'a self,
         scope: &'a BlobScope,

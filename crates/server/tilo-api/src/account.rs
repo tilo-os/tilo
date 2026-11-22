@@ -430,8 +430,8 @@ impl Server {
             Err(error) => return answer(structured, path, refused(&error)),
         };
         match tool {
-            "tilo_ls" => self.account_ls(key, path, structured).await,
-            "tilo_read" => self.account_read(&grant, key, path, structured).await,
+            "tilo_ls" => self.account_ls(&key, path, structured).await,
+            "tilo_read" => self.account_read(&grant, &key, path, structured).await,
             "tilo_status" => {
                 let id = arguments
                     .get("invocation_id")
@@ -441,7 +441,7 @@ impl Server {
             }
             _ => {
                 let args = arguments.get("args").cloned().unwrap_or_else(|| json!({}));
-                let outcome = self.account_do(&grant, key, path, &args).await;
+                let outcome = self.account_do(&grant, &key, path, &args).await;
                 answer(structured, path, outcome)
             }
         }

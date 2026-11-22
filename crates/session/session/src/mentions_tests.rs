@@ -25,7 +25,6 @@ const NOTE: &str = "tab:00000000000000a1";
 const NOTES: &str = "so.tilo.notes";
 const WORKSPACE: &str = "6d1c1f36-0000-4000-8000-000000000001";
 
-
 fn name(member: &ui::MemberId) -> String {
     match member.id() {
         ADA => "Ada".into(),

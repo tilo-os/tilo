@@ -388,6 +388,36 @@ pub(crate) struct Local {
     test_runtime: RefCell<Option<tokio::runtime::Handle>>,
 }
 
+/// Whether the person of `device` may read `workspace`'s files, as the workspace's people and
+/// grants decide it now; `false` for a device the workspace does not admit.
+#[cfg(target_os = "linux")]
+fn reads_files(engine: Option<&Engine>, workspace: &str, device: EndpointId) -> bool {
+    let (Some(engine), Some(identity)) =
+        (engine, tilo_desktop_model::WorkspaceId::parse(workspace))
+    else {
+        return false;
+    };
+    let now = tilo_clock::wall();
+    engine
+        .owner()
+        .with_current(identity, |view| {
+            let member = view
+                .peer()
+                .permissions(*device.as_bytes(), now)
+                .map_err(|error| error.to_string())?;
+            let Some(person) = member.person_id() else {
+                return Ok(false);
+            };
+            let policy = view.peer().governance().governed_policy()?;
+            let context = tilo_action_policy::Context::at_time(now);
+            Ok(
+                tilo_workspace_service::files::access::decide(&policy, workspace, person, &context)
+                    .is_some(),
+            )
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(target_os = "linux")]
 impl std::fmt::Debug for Local {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -459,7 +489,8 @@ impl Local {
 
     /// Hand `event` to the content store when it is one of a record's content messages; whether it
     /// was, in which case nothing else here takes it. Every such message reached here through the
-    /// workspace's policy, which admitted the device that sent it.
+    /// workspace's policy, which admitted the device that sent it; the bytes of the workspace's
+    /// files go only to a device whose person may read them.
     fn keep_content(&self, event: &Event, client: &SessionClient) -> bool {
         let Some(content) = self.content.borrow().clone() else {
             return false;
@@ -470,7 +501,11 @@ impl Local {
         let Some(workspace) = client.workspace_id(*ws) else {
             return false;
         };
-        content.heard(*ws, &workspace, *peer, msg)
+        let engine = self.engine.as_deref();
+        let may_read = |app: &str| {
+            app != fs_protocol::tree::FILES_APP || reads_files(engine, &workspace, *peer)
+        };
+        content.heard(*ws, &workspace, *peer, msg, &may_read)
     }
 
     /// Keep what reached here of the devices a workspace's content can be handed over from: those
@@ -1368,7 +1403,8 @@ fn live_beside(
     wake: &Arc<dyn Fn() + Send + Sync>,
     beside: &mut tilo_network_actor::own_service::Protocols,
 ) -> (Option<crate::live::Live>, Vec<Vec<u8>>) {
-    let mut live = engine.map(|engine| crate::live::Live::new(Arc::clone(engine), Arc::clone(wake)));
+    let mut live =
+        engine.map(|engine| crate::live::Live::new(Arc::clone(engine), Arc::clone(wake)));
     if let Some(live) = &mut live {
         beside.extend(live.protocols());
     }
@@ -1404,7 +1440,9 @@ impl Client {
         // What this device hears on its local network wakes the session, which shows which of the
         // person's devices are nearby.
         let lan = entry.lan.unwrap_or_else(|| Nearby::new(Arc::clone(&wake)));
-        let host_outbox = HostOutbox { commands: commands.clone() };
+        let host_outbox = HostOutbox {
+            commands: commands.clone(),
+        };
         let outgoing: Arc<dyn Outbox> = Arc::new(host_outbox.clone());
         let link_outbox = host_outbox.clone();
         let fabric = fabric_of(

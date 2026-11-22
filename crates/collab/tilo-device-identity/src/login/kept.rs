@@ -8,7 +8,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::ServerAddress;
 use crate::IdentityPaths;
-use crate::persist::{adopt_device_key, load_device_key, read_device_cert, write_device_cert};
+use crate::persist::{load_device_key, read_device_cert, write_device_cert};
 
 /// What a login this computer cannot read says.
 pub const LOGIN_DAMAGED: &str = "This computer's Tilo login is damaged: log in again with a ticket \
@@ -20,11 +20,6 @@ const LOGIN_STALE: &str = "This computer's Tilo login is for a device key it no 
 
 /// The file in [`Place::dir`] a login is kept in.
 const LOGIN_FILE: &str = "login.json";
-
-/// The files in [`Place::dir`] an earlier tilo kept a login in, with a device key of its own:
-/// read once, and removed once the login is kept with this computer's one device key.
-const EARLIER_KEY: &str = "key";
-const EARLIER_LOGIN: &str = "device.json";
 
 /// Where this account keeps its login and what the login keeps on this computer (its folders,
 /// its background process's state): `$XDG_STATE_HOME/tilo/device`. The device key and its certificates are
@@ -73,7 +68,7 @@ impl Place {
     /// makes itself undumpable.
     #[must_use]
     pub fn logged_in(&self) -> bool {
-        self.dir.join(LOGIN_FILE).exists() || self.dir.join(EARLIER_KEY).exists()
+        self.dir.join(LOGIN_FILE).exists()
     }
 }
 
@@ -127,8 +122,7 @@ struct Kept {
 }
 
 /// Keep `device` in `place`: its certificate beside this computer's device key, which it must
-/// certify, and the rest in [`LOGIN_FILE`]. A login an earlier tilo kept with a key of its own
-/// is removed.
+/// certify, and the rest in [`LOGIN_FILE`].
 ///
 /// # Errors
 /// The certificate is for another key than this computer's, or the files cannot be written.
@@ -159,14 +153,6 @@ pub fn store(place: &Place, device: &Device) -> Result<()> {
         &place.dir.join(LOGIN_FILE),
         &serde_json::to_vec_pretty(&kept)?,
     )?;
-    for earlier in [EARLIER_KEY, EARLIER_LOGIN] {
-        match std::fs::remove_file(place.dir.join(earlier)) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Err(anyhow!(error).context("removing the earlier login"));
-            }
-            _ => {}
-        }
-    }
     Ok(())
 }
 
@@ -180,9 +166,6 @@ pub fn load(place: &Place) -> Result<Option<(SigningKey, Device)>> {
         tracing::debug!(%why, "reading this computer's Tilo {what}");
         anyhow!(LOGIN_DAMAGED)
     };
-    if place.dir.join(EARLIER_KEY).exists() {
-        return take_earlier(place).map(Some);
-    }
     let bytes = match std::fs::read(place.dir.join(LOGIN_FILE)) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -216,63 +199,6 @@ pub fn load(place: &Place) -> Result<Option<(SigningKey, Device)>> {
             server_address: kept.server_address,
         },
     )))
-}
-
-/// A login an earlier tilo kept in `place` with a device key of its own, kept with this
-/// computer's one device key now: the earlier key becomes it when the computer has none yet. A
-/// computer that has one already keeps it, and its login is made again (`tilo login`), since the
-/// person's root certified the other key.
-fn take_earlier(place: &Place) -> Result<(SigningKey, Device)> {
-    /// The login as the earlier tilo kept it.
-    #[derive(Deserialize)]
-    struct Earlier {
-        site: String,
-        host_origin: String,
-        workspace: String,
-        #[serde(default)]
-        workspace_name: Option<String>,
-        agent: String,
-        cert: String,
-        server_cert: String,
-        #[serde(default)]
-        server_address: Option<ServerAddress>,
-    }
-    let seed: [u8; 32] = std::fs::read(place.dir.join(EARLIER_KEY))
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
-    let kept: Earlier = std::fs::read(place.dir.join(EARLIER_LOGIN))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
-    let cert = |hexed: &str| -> Result<DeviceCert> {
-        hex::decode(hexed)
-            .ok()
-            .and_then(|bytes| postcard::from_bytes(&bytes).ok())
-            .ok_or_else(|| anyhow!(LOGIN_DAMAGED))
-    };
-    let device = Device {
-        site: kept.site,
-        host_origin: kept.host_origin,
-        workspace: kept.workspace,
-        workspace_name: kept.workspace_name,
-        agent: kept.agent,
-        cert: cert(&kept.cert)?,
-        server_cert: cert(&kept.server_cert)?,
-        server_address: kept.server_address,
-    };
-    let key = match load_device_key(&place.keys) {
-        Ok(key) => key,
-        Err(_) if !place.keys.device_privkey.exists() => {
-            adopt_device_key(&place.keys, &seed).context("keeping this computer's device key")?
-        }
-        Err(error) => return Err(anyhow!(error).context("reading this computer's device key")),
-    };
-    if key.to_bytes() != seed {
-        bail!(LOGIN_STALE);
-    }
-    store(place, &device)?;
-    Ok((key, device))
 }
 
 /// The workspace this computer's login entered: its id, and the name the
@@ -345,23 +271,25 @@ pub fn holder_api_socket(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{name}.api.sock"))
 }
 
-/// Where this computer's device holder serves Tilo's API, when this computer
-/// logged in: every program of the login acts as the device there, over the
-/// device's one session, and never opens a second one under the same key,
-/// which would cut the first off at the server. `keys` are this computer's device key and
-/// certificates.
+/// Where this computer's daemon serves Tilo's API: every program of the account acts as its
+/// device there, over the one session it keeps. A computer with no login is still the device it
+/// made for itself, with the workspace it founded, so its programs reach the daemon here too.
+/// `keys` are this computer's device key and certificates.
 ///
 /// # Errors
 /// The login is damaged, or the holders' directory is not this account's.
 #[cfg(unix)]
 pub fn held_api(keys: IdentityPaths) -> Result<Option<PathBuf>> {
     let place = Place::here(keys)?;
-    let Some((key, _)) = load(&place)? else {
-        return Ok(None);
+    let key = match load(&place)? {
+        Some((key, _)) => key.verifying_key().to_bytes(),
+        // No login: the device key the daemon serves as, named by its certificate so the secret
+        // is not read here.
+        None => match read_device_cert(&place.keys().device_cert) {
+            Ok(cert) => cert.device_public_key,
+            Err(_) => return Ok(None),
+        },
     };
     let holders = holder_dir(place.dir()).map_err(|why| anyhow!(why))?;
-    Ok(Some(holder_api_socket(
-        &holders,
-        &holder_name(&key.verifying_key().to_bytes()),
-    )))
+    Ok(Some(holder_api_socket(&holders, &holder_name(&key))))
 }

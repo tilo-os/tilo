@@ -167,11 +167,10 @@ impl StatePeer {
             return Ok(Under::Missing);
         };
         let named: BTreeSet<[u8; 4]> = write.governance.iter().copied().collect();
-        let current: BTreeSet<[u8; 4]> =
-            automerge::transaction::Transactable::base_heads(&**doc)
-                .iter()
-                .map(|head| collab_types::governance_head(&head.0))
-                .collect();
+        let current: BTreeSet<[u8; 4]> = automerge::transaction::Transactable::base_heads(&**doc)
+            .iter()
+            .map(|head| collab_types::governance_head(&head.0))
+            .collect();
         if !named.is_empty() && named == current {
             return Ok(Under::Now);
         }
@@ -204,7 +203,10 @@ impl StatePeer {
                     write.seq,
                     compaction.as_ref(),
                 )?;
-                let known = cut.written_in.iter().any(|change| judged.has_change(change));
+                let known = cut
+                    .written_in
+                    .iter()
+                    .any(|change| judged.has_change(change));
                 let before_it = match written {
                     // Made beside the write or after it: it judges the write
                     // unless it kept it.
@@ -260,7 +262,8 @@ impl StatePeer {
     /// take in, which a judgement does not read.
     fn judging_by(&self, judged: CachedDocument) -> Self {
         let workspace = self.core.workspace.clone();
-        let owner = super::receiving::governed_owner(&judged, &workspace).unwrap_or(self.core.owner);
+        let owner =
+            super::receiving::governed_owner(&judged, &workspace).unwrap_or(self.core.owner);
         Self {
             core: PeerCore {
                 workspace,

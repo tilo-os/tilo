@@ -106,3 +106,28 @@ pub(crate) fn windowed<T>(step: &'static str, work: impl FnOnce() -> T) -> T {
     window(step, started);
     result
 }
+
+/// How long a phase of a write may wait before it is said while it still waits.
+const WAITED_LONG: Duration = Duration::from_secs(10);
+
+/// Run `work`, a phase of a write, saying at warn level once it has waited [`WAITED_LONG`] for
+/// `phase` and still waits: a write that never ends names the phase it waits in before whoever
+/// gives up on it does, on any host, timings enabled or not.
+pub(crate) async fn said_if_long<T>(
+    phase: &'static str,
+    work: impl std::future::Future<Output = T>,
+) -> T {
+    let mut work = std::pin::pin!(work);
+    let waited = std::pin::pin!(tilo_rt::sleep(WAITED_LONG));
+    match futures::future::select(work.as_mut(), waited).await {
+        futures::future::Either::Left((done, _)) => done,
+        futures::future::Either::Right(((), _)) => {
+            tracing::warn!(
+                phase,
+                waited_s = WAITED_LONG.as_secs(),
+                "a write still waits"
+            );
+            work.await
+        }
+    }
+}

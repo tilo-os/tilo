@@ -12,8 +12,8 @@
 #      unit; instances get provisioned per-tenant via k8s or a
 #      podman-quadlet fleet.
 #
-# Nothing here compiles: t builds the server, its admin, its enroll program and
-# the filesystem replica (tools/ci/publish/server-binaries.sh, the check
+# Nothing here compiles: t builds the server, its admin and its enroll program
+# (tools/ci/publish/server-binaries.sh, the check
 # server-binaries) and this build lays them out with the base and the packages
 # they run against, from the same frozen snapshot and mirrored base as the
 # other server images (tools/ci/publish/server-build.sh). Its context is the
@@ -62,7 +62,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 COPY bin/tilo-server /usr/libexec/tilo/tilo-server
 COPY bin/tilo-server-admin /usr/libexec/tilo/tilo-server-admin
 COPY bin/tilo-enroll /usr/libexec/tilo/tilo-enroll
-COPY bin/fs /usr/bin/fs
 COPY os/containers/tilo-server/tilo-home-peer /usr/bin/tilo-home-peer
 RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-home-peer \
     && for name in tilo-server tilo-server-admin tilo-enroll; do \

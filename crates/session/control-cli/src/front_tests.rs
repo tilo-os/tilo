@@ -1,138 +1,165 @@
 use std::io::{BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use tilo_actions::remote::{self, CataloguePage, CatalogueResource, InvokeRequest, TestProvider};
+use tilo_actions::{
+    ActionAddress, ActionContract, ActionOutput, ActionParam, ActionState, ExecutionLocus,
+    InputSpec, OperationKind, ParamType,
+};
 
 use super::*;
 
-/// What the fake desktop below lists: shell chrome, app actions with typed
-/// parameters (two of them titled alike), and apps here and to get.
-fn rows() -> Vec<serde_json::Value> {
-    vec![
-        serde_json::json!({"provider": "actions", "id": "window.new.terminal", "kind": "Actions",
-            "title": "New terminal window", "params": []}),
-        serde_json::json!({"provider": "app-actions", "id": "notes\u{1f}rename", "kind": "Actions",
-            "title": "Rename note", "subtitle": "Todo",
-            "params": [{"name": "title", "type": "text", "required": true, "description": "The new name"}]}),
-        serde_json::json!({"provider": "app-actions", "id": "files\u{1f}rename", "kind": "Actions",
-            "title": "Rename", "subtitle": "report.md",
-            "params": [{"name": "name", "type": "text", "required": true}]}),
-        serde_json::json!({"provider": "app-actions", "id": "sheets\u{1f}rename", "kind": "Actions",
-            "title": "Rename", "subtitle": "Budget",
-            "params": [{"name": "name", "type": "text", "required": true}]}),
-        serde_json::json!({"provider": "app-actions", "id": "mixer\u{1f}volume", "kind": "Actions",
-        "title": "Set volume",
-        "params": [
-            {"name": "level", "type": "integer", "required": true},
-            {"name": "mode", "type": "text", "choices": ["quiet", "loud"]}
-        ]}),
-        serde_json::json!({"provider": "applications", "id": "so.tilo.calculator",
-            "kind": "Apps", "title": "Calculator", "params": []}),
-        serde_json::json!({"provider": "applications", "id": "so.tilo.notes",
-            "kind": "Apps", "title": "Notes", "params": []}),
-        serde_json::json!({"provider": "store-catalogue", "id": "app:so.tilo.chess",
-            "kind": "Apps", "title": "Chess", "params": []}),
-    ]
-}
-
-fn actions() -> Vec<Action> {
-    rows().iter().filter_map(Action::from_row).collect()
-}
-
-/// The desktop's own matching, roughly: every word typed starts a word of
-/// the title, or the query is in the id; `kinds` keeps apps.
-fn enumerate(request: &serde_json::Value) -> serde_json::Value {
-    let query = request["query"].as_str().unwrap_or_default().to_lowercase();
-    let words: Vec<&str> = query.split_whitespace().collect();
-    let apps_only = request.get("kinds").is_some();
-    let actions: Vec<serde_json::Value> = rows()
-        .into_iter()
-        .filter(|row| !apps_only || row["kind"] == "Apps")
-        .filter(|row| {
-            let title = row["title"].as_str().unwrap_or_default().to_lowercase();
-            let id = row["id"].as_str().unwrap_or_default();
-            words.is_empty()
-                || id.contains(query.as_str())
-                || words.iter().all(|word| {
-                    title
-                        .split(|c: char| !c.is_alphanumeric())
-                        .any(|part| part.starts_with(word))
-                })
-        })
-        .collect();
-    serde_json::json!({"answer": {"query": query, "count": actions.len(), "actions": actions,
-        "truncated": false}})
-}
-
-/// A desktop's answers: listings from [`enumerate`], invocations settled.
-fn desktop_answer(request: &serde_json::Value) -> serde_json::Value {
-    match request["op"].as_str() {
-        Some("actions_enumerate") => enumerate(request),
-        Some("actions_invoke") => serde_json::json!({"answer": {
-            "provider": request["provider"], "id": request["id"],
-            "receipt": {"invocation": "invocation-1",
-                "update": {"state": "succeeded", "output": {"value": "done"}}}
-        }}),
-        _ => serde_json::json!({"err": {"code": "bad_request", "message": "?"}}),
+fn row(
+    provider: &str,
+    (resource, label): (&str, &str),
+    (id, title): (&str, &str),
+    params: Vec<ActionParam>,
+) -> CatalogueRow {
+    CatalogueRow {
+        offered: None,
+        provider: provider.into(),
+        app_id: "so.tilo.test".into(),
+        parent_resource: String::new(),
+        resource: CatalogueResource {
+            id: resource.into(),
+            kind: "test".into(),
+            label: label.into(),
+            presentation: None,
+        },
+        action: Some(ActionDescriptor {
+            did: None,
+            state: ActionState::default(),
+            semantic_identity: None,
+            address: ActionAddress::new(resource, id),
+            resource_kind: "test".into(),
+            resource_label: label.into(),
+            action_label: title.into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: ExecutionLocus::ClientLocal,
+            kind: OperationKind::Document,
+            contract: ActionContract::default(),
+            input: InputSpec::None,
+            params,
+            view: None,
+        }),
+        has_children: false,
+        visibility: None,
+        surface: None,
     }
 }
 
-/// A socket answering each request line with `answer`, recording requests.
-struct FakeSocket {
-    path: PathBuf,
-    requests: Arc<Mutex<Vec<serde_json::Value>>>,
+/// What the fake desktop below offers: the shell's own action, an action two
+/// places offer under one id, one with a typed parameter, and an app.
+fn rows() -> Vec<CatalogueRow> {
+    let named = |name: &'static str, ty| vec![ActionParam::required(name, ty, "")];
+    vec![
+        row(
+            "so.tilo.session",
+            ("desktop:chrome", "Desktop"),
+            ("new-terminal-window", "New terminal window"),
+            Vec::new(),
+        ),
+        row(
+            "7",
+            ("notes.page:1", "Todo"),
+            ("rename", "Rename note"),
+            named("title", ParamType::Text),
+        ),
+        row(
+            "8",
+            ("sheets.sheet:1", "Budget"),
+            ("rename", "Rename"),
+            named("name", ParamType::Text),
+        ),
+        row(
+            "so.tilo.session",
+            ("session:audio", "Sound"),
+            ("set-volume", "Set volume"),
+            named("level", ParamType::Integer),
+        ),
+        row(
+            "workspace:w1",
+            ("app.so.tilo.notes", "Notes"),
+            (remote::APPLICATION_OPEN_ACTION, "Open"),
+            Vec::new(),
+        ),
+    ]
 }
 
-impl FakeSocket {
-    fn serve(
-        dir: &Path,
-        name: &str,
-        answer: fn(&serde_json::Value) -> serde_json::Value,
-        close_after_first: bool,
-    ) -> Self {
+/// A desktop's control socket answering frames as a session does, through
+/// [`remote::serve`] over a provider that offers [`rows`] and completes
+/// every invocation with `done`.
+struct FakeDesktop {
+    path: PathBuf,
+    provider: Arc<TestProvider>,
+}
+
+impl FakeDesktop {
+    fn serve(dir: &Path, name: &str) -> Self {
         let path = dir.join(name);
         let listener = UnixListener::bind(&path).expect("bind the fake socket");
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&requests);
+        let provider = Arc::new(
+            TestProvider::new()
+                .with_catalogue(|_, query| Ok(CataloguePage::from_rows("1".into(), rows(), &query)))
+                .completing(|_| ActionOutput {
+                    value: Some("done".into()),
+                    resources: Vec::new(),
+                }),
+        );
+        let serving = Arc::clone(&provider);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
-                let seen = Arc::clone(&seen);
+                let provider = Arc::clone(&serving);
                 std::thread::spawn(move || {
                     let mut writer = stream.try_clone().expect("clone");
                     for line in BufReader::new(stream).lines() {
                         let Ok(line) = line else { return };
-                        let request: serde_json::Value =
-                            serde_json::from_str(&line).expect("one JSON request per line");
-                        let reply = answer(&request);
-                        seen.lock().expect("requests").push(request);
-                        if writeln!(writer, "{reply}").is_err() || close_after_first {
-                            return;
-                        }
+                        let frame = RemoteActionFrame::decode(line.as_bytes()).expect("a frame");
+                        let caller = remote::Caller::local_person("person");
+                        let answer = remote::serve(&provider, &caller, frame.message)
+                            .and_then(|pending| pending.wait_timeout(Duration::from_secs(5)).ok())
+                            .flatten()
+                            .expect("an answer");
+                        let bytes = RemoteActionFrame::new(answer).encode().expect("encode");
+                        writer.write_all(&bytes).expect("write");
+                        writer.write_all(b"\n").expect("write");
                     }
                 });
             }
         });
-        Self { path, requests }
+        Self { path, provider }
     }
 
-    fn requests(&self) -> Vec<serde_json::Value> {
-        self.requests.lock().expect("requests").clone()
-    }
-
-    fn invocations(&self) -> Vec<serde_json::Value> {
-        self.requests()
-            .into_iter()
-            .filter(|request| request["op"] == "actions_invoke")
-            .collect()
+    fn invoked(&self) -> Vec<InvokeRequest> {
+        self.provider.asked()
     }
 }
 
+use std::time::Duration;
+
 /// The admin socket as an app's process meets it: one `not_permitted`
 /// answer, then the connection closes.
-fn admin_refusal(_: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({"err": {"code": "not_permitted",
-        "message": "a sandboxed process cannot use the admin control socket"}})
+fn refusing_admin(dir: &Path) -> PathBuf {
+    let path = dir.join("admin-control.sock");
+    let listener = UnixListener::bind(&path).expect("bind");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut line = String::new();
+            let _ = BufReader::new(stream.try_clone().expect("clone")).read_line(&mut line);
+            let _ = writeln!(
+                stream,
+                "{}",
+                serde_json::json!({"err": {"code": "not_permitted", "message": "an app's process"}})
+            );
+        }
+    });
+    path
 }
 
 struct Ran {
@@ -155,192 +182,32 @@ fn ran(run: impl FnOnce(&mut Io<'_>) -> u8) -> Ran {
     }
 }
 
-#[test]
-fn names_are_title_slugs_made_unique_by_place_and_found_by_title_words() {
-    let actions = actions();
-    let names = display_names(&actions);
-    assert_eq!(names[0], "new-terminal-window");
-    assert_eq!(names[1], "rename-note");
-    assert_eq!(names[2], "rename-report-md");
-    assert_eq!(names[3], "rename-budget");
-    assert_eq!(names[5], "calculator");
-    let unique: std::collections::HashSet<&String> = names.iter().collect();
-    assert_eq!(unique.len(), names.len(), "{names:?}");
-
-    assert_eq!(pick("new-terminal-window", &actions), Pick::One(0));
-    assert_eq!(pick("New terminal window", &actions), Pick::One(0));
-    assert_eq!(pick("new term", &actions), Pick::One(0), "words of a title");
-    assert_eq!(pick("rename-budget", &actions), Pick::One(3));
-    assert_eq!(pick("rename", &actions), Pick::Many(vec![2, 3]));
-    assert_eq!(pick("nothing-like-it", &actions), Pick::None);
-    assert_eq!(
-        pick("app-actions:notes\\x1frename", &actions),
-        Pick::One(1),
-        "the address `show` prints"
-    );
+fn args(request: &InvokeRequest) -> Value {
+    match &request.argument {
+        InvokeArgument::Json(args) => Value::Object(args.clone()),
+        InvokeArgument::None => Value::Null,
+        InvokeArgument::Text(text) => Value::String(text.clone()),
+    }
 }
 
 #[test]
-fn arguments_follow_the_schema_with_sentences_that_say_what_it_takes() {
-    let actions = actions();
-    let words = |words: &[&str]| {
-        words
-            .iter()
-            .map(|word| (*word).to_string())
-            .collect::<Vec<_>>()
-    };
-    let rename = &actions[1];
-    assert_eq!(
-        bind_args(rename, &words(&["Groceries"])).expect("a lone value"),
-        serde_json::json!({"title": "Groceries"})
-            .as_object()
-            .cloned()
-            .unwrap_or_default()
-    );
-    assert_eq!(
-        bind_args(rename, &words(&["title=Big", "shop"])).expect_err("nowhere for shop"),
-        "Say which option “shop” is for: title (text)."
-    );
-    let missing = bind_args(rename, &[]).expect_err("title is required");
-    assert_eq!(
-        missing,
-        "“Rename note” needs title (text). It takes title (text)."
-    );
-    let unknown = bind_args(rename, &words(&["--colour", "red"])).expect_err("no such option");
-    assert_eq!(
-        unknown,
-        "“Rename note” has no option “colour”. It takes title (text)."
-    );
-
-    let volume = &actions[4];
-    assert_eq!(
-        bind_args(volume, &words(&["40", "mode=quiet"])).expect("typed"),
-        serde_json::json!({"level": 40, "mode": "quiet"})
-            .as_object()
-            .cloned()
-            .unwrap_or_default()
-    );
-    assert_eq!(
-        bind_args(volume, &words(&["level=loud"])).expect_err("not a number"),
-        "level must be a whole number, not “loud”."
-    );
-    assert_eq!(
-        bind_args(volume, &words(&["--level=3", "--mode", "medium"])).expect_err("not a choice"),
-        "mode must be quiet or loud, not “medium”."
-    );
-    let terminal = &actions[0];
-    assert_eq!(
-        bind_args(terminal, &words(&["now"])).expect_err("takes nothing"),
-        "“New terminal window” takes nothing."
-    );
-}
-
-#[test]
-fn open_resolves_an_app_by_word_name_or_id_like_search() {
-    let actions = actions();
-    assert_eq!(
-        pick_app("calc", &actions),
-        Some(5),
-        "the desktop's best match"
-    );
-    assert_eq!(pick_app("Calculator", &actions), Some(5));
-    assert_eq!(
-        pick_app("notes", &actions),
-        Some(6),
-        "its name, not the note action"
-    );
-    assert_eq!(pick_app("so.tilo.calculator", &actions), Some(5));
-    assert_eq!(
-        pick_app("so.tilo.chess", &actions),
-        Some(7),
-        "an app to get"
-    );
-    assert_eq!(pick_app("x", &actions[..5]), None, "no app rows at all");
-
+fn do_picks_by_id_title_or_place_and_invokes_the_one_frame() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let socket = FakeSocket::serve(dir.path(), "control.sock", desktop_answer, false);
-    let sockets = [ControlSocket::Named(socket.path.clone())];
+    let desktop = FakeDesktop::serve(dir.path(), "control.sock");
+    let sockets = [ControlSocket::Named(desktop.path.clone())];
     let spelling = Spelling::tilo();
 
-    let opened = ran(|io| open(&sockets, "calc", &[], dir.path(), &spelling, io));
-    assert_eq!(opened.code, 0, "{}", opened.err);
-    let invoked = socket.invocations();
-    assert_eq!(invoked.len(), 1);
-    assert_eq!(invoked[0]["provider"], "applications");
-    assert_eq!(invoked[0]["id"], "so.tilo.calculator");
-    assert_eq!(invoked[0]["args"], serde_json::json!({}));
-    let listed = socket
-        .requests()
-        .into_iter()
-        .find(|request| request["op"] == "actions_enumerate")
-        .expect("a listing first");
-    assert_eq!(listed["query"], "calc");
-    assert_eq!(listed["kinds"], serde_json::json!(["app"]));
-
-    let with_files = ran(|io| {
-        open(
-            &sockets,
-            "Notes",
-            &["plan.md".to_string(), "https://tilo.so".to_string()],
-            Path::new("/home/me"),
-            &spelling,
-            io,
-        )
-    });
-    assert_eq!(with_files.code, 0, "{}", with_files.err);
-    let invoked = socket.invocations();
-    let last = invoked.last().expect("an invocation");
-    assert_eq!(last["provider"], "applications");
-    assert_eq!(last["id"], "open-with:so.tilo.notes");
-    assert_eq!(
-        last["args"],
-        serde_json::json!({"open": ["/home/me/plan.md", "https://tilo.so"]})
-    );
-
-    let absent = ran(|io| {
-        open(
-            &sockets,
-            "chess",
-            &["game.pgn".to_string()],
-            dir.path(),
-            &spelling,
-            io,
-        )
-    });
-    assert_eq!(absent.code, 1);
-    assert_eq!(
-        absent.err,
-        "Chess isn't on this device yet. Open it once to get it: tilo open chess\n"
-    );
-    let unknown = ran(|io| open(&sockets[..0], "calc", &[], dir.path(), &spelling, io));
-    assert_eq!(unknown.code, 1);
-    assert_eq!(unknown.err, "This needs a Tilo desktop session.\n");
-}
-
-#[test]
-fn do_validates_then_invokes_through_a_control_socket() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = FakeSocket::serve(dir.path(), "control.sock", desktop_answer, false);
-    let sockets = [ControlSocket::Named(socket.path.clone())];
-    let spelling = Spelling::tilo();
-
-    let done = ran(|io| run(&sockets, "new terminal", &[], false, &spelling, io));
+    let done = ran(|io| run(&sockets, "new terminal window", &[], false, &spelling, io));
     assert_eq!(
         (done.code, done.out.as_str()),
         (0, "ok\ndone\n"),
         "{}",
         done.err
     );
-    let invoked = socket.invocations();
-    assert_eq!(invoked.len(), 1);
-    assert_eq!(invoked[0]["provider"], "actions");
-    assert_eq!(invoked[0]["id"], "window.new.terminal");
-    assert_eq!(invoked[0]["wait_ms"], 5000);
-
     let renamed = ran(|io| {
         run(
             &sockets,
-            "rename-note",
+            "todo#rename",
             &["Groceries".into()],
             false,
             &spelling,
@@ -348,187 +215,125 @@ fn do_validates_then_invokes_through_a_control_socket() {
         )
     });
     assert_eq!(renamed.code, 0, "{}", renamed.err);
-    let invoked = socket.invocations();
-    assert_eq!(invoked[1]["id"], "notes\u{1f}rename");
-    assert_eq!(
-        invoked[1]["args"],
-        serde_json::json!({"title": "Groceries"})
-    );
+    let louder = ran(|io| run(&sockets, "set-volume", &["40".into()], false, &spelling, io));
+    assert_eq!(louder.code, 0, "{}", louder.err);
+    let invoked = desktop.invoked();
+    assert_eq!(invoked.len(), 3);
+    assert_eq!(invoked[0].target.provider, "so.tilo.session");
+    assert_eq!(invoked[0].target.address.action, "new-terminal-window");
+    assert_eq!(invoked[1].target.provider, "7");
+    assert_eq!(args(&invoked[1]), serde_json::json!({"title": "Groceries"}));
+    assert_eq!(args(&invoked[2]), serde_json::json!({"level": 40}));
 
-    let refused = ran(|io| {
+    let ambiguous = ran(|io| run(&sockets, "rename", &["x".into()], false, &spelling, io));
+    assert_eq!(ambiguous.code, 1);
+    assert!(
+        ambiguous.err.contains("tilo do todo#rename")
+            && ambiguous.err.contains("tilo do budget#rename"),
+        "{}",
+        ambiguous.err
+    );
+    let unknown = ran(|io| run(&sockets, "fly", &[], false, &spelling, io));
+    assert_eq!(unknown.code, 1);
+    assert_eq!(desktop.invoked().len(), 3, "nothing unclear is invoked");
+
+    let json = ran(|io| {
         run(
             &sockets,
             "set-volume",
-            &["level=loud".into()],
-            false,
+            &["level=5".into()],
+            true,
             &spelling,
             io,
         )
     });
-    assert_eq!(refused.code, 1);
-    assert_eq!(refused.err, "level must be a whole number, not “loud”.\n");
-    let ambiguous = ran(|io| run(&sockets, "rename", &["x".into()], false, &spelling, io));
-    assert_eq!(ambiguous.code, 1);
-    assert!(
-        ambiguous.err.contains("tilo do rename-report-md")
-            && ambiguous.err.contains("tilo do rename-budget"),
-        "{}",
-        ambiguous.err
-    );
-    assert_eq!(
-        socket.invocations().len(),
-        2,
-        "nothing is invoked when its arguments are wrong or its name is unclear"
-    );
+    let typed: Value = serde_json::from_str(&json.out).expect("typed JSON");
+    assert_eq!(typed["status"], "ok");
+    assert_eq!(typed["result"], "done");
 
-    let shown = ran(|io| show(&sockets, "rename-note", &spelling, io));
-    assert_eq!(shown.code, 0);
+    let listed = ran(|io| list(&sockets, "", &spelling, io));
+    assert_eq!(listed.code, 0, "{}", listed.err);
+    assert!(
+        listed
+            .out
+            .contains("new-terminal-window  New terminal window"),
+        "{}",
+        listed.out
+    );
+    assert!(listed.out.contains("todo#rename"), "{}", listed.out);
+
+    let shown = ran(|io| show(&sockets, "todo#rename", &spelling, io));
+    assert_eq!(shown.code, 0, "{}", shown.err);
     assert!(
         shown.out.starts_with("Rename note\nTodo\n"),
         "{}",
         shown.out
     );
     assert!(
-        shown.out.contains("  title  text, required  The new name"),
-        "{}",
-        shown.out
-    );
-    assert!(
-        shown.out.contains("tilo do rename-note title=…"),
+        shown.out.contains("tilo do todo#rename title=…"),
         "{}",
         shown.out
     );
 }
 
-/// `--json` reads the answer as the typed shape the API answers a hosted
-/// workspace with, from the same one invocation: `status`, `invocation` and
-/// `result`.
 #[test]
-fn do_json_answers_the_typed_shape_the_api_answers() {
+fn open_finds_an_app_by_name_and_opens_files_in_it() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let socket = FakeSocket::serve(dir.path(), "control.sock", desktop_answer, false);
-    let sockets = [ControlSocket::Named(socket.path.clone())];
+    let desktop = FakeDesktop::serve(dir.path(), "control.sock");
+    let sockets = [ControlSocket::Named(desktop.path.clone())];
+    let cwd = Path::new("/home/me");
     let spelling = Spelling::tilo();
 
-    let answered = ran(|io| run(&sockets, "new terminal", &[], true, &spelling, io));
-    assert_eq!(answered.code, 0, "{}", answered.err);
+    let opened = ran(|io| open(&sockets, "notes", &[], cwd, &spelling, io));
+    assert_eq!(opened.code, 0, "{}", opened.err);
+    let with_file = ran(|io| open(&sockets, "Notes", &["plan.md".into()], cwd, &spelling, io));
+    assert_eq!(with_file.code, 0, "{}", with_file.err);
+    let missing = ran(|io| open(&sockets, "chess", &[], cwd, &spelling, io));
+    assert_eq!(missing.err, "There is no app called “chess”.\n");
+
+    let invoked = desktop.invoked();
+    assert_eq!(invoked[0].target.address.resource, "app.so.tilo.notes");
+    assert_eq!(invoked[1].target.provider, "workspace:w1");
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&answered.out).expect("one JSON answer"),
-        serde_json::json!({"status": "ok", "invocation": "invocation-1", "result": "done"})
+        invoked[1].target.address.resource,
+        "app.open-with:so.tilo.notes"
     );
     assert_eq!(
-        socket.invocations().len(),
-        1,
-        "the typed answer is the one invocation's, not a second call"
+        args(&invoked[1]),
+        serde_json::json!({"open": ["/home/me/plan.md"]})
     );
+    assert_eq!(complete_apps(&sockets, "no"), ["notes"]);
 }
 
-/// A desktop whose action outlasts the first wait: the invocation answers
-/// that it was accepted, and its status, asked after, that it succeeded.
-fn slow_desktop_answer(request: &serde_json::Value) -> serde_json::Value {
-    match request["op"].as_str() {
-        Some("actions_invoke") => serde_json::json!({"answer": {"receipt": {
-            "broker_invocation_id": 4, "invocation": "invocation-4",
-            "update": {"state": "accepted", "invocation": "invocation-4"}}}}),
-        Some("actions_status") => serde_json::json!({"answer": {"receipt": {
-            "broker_invocation_id": 4, "invocation": "invocation-4",
-            "update": {"state": "succeeded", "output": {"value": "planned"}}}}}),
-        _ => desktop_answer(request),
-    }
-}
-
-/// An action still going after the first wait is followed to its end, so the
-/// command answers what it did rather than exiting on "still going".
+/// From inside an app the admin socket turns the process away, and the
+/// same frames go to the session's MCP server, which acts with that app's
+/// scope.
 #[test]
-fn an_action_that_outlasts_one_wait_answers_how_it_ended() {
+fn inside_an_app_the_frames_go_to_the_mcp_server() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let socket = FakeSocket::serve(dir.path(), "control.sock", slow_desktop_answer, false);
-    let sockets = [ControlSocket::Named(socket.path.clone())];
-    let spelling = Spelling::tilo();
-
-    let answered = ran(|io| {
-        run_address(
+    let admin = refusing_admin(dir.path());
+    let agent = FakeDesktop::serve(dir.path(), "agent.sock");
+    let sockets = [
+        ControlSocket::Admin(admin),
+        ControlSocket::Agent(agent.path.clone()),
+    ];
+    let done = ran(|io| {
+        run(
             &sockets,
-            (
-                "tilo.machines",
-                "machines\u{1f}machine.plan",
-                "Plan a machine",
-            ),
-            &serde_json::json!({}),
-            &spelling,
+            "new-terminal-window",
+            &[],
+            false,
+            &Spelling::tilo(),
             io,
         )
     });
-    assert_eq!(answered.code, 0, "{}", answered.err);
-    assert_eq!(answered.out, "ok\nplanned\n");
-    let followed: Vec<_> = socket
-        .requests()
-        .into_iter()
-        .filter(|request| request["op"] == "actions_status")
-        .collect();
-    assert_eq!(followed.len(), 1, "{followed:?}");
-    assert_eq!(followed[0]["invocation_id"], 4);
+    assert_eq!(done.code, 0, "{}", done.err);
+    assert_eq!(agent.invoked().len(), 1);
 }
 
-/// Options typed without a schema to bind them read as JSON where they parse,
-/// else as text: one reading for an action this desktop names by its address
-/// and one a hosted workspace does.
-#[test]
-fn loose_options_are_json_where_they_parse() {
-    assert_eq!(
-        arguments(&[
-            "name=Jane Doe".into(),
-            "count=3".into(),
-            "--ok=true".into(),
-            "edit={\"op\":\"set\"}".into()
-        ])
-        .expect("every word is name=value"),
-        serde_json::json!({"name": "Jane Doe", "count": 3, "ok": true, "edit": {"op": "set"}})
-            .as_object()
-            .cloned()
-            .unwrap_or_default()
-    );
-    assert_eq!(
-        arguments(&["nothing".into()]).expect_err("no name"),
-        "Write “nothing” as name=value."
-    );
-}
-
-/// An answer reads the same wherever the action ran: how it stands and where,
-/// what it answered, what it made, and its links.
-#[test]
-fn an_action_answer_says_what_ran_and_where_it_is() {
-    let done = serde_json::json!({"status": "ok", "path": "notes#open",
-        "invocation": "inv-1", "link": "https://tilo.sh/#/w/x/notes/Todo"});
-    assert_eq!(
-        answer_text(&done),
-        "ok notes#open\nhttps://tilo.sh/#/w/x/notes/Todo"
-    );
-    // What it made or changed, as a path the next command takes as it is: the
-    // answer an agent's create prints is not lost.
-    let created = serde_json::json!({"status": "ok", "path": "tasks#create",
-        "resources": ["tasks.tracker/issues/7"], "result": {"id": 7}});
-    assert_eq!(
-        answer_text(&created),
-        "ok tasks#create\n{\"id\":7}\n-> tasks.tracker/issues/7"
-    );
-    let pending = serde_json::json!({"status": "pending", "invocation": "inv-2",
-        "path": "pdf-viewer#import-pdf-content", "ask": {"url": "https://tilo.sh/approve/1"}});
-    assert_eq!(
-        answer_text(&pending),
-        "pending inv-2: it waits for you, at https://tilo.sh/approve/1 \
-         (pdf-viewer#import-pdf-content)"
-    );
-    let running = serde_json::json!({"status": "pending", "invocation": "inv-3"});
-    assert_eq!(answer_text(&running), "pending inv-3: still going");
-}
-
-/// A listing with no desktop to list from says what a hosted workspace's
-/// listing is, rather than only that a session is missing.
 #[test]
 fn the_listing_without_a_desktop_names_the_hosted_way() {
-    let spelling = Spelling::tilo();
-    let listed = ran(|io| list(&[], "", &spelling, io));
+    let listed = ran(|io| list(&[], "", &Spelling::tilo(), io));
     assert_eq!(listed.code, 1);
     assert_eq!(
         listed.err,
@@ -537,65 +342,14 @@ fn the_listing_without_a_desktop_names_the_hosted_way() {
     );
 }
 
-/// From inside an app — the Terminal app and what runs in it — the admin
-/// socket turns the process away. The same commands then list and run
-/// through the session's MCP server, which acts with that terminal's
-/// workspace scope; nothing is widened.
 #[test]
-fn inside_a_sandboxed_app_actions_list_and_run_through_the_mcp_server() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let admin = FakeSocket::serve(dir.path(), "admin-control.sock", admin_refusal, true);
-    let agent = FakeSocket::serve(dir.path(), "agent.sock", desktop_answer, false);
-    let sockets = [
-        ControlSocket::Admin(admin.path.clone()),
-        ControlSocket::Agent(agent.path.clone()),
-    ];
-    let spelling = Spelling::tilo();
-
-    let listed = ran(|io| list(&sockets, "", &spelling, io));
-    assert_eq!(listed.code, 0, "{}", listed.err);
-    assert!(listed.out.starts_with("Actions\n"), "{}", listed.out);
-    assert!(
-        listed
-            .out
-            .contains("  new-terminal-window  New terminal window\n"),
-        "{}",
-        listed.out
-    );
-    assert!(listed.out.contains("\nApps\n"), "{}", listed.out);
-
-    let done = ran(|io| run(&sockets, "new-terminal-window", &[], false, &spelling, io));
-    assert_eq!(done.code, 0, "{}", done.err);
-    assert_eq!(agent.invocations().len(), 1, "run through the MCP server");
-    assert!(
-        admin.invocations().is_empty(),
-        "nothing ran through the admin socket"
-    );
-    assert!(
-        admin.requests().len() <= 2,
-        "each command asked the admin socket once and moved on: {:?}",
-        admin.requests()
-    );
-
-    // An MCP server that turns the process away too ends in one sentence.
-    let refusing = FakeSocket::serve(
-        dir.path(),
-        "refusing-agent.sock",
-        |_| {
-            serde_json::json!({"jsonrpc": "2.0", "id": null,
-            "error": {"code": -32001, "message": "a sandboxed process cannot use the MCP server"}})
-        },
-        true,
-    );
-    let sockets = [
-        ControlSocket::Admin(admin.path),
-        ControlSocket::Agent(refusing.path),
-    ];
-    let refused = ran(|io| list(&sockets, "", &spelling, io));
-    assert_eq!(refused.code, 1);
+fn loose_options_are_json_where_they_parse() {
+    let args = arguments(&["count=3".into(), "--title=Groceries".into()]).expect("args");
+    assert_eq!(args["count"], 3);
+    assert_eq!(args["title"], "Groceries");
     assert_eq!(
-        refused.err,
-        "The desktop didn't let this terminal use its actions.\n"
+        arguments(&["oops".into()]).unwrap_err(),
+        "Write “oops” as name=value."
     );
 }
 
@@ -611,4 +365,10 @@ fn files_become_absolute_and_links_stay_as_they_are() {
         "/home/me/work/C:",
         "no scheme without a body"
     );
+}
+
+#[test]
+fn an_answer_says_what_ran_and_what_it_made() {
+    let answer = serde_json::json!({"status": "ok", "result": "done", "resources": ["notes/Todo"]});
+    assert_eq!(answer_text(&answer), "ok\ndone\n-> notes/Todo");
 }

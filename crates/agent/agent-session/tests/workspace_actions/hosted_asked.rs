@@ -11,13 +11,13 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tilo_peer_state::join::decode_and_verify_invitation;
-use tilo_server::workspace_agents::{Ask, ServerAgents, Turn};
 use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::person_model::{
     Events, ModelProvider, ProviderCall, ProviderFuture, ProviderProtocol, protocol::StreamEvent,
     scripted::Linking,
 };
 use tilo_server::workspaces::{IssueInvitationRequest, Workspaces};
+use tilo_workspace_service::agents::{Ask, ServerAgents, Turn};
 use tilo_workspace_service::asks::{self, AskState};
 use tilo_workspace_service::tl_records::runtime::Value;
 use tilo_workspace_service::tl_records::runtime::rich::RichValue;
@@ -206,17 +206,21 @@ async fn a_hosted_agent_answers_the_message_that_mentions_it() {
         turn.request
     );
 
-    // The ask is answered: its reply is the agent's, in the model's words, and the server's
-    // claim is the one its turn was taken under.
+    // The ask is answered: its reply is the agent's, in the model's words, and the server holds
+    // the turn it was taken under.
     let answered = asked(&workspaces, &workspace, &person).await;
     assert_eq!(answered.len(), 1, "{answered:?}");
     let ask = &answered[0];
     assert_eq!(ask.state, AskState::Done, "{ask:?}");
-    let device = hex::encode(workspaces.governor().device_public_key);
-    assert!(
-        ask.claims.iter().any(|claim| claim.device == device),
-        "the server claimed the turn: {:?}",
-        ask.claims
+    let lease = format!(
+        "ask/{}/{}",
+        asks::chat_packages().unwrap().app(),
+        ask.at.id_string()
+    );
+    assert_eq!(
+        workspaces.lease_holder(&workspace, &lease).await.unwrap(),
+        Some(workspaces.governor().device_public_key),
+        "the server claimed the turn"
     );
     let reply = ask.latest().expect("the ask has a reply");
     assert_eq!(reply.attempt, 1);
@@ -734,13 +738,6 @@ async fn make_own_agent(workspaces: &Workspaces, workspace: &str, person: &str) 
                         mcp_client: None,
                     }),
                 )
-                .map_err(|error| error.to_string())?;
-                made.apply(WorkspaceAgents::SET_AGENT_ON_HOST.with(
-                    workspace_agents::SetAgentOnHost {
-                        agent: Id::from_raw(SCOUT.to_owned()),
-                        on_host: true,
-                    },
-                ))
                 .map_err(|error| error.to_string())?;
                 *doc = std::mem::take(made.doc_mut());
                 Ok(())

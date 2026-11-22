@@ -2468,15 +2468,11 @@ enrol_planned_server() {
   step "Enrolling this machine with one of your devices"
   local enrol=("$ENROLL_BIN" enroll --identity-root "$identity"
     --token-file /etc/tilo/enrollment-token.txt
-    --home-peer-output "$DEPLOY_ETC/tilo/home-peer.toml"
     --label "$HOSTNAME_VAL" --timeout 270)
   [ -z "${PLAN_RECOVERY_KEY_FILE:-}" ] || enrol+=(--recovery-key-file "$PLAN_RECOVERY_KEY_FILE")
   [ -z "$relay" ] || enrol+=(--relay "$relay")
   "${enrol[@]}" 2>&1 \
     || die "this machine did not enroll; its disk would need the recovery key at every boot"
-  [ -s "$DEPLOY_ETC/tilo/home-peer.toml" ] \
-    || die "enrollment produced no home-peer configuration"
-  chmod 0600 "$DEPLOY_ETC/tilo/home-peer.toml"
   # The enrollment wrote into the installed /var as root from this live
   # medium; label every file with the policy path it will have there, so the
   # server's own account and session can read it.
@@ -2484,7 +2480,6 @@ enrol_planned_server() {
     relative="${written#"$var"/}"
     label_installed_tilo_path "$written" "/var/$relative"
   done < <(find "$identity" -mindepth 1 -print0)
-  label_installed_tilo_path "$DEPLOY_ETC/tilo/home-peer.toml" /etc/tilo/home-peer.toml
   # The installed system's first boot would have created these trees with
   # tmpfiles' group, and the server's own account reads its device key through
   # it (0640). A file written before that boot would stay root-only, so give

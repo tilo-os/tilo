@@ -1,5 +1,5 @@
 //! `tilo open`, `tilo action …` and `tilo do`: the desktop's apps and
-//! actions, through the same control protocol `tilo-control` speaks
+//! actions, as the action model's frames sent to its control socket
 //! ([`tilo_control::front`]).
 //!
 //! Which socket a request reaches is decided per process, never widened:
@@ -55,15 +55,13 @@ pub enum ActionCmd {
 pub fn branch_workspace(source: &str, name: &str, spelling: &Spelling) -> ExitCode {
     let sockets = sockets();
     with_io(|io| {
-        let address =
-            tilo_actions::ActionAddress::new("desktop:chrome", "branch-workspace").encode();
-        front::run_address(
+        front::run_target(
             &sockets,
-            (
-                tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
-                &address,
-                "Branch a workspace",
-            ),
+            tilo_actions::remote::RemoteActionTarget {
+                provider: tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new("desktop:chrome", "branch-workspace"),
+            },
+            "Branch a workspace",
             &serde_json::json!({ "source": source, "name": name }),
             spelling,
             io,

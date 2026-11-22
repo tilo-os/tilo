@@ -76,7 +76,6 @@ impl Namespace {
             .max()
             .unwrap_or(0);
         let mut ns = Self::over(docs, mount, max_local);
-        ns.ensure_document_ids();
         ns.rebuild_document_index();
         // Name what opening wrote as the mount's now: a merge made before the next save settles
         // a pending change without its name, and a device signs only the changes that name what
@@ -89,7 +88,6 @@ impl Namespace {
 
     /// Every record of the tree, kept as one: what [`Self::from_bytes`] reads back.
     pub fn save(&mut self) -> Vec<u8> {
-        self.note_change();
         bundle(
             self.doc
                 .each_mut()
@@ -100,7 +98,6 @@ impl Namespace {
 
     /// Record `chunk` of the tree (0 for the tree's own) saved whole, if this namespace holds it.
     pub fn save_document(&mut self, chunk: TreeChunk) -> Option<Vec<u8>> {
-        self.note_change();
         Some(self.doc.doc_mut(chunk)?.save())
     }
 
@@ -125,18 +122,6 @@ impl Namespace {
         records
     }
 
-    /// Finish a mutation: every node it made has its stable record id before anything
-    /// reads the document (`save`, `changes_since`).
-    ///
-    /// INVARIANT: pair every mutation with its `note_change` inside the same `Namespace`
-    /// lock scope, so the ids of a change are there before another change's `save` folds
-    /// them.
-    pub fn note_change(&mut self) {
-        if !self.document_ids_complete {
-            self.ensure_document_ids();
-        }
-    }
-
     /// Changes since the last `save_incremental`/load/merge, advancing the shared
     /// automerge watermark.
     ///
@@ -144,7 +129,6 @@ impl Namespace {
     /// `Namespace` lock scope: the watermark is one shared cursor, so a mutation saved
     /// outside that scope can have its delta swallowed by a concurrent remote apply.
     pub fn save_incremental(&mut self) -> Vec<u8> {
-        self.note_change();
         bundle(
             self.doc
                 .each_mut()
@@ -257,12 +241,10 @@ impl Namespace {
                 }
                 self.ino_to_id.retain(|ino, _| *ino == ROOT_INO);
                 self.id_to_ino.retain(|id, _| id == ROOT_ID);
-                self.document_ids_complete = false;
                 self.cycle_scan_pending = true;
                 self.placed_since_resolve.clear();
                 let touched = self.load_records(records)?;
                 drop(touched);
-                self.ensure_document_ids();
                 self.rebuild_document_index();
                 self.resolve_pending();
                 return Ok(self.doc.node_ids().cloned().collect());
@@ -282,7 +264,6 @@ impl Namespace {
 
     /// Each record's heads: the tree's own (0) and every chunk's.
     pub fn document_heads(&mut self) -> BTreeMap<TreeChunk, Vec<automerge::ChangeHash>> {
-        self.note_change();
         self.doc.heads()
     }
 
@@ -310,7 +291,6 @@ impl Namespace {
         arrived: Vec<(TreeChunk, Vec<u8>)>,
         published: &BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
     ) -> Result<BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>, automerge::AutomergeError> {
-        self.note_change();
         let before = self.doc.heads();
         self.take_documents(arrived)?;
         let actor = self.doc.index().get_actor().clone();
@@ -348,7 +328,6 @@ impl Namespace {
         &mut self,
         known: &BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
     ) -> Vec<ResourceWrite> {
-        self.note_change();
         self.name_records();
         let mut writes = Vec::new();
         for (chunk, doc) in self.doc.each_mut() {
@@ -364,13 +343,16 @@ impl Namespace {
     /// more, or this namespace holds nothing of the record. A record that changed more than
     /// one write carries goes out over several, each building on the last. Reading changes
     /// walks the record's document, so a caller asks only for a record it can send now.
+    ///
+    /// `held` may name changes this record builds on (heads the holder had before others came
+    /// after them): once every change after `held` goes out, the heads are this record's own,
+    /// so the holder counts as having all of it rather than heads it can never match.
     pub fn document_write(
         &mut self,
         chunk: TreeChunk,
         held: &[automerge::ChangeHash],
         budget: usize,
     ) -> Option<ResourceWrite> {
-        self.note_change();
         let (_, doc) = self.doc.each_mut().find(|(each, _)| *each == chunk)?;
         if doc.get_heads().as_slice() == held {
             return None;
@@ -383,9 +365,11 @@ impl Namespace {
         let mut changes = Vec::new();
         let mut reached: std::collections::BTreeSet<automerge::ChangeHash> =
             known.iter().copied().collect();
+        let mut whole = true;
         for change in doc.get_changes(&known) {
             let raw = change.raw_bytes();
             if !changes.is_empty() && changes.len().saturating_add(raw.len()) > budget {
+                whole = false;
                 break;
             }
             changes.extend_from_slice(raw);
@@ -394,10 +378,15 @@ impl Namespace {
             }
             reached.insert(change.hash());
         }
+        let heads = if whole {
+            doc.get_heads()
+        } else {
+            reached.into_iter().collect()
+        };
         Some(ResourceWrite {
             chunk,
             changes,
-            heads: reached.into_iter().collect(),
+            heads,
         })
     }
 
@@ -543,6 +532,18 @@ impl Namespace {
             return false;
         };
         doc.commit_named();
+        // A record a build before wrote names nothing: it takes the founding every holder
+        // derives alike, which the workspace's server gives it too, so the two identities merge
+        // as one instead of competing.
+        if let Some(mut founding) = collab_types::document::identity::founding_for_unnamed(
+            doc,
+            &id,
+            &tree_kind(),
+            workspace,
+        ) && (**doc).merge_incoming(&mut founding).is_err()
+        {
+            return false;
+        }
         collab_types::document::identity::init_scoped(
             doc,
             &id,

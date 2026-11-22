@@ -12,7 +12,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 #[allow(
     dead_code,
     reason = "each test reads what it needs of the change marks"

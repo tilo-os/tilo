@@ -6,7 +6,7 @@ app or installer. The general SDK and collection macOS 13 policy is unchanged.
 The normal collection validator continues to reject unreviewed nested libraries.
 
 The input is an explicit, SHA-256-pinned local audit profile with 41 images:
-`tilo-runtime-mcp`, `gst-plugin-scanner`, five plugins (VPX, AOM, rav1e, dav1d,
+`tilo-runtime`, `gst-plugin-scanner`, five plugins (VPX, AOM, rav1e, dav1d,
 libav), and their dependency closure. The smaller profile without libav is not
 selected. This preserves the reviewed helper codec discovery surface; it does
 not qualify application-specific playback, capture, or export dependencies.
@@ -39,8 +39,8 @@ stage removes only its own temporary directory; retry uses a fresh transaction.
 
 ## Layout and discovery
 
-- `Contents/MacOS/tilo-runtime-mcp.real`: relocated original helper.
-- `Contents/MacOS/tilo-runtime-mcp`: small native launcher preserving arguments
+- `Contents/MacOS/tilo-runtime.real`: relocated original helper.
+- `Contents/MacOS/tilo-runtime`: small native launcher preserving arguments
   through `execv`; the daemon's later self-reexec inherits discovery variables.
 - `Contents/Helpers/gst-plugin-scanner`: relocated scanner.
 - `Contents/PlugIns`: exactly the five selected plugin images.

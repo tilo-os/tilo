@@ -132,8 +132,6 @@ enum Command {
         label: String,
         #[arg(long, default_value_t = 270)]
         timeout: u64,
-        #[arg(long, default_value = "/etc/tilo/home-peer.toml")]
-        home_peer_output: PathBuf,
         /// Where the token's nonce is written, when this machine enrolled with
         /// one: the plan it was handed is named by it.
         #[arg(long)]
@@ -354,7 +352,6 @@ struct EnrollRequest<'a> {
     identity_root: &'a std::path::Path,
     label: &'a str,
     timeout: u64,
-    home_peer_output: &'a std::path::Path,
     nonce_output: Option<&'a std::path::Path>,
     method: Option<tilo_identity::enrollment::Method>,
     relay: Option<&'a str>,
@@ -369,7 +366,6 @@ fn enroll(request: EnrollRequest<'_>) -> anyhow::Result<()> {
         identity_root,
         label,
         timeout,
-        home_peer_output,
         nonce_output,
         method,
         relay,
@@ -389,7 +385,6 @@ fn enroll(request: EnrollRequest<'_>) -> anyhow::Result<()> {
         label,
         timeout,
         kind: EnrollmentKind::HomePeer,
-        home_peer_output: Some(home_peer_output),
         identity_dir: None,
         requester_lease: None,
         port: NEARBY_PORT,
@@ -621,7 +616,6 @@ fn out_of_band_payload(
         nonce,
         recipient_device_public_key: cert.device_public_key,
         server_node_id: tilo_server::daemon::server_node_id(device),
-        home_peer_toml: None,
         public_identity_json: Some(public_identity_document(user, "My Tilo identity")?),
         fleet_json: Some(serde_json::to_vec_pretty(&fleet)?),
         home_peers_json: Some(b"[]".to_vec()),
@@ -825,7 +819,6 @@ fn pair_device_cli(
                     label,
                     timeout,
                     kind: EnrollmentKind::PersonalDevice,
-                    home_peer_output: None,
                     identity_dir: Some(identity_dir),
                     requester_lease,
                     port: NEARBY_PORT,
@@ -889,7 +882,6 @@ fn run() -> anyhow::Result<()> {
             identity_root,
             label,
             timeout,
-            home_peer_output,
             nonce_output,
             method,
             relay,
@@ -899,7 +891,6 @@ fn run() -> anyhow::Result<()> {
             identity_root: &identity_root,
             label: &label,
             timeout,
-            home_peer_output: &home_peer_output,
             nonce_output: nonce_output.as_deref(),
             method,
             relay: relay.as_deref(),

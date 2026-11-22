@@ -1048,14 +1048,15 @@ fn a_pending_question_is_listed_and_answered_through_the_socket() {
     let answered = ask(
         &mut session,
         &socket,
-        &json!({
-            "op": "actions_invoke",
-            "provider": "so.tilo.session",
-            "id": "question:device-unlock:test\u{1f}answer",
-            "args": {},
-        }),
+        &crate::common::invoking(
+            &tilo_actions::remote::RemoteActionTarget {
+                provider: "so.tilo.session".to_owned(),
+                address: tilo_actions::ActionAddress::new("question:device-unlock:test", "answer"),
+            },
+            &json!({}),
+        ),
     );
-    assert!(answered.get("err").is_none(), "{answered}");
+    assert_eq!(crate::common::refused(&answered), None, "{answered}");
     let mut woken = std::task::Context::from_waker(std::task::Waker::noop());
     let answer = match std::future::Future::poll(std::pin::Pin::new(&mut asked), &mut woken) {
         std::task::Poll::Ready(answer) => answer.expect("the person answered the sheet"),

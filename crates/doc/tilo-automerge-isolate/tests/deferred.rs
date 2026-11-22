@@ -1,7 +1,6 @@
 //! A copy that admits a writer's changes as they come and applies them only
 //! where it is read.
 
-
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};
 use tilo_automerge_isolate::{Applied, Deferred, Dependencies, Isolate, Limits};

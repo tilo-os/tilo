@@ -85,7 +85,7 @@ mod tests {
                 tilo_identity::provisioning::IdentityStorage::Files,
             )
             .unwrap();
-            let record = tilo_identity_client::resolve_active_identity(&identities).unwrap();
+            let record = tilo_identity::store::resolve_active_identity(&identities).unwrap();
             let mut metadata: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
             metadata["secret_ref"]["backend"] = "fixture-unavailable-provider".into();
@@ -113,7 +113,7 @@ mod tests {
             std::fs::write(&record, serde_json::to_vec(&public).unwrap()).unwrap();
             std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600)).unwrap();
             assert_eq!(
-                tilo_identity_client::resolve_active_identity(&identities),
+                tilo_identity::store::resolve_active_identity(&identities),
                 Some(record)
             );
             assert!(load_root(Some(&identities)).is_err());

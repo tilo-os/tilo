@@ -52,6 +52,7 @@ pub fn invited_server(invitation: &[u8]) -> Result<String, JsError> {
                 .map(|url| url.to_string()),
             web: None,
         }),
+        origin: None,
     };
     let offer = serde_json::json!({
         "kind": "invitation", "workspace": grant.workspace_id.to_string(),

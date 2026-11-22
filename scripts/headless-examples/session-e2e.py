@@ -103,6 +103,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 SESSION_SH = REPO / "dist/dev/nested-session.sh"
 sys.path.insert(0, str(HERE / "agent-tilolang"))
+from real_apps import address, catalogue, invocation, receipt  # noqa: E402
 from replay_model import OpenAiReplay  # noqa: E402
 
 # The tilolang apps, by their directory under apps/tl, and the native apps beside them: the
@@ -337,29 +338,34 @@ class Session:
     def state_dump(self) -> dict:
         return self.control_json("state-dump")
 
-    def actions(self, query: str) -> list[dict]:
-        """The actions listed for `query`, once the listing is complete (no app index or
-        directory page still on its way)."""
-        return self.control_json("actions", "list", query, "--json", "--programmatic",
-                                 "--wait").get("actions", [])
+    def frame(self, message: dict) -> dict:
+        """One action-model frame asked of the session's control socket, and its answer."""
+        return self.control_json("raw", json.dumps(message))
 
-    def invoke(self, provider: str, ident: str, args: dict | None = None,
-               job: bool = False) -> dict:
-        """Invoke `provider`'s action `ident` and answer its settled receipt. `job` for an action
-        that takes the work and carries it out on the session's next pass: its receipt says
-        `accepted`, and the check proves what it did by the session's own state.
+    def actions(self, query: str) -> list[dict]:
+        """The rows the session lists for `query` (see `real_apps.catalogue`)."""
+        return catalogue(self.frame, query)
+
+    def invoke(self, provider: str, resource: str, action: str, args: dict | None = None,
+               job: bool = False) -> dict | str:
+        """Invoke `resource`'s `action` of `provider` and answer where it stands once it settled.
+        `job` for an action that takes the work and carries it out on the session's next pass: it
+        stands accepted, and the check proves what it did by the session's own state.
 
         Asked once: a session holds an action until its identity names the person at its seat, so
-        an `unavailable` here is the session's own answer, not a moment to press the row again."""
-        argv = ["actions", "invoke", provider, ident, "--wait=30000"]
-        if args is not None:
-            argv += ["--args-json", json.dumps(args)]
-        answer = self.control_json(*argv)
-        state = answer.get("receipt", {}).get("update", {}).get("state")
-        done = (None, "succeeded", "accepted") if job else (None, "succeeded")
-        if state not in done:
-            raise Failed(f"{provider} {ident} did not succeed: {json.dumps(answer)[:1500]}")
-        return answer
+        a refusal here is the session's own answer, not a moment to press the row again."""
+        status = receipt(self.frame(invocation(provider, resource, action, args, 10000)))
+        if not (status == "Accepted" and job) and "Completed" not in status:
+            raise Failed(f"{provider} {resource}#{action} did not succeed: "
+                         f"{json.dumps(status)[:1500]}")
+        return status
+
+    def open(self, app: str) -> dict | str:
+        """Open the installed app `app` as the workspace offers it."""
+        row = wait_for(f"the session to offer {app}", lambda: next(
+            (row for row in self.actions(app) if address(row) == (f"app.{app}", "open")), None),
+            lambda: [address(row) for row in self.actions(app)])
+        return self.invoke(row["provider"], *address(row))
 
     def windows(self) -> list[dict]:
         return self.control_json("windows", "--json")
@@ -483,7 +489,7 @@ def check_open(session: Session) -> dict:
 
     def open_app(name: str) -> None:
         try:
-            answers[name] = session.invoke("applications", app_id(name))
+            answers[name] = session.open(app_id(name))
         except Failed as error:
             answers[name] = error
 
@@ -643,11 +649,9 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel, out: Path) -> di
     session.provision(model)
     # What the person does: the shell's own search, with the request typed into it.
     shell = wait_for("the shell's search", lambda: next((
-        a for a in session.actions("search")
-        if a.get("resource") == SHELL_RESOURCE and a.get("operation") == "search"), None),
-        lambda: [{"resource": a.get("resource"), "operation": a.get("operation")}
-                 for a in session.actions("search")])
-    session.invoke(shell["provider"], shell["id"], {"query": REQUEST})
+        a for a in session.actions("search") if address(a) == (SHELL_RESOURCE, "search")), None),
+        lambda: [address(a) for a in session.actions("search")])
+    session.invoke(shell["provider"], *address(shell), {"query": REQUEST})
 
     def shown_rows() -> list[dict]:
         """The rows the open search shows, in the shell's order."""
@@ -659,14 +663,13 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel, out: Path) -> di
         for at, row in enumerate(shown_rows()):
             title = row.get("title") or ""
             if title.startswith("Send to ") and REQUEST in title:
-                return {"id": f"{SEARCH_RESOURCE}:row:{at}\u001fchoose-search-row",
-                        "title": title}
+                return {"resource": f"{SEARCH_RESOURCE}:row:{at}", "title": title}
         return None
 
     row = wait_for("search's row handing the request to the person's agent", agent_row,
                    lambda: [row.get("title") for row in shown_rows()])
     # Chosen as a person chooses it: the row's own action, which runs the session's send.
-    session.invoke(SESSION_PROVIDER, row["id"], job=True)
+    session.invoke(SESSION_PROVIDER, row["resource"], "choose-search-row", job=True)
 
     def reached_the_agent() -> bool:
         """Whether the agent was asked, failing at once with what the session refused."""

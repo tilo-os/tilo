@@ -7,7 +7,6 @@
 )]
 // One test binary instead of one per file; #[path] keeps the files in place.
 
-
 /// Each test's app keeps its account stores under a private root, so a
 /// suite run never reads the user's accounts, replays their interrupted
 /// account journal or writes a migration marker into their config.

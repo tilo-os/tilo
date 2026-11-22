@@ -8,7 +8,6 @@
 //! Without either, the rendering tests say so and return, unless
 //! `TILO_REQUIRE_MEDIA=1` demands them.
 
-
 use tilo_actions::MemberId;
 use tilo_actions::api::{ActionDescriptor, ApiError};
 use tilo_agent_session::{ConfinedReplica, ReplicaActor, Seed, render};

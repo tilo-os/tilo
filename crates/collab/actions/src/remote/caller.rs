@@ -64,6 +64,9 @@ pub struct Caller {
     // what the agent would click.
     pub(super) turn: Option<tilo_action_policy::turn::Turn>,
     roster_created_at: Option<i64>,
+    // The person whose message the server's turn answers, as the server read
+    // its cause (`Self::on_roster_turn`).
+    turn_person: Option<[u8; 32]>,
     // The name an agent goes by, from the key its person certified for it
     // (`Self::named`): presentation only, what History names it by.
     pub(super) agent_name: Option<String>,
@@ -89,6 +92,7 @@ impl Caller {
             within: within::Within::NONE,
             turn: None,
             roster_created_at: None,
+            turn_person: None,
             agent_name: None,
             asked: None,
             bound: Vec::new(),
@@ -400,15 +404,38 @@ impl Caller {
         self
     }
 
-    /// Bind a certified agent caller to the hosted roster entry and turn that
-    /// its provider admitted. The workspace service must verify this binding.
+    /// Bind a certified agent caller to the hosted roster entry it was
+    /// approved as, working for `person`: the author of the message whose
+    /// turn it answers, as its provider read it. The workspace service must
+    /// verify this binding.
     #[must_use]
-    pub fn on_roster_turn(mut self, turn: tilo_action_policy::turn::Turn, created_at: i64) -> Self {
+    pub fn on_roster(mut self, created_at: i64, person: [u8; 32]) -> Self {
         if !self.session_delegated && self.acting.is_agent() && self.device_public_key.is_some() {
-            self.turn = Some(turn);
             self.roster_created_at = Some(created_at);
+            self.turn_person = Some(person);
         }
         self
+    }
+
+    /// [`Self::on_roster`], inside `turn`.
+    #[must_use]
+    pub fn on_roster_turn(
+        self,
+        turn: tilo_action_policy::turn::Turn,
+        created_at: i64,
+        person: [u8; 32],
+    ) -> Self {
+        let mut caller = self.on_roster(created_at, person);
+        if caller.roster_created_at.is_some() {
+            caller.turn = Some(turn);
+        }
+        caller
+    }
+
+    /// The person a roster agent works for ([`Self::on_roster`]).
+    #[must_use]
+    pub const fn turn_person(&self) -> Option<&[u8; 32]> {
+        self.turn_person.as_ref()
     }
 
     /// The creation time of the roster entry the provider bound this turn to.

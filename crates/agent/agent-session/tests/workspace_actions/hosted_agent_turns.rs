@@ -6,10 +6,7 @@ use std::sync::Mutex;
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, ToolCall, Usage,
 };
-use tilo_server::{
-    workspace_agents::{Model, ServerAgents},
-    workspace_bots::events::WorkspaceEvents,
-};
+use tilo_workspace_service::agents::{Model, ServerAgents, events::WorkspaceEvents};
 use tilo_workspace_service::asks;
 use tilo_workspace_service::tl_records::runtime::Value as TlValue;
 use tilo_workspace_service::tl_records::runtime::rich::RichValue;
@@ -112,13 +109,6 @@ pub(super) async fn make_agent(
         }),
     )
     .unwrap();
-    made.apply(
-        WorkspaceAgents::SET_AGENT_ON_HOST.with(workspace_agents::SetAgentOnHost {
-            agent: Id::from_raw(SCOUT.to_owned()),
-            on_host: true,
-        }),
-    )
-    .unwrap();
     if limit_micros.is_some() {
         made.apply(WorkspaceAgents::SET_AGENT_SPEND_LIMIT.with(
             workspace_agents::SetAgentSpendLimit {
@@ -174,13 +164,13 @@ pub(super) async fn file_issue(
     (governor, browser): (&crate::support::Device, &crate::support::Device),
 ) -> String {
     let catalogue = crate::common::catalogue();
-    let tracker = tilo_server::workspace_bots::workspace_resource(&catalogue, TASKS);
+    let tracker = tilo_workspace_service::agents::workspace_resource(&catalogue, TASKS);
     workspaces
         .prepare_application(workspace, &governor.cert, &catalogue, TASKS, &tracker)
         .await
         .unwrap();
     let id = WorkspaceId::parse(workspace).unwrap();
-    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(actions.clone(), id);
+    let service = tilo_workspace_service::agents::WorkspaceActionProvider::new(actions.clone(), id);
     let person = tilo_actions::remote::Caller::authenticated(
         root.verifying_key().to_bytes(),
         browser.cert.device_public_key,
@@ -193,7 +183,7 @@ pub(super) async fn file_issue(
     };
     let arguments =
         serde_json::json!({"title": "Plan the launch", "assignee": format!("agent:{SCOUT}")});
-    tilo_server::workspace_agents::invoke_named(
+    tilo_workspace_service::agents::invoke_named(
         &service,
         &person,
         &route,
@@ -296,13 +286,14 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
     // other: the native apps name their surfaces as the server first runs them.
     let _ = crate::common::catalogue();
     tilo_server::surfaces::decide_receipt(&state.path().join("surfaces"));
-    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &host,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = server.roster.actions.clone();
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &host, &workspace).await;
@@ -334,11 +325,10 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
         .unwrap();
 
     let unasked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(never_asked(Arc::clone(&unasked))),
-    );
+    let agents = server
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(never_asked(Arc::clone(&unasked)));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     tokio::time::timeout(
@@ -422,13 +412,14 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &host,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = server.roster.actions.clone();
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &host, &workspace).await;
@@ -438,7 +429,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
     let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
 
     // Nothing linked, and a server that runs no model: the person is told what to link.
-    let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), None);
+    let agents = server.approving(&workspace, &[SCOUT]).await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     agents.answer(&workspace, &turns[0]).await.unwrap();
@@ -467,11 +458,10 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
         .await
         .unwrap();
     let unasked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(never_asked(Arc::clone(&unasked))),
-    );
+    let agents = server
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(never_asked(Arc::clone(&unasked)));
     // The turn that could not work stopped the work on its issue: nothing is owed until its
     // person says something new, and the turn read before that stop begins nothing again.
     agents.answer(&workspace, &turns[0]).await.unwrap();
@@ -494,7 +484,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
         .unwrap()
         .0
         .clone();
-    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(
+    let service = tilo_workspace_service::agents::WorkspaceActionProvider::new(
         actions,
         WorkspaceId::parse(&workspace).unwrap(),
     );
@@ -507,7 +497,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
         document: kept_in.clone(),
     };
     let words = serde_json::json!({"issue": issue.as_str(), "text": "I linked one: try again."});
-    tilo_server::workspace_agents::invoke_named(
+    tilo_workspace_service::agents::invoke_named(
         &service,
         &asking,
         &route,
@@ -539,13 +529,14 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &host,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = server.roster.actions.clone();
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     // The person's page joins: the device the server admits their agent's turns on.
@@ -563,11 +554,10 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
     let issue: Id = issue.clone();
 
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(looks_then_answers(1_000, Arc::clone(&asked))),
-    );
+    let agents = server
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(looks_then_answers(1_000, Arc::clone(&asked)));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(
         turns.len(),
@@ -677,13 +667,14 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &host,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = server.roster.actions.clone();
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &host, &workspace).await;
@@ -692,11 +683,10 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
     let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
 
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions,
-        Some(looks_then_answers(10_000, Arc::clone(&asked))),
-    );
+    let agents = server
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(looks_then_answers(10_000, Arc::clone(&asked)));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     agents.answer(&workspace, &turns[0]).await.unwrap();
@@ -731,14 +721,13 @@ pub(super) async fn asked_on(
     let packages = asks::chat_packages().unwrap();
     let record = workspaces
         .tl_record(workspace, packages.app())
-        .await
         .expect("the workspace's Chat record reads");
     let policy = workspaces
         .policy_of(workspace)
         .await
         .map(std::sync::Arc::new);
     let opened = tilo_workspace_service::tl_records::Opened::open(
-        &record,
+        record.store(),
         &packages,
         tilo_server::tl_chat::viewer(),
         policy,
@@ -906,13 +895,14 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &host,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = server.roster.actions.clone();
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &host, &workspace).await;
@@ -931,11 +921,10 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(looks_then_answers(1_000, Arc::clone(&asked))),
-    );
+    let agents = server
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(looks_then_answers(1_000, Arc::clone(&asked)));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(
         turns.len(),
@@ -997,24 +986,24 @@ async fn a_first_message_is_taken_at_the_look_its_own_write_starts() {
     let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (serving, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let serving = crate::harness::hosted::start(
         &root,
         &server,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = serving.roster.actions.clone();
     let workspaces = serving.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&serving, &browser, &server, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(looks_then_answers(1_000, Arc::clone(&asked))),
-    );
+    let agents = serving
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(looks_then_answers(1_000, Arc::clone(&asked)));
     assert!(
         asked_on(&workspaces, &workspace).await.is_empty(),
         "nothing was asked here yet: the first message asks the agent"
@@ -1123,13 +1112,14 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
     let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (served, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let served = crate::harness::hosted::start(
         &root,
         &server,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = served.roster.actions.clone();
     let workspaces = served.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&served, &browser, &server, &workspace).await;
@@ -1137,7 +1127,11 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
     // The workspace as a person has it: their agent made to work here, and the chat with them
     // in it.
     make_agent(&page, &workspaces, &workspace, &person, None).await;
-    let events = WorkspaceEvents::start(workspaces.clone(), false);
+    let events = WorkspaceEvents::start(
+        workspaces.clone(),
+        false,
+        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+    );
 
     write_to_agent(
         &actions,
@@ -1148,10 +1142,10 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(does_then_answers(
+    let agents = served
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(does_then_answers(
             vec![
                 serde_json::json!({
                     "path": "tilo.events/events#set-up",
@@ -1165,9 +1159,8 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
             ],
             "You will be reminded every morning.",
             Arc::clone(&asked),
-        )),
-    )
-    .with_events(Some(events));
+        ))
+        .with_events(Some(events));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     tokio::time::timeout(
@@ -1223,3 +1216,218 @@ mod hosted_initiative;
 /// reads.
 #[path = "hosted_asked.rs"]
 mod asked;
+/// The member's root signs one approver command for `server`. A member's
+/// page holds their root, so the commands it sends carry that signature and
+/// no device certificate of its own.
+fn member_approval(
+    root: &SigningKey,
+    request: tilo_server_protocol::certify::ApproverRequest,
+) -> tilo_server_protocol::certify::MemberApproval {
+    use ed25519_dalek::Signer as _;
+    let user_public_key = root.verifying_key().to_bytes();
+    let issued_at_ns = tilo_clock::unix_now_ns();
+    let digest = tilo_server_protocol::certify::MemberApproval::signed_digest(
+        &user_public_key,
+        issued_at_ns,
+        &request,
+    )
+    .unwrap();
+    tilo_server_protocol::certify::MemberApproval {
+        user_public_key,
+        issued_at_ns,
+        request,
+        signature: root.sign(&digest).to_bytes(),
+        device: None,
+    }
+}
+
+/// A member of the host's workspace, not the host's own person, keeps an
+/// agent on it: they make it from their page, approve its grant with their
+/// own root from another device, and the turn that answers works for them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_members_own_agent_on_the_host_works_for_them() {
+    use tilo_peer_state::join::Role;
+    use tilo_server_client::MemberApprover;
+    use tilo_server_client::MemberServer as _;
+    use tilo_server_protocol::agents::{
+        AGENTS_PROVIDER, REQUEST_GRANT_ACTION, SUPERVISOR_RESOURCE,
+    };
+    use tilo_server_protocol::certify::{ApproverReply, ApproverRequest};
+    use tilo_user_identity::{CertificationPolicy, issue_device_cert};
+    use tilo_workspace_service::agents::ServerAgents;
+
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (member, _) = tilo_user_identity::UserIdentity::generate("Bob", 1);
+    let host = enrol(&owner, "tilo-sh", DeviceCapabilities::member());
+    let member_page = enrol(&member, "bobs-browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let server = crate::harness::hosted::start(
+        &owner,
+        &host,
+        state.path(),
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
+    )
+    .await;
+    let actions = server.roster.actions.clone();
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    super::resource_support::admit_person(&server, &host, &workspace, &member_page, Role::Editor)
+        .await;
+    let mut page =
+        super::resource_support::open_admitted_peer(&server, &member_page, &host, &workspace).await;
+    let keeper = member.verifying_key().to_bytes();
+    let person = hex::encode(keeper);
+    // The member makes an agent of their own, kept by them.
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+
+    // Their page asks the host to run it, and the host queues the grant for
+    // the member's root.
+    let asked = page
+        .invoke(request(
+            AGENTS_PROVIDER,
+            ActionAddress::new(SUPERVISOR_RESOURCE, REQUEST_GRANT_ACTION),
+            InvokeArgument::Json(
+                serde_json::json!({
+                    "agentId": SCOUT,
+                    "workspaces": [workspace],
+                    "apps": [TASKS],
+                    "expiresInSecs": 3600,
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        ))
+        .await;
+    assert!(
+        matches!(asked.status, ReceiptStatus::Completed { .. }),
+        "the member asks for their own agent's grant: {asked:?}"
+    );
+    let approver = MemberApprover::new(ServerAddress::at(server.server.node_addr()));
+    let approve = |request| member_approval(&member, request);
+    let ApproverReply::DelegateProposals(proposals) = approver
+        .ask(&approve(ApproverRequest::DelegateProposals))
+        .await
+        .unwrap()
+    else {
+        panic!("the member's proposals");
+    };
+    assert_eq!(proposals.len(), 1, "{proposals:?}");
+    let proposal = proposals[0].clone();
+    let ApproverReply::Pending(pending) = approver
+        .ask(&approve(ApproverRequest::ListPending))
+        .await
+        .unwrap()
+    else {
+        panic!("the member's pending requests");
+    };
+    let pending = pending
+        .into_iter()
+        .find(|entry| entry.request_digest == proposal.request_digest)
+        .unwrap();
+    let now = tilo_clock::unix_now_ns();
+    let cert = issue_device_cert(
+        &pending.request,
+        &member,
+        &CertificationPolicy::agent(),
+        &RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    let delegation = proposal
+        .proposal
+        .sign(&member, pending.request.device_public_key, now)
+        .unwrap();
+    assert_eq!(
+        approver
+            .ask(&approve(ApproverRequest::Decide {
+                request_digest: proposal.request_digest,
+                decision: tilo_server_protocol::certify::ApproverDecision::IssueDelegate {
+                    cert,
+                    delegation,
+                },
+            }))
+            .await
+            .unwrap(),
+        ApproverReply::Decided
+    );
+    let workspace_id = WorkspaceId::parse(&workspace).unwrap();
+    let link = server.server.agent_link();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        if link
+            .roster_session_device(&server.roster.sessions, workspace_id, SCOUT, &keeper)
+            .await
+            .is_some()
+        {
+            break;
+        }
+        let grant = server
+            .agents
+            .supervisor()
+            .snapshot()
+            .grants
+            .into_iter()
+            .find(|grant| grant.proposal.delegate.agent_id() == Some(SCOUT))
+            .map(|grant| (grant.state, grant.reason));
+        assert!(
+            Instant::now() < deadline,
+            "the member's agent did not join under their approval: {grant:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // The member gives it an issue, and the turn works for them, not for the
+    // host's own person.
+    let tracker_id = file_issue(
+        &actions,
+        &workspaces,
+        &workspace,
+        &member,
+        (&host, &member_page),
+    )
+    .await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = ServerAgents::with_sessions(
+        workspaces.clone(),
+        actions.clone(),
+        Arc::new(server.server.agent_link()),
+        server.roster.sessions.clone(),
+    )
+    .scripted(looks_then_answers(1_000, Arc::clone(&asked)));
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(
+        turns.len(),
+        1,
+        "the issue is the member's agent's turn: {turns:?}"
+    );
+    assert_eq!(
+        turns[0].person, person,
+        "it works for the member who kept it"
+    );
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        agents.answer(&workspace, &turns[0]),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the turn never ended; the model was asked {:?}",
+            asked.lock().unwrap().len()
+        )
+    })
+    .unwrap();
+    let answered = tracker(&workspaces, &workspace, &tracker_id).await;
+    assert!(
+        answered
+            .issues
+            .values()
+            .flat_map(|issue| issue.comments.values())
+            .any(|message| {
+                message.author == Some(ui::tilo_resource::MemberId::agent(SCOUT))
+                    && message.text.contains("the plan is ready")
+            }),
+        "the member's agent answers in their issue"
+    );
+    drop(approver);
+}

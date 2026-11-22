@@ -10,7 +10,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use serde::{Deserialize, Serialize};
 use tilo_document::{RichText, RichTextAction};
 use tilo_rich_text::RichTextFieldViews;

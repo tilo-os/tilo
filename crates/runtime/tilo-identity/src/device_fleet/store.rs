@@ -33,7 +33,7 @@ impl DeviceFleetStore {
     /// Returns an error if the identity registry's environment (neither
     /// `XDG_CONFIG_HOME` nor `HOME` set) can't be resolved.
     pub fn from_env() -> io::Result<Self> {
-        let registry = crate::registry::IdentityRegistryStore::from_env()?;
+        let registry = crate::store::IdentityRegistryStore::from_env()?;
         Ok(Self::at(
             registry.identity_dir(),
             crate::provisioning::collaboration_identity_paths(),
@@ -367,37 +367,6 @@ impl DeviceFleetStore {
         Ok(certified)
     }
 
-    /// Certify a disk-unlock boot key for an enrolled, unrevoked device of
-    /// `identity_id`: the root signs `cert` in place.
-    pub fn certify_boot_key(
-        &self,
-        identity_id: &str,
-        cert: &mut tilo_unlock_protocol::BootKeyCert,
-    ) -> io::Result<()> {
-        let (root, profile) = self.identity(identity_id)?;
-        let fleet = self.load(identity_id)?;
-        if cert.user_public_key != profile.user_public_key
-            || fleet.is_revoked(&cert.device_public_key)
-            || !fleet
-                .certificates
-                .iter()
-                .any(|enrolled| enrolled.device_public_key == cert.device_public_key)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "the device is not an unrevoked member of this identity's fleet",
-            ));
-        }
-        let digest = cert
-            .signing_digest()
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        cert.signature = root
-            .sign(&digest)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        cert.verify()
-            .map_err(|error| io::Error::other(error.to_string()))
-    }
-
     /// Sign `digest` with `identity_id`'s root. The caller builds the record
     /// whose digest this is; identity-host learns no policy of its own from
     /// it, and a device that does not hold the root cannot sign.
@@ -615,11 +584,8 @@ impl DeviceFleetStore {
     pub(crate) fn identity(
         &self,
         identity_id: &str,
-    ) -> io::Result<(
-        crate::store::SigningIdentity,
-        crate::registry::IdentityProfile,
-    )> {
-        let store = crate::registry::IdentityRegistryStore::at(&self.identity_dir);
+    ) -> io::Result<(crate::store::SigningIdentity, crate::store::IdentityProfile)> {
+        let store = crate::store::IdentityRegistryStore::at(&self.identity_dir);
         let registry = store.load_reconciled()?;
         let profile = registry
             .identities
@@ -837,7 +803,7 @@ mod tests {
                 crate::provisioning::IdentityStorage::Files,
             )
             .expect("provision");
-            let identity_id = crate::registry::IdentityRegistryStore::at(&identity_dir)
+            let identity_id = crate::store::IdentityRegistryStore::at(&identity_dir)
                 .load()
                 .expect("registry")
                 .default_identity
@@ -903,7 +869,7 @@ mod tests {
                     crate::provisioning::IdentityStorage::Files,
                 )
                 .expect("provision");
-                let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
+                let registry = crate::store::IdentityRegistryStore::at(&identity_dir)
                     .load()
                     .expect("registry");
                 let identity_id = registry.default_identity.expect("default identity");
@@ -1017,7 +983,7 @@ mod tests {
                     crate::provisioning::IdentityStorage::Files,
                 )
                 .expect("provision");
-                let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
+                let registry = crate::store::IdentityRegistryStore::at(&identity_dir)
                     .load()
                     .expect("registry");
                 let identity_id = registry.default_identity.expect("default identity");
@@ -1100,7 +1066,7 @@ mod tests {
                 crate::provisioning::IdentityStorage::Files,
             )
             .expect("provision");
-            let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
+            let registry = crate::store::IdentityRegistryStore::at(&identity_dir)
                 .load()
                 .expect("registry");
             let identity_id = registry.default_identity.expect("default identity");

@@ -4,7 +4,6 @@
 //! device folds its workspace's layout record with, rather than against a
 //! helper written to agree with it.
 
-
 use automerge::AutoCommit;
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::shared_resource::{self, device};

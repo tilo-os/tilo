@@ -1,0 +1,338 @@
+//! A ticket: `tilo device add` on one computer serves one, and `tilo login` on another becomes
+//! one of the person's devices with it. Served on the issuer's one endpoint, and called as the
+//! daemon's `devices#logIn` action by the computer that logs in.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use ed25519_dalek::SigningKey;
+use serde_json::{Value, json};
+use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
+use tilo_actions::{InvocationId, InvocationUpdate};
+use tilo_device_identity::login::{
+    CERTIFY, CertifyInput, Entry, LOG_IN, PROVIDER, RESOURCE, SCOPE, Ticket,
+};
+use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
+use tilo_peer_state::new_device::ServedTicket;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+
+use super::ticket::{RootApprover, Tickets};
+
+/// A device `root` certified, and its key.
+fn enrol(
+    root: &SigningKey,
+    label: &str,
+    capabilities: DeviceCapabilities,
+) -> (SigningKey, DeviceCert) {
+    let key = SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng));
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: label.into(),
+        capabilities,
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, root).unwrap();
+    (key, cert)
+}
+
+/// An endpoint keyed by `key`, reached on this machine alone: the daemon's endpoint, in a test.
+async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
+    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+        .relay_mode(iroh::RelayMode::Disabled)
+        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .bind()
+        .await
+        .unwrap()
+}
+
+/// The computer's login, naming `server`'s address: the device whose certificate is `laptop`, in
+/// `workspace`.
+fn login_to(
+    server: &tilo_server::daemon::Server,
+    workspace: &str,
+    (laptop_cert, server_cert): (&DeviceCert, &DeviceCert),
+) -> tilo_device_identity::login::Device {
+    tilo_device_identity::login::Device {
+        site: "https://tilo.test/".into(),
+        host_origin: "https://eu1.tilo.test".into(),
+        workspace: workspace.to_owned(),
+        workspace_name: Some("Studio".into()),
+        agent: "Claude Code".into(),
+        cert: laptop_cert.clone(),
+        server_cert: server_cert.clone(),
+        server_address: Some(tilo_server_protocol::web::ServerAddress {
+            endpoint_addr: server.node_addr(),
+            relay_url: None,
+            web: None,
+        }),
+    }
+}
+
+/// Call `action` of the ticket's provider on the device that issued `ticket`, as the computer
+/// with `key` and no certificate, in `scope`: how it ended.
+async fn ask_issuer(
+    ticket: &Ticket,
+    key: &SigningKey,
+    scope: &str,
+    action: &str,
+) -> Option<Result<InvocationUpdate, ActionCallError>> {
+    let dialed = tilo_server_client::ServerAddress::at(
+        tilo_api::daemon::enter::address_of(&ticket.issuer).unwrap(),
+    );
+    let dialed_endpoint = dialed.bind(Some(key.to_bytes())).await.unwrap();
+    let service = ActionService::new(key.clone(), Arc::new(NoActions));
+    let device = Arc::new(service.remote(&dialed_endpoint, &dialed.addr(), scope));
+    let input = CertifyInput {
+        secret: ticket.secret_hex(),
+        device_public_key: hex::encode(key.verifying_key().to_bytes()),
+        agent: "Codex".into(),
+        label: None,
+    };
+    let serde_json::Value::Object(argument) = serde_json::to_value(&input).unwrap() else {
+        panic!("the input is an object");
+    };
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(RESOURCE, action),
+        },
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let settled = device
+        .invoke_until_settled(request, Duration::from_secs(10))
+        .await;
+    dialed_endpoint.close().await;
+    settled
+}
+
+/// The daemon's device action `action` with `args`, as its provider answers it: its output, or
+/// why it failed.
+async fn ask_device(tickets: &Tickets, action: &str, args: Value) -> Result<Value, String> {
+    let Value::Object(argument) = args else {
+        panic!("the arguments are an object");
+    };
+    let invocation = InvocationId::new();
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation,
+        target: RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(RESOURCE, action),
+        },
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    tickets
+        .invoke(&request)
+        .await
+        .expect("the action is answered")
+        .map_err(|error| format!("{error:?}"))?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(10))
+        .unwrap_or_else(Instant::now);
+    loop {
+        match tickets.observe(&invocation) {
+            Some(state) => match state.update {
+                InvocationUpdate::Succeeded { output, .. } => {
+                    return Ok(output.value.unwrap_or_default());
+                }
+                InvocationUpdate::Failed { error, .. } => return Err(error.message),
+                _ => {}
+            },
+            None => return Err("the daemon kept no such action".into()),
+        }
+        if Instant::now() >= deadline {
+            return Err("the device action did not end".into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one person adding a computer, from the ticket to its entry, read top to bottom"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the server answers the laptop's ticket and the desk's entry until it shuts down"
+)]
+async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
+    let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig::loopback(state.path().join("server")),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: server_key,
+            device_cert: server_cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let hosted = server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .clone();
+    let workspace = hosted.create("Studio").await.unwrap().workspace;
+    hosted
+        .enter(&workspace, &laptop_cert)
+        .await
+        .expect("a device of the person enters the workspace");
+
+    let laptop_login = login_to(&server, &workspace, (&laptop_cert, &server_cert));
+
+    // `tilo device add` on the laptop: its daemon serves a ticket on its endpoint, its root
+    // approving the computer that comes with it.
+    let laptop_endpoint = endpoint(&laptop_key).await;
+    let ticket = Ticket::new(tilo_api::daemon::enter::reached_of(&laptop_endpoint.addr()));
+    let mut reached = tilo_api::daemon::enter::reached_of(&server.node_addr());
+    if reached.relay.is_none() {
+        reached
+            .relay
+            .clone_from(&laptop_login.server_address.as_ref().unwrap().relay_url);
+    }
+    let enter = Entry {
+        workspace: laptop_login.workspace.clone(),
+        workspace_name: laptop_login.workspace_name.clone(),
+        server_cert: laptop_login.server_cert.clone(),
+        server: reached,
+        site: laptop_login.site.clone(),
+        host_origin: laptop_login.host_origin.clone(),
+    };
+    let waiting = ServedTicket::new(
+        ticket.clone(),
+        root.verifying_key().to_bytes(),
+        enter,
+        Arc::new(RootApprover {
+            root: root.clone(),
+            device: laptop_key.clone(),
+            cert: laptop_cert.clone(),
+        }),
+        RevocationList::new(),
+    );
+    let service = ActionService::new(laptop_key.clone(), Arc::new(NoActions));
+    service.admit_uncertified(SCOPE, Arc::new(waiting.clone()));
+    let router = iroh::protocol::Router::builder(laptop_endpoint.clone())
+        .accept(ACTIONS_ALPN, service)
+        .spawn();
+
+    let text = ticket.encode();
+    let ticket = Ticket::parse(&text).unwrap();
+    let (desk_key, desk_cert) = enrol(&root, "the desk", DeviceCapabilities::member());
+
+    // A computer with no certificate gets nothing but the certify action.
+    let other = ask_issuer(&ticket, &desk_key, SCOPE, "list").await;
+    assert!(
+        matches!(other, Some(Err(ActionCallError::UnknownAction))),
+        "another action of the ticket's provider is refused: {other:?}"
+    );
+    let in_workspace = ask_issuer(&ticket, &desk_key, &workspace, CERTIFY).await;
+    assert!(
+        matches!(
+            in_workspace,
+            Some(Err(
+                ActionCallError::NotPermitted | ActionCallError::Refused { .. }
+            ))
+        ),
+        "a call in the person's workspace is refused to a device it does not know: {in_workspace:?}"
+    );
+
+    // `tilo login <ticket>` on the desk: its daemon's `devices#logIn` asks the laptop.
+    let desk_endpoint = endpoint(&desk_key).await;
+    let keys = tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys"));
+    tilo_device_identity::persist::adopt_device_key(&keys, &desk_key.to_bytes()).unwrap();
+    let place = tilo_device_identity::login::Place::at(state.path().join("desk"), keys);
+    let desk = Tickets::new(
+        desk_key.clone(),
+        desk_cert,
+        desk_endpoint,
+        None,
+        place.clone(),
+    );
+
+    // A wrong secret is refused.
+    let mut wrong = ticket.clone();
+    wrong.secret = [7; 32];
+    let refused = ask_device(
+        &desk,
+        LOG_IN,
+        json!({"ticket": wrong.encode(), "agent": "Codex", "label": "Codex on desk"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.contains("didn't take this ticket"), "{refused}");
+
+    let answer = ask_device(
+        &desk,
+        LOG_IN,
+        json!({"ticket": text, "agent": "Codex", "label": "Codex on desk"}),
+    )
+    .await
+    .unwrap_or_else(|why| panic!("the laptop certifies the desk: {why}"));
+    assert_eq!(answer["workspace"], workspace);
+    // The desk's login is kept, and the ticket is spent.
+    let desk_login = tilo_device_identity::login::load(&place)
+        .unwrap()
+        .expect("the desk's login is kept")
+        .1;
+    assert_eq!(
+        desk_login.cert.device_public_key,
+        desk_key.verifying_key().to_bytes()
+    );
+    let (spent_key, _) = enrol(&root, "another", DeviceCapabilities::member());
+    let spent = ask_issuer(&ticket, &spent_key, SCOPE, CERTIFY).await;
+    assert!(
+        matches!(spent, Some(Err(ActionCallError::Refused { .. }))),
+        "the ticket is spent: {spent:?}"
+    );
+
+    let desk_session = tilo_test_env::within(
+        "the desk enters",
+        tilo_api::daemon::enter::connect(&desk_key, &desk_login, None),
+    )
+    .await
+    .expect("the desk enters as the person's device");
+    let listed = desk_session
+        .personal_list(
+            &tilo_server_session::workspaces::WorkspaceLabels::new(),
+            None,
+        )
+        .await
+        .expect("the desk reads the person's workspaces");
+    assert!(
+        listed
+            .workspaces
+            .iter()
+            .any(|known| known.workspace == workspace),
+        "the desk lists the person's workspace: {:?}",
+        listed.workspaces
+    );
+
+    desk_session.close();
+    let _ = router.shutdown().await;
+    server.shutdown().await;
+}

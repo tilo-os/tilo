@@ -213,11 +213,18 @@ pub(crate) struct Knitted {
     pub(crate) agent_sessions:
         Option<std::sync::Arc<dyn tilo_broker_core::services::AgentSessions>>,
     pub(crate) tools: Option<crate::tools::Handle>,
+    /// Where each folder the files daemon holds stands, as it says over the tree socket.
+    pub(crate) folders: tilo_workspace_service::files::Folders,
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "the app wire's services are all decided in one place, so a service added is not missed"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the service slot the agents start on is moved into their start once the broker \
+              serves, not held to the end"
 )]
 pub(crate) fn start_app_wire(
     options: &Options,
@@ -247,6 +254,7 @@ pub(crate) fn start_app_wire(
     let Some(path) = app_wire_path(options)? else {
         return Ok(None);
     };
+    let agents_service = service.clone();
     let link = app_wire::Link::new(options.wake.handle());
     let layout = layout_authority(options, handle, revocations);
     // The workspace's activity as this session's apps read it: the shell's own model.
@@ -360,7 +368,24 @@ pub(crate) fn start_app_wire(
         actions.install(broker.device_host());
         attach_remote_use(&actions, options);
     }
-    let files_tree = serve_files_tree(&path, service, content.as_deref(), options)?;
+    let files_tree = serve_files_tree(
+        &path,
+        service,
+        content.as_deref(),
+        options,
+        services.folders,
+    )?;
+    // This device runs its workspaces' agents in its own workspace service once that opens: the
+    // one engine a workspace's host runs, in this process, each turn's calls decided by this
+    // broker as the person's own calls are.
+    if let Some(broker) = broker.app_action_broker() {
+        tilo_rt::app()
+            .handle()
+            .spawn(tilo_workspace_service::agents::on_device(
+                agents_service,
+                broker.device_host(),
+            ));
+    }
     Ok(Some(AppWire {
         link,
         path,
@@ -386,6 +411,7 @@ fn serve_files_tree(
     service: tilo_workspace_service::service::ServiceSlot,
     content: Option<&crate::content::ContentService>,
     options: &Options,
+    folders: tilo_workspace_service::files::Folders,
 ) -> Result<Option<tilo_workspace_service::files::socket::Serving>, Error> {
     use tilo_workspace_service::apps::services::LauncherServices as _;
     let Some(content) = content else {
@@ -393,6 +419,18 @@ fn serve_files_tree(
     };
     let launches = std::sync::Arc::clone(&options.launches);
     let socket = wire.with_file_name(format!("{}.sock", fs::tree_sync::remote::SOCKET));
+    // The keys of a tree's group, as this person's identity service hands them to this device:
+    // only ever for the workspace the connection was admitted for.
+    let identity = tilo_paths::xdg::service_socket("identity");
+    let keys: tilo_workspace_service::files::socket::Keys = std::sync::Arc::new(move |workspace| {
+        let keys = fs::hydration::FileKeys::new(workspace, identity.clone());
+        Box::pin(async move {
+            let keys = keys.access().await.map_err(|error| format!("{error:#}"))?;
+            keys.to_bytes()
+                .map(|bytes| bytes.to_vec())
+                .map_err(|error| format!("{error:#}"))
+        })
+    });
     Ok(Some(tilo_workspace_service::files::socket::serve(
         &socket,
         service,
@@ -400,6 +438,8 @@ fn serve_files_tree(
         std::sync::Arc::new(move |pid, workspace| {
             launches.attest_process(pid, ui::apps::FILE_EXPLORER, workspace)
         }),
+        content.files_offers(keys),
+        folders,
     )?))
 }
 

@@ -44,6 +44,8 @@ set -euo pipefail
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$dev_dir/../.." && pwd)"
 vm="$dev_dir/vm.sh"
+# shellcheck source=os/dev/action-frame.sh
+source "$dev_dir/action-frame.sh"
 
 die() { printf 'server plan install cycle: %s\n' "$*" >&2; exit 1; }
 note() { printf 'server plan install cycle: %s\n' "$*" >&2; }
@@ -313,15 +315,15 @@ owner_cmd tilo machine add --os server --name "$server_name" \
   }
 plan_id="$(sed -n 's/^plan \([0-9a-f]\{32\}\).*/\1/p' "$evidence/03-plan.txt" | head -n 1)"
 [[ "$plan_id" =~ ^[0-9a-f]{32}$ ]] || die "the plan's id is not in the command's answer: $(cat "$evidence/03-plan.txt")"
-owner_control actions invoke tilo.machines $'machines\x1fmachine.show' \
-  --args-json "{\"plan\":\"$plan_id\"}" --wait=30000 \
-  > "$evidence/03-plan-entry.json" \
+{ owner_control raw "$(action_frame tilo.machines machines machine.show "{\"plan\":\"$plan_id\"}")" \
+    > "$evidence/03-plan-entry.json" \
+    && action_completed "$evidence/03-plan-entry.json"; } \
   || { cat "$evidence/03-plan-entry.json" >&2; die 'the plan entry could not be read back'; }
-jq -e '.receipt.update.output.value.plan as $plan
+jq -e '.message.Receipt.status.Completed.output.value.plan as $plan
   | $plan.plan == $id and ($plan.open | length == 0)' --arg id "$plan_id" \
   "$evidence/03-plan-entry.json" >/dev/null \
   || die 'the plan entry is not the complete plan the machine installs from'
-jq '.receipt.update.output.value.plan' "$evidence/03-plan-entry.json" > "$storage/plan.json"
+jq '.message.Receipt.status.Completed.output.value.plan' "$evidence/03-plan-entry.json" > "$storage/plan.json"
 owner ssh "cat $owner_root/machine.token" > "$storage/machine.token" \
   || die 'the token could not be taken from the owner device'
 chmod 0600 "$storage/machine.token" "$storage/plan.json"
@@ -594,8 +596,9 @@ await_owner_question() {
 answer_owner() {
   local verdict=$1 resource=$2 action=answer
   [ "$verdict" = allow ] || action=cancel
-  owner_control actions invoke so.tilo.session "${resource}"$'\x1f'"${action}" --wait \
-    > "$out/owner-answer-$verdict.txt" 2>&1 \
+  { owner_control raw "$(action_frame so.tilo.session "$resource" "$action")" \
+      > "$out/owner-answer-$verdict.txt" 2>&1 \
+      && action_completed "$out/owner-answer-$verdict.txt"; } \
     || { cat "$out/owner-answer-$verdict.txt" >&2; die "the owner's sheet could not be answered ($verdict)"; }
 }
 enrol_question="$(await_owner_question network.machine-enrol enrol)"

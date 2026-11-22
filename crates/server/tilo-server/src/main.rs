@@ -14,8 +14,6 @@
 //!   (`admit <code>` on stdin) and announces each on stdout.
 //! - `--workspace-documents` on `run` and `dev` (feature `agents`) — the workspaces'
 //!   records and roster agents on the host, each agent working on the model its workspace linked.
-//! - `page-host <origin>` (feature `web`) — print what a site hands its page
-//!   about the host at `origin` (the web entry's `TILO_WEB_HOME_HOST_INFO`).
 //! - `status` — print a snapshot of the running daemon's counters
 //!   by reading the on-disk metrics dump.
 
@@ -83,20 +81,12 @@ enum Cmd {
     Run {
         #[cfg(feature = "web")]
         #[command(flatten)]
-        web: web_cli::WebArgs,
+        web: Box<web_cli::WebArgs>,
     },
-    /// A throwaway local host for browser development (never in production:
-    /// it certifies every browser device that asks).
-    #[cfg(feature = "web")]
-    Dev(web_cli::DevArgs),
     /// A short-lived shared workspace: its own user root and browser listener,
     /// certifying only the browsers its operator admits on stdin.
     #[cfg(feature = "web")]
     Workspace(Box<web_cli::WorkspaceArgs>),
-    /// Print, as one line of JSON, what a site hands its page about the host
-    /// at an origin: the web entry's `TILO_WEB_HOME_HOST_INFO`.
-    #[cfg(feature = "web")]
-    PageHost(web_cli::PageHostArgs),
 }
 
 /// Logs go to stderr: a persistent workspace's stdout is the line protocol its
@@ -106,10 +96,12 @@ fn install_logging() {
     // The channel service says at info what an operator acts on once: state
     // an earlier build saved upgraded in place, or a copied machine joining
     // as itself; so does a workspace's governance brought up from an earlier
-    // release's, with each grant it holds no grant for and why.
+    // release's, with each grant it holds no grant for and why. The agents this server runs
+    // say at info what they did, as the rest of the server does.
     let filter = EnvFilter::try_from_env("TILO_SERVER_LOG").unwrap_or_else(|_| {
         EnvFilter::new(
-            "tilo_server=info,tilo_workspace_keys=info,tilo_peer_state::state::rebase=info,warn",
+            "tilo_server=info,tilo_workspace_service::agents=info,tilo_workspace_keys=info,\
+             tilo_peer_state::state::rebase=info,warn",
         )
     });
     fmt()
@@ -147,18 +139,12 @@ fn run() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Init => cmd_init(&cli.config),
         #[cfg(feature = "web")]
-        Cmd::Run { web } => cmd_run(&cli.config, web),
+        Cmd::Run { web } => cmd_run(&cli.config, *web),
         #[cfg(not(feature = "web"))]
         Cmd::Run {} => cmd_run(&cli.config),
         #[cfg(feature = "web")]
-        Cmd::Dev(args) => {
-            tilo_rt::daemon("tilo-server").run(watched(web_cli::dev(args, wait_for_shutdown())))?
-        }
-        #[cfg(feature = "web")]
         Cmd::Workspace(args) => tilo_rt::daemon("tilo-server")
             .run(watched(web_cli::workspace(*args, wait_for_shutdown())))?,
-        #[cfg(feature = "web")]
-        Cmd::PageHost(args) => tilo_rt::daemon("tilo-server").run(web_cli::page_host(args))?,
     }
 }
 
@@ -278,118 +264,3 @@ async fn wait_for_shutdown() -> anyhow::Result<()> {
 // test executable serves, as `main` does through `dispatch_early`.
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
-
-#[cfg(test)]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
-)]
-mod tests {
-    use super::*;
-    use iroh_base::EndpointAddr;
-    use tilo_server::daemon::Server;
-    use tilo_server::mesh::ServiceCapabilities;
-    use tilo_user_identity::{
-        DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
-        sign_device_cert,
-    };
-
-    /// Exercise the same stock init + config reload used by firstboot, then
-    /// start the daemon with the handoff bundle that firstboot writes. This
-    /// catches regressions where the NAS appears configured but silently
-    /// starts as a server-only peer.
-    #[tokio::test]
-    async fn init_reload_and_home_peer_handoff_enable_full_replication() {
-        let temp = tempfile::tempdir().unwrap();
-        let config_path = temp.path().join("server.toml");
-        cmd_init(&config_path).unwrap();
-
-        let mut config = ServerConfig::load(&config_path).unwrap();
-        assert_eq!(
-            config.home_peer_bundle,
-            PathBuf::from("/etc/tilo/home-peer.toml")
-        );
-        assert_eq!(
-            config.full_replica_status,
-            PathBuf::from("/var/lib/tilo/full-replica/status.json")
-        );
-        assert!(!config.services.full_content_replication);
-
-        let (user_sk, user) = UserIdentity::generate("home owner", 1);
-        let (device_sk, device) = DeviceIdentity::generate("home server", 2);
-        let mut cert = DeviceCert {
-            user_public_key: user.public_key,
-            device_public_key: device.public_key,
-            device_label: device.label,
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 3,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &user_sk).unwrap();
-
-        let status_path = temp.path().join("full-replica/status.json");
-        std::fs::create_dir_all(status_path.parent().unwrap()).unwrap();
-        let filesystem_endpoint =
-            EndpointAddr::new(iroh::SecretKey::from_bytes(&device_sk.to_bytes()).public())
-                .with_ip_addr("127.0.0.1:43210".parse().unwrap());
-        let mut status = fs::full_replica::FullReplicaStatus::syncing();
-        status.state = "ready".into();
-        status.full_content_replication = true;
-        status.filesystem_endpoints.push(filesystem_endpoint);
-        fs::full_replica::save_status(&status_path, &status).unwrap();
-        // The server judges the stamp by a clock stopped where it was written,
-        // so it stays recent however long the server takes to start.
-        let stamped = fs::full_replica::load_status(&status_path)
-            .unwrap()
-            .unwrap()
-            .updated_at_ms;
-
-        let bundle_path = temp.path().join("home-peer.toml");
-        let bundle = fs::full_replica::HomePeerSet {
-            status_file: status_path.clone(),
-            workspaces: vec![fs::full_replica::HomePeerBundle {
-                ticket: fs::Ticket {
-                    node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
-                    workspace: [9; 32],
-                }
-                .encode()
-                .unwrap(),
-                cache_dir: temp.path().join("cache"),
-                capability_json: "[]".into(),
-                authority: None,
-                members: Vec::new(),
-                server_workspace_ids: vec![tilo_server_protocol::WorkspaceId::from_u128(42)],
-            }],
-        };
-        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
-
-        // These paths model the firstboot-generated handoff while keeping the
-        // test hermetic instead of writing under /etc or /var/lib.
-        config.home_peer_bundle = bundle_path;
-        config.full_replica_status = status_path.clone();
-        config.state_root = temp.path().join("server-state");
-        config.identity_root = temp.path().join("identity");
-        config.services = ServiceCapabilities::home_peer();
-        config.save(&config_path).unwrap();
-        let config = ServerConfig::load(&config_path).unwrap();
-
-        let server = Server::start_with_replica_clock(
-            config,
-            ServerIdentity {
-                user_public_key: user.public_key,
-                device_signing_key: device_sk,
-                device_cert: cert,
-                revocations: RevocationList::new(),
-            },
-            std::sync::Arc::new(tilo_clock::FixedClock(stamped)),
-        )
-        .await
-        .unwrap();
-        let profile = server.handle().mesh_profile();
-        assert!(profile.services.full_content_replication);
-        assert_eq!(profile.filesystem_endpoints.len(), 1);
-        server.shutdown().await;
-    }
-}

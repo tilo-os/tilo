@@ -30,14 +30,17 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tilo_identity::device_fleet::DeviceFleetStore;
-use tilo_identity::registry::IdentityRegistryStore;
+use tilo_identity::store::IdentityRegistryStore;
 use tilo_service::{Asked, Question, Questions};
 use tilo_unlock_protocol::{
-    APPROVAL_TIMEOUT_NS, BootKeyCert, CHALLENGE_LIFETIME_NS, ClientFrame, ENROL_SOCKET, EnrolReply,
-    EnrolRequest, EnrolResponse, PROTOCOL_VERSION, RefusalReason, SiblingContact, SiblingFrame,
-    SlotId, UnlockHello, UnlockRequest, decode_frame, encode_frame, frame_len, seal_sibling_half,
+    APPROVAL_TIMEOUT_NS, CHALLENGE_LIFETIME_NS, ClientFrame, ENROL_SOCKET, EnrolReply,
+    EnrolRequest, EnrolResponse, RefusalReason, SiblingContact, SiblingFrame, SlotId, UnlockHello,
+    UnlockRequest, decode_frame, encode_frame, frame_len, seal_sibling_half,
 };
-use tilo_user_identity::{CertifiedFleet, DeviceCertification};
+use tilo_user_identity::{
+    CertifiedFleet, DeviceCapabilities, DeviceCert, DeviceCertification,
+    device_cert_signing_digest, verify_device_cert,
+};
 
 /// The kind the session's sheet reads a disk-unlock request as.
 pub(crate) const KIND: &str = "network.device-unlock";
@@ -142,7 +145,8 @@ impl Unlock {
         let now = tilo_clock::unix_now_ns();
         // The owner's answer to this boot, when their devices kept one, is the whole exchange: an
         // approval needs the half, a denial needs nothing loaded.
-        let allowed_before = boot_cert_digest(&hello.boot_cert)
+        let boot_digest = boot_cert_digest(&hello.boot_cert);
+        let allowed_before = boot_digest
             .and_then(|digest| {
                 decision_for(
                     &published.decisions,
@@ -183,7 +187,14 @@ impl Unlock {
         }
         // The person is asked here, and the sheet shows nothing more of it once they answered or
         // the boot went away.
-        let asked = self.ask(&hello.boot_cert, &pending, &request);
+        let asking = boot_digest
+            .and_then(|digest| published.enrolments.get(&digest))
+            .map(UnlockEnrolment::device);
+        let Some(asking) = asking else {
+            self.lock().withdraw(&digest);
+            return;
+        };
+        let asked = self.ask(asking, &pending, &request);
         let Some(answer) = wait_for_person(asked, &send).await else {
             self.lock().withdraw(&digest);
             return;
@@ -349,15 +360,10 @@ impl Unlock {
 
     /// Put the boot's request to the person, with the code its screen shows,
     /// and let dropping the question go with it.
-    fn ask(
-        &self,
-        cert: &BootKeyCert,
-        approval_code: &str,
-        request: &UnlockRequest,
-    ) -> Option<Asked> {
+    fn ask(&self, device: [u8; 32], approval_code: &str, request: &UnlockRequest) -> Option<Asked> {
         let questions = self.questions.as_ref()?;
         let handle = format!("device-unlock:{}", hex::encode(request.boot_id.0));
-        let device = self.label_of(&cert.device_public_key);
+        let device = self.label_of(&device);
         Some(
             questions.ask(Question {
                 handle,
@@ -367,7 +373,7 @@ impl Unlock {
                 details: serde_json::to_value(UnlockQuestion {
                     approval_code: approval_code.to_owned(),
                     device,
-                    slot: slot_name(&cert.slot),
+                    slot: slot_name(&request.slot),
                 })
                 .unwrap_or_default(),
             }),
@@ -427,19 +433,25 @@ impl Unlock {
         }
         let refused = NotEnrolled::Reason;
         let store = DeviceFleetStore::from_env().map_err(|error| refused(error.to_string()))?;
-        let mut cert = BootKeyCert {
-            version: PROTOCOL_VERSION,
+        // The boot key is certified as an ordinary device certificate that grants nothing: it can
+        // ask for the half, never act as the device.
+        let mut cert = DeviceCert {
             user_public_key: *ownership.fleet.user_public_key(),
-            device_public_key: enrollee,
-            boot_public_key: request.boot_public_key,
-            slot: request.slot,
-            attestation_key: request.attestation_key.clone(),
+            device_public_key: request.boot_public_key,
+            device_label: self.label_of(&enrollee),
+            capabilities: DeviceCapabilities::nothing(),
             issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
-        store
-            .certify_boot_key(&ownership.identity_id, &mut cert)
+        let digest = device_cert_signing_digest(&cert)
+            .map_err(|error| refused(format!("the boot key's certificate: {error}")))?;
+        cert.signature = store
+            .sign_root(&ownership.identity_id, &digest)
             .map_err(|error| refused(error.to_string()))?;
+        verify_device_cert(&cert)
+            .map_err(|error| refused(format!("the boot key's certificate: {error}")))?;
         let secret_sync = store
             .secret_sync_key(&ownership.identity_id)
             .and_then(|key| key.public_key().map_err(std::io::Error::other))
@@ -502,7 +514,10 @@ impl Unlock {
             DeviceId::new(hex::encode(self.local)).map_err(|error| refused(error.to_string()))?;
         let enrolment = UnlockEnrolment {
             cert: cert.clone(),
+            device_public_key: enrollee,
             sealed_half,
+            slot: request.slot,
+            attestation_key: request.attestation_key.clone(),
             stamp: tilo_network_actor::fabric::FabricStamp {
                 counter: 0,
                 device: holder,
@@ -511,7 +526,7 @@ impl Unlock {
         self.publish(enrolment, approval);
         tracing::info!(
             device = %hex::encode(enrollee),
-            slot = %slot_name(&cert.slot),
+            slot = %slot_name(&request.slot),
             "device unlock: enrolled",
         );
         Ok(EnrolResponse { cert, siblings })
@@ -524,7 +539,7 @@ impl Unlock {
         self.update_state(|state| {
             state
                 .enrolments
-                .retain(|current| current.cert.slot != enrolment.cert.slot);
+                .retain(|current| current.slot != enrolment.slot);
             state.enrolments.push(enrolment);
             if let Some(approval) = approval {
                 let device = approval.device_public_key;
@@ -670,9 +685,9 @@ async fn wait_for_person(
     }
 }
 
-/// The enrolment a boot certificate is known by.
-fn boot_cert_digest(cert: &BootKeyCert) -> Option<[u8; 32]> {
-    cert.signing_digest().ok()
+/// The enrolment a boot's certificate is known by.
+fn boot_cert_digest(cert: &DeviceCert) -> Option<[u8; 32]> {
+    device_cert_signing_digest(cert).ok()
 }
 
 /// The slot as the boot screen names it, and as the person's own record of their answers keeps it.

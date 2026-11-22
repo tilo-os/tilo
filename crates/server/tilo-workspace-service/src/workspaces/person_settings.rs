@@ -17,7 +17,7 @@
 pub(in crate::workspaces) mod kept_sign_ins;
 /// One provider's grant, kept in the workspace's vault and renewed behind one
 /// lock.
-mod oauth_grant;
+pub(in crate::workspaces) mod oauth_grant;
 mod sending;
 /// Signing in on a provider's own page, and the server's end of it.
 mod sign_in;

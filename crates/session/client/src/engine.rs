@@ -415,8 +415,9 @@ impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
             && let Some(link) = self.link.lock_recover().clone()
         {
             // A write sealed under an epoch whose key is not here yet: the person's other devices
-            // are asked for the group's frames, as they are for any record's keys.
-            link.want_frames(workspace, 0);
+            // are asked for the frames of the group it is sealed under, as they are for any
+            // record's keys.
+            link.want_write_frames(workspace, write);
         }
         opened
     }

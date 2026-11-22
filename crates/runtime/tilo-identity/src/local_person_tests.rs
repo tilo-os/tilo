@@ -40,8 +40,7 @@ fn bound_device(root: &Path) -> (IdentityPaths, Account) {
 
 fn signer(account: &Account) -> crate::store::SigningIdentity {
     let dir = account.home.join(IDENTITY_DIR_IN_HOME);
-    crate::store::load_from_path(tilo_identity_client::resolve_active_identity(&dir).unwrap())
-        .unwrap()
+    crate::store::load_from_path(crate::store::resolve_active_identity(&dir).unwrap()).unwrap()
 }
 
 tilo_test_env::scenario! {
@@ -74,11 +73,31 @@ tilo_test_env::scenario! {
         .unwrap();
         std::fs::write(proof_path(&forged), signature).unwrap();
         let claim = account(temp.path(), "dee", uid() + 3);
+        let claim_record = claim.home.join(IDENTITY_DIR_IN_HOME).join("primary.json");
         std::fs::write(
-            claim.home.join(IDENTITY_DIR_IN_HOME).join("registry.json"),
-            format!("{{\"default_identity\": \"{}\"}}", hex::encode(user)),
+            &claim_record,
+            serde_json::json!({
+                "display_name": "Dee",
+                "avatar_color": [0, 0, 0],
+                "threshold_identity": {
+                    "single_device": false,
+                    "group_public_key": user.to_vec(),
+                    "threshold": 1,
+                    "total_shares": 1,
+                    "share_index": 0,
+                    "secret_bytes": []
+                },
+                "created_at": "now",
+                "schema_version": 1
+            })
+            .to_string(),
         )
         .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&claim_record, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
         let garbage = account(temp.path(), "eve", uid() + 4);
         std::fs::write(proof_path(&garbage), b"not a signature").unwrap();
 

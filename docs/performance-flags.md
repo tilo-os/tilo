@@ -273,7 +273,7 @@ tilo-control --socket "$sock" raw '{"op":"process_memory"}'   # where the sessio
 or earlier at `profile-stop`. Only one records at a time. The resource holds
 nothing personal — frame timings, mapping classes, thread names — so it is
 published like the session's other readings; the memory report also answers
-`process_memory` on the owner's control socket. `tilo-control actions list
+`process_memory` on the owner's control socket. `tilo action list
 session-diagnostics` shows the same three verbs the action API offers.
 
 Each profile is a private (0700/0600) directory

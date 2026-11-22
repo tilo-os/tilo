@@ -48,6 +48,7 @@ enum Ask {
         key: String,
         name: String,
         entry: url::Url,
+        host: Option<Box<tilo_server_protocol::web::PageHost>>,
     },
     /// Join the home workspace of the community `site`, with nobody at the
     /// directory asking for it.
@@ -267,6 +268,7 @@ impl Store {
             key: key.to_owned(),
             name: listing.entry.name.clone(),
             entry,
+            host: listing.entry_host.clone().map(Box::new),
         }) {
             *self.joining.borrow_mut() = None;
             tracing::info!(
@@ -782,10 +784,16 @@ async fn work(
     while let Some(ask) = asks.recv().await {
         let answer = match ask {
             Ask::Read { community, site } => Answer::Read(read(&client, community, site).await),
-            Ask::Join { key, name, entry } => Answer::Joined {
+            Ask::Join {
                 key,
                 name,
-                granted: client::through_entry(&entry).map_err(|error| said(&error)),
+                entry,
+                host,
+            } => Answer::Joined {
+                key,
+                name,
+                granted: client::through_entry(&entry, host.map(|host| *host))
+                    .map_err(|error| said(&error)),
             },
             Ask::Community { site } => Answer::Community {
                 joined: match &client {

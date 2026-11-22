@@ -241,13 +241,6 @@ enum Command {
     Raw {
         json: String,
     },
-    /// Read what an open app holds through its `read` action: the resource
-    /// itself, or the nested `item` it lists.
-    Read {
-        app: String,
-        item: Option<String>,
-        json: bool,
-    },
     /// The questions waiting for the person, as their sheets show them: each
     /// one's handle, kind and label, and the action that answers or declines
     /// it (a development session's socket only).
@@ -271,7 +264,6 @@ impl Command {
                 | Self::ActionsCancel { .. }
                 | Self::ActionsSession
                 | Self::Raw { .. }
-                | Self::Read { .. }
         )
     }
 }
@@ -397,7 +389,6 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
         "watch" => parse_watch(iter.next())?,
         "state-dump" | "windows" => parse_state_read(op, &mut iter)?,
         "actions" => parse_actions_command(&mut iter)?,
-        "read" => parse_read(&mut iter)?,
         "questions" => {
             let json = match iter.next().map(String::as_str) {
                 None => false,
@@ -498,170 +489,9 @@ fn parse_wheel<'a>(iter: &mut impl Iterator<Item = &'a String>) -> Result<Comman
     })
 }
 
-/// Parse `read APP [ITEM] [--json]`.
-fn parse_read<'a>(iter: &mut impl Iterator<Item = &'a String>) -> Result<Command, ParseError> {
-    let mut json = false;
-    let mut words = Vec::new();
-    for rest in iter.by_ref() {
-        if rest == "--json" {
-            json = true;
-        } else {
-            words.push(rest.clone());
-        }
-    }
-    let mut words = words.into_iter();
-    let app = words.next().ok_or_else(|| {
-        ParseError::Usage("read APP [ITEM] requires an app id, such as so.tilo.notes".to_string())
-    })?;
-    let item = words.next();
-    if words.next().is_some() {
-        return Err(ParseError::Usage(
-            "read takes an app id and at most one item id".to_string(),
-        ));
-    }
-    Ok(Command::Read { app, item, json })
-}
-
-/// How long `read` waits for an open app's `read` to be listed: the listing
-/// settles as the desktop indexes it, and an app just opened publishes its
-/// actions as it starts. The desktop holds each listing request until the
-/// listing has settled or changed (`wait_ms`), so this is a deadline, never a
-/// pause.
-const READ_DISCOVERY_WAIT_MS: u64 = 10_000;
-/// The most listings `read` looks at. Each one is a changed listing the
-/// desktop waited for, so this bounds a misbehaving desktop, not a wait.
-const READ_DISCOVERY_LISTINGS: u32 = 64;
-/// How long `read` follows an admitted invocation to its answer: an app
-/// action is admitted first and answers on its job. The desktop holds the
-/// reply until then (`wait_ms`).
-const READ_ANSWER_WAIT_MS: u64 = 20_000;
-
 /// Whether an invocation in `state` has ended, one way or another.
 fn settled(state: &str) -> bool {
     matches!(state, "succeeded" | "failed" | "cancelled")
-}
-
-/// The address of `app`'s `read` action in an enumeration answer.
-fn read_action_id(answer: &serde_json::Value, app: &str) -> Option<String> {
-    answer
-        .get("actions")?
-        .as_array()?
-        .iter()
-        .find(|row| {
-            row.get("provider").and_then(serde_json::Value::as_str) == Some("app-actions")
-                && row.get("application").and_then(serde_json::Value::as_str) == Some(app)
-                && row.get("operation").and_then(serde_json::Value::as_str) == Some("read")
-        })
-        .and_then(|row| row.get("id")?.as_str().map(str::to_string))
-}
-
-/// The `read` listing request: settled within `wait_ms`, and with
-/// `after_revision`, a listing other than the one already seen.
-fn read_listing_request(wait_ms: u64, after_revision: Option<&str>) -> String {
-    let mut request = serde_json::json!({
-        "op": "actions_enumerate",
-        "query": "read",
-        "wait_ms": wait_ms,
-    });
-    if let (Some(revision), Some(fields)) = (after_revision, request.as_object_mut()) {
-        fields.insert("after_revision".into(), revision.into());
-    }
-    request.to_string()
-}
-
-/// Milliseconds of `budget` left since `started`.
-fn remaining_ms(budget: u64, started: std::time::Instant) -> u64 {
-    let spent = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    budget.saturating_sub(spent)
-}
-
-/// `read APP [ITEM]` over one connection: find the open app's `read` action,
-/// invoke it, and print the typed value it answers.
-fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) -> u8 {
-    run_read_with(&mut |request| round_trip(stream, request), app, item, json)
-}
-
-/// [`run_read`] over any request/answer transport. Nothing here pauses:
-/// every request asks the desktop to hold its answer (`wait_ms`) until there
-/// is one worth giving — a settled listing, a changed listing, the app's
-/// answer — so it usually takes two requests, one listing and one invocation.
-fn run_read_with(
-    round_trip: &mut dyn FnMut(&str) -> std::io::Result<serde_json::Value>,
-    app: &str,
-    item: Option<&str>,
-    json: bool,
-) -> u8 {
-    let started = std::time::Instant::now();
-    let mut seen: Option<String> = None;
-    let mut id = None;
-    for _ in 0..READ_DISCOVERY_LISTINGS {
-        let wait_ms = remaining_ms(READ_DISCOVERY_WAIT_MS, started);
-        let response = match round_trip(&read_listing_request(wait_ms, seen.as_deref())) {
-            Ok(response) => response,
-            Err(e) => {
-                eprintln!("tilo-control: socket round-trip: {e}");
-                return 2;
-            }
-        };
-        if response.get("err").is_some() {
-            return print_response(
-                &Command::ActionsList {
-                    include_programmatic: false,
-                    query: "read".into(),
-                    json,
-                    page: ListPage::default(),
-                    wait_ms: None,
-                },
-                &response,
-            );
-        }
-        let answer = response.get("answer");
-        id = answer.and_then(|answer| read_action_id(answer, app));
-        if id.is_some() {
-            break;
-        }
-        // Ask again only a desktop that waits — it holds the next request
-        // until the listing changes — and only while time is left. One that
-        // answers without `settled` cannot be asked for "the next listing",
-        // and asking anyway would spin.
-        let revision = answer
-            .filter(|answer| answer.get("settled").is_some())
-            .and_then(|answer| answer.get("revision")?.as_str());
-        match revision {
-            Some(revision) if remaining_ms(READ_DISCOVERY_WAIT_MS, started) > 0 => {
-                seen = Some(revision.to_string());
-            }
-            _ => break,
-        }
-    }
-    let Some(id) = id else {
-        eprintln!("error [unknown_action]: no open `{app}` offers `read`");
-        eprintln!(
-            "hint: open it with `tilo-control actions invoke applications {app}`; \
-             `tilo-control actions list read` shows what the desktop can read now"
-        );
-        return 1;
-    };
-    let mut args = serde_json::Map::new();
-    if let Some(item) = item {
-        args.insert("item".into(), item.into());
-    }
-    let invoke = serde_json::json!({
-        "op": "actions_invoke",
-        "provider": "app-actions",
-        "id": id,
-        "args": args,
-        "wait_ms": READ_ANSWER_WAIT_MS,
-    })
-    .to_string();
-    let response = match round_trip(&invoke) {
-        Ok(response) => response,
-        Err(e) => {
-            eprintln!("tilo-control: socket round-trip: {e}");
-            return 2;
-        }
-    };
-    print_read_answer(&response, json)
 }
 
 /// `actions invoke --wait`: print the answer as without `--wait`, then say
@@ -745,58 +575,6 @@ fn run_session(
         answers.flush()?;
     }
     Ok(())
-}
-
-/// Print the value a `read` answered, or why it did not.
-fn print_read_answer(response: &serde_json::Value, json: bool) -> u8 {
-    if let Some(err) = response.get("err") {
-        let code = err
-            .get("code")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
-        eprintln!("error [{code}]: {msg}");
-        return 1;
-    }
-    let update = response
-        .pointer("/answer/receipt/update")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    match update.get("state").and_then(serde_json::Value::as_str) {
-        Some("succeeded") => {
-            let value = update
-                .pointer("/output/value")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            let out = if json {
-                value.to_string()
-            } else {
-                serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
-            };
-            println!("{out}");
-            0
-        }
-        Some("failed") => {
-            let error = update.get("error").cloned().unwrap_or_default();
-            let code = error
-                .get("code")
-                .and_then(|v| v.as_str())
-                .unwrap_or("action_failed");
-            let msg = error.get("message").and_then(|v| v.as_str()).unwrap_or("");
-            eprintln!("error [{code}]: {msg}");
-            1
-        }
-        state => {
-            // A receipt is not what the resource holds: printing it as the
-            // answer would hand the caller something else to parse.
-            eprintln!(
-                "error [unanswered]: the read did not answer (state {}): {}",
-                state.unwrap_or("none"),
-                response.get("answer").cloned().unwrap_or_default()
-            );
-            1
-        }
-    }
 }
 
 /// Parse `state-dump [--pretty] [--history]` and `windows [--json]`, the
@@ -1309,7 +1087,6 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         }
         Command::StateDump { .. } => json!({ "op": "state_dump" }),
         Command::Windows { .. } => json!({ "op": "windows" }),
-        Command::Read { .. } => json!({ "op": "actions_enumerate", "query": "read" }),
         Command::Questions { .. } => json!({ "op": "questions" }),
         Command::ActionsList {
             query,
@@ -1545,9 +1322,8 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             // Plain Ok response — emit the canonical "ok" string.
             println!("ok");
         }
-        Command::Read { .. } | Command::ActionsSession => {
-            // Answered by `run_read` and `run_session`, which own their
-            // round trips.
+        Command::ActionsSession => {
+            // Answered by `run_session`, which owns its round trips.
             println!("{response}");
         }
         Command::Questions { json } => print_questions(response, *json),
@@ -1662,13 +1438,13 @@ fn print_usage() {
          \x20 tilo-control [--socket PATH] <subcommand> [args]\n\
          \n\
          The action model — the typed actions behind the launcher, the palette, settings\n\
-         and every app — is the way to drive a desktop. Run it as the device admin (the\n\
-         account that set the device up, over its own login or ssh): the desktop serves\n\
-         $XDG_RUNTIME_DIR/tilo-session/admin-control.sock to that account once first login\n\
-         is complete. A set $TILO_TEST_CONTROL, or --socket, sends every subcommand there\n\
-         instead.\n\
+         and every app — is the way to drive a desktop: `tilo action list` and `tilo do`\n\
+         send its frames to the desktop's control socket. The desktop serves\n\
+         $XDG_RUNTIME_DIR/tilo-session/admin-control.sock to the device admin (the account\n\
+         that set the device up, over its own login or ssh) once first login is complete.\n\
+         A set $TILO_TEST_CONTROL, or --socket, sends every subcommand there instead.\n\
          \n\
-         Action model (admin control socket):\n\
+         A console app's actions (the installer, the greeter), at its own socket:\n\
          \x20 actions list [QUERY] [--json] [--programmatic] search: list actions as `PROVIDER:ID  KIND  TITLE`\n\
          \x20                               (read-only; empty QUERY lists everything;\n\
          \x20                               --json adds params, contract and hierarchy;\n\
@@ -1696,9 +1472,6 @@ fn print_usage() {
          \x20 actions session               many requests over one connection: one wire\n\
          \x20                               request per stdin line (`raw` JSON), one\n\
          \x20                               answer per stdout line\n\
-         \x20 read APP [ITEM] [--json]      what an open app holds, as typed data: the\n\
-         \x20                               resource itself, or the ITEM it lists\n\
-         \x20                               (e.g. `read so.tilo.notes`, then a page's item)\n\
          \x20 windows [--json]              open windows: workspace/strip, group, tab, app\n\
          \x20                               (`*` marks the one in front)\n\
          \x20 state-dump [--pretty] [--history]\n\
@@ -1707,9 +1480,7 @@ fn print_usage() {
          \x20                               trails, which grow with every action\n\
          \x20 raw '<json>'                  passthrough — escape hatch for new commands\n\
          \n\
-         For example: `actions list notes`, then `actions invoke applications so.tilo.notes`,\n\
-         then `windows` shows its window. Open a file with `actions invoke files /abs/path`,\n\
-         lock with `actions invoke session lock`.\n\
+         For example: `tilo open notes`, then `windows` shows its window.\n\
          \n\
          Synthetic input and capture (development sessions only: a dev-overrides build\n\
          started with $TILO_TEST_CONTROL; default $XDG_RUNTIME_DIR/tilo-session/test-control.sock).\n\
@@ -1862,15 +1633,6 @@ fn main() -> ExitCode {
                 eprintln!("tilo-control: session: {e}");
                 ExitCode::from(2)
             }
-        };
-    }
-
-    if let Command::Read { app, item, json } = &invocation.command {
-        let code = run_read(&mut stream, app, item.as_deref(), *json);
-        return if code == 0 {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::from(code)
         };
     }
 
@@ -2410,154 +2172,6 @@ mod tests {
             assert!(!parse(input).unwrap().command.is_semantic(), "{input:?}");
         }
         assert!(parse(&["windows", "--pretty"]).is_err());
-    }
-
-    #[test]
-    fn read_finds_the_apps_read_action_and_parses_its_item() {
-        assert_eq!(
-            parse(&["read", "so.tilo.notes", "notes.page:1", "--json"])
-                .unwrap()
-                .command,
-            Command::Read {
-                app: "so.tilo.notes".into(),
-                item: Some("notes.page:1".into()),
-                json: true,
-            }
-        );
-        assert!(parse(&["read"]).is_err(), "an app id is required");
-        assert!(parse(&["read", "a", "b", "c"]).is_err());
-        assert!(
-            parse(&["read", "so.tilo.notes"])
-                .unwrap()
-                .command
-                .is_semantic()
-        );
-
-        let answer = serde_json::json!({"actions": [
-            {"provider": "applications", "id": "so.tilo.notes", "application": null, "operation": null},
-            {"provider": "app-actions", "id": "other", "application": "so.tilo.files", "operation": "read"},
-            {"provider": "app-actions", "id": "x", "application": "so.tilo.notes", "operation": "render"},
-            {"provider": "app-actions", "id": "wanted", "application": "so.tilo.notes", "operation": "read"},
-        ]});
-        assert_eq!(
-            read_action_id(&answer, "so.tilo.notes").as_deref(),
-            Some("wanted")
-        );
-        assert_eq!(read_action_id(&answer, "so.tilo.chat"), None);
-
-        let succeeded = serde_json::json!({"answer": {"receipt": {"update": {
-            "state": "succeeded", "output": {"value": {"pages": []}}}}}});
-        assert_eq!(print_read_answer(&succeeded, true), 0);
-        let failed = serde_json::json!({"answer": {"receipt": {"update": {
-            "state": "failed", "error": {"code": "action_failed", "message": "no note"}}}}});
-        assert_eq!(print_read_answer(&failed, true), 1);
-    }
-
-    /// A scripted desktop: answers `replies` in order and records each
-    /// request it was sent.
-    fn scripted(
-        replies: Vec<serde_json::Value>,
-        sent: &mut Vec<serde_json::Value>,
-    ) -> impl FnMut(&str) -> std::io::Result<serde_json::Value> + '_ {
-        let mut replies = replies.into_iter();
-        move |request| {
-            sent.push(serde_json::from_str(request).expect("requests are JSON"));
-            replies
-                .next()
-                .ok_or_else(|| std::io::Error::other("the script has no more answers"))
-        }
-    }
-
-    fn read_listing(revision: &str, with_read: bool) -> serde_json::Value {
-        let actions = if with_read {
-            serde_json::json!([{
-                "provider": "app-actions", "id": "notes-read",
-                "application": "so.tilo.notes", "operation": "read",
-            }])
-        } else {
-            serde_json::json!([])
-        };
-        serde_json::json!({"answer": {
-            "actions": actions, "revision": revision, "complete": true, "settled": true,
-        }})
-    }
-
-    /// `read` asks the desktop to wait on both the listing and the app's
-    /// answer, so it takes one listing and one invocation: no pausing, no
-    /// polling.
-    #[test]
-    fn read_waits_in_two_requests_and_never_polls() {
-        let answered = serde_json::json!({"answer": {"receipt": {
-            "broker_invocation_id": 7,
-            "update": {"state": "succeeded", "output": {"value": {"pages": []}}}}}});
-        let mut sent = Vec::new();
-        let code = run_read_with(
-            &mut scripted(vec![read_listing("r1", true), answered], &mut sent),
-            "so.tilo.notes",
-            Some("page-1"),
-            true,
-        );
-        assert_eq!(code, 0);
-        assert_eq!(sent.len(), 2, "one listing, one invocation: {sent:?}");
-        assert_eq!(sent[0]["op"], "actions_enumerate");
-        assert_eq!(sent[0]["wait_ms"], READ_DISCOVERY_WAIT_MS);
-        assert!(sent[0].get("after_revision").is_none());
-        assert_eq!(
-            sent[1],
-            serde_json::json!({
-                "op": "actions_invoke", "provider": "app-actions", "id": "notes-read",
-                "args": {"item": "page-1"}, "wait_ms": READ_ANSWER_WAIT_MS,
-            })
-        );
-
-        // An app still starting is not listed yet: the next listing is asked
-        // for past the one seen, so the desktop holds it until it changes.
-        let mut sent = Vec::new();
-        let code = run_read_with(
-            &mut scripted(
-                vec![
-                    read_listing("r1", false),
-                    read_listing("r2", true),
-                    serde_json::json!({"answer": {"receipt": {
-                        "update": {"state": "succeeded", "output": {"value": 1}}}}}),
-                ],
-                &mut sent,
-            ),
-            "so.tilo.notes",
-            None,
-            true,
-        );
-        assert_eq!(code, 0);
-        assert_eq!(sent.len(), 3);
-        assert_eq!(sent[1]["after_revision"], "r1");
-
-        // A desktop that does not wait (no `settled`) is asked once: asking
-        // again would only spin.
-        let mut sent = Vec::new();
-        let code = run_read_with(
-            &mut scripted(
-                vec![serde_json::json!({"answer": {"actions": [], "revision": "r1"}})],
-                &mut sent,
-            ),
-            "so.tilo.notes",
-            None,
-            true,
-        );
-        assert_eq!(code, 1);
-        assert_eq!(sent.len(), 1);
-    }
-
-    /// An app's read the desktop's wait did not see answered prints no
-    /// receipt as if it were content.
-    #[test]
-    fn read_never_prints_an_unanswered_receipt_as_content() {
-        let admitted = serde_json::json!({"answer": {"receipt": {
-            "broker_invocation_id": 7, "update": {"state": "accepted"}}}});
-        assert_eq!(print_read_answer(&admitted, true), 1);
-        let answered = serde_json::json!({"answer": {"receipt": {
-            "broker_invocation_id": 7,
-            "update": {"state": "succeeded", "output": {"value": {"pages": []}}}}}});
-        assert_eq!(print_read_answer(&answered, true), 0);
     }
 
     /// `--wait` asks the desktop to hold the answer until the action

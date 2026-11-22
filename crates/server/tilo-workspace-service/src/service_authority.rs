@@ -59,6 +59,11 @@ pub enum ServiceOperation {
     /// Stop holding a workspace for its governor: the host's person's, or the
     /// governor's person's, which the handler checks.
     UnhostWorkspace,
+    /// Take in what the store of a device keeping a workspace kept here keeps
+    /// of it, as that device asks before it lets the workspace go: anyone's to
+    /// ask, and the handler checks the workspace names the caller among those
+    /// keeping it.
+    CatchUpWorkspace,
     /// Read the revocations of the host's person this host enforces: the
     /// devices their root revoked, as the person's devices announced them.
     ListRevocations,
@@ -132,6 +137,7 @@ impl ServiceOperation {
             Self::ComputeControl => "compute.control",
             Self::HostWorkspace => "workspace.host",
             Self::UnhostWorkspace => "workspace.unhost",
+            Self::CatchUpWorkspace => "workspace.catch-up",
             Self::ListRevocations => "identity.revocations",
             Self::CreateOwnWorkspace => "workspace.create-own",
             Self::DeleteOwnWorkspace => "workspace.delete",
@@ -154,7 +160,10 @@ impl ServiceOperation {
     /// catalogue, which has no workspace to ask, offers it to the host's own
     /// person alone.
     pub(crate) const fn decided_by_its_workspace(self) -> bool {
-        matches!(self, Self::HostWorkspace | Self::UnhostWorkspace)
+        matches!(
+            self,
+            Self::HostWorkspace | Self::UnhostWorkspace | Self::CatchUpWorkspace
+        )
     }
 
     /// Whether the device `caller` may do this on the host of the person
@@ -175,6 +184,7 @@ impl ServiceOperation {
                     | Self::NamePersonalDevice
                     | Self::HostWorkspace
                     | Self::UnhostWorkspace
+                    | Self::CatchUpWorkspace
             )
         {
             return false;
@@ -207,6 +217,7 @@ impl ServiceOperation {
             | Self::ComputeControl
             | Self::HostWorkspace
             | Self::UnhostWorkspace
+            | Self::CatchUpWorkspace
             | Self::PlanMachine
             | Self::ListMachines
             | Self::ShowMachine
@@ -221,7 +232,7 @@ mod tests {
     use super::ServiceOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [ServiceOperation; 22] = [
+    const ALL: [ServiceOperation; 23] = [
         ServiceOperation::CreateWorkspace,
         ServiceOperation::ListWorkspaces,
         ServiceOperation::EnterWorkspace,
@@ -233,6 +244,7 @@ mod tests {
         ServiceOperation::ComputeControl,
         ServiceOperation::HostWorkspace,
         ServiceOperation::UnhostWorkspace,
+        ServiceOperation::CatchUpWorkspace,
         ServiceOperation::ListRevocations,
         ServiceOperation::CreateOwnWorkspace,
         ServiceOperation::DeleteOwnWorkspace,
@@ -273,6 +285,7 @@ mod tests {
                     | ServiceOperation::ReadPersonalList
                     | ServiceOperation::HostWorkspace
                     | ServiceOperation::UnhostWorkspace
+                    | ServiceOperation::CatchUpWorkspace
             );
             assert!(
                 operation.permits(&host, &device(host, DeviceCapabilities::member())),

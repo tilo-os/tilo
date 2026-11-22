@@ -394,7 +394,7 @@ fn wait_for_package(
         assert!(
             Instant::now() < deadline,
             "package did not arrive after the join; source states {states:?}; active {:?}",
-            tilo_identity_client::resolve_active_identity(target_identity)
+            tilo_identity::store::resolve_active_identity(target_identity)
         );
         while let Some(state) = source.poll() {
             let ended = matches!(&state, SourceState::Failed | SourceState::Rejected);
@@ -475,12 +475,12 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
         "the source to refuse an approval for another request",
         || crate::transport::refused_approvals() > refused,
     );
-    assert!(tilo_identity_client::resolve_active_identity(&target_identity).is_none());
+    assert!(tilo_identity::store::resolve_active_identity(&target_identity).is_none());
     source.approve(&approval).unwrap();
     let delivered = wait_for_package(&source, &receiver, deadline, &target_identity);
     assert_eq!(delivered.package_sha256, package_sha256);
     assert_eq!(std::fs::read(&delivered.package_path).unwrap(), package);
-    let joined = tilo_identity_client::resolve_active_identity(&target_identity).unwrap();
+    let joined = tilo_identity::store::resolve_active_identity(&target_identity).unwrap();
     assert_eq!(
         tilo_identity_client::load_metadata_from_path(&joined)
             .unwrap()

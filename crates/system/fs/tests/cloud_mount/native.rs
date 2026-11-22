@@ -439,7 +439,7 @@ fn kernel_native_conversions_are_read_only_while_uploaded_office_files_are_writa
     ];
     config.acl = fuser::SessionACL::Owner;
     let _session = fuser::spawn_mount(
-        fs::cloud::fuse::CloudFs::new(volume.clone()),
+        tilo_fs::cloud::fuse::CloudFs::new(volume.clone()),
         mount.path(),
         &config,
     )

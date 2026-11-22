@@ -57,6 +57,8 @@ import sys
 import time
 from pathlib import Path
 
+from real_apps import address, catalogue, invocation, receipt
+
 REPO = Path(__file__).resolve().parents[2]
 SESSION = REPO / "dist/dev/nested-session.sh"
 BIN = REPO / "target/nested-session/bin"
@@ -125,11 +127,14 @@ class Session:
     def control_json(self, *args: str):
         return json.loads(run([BIN / "tilo-control", *args], env=self.env()))
 
-    def actions(self, query: str) -> list:
-        return self.control_json("actions", "list", query, "--json").get("actions", [])
+    def frame(self, message: dict) -> dict:
+        return self.control_json("raw", json.dumps(message))
 
-    def invoke(self, provider: str, ident: str):
-        return self.control_json("actions", "invoke", provider, ident, "--wait")
+    def actions(self, query: str) -> list:
+        return catalogue(self.frame, query)
+
+    def invoke(self, row: dict):
+        return receipt(self.frame(invocation(row["provider"], *address(row), None, 10000)))
 
     def log(self) -> str:
         return (self.state / "logs/session.log").read_text(errors="replace")
@@ -533,8 +538,9 @@ def main() -> int:
             until("the app's window",
                   lambda: any(PRESENTED.search(line) for line in shell_log.new().splitlines()), 120, 0.25)
             new_note = until("Notes' New note", lambda: next((a for a in session.actions("New note")
-                                                              if a.get("title") == "New note"), None), 30, 0.25)
-            session.invoke(new_note["provider"], new_note["id"])
+                                                              if (a.get("action") or {}).get("action_label") == "New note"),
+                                                             None), 30, 0.25)
+            session.invoke(new_note)
             time.sleep(1.0)
             dev_log.new()
             shell_log.new()

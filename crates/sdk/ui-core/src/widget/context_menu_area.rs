@@ -469,9 +469,12 @@ impl ContextMenuArea {
     /// that.
     pub fn open_over(&mut self, anchor: Rect, at_pointer: Option<Point>) -> bool {
         let entries = (self.entries)(self.content.as_ref(), at_pointer);
+        // A row of commands is something to offer whether or not the view bound it (a
+        // described row the host left unbound still shows, so a missing binding is seen
+        // rather than silently emptying the menu); captions and rules are not.
         let offered = entries
             .iter()
-            .any(|entry| entry.run.is_some() || !entry.press.is_none());
+            .any(|entry| !matches!(entry.item, MenuItem::Separator | MenuItem::Caption(_)));
         let mut menu = ContextMenu::new();
         self.runs.clear();
         self.presses.clear();

@@ -163,7 +163,7 @@ pub fn approval_args(
 ///
 /// When this account has no identity, or it cannot be read.
 pub fn holds_whole_key(paths: &PersonPaths) -> Result<bool, String> {
-    let record = tilo_identity_client::resolve_active_identity(&paths.dir)
+    let record = crate::store::resolve_active_identity(&paths.dir)
         .ok_or("this account has no identity yet")?;
     let metadata = tilo_identity_client::load_metadata_from_path(&record)
         .map_err(|error| format!("could not read your identity: {error}"))?;

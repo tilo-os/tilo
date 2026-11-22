@@ -11,7 +11,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::path::PathBuf;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;

@@ -5,17 +5,6 @@ use super::{
     RegisteredActionDirectory, published_directory_action, validate_directory_identifier,
 };
 
-enum ResolutionRevision<'a> {
-    /// Only the durable admission tests resolve from a live revision; the
-    /// action api resolves the directory without this retained-offer path.
-    #[allow(
-        dead_code,
-        reason = "driven by the durable admission tests, which reach it through a test-only entrypoint"
-    )]
-    Live(&'a str),
-    RetainedLocal(&'a str),
-}
-
 struct CapturedResolution {
     registered: RegisteredActionDirectory,
     worker: Option<PrivateWorkerRegistration>,
@@ -89,8 +78,6 @@ impl ResolvedOffer {
         )
     }
 }
-impl CapturedResolution {}
-impl ResolvedOffer {}
 impl AppBrokerState {
     #[expect(
         clippy::future_not_send,
@@ -102,7 +89,7 @@ impl AppBrokerState {
         actor: &BrokerActor,
         cluster: &str,
         peer: u64,
-        revision: ResolutionRevision<'_>,
+        revision: &str,
         resource: &str,
         action: &str,
     ) -> Result<CapturedResolution, String> {
@@ -120,31 +107,16 @@ impl AppBrokerState {
             .map_err(|_| "worker registry unavailable")?
             .get(peer, &registered.route)
             .and_then(|current| current.worker_registration.clone());
-        let resolution = tokio::time::timeout(Duration::from_secs(2), async {
-            match revision {
-                ResolutionRevision::Live(revision) => {
-                    self.resolve_action_directory_for_actor(
-                        directories,
-                        actor,
-                        cluster,
-                        peer,
-                        (revision, resource, action),
-                        false,
-                    )
-                    .await
-                }
-                ResolutionRevision::RetainedLocal(revision) => {
-                    self.resolve_local_document_directory_for_actor(
-                        directories,
-                        actor,
-                        cluster,
-                        peer,
-                        (revision, resource, action),
-                    )
-                    .await
-                }
-            }
-        })
+        let resolution = tokio::time::timeout(
+            Duration::from_secs(2),
+            self.resolve_local_document_directory_for_actor(
+                directories,
+                actor,
+                cluster,
+                peer,
+                (revision, resource, action),
+            ),
+        )
         .await
         .map_err(|_| "action directory resolution timeout")??;
         check_registration(&registered, worker.as_ref(), self, directories, peer)?;
@@ -155,52 +127,6 @@ impl AppBrokerState {
             permit,
         })
     }
-    #[expect(
-        clippy::future_not_send,
-        reason = "runs on the broker's single-threaded LocalSet"
-    )]
-    #[cfg(test)]
-    pub(super) async fn resolve_invocation_offer(
-        &self,
-        directories: &LocalActionDirectoryRegistry,
-        actor: &BrokerActor,
-        cluster: &str,
-        peer: u64,
-        revision: &str,
-        resource: &str,
-        action: &str,
-    ) -> Result<ResolvedOffer, String> {
-        validate_directory_identifier(
-            revision,
-            "invocation revision",
-            DIRECTORY_MAX_QUERY_REVISION_BYTES,
-            true,
-        )
-        .map_err(|error| error.to_string())?;
-        let captured = self
-            .capture_directory_resolution(
-                directories,
-                actor,
-                cluster,
-                peer,
-                ResolutionRevision::Live(revision),
-                resource,
-                action,
-            )
-            .await?;
-        let runtime_collab::ActionDirectoryResolution::Found { row, .. } = captured.resolution
-        else {
-            return Err("directory revision or action changed".into());
-        };
-        let published = published_directory_action(&row).map_err(|error| error.to_string())?;
-        Ok(ResolvedOffer {
-            registered: captured.registered,
-            published,
-            worker: captured.worker,
-            _permit: captured.permit,
-        })
-    }
-
     #[expect(
         clippy::future_not_send,
         reason = "runs on the broker's single-threaded LocalSet"
@@ -228,7 +154,7 @@ impl AppBrokerState {
                 actor,
                 cluster,
                 peer,
-                ResolutionRevision::RetainedLocal(revision),
+                revision,
                 resource,
                 action,
             )

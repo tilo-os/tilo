@@ -3,7 +3,6 @@
 //! record's route for it, and the store the window's code reads keeps what
 //! arrives — its history shows the words and the action replays.
 
-
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};

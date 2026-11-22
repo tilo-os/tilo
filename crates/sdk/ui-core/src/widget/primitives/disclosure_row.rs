@@ -269,6 +269,9 @@ pub struct DisclosureRow {
     dense: bool,
     /// How wide a dense row's words were drawn: its chevron stands after them.
     dense_words: std::cell::Cell<f64>,
+    /// How the person points: a finger's coarse press needs a header a finger can hit, however
+    /// few lines it has.
+    environment: crate::interaction::InteractionEnvironment,
     rect: Rect,
     header: Rect,
     header_px: f64,
@@ -305,6 +308,7 @@ impl DisclosureRow {
             separator: false,
             dense: false,
             dense_words: std::cell::Cell::new(0.0),
+            environment: crate::interaction::InteractionEnvironment::default(),
             rect: Rect::ZERO,
             header: Rect::ZERO,
             header_px: 0.0,
@@ -491,17 +495,18 @@ impl DisclosureRow {
     }
 
     fn header_height(&self, theme: &Theme) -> f64 {
-        if self.dense {
+        let own = if self.dense {
             let line = f64::from(theme.text(crate::TextRole::Caption).line_height_px());
-            return line + 2.0 * f64::from(theme.tokens.spacing.rhythm.tight);
-        }
-        let m = &theme.tokens.metrics;
-        let lines = self.face().lines();
-        f64::from(match lines {
-            1 => m.row_single,
-            2 => m.row_double,
-            _ => m.row_double + (m.row_double - m.row_single),
-        })
+            line + 2.0 * f64::from(theme.tokens.spacing.rhythm.tight)
+        } else {
+            let m = &theme.tokens.metrics;
+            f64::from(match self.face().lines() {
+                1 => m.row_single,
+                2 => m.row_double,
+                _ => m.row_double + (m.row_double - m.row_single),
+            })
+        };
+        own.max(f64::from(self.environment.minimum_collection_row()))
     }
 
     fn progress(&self) -> f64 {
@@ -1154,6 +1159,20 @@ impl Widget for DisclosureRow {
         }
     }
 
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.environment != environment {
+            self.environment = environment;
+            self.dirty = true;
+            self.layout_dirty = true;
+        }
+        for child in self.children_mut() {
+            child.set_interaction_environment(environment);
+        }
+    }
+
     // In the order of the row's layout nodes: the body, then the control.
     fn children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = vec![self.body.as_ref()];
@@ -1370,8 +1389,12 @@ mod tests {
                 (three.header_height(&theme) - 68.0).abs() < 1e-6,
                 "a third line adds what the second did"
             );
-            let compact = theme.with_density(crate::tokens::Density::Compact);
+            let compact = theme.clone().with_density(crate::tokens::Density::Compact);
             assert!((one.header_height(&compact) - 28.0).abs() < 1e-6);
+            // A finger needs a header it can hit, however few lines it has.
+            let mut touched = DisclosureRow::new("Wi-Fi", Box::new(crate::widget::Spacer::fixed(40.0)));
+            touched.set_interaction_environment(crate::interaction::InteractionEnvironment::default().with_touch_modality());
+            assert!((touched.header_height(&theme) - 48.0).abs() < 1e-6);
         }
 
         // A view opening its row (an agent's action) moves as the person

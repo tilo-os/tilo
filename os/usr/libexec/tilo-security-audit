@@ -588,7 +588,7 @@ esac
 # (ProtectProc=invisible). /proc is not remounted hidepid globally: that hides
 # PID 1 from every unprivileged process, which breaks libsystemd's unit
 # lookups (the AT-SPI bus cannot start); secret holders are non-dumpable.
-for unit in tilo-server.service tilo-fs-replica.service tilo-local-model.service; do
+for unit in tilo-server.service tilo-local-model.service; do
   if [ "$(systemctl show -p ProtectProc --value "$unit" 2>/dev/null)" = invisible ]; then
     ok "$unit sees only its own processes (ProtectProc=invisible)"
   else

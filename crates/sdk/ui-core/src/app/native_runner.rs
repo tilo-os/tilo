@@ -242,14 +242,18 @@ impl AppHandler {
 
 impl AppHandler {
     /// Tell the app how far the compositor's input reached it, to run in its place among the
-    /// window's own input; only the Wayland host delivers a serial, and the receiver stays `&mut
-    /// self` on every target so callers need no `cfg`.
+    /// window's own input: only the Wayland host delivers a serial.
+    #[cfg(target_os = "linux")]
     fn follow_handled_input(&mut self) {
-        #[cfg(target_os = "linux")]
         if let Some(serial) = winit::platform::wayland::delivered_input_serial() {
             self.app.input_handled(serial);
         }
     }
+
+    /// Only the Wayland host delivers an input serial, so every other host has handed the app
+    /// the whole of its input already; the callers stay the same on every target.
+    #[cfg(not(target_os = "linux"))]
+    fn follow_handled_input(&self) {}
 }
 
 #[cfg(any(target_os = "macos", windows))]
@@ -5058,7 +5062,8 @@ impl App {
     /// more window of the loop, and the loop ends with the last.
     #[allow(
         clippy::unwrap_used,
-        reason = "event-loop creation/run failure is unrecoverable at process startup; the public run()/run_with_setup() signature is called from every app's main() and returning Result here would ripple across the whole app surface for a failure with no fallback"
+        clippy::expect_used,
+        reason = "event-loop creation/run failure is unrecoverable at process startup, as is an Android launch that did not come through ui::android_main! and so has no activity: the public run()/run_with_setup() signature is called from every app's main() and returning Result here would ripple across the whole app surface for a failure with no fallback"
     )]
     pub(crate) fn run_windows<F>(
         mut self,

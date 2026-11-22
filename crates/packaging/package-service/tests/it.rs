@@ -7,7 +7,6 @@
 )]
 // One test binary instead of one per file; #[path] keeps the files in place.
 
-
 #[path = "common/mod.rs"]
 mod common;
 

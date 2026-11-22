@@ -127,6 +127,8 @@ struct Writer {
     sent: BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
     /// Bytes handed to the session.
     bytes: usize,
+    /// Records of the tree written, one per record a write changed.
+    writes: usize,
 }
 
 impl Writer {
@@ -162,6 +164,7 @@ impl Writer {
                     .unwrap();
             }
             self.bytes += write.changes.len();
+            self.writes += 1;
             self.link
                 .write(route, &DocumentMutation::Incremental(write.changes))
                 .unwrap();
@@ -261,8 +264,10 @@ impl Reader {
 #[derive(Debug, Default, Clone, Copy)]
 struct Window {
     /// Time from writing the file into the namespace until the host had it, the page's
-    /// reading set apart.
+    /// reading set apart: printed, never judged, as a shared machine stalls now and then.
     write_us: f64,
+    /// Records of the tree the window's writes changed.
+    writes: f64,
     /// Bytes sent.
     sent: f64,
     /// Bytes the host keeps on disk.
@@ -350,6 +355,7 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
         namespace: Namespace::new("laptop").unwrap(),
         sent: BTreeMap::new(),
         bytes: 0,
+        writes: 0,
     };
     let landed = reader_link
         .events_where(|event| matches!(event, tilo_session_client::Event::Landed { .. }));
@@ -371,7 +377,8 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
     let mut windows = Vec::new();
     let mut folder = ROOT_INO;
     for start in (0..FILES).step_by(WINDOW) {
-        let (sent, kept, read, reads, busy, memory) = (
+        let (changed, sent, kept, read, reads, busy, memory) = (
+            writer.writes,
             writer.bytes,
             disk_bytes(state.path()),
             reader.bytes,
@@ -409,6 +416,7 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
         let shown_after = reading.elapsed();
         let window = Window {
             write_us: wrote.as_secs_f64() * 1e6 / WINDOW as f64,
+            writes: (writer.writes - changed) as f64,
             sent: (writer.bytes - sent) as f64 / WINDOW as f64,
             kept: disk_bytes(state.path()).saturating_sub(kept) as f64 / WINDOW as f64,
             read_us: reader.busy.saturating_sub(busy).as_secs_f64() * 1e6 / WINDOW as f64,
@@ -418,8 +426,9 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
             memory: rss_kib().saturating_sub(memory) as f64 * 1024.0 / WINDOW as f64,
         };
         eprintln!(
-            "files {shown:>6}: write {:>5.0} us  sent {:>4.0} B  kept {:>5.0} B  page {:>4.0} us {:>4.0} B {:>4.0} records  memory {:>6.0} B  per file; shown {:>5.1} ms after the host had it; rss {} MiB, {} records",
+            "files {shown:>6}: write {:>5.0} us {:>3.0} records  sent {:>4.0} B  kept {:>5.0} B  page {:>4.0} us {:>4.0} B {:>4.0} records  memory {:>6.0} B  per file; shown {:>5.1} ms after the host had it; rss {} MiB, {} records",
             window.write_us,
+            window.writes,
             window.sent,
             window.kept,
             window.read_us,
@@ -454,10 +463,9 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
         "the file's chunk names the agent that wrote it: {named:?}"
     );
 
-    // The last files cost what the first did. What the page reads is counted, not timed: a
-    // shared machine stalls now and then, and the records a write makes it read do not change
-    // with the machine. The times are the median of five windows at each end, so one stalled
-    // window is the machine while every late window slower is the folder.
+    // The last files cost what the first did, counted rather than timed: a shared machine stalls
+    // for seconds now and then, and the records a write changes and makes the page read do not
+    // change with the machine. Sizes are the median of five windows at each end.
     let early = windows.get(..5).unwrap();
     let late = windows.get(windows.len() - 5..).unwrap();
     let median = |windows: &[Window], cost: fn(&Window) -> f64| {
@@ -472,7 +480,6 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
             "{what} grew with the folder: {first:.0} {unit} early on, {last:.0} {unit} at the end"
         );
     };
-    flat("the time a write takes", "per file", |w| w.write_us, 2.0);
     flat("the bytes a write sends", "per file", |w| w.sent, 1.25);
     flat(
         "what the host keeps of a write",
@@ -491,6 +498,14 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
     // ends are compared as the five windows' sums, where a record more or less is the batching.
     // A page that followed a write through the whole folder would read every chunk, tens of
     // times more at five thousand files than at two.
+    // A write that changed records across the whole folder would write every chunk, as many as
+    // the folder has at five thousand files: what the writer changes is counted the same way.
+    let written = |windows: &[Window]| windows.iter().map(|window| window.writes).sum::<f64>();
+    let (early_written, late_written) = (written(early), written(late));
+    assert!(
+        late_written <= early_written.max(1.0) * 3.0,
+        "the records a write changes grew with the folder: {early_written:.0} early on, {late_written:.0} at the end"
+    );
     let records = |windows: &[Window]| windows.iter().map(|window| window.records).sum::<f64>();
     let (early_records, late_records) = (records(early), records(late));
     assert!(
@@ -582,6 +597,7 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
         namespace: Namespace::new("laptop").unwrap(),
         sent: BTreeMap::new(),
         bytes: 0,
+        writes: 0,
     };
     let mut folder = ROOT_INO;
     for n in 0..FILES {

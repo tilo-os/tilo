@@ -1,4 +1,3 @@
-
 //! A record that does not read as the resource shows why, never the last
 //! state as if it were current, and every action reports why it is
 //! unavailable.

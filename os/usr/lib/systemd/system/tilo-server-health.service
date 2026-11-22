@@ -10,7 +10,7 @@ Documentation=file:///usr/share/doc/tilo/recovery.md
 #
 # A machine waiting to be paired has no server yet; it is judged by
 # multi-user.target alone, so it is never rolled back for waiting on a person.
-After=multi-user.target tilo-server.service tilo-fs-replica.service
+After=multi-user.target tilo-server.service
 # Above tilo-server-health's own wait (240 s), so the verdict is its own.
 TimeoutStartSec=360
 

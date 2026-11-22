@@ -2,7 +2,7 @@
 //! `root board: Board`) and a collection of a union of types, through the workspace document and
 //! a second replica.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
 
 use crate::fixtures::Replica;
@@ -89,7 +89,7 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 
 #[test]
 fn a_named_root_collection_holds_items_of_each_type_of_its_union() {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(PINS, "")]);
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(PINS, "")]);
     let board = ada.host.root_of(APP).unwrap();
     ada.commit();
     call(
@@ -107,15 +107,14 @@ fn a_named_root_collection_holds_items_of_each_type_of_its_union() {
         call(&ada, "read", vec![Value::resource(&board)]),
         Value::text("[milk]<tilo.so>")
     );
-    let mut ben = ada.fork("ben", &[(PINS, &loaded[0].ids)]);
-    ben.host.sync_from(&ben.doc);
+    let ben = ada.fork("ben", &[(PINS, &loaded[0].ids)]);
     call(
         &ben,
         "note",
         vec![Value::resource(&board), Value::text("eggs")],
     );
     ben.commit();
-    ada.sync_with(&mut ben);
+    ada.sync_with(&ben);
     assert_eq!(
         call(&ada, "read", vec![Value::resource(&board)]),
         Value::text("[milk]<tilo.so>[eggs]")

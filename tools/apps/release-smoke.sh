@@ -222,7 +222,6 @@ engines() (
                "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                "pdf-viewer libtilo_pdf_engine.so" \
                "sheets libtilo_spreadsheet_engine.so --probe-spreadsheet-engine" \
-               "agent libtilo_agent_web_engine.so --probe-agent-web-engine" \
                "file-explorer libtilo_pdf_engine.so" \
                "file-explorer libtilo_archive_engine.so" \
                "print-centre libtilo_pdf_engine.so" \

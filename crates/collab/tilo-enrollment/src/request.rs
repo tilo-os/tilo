@@ -139,23 +139,12 @@ pub fn install_answer(
     let JoinOptions {
         identity_root,
         kind,
-        home_peer_output,
         identity_dir,
         requester_lease,
         person_uid,
         ..
     } = options;
     if kind == EnrollmentKind::HomePeer {
-        let home_peer_toml = payload
-            .home_peer_toml
-            .as_ref()
-            .context("approving device omitted home-peer configuration")?;
-        let _: fs::full_replica::HomePeerSet = toml::from_str(home_peer_toml)
-            .context("approving device returned an invalid home-peer configuration")?;
-        tilo_files::native::atomic::write(
-            home_peer_output.context("home-peer output is required")?,
-            home_peer_toml.as_bytes(),
-        )?;
         // The person's earlier servers, which take this one in among them when
         // it starts.
         let earlier = tilo_server_protocol::checked_home_peers(
@@ -488,7 +477,6 @@ pub struct JoinOptions<'a> {
     pub label: &'a str,
     pub timeout: u64,
     pub kind: EnrollmentKind,
-    pub home_peer_output: Option<&'a std::path::Path>,
     pub identity_dir: Option<&'a std::path::Path>,
     pub requester_lease: Option<tilo_server_protocol::ProcessLease>,
     pub port: u16,

@@ -1,4 +1,3 @@
-
 //! A run's address: the resource Console publishes for it, the view a link opens, and the
 //! link itself, round-tripping through the link grammar.
 #![allow(

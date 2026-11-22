@@ -14,23 +14,20 @@
 //! the loop is woken for it.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionTarget,
-    settle_with,
+    self, ActionCallError, ActionProvider as _, Caller, RemoteActionFrame, RemoteActionMessage,
 };
-use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_compositor::{Compositor, InputEvent};
 
 use tilo_desktop::overlays::{Overlays, Part};
@@ -310,10 +307,6 @@ impl Context {
 /// the owner's socket serves the semantic half only ([`Op::owner_serves`], [`served`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Op {
-    ActionsCancel,
-    ActionsEnumerate,
-    ActionsInvoke,
-    ActionsStatus,
     ClickAt,
     ClickNamed,
     Drag,
@@ -347,11 +340,7 @@ enum Op {
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 32] = [
-        Self::ActionsCancel,
-        Self::ActionsEnumerate,
-        Self::ActionsInvoke,
-        Self::ActionsStatus,
+    const ALL: [Self; 28] = [
         Self::ClickAt,
         Self::ClickNamed,
         Self::Drag,
@@ -385,10 +374,6 @@ impl Op {
     /// The op `request` names, or `None` for one the protocol does not answer at all.
     fn of(request: &Json) -> Option<Self> {
         Some(match request.get("op").and_then(Json::as_str)? {
-            "actions_cancel" => Self::ActionsCancel,
-            "actions_enumerate" => Self::ActionsEnumerate,
-            "actions_invoke" => Self::ActionsInvoke,
-            "actions_status" => Self::ActionsStatus,
             "click_at" => Self::ClickAt,
             "click_named" => Self::ClickNamed,
             "drag" => Self::Drag,
@@ -424,10 +409,6 @@ impl Op {
     /// The name the protocol writes it as.
     const fn name(self) -> &'static str {
         match self {
-            Self::ActionsCancel => "actions_cancel",
-            Self::ActionsEnumerate => "actions_enumerate",
-            Self::ActionsInvoke => "actions_invoke",
-            Self::ActionsStatus => "actions_status",
             Self::ClickAt => "click_at",
             Self::ClickNamed => "click_named",
             Self::Drag => "drag",
@@ -466,11 +447,7 @@ impl Op {
     const fn owner_serves(self) -> bool {
         matches!(
             self,
-            Self::ActionsCancel
-                | Self::ActionsEnumerate
-                | Self::ActionsInvoke
-                | Self::ActionsStatus
-                | Self::ProcessMemory
+            Self::ProcessMemory
                 | Self::ProfileStart
                 | Self::ProfileStatus
                 | Self::ProfileStop
@@ -484,19 +461,6 @@ impl Op {
 }
 
 impl Op {
-    /// Whether what `request` asks of this op starts work the broker answers, which needs no session
-    /// the frame shows: an action a tool or an agent invokes starts now, in this pass, and the
-    /// answer it waits on comes back beside the frame instead of after it. An invocation the
-    /// session's own actions answer is the loop's to run later in the pass, so it waits for the
-    /// frame with everything else.
-    fn starts_an_action(self, request: &Json) -> bool {
-        self == Self::ActionsInvoke
-            && request
-                .get("provider")
-                .and_then(Json::as_str)
-                .is_some_and(|provider| provider != tilo_actions::remote::SESSION_ACTIONS_PROVIDER)
-    }
-
     /// Whether it hands the session input, which the loop serves where a device's own input reaches
     /// it: in the pass it arrives in, before that pass draws its frame.
     const fn hands_input(self) -> bool {
@@ -533,10 +497,9 @@ fn not_this_api(who: Audience, op: Op) -> Json {
     refusal(
         "not_permitted",
         &format!(
-            "this control socket serves the action model, the state it shows and the \
-             session's own diagnostics (`actions_cancel`, `actions_enumerate`, \
-             `actions_invoke`, `actions_status`, `process_memory`, `profile_start`, \
-             `profile_status`, `profile_stop`, `state_dump`, `watch` and `windows`), not \
+            "this control socket serves action frames, the state the session shows and its \
+             own diagnostics (`process_memory`, `profile_start`, `profile_status`, \
+             `profile_stop`, `resource_read`, `state_dump`, `watch` and `windows`), not \
              `{}`; synthetic input and screenshots exist only on a development session's \
              test-control socket",
             op.name()
@@ -578,11 +541,10 @@ impl Control {
         let (asks, asked) = channel();
         let changes = Arc::new(Changes::new(options.wake.handle()));
         let actions = Arc::new(Actions {
+            person: host.as_ref().clone().for_local_person(),
             host,
             caller: Caller::local_person(options.person.clone()).in_new_execution(),
             front: Front::default(),
-            log: Mutex::new(BTreeMap::new()),
-            next: AtomicU64::new(1),
             locked: AtomicBool::new(false),
         });
         let shared = Arc::new(Shared {
@@ -648,7 +610,7 @@ impl Control {
             answer,
         } in waiting.drain(..)
         {
-            if op.hands_input() || op.starts_an_action(&request) {
+            if op.hands_input() {
                 let _ = answer.send(loop_answer(
                     op,
                     &request,
@@ -893,6 +855,13 @@ fn serve_connection(stream: UnixStream, ctx: &Context, shared: &Shared, first: O
         }
         let answer = match serde_json::from_str::<Json>(&line) {
             Err(error) => refusal("parse_error", &error.to_string()),
+            // A frame of the action model's own wire: the one call, as every other caller makes it.
+            Ok(request) if request.get("op").is_none() && request.get("version").is_some() => {
+                if talk(&writer, &frame_answer(&line, &shared.actions, ctx)).is_err() {
+                    break;
+                }
+                continue;
+            }
             Ok(request) => match Op::of(&request) {
                 None => unsupported(ctx, &request),
                 Some(op) if !served(ctx.who, op) => not_this_api(ctx.who, op),
@@ -998,10 +967,6 @@ fn asked_here(
     shared: &Shared,
 ) -> Option<Json> {
     Some(match op {
-        Op::ActionsEnumerate => actions_enumerate(request, &shared.actions, &shared.changes, ctx),
-        Op::ActionsInvoke => actions_invoke(request, &shared.actions, ctx),
-        Op::ActionsStatus => actions_status(request, &shared.actions, ctx),
-        Op::ActionsCancel => actions_cancel(request, &shared.actions, ctx),
         Op::Watch => watch(request, writer, watching, ctx, shared),
         Op::ResourceRead => resource_read(request, &shared.actions, ctx),
         _ => return None,
@@ -1051,7 +1016,7 @@ fn resource_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     };
     let caller = actions.caller(ctx).in_workspace(workspace);
     match tilo_actions::remote::read_resources(reads.as_ref(), &caller, &asks, after, deadline)
-        .map_err(|error| action_refusal(&error))
+        .map_err(|error| refusal(error.code(), &error.to_string()))
         .and_then(|readings| {
             readings
                 .readable()
@@ -1470,9 +1435,10 @@ struct Actions {
     caller: Caller,
     /// The workspace in front, as the loop last served it: what an invocation opens into.
     front: Front,
-    /// The number a tool was answered with, and the invocation it names.
-    log: Mutex<BTreeMap<u64, InvocationId>>,
-    next: AtomicU64,
+    /// The broker as the person at this device invokes through it
+    /// ([`mcp_server::Host::for_local_person`]): what a frame on the owner's or the development
+    /// socket is answered by.
+    person: mcp_server::Host,
     /// Whether the screen is locked, as the loop last read it: the owner's socket invokes nothing
     /// there.
     locked: AtomicBool,
@@ -1483,9 +1449,6 @@ const HOST_WAIT: Duration = Duration::from_secs(30);
 
 /// The longest a control request waits: what `tilo-control` says a desktop caps a wait at.
 const MAX_WAIT: Duration = Duration::from_secs(30);
-
-/// How long a settled wait stands by the host's own answer once it gave one.
-const SETTLE_WAIT: Duration = Duration::from_secs(35);
 
 /// The workspace in front, as the loop last served the session, and the wait for a request that
 /// arrives before the session holds one.
@@ -1558,13 +1521,6 @@ impl Actions {
         }
     }
 
-    /// Remember `invocation` under a fresh number for the tools.
-    fn remember(&self, invocation: InvocationId) -> u64 {
-        let number = self.next.fetch_add(1, Ordering::Relaxed);
-        self.log.lock_recover().insert(number, invocation);
-        number
-    }
-
     /// Whether the screen is locked, as the loop last read it, and where it stands now.
     fn set_locked(&self, locked: bool) {
         self.locked.store(locked, Ordering::Relaxed);
@@ -1573,205 +1529,54 @@ impl Actions {
     fn locked(&self) -> bool {
         self.locked.load(Ordering::Relaxed)
     }
-
-    /// The invocation a tool's number names, while this session remembers it.
-    fn invocation(&self, number: u64) -> Option<InvocationId> {
-        self.log.lock_recover().get(&number).copied()
-    }
 }
 
-/// The answer to `actions_enumerate` : the rows the actions answer with now, in the shape the tools
-/// that drive a desktop read, held until they move past `after_revision` or the listing is
-/// complete.
-fn actions_enumerate(
-    request: &Json,
-    actions: &Actions,
-    changes: &Arc<Changes>,
-    ctx: &Context,
-) -> Json {
-    let compact = request.get("detail").and_then(Json::as_str) == Some("compact");
-    let kinds: Vec<String> = request
-        .get("kinds")
-        .and_then(Json::as_array)
-        .map(|kinds| {
-            kinds
-                .iter()
-                .filter_map(Json::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-    let wait_ms = request.get("wait_ms").and_then(Json::as_u64);
-    let after = request
-        .get("after_revision")
-        .and_then(Json::as_str)
-        .map(str::to_owned);
-    // A query of several words is read as the tools read it: the host narrows to the first word,
-    // and the rest narrow what it answered ([`legacy_rows`]).
-    let words: Vec<String> = request
-        .get("query")
-        .and_then(Json::as_str)
-        .unwrap_or_default()
-        .split_whitespace()
-        .map(str::to_lowercase)
-        .collect();
-    let paging = request
-        .get("cursor")
-        .and_then(Json::as_str)
-        .is_some_and(|cursor| !cursor.is_empty());
-    let files = request
-        .get("files")
-        .and_then(Json::as_bool)
-        .unwrap_or(false);
-    let deadline = wait_deadline(wait_ms);
-    let mut seen = changes.generation();
-    loop {
-        let page = match catalogue_page(request, actions, &words, ctx) {
-            Ok(page) => page,
-            Err(answer) => return answer,
-        };
-        if listing_settled(&page, after.as_deref(), paging, wait_ms.is_some()) {
-            return listing(&page, &words, compact, &kinds, files);
-        }
-        let Some((generation, _)) = changes.wait(seen, None, Some(deadline)) else {
-            return listing(&page, &words, compact, &kinds, files);
-        };
-        seen = generation;
-    }
-}
-
-/// Whether the listing `page` is the one to answer: the one after `after` , or, without one, a
-/// complete listing — the whole of it, or its first page when more pages follow.
-fn listing_settled(page: &CataloguePage, after: Option<&str>, paging: bool, waits: bool) -> bool {
-    if let Some(after) = after {
-        return page.revision != after;
-    }
-    !waits || paging || page.exhausted || !page.next_cursor.is_empty()
-}
-
-/// One page of what the caller is offered, as the broker and the session's own APIs answer it.
-fn catalogue_page(
-    request: &Json,
-    actions: &Actions,
-    words: &[String],
-    ctx: &Context,
-) -> Result<CataloguePage, Json> {
-    let limit = request.get("limit").and_then(Json::as_u64);
-    let mut query = CatalogueQuery {
-        needle: words.first().cloned().unwrap_or_default(),
-        max_results: limit.map_or(MAX_CATALOGUE_PAGE, |limit| {
-            u32::try_from(limit)
-                .unwrap_or(u32::MAX)
-                .clamp(1, MAX_CATALOGUE_PAGE)
-        }),
-        ..CatalogueQuery::default()
+/// The answer to one [`RemoteActionFrame`] line: the frame [`remote::serve`] answers it with, as
+/// the person at this device (or, at the app socket, as the app), in the workspace in front unless
+/// the connection was admitted to another. A caller names no workspace: the session decides where
+/// the person is, waiting for one when it has none yet ([`Front::known`]). The owner's socket
+/// invokes nothing while the screen is locked: what a person's own scripts run is what the person
+/// at the device could run.
+fn frame_answer(line: &str, actions: &Actions, ctx: &Context) -> String {
+    let message = match RemoteActionFrame::decode(line.as_bytes()) {
+        Ok(frame) => frame.message,
+        Err(error) => return refusal("parse_error", &error.to_string()).to_string(),
     };
-    if let Some(token) = request
-        .get("cursor")
-        .and_then(Json::as_str)
-        .filter(|token| !token.is_empty())
-    {
-        let Some((revision, cursor)) = decode_cursor(token) else {
-            return Err(refusal(
-                "invalid_arguments",
-                "the cursor is not one this desktop printed",
-            ));
+    let locked = ctx.who != Audience::Dev
+        && actions.locked()
+        && matches!(message, RemoteActionMessage::Invoke(_));
+    let error = if locked {
+        ActionCallError::Unavailable {
+            reason: "the session is locked; unlock it at the device, then invoke again".into(),
+        }
+    } else {
+        ActionCallError::Unanswered
+    };
+    let Some(unanswered) = remote::refuse(&message, error) else {
+        return refusal("parse_error", "a frame sent here asks something").to_string();
+    };
+    let answer = if locked {
+        unanswered
+    } else {
+        let caller = actions.caller(ctx);
+        let provider = if ctx.scope.is_some() {
+            actions.host.as_ref()
+        } else {
+            &actions.person
         };
-        query.revision = Some(revision);
-        query.cursor = cursor;
+        remote::serve(provider, &caller, message)
+            .and_then(|pending| {
+                pending
+                    .wait_timeout(remote::MAX_REMOTE_WAIT.saturating_add(HOST_WAIT))
+                    .ok()
+                    .flatten()
+            })
+            .unwrap_or(unanswered)
+    };
+    match RemoteActionFrame::new(answer).encode() {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(error) => refusal("unavailable", &error.to_string()).to_string(),
     }
-    let caller = actions.caller(ctx);
-    match actions.host.query(&caller, query).wait_timeout(HOST_WAIT) {
-        Ok(Some(Ok(page))) => Ok(page),
-        Ok(Some(Err(error))) => Err(action_refusal(&error)),
-        Ok(None) | Err(_) => Err(refusal("unavailable", "the listing did not answer")),
-    }
-}
-
-/// The answer to a page: its rows as the tools know them, and the cursor of the next one.
-fn listing(
-    page: &CataloguePage,
-    words: &[String],
-    compact: bool,
-    kinds: &[String],
-    files: bool,
-) -> Json {
-    if page.stale_cursor {
-        return refusal("stale_cursor", "the listing moved on; list it again");
-    }
-    // Files and folders are the resources behind actions, left out of a listing unless they were
-    // asked for — by `files` , or by a kind filter that may name them.
-    let resources = files || !kinds.is_empty();
-    let mut rows = legacy_rows(page, words, compact, resources);
-    if !kinds.is_empty() {
-        rows.retain(|row| {
-            row.get("kind")
-                .and_then(Json::as_str)
-                .is_some_and(|kind| kinds.iter().any(|wanted| kind_matches(kind, wanted)))
-        });
-    }
-    let truncated = !page.exhausted || page.budget_exhausted;
-    let mut answer = json!({
-        "count": rows.len(),
-        "actions": rows,
-        "revision": page.revision,
-        "complete": !truncated,
-        "truncated": truncated,
-        // This desktop holds a listing request until the listing settles or moves on.
-        "settled": true,
-    });
-    if !page.next_cursor.is_empty()
-        && let Some(fields) = answer.as_object_mut()
-    {
-        fields.insert(
-            "next_cursor".into(),
-            encode_cursor(&page.revision, &page.next_cursor).into(),
-        );
-    }
-    json!({"answer": answer})
-}
-
-/// Whether a row of `kind` answers a `--kind` filter: its kind, in any case, and the names the
-/// tools use for an app or an action.
-fn kind_matches(kind: &str, wanted: &str) -> bool {
-    let wanted = wanted.to_lowercase();
-    kind.eq_ignore_ascii_case(&wanted)
-        || (kind == KIND_APPS
-            && matches!(
-                wanted.as_str(),
-                "app" | "apps" | "application" | "applications"
-            ))
-        || (kind == KIND_ACTIONS && matches!(wanted.as_str(), "action" | "actions"))
-}
-
-/// The kind a row that opens an app is listed as, as the tools group and filter it.
-const KIND_APPS: &str = "Apps";
-/// The kind a row that runs an action is listed as.
-const KIND_ACTIONS: &str = "Actions";
-
-/// The page's rows as the tools that drive a desktop address them.
-/// An app the workspace can open is `applications:<app id>` ; an action an app publishes while it
-/// runs is `app-actions:<provider>␟<address>` ; any other action is `<provider>:<address>` . The
-/// address is the action model's own — resource, then action ([`ActionAddress::encode`]) — which
-/// the tools print escaped and take back.
-fn legacy_rows(
-    page: &CataloguePage,
-    words: &[String],
-    compact: bool,
-    resources: bool,
-) -> Vec<Json> {
-    page.rows
-        .iter()
-        .filter(|row| resources || row.action.is_some())
-        .filter_map(legacy_row)
-        .filter(|row| row_mentions(row, words))
-        .map(|mut row| {
-            if compact && let Some(fields) = row.as_object_mut() {
-                fields.remove("contract");
-            }
-            row
-        })
-        .collect()
 }
 
 /// The controls the session shows now, as the tools read them: each one's name, what it does where it
@@ -1829,391 +1634,12 @@ fn clicked_named(request: &Json, session: &Session<'_>) -> Json {
     }
 }
 
-/// One row in the tools' shape, or `None` for a row that only holds more rows.
-fn legacy_row(row: &tilo_actions::remote::CatalogueRow) -> Option<Json> {
-    let action = row.action.as_ref();
-    let mut described = json!({
-        "provider": row.provider,
-        "kind": action.map_or_else(|| row.resource.kind.clone(), |_| KIND_ACTIONS.to_owned()),
-        "operation_kind": action.map(|action| {
-            serde_json::to_value(action.kind).unwrap_or(Json::Null)
-        }),
-        "title": action.map_or_else(
-            || row.resource.label.clone(),
-            |action| action.action_label.clone(),
-        ),
-        "subtitle": row.resource.label,
-        "params": action.map_or_else(Vec::new, |action| {
-            action.params.iter().map(param_row).collect()
-        }),
-        "contract": action.map(|action| {
-            serde_json::to_value(&action.contract).unwrap_or(Json::Null)
-        }),
-        "application": row.app_id,
-        "record": "",
-        "resource": row.resource.id,
-        "semantic_identity": action.map(|action| action.semantic_identity.clone()),
-        "operation": action.map(|action| action.address.action.clone()),
-    });
-    let fields = described.as_object_mut()?;
-    match action {
-        None => {
-            fields.insert("id".into(), row.resource.id.clone().into());
-        }
-        Some(action) => {
-            if opens_app(row, action) {
-                fields.insert("provider".into(), "applications".into());
-                fields.insert("id".into(), row.app_id.clone().into());
-                fields.insert("kind".into(), KIND_APPS.into());
-                fields.insert("title".into(), row.resource.label.clone().into());
-            } else if is_app_action(&row.provider) {
-                fields.insert("provider".into(), "app-actions".into());
-                fields.insert(
-                    "id".into(),
-                    format!("{}\u{1f}{}", row.provider, action.address.encode()).into(),
-                );
-            } else {
-                fields.insert("id".into(), action.address.encode().into());
-            }
-        }
-    }
-    Some(described)
-}
-
-/// One parameter, as the tools read it.
-fn param_row(param: &tilo_actions::ActionParam) -> Json {
-    json!({
-        "name": param.name,
-        "type": param.ty.label(),
-        "required": param.required,
-        "description": param.description,
-        "choices": param.choices,
-        "nullable": param.nullable,
-    })
-}
-
-/// Whether `row` is the workspace's open of an app: the action a person picks an app by.
-fn opens_app(
-    row: &tilo_actions::remote::CatalogueRow,
-    action: &tilo_actions::ActionDescriptor,
-) -> bool {
-    action.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
-        && action
-            .address
-            .resource
-            .starts_with(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
-        && tilo_actions::remote::provider_workspace(&row.provider).is_some()
-}
-
-/// Whether `provider` names an app's own actions: the instance an app runs in, or an app the
-/// desktop launches.
-fn is_app_action(provider: &str) -> bool {
-    provider.starts_with("application:") || provider.starts_with("launch:")
-}
-
-/// Whether `row` mentions every word the query asked for, over what the tools see of it.
-fn row_mentions(row: &Json, words: &[String]) -> bool {
-    if words.len() < 2 {
-        return true;
-    }
-    let mut fields = Vec::new();
-    for key in [
-        "id",
-        "title",
-        "subtitle",
-        "kind",
-        "application",
-        "operation",
-        "resource",
-    ] {
-        if let Some(text) = row.get(key).and_then(Json::as_str) {
-            fields.push(text.to_lowercase());
-        }
-    }
-    words
-        .iter()
-        .all(|word| word.is_empty() || fields.iter().any(|field| field.contains(word.as_str())))
-}
-
-/// A cursor as the tools carry it: the revision it was cut at and the actions' continuation after
-/// it, so the next page reads on in the listing it was taken from.
-fn encode_cursor(revision: &str, cursor: &[u8]) -> String {
-    format!("{revision}~{}", hex::encode(cursor))
-}
-
-/// [`encode_cursor`] undone, `None` for a token this desktop did not print.
-fn decode_cursor(token: &str) -> Option<(String, Vec<u8>)> {
-    let (revision, cursor) = token.rsplit_once('~')?;
-    Some((revision.to_owned(), hex::decode(cursor).ok()?))
-}
-
-/// The answer to `actions_invoke` : the receipt, by a number the tools follow it with. The owner's
-/// shared invokes nothing while the screen is locked: what a person's own scripts run is what the
-/// person at the device could run, and a locked desktop runs nothing. `confirmed` stands for the
-/// person's own answer to an action that asks first, as pressing Allow in its prompt does.
-fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
-    if ctx.who != Audience::Dev && actions.locked() {
-        return refusal(
-            "locked",
-            "the session is locked; unlock it at the device, then invoke again",
-        );
-    }
-    let Some(provider) = request.get("provider").and_then(Json::as_str) else {
-        return refusal("parse_error", "`actions_invoke` takes `provider`");
-    };
-    let Some(id) = request.get("id").and_then(Json::as_str) else {
-        return refusal("parse_error", "`actions_invoke` takes `id`");
-    };
-    if request.get("device").and_then(Json::as_str).is_some() {
-        return refusal(
-            "unsupported",
-            "this desktop runs an action here; sending one to another device is not served at \
-             this shared",
-        );
-    }
-    // Which workspace the action is asked in is the session's answer, not a copy of it: a request
-    // that lands while the session is still adopting the person's workspaces waits for the session
-    // rather than naming none and being refused as if the person's own session were not theirs.
-    let workspace = match &ctx.scope {
-        Some(scope) => scope.workspace.clone(),
-        None => match actions.front.known(HOST_WAIT) {
-            Some(workspace) => workspace,
-            None => {
-                return refusal(
-                    "unavailable",
-                    "this session holds no workspace yet; there is nothing in front to act in",
-                );
-            }
-        },
-    };
-    let target = match legacy_target(provider, id, &workspace) {
-        Ok(target) => target,
-        Err(answer) => return answer,
-    };
-    let argument = match request.get("args") {
-        None | Some(Json::Null) => InvokeArgument::None,
-        Some(Json::Object(object)) if object.is_empty() => InvokeArgument::None,
-        Some(Json::Object(object)) => InvokeArgument::Json(object.clone()),
-        Some(other) => {
-            return refusal(
-                "parse_error",
-                &format!("`args` is an object of arguments, not {other}"),
-            );
-        }
-    };
-    let invocation = InvocationId::new();
-    let caller = actions.caller(ctx);
-    let confirmation = match request.get("confirmed").and_then(Json::as_bool) {
-        Some(true) => Some(tilo_actions::remote::Confirmation::Confirmed),
-        _ => None,
-    };
-    let invoke = InvokeRequest {
-        invocation,
-        target,
-        argument,
-        context: None,
-        confirmation,
-        revision: None,
-        on_behalf_of: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
-    // The person at this device's own actions are theirs; a program inside an app acts as that app, and the
-    // broker's per-action permissions decide for it.
-    let started = match ctx.scope {
-        Some(_) => actions.host.invoke(&caller, invoke),
-        None => actions.host.invoke_as_local_person(&caller, invoke),
-    };
-    let receipt = match started.wait_timeout(HOST_WAIT) {
-        Ok(Some(Ok(receipt))) => receipt,
-        Ok(Some(Err(error))) => return action_refusal(&error),
-        // The wait is the action's answer, not its start: nothing here says the action never
-        // began, and the number follows where it got to.
-        Ok(None) | Err(_) => {
-            let number = actions.remember(invocation);
-            return refusal(
-                "unavailable",
-                &format!(
-                    "the action has not answered and may still run; follow it with \
-                     `actions_status` {number}"
-                ),
-            );
-        }
-    };
-    receipt_answer(
-        actions,
-        &caller,
-        &receipt,
-        request.get("wait_ms").and_then(Json::as_u64),
-    )
-}
-
-/// The answer to `actions_status` : where an invocation a tool started stands now.
-fn actions_status(request: &Json, actions: &Actions, ctx: &Context) -> Json {
-    let Some(number) = request.get("invocation_id").and_then(Json::as_u64) else {
-        return refusal("parse_error", "`actions_status` takes `invocation_id`");
-    };
-    let Some(invocation) = actions.invocation(number) else {
-        return refusal(
-            "unknown_invocation",
-            &format!("no invocation {number} is known here"),
-        );
-    };
-    let caller = actions.caller(ctx);
-    let current = actions
-        .host
-        .observe(&caller, &invocation)
-        .map_or(InvocationUpdate::Accepted { invocation }, |state| {
-            state.update
-        });
-    let update = match request.get("wait_ms").and_then(Json::as_u64) {
-        Some(wait_ms) if wait_ms > 0 && !current.is_terminal() => {
-            settled(actions, &caller, invocation, current, wait_ms)
-        }
-        _ => current,
-    };
-    json!({"answer": {"receipt": {
-        "broker_invocation_id": number,
-        "invocation": invocation,
-        "update": update,
-    }}})
-}
-
-/// The answer to `actions_cancel` : the invocation asked to stop.
-fn actions_cancel(request: &Json, actions: &Actions, ctx: &Context) -> Json {
-    let Some(number) = request.get("invocation_id").and_then(Json::as_u64) else {
-        return refusal("parse_error", "`actions_cancel` takes `invocation_id`");
-    };
-    let Some(invocation) = actions.invocation(number) else {
-        return refusal(
-            "unknown_invocation",
-            &format!("no invocation {number} is known here"),
-        );
-    };
-    let caller = actions.caller(ctx);
-    match actions
-        .host
-        .cancel(&caller, &invocation)
-        .wait_timeout(HOST_WAIT)
-    {
-        Ok(Some(Ok(()))) => json!({"answer": {}}),
-        Ok(Some(Err(error))) => action_refusal(&error),
-        Ok(None) | Err(_) => refusal("unavailable", "the action did not answer the cancel"),
-    }
-}
-
-/// A receipt's answer, held while the invocation runs when the tool asked to wait for it.
-fn receipt_answer(
-    actions: &Actions,
-    caller: &Caller,
-    receipt: &InvocationReceipt,
-    wait_ms: Option<u64>,
-) -> Json {
-    if let ReceiptStatus::Rejected { error } = &receipt.status {
-        return action_refusal(error);
-    }
-    let invocation = receipt.invocation;
-    let number = actions.remember(invocation);
-    let mut update = crate::surfaces::outcome(invocation, &receipt.status)
-        .unwrap_or(InvocationUpdate::Accepted { invocation });
-    if let Some(wait_ms) = wait_ms.filter(|wait_ms| *wait_ms > 0)
-        && !update.is_terminal()
-    {
-        update = settled(actions, caller, invocation, update, wait_ms);
-    }
-    json!({"answer": {"receipt": {
-        "broker_invocation_id": number,
-        "invocation": invocation,
-        "update": update,
-    }}})
-}
-
-/// The invocation's state once it settles, or what it has got to by `wait_ms` from now.
-fn settled(
-    actions: &Actions,
-    caller: &Caller,
-    invocation: InvocationId,
-    current: InvocationUpdate,
-    wait_ms: u64,
-) -> InvocationUpdate {
-    let deadline = wait_deadline(Some(wait_ms));
-    match settle_with(actions.host.as_ref(), caller, invocation, None, deadline)
-        .wait_timeout(SETTLE_WAIT)
-    {
-        Ok(Some(Some(state))) => state.update,
-        _ => actions
-            .host
-            .observe(caller, &invocation)
-            .map_or(current, |state| state.update),
-    }
-}
-
 /// When a wait of `wait_ms` started now ends, capped at what a control request waits.
 fn wait_deadline(wait_ms: Option<u64>) -> Instant {
     let wait = Duration::from_millis(wait_ms.unwrap_or(0)).min(MAX_WAIT);
     Instant::now()
         .checked_add(wait)
         .unwrap_or_else(Instant::now)
-}
-
-/// The target a tool's `(provider, id)` names, in the action model's own addressing.
-fn legacy_target(provider: &str, id: &str, workspace: &str) -> Result<RemoteActionTarget, Json> {
-    // The workspace verbs by the names tools spell them (`workspace.create`, `workspace.branch`):
-    // the session's own actions, as the workspace menu invokes them.
-    if provider == "actions"
-        && let Some(action) = match id {
-            "workspace.create" => Some("new-workspace"),
-            "workspace.branch" => Some("branch-workspace"),
-            _ => None,
-        }
-    {
-        return Ok(RemoteActionTarget {
-            provider: tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned(),
-            address: ActionAddress::new(tilo_desktop::verbs::CHROME_RESOURCE, action),
-        });
-    }
-    if provider == "applications" {
-        if id.is_empty() {
-            return Err(refusal("unknown_action", "`id` is the app's id"));
-        }
-        return Ok(tilo_actions::remote::application_open_target(workspace, id));
-    }
-    let (provider, address) = if provider == "app-actions" {
-        let Some((provider, address)) = id.split_once('\u{1f}') else {
-            return Err(refusal(
-                "unknown_action",
-                "an app-actions id is `provider␟resource␟action`, as `tilo-control actions list` \
-                 printed it",
-            ));
-        };
-        (provider, address)
-    } else {
-        (provider, id)
-    };
-    let Some(address) = ActionAddress::parse(address) else {
-        return Err(refusal(
-            "unknown_action",
-            "an action's id is `resource␟action`, as `tilo-control actions list` printed it",
-        ));
-    };
-    Ok(RemoteActionTarget {
-        provider: provider.to_owned(),
-        address,
-    })
-}
-
-/// A host's refusal as the tools read it: the codes they know, and what they mean here.
-fn action_refusal(error: &ActionCallError) -> Json {
-    let code = match error {
-        // This shared's own refusal is `not_permitted` , which a tool reads as the socket not serving
-        // it at all; an action the person may not run is another answer.
-        ActionCallError::NotPermitted => "not_allowed",
-        ActionCallError::StaleRevision => "stale_cursor",
-        ActionCallError::ConfirmationRequired { .. } => "needs_confirmation",
-        other => other.code(),
-    };
-    refusal(code, &error.to_string())
 }
 
 /// `request` 's `name` field, when it is a number.
@@ -2412,12 +1838,11 @@ fn snapshot(compositor: &mut Compositor, path: &str) -> Result<(), (&'static str
 /// real identity is never replaced; a release build mints none.
 fn provision_test_identity() -> Json {
     use tilo_identity::provisioning::{ProvisionOutcome, THROWAWAY_TEST_IDENTITY_NAME};
-    let store = match tilo_onboarding_session::identity_provisioning::DiskIdentityStore::from_env()
-    {
-        Ok(store) => store,
+    let identity_path = match tilo_identity::store::active_identity_path() {
+        Ok(path) => path,
         Err(error) => return refusal("provision_failed", &format!("no identity store: {error}")),
     };
-    let Some(identity_dir) = store.path().parent() else {
+    let Some(identity_dir) = identity_path.parent() else {
         return refusal("provision_failed", "the identity store has no directory");
     };
     match tilo_onboarding_session::firstboot::ensure_throwaway_test_identity(

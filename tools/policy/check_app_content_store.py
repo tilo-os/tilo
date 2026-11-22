@@ -47,7 +47,7 @@ ALLOWED = (
     Path("crates/platform/tilolang-process/src/lib.rs"),
     Path("crates/system/fs/src/main.rs"),
     Path("crates/runtime/tilo-runtime/src/cli.rs"),
-    Path("crates/runtime/tilo-runtime/src/standalone.rs"),
+    Path("crates/runtime/tilo-runtime/src/device/services.rs"),
 )
 CALL = re.compile(
     r"\b(?:tilo_content_device\s*::\s*for_app|ContentStore\s*::\s*local_for_app)\b"

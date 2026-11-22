@@ -16,9 +16,10 @@
 //! whether or not it acts on it.
 //!
 //! A tilolang app's record is held beside them ([`HeldDocuments::hold_tilolang`]): opened
-//! through the app's package, its resources published as every tilolang resource is
-//! (`tl.<app>.<Type>`), so the bot's steps find, type, invoke and read its actions on the same
-//! path as a native record's, and a read answers what the core read answers of it.
+//! through the app's package over the workspace's resource store, its resources published as
+//! every tilolang resource is (`tl.<app>.<Type>`), so the bot's steps find, type, invoke and
+//! read its actions on the same path as a native record's, and a read answers what the core read
+//! answers of it. What a step changes of it reaches the workspace as the step runs.
 
 use std::collections::BTreeMap;
 
@@ -35,9 +36,10 @@ use crate::apps::{AppCatalogue, ReplicaActor, Seed};
 use crate::worker::ConfinedReplica;
 use ui::permissions::policy;
 
-/// A tilolang app's record of the workspace as a bot holds it: the documents that keep it, as the
-/// workspace has them with what the bot's runs changed since, read and changed through the app's
-/// package on the calling thread.
+/// A tilolang app's record of the workspace as a bot holds it: read and changed through the
+/// app's package on the calling thread, each change reaching the workspace as the bot makes it.
+/// A step on it is not found again in history ([`ApiMember::find_in_history`]): what the store
+/// keeps of a change names its invoker and run, not the step of a program it was.
 pub trait TilolangRecord: Send {
     /// Every action its resources publish, each in the row of the resource holding it.
     ///
@@ -62,8 +64,6 @@ pub trait TilolangRecord: Send {
     /// # Errors
     /// The record does not open, or the read is refused.
     fn read(&self, resource: &str, reader: &Actor) -> Result<Value, String>;
-    /// Its documents as held now, each whole, by document id (`""` for the app's own).
-    fn documents(&self) -> BTreeMap<String, Vec<u8>>;
 }
 
 /// One installation's replicas of the workspace's records.
@@ -113,13 +113,6 @@ impl HeldDocuments {
     /// Hold `record`, the record of the tilolang app `app`, in place of the one held before.
     pub fn hold_tilolang(&mut self, app: &str, record: Box<dyn TilolangRecord>) {
         self.tilolang.insert(app.to_owned(), record);
-    }
-
-    /// The documents of the tilolang app `app`'s record as the runs left them: what the host
-    /// writes into the workspace of them is what they gained since it held them.
-    #[must_use]
-    pub fn tilolang_documents(&self, app: &str) -> Option<BTreeMap<String, Vec<u8>>> {
-        Some(self.tilolang.get(app)?.documents())
     }
 
     /// The route a tilolang app's record is offered and invoked on.
@@ -435,14 +428,7 @@ impl ApiMember for HeldDocuments {
                 })
                 .map(|context| (route.clone(), context))
         });
-        native.or_else(|| {
-            self.tilolang.iter().find_map(|(app, record)| {
-                record.documents().values().find_map(|bytes| {
-                    let doc = automerge::Automerge::load(bytes).ok()?;
-                    recorded(&doc).map(|context| (self.tilolang_route(app), context))
-                })
-            })
-        })
+        native
     }
 
     fn outbox(&self, route: &DocumentRoute, field: &str) -> Vec<OutboxRow> {

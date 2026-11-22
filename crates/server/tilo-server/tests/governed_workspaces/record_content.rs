@@ -60,6 +60,25 @@ async fn says_it_lacks(server: &Server, workspace: &str, blobs: u32, what: &str)
     .await;
 }
 
+/// What `server` answers `asking` when it asks how much of `workspace`'s content it keeps
+/// (`workspace/servers#content`), or why it refused.
+async fn content_held(
+    server: &Server,
+    host: &TestDevice,
+    asking: &TestDevice,
+    workspace: &WorkspaceListing,
+) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
+    use super::governance_actions::{ask, invocation, outcome, subscribed};
+    let client = subscribed(server, asking, workspace.workspace_id).await;
+    let message = invocation(
+        tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
+        format!("workspace.permissions:{}/servers", workspace.workspace),
+        "content",
+        serde_json::json!({}),
+    );
+    outcome(ask(&client, host, workspace.workspace_id, message).await)
+}
+
 /// What the host serves a device asking `workspace` for `address` of `PHOTOS`,
 /// its pieces put together.
 fn served(server: &Server, workspace: &str, asking: &TestDevice, address: &str) -> Vec<u8> {
@@ -188,6 +207,14 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
         "the host says it lacks the picture the record names",
     )
     .await;
+    // Its owner asks the host the same: the picture is still only on Bob's device.
+    let held = content_held(&server, &alice_home, &laptop, &workspace)
+        .await
+        .expect("the owner asks how much content the host keeps");
+    assert_eq!(
+        held["lacking"], 1,
+        "the host answers its owner that it lacks the picture: {held}"
+    );
     let pieces = neighbour_wire::content::answer(
         &phone.device_pubkey(),
         &alice_home.device_pubkey(),
@@ -218,10 +245,24 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
         "the host says it lacks nothing once it keeps the picture",
     )
     .await;
+    let held = content_held(&server, &alice_home, &laptop, &workspace)
+        .await
+        .expect("the owner asks how much content the host keeps");
+    assert_eq!(
+        (&held["lacking"], &held["named"]),
+        (&serde_json::json!(0), &serde_json::json!(1)),
+        "the host answers its owner that it keeps all the content its records name: {held}"
+    );
 
     // Bob's page is gone; a page that reloads reads the picture from the host,
     // as ciphertext, and opens it with the key its record carries.
     drop(session);
+    // Bob, a member who does not choose the workspace's servers, is not answered.
+    assert_eq!(
+        content_held(&server, &alice_home, &phone, &workspace).await,
+        Err(tilo_actions::remote::ActionCallError::UnknownAction),
+        "only the workspace's owners ask how much of its content its server keeps"
+    );
     let carol = TestUser::fresh("Carol");
     let carol_phone = carol.enrol("carol-phone", DeviceCapabilities::member());
     sealed_documents::join(

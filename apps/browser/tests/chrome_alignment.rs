@@ -1,4 +1,3 @@
-
 //! The toolbar row's geometry, read off the retained widgets through the
 //! production frame: every control sits on the address field's centre line,
 //! and a narrow window moves commands into the overflow menu instead of

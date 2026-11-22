@@ -35,7 +35,7 @@ import re
 import shlex
 
 from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import wait_until
+from ..vm import VmError, first_json, invoked, listed, wait_until
 from .resources import SIGN_OUT, dev_account, sign_in
 
 AREA = "secrets"
@@ -336,17 +336,18 @@ def control(ctx, user: str, *args: str, timeout: float = 60) -> str:
                             .replace("__ARGS__", shlex.join(args)), timeout=timeout)
 
 
+def asking(ctx, user: str):
+    """What sends one action frame to `user`'s session and answers the frame back."""
+    return lambda frame: first_json(control(ctx, user, "raw", json.dumps(frame)))
+
+
 def onboarding_rows(ctx, user: str) -> list[dict] | None:
     """Setup's action rows, or None while the socket does not answer."""
-    text = control(ctx, user, "actions", "list", "--json", "--limit", "200")
-    start = text.find("{")
     try:
-        listing = json.JSONDecoder().raw_decode(text[start:])[0] if start >= 0 else None
-    except ValueError:
-        listing = None
-    if not isinstance(listing, dict):
+        rows = listed(asking(ctx, user))
+    except (VmError, ValueError, KeyError, TypeError):
         return None
-    return [a for a in listing.get("actions", []) if a.get("application") == SETUP]
+    return [a for a in rows if a.get("application") == SETUP]
 
 
 def next_first_use_step(offered: set[str], acknowledged: set[str]):
@@ -379,9 +380,8 @@ def go_through_first_use(ctx, user: str) -> list[str]:
             raise CheckFailed(f"first use offers nothing this check knows how to go forward with: "
                               f"{sorted(rows)} (after {done})")
         row = rows[step]
-        out = control(ctx, user, "actions", "invoke", row["provider"], row["id"],
-                      *(["--args-json", json.dumps(args)] if args else []), timeout=120)
-        ctx.write(f"C02-first-use-{len(done):02}-{step}.txt", out)
+        out = invoked(asking(ctx, user), row["provider"], row["id"], args or None)
+        ctx.write(f"C02-first-use-{len(done):02}-{step}.txt", json.dumps(out, indent=2))
         if step in ACKNOWLEDGE:
             acknowledged.add(step)
         done.append(step)

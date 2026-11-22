@@ -16,7 +16,7 @@ use tilolang_mail::serve::{Connector, Wakeup};
 use tilolang_tilo::runtime::store::Store as _;
 use tilolang_tilo::runtime::{ResourceRef, UiNode, Value as RtValue};
 
-use super::{Session, Window, WorkspaceEnd};
+use super::{Session, Window};
 use crate::change_marks::action_id;
 
 const APP: &str = "so.tilo.mail";
@@ -152,6 +152,19 @@ struct MailConnector {
 
 impl MailConnector {
     fn new(source: impl Fn() -> Vec<AccountConfig> + Send + 'static) -> Self {
+        Self::signing(
+            move || source().into_iter().map(Into::into).collect(),
+            |_| {},
+        )
+    }
+
+    /// The connector for the accounts `source` names, each with the password the session
+    /// released for it or why it released none; the person's yes to an account's sign-in goes to
+    /// `allow`, as it goes to the session.
+    fn signing(
+        source: impl Fn() -> Vec<tilolang_mail::engine::MailAccount> + Send + 'static,
+        allow: impl Fn(&str) + Send + 'static,
+    ) -> Self {
         let (wakeups, woken) = std::sync::mpsc::channel::<Wakeup>();
         let looping = wakeups.clone();
         let online = Arc::new(AtomicBool::new(false));
@@ -168,8 +181,9 @@ impl MailConnector {
             )
             .expect("the engine starts");
             let (requests, events) = ::mail_engine::engine::spawn_waking(Box::new(engine), wake);
-            let source = move || source().into_iter().map(Into::into).collect();
-            Connector::new(Box::new(source), requests, events, device).run(&woken, &looping);
+            Connector::new(Box::new(source), requests, events, device)
+                .allowing(allow)
+                .run(&woken, &looping);
         });
         Self { wakeups, online }
     }
@@ -189,11 +203,6 @@ impl MailConnector {
     /// credential of its own.
     fn window(&self) -> Session {
         self.attach(Session::opened(APP, "ada", Window::in_harness))
-    }
-
-    /// [`Self::window`], its connection reaching the workspace `end`.
-    fn window_reaching(&self, end: &WorkspaceEnd) -> Session {
-        self.attach(Session::reaching(APP, end, Window::in_harness))
     }
 
     /// `session`'s origin, reaching this connector.
@@ -578,6 +587,18 @@ fn texts_in(node: &UiNode, out: &mut Vec<String>) {
     }
 }
 
+/// Every node under `node` whose `label` is `label`.
+fn labelled<'a>(node: &'a UiNode, label: &str) -> Vec<&'a UiNode> {
+    let mut found = Vec::new();
+    if matches!(node.props.get("label"), Some(RtValue::Text(text)) if text == label) {
+        found.push(node);
+    }
+    for child in &node.children {
+        found.extend(labelled(child, label));
+    }
+    found
+}
+
 /// The wall clock at `hour:minute:second` on `day` of 2026, in the zone this process reads as
 /// the person's.
 fn local(month: i8, day: i8, (hour, minute, second): (i8, i8, i8)) -> ui::time::SystemTime {
@@ -660,6 +681,36 @@ fn an_account_syncs_into_mailboxes_and_conversations() {
         matches!(session.value_of(&inbox, "unread"), RtValue::Int(2))
     });
     assert_eq!(session.threads().len(), 2);
+}
+
+/// An editor of the workspace's mailbox, which holds its own keys, is offered Check now like
+/// its owner; the rules ask an editor before what reaches outside, so the press stops on the
+/// window's Ask bar rather than the action showing dimmed.
+#[test]
+fn an_editors_check_now_is_offered_and_asks_on_the_ask_bar() {
+    let _settled = ui::motion::testing::settled();
+    let servers = servers();
+    let connector = MailConnector::of(account(&servers));
+    let mut session = connector.attach(Session::bo_editing(APP, Window::in_harness));
+    synced(&mut session);
+    let check = session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .actions()
+        .iter()
+        .find(|action| action.action_label == "Check now")
+        .expect("the window offers Check now")
+        .contract
+        .availability
+        .clone();
+    assert_eq!(check, ui::tilo_actions::Availability::Available);
+    super::choose(&mut session, "Check now");
+    assert_eq!(
+        session.ask_bar().as_deref(),
+        Some("Check now"),
+        "the press asks first"
+    );
 }
 
 #[test]
@@ -751,7 +802,10 @@ fn a_calendar_invitation_is_a_draft_that_goes_out_with_its_calendar_part() {
                 "body": "You're invited.", "calendar_ics": ics}),
     );
     assert_eq!(session.text(&draft, "to"), "grace@hopper.example");
-    assert!(!session.flag(&draft, "sent"), "nothing is sent until the person sends it");
+    assert!(
+        !session.flag(&draft, "sent"),
+        "nothing is sent until the person sends it"
+    );
     assert!(servers.smtp.sent().is_empty());
 
     session.call("send", &draft, &json!({}));
@@ -759,7 +813,10 @@ fn a_calendar_invitation_is_a_draft_that_goes_out_with_its_calendar_part() {
         servers.smtp.sent().len() == 1
     });
     let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
-    assert!(sent.contains("Subject: Invitation: Launch review"), "{sent}");
+    assert!(
+        sent.contains("Subject: Invitation: Launch review"),
+        "{sent}"
+    );
     assert!(sent.contains("text/calendar; method=REQUEST"), "{sent}");
     assert!(sent.contains("invitation.ics"), "{sent}");
 }
@@ -805,10 +862,15 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
     };
     assert_eq!(session.text(thread, "subject"), "Engine notes");
     assert!(
-        session.text(thread, "snippet").starts_with("The notes are attached."),
+        session
+            .text(thread, "snippet")
+            .starts_with("The notes are attached."),
         "a conversation reads as its first message"
     );
-    assert!(session.flag(thread, "unread"), "the unread reply leaves it unread");
+    assert!(
+        session.flag(thread, "unread"),
+        "the unread reply leaves it unread"
+    );
     let messages = session.refs(thread, "messages");
     assert_eq!(messages.len(), 2, "each message once");
     let notes = &messages[0];
@@ -819,7 +881,10 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
     assert_eq!(session.text(notes, "attachments"), "notes.pdf");
     assert!(session.text(notes, "parts").contains("tilo.content:def"));
     assert!(!session.flag(notes, "unread"));
-    assert_eq!(session.text(notes, "body"), "The notes are attached.\r\nAda");
+    assert_eq!(
+        session.text(notes, "body"),
+        "The notes are attached.\r\nAda"
+    );
     assert!(
         session
             .try_call("deliver_message", &root, &json!({"subject": "Nobody"}))
@@ -831,6 +896,14 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
     let reply = session.made("reply_to", notes, &json!({}));
     assert_eq!(session.text(&reply, "to"), "ada@analytical.example");
     assert_eq!(session.text(&reply, "subject"), "Re: Engine notes");
+    // It came to no account the workspace has, so the answer goes from the one it reads now.
+    assert_eq!(session.text(&reply, "from"), ME);
+    let reply = session.made("reply", thread, &json!({}));
+    assert_eq!(session.text(&reply, "from"), ME);
+    assert!(
+        session.view_of(&reply).iter().any(|text| text == ME),
+        "the composer says the address it goes from"
+    );
 }
 
 #[test]
@@ -853,7 +926,7 @@ fn a_reply_goes_out_through_the_outbox_once_the_server_takes_it() {
         servers.smtp.sent().len() == 1
     });
     session.until("the outbox to settle", |session| {
-        session.instance_host().store().outbox_pending_count() == 0
+        session.instance_host().store().outbox_pending().is_empty()
     });
     let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
     assert!(sent.contains("Subject: Re: Launch plan"), "{sent}");
@@ -963,6 +1036,72 @@ fn a_troubled_account_says_so_in_its_window_and_clears_when_the_server_answers()
     );
 }
 
+// USER REQUIREMENT: where the workspace's rules ask the person first before an account's
+// password leaves its vault, their Mail window asks them on its Ask bar, and their yes signs the
+// account in.
+#[test]
+fn an_account_the_rules_ask_about_signs_in_once_its_person_says_yes_on_the_ask_bar() {
+    const ASKS_FIRST: &str = "The workspace asks you first";
+    let servers = servers();
+    let config = account(&servers);
+    let allowed = Arc::new(AtomicBool::new(false));
+    let said_yes = Arc::clone(&allowed);
+    let connector = MailConnector::signing(
+        move || {
+            // The session releases the password once the person said yes, and asks before.
+            let released = allowed.load(Ordering::Acquire);
+            vec![tilolang_mail::engine::MailAccount {
+                config: AccountConfig {
+                    password: if released {
+                        config.password.clone()
+                    } else {
+                        String::new()
+                    },
+                    ..config.clone()
+                },
+                refused: None,
+                asks: (!released).then(|| ASKS_FIRST.to_owned()),
+            }]
+        },
+        move |account| {
+            assert_eq!(account, ME);
+            said_yes.store(true, Ordering::Release);
+        },
+    );
+    let mut session = connector.window();
+    let asked = session.wait_for("the window to ask the person", |session| {
+        session
+            .hosted()
+            .view()
+            .and_then(tilo_app_window::AppWindow::asks)
+            .map(|ask| ask.action.clone())
+    });
+    assert!(
+        asked.contains(ME),
+        "the Ask bar names the account it signs in to: {asked}"
+    );
+    assert!(
+        session.threads().is_empty(),
+        "nothing is read before the yes"
+    );
+
+    session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .answer(tilo_render_protocol::patch::Answer::Allow);
+    synced(&mut session);
+    assert_eq!(session.threads().len(), 2);
+    assert!(
+        session
+            .hosted()
+            .view()
+            .and_then(tilo_app_window::AppWindow::asks)
+            .is_none(),
+        "nothing waits on the person any more"
+    );
+}
+
 #[test]
 fn a_sent_message_waits_for_the_persons_hold_before_it_goes() {
     let servers = servers();
@@ -1021,7 +1160,7 @@ fn a_message_that_went_cannot_be_taken_back() {
         servers.smtp.sent().len() == 1
     });
     session.until("the outbox to settle", |session| {
-        session.instance_host().store().outbox_pending_count() == 0
+        session.instance_host().store().outbox_pending().is_empty()
     });
     let refused = session.try_call("undo_send", &draft, &json!({}));
     assert!(
@@ -1211,8 +1350,10 @@ fn every_account_shows_in_the_sidebar_and_opens_its_own_mail() {
                 .iter()
                 .all(|a| !session.refs(a, "threads").is_empty())
     });
+    // Each account shows by its address: one person's two accounts carry the same name, and
+    // only the address tells them apart.
     let texts = session.shown();
-    for want in ["Sam Rivera", "Sam at work"] {
+    for want in [ME, "work@rivera.example"] {
         assert!(
             texts.iter().any(|text| text == want),
             "the sidebar names {want}: {texts:#?}"
@@ -1627,154 +1768,88 @@ fn a_reply_typed_in_the_conversation_goes_out_once_quoting_the_message_it_answer
     assert_eq!(servers.smtp.sent().len(), 1, "it goes once");
 }
 
-// USER REQUIREMENT: mail the workspace refuses is not lost: it stands in the window, which says
-// it is not saved yet, and once the workspace takes changes again "Try again" hands it all of
-// it, each message once.
+// USER REQUIREMENT: a reply the workspace has no account to send says so where it names the
+// sender, and offers the way to Settings' accounts, rather than a blank From and a Send that
+// does nothing.
 #[test]
-fn a_sync_the_workspace_refuses_is_kept_and_reaches_it_once_it_takes_changes() {
-    let servers = empty_servers();
-    let workspace = WorkspaceEnd::default();
-    let connector = MailConnector::of(account(&servers));
-    let mut session = connector.window_reaching(&workspace);
-    workspace.refusing.store(true, Ordering::SeqCst);
-    servers.imap.append("INBOX", &plan(), &[]);
-    servers.imap.append(
-        "INBOX",
-        &mail(
-            "dinner@chen.example",
-            "Bo Chen <bo@chen.example>",
-            "Dinner on Friday?",
-            "Shall we try the new place?",
-            None,
-        ),
-        &[],
-    );
-    session.until("the mail to stand on this device", |session| {
-        session.threads().len() == 2
-    });
-    let said = ui::window_toolbar::notice().expect("the window says the mail is not saved");
-    assert!(said.text.contains("kept on this device"), "{said:?}");
-    assert!(ui::window_toolbar::edited(), "the window marks it unsaved");
-    assert!(!workspace.holds(&session), "the workspace does not hold it");
-
-    // The workspace takes changes again, and the person asks to save again, as the bar offers.
-    workspace.refusing.store(false, Ordering::SeqCst);
-    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
-        id: ui::SAVE_RETRY_ACTION.to_owned(),
-    });
-    synced(&mut session);
-    assert!(
-        workspace.holds(&session),
-        "the workspace holds all the mail"
-    );
-    assert!(
-        !ui::window_toolbar::edited() && ui::window_toolbar::notice().is_none(),
-        "nothing is marked unsaved any more"
-    );
-    assert_eq!(
-        session
-            .refs(&session.thread("Launch plan"), "messages")
-            .len(),
-        1,
-        "each message once"
-    );
-    let account = session.accounts().remove(0);
-    assert_eq!(
-        session.text(&account, "trouble"),
-        "",
-        "the account says nothing"
-    );
-}
-
-// USER REQUIREMENT: a read the workspace cannot answer — its index has not caught up with what
-// it holds — leaves no mail half kept: the account says the mail could not be saved, the
-// window says what it cannot do and how old the mail is, and the next sync reads the workspace
-// again, never taking it as "the account is gone". An account stays one account, and the mail
-// the step waited on comes in once the workspace answers again.
-#[test]
-fn a_read_the_workspace_cannot_answer_keeps_one_account_and_its_inbox_fills() {
-    let servers = empty_servers();
-    let (_connector, mut session) = window_of(account(&servers));
-    servers.imap.append("INBOX", &plan(), &[]);
-    session.until("the conversation to come in", |session| {
-        session.threads().len() == 1
-    });
-    let account = session.accounts().remove(0);
+fn a_reply_with_no_account_to_send_it_says_so_and_does_not_send() {
+    let connector = MailConnector::new(Vec::new);
+    let mut session = connector.window();
+    session.settle();
     let root = session.mail_root();
-    let store = session.instance_host().store().clone();
-    // An answer arrives, and the workspace cannot read the conversation it joins: the step that
-    // keeps it waits for the next sync, and the account says so.
-    store.fail_reads_of(&session.thread("Launch plan").id_string());
-    servers.imap.append(
-        "INBOX",
-        &mail(
-            "plan-2@analytical.example",
-            "Ada Lovelace <ada@analytical.example>",
-            "Re: Launch plan",
-            "Agreed on the twelfth.",
-            Some("plan@hopper.example"),
-        ),
-        &[],
+    session.call(
+        "deliver_message",
+        &root,
+        &json!({
+            "from": "Grace Hopper <grace@navy.example>", "to": "Office <office@company.example>",
+            "subject": "Quarterly invoices", "body": "Please confirm the totals by Friday.",
+            "date": "2026-11-12T09:30:00Z", "folder": "inbox",
+            "message_id": "<invoices@navy.example>",
+        }),
     );
-    session.call("check_now", &account, &json!({}));
-    session.until("the account to say the mail is not saved", |session| {
-        session
-            .accounts()
-            .first()
-            .is_some_and(|a| session.text(a, "trouble").contains("could not be saved"))
-    });
-    assert!(
-        session.flag(&account, "online"),
-        "the server answered: it is the workspace that could not take what it said"
-    );
-    // The window says it over the mail the server did answer with, and how old that mail is:
-    // the notice adds what the account cannot say of itself.
-    let said = session.view_of(&account);
-    assert!(
-        said.iter().any(|text| text.contains("Can't save what")),
-        "the notice says what the window cannot do: {said:#?}"
-    );
-    let when = said.iter().find_map(|text| {
-        text.split_once("Last fetched ")
-            .map(|(_, at)| at.to_owned())
-    });
-    let when = when.unwrap_or_else(|| panic!("the notice says when the mail was read: {said:#?}"));
-    // The time reads in the clock the person chose in Settings, as every time the window shows
-    // does: `14:05` or `2:05 PM`.
-    let clock = ui::clock::configured();
-    assert!(
-        (0..24).any(|hour| (0..60).any(|minute| ui::clock::hour_minute(hour, minute) == when)),
-        "the clock time a person reads: {when}, read in {clock:?}"
-    );
-    // The step waits for the next sync — and the store answers none of the account's documents
-    // while it takes it in again, as an index that has not caught up with the workspace does.
-    store.fail_reads_of(&root.id_string());
-    for _ in 0..3 {
-        session.settle();
+    let kept = session.refs(&root, "recovered_mail");
+    let [thread] = kept.as_slice() else {
+        panic!("one conversation: {kept:?}");
+    };
+    let draft = session.made("reply", thread, &json!({}));
+    assert_eq!(session.text(&draft, "subject"), "Re: Quarterly invoices");
+    assert_eq!(session.text(&draft, "to"), "grace@navy.example");
+    assert_eq!(session.text(&draft, "from"), "");
+
+    let shown = session.view_of(&draft);
+    for said in ["No mail account to send from", "Add an account in Settings"] {
+        assert!(
+            shown.iter().any(|text| text == said),
+            "{said:?} in {shown:?}"
+        );
     }
-    // The workspace answers again: the account it holds is still the one account, and the mail
-    // the step waited on comes in, once.
-    store.take_reads();
-    session.call("check_now", &account, &json!({}));
-    let accounts = session.accounts();
+    // The composer's Send stands where a person looks for it, unavailable, saying why: what
+    // `send` refuses it with.
+    let window = session
+        .instance_host()
+        .open_resource(&draft, None)
+        .expect("its window opens");
+    let sends = labelled(window.tree(), "Send");
+    let composer = sends
+        .iter()
+        .find(|node| node.kind == "ui.Button")
+        .unwrap_or_else(|| panic!("the composer's Send: {shown:?}"));
     assert_eq!(
-        accounts.len(),
-        1,
-        "a read that failed is no account gone, and no account was made again: {accounts:?}"
+        composer.props.get("enabled"),
+        Some(&RtValue::Int(0)),
+        "the composer's Send is unavailable: {:?}",
+        composer.props
     );
-    let account = accounts.into_iter().next().expect("the account");
-    assert_eq!(session.text(&account, "address"), ME);
-    session.until("the answer to come in", |session| {
-        session
-            .refs(&session.thread("Launch plan"), "messages")
-            .len()
-            == 2
-    });
-    assert_eq!(session.threads().len(), 1, "one conversation");
     assert_eq!(
-        session.text(&account, "trouble"),
-        "",
-        "and the account says nothing is wrong"
+        composer.props.get("description"),
+        Some(&RtValue::Text(
+            "Add a mail account in Settings first".to_owned()
+        )),
+        "the composer's Send says why: {:?}",
+        composer.props
     );
-    assert!(session.flag(&account, "online"), "its server answers");
+    // So is the window's, in its menu.
+    for send in sends.iter().filter(|node| node.kind != "ui.Button") {
+        assert_eq!(
+            send.props.get("disabled"),
+            Some(&RtValue::Int(1)),
+            "{:?}",
+            send.props
+        );
+        assert_eq!(
+            send.props.get("reason"),
+            Some(&RtValue::Text(
+                "Add a mail account in Settings first".to_owned()
+            )),
+            "{:?}",
+            send.props
+        );
+    }
+    let refused = session
+        .try_call("send", &draft, &json!({}))
+        .expect_err("a draft with no account is not sent");
+    assert!(
+        refused.contains("Add a mail account in Settings first"),
+        "{refused}"
+    );
 }

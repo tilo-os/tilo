@@ -97,7 +97,7 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
-            let (mut fixture, _, _) = durable_fixture(root.path(), None);
+            let (mut fixture, _) = durable_fixture(root.path(), None);
             let api = device_api(&fixture);
             let caller = a_device(&fixture, 52);
             let other = a_device(&fixture, 53);
@@ -121,7 +121,8 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
                 page.rows.iter().any(|row| {
                     row.provider == "71"
                         && row.action.as_ref().is_some_and(|action| {
-                            action.address.action == "open" && action.address.resource == "workspace:atlas"
+                            action.address.action == "open"
+                                && action.address.resource == "workspace:atlas"
                         })
                 }),
                 "the catalogue offers the fixture application's action: {:?}",
@@ -129,7 +130,7 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
             );
             // The contract now asks for a phrase, and streams items.
             {
-                let mut surfaces = fixture.state.surfaces.lock().unwrap();
+                let mut surfaces = fixture.state.publishers.surfaces.lock().unwrap();
                 let action = &mut surfaces.get_mut(&71).unwrap().actions[0];
                 action.contract.confirmation = ConfirmationPolicy::Phrase {
                     phrase: "DO IT".into(),
@@ -149,12 +150,16 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
             );
             let mut confirmed = request.clone();
             confirmed.confirmation = Some(Confirmation::Phrase("DO IT".into()));
-            let first = answered(&fixture, api.invoke(&caller, confirmed)).await.unwrap();
+            let first = answered(&fixture, api.invoke(&caller, confirmed))
+                .await
+                .unwrap();
             assert_eq!(first.invocation, invocation);
             assert!(matches!(first.status, ReceiptStatus::Accepted));
             // The same id from the same device is the same invocation, whatever
             // confirmation the retry carries: the effect is not handed over twice.
-            let duplicate = answered(&fixture, api.invoke(&caller, request.clone())).await.unwrap();
+            let duplicate = answered(&fixture, api.invoke(&caller, request.clone()))
+                .await
+                .unwrap();
             assert_eq!(duplicate, first);
             let delivered = fixture
                 .invocation_rx
@@ -239,11 +244,10 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
             };
             update_app(&channel, delivered.id, &terminal).await.unwrap();
             // The id answers with what it finished as, on every later ask.
-            assert_eq!(
-                api.observe(&caller, &invocation).unwrap().update,
-                terminal
-            );
-            let replayed = answered(&fixture, api.invoke(&caller, request.clone())).await.unwrap();
+            assert_eq!(api.observe(&caller, &invocation).unwrap().update, terminal);
+            let replayed = answered(&fixture, api.invoke(&caller, request.clone()))
+                .await
+                .unwrap();
             assert_eq!(
                 replayed.status,
                 ReceiptStatus::Completed {
@@ -251,7 +255,10 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
                 }
             );
             assert!(fixture.invocation_rx.try_recv().is_err());
-            assert_eq!(std::fs::read_to_string(root.path().join("effect-counter")).unwrap(), "1");
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("effect-counter")).unwrap(),
+                "1"
+            );
         })
         .await;
 }
@@ -263,13 +270,14 @@ async fn a_resolved_target_that_is_gone_or_stale_is_refused() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
-            let (mut fixture, _, _) = durable_fixture(root.path(), None);
+            let (mut fixture, _) = durable_fixture(root.path(), None);
             let api = device_api(&fixture);
             let caller = a_device(&fixture, 52);
             // What the caller names is resolved by the directory that publishes
             // it rather than answered from an eager surface.
             fixture
                 .state
+                .publishers
                 .surfaces
                 .lock()
                 .unwrap()
@@ -307,7 +315,7 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
-            let (mut fixture, _, _) = durable_fixture(root.path(), None);
+            let (mut fixture, _) = durable_fixture(root.path(), None);
             let membership = fixture.membership.as_ref().unwrap().clone();
             let caller = a_device(&fixture, 52);
             let host = fixture.state.invocation_host().unwrap();
@@ -357,7 +365,7 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
             drop(api);
             drop(fixture);
             broker_gone(gone).await;
-            let (mut reopened, _, _) = durable_fixture(root.path(), Some(membership));
+            let (mut reopened, _) = durable_fixture(root.path(), Some(membership));
             assert_eq!(reopened.state.invocation_host().unwrap(), host);
             let api = device_api(&reopened);
             assert_eq!(

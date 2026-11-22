@@ -3098,4 +3098,3 @@ pub fn input_purpose_name(purpose: InputPurpose) -> &'static str {
 
 #[cfg(test)]
 mod tests;
-

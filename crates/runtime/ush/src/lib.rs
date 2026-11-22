@@ -96,7 +96,6 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "append",
     "history",
     "tilo-runtime",
-    "tilo-runtime-mcp",
     "ush-sh",
 ];
 

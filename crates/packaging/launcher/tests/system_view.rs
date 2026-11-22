@@ -3,7 +3,6 @@
 //! A view replaces ~40 per-path `--ro-bind-try` operations with a few binds of a tree
 //! assembled once (`launcher::sandbox_view`).
 
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
 use std::os::fd::AsRawFd;

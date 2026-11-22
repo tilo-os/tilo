@@ -31,12 +31,12 @@ use tilo_actions::remote::person_telling::{
 };
 
 use super::*;
-use crate::workspace_telling::Teller;
 use crate::workspaces::ToTell;
 use crate::workspaces::fixtures::{governor, test_host_taking_part as test_host};
 use crate::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
 use crate::workspaces::person_model::{ProviderProtocol, Spender};
 use crate::workspaces::push_addresses::{PushKey, Register};
+use tilo_workspace_service::agents::telling::Teller;
 
 /// A person this server keeps a log for. No device of theirs is on.
 const ADA: [u8; 32] = [8; 32];

@@ -49,10 +49,9 @@ case $group in
     # invoke one, and the same through the MCP server — and how many complete
     # at once. A whole app task (Notes) is not timed here: a builder starts
     # no app, its sandboxes needing a /proc of their own, so such a step would
-    # measure nothing; the agent's own task pipeline is the `agent-native`
-    # group's. tilo-runtime's dev-overrides carry the throwaway identity the
+    # measure nothing. tilo-runtime's dev-overrides carry the throwaway identity the
     # run's session mints for the shell it opens.
-    cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime-mcp \
+    cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime \
       --features dev-overrides
     test -r "$VK_DRIVER_FILES"
     env_json release lavapipe kvm > "$out/env.json"
@@ -60,22 +59,6 @@ case $group in
       --spawn "$target/release/tilo-session" --samples 1000 --warmup 100 \
       --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
       --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/compositor.log"
-    ;;
-  agent-native)
-    # The agent's own task pipeline, without the desktop: a release build of the agent's
-    # tests, which shares nothing with the session's build above, so it runs as a check of its
-    # own beside it. Its records are the agent group's.
-    env_json release none kvm > "$out/env-pipeline.json"
-    TILO_AGENT_NATIVE_REPS=30 TILO_AGENT_NATIVE_SAMPLES="$out/native" \
-      cargo test --locked --release -p agent --lib turn_steps_benchmark -- --nocapture
-    for plan in pipelined sequential; do
-      python3 tools/perf/record.py emit --kpi "agent.task.native.${plan}.wall" --unit ms \
-        --samples-file "$out/native/${plan}.txt" --env-json "$out/env-pipeline.json" \
-        --meta steps=3 --meta step_ms=100 >> "$out/agent-native.jsonl"
-    done
-    python3 tools/perf/record.py emit --kpi agent.task.native.idle_round_trips --unit count \
-      --samples-file "$out/native/idle.txt" --env-json "$out/env-pipeline.json" \
-      --meta steps=3 --meta step_ms=100 >> "$out/agent-native.jsonl"
     ;;
   footprint)
     curl --fail --silent --show-error --retry 3 --retry-all-errors --proto '=https' \

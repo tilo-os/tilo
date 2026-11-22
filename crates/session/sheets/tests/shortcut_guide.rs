@@ -2,7 +2,6 @@
 //! what it shows for each input, and what pressing a key or Done asks the
 //! shell.
 
-
 use tilo_sheets::SheetState as _;
 use tilo_sheets::shortcut_guide::{
     Guide, GuideEffect, GuideState, Modality, Pair, Shortcut, ShortcutGuideApp,

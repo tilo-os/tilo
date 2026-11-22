@@ -6,7 +6,6 @@
 //! encrypt → decrypt — without touching the openmls 3+-member surface.
 //! A failure here means the crate is fundamentally broken.
 
-
 use collab_types::WorkspaceId;
 use key_group::{KeyGroup, MemberKey};
 

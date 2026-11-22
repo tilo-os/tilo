@@ -104,8 +104,11 @@ def real_apps_lines(log: str) -> list[dict]:
 def opens(session, app: str) -> dict:
     """Open `app` and answer the launch-latency lines of that open."""
     app_id = real_apps.app_id(app)
+    row = real_apps.until(f"the session to offer {app_id}", lambda: next(
+        (row for row in session.actions(app_id)
+         if real_apps.address(row) == (f"app.{app_id}", "open")), None), DEADLINE)
     asked = time.time()
-    session.control({"op": "actions_invoke", "provider": "applications", "id": app_id})
+    session.invoke_row(row)
     end = time.time() + DEADLINE
     while time.time() < end:
         found = [line for line in real_apps_lines(session.log()) if line["epoch"] >= asked - 0.05]

@@ -93,6 +93,12 @@ view typed_mail(b: Board, q: Text) {
     }
 }
 
+view by_subject(b: Board, q: Text) {
+    for m in b.messages.sort_by(m -> m.subject).matching(q) {
+        text(m.subject)
+    }
+}
+
 view sorted(b: Board, q: Text) {
     for t in b.tasks.sort_by(t -> t.title).matching(q) {
         text(t.title)
@@ -222,7 +228,7 @@ view sorted(b: Board, q: Text) {
             // The message subjects' words find their messages, in any case.
             assert_eq!(
                 t.shows("typed_mail", Some("fresh")),
-                ["fresh from yc", "fresh from acme"]
+                ["fresh from acme", "fresh from yc"]
             );
             assert_eq!(
                 t.shows("typed_mail", Some("FRESH acme")),
@@ -230,7 +236,7 @@ view sorted(b: Board, q: Text) {
             );
             assert_eq!(
                 t.shows("typed_mail", Some("yc")),
-                ["fresh from yc", "old from yc", "read from yc",]
+                ["read from yc", "fresh from yc", "old from yc"]
             );
             // Free text with filters is both: the word and the filter together.
             assert_eq!(
@@ -300,6 +306,33 @@ view sorted(b: Board, q: Text) {
             assert_eq!(
                 t.shows("sorted", Some("sort:-effort")),
                 ["b", "c", "a", "d"]
+            );
+        }
+
+        phase a_search_lists_in_its_types_own_order_unless_it_asks_another;
+        {
+            let t = Tasks::new();
+            // A message's order is its latest first: what a mailbox's search lists.
+            assert_eq!(
+                t.shows("typed_mail", Some("is:unread")),
+                ["fresh from acme", "fresh from yc", "old from yc"]
+            );
+            assert_eq!(
+                t.shows("typed_mail", Some("")),
+                ["fresh from acme", "read from yc", "fresh from yc", "old from yc"]
+            );
+            // An order the search asks, or the one the view put the items in, is kept.
+            assert_eq!(
+                t.shows("typed_mail", Some("is:unread sort:received")),
+                ["old from yc", "fresh from yc", "fresh from acme"]
+            );
+            assert_eq!(
+                t.shows("by_subject", Some("is:unread")),
+                ["fresh from acme", "fresh from yc", "old from yc"]
+            );
+            assert_eq!(
+                t.shows("by_subject", Some("yc")),
+                ["fresh from yc", "old from yc", "read from yc"]
             );
         }
 

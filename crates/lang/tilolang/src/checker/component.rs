@@ -209,6 +209,28 @@ impl Checker<'_> {
                 );
             }
         }
+        // A control that can stand dimmed says why, in the `description` ui-core shows on it: a
+        // person never meets a dimmed control that does not explain itself. A component with no
+        // place for the reason is never dimmed.
+        let dimmed = args.iter().any(|a| {
+            a.name.as_ref().is_some_and(|id| id.name == "enabled")
+                && !matches!(a.value.kind, ast::ExprKind::Bool(true))
+        });
+        if dimmed && !given.contains("description") {
+            let fix = if d.prop("description").is_some() {
+                "give `description:`, why it cannot be used while it is dimmed".to_owned()
+            } else {
+                format!(
+                    "{} has no place to say why, so it is never dimmed",
+                    shown(d)
+                )
+            };
+            self.err(
+                "E022",
+                span,
+                format!("{} dimmed by `enabled:` says why: {fix}", shown(d)),
+            );
+        }
         // A rich input's `@` drawer offers who can read what a mention names; the conversation's own
         // people it offers are the view's to give.
         if d.name == "RichInput" && !given.contains("people") {

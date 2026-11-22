@@ -125,7 +125,7 @@ fn a_new_identity_is_made_once_where_the_session_reads_it() {
     assert!(said.contains("already holds Ada's"), "{said}");
 
     let identity_dir = config.join("tilo/identity");
-    let active = tilo_identity_client::resolve_active_identity(&identity_dir)
+    let active = tilo_identity::store::resolve_active_identity(&identity_dir)
         .expect("the session's identity store holds the person");
     let metadata = tilo_identity::store::load_metadata_from_path(&active).unwrap();
     assert_eq!(hex::encode(metadata.group_public_key), key);

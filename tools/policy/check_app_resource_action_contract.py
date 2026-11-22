@@ -133,6 +133,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_cancel": "drops an edit in progress and puts back what the label showed: what this "
     "window shows, no edit",
     "on_effect": "activates a published native effect action",
+    "on_continue_without": "ends this window's wait for an answer and shows its view, reading "
+    "the answer as missing; changes no resource",
     "on_choose": "publishes the row's own press as its view action `choose`, which a person, "
     "a screen reader, a script and an agent all reach",
     "on_own_device_effect": "activates a published native effect action",
@@ -596,12 +598,10 @@ LEGACY_API_BANS = {
     ),
 }
 # The apps that act on other apps' published actions or publish their own to
-# the broker as data, not through a resource of their own: the agent plans and
-# invokes whatever the catalogue offers, and Shortcuts stores and runs steps of
-# it. An address is their data, so they build one; every other old API is
-# refused for them as for any app.
+# the broker as data, not through a resource of their own: Shortcuts stores and
+# runs steps of the catalogue. An address is its data, so it builds one; every
+# other old API is refused for it as for any app.
 PROTOCOL_ENDPOINTS: dict[str, str] = {
-    "agent": "plans and invokes the actions the broker's catalogue offers",
     "shortcuts": "stores and runs steps that name other apps' published actions",
 }
 # Which matches of a legacy rule are the old API, given the file's code and
@@ -1887,19 +1887,14 @@ def audit(
                         f"stale SearchProvider limit exemption `{key}`",
                     )
                 )
-        app_name = manifest_path.parent.name
-        # The headless agent publishes nothing of its own: it acts only
-        # through the broker's task-bound action surfaces. An `apps/*-model`
-        # crate is a record shape apps embed, not an app, and neither is the
-        # `apps/*-model-wasm`
-        # guest crate a package carries it from: the apps embedding it publish
-        # its actions.
+        # An `apps/*-model` crate is a record shape apps embed, not an app, and
+        # neither is the `apps/*-model-wasm` guest crate a package carries it
+        # from: the apps embedding it publish its actions.
         # A compute package runs for the action of the app that requested it.
         # A headless service has no widget tree to publish from; it publishes
         # its action descriptors to the broker directly.
         if (
-            app_name != "agent"
-            and not is_model_crate(manifest_path.parent)
+            not is_model_crate(manifest_path.parent)
             and not compute_package
             and not dynamic_resource_host(manifest_path.parent)
             and not headless_action_service(manifest_path.parent, combined)

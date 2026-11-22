@@ -1183,34 +1183,14 @@ impl Worker {
 
     fn prepare_bounded_action(
         &self,
-        caller: &Caller,
-        (request, route): (&InvokeRequest, &DocumentRoute),
+        request: &InvokeRequest,
         held: &BoundedReplica,
         descriptor: &tilo_actions::ActionDescriptor,
-    ) -> Result<(), ActionCallError> {
-        let address = &descriptor.address;
-        if caller.roster_created_at().is_some()
-            && descriptor.kind != tilo_actions::OperationKind::Document
-            && !(descriptor.kind == tilo_actions::OperationKind::Effect
-                && descriptor.contract.kind == ActionKind::Undoable
-                && collab_types::app_surface::document_verb(
-                    &route.app_id,
-                    address
-                        .resource
-                        .split_once('/')
-                        .map_or(descriptor.resource_kind.as_str(), |(kind, _)| kind),
-                    &address.action,
-                ))
-        {
-            return Err(ActionCallError::Refused {
-                reason: "this roster permission covers actions on a workspace document".into(),
-            });
-        }
+    ) {
         if descriptor.contract.kind == super::ActionKind::Read {
             self.note_reads(request);
         }
         put_what_it_reads(held, descriptor);
-        Ok(())
     }
 
     /// Run `request` on the record at `route` for `who`, in their replica:
@@ -1284,8 +1264,7 @@ impl Worker {
                 },
             ));
         };
-        self.prepare_bounded_action(caller, (request, route), &held, &descriptor)
-            .map_err(Outcome::Rejected)?;
+        self.prepare_bounded_action(request, &held, &descriptor);
         // What is said in a direct conversation the caller's person takes no part in is not
         // there for an action they are offered either ([`super::direct`]).
         let arguments = withheld.given(descriptor.bind_prompt_text(arguments))?;
@@ -1428,13 +1407,8 @@ impl Worker {
         let is_roster = who.caller.roster_created_at().is_some();
         let checking = super::timing_start();
         for (changed, mutation) in &taken {
+            // An agent's approval decides every record it changes, each on its own.
             if is_roster {
-                if matches!(mutation, DocumentMutation::Snapshot(_)) {
-                    return Err(Outcome::Rejected(ActionCallError::Refused {
-                        reason: "this roster permission covers changes to an existing document"
-                            .into(),
-                    }));
-                }
                 self.policy_at(workspace_id, who, changed)
                     .map_err(Outcome::Rejected)?;
             }

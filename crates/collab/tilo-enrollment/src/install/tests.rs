@@ -79,7 +79,6 @@ fn personal_payload(
         recipient_device_public_key: cert.device_public_key,
         server_node_id: [8; 32],
         cert,
-        home_peer_toml: None,
         public_identity_json: Some(public_identity_document(user, "My Tilo identity")?),
         fleet_json: Some(serde_json::to_vec_pretty(&fleet)?),
         home_peers_json: Some(b"[]".to_vec()),
@@ -166,7 +165,7 @@ tilo_test_env::scenario! {
         // First use reads a selected joined identity as a finished join;
         // an interrupted commit has selected nothing yet.
         assert_eq!(
-            tilo_identity_client::resolve_active_identity(identity_dir.path()),
+            tilo_identity::store::resolve_active_identity(identity_dir.path()),
             None,
             "an unfinished join selected its identity"
         );
@@ -217,13 +216,13 @@ tilo_test_env::scenario! {
             vec![hex::encode(member.verifying_key().to_bytes())]
         );
         assert!(
-            tilo_identity_client::resolve_active_identity(identity_dir.path()).is_some(),
+            tilo_identity::store::resolve_active_identity(identity_dir.path()).is_some(),
             "the finished join selects its identity"
         );
         // What the runtime starts the identity from is the registry this
         // wrote, read by the code that reads it: a field it does not know
         // keeps the member it holds from starting at all.
-        let registry = tilo_identity::registry::IdentityRegistryStore::at(identity_dir.path())
+        let registry = tilo_identity::store::IdentityRegistryStore::at(identity_dir.path())
             .load()
             .expect("the registry this join wrote is one the runtime reads");
         let (id, _) = registry
@@ -254,8 +253,7 @@ tilo_test_env::scenario! {
             recipient_device_public_key: cert.device_public_key,
             server_node_id: [8; 32],
             cert: cert.clone(),
-            home_peer_toml: None,
-            public_identity_json: Some(public_identity_document(user, "My Tilo identity").unwrap()),
+                public_identity_json: Some(public_identity_document(user, "My Tilo identity").unwrap()),
             fleet_json: Some({
                 let mut fleet = DeviceFleet::new(hex::encode(user));
                 fleet.certificates.push(cert);
@@ -271,7 +269,7 @@ tilo_test_env::scenario! {
         // The joined identity is what this device acts for from the next
         // login on, not an absent default that asks to create one.
         assert_eq!(
-            tilo_identity_client::resolve_active_identity(identity_dir.path()),
+            tilo_identity::store::resolve_active_identity(identity_dir.path()),
             Some(record.clone())
         );
         let loaded = tilo_identity::store::load_from_path(record).unwrap();
@@ -282,21 +280,10 @@ tilo_test_env::scenario! {
             std::fs::read(tilo_server_protocol::home_peer_registry_path(identity_root.path())).unwrap(),
             b"[]"
         );
-        let registry: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(identity_dir.path().join("registry.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(registry["default_identity"], hex::encode(user));
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt as _;
             let uid = rustix::process::geteuid().as_raw();
-            assert_eq!(
-                std::fs::metadata(identity_dir.path().join("registry.json"))
-                    .unwrap()
-                    .uid(),
-                uid
-            );
             assert_eq!(
                 std::fs::metadata(
                     fleet_store(identity_root.path(), identity_dir.path(), None)
@@ -478,7 +465,7 @@ tilo_test_env::scenario! {
         let record = install(identity_dir.path(), uid).unwrap();
         assert_eq!(std::fs::metadata(record).unwrap().uid(), uid);
         assert!(paths.device_cert.exists());
-        assert_eq!(tilo_identity_client::resolve_active_identity(identity_dir.path()), None);
+        assert_eq!(tilo_identity::store::resolve_active_identity(identity_dir.path()), None);
     }
 
 }

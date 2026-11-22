@@ -96,6 +96,23 @@ pub struct DeviceAction {
     /// the request's signature, and never of what the action records.
     #[serde(with = "serde_bytes")]
     pub placement: Option<Vec<u8>>,
+    /// The agent the source device's person handed this request to, when it is one: an MCP
+    /// client on that device working for them. It only narrows: the answering device acts on it
+    /// as that agent, for the device's person, never as more than the person. Part of the
+    /// request's signature.
+    pub agent: Option<HandedAgent>,
+}
+
+/// The agent a device's person handed a request to, as the device says it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandedAgent {
+    /// What the agent's MCP client calls itself (`Claude Code`): the answering device works with
+    /// it as the person's agent member for that client there, shown by that member's name.
+    pub client: String,
+    /// The agent session the request belongs to, as the asking device keeps it: the requests of
+    /// one session are one agent session on the answering device, which groups their changes and
+    /// which the person can stop there.
+    pub session: String,
 }
 
 /// The action message as the bytes every transport carries it as.
@@ -280,17 +297,12 @@ fn signing_message(issued_at_ns: u64, encoded: &[u8]) -> Vec<u8> {
 }
 
 /// One frame a device's action connection carries: an action to run on the
-/// answering device, or a route the asking device wonders about.
-///
-/// Each is answered in its own shape on the same stream: the action with
-/// the [`RemoteActionFrame`] bytes its dispatcher produced, the offer with
-/// the answering device's [`Answer`](crate::offer::Answer).
+/// answering device, answered on the same stream with the
+/// [`RemoteActionFrame`] bytes its dispatcher produced.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ActionServiceFrame {
     /// An action this device asks the addressed one to run.
     Action(Box<SignedDeviceAction>),
-    /// A route this device asks the addressed one whether it would run.
-    Offer(Box<crate::offer::Query>),
 }
 
 /// Signed actions a target admitted while they are still fresh, so a device
@@ -379,6 +391,7 @@ mod tests {
                 query: CatalogueQuery::default(),
             },
             placement: None,
+            agent: None,
         }
     }
 

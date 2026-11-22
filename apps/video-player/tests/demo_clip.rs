@@ -8,7 +8,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::path::Path;
 
 fn next_box(data: &[u8], kind: [u8; 4]) -> Option<(&[u8], &[u8])> {

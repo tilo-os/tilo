@@ -471,6 +471,9 @@ impl Session {
         // and what the broker admits each session on.
         let agent_sessions = crate::agent_sessions::AgentSessions::new();
         agent_sessions.wake_on_spend(options.wake.handle());
+        // Where each workspace's folder on this computer stands, as the files daemon says it over
+        // the tree socket: what the shell shows, so a person knows what reached the server.
+        let folders = tilo_workspace_service::files::Folders::new(options.wake.handle());
         let agents = Rc::new(crate::agents::Agents::new(
             records.clone(),
             options.wake.handle(),
@@ -716,9 +719,6 @@ impl Session {
         if let Some(index) = &resource_index {
             index.sweep();
         }
-        // The MCP server toward the person's other devices: answered on this device's
-        // endpoint, and served by the MCP server once it opens.
-        let device_agents = crate::device_mcp::DeviceAgents::new(options.wake.handle());
         let peer_documents = crate::sync::PeerDocuments::new(
             std::sync::Arc::clone(&channels_broker),
             std::sync::Arc::clone(&channels_fanout),
@@ -729,7 +729,7 @@ impl Session {
             &options,
             continuity.clone(),
             engine.clone(),
-            (beside, &device_agents),
+            beside,
             Some(peer_documents.clone()),
             (workspace_service.clone(), &changes),
         );
@@ -758,11 +758,6 @@ impl Session {
         let document_content = crate::content::ContentService::open(options.state.as_deref());
         if let Some(sync) = &sync {
             sync.attach_content(std::sync::Arc::clone(&document_content));
-            // What this session says when another of the person's devices
-            // offers it work: the inputs its own content already keeps.
-            if let Some(actions) = sync.device_actions() {
-                actions.attach_content(std::sync::Arc::clone(&document_content));
-            }
         }
         // What other members send here is the workspaces' to admit: their
         // policies are read from the shell this session shows.
@@ -977,6 +972,7 @@ impl Session {
             engine: engine.clone(),
             // The invite sheet is the session's own surface: the shell asks for it here.
             asks: Rc::clone(&asks),
+            folders: folders.clone(),
         });
         let shell_service = shell();
         let shell = if options.shell {
@@ -1227,13 +1223,14 @@ impl Session {
                 agents: Some(agents.roster()),
                 agent_sessions: Some(std::sync::Arc::clone(&agent_sessions) as _),
                 tools: Some(tools.clone()),
+                folders,
             },
             crate::services::app_wire::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
                 documents,
                 resources,
-                service: workspace_service,
+                service: workspace_service.clone(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 sealed: crate::app_wire::Sealed {
                     broker: std::sync::Arc::clone(&channels_broker),
@@ -1368,12 +1365,14 @@ impl Session {
                     .as_ref()
                     .map(|app_wire| std::sync::Arc::clone(&app_wire.layout)),
             );
-            server.hear_device_agents(std::sync::Arc::clone(&device_agents));
             server.open_terminals_on(
                 app_wire
                     .as_ref()
                     .and_then(|app_wire| app_wire.hosting.clone()),
             );
+            if let Some(devices) = sync.as_ref().and_then(|sync| sync.device_actions()) {
+                server.hear_device_agents(devices);
+            }
             server
         });
         let automation = crate::automation::Automation::new(
@@ -1670,7 +1669,7 @@ impl Session {
             workspace_settings,
             ws_settings_fed: Cell::new(None),
             capabilities_fed: Cell::new(None),
-            fs_authority: crate::fs_authority::Publisher::for_session(),
+            files_access: Some(std::sync::Arc::clone(&document_content)),
             workspace_tabs,
             agents,
             records,
@@ -1712,12 +1711,12 @@ impl Session {
             asker,
             mcp_server: RefCell::new(mcp_server),
             session_services,
-            device_agents: std::sync::Arc::clone(&device_agents),
             folder_import: RefCell::new(None),
             sync,
             engine,
             document_reads,
             document_writes: writes,
+            held_stores: crate::engine_records::held_stores(workspace_service),
             desktops,
             notes,
             membership_fed: std::cell::RefCell::new(None),
@@ -2319,16 +2318,6 @@ impl Session {
         self.shared.published.resources()
     }
 
-    /// The server this device answers the person's other devices' agents at,
-    /// admitting those `devices` says are theirs.
-    #[must_use]
-    pub fn device_mcp(
-        &self,
-        devices: std::sync::Arc<dyn tilo_device_mcp::PersonsDevices>,
-    ) -> tilo_device_mcp::DeviceServer {
-        self.shared.device_agents.server(devices)
-    }
-
     /// The windows the overview pictures as the compositor draws them now: each window's id and
     /// the rect its picture rests at, logical `(x, y, width, height)` , bottom first. Empty while
     /// the overview is away, and before a window on the shell has a picture.
@@ -2382,6 +2371,17 @@ impl Session {
     #[must_use]
     pub fn stored_record(&self, app: &str, workspace: &str, record: &str) -> Option<Vec<u8>> {
         self.shared.records.stored(app, workspace, record)
+    }
+
+    /// This device's action service, which the person's other devices ask it through: a test
+    /// holds a workspace's roster of its own there ([`ActionService::hold`]). `None` on a
+    /// session that takes part as nobody.
+    ///
+    /// [`ActionService::hold`]: tilo_peer_state::actions::ActionService::hold
+    #[must_use]
+    pub fn device_actions(&self) -> Option<tilo_peer_state::actions::ActionService> {
+        let devices = self.shared.sync.as_ref()?.device_actions()?;
+        Some(devices.action_service())
     }
 
     /// Whether an agent in `workspace` acts here only in one of its sessions: true once the session

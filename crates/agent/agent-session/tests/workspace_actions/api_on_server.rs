@@ -183,8 +183,7 @@ async fn start(issuer: &str, shelled: bool) -> OnServer {
         &Config {
             issuer: issuer.into(),
             web_entry: web_entry.trim_end_matches('/').to_owned(),
-            invite_entry: None,
-            hosts: vec![server.clone()],
+            hosts: vec![hosted.web.host_info().clone()],
         },
         Store::in_memory(),
     )
@@ -269,8 +268,7 @@ impl OnServer {
             &Config {
                 issuer: issuer.clone(),
                 web_entry: web_entry.trim_end_matches('/').to_owned(),
-                invite_entry: None,
-                hosts: vec![server.clone()],
+                hosts: vec![hosted.web.host_info().clone()],
             },
             Store::in_memory(),
         )
@@ -474,14 +472,14 @@ pub async fn enter_page(
         .unwrap();
     assert!(matches!(offer, JoinReply::Invitation { .. }), "{offer:?}");
     // The page's session carries the invitation in its first message.
-    let info = tilo_server_client::https::server_info(&host).await.unwrap();
+    let server_cert = on_server.host.cert.clone();
     let label = page.cert.device_label.clone();
     let held = Held {
         cert: page.cert.clone(),
-        server_cert: Some(info.server_cert.clone()),
+        server_cert: Some(server_cert.clone()),
     };
     let (_, entering) = invitation_entry(
-        &info.server_cert,
+        &server_cert,
         invitation,
         &page.key,
         Entering {
@@ -494,12 +492,11 @@ pub async fn enter_page(
     )
     .await
     .unwrap();
-    let address = info.address.expect("the server takes device sessions");
     let session = tilo_session_client::start_session(
         tilo_session_client::PeerConfig {
-            host: tilo_server_client::ServerAddress::published(&address),
+            host: on_server.server_host(),
             cert: page.cert.clone(),
-            server_cert: info.server_cert,
+            server_cert,
             revocations: tilo_user_identity::RevocationList::new(),
             entering: Some(entering),
         },
@@ -598,13 +595,16 @@ pub async fn serve(command: &[std::ffi::OsString]) -> std::process::ExitCode {
     let key_file = on_server.state.path().join("key-file.json");
     std::fs::write(
         &key_file,
-        serde_json::to_vec(&tilo_api::direct::KeyFile::new(
-            &on_server.server,
-            Some(&on_server.web_entry),
-            "Ada's script",
-            &script.key,
-            &script.cert,
-        ))
+        serde_json::to_vec(
+            &tilo_api::direct::KeyFile::new(
+                &on_server.server,
+                Some(&on_server.web_entry),
+                "Ada's script",
+                &script.key,
+                &script.cert,
+            )
+            .reaching_at(on_server.hosted.web.host_info().clone()),
+        )
         .unwrap(),
     )
     .unwrap();

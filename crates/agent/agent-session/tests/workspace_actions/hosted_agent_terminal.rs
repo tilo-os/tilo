@@ -1,6 +1,5 @@
 //! An agent a workspace's server works executes commands in the workspace's Terminal for its
-//! person, on a server somebody else operates, as tilo.sh is: the person is one of the people it
-//! keeps workspaces for, and their agent is held to what they allow.
+//! person, on their own server, and is held to what they allow.
 //!
 //! A command asks the person first, in the agent's reply, and the person's own answer, written
 //! where they asked, carries it out, once, with the agent told what it printed. A second command
@@ -10,11 +9,8 @@
 use super::api_unattended::{Person, Sheet, beside};
 use super::hosted_agent_turns::{SCOUT, make_agent};
 use super::hosted_secret_use::InChat;
-use super::resource_support::{admit_person_at, open_admitted_at};
 use super::*;
 use std::sync::Arc;
-use tilo_peer_state::join::Role;
-use tilo_server::workspace_agents::ServerAgents;
 use tilo_server::workspaces::{
     Workspaces,
     person_model::{
@@ -24,16 +20,20 @@ use tilo_server::workspaces::{
 };
 use tilo_server_client::MemberApprover;
 use tilo_server_client::questions::{MemberQuestions, answer_questions};
+use tilo_workspace_service::agents::ServerAgents;
 use tokio::sync::mpsc;
 use ui::tilo_resource::Id;
+
+/// Where the workspace keeps its chat.
+const CHAT: &str = "so.tilo.chat";
 
 /// Where the workspace keeps its agents.
 const AGENTS: &str = ui::tilo_workspace_agent::OWNER;
 
-/// A server its operator keeps up, keeping Ada's workspace, with her assistant on it, her own
-/// model, and a shell for the workspace's commands.
+/// Ada's server, keeping her workspace, with her assistant on it, her own model, and a shell for
+/// the workspace's commands.
 struct OnTheirServer {
-    _server: tilo_server::daemon::Server,
+    _server: crate::harness::hosted::Hosted,
     _actions: tilo_agent_session::workspace_actions::WorkspaceActions,
     workspaces: Workspaces,
     workspace: String,
@@ -55,28 +55,32 @@ struct OnTheirServer {
 
 impl OnTheirServer {
     async fn start() -> Self {
-        Self::start_with(None).await
+        Self::start_with(None, &[]).await
     }
 
     /// [`Self::start`], with the server's own model answering her assistant where one is
-    /// given: she then links no model of her own.
-    async fn start_with(servers_model: Option<tilo_server::workspace_agents::Model>) -> Self {
-        Self::start_on(servers_model, false).await
+    /// given: she then links no model of her own. Her assistant is approved for `apps` alone,
+    /// where she names any.
+    async fn start_with(
+        servers_model: Option<tilo_workspace_service::agents::Model>,
+        apps: &[&str],
+    ) -> Self {
+        Self::start_on(servers_model, apps, false).await
     }
 
     /// [`Self::start`], whose workspace runs its programs in a VM, as a workspace hosted by a
     /// server that sells them does: the VM host keeps what each program it started was given.
     async fn start_with_vm() -> Self {
-        Self::start_on(None, true).await
+        Self::start_on(None, &[], true).await
     }
 
     async fn start_on(
-        servers_model: Option<tilo_server::workspace_agents::Model>,
+        servers_model: Option<tilo_workspace_service::agents::Model>,
+        apps: &[&str],
         in_vm: bool,
     ) -> Self {
-        let (operator, _) = tilo_user_identity::UserIdentity::generate("Server operator", 1);
-        let holder = enrol(&operator, "tilo-sh", DeviceCapabilities::member());
         let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+        let holder = enrol(&ada, "tilo-sh", DeviceCapabilities::member());
         let browser = enrol(&ada, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
         let shells = tempfile::tempdir().unwrap();
@@ -99,32 +103,27 @@ impl OnTheirServer {
             )),
             None => tilo_server::agents::host_shells(shells.path().join("shells")).unwrap(),
         };
-        let (server, actions) = tilo_server::agents::start_serving_documents(
-            crate::harness::hosted::on_this_machine(state.path()),
-            tilo_server::daemon::ServerIdentity {
-                user_public_key: operator.verifying_key().to_bytes(),
-                device_signing_key: holder.key.clone(),
-                device_cert: holder.cert.clone(),
-                revocations: tilo_user_identity::RevocationList::new(),
+        let server = crate::harness::hosted::start(
+            &ada,
+            &holder,
+            state.path(),
+            crate::harness::hosted::Options {
+                shell: Some(shell),
+                ..crate::harness::hosted::Options::offering(crate::common::catalogue)
             },
-            Some(Arc::new(crate::common::catalogue)),
-            Some(shell),
-            None,
         )
-        .await
-        .unwrap();
+        .await;
+        let actions = server.roster.actions.clone();
         let address = tilo_server_client::ServerAddress::at(server.node_addr());
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let keeper = ada.verifying_key().to_bytes();
-        // As a server keeping people's own workspaces makes her the owner of hers: a member
-        // the workspace is kept for, its administrator.
-        admit_person_at(&server, &holder, &workspace, &browser, Role::Editor).await;
-        workspaces
-            .declare_owner(&workspace, keeper, Some("Ada"))
-            .await
-            .unwrap();
-        let page = open_admitted_at(&server, &browser, &holder, &workspace).await;
+        assert!(
+            workspaces
+                .name_person_everywhere(keeper, "Ada", tilo_clock::unix_now_ms())
+                .await
+        );
+        let page = Browser::open_at(&server, &browser, &holder, &workspace).await;
         let person = hex::encode(keeper);
         make_agent(&page, &workspaces, &workspace, &person, None).await;
         let model = ScriptedProvider::answering(Vec::new());
@@ -145,7 +144,9 @@ impl OnTheirServer {
                 .await
                 .unwrap();
         }
-        let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), servers_model);
+        let agents = Box::pin(server.approving_for(&workspace, &[SCOUT], apps))
+            .await
+            .scripted(servers_model);
         let chat = InChat::new(&workspaces, &workspace, person).await;
         Self {
             _server: server,
@@ -236,6 +237,29 @@ fn executes(call: &str, command: &str) -> Reply {
     input.insert("path".to_owned(), "terminal#run".into());
     input.insert("args".to_owned(), serde_json::json!({ "command": command }));
     Reply::tool_call(call, "tilo_do", serde_json::Value::Object(input))
+}
+
+/// An assistant whose approval names no Terminal runs nothing there: its command is refused in
+/// words it can tell its person, and nothing is run or asked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_approved_without_the_terminal_runs_no_command() {
+    let hosted = OnTheirServer::start_with(None, &[CHAT]).await;
+    hosted
+        .turn(
+            "Say hello in the shell",
+            vec![
+                executes("first", "echo first-echo-$((40+2))"),
+                Reply::text("I may not."),
+            ],
+        )
+        .await;
+    assert!(
+        hosted.was_shown("this agent was not approved to change"),
+        "the model was shown:\n{}",
+        hosted.shown()
+    );
+    assert!(!hosted.was_shown("first-echo-42"), "nothing was run");
+    assert!(hosted.questions().await.is_empty(), "nobody was asked");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -591,14 +615,14 @@ async fn servers_model_failed_turn_then_next_message() {
     use tilo_action_policy::agent_answers::AnswerScope;
     use tilo_model_gateway::host_backend::protocol::{Content, ErrorKind, ModelError};
     let plays: Arc<std::sync::Mutex<std::collections::VecDeque<Play>>> = Arc::default();
-    let model: tilo_server::workspace_agents::Model = {
+    let model: tilo_workspace_service::agents::Model = {
         let plays = Arc::clone(&plays);
         Arc::new(move || {
             Some(Box::new(Played(Arc::clone(&plays)))
                 as Box<dyn tilo_agent_session::model::PlanTurns>)
         })
     };
-    let hosted = OnTheirServer::start_with(Some(model)).await;
+    let hosted = OnTheirServer::start_with(Some(model), &[]).await;
     let command =
         AnswerScope::action(ui::apps::TERMINAL, "terminal.session", "run").node(&hosted.workspace);
     hosted.bound(&[(&command, "allow")]).await.unwrap();

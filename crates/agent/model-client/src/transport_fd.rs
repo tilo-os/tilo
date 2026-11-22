@@ -201,8 +201,7 @@ impl Transport for FdTransport {
                 .map_err(|_| ModelError::new(ErrorKind::Unavailable))?;
             let millis = match &request {
                 Request::Complete { timeout_ms, .. }
-                | Request::CompleteDefault { timeout_ms, .. }
-                | Request::Transform { timeout_ms, .. } => (*timeout_ms).clamp(1, 120_000),
+                | Request::CompleteDefault { timeout_ms, .. } => (*timeout_ms).clamp(1, 120_000),
                 _ => 120_000,
             };
             let id = self

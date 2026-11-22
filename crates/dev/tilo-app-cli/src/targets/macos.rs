@@ -29,7 +29,7 @@ const MINIMUM_SYSTEM_VERSION: &str = "13.0";
 /// The runtime daemon's executable name. The SDK looks for it beside the
 /// app's executable before `PATH`, so a bundle carrying it in
 /// `Contents/MacOS` joins (or starts) the shared runtime wherever it runs.
-pub(super) const RUNTIME_HOST: &str = "tilo-runtime-mcp";
+pub(super) const RUNTIME_HOST: &str = "tilo-runtime";
 
 /// Write `<output>/<Name>.app` around `binary` and the runtime daemon
 /// `runtime_host`, with its entitlements beside it. Returns the bundle path.
@@ -581,7 +581,7 @@ mod tests {
                 std::fs::read(&binary).unwrap(),
                 b"app fixture, not executable"
             );
-            project.manifest.entrypoint.as_mut().unwrap().bin = PathBuf::from("bin/TILO-RUNTIME-MCP");
+            project.manifest.entrypoint.as_mut().unwrap().bin = PathBuf::from("bin/TILO-RUNTIME");
             assert!(
                 super::super::assemble_macos_project(
                     &project,

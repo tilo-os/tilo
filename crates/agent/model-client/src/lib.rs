@@ -29,17 +29,6 @@ pub const RPC_VERSION: u16 = 3;
 /// Every gateway request and response: a little-endian `u32` length, then
 /// JSON.
 pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(2 * 1024 * 1024);
-/// Largest instruction text one [`Request::Transform`] may carry.
-pub const MAX_TRANSFORM_INSTRUCTIONS_BYTES: usize = 16 * 1024;
-/// Largest input text one [`Request::Transform`] may carry.
-pub const MAX_TRANSFORM_INPUT_BYTES: usize = 256 * 1024;
-/// The most output tokens one [`Request::Transform`] may ask a model for.
-pub const MAX_TRANSFORM_OUTPUT_TOKENS: u32 = 4096;
-/// The longest one [`Request::Transform`] may wait on a provider, retries
-/// included.
-pub const MAX_TRANSFORM_TIMEOUT: Duration = Duration::from_secs(30);
-/// The largest model answer a [`Request::Transform`] returns.
-pub const MAX_TRANSFORM_OUTPUT_BYTES: usize = 256 * 1024;
 
 pub use agent_provider_config::is_supervised_loopback;
 
@@ -127,19 +116,6 @@ pub enum Request {
         /// while a streamed turn owned the channel. Absent: now.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at_unix_ms: Option<u64>,
-    },
-    /// One bounded, single-shot text transformation for tilo-agent: a
-    /// system instruction and one input, answered with the model's text. No
-    /// tools, no conversation, no provider envelope: the gateway builds the
-    /// provider request itself, caps its size, output and deadline, and
-    /// returns only the answer text.
-    Transform {
-        profile_id: String,
-        model_id: String,
-        instructions: String,
-        input: String,
-        max_output_tokens: u32,
-        timeout_ms: u64,
     },
     /// Fixed-shape, device-local visual analysis for Photos. The gateway
     /// owns the prompt and refuses hosted, unpinned, or non-vision profiles;
@@ -414,8 +390,8 @@ fn exchange(request: Request) -> Result<Response, ClientError> {
 ///
 /// Every RPC duplicates the same connected socket, so the duplicates share
 /// one byte stream, and the gateway answers a connection's requests in the
-/// order they came. Two threads talking at once (the agent's transforms
-/// beside its planning turn, two agents of one host) would read each
+/// order they came. Two threads talking at once (a one-shot call beside a
+/// planning turn, two agents of one host) would read each
 /// other's frames: one caller handed another's answer, or a frame split
 /// between two readers. The gateway serves one request at a time anyway,
 /// so taking turns costs no throughput.
@@ -866,61 +842,6 @@ pub fn trace_at(
     .map(|_| ())
 }
 
-/// Run one bounded single-shot transformation through the isolated model
-/// gateway and return the model's answer text. The gateway enforces the
-/// `MAX_TRANSFORM_*` bounds; a request past them is refused, not truncated.
-pub fn transform(
-    profile_id: &str,
-    model_id: &str,
-    instructions: &str,
-    input: &str,
-    max_output_tokens: u32,
-    timeout: Duration,
-) -> Result<String, ClientError> {
-    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
-    let response = request(Request::Transform {
-        profile_id: profile_id.to_string(),
-        model_id: model_id.to_string(),
-        instructions: instructions.to_string(),
-        input: input.to_string(),
-        max_output_tokens,
-        timeout_ms,
-    })?;
-    response
-        .output
-        .ok_or_else(|| ClientError::Protocol("gateway returned no transform answer".into()))
-}
-
-/// [`transform`] for a caller that may stop wanting the answer (its
-/// invocation was cancelled): once `stop` says so (it is asked every
-/// [`STOP_POLL`]), the gateway is told to stop the provider call, which
-/// then no longer holds the process's one gateway channel.
-///
-/// # Errors
-/// As [`transform`]; a stopped transform fails as
-/// [`ErrorKind::Cancelled`](agent_provider_config::protocol::ErrorKind::Cancelled).
-pub fn transform_until(
-    (profile_id, model_id): (&str, &str),
-    (instructions, input): (&str, &str),
-    max_output_tokens: u32,
-    timeout: Duration,
-    stop: &(dyn Fn() -> bool + Sync),
-) -> Result<String, ClientError> {
-    streaming_request(
-        Request::Transform {
-            profile_id: profile_id.to_string(),
-            model_id: model_id.to_string(),
-            instructions: instructions.to_string(),
-            input: input.to_string(),
-            max_output_tokens,
-            timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-        },
-        false,
-        &mut |_, _| {},
-        Some(stop),
-    )
-}
-
 /// Request a fixed-schema visual analysis through the launcher-issued gateway
 /// descriptor. This operation can only be authorized for Photos by the
 /// gateway; callers cannot provide a URL, arbitrary prompt, or timeout.
@@ -1076,11 +997,11 @@ mod wire_tests {
         fn calls_on_the_shared_launcher_channel_take_turns_and_stop_cleanly;
 
         phase a_call_beside_a_stream_on_the_shared_channel_gets_its_own_answer;
-        // The agent's transforms run beside its streamed planning turn, over
-        // the one launcher channel. A transform asked while the turn's caller
-        // is still busy with one of its events used to read the turn's next
-        // frame as its own answer, and the turn then read the transform's: it
-        // now waits its turn, and each caller gets its own answer.
+        // A one-shot call runs beside a streamed planning turn, over the one
+        // launcher channel. A call asked while the turn's caller is still busy
+        // with one of its events used to read the turn's next frame as its own
+        // answer, and the turn then read the call's: it now waits its turn, and
+        // each caller gets its own answer.
         {
             use std::os::fd::AsRawFd as _;
             let (app, mut gateway) = UnixStream::pair().unwrap();
@@ -1094,13 +1015,10 @@ mod wire_tests {
                 assert!(matches!(frame.value, Request::Complete { .. }));
                 write_frame(&mut gateway, &answer("{}", Some(EVENT_TOOL_CALL))).unwrap();
                 write_frame(&mut gateway, &answer("the plan", None)).unwrap();
-                // Then each transform, answered with its own input.
+                // Then each one-shot call, answered with what it carried.
                 while let Ok(frame) = read_frame::<Frame<Request>>(&mut gateway) {
-                    let Request::Transform { input, .. } = frame.value else {
-                        panic!("only a transform follows the stream");
-                    };
                     let _ = asked_by.send(());
-                    write_frame(&mut gateway, &answer(&input, None)).unwrap();
+                    write_frame(&mut gateway, &answer(&echoed(&frame.value), None)).unwrap();
                 }
             });
             let (in_event, event_seen) = std::sync::mpsc::channel();
@@ -1112,7 +1030,7 @@ mod wire_tests {
                     &mut |kind, _| {
                         assert_eq!(kind, EVENT_TOOL_CALL);
                         // The turn's caller is busy with the event (running the
-                        // call) while the transform is asked.
+                        // call) while the one-shot call is asked.
                         in_event.send(()).unwrap();
                         let _ = go.recv_timeout(tilo_test_env::hang_bound());
                     },
@@ -1120,22 +1038,13 @@ mod wire_tests {
                 )
             });
             tilo_test_env::recv("the stream's event", &event_seen);
-            let transform = std::thread::spawn(|| {
-                transform(
-                    "hosted",
-                    "model",
-                    "Shorten",
-                    "the document",
-                    64,
-                    Duration::from_secs(1),
-                )
-            });
-            // Long enough for a transform on the channel to have read a frame.
+            let call = std::thread::spawn(|| one_shot(7));
+            // Long enough for a call on the channel to have read a frame.
             let _ = asked.recv_timeout(Duration::from_millis(300));
             std::thread::sleep(Duration::from_millis(100));
             go_on.send(()).unwrap();
             assert_eq!(stream.join().unwrap().unwrap(), "the plan");
-            assert_eq!(transform.join().unwrap().unwrap(), "the document");
+            assert_eq!(call.join().unwrap().unwrap(), "7");
             drop(env);
             drop(app);
             server.join().unwrap();
@@ -1152,7 +1061,7 @@ mod wire_tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(SERVICE_FD_ENV, app.as_raw_fd().to_string());
             let server = stoppable_gateway(gateway, false);
-            let (plan, after) = give_up_then_transform();
+            let (plan, after) = give_up_then_call();
             let Err(ClientError::Model(error)) = plan else {
                 panic!("a stopped turn is cancelled, not answered: {plan:?}");
             };
@@ -1160,7 +1069,7 @@ mod wire_tests {
                 error.kind,
                 agent_provider_config::protocol::ErrorKind::Cancelled
             );
-            assert_eq!(after.unwrap(), "after the stop");
+            assert_eq!(after.unwrap(), "9");
             drop(env);
             drop(app);
             server.join().unwrap();
@@ -1176,12 +1085,12 @@ mod wire_tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(SERVICE_FD_ENV, app.as_raw_fd().to_string());
             let server = stoppable_gateway(gateway, true);
-            let (plan, after) = give_up_then_transform();
+            let (plan, after) = give_up_then_call();
             assert!(
                 matches!(&plan, Err(ClientError::Model(error)) if error.kind == agent_provider_config::protocol::ErrorKind::Cancelled),
                 "{plan:?}"
             );
-            assert_eq!(after.unwrap(), "after the stop");
+            assert_eq!(after.unwrap(), "9");
             drop(env);
             drop(app);
             server.join().unwrap();
@@ -1235,7 +1144,7 @@ mod wire_tests {
 
     /// A gateway that streams one event of a cancellable turn, then
     /// (when `answers_first`) its answer, and acknowledges the stop it is
-    /// then sent; afterwards it answers each transform with its input.
+    /// then sent; afterwards it answers each one-shot call with what it carried.
     /// Hands back the id the stop named.
     fn stoppable_gateway(
         mut gateway: UnixStream,
@@ -1268,18 +1177,15 @@ mod wire_tests {
             write_frame(&mut gateway, &answer(&format!("cancelled:{stopped}"), None)).unwrap();
             assert_eq!(stopped, id);
             while let Ok(frame) = read_frame::<Frame<Request>>(&mut gateway) {
-                let Request::Transform { input, .. } = frame.value else {
-                    panic!("only a transform follows the stream");
-                };
-                write_frame(&mut gateway, &answer(&input, None)).unwrap();
+                write_frame(&mut gateway, &answer(&echoed(&frame.value), None)).unwrap();
             }
             stopped
         })
     }
 
     /// Ask a stoppable turn that its caller gives up on at its first event,
-    /// then a transform on the same channel.
-    fn give_up_then_transform() -> (Result<String, ClientError>, Result<String, ClientError>) {
+    /// then a one-shot call on the same channel.
+    fn give_up_then_call() -> (Result<String, ClientError>, Result<String, ClientError>) {
         let stop = std::sync::atomic::AtomicBool::new(false);
         let mut events = 0_usize;
         let plan = streaming_request(
@@ -1295,15 +1201,26 @@ mod wire_tests {
             Some(&|| stop.load(std::sync::atomic::Ordering::Relaxed)),
         );
         assert_eq!(events, 1, "nothing after the stop reaches the caller");
-        let after = transform(
-            "hosted",
-            "model",
-            "Shorten",
-            "after the stop",
-            64,
-            Duration::from_secs(1),
-        );
-        (plan, after)
+        (plan, one_shot(9))
+    }
+
+    /// A one-shot call on the launcher channel, carrying `id`: the fake gateways answer it
+    /// with that id ([`echoed`]).
+    fn one_shot(id: u64) -> Result<String, ClientError> {
+        request(Request::Trace {
+            trace: PlanTrace { id, turn: 0 },
+            event: TraceEvent::ActionSubmitted,
+            at_unix_ms: None,
+        })
+        .map(|answered| answered.output.unwrap_or_default())
+    }
+
+    /// What a fake gateway answers a one-shot call with: the id it carried.
+    fn echoed(asked: &Request) -> String {
+        let Request::Trace { trace, .. } = asked else {
+            panic!("only one-shot calls follow the stream");
+        };
+        trace.id.to_string()
     }
 }
 

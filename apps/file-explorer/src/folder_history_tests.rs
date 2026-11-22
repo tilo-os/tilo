@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use ::fs::namespace::{Namespace, ROOT_INO, acting_as};
+use ::tilo_fs::namespace::{Namespace, ROOT_INO, acting_as};
 use fs_protocol::files::TreeChunk;
 use fs_protocol::tree::{FilesTree, Tree, TreeChunks};
 use ui::automerge::AutoCommit;
@@ -171,9 +171,10 @@ fn ada() -> ui::tilo_actions::MemberId {
 /// A document the person copied into the workspace's folder on their computer: `letter.txt`,
 /// which the mount writes as their certified device.
 fn copied_into_the_mount() -> (Folder, String) {
-    let mut namespace =
-        ::fs::namespace::Namespace::new(::fs::namespace::MountAuthor::person("laptop", ada()))
-            .unwrap();
+    let mut namespace = ::tilo_fs::namespace::Namespace::new(
+        ::tilo_fs::namespace::MountAuthor::person("laptop", ada()),
+    )
+    .unwrap();
     let ino = namespace
         .create_file(ROOT_INO, "letter.txt", Some(&hash(3)), 3, 1)
         .unwrap();

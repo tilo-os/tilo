@@ -19,7 +19,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::fmt::Write as _;
 
 use collab_types::WorkspaceId;

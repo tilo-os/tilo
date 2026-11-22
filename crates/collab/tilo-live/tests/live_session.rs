@@ -16,7 +16,6 @@
     clippy::indexing_slicing,
     reason = "a failed unwrap or index in a test is its assertion"
 )]
-
 #![allow(
     clippy::too_many_lines,
     reason = "each test is one workspace session end to end"

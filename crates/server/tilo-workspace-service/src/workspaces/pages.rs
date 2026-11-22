@@ -30,7 +30,7 @@ use super::collaboration::carried;
 use super::hosts::holders_of;
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedWorkspace, IssueInvitationRequest,
-    IssuedInvitation, RemoveMemberRequest, WorkspaceSummary, Workspaces, system_time,
+    IssuedInvitation, WorkspaceSummary, Workspaces, system_time,
 };
 use crate::service_authority::ServiceOperation;
 use tilo_lock::MutexRecover as _;
@@ -267,14 +267,6 @@ impl Workspaces {
             | WorkspacesRequest::Unlist { .. }
             | WorkspacesRequest::MailInvite { .. }) => {
                 self.page_invitations(device, request, now).await?
-            }
-            WorkspacesRequest::Remove {
-                workspace,
-                request_id,
-                user_public_key,
-            } => {
-                self.page_remove(&workspace, device, request_id, user_public_key)
-                    .await?
             }
             WorkspacesRequest::EditRoles {
                 workspace,
@@ -689,28 +681,6 @@ impl Workspaces {
             invite_id: issued.invite_id,
             signed_invitation: issued.signed_invitation,
         })
-    }
-
-    async fn page_remove(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        request_id: [u8; 32],
-        user_public_key: [u8; 32],
-    ) -> Result<WorkspacesReply, CollaborationError> {
-        if user_public_key == self.inner.host.cert.user_public_key {
-            return Err(CollaborationError::new("the owner cannot be removed"));
-        }
-        self.remove_member(
-            workspace,
-            device,
-            RemoveMemberRequest {
-                request_id,
-                user_public_key,
-            },
-        )
-        .await?;
-        self.page_workspace(workspace, device).await
     }
 
     /// Issue the single-use invitation of the owner's grant and record the

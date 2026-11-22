@@ -47,7 +47,7 @@ fn authorized_device(identity: &Path, certificate: &[u8]) -> io::Result<([u8; 32
     if !tilo_identity::provisioning::active_identity_owns_device(identity, &paths)? {
         return Err(failure());
     }
-    let active = tilo_identity_client::resolve_active_identity(identity).ok_or_else(failure)?;
+    let active = tilo_identity::store::resolve_active_identity(identity).ok_or_else(failure)?;
     let metadata = tilo_identity_client::load_metadata_from_path(&active).map_err(|_| failure())?;
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .map_err(|_| failure())?;
@@ -181,7 +181,7 @@ pub fn attach_deferred_continuity() {
     let Some(home) = crate::identity::session_home() else {
         return;
     };
-    let Ok(store) = tilo_identity::registry::IdentityRegistryStore::from_env() else {
+    let Ok(store) = tilo_identity::store::IdentityRegistryStore::from_env() else {
         return;
     };
     if let Ok(Some(path)) = deferred_projection(&home, store.identity_dir()) {
@@ -236,7 +236,7 @@ pub fn validate_published_projection(path: &Path) -> bool {
     let Some(home) = crate::identity::session_home() else {
         return false;
     };
-    let Ok(store) = tilo_identity::registry::IdentityRegistryStore::from_env() else {
+    let Ok(store) = tilo_identity::store::IdentityRegistryStore::from_env() else {
         return false;
     };
     let identity = store.identity_dir();

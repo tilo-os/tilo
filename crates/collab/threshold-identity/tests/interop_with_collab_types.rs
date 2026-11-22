@@ -5,7 +5,6 @@
 //! byte-for-byte through the standard Ed25519 path in `collab_types`,
 //! with no special "threshold mode" needed.
 
-
 use std::time::SystemTime;
 
 use collab_types::{

@@ -18,7 +18,6 @@ set -euo pipefail
 identity_root="${TILO_SERVER_IDENTITY_ROOT:-/var/lib/tilo}"
 token="${TILO_SERVER_ENROLLMENT_TOKEN:-/etc/tilo/enrollment-token.txt}"
 cert="$identity_root/device/cert.bin"
-home_peer="${TILO_SERVER_HOME_PEER:-/etc/tilo/home-peer.toml}"
 decommissioned="${TILO_SERVER_DECOMMISSIONED:-/var/lib/tilo-server/decommissioned}"
 state_root="${TILO_SERVER_STATE_ROOT:-/var/lib/tilo-server}"
 # The plan this machine installs from is named by the token nonce, kept here
@@ -37,22 +36,6 @@ sibling_seconds="${TILO_SIBLING_SECONDS:-240}"
 sibling_owner="${TILO_SERVER_SIBLING_OWNER:-0}"
 
 log() { printf 'tilo-server-firstboot: %s\n' "$*" >&2; }
-
-handoff_home_peer() {
-    local metadata owner
-    metadata="$(stat -c '%u:%a:%h:%s' -- "$home_peer" 2>/dev/null || true)"
-    if [[ ! -f "$home_peer" || -L "$home_peer" \
-        || ! "$metadata" =~ ^(0|[0-9]+):(600|644):1:([0-9]+)$ \
-        || "${BASH_REMATCH[3]:-65537}" -gt 65536 ]]; then
-        echo "tilo-server-firstboot: refusing unsafe home-peer configuration inode" >&2
-        exit 1
-    fi
-    owner="$(id -u tilo-server)"
-    [[ "${BASH_REMATCH[1]}" = 0 || "${BASH_REMATCH[1]}" = "$owner" ]] \
-        || { echo "tilo-server-firstboot: home-peer configuration has unexpected owner" >&2; exit 1; }
-    chown --no-dereference tilo-server:tilo-server "$home_peer"
-    chmod 0600 "$home_peer"
-}
 
 valid_device_certificate() {
     local metadata size
@@ -145,8 +128,7 @@ if [[ -e "$cert" || -L "$cert" ]] && ! valid_device_certificate; then
     exit 1
 fi
 
-if valid_device_certificate && [[ -s "$home_peer" ]]; then
-    handoff_home_peer
+if valid_device_certificate; then
     sibling_enrol
     exit 0
 fi
@@ -180,13 +162,12 @@ if [[ -r /etc/tilo/server.toml ]]; then
         /etc/tilo/server.toml | head -n 1)"
 fi
 enroll_args=(--identity-root "$identity_root"
-    --home-peer-output "$home_peer" --label "$label" --timeout 270
+    --label "$label" --timeout 270
     --nonce-output "$install_plan")
 [[ -n "$relay" ]] && enroll_args+=(--relay "$relay")
 "$enroll_bin" enroll "${enroll_args[@]}"
 valid_device_certificate \
     || { echo "tilo-server-firstboot: enrollment produced an unsafe device certificate" >&2; exit 1; }
-handoff_home_peer
 # The server reads the plan it must finish installing from this file: it is
 # the server account's to read, and nobody else's.
 if [[ -e "$install_plan" || -L "$install_plan" ]]; then

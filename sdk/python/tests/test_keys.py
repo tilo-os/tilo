@@ -215,11 +215,11 @@ async def test_the_account_says_what_its_workspaces_kept_and_ran(tilo, api):
 async def test_a_workspace_invites_another_person_with_a_link(tilo, api):
     invitation = await tilo.workspace("jane-doe").members.invite(role="editor")
 
-    assert invitation.link.startswith("https://tilo.sh/i/")
+    assert invitation.link.startswith("https://tilo.sh/#/w/")
     assert invitation.role == "editor"
     assert invitation.email is None and not invitation.sent
-    assert api.asked("POST", "/v1/workspaces/")[-1]["path"].endswith("/members/invitations")
-    assert api.asked("POST", "/members/invitations")[-1]["body"] == b'{"role": "editor"}'
+    asked = api.asked("POST", "/resources/workspace/invitations/actions/invite")[-1]
+    assert asked["body"] == b'{"role": "editor"}'
 
 
 async def test_an_emailed_invitation_says_it_was_not_sent(tilo):
@@ -230,9 +230,9 @@ async def test_an_emailed_invitation_says_it_was_not_sent(tilo):
     assert invitation.sent is False and invitation.next
 
 
-async def test_an_invitation_above_editor_is_refused(tilo):
+async def test_an_invitation_to_no_place_is_refused(tilo):
     with pytest.raises(Refused) as raised:
-        await tilo.workspace("jane-doe").members.invite(role="moderator")
+        await tilo.workspace("jane-doe").members.invite(role="superuser")
 
     assert raised.value.code == "invalid_arguments"
 

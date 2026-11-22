@@ -490,7 +490,7 @@ impl SessionSearch {
     }
 
     /// Serve the workspace's action catalogue as a source of the person's search: `provider` is
-    /// this session's action host, the one `tilo do` and `tilo-control actions_enumerate` ask.
+    /// this session's action host, the one `tilo do` and an agent's tools ask.
     /// Its rows are listed for the workspace in front, less the ones this device's own sources
     /// already publish ([`tilo_desktop_search::providers::HostActions`]).
     pub fn serve_catalogue(
@@ -1575,10 +1575,22 @@ fn feed(search: &SessionSearch, workspace: &str, scope: &Scope) -> SearchHostFee
     }
     // The apps of the reading the sources were just built from, so one search never mixes two.
     let applications = SessionSearch::installed_applications(search.kept.borrow().reading.as_ref());
+    // What fills a resource-kind parameter's field, where this session serves the workspace's
+    // catalogue: the kind's list action is asked through the same action host.
+    let resource_options = search.catalogue.borrow().clone().map(|catalogue| {
+        let silent: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(|| {});
+        let wake = search.wake.clone().unwrap_or(silent);
+        let caller = tilo_actions::remote::Caller::local_person(search.person.as_str())
+            .in_workspace(workspace);
+        std::sync::Arc::new(tilo_desktop_search::providers::ResourceLists::new(
+            catalogue, caller, wake,
+        )) as std::sync::Arc<dyn tilo_desktop_search::providers::ResourceSource>
+    });
     SearchHostFeed {
         applications,
         published,
         sources,
+        resource_options,
         preferences: search.preferences.borrow().clone(),
         now: ui::time::unix_now(),
         usage: search.usage.borrow().clone(),
@@ -1823,6 +1835,7 @@ mod tests {
                 candidates: Vec::new(),
                 declared: std::collections::BTreeMap::new(),
                 resource_kinds: std::collections::BTreeMap::new(),
+                earlier: tilo_action_policy::EarlierIds::default(),
                 launchable: Vec::new(),
                 tools: Vec::new(),
             }

@@ -1,6 +1,5 @@
 //! What the `tilo-install` end-to-end tests share: the binary, the keys and the `.tapp` builder.
 
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

@@ -794,9 +794,9 @@ fn unescaped(field: Text) -> Text {
     out
 }
 
-/// Files dropped on the notebook: a Markdown file comes in as a note, an archive as the pages it
-/// holds — the notebook's own written out, or another app's export — and each file of a drop in
-/// turn. One action, so undo takes the whole drop back at once.
+/// Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An
+/// archive becomes the pages it holds, whether the notebook's own written out or another app's
+/// export. One action, so undo takes the whole drop back at once.
 action import_dropped(nb: Notebook, files: List<File>) (
     icon: .file_plus,
     label: "Import files",

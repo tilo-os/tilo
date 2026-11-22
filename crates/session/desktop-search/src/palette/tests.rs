@@ -1860,3 +1860,220 @@ fn an_action_taking_two_values_is_asked_each_in_turn_then_runs_with_both() {
         ))
     );
 }
+
+/// The workspace's vault, as its host answers `tilo.vault/vault#list`: two items, the first
+/// titled as Passwords shows it.
+struct VaultList(serde_json::Value);
+
+impl tilo_actions::remote::ActionProvider for VaultList {
+    fn query(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: tilo_actions::remote::CatalogueQuery,
+    ) -> Pending<Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>>
+    {
+        Pending::ready(Err(tilo_actions::remote::ActionCallError::Unavailable {
+            reason: "a vault lists no catalogue".to_owned(),
+        }))
+    }
+
+    fn invoke(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        assert_eq!(request.target.provider, "tilo.vault");
+        assert_eq!(request.target.address.resource.as_str(), "vault");
+        assert_eq!(request.target.address.action.as_str(), "list");
+        Pending::ready(Ok(tilo_actions::remote::InvocationReceipt {
+            invocation: request.invocation,
+            status: tilo_actions::remote::ReceiptStatus::Completed {
+                output: tilo_actions::ActionOutput {
+                    value: Some(self.0.clone()),
+                    resources: Vec::new(),
+                },
+            },
+        }))
+    }
+
+    fn observe(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        Pending::ready(Ok(()))
+    }
+}
+
+/// What a resource-kind field of the workspace's vault lists.
+fn vault_options() -> Arc<dyn ResourceSource> {
+    Arc::new(crate::providers::ResourceLists::new(
+        Arc::new(VaultList(serde_json::json!({
+            "items": [
+                {
+                    "reference": "vault.item:0123456789abcdef0123456789abcdef",
+                    "kind": "login",
+                    "belongsTo": ["https://example.com"],
+                    "title": "Example",
+                    "addedAt": 1,
+                },
+                {
+                    "reference": "vault.item:ffffffffffffffffffffffffffffffff",
+                    "kind": "key",
+                    "belongsTo": ["https://api.example.com"],
+                    "addedAt": 2,
+                },
+            ],
+        }))),
+        tilo_actions::remote::Caller::local_person("ada").in_workspace("workspace"),
+        Arc::new(|| {}),
+    ))
+}
+
+/// [`two_valued`], its item one a person picks from the workspace's vault rather than types.
+fn two_valued_picking() -> Vec<PublishedActions> {
+    let mut published = two_valued();
+    published[0].actions[0].params = vec![
+        tilo_actions::ActionParam::required("variable", tilo_actions::ParamType::Text, "Variable"),
+        tilo_actions::remote::person_vault::item_param("item", "Vault item"),
+    ];
+    published
+}
+
+/// A search over [`two_valued_picking`], the vault listing its items, with the action chosen
+/// and its first value answered: its vault item's step is open.
+fn picking_the_item() -> DesktopSearch {
+    let mut search = DesktopSearch::new();
+    search.open(SearchData {
+        published: two_valued_picking(),
+        resource_options: Some(vault_options()),
+        scope: Scope::Workspace,
+        ..data()
+    });
+    settled(&mut search);
+    search.set_query("secret");
+    settled(&mut search);
+    let at = search
+        .palette()
+        .visible_entries()
+        .iter()
+        .position(|entry| entry.label == "Add secret")
+        .expect("the action answers the query");
+    search.palette_mut().set_cursor(at);
+    search.palette_mut().activate_selected();
+    assert!(
+        !search.observe(),
+        "choosing a row that takes more asks its first value, leaving search open"
+    );
+    let id = search
+        .collecting
+        .as_ref()
+        .expect("the action is being collected")
+        .hit
+        .id
+        .clone();
+    assert!(search.answered_collected_field(&ui::CommandOutcome {
+        id,
+        argument: Some("API_TOKEN".into()),
+    }));
+    settled(&mut search);
+    search
+}
+
+#[test]
+fn an_action_taking_a_vault_item_lists_the_items_and_runs_with_the_one_chosen() {
+    let mut search = picking_the_item();
+    let shown: Vec<(String, Option<String>)> = search
+        .palette()
+        .visible_entries()
+        .iter()
+        .map(|entry| (entry.label.clone(), entry.description.clone()))
+        .collect();
+    assert_eq!(
+        shown,
+        vec![
+            (
+                "Example".to_owned(),
+                Some("login \u{b7} https://example.com".to_owned())
+            ),
+            ("key \u{b7} https://api.example.com".to_owned(), None,),
+        ],
+        "each item is listed by its title, else what it is and where it belongs"
+    );
+    assert!(
+        shown
+            .iter()
+            .all(|(label, _)| !label.contains("vault.item:")),
+        "the person picks the item, never types its address: {shown:?}"
+    );
+    let at = search
+        .palette()
+        .visible_entries()
+        .iter()
+        .position(|entry| entry.label == "Example")
+        .expect("the vault's item is a row");
+    search.palette_mut().set_cursor(at);
+    search.palette_mut().activate_selected();
+    assert!(
+        search.observe(),
+        "the picked item is the last value, so the action runs"
+    );
+    let Some(Target::Invoke(invoke)) = search.take_choice() else {
+        panic!("the action runs by address once every value is given");
+    };
+    assert_eq!(
+        invoke.arguments.get("variable"),
+        Some(&serde_json::Value::String("API_TOKEN".into()))
+    );
+    assert_eq!(
+        invoke.arguments.get("item"),
+        Some(&serde_json::Value::String(
+            "vault.item:0123456789abcdef0123456789abcdef".into()
+        )),
+        "the chosen item fills the field with its reference"
+    );
+}
+
+#[test]
+fn escaping_the_pick_returns_to_the_list_without_running_the_action() {
+    let mut search = picking_the_item();
+    assert!(
+        search
+            .palette()
+            .visible_entries()
+            .iter()
+            .any(|entry| entry.label == "Example"),
+        "the items are listed to pick from"
+    );
+    // Escape closes the palette; the pick goes back to the list it opened over.
+    search.palette_mut().close();
+    assert!(!search.observe(), "backing out keeps search open");
+    assert!(search.collecting.is_none(), "the action is not run");
+    assert!(
+        search.palette().is_open(),
+        "the list is where the person was"
+    );
+    assert_eq!(search.query(), "secret", "their query is put back");
+    settled(&mut search);
+    let listed: Vec<String> = search
+        .palette()
+        .visible_entries()
+        .iter()
+        .map(|entry| entry.label.clone())
+        .collect();
+    assert!(
+        listed.iter().any(|label| label == "Add secret"),
+        "the row the person chose is listed again: {listed:?}"
+    );
+    assert!(search.take_choice().is_none(), "nothing ran");
+}

@@ -23,7 +23,7 @@
 //! the steps already in history instead of repeating them.
 //!
 //! What the program itself keeps between its runs, its counts and its note,
-//! is in a file beside that one ([`super::kept`]), written whenever it
+//! is in a file beside that one ([`tilo_workspace_service::agents::kept`]), written whenever it
 //! changes.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -53,10 +53,10 @@ use tilo_connector::ConnectorProcess;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCert;
 
-use super::kept::KeptFile;
 use crate::workspaces::{MemberMark, Workspaces};
 use tilo_content::{ContentStore, WorkspaceStores};
-use tilo_workspace_service::tl_records::{self, Packages, ProgramRecord, RecordBytes};
+use tilo_workspace_service::agents::kept::KeptFile;
+use tilo_workspace_service::tl_records::{self, Packages, ProgramRecord};
 
 // The field a connector's records keep their outbox under, which the bot's
 // grant lets it settle.
@@ -108,6 +108,51 @@ pub struct InstalledBot {
     /// the program and keeps the installation.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub release: String,
+}
+
+/// What an event's installation says it was installed from.
+const EVENT_ENTRY: &str = "event";
+
+/// What runs a workspace's events here: each one's program as a bot of its own, for the
+/// member who set it up.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EventRunner;
+
+impl tilo_workspace_service::agents::events::Runner for EventRunner {
+    fn run(
+        &self,
+        workspaces: &Workspaces,
+        workspace: &str,
+        definition: &tilo_agent_session::bot::event::Definition,
+        person: String,
+        steps: Arc<dyn HostSteps>,
+        progress: PathBuf,
+    ) -> Result<(Arc<KeptFile>, tokio::task::JoinHandle<()>), String> {
+        let bot = InstalledBot {
+            installation: definition.id.clone(),
+            entry: EVENT_ENTRY.to_owned(),
+            name: definition.name.clone(),
+            program: definition.program_text()?,
+            inputs: definition.inputs(),
+            installed_at_ms: definition.set_up_at_ms,
+            release: String::new(),
+        };
+        // An event changes no record, so nothing is ever signed with this
+        // key: it only names the run's caller, anew at each start.
+        let key = SigningKey::from_bytes(&rand::random());
+        let runner = BotRunner::new(
+            workspaces.clone(),
+            workspace.to_owned(),
+            workspaces.governor().clone(),
+            key,
+            bot,
+            BTreeMap::new(),
+            progress,
+        )?
+        .runs_for(person, steps);
+        let kept = runner.kept();
+        Ok((kept, tokio::spawn(runner.run())))
+    }
 }
 
 impl InstalledBot {
@@ -963,20 +1008,19 @@ impl BotRunner {
         // run reads what members did up to now: each app's own records,
         // then the parts of the chains they keep beside them. A record the
         // bot cannot hold is left out of the run (and said), not every run
-        // with it. A tilolang app's record is held whole, through its package.
-        let mut tilolang = BTreeMap::new();
+        // with it. A tilolang app's record is read through its package from the workspace's
+        // store, which each of its steps writes as it runs.
         let access = std::sync::Arc::new(self.access.clone());
         for (app, packages) in &self.tilolang {
-            let record = self.workspaces.tl_record(&self.workspace, app).await?;
+            let record = self.workspaces.tl_record(&self.workspace, app)?;
             self.held.lock_recover().hold_tilolang(
                 app,
                 Box::new(ProgramRecord::new(
                     packages.clone(),
-                    record.clone(),
+                    record,
                     Some(std::sync::Arc::clone(&access)),
                 )),
             );
-            tilolang.insert(app.clone(), record);
         }
         let mut routes = self.routes().await?;
         routes.retain(|(app, _)| !self.tilolang.contains_key(app));
@@ -1044,38 +1088,6 @@ impl BotRunner {
         })
         .await
         .map_err(|error| error.to_string())?;
-        // The run's changes reach the workspace in the order its steps made them: a tilolang
-        // app's record first, then the records held beside it, so one the workspace refuses
-        // leaves what came before it standing.
-        for (app, before) in &tilolang {
-            if let Err(refusal) = self.publish_tilolang(app, before).await {
-                // The refused change, and every later one built on it, stay out of the
-                // workspace; the bot's replicas they touched start over from the workspace's
-                // records, or every later change of theirs would carry the refused one and be
-                // refused too.
-                let mut touched: BTreeSet<DocumentRoute> = self
-                    .held
-                    .lock_recover()
-                    .take_changes()
-                    .into_iter()
-                    .map(|(route, _)| route)
-                    .collect();
-                touched.insert(DocumentRoute {
-                    app_id: app.clone(),
-                    cluster_id: self.workspace.clone(),
-                    document: String::new(),
-                });
-                let mut held = self.held.lock_recover();
-                for route in &touched {
-                    held.forget(route);
-                }
-                drop(held);
-                self.api.forget_steps();
-                let reason = format!("the workspace refused the bot's change to {app}: {refusal}");
-                tracing::warn!(installation = %self.bot.installation, run = %firing.invocation.0, %app, %refusal, "bot change refused; the run goes again");
-                return Ok(Fired::Refused(reason));
-            }
-        }
         let changes = self.held.lock_recover().take_changes();
         let count = changes.len();
         let mut changes = changes.into_iter().enumerate();
@@ -1112,51 +1124,6 @@ impl BotRunner {
             }
         }
         Ok(Fired::Ran(Box::new(report)))
-    }
-
-    /// Write what a run changed of the tilolang app `app`'s record, held from `before`, as a
-    /// member write for the bot: each change names the bot, and this device signs it.
-    async fn publish_tilolang(&self, app: &str, before: &RecordBytes) -> Result<(), String> {
-        let Some(after) = self.held.lock_recover().tilolang_documents(app) else {
-            return Ok(());
-        };
-        let written = tl_records::written_since(before, &after)?;
-        if written.is_empty() {
-            return Ok(());
-        }
-        // A record the workspace holds already takes the bot's changes as the bot's own writes,
-        // signed by its device, as a native app's does: every member decides each as the bot's,
-        // within its grants and showing another name only where the workspace lets it. Each
-        // change is published on its own, so one the workspace refuses leaves those before it
-        // standing, as a native app's does. The write that founds a record is the host's.
-        for write in written {
-            if write.founding {
-                self.workspaces
-                    .write_tl(&self.workspace, app, vec![write])
-                    .await?;
-                continue;
-            }
-            for change in automerge::Automerge::parse_changes(&write.changes)
-                .map_err(|error| error.to_string())?
-            {
-                #[cfg(test)]
-                if self.refuse_for_test() {
-                    return Err("refused for the test".into());
-                }
-                self.workspaces
-                    .publish_tl_as_bot(
-                        &self.workspace,
-                        &self.host,
-                        &self.bot_key,
-                        app,
-                        &write.document,
-                        change.raw_bytes(),
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-        }
-        Ok(())
     }
 
     /// Who is in the workspace, by name and in what role, as of now: `{"members":
@@ -1340,15 +1307,6 @@ fn stopped_at(report: &tilo_automation::InvocationReport) -> Option<(Ended, Stri
             Some((Ended::Failed, "the run was cancelled".to_owned()))
         }
     }
-}
-
-/// The next time `trigger` fires after `now_ms` on this host's clock, ms
-/// since the epoch: a schedule's next time, a moment itself. None for a
-/// trigger that is not on the clock.
-#[must_use]
-pub fn next_fire_ms(trigger: &TriggerSpec, now_ms: i64) -> Option<i64> {
-    let now = jiff::Timestamp::from_millisecond(now_ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-    Timed::of(trigger)?.first_ms(now, &jiff::tz::TimeZone::system())
 }
 
 /// `record` of `app`, as the runner names one record across passes.

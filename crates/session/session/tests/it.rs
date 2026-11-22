@@ -79,10 +79,10 @@ mod delete_workspace;
 mod desktop_services;
 #[path = "dev_session_apps.rs"]
 mod dev_session_apps;
+#[path = "device_agents.rs"]
+mod device_agents;
 #[path = "device_branch.rs"]
 mod device_branch;
-#[path = "device_mcp.rs"]
-mod device_mcp;
 #[path = "device_record.rs"]
 mod device_record;
 #[path = "devices.rs"]
@@ -97,8 +97,6 @@ mod displays;
 mod fabric;
 #[path = "file_clipboard.rs"]
 mod file_clipboard;
-#[path = "files_link.rs"]
-mod files_link;
 #[path = "files_tree.rs"]
 mod files_tree;
 #[path = "find_off_loop.rs"]
@@ -251,6 +249,8 @@ mod shell_themes;
 mod shortcut_effects;
 #[path = "shortcut_guide.rs"]
 mod shortcut_guide;
+#[path = "startup_timeline.rs"]
+mod startup_timeline;
 #[path = "strips_tabs.rs"]
 mod strips_tabs;
 #[path = "style_packages.rs"]
@@ -273,6 +273,8 @@ mod visual_alerts;
 mod vpn;
 #[path = "wifi_continuity.rs"]
 mod wifi_continuity;
+#[path = "window_accent.rs"]
+mod window_accent;
 #[path = "window_bar_actions.rs"]
 mod window_bar_actions;
 #[path = "window_layout.rs"]

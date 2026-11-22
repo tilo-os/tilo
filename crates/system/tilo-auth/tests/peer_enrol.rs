@@ -28,10 +28,10 @@ use tilo_auth::sibling::enrol::{NotEnrolled, PeerRegistrar, Registrar};
 use tilo_device_identity::{IdentityPaths, persist};
 use tilo_identity::device_fleet::{DeviceFleet, DeviceFleetStore};
 use tilo_unlock_protocol::{
-    BootKeyCert, ENROL_ALPN, EnrolReply, EnrolRequest, EnrolResponse, Half, PROTOCOL_VERSION,
-    SiblingContact, SlotId, decode_frame, encode_frame, frame_len,
+    ENROL_ALPN, EnrolReply, EnrolRequest, EnrolResponse, Half, SiblingContact, SlotId,
+    decode_frame, encode_frame, frame_len,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert, verify_device_cert};
 
 /// The person's root, which only their own devices hold.
 fn person() -> SigningKey {
@@ -60,7 +60,6 @@ fn certify(root: &SigningKey, device: &SigningKey, label: &str) -> DeviceCert {
 /// What the enrolling machine keeps: this device's key and certificate, and
 /// the fleet that names the person's devices.
 struct Enrolling {
-    pubkey: [u8; 32],
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
 }
@@ -113,7 +112,6 @@ fn joined(root: &SigningKey, certs: &[DeviceCert], personal: bool) -> Enrolling 
     std::fs::write(&file, serde_json::to_vec(&fleet).expect("the fleet"))
         .expect("the fleet is written");
     Enrolling {
-        pubkey: key.verifying_key().to_bytes(),
         _env: env,
         _root: dir,
     }
@@ -140,21 +138,21 @@ struct Answering {
 }
 
 impl Answering {
-    fn reply(&self, request: &EnrolRequest, device: [u8; 32]) -> EnrolReply {
+    fn reply(&self, request: &EnrolRequest) -> EnrolReply {
         match self.answer {
             Answer::NotKeyHolder => EnrolReply::NotKeyHolder,
             Answer::Enrol => {
-                let mut cert = BootKeyCert {
-                    version: PROTOCOL_VERSION,
+                let mut cert = DeviceCert {
                     user_public_key: self.person,
-                    device_public_key: device,
-                    boot_public_key: request.boot_public_key,
-                    slot: request.slot,
-                    attestation_key: request.attestation_key.clone(),
+                    device_public_key: request.boot_public_key,
+                    device_label: "Boot key".into(),
+                    capabilities: DeviceCapabilities::nothing(),
                     issued_at_ns: tilo_clock::unix_now_ns(),
+                    expires_at_ns: None,
                     signature: [0; 64],
+                    issuer: None,
                 };
-                cert.sign(&self.root).expect("the person's root signs");
+                sign_device_cert(&mut cert, &self.root).expect("the person's root signs");
                 EnrolReply::Enrolled(Box::new(EnrolResponse {
                     cert,
                     siblings: vec![SiblingContact {
@@ -177,8 +175,7 @@ impl ProtocolHandler for Answering {
         let Some(request) = read_frame::<EnrolRequest>(&mut recv).await else {
             return Ok(());
         };
-        let device = *connection.remote_id().as_bytes();
-        write_reply(&mut send, &self.reply(&request, device)).await;
+        write_reply(&mut send, &self.reply(&request)).await;
         Ok(())
     }
 }
@@ -334,7 +331,7 @@ fn a_device_without_the_root_enrols_by_asking_one_that_holds_it() {
     let phone = certify(&root, &device_key(0x41), "The phone");
     let server = certify(&root, &device_key(0x51), "The server");
     let me = certify(&root, &device_key(0x61), "The desktop");
-    let enrolled = enrolling(&root, &[laptop, phone, server, me]);
+    let _enrolled = enrolling(&root, &[laptop, phone, server, me]);
     let devices = Devices::new(&root, Answer::NotKeyHolder, Answer::Enrol);
 
     // This machine has no session at all: it reads its own key and the person's
@@ -346,15 +343,15 @@ fn a_device_without_the_root_enrols_by_asking_one_that_holds_it() {
         .register(&request)
         .expect("the device that holds the root enrols it");
     assert_eq!(
-        response.cert.device_public_key,
-        device_key(0x61).verifying_key().to_bytes()
+        response.cert.user_public_key,
+        root.verifying_key().to_bytes()
     );
     assert_eq!(
-        response.cert.boot_public_key,
+        response.cert.device_public_key,
         boot_key.verifying_key().to_bytes()
     );
-    assert_eq!(response.cert.slot, request.slot);
-    response.cert.verify().expect("the person's root signed");
+    assert_eq!(response.cert.capabilities, DeviceCapabilities::nothing());
+    verify_device_cert(&response.cert).expect("the person's root signed");
     assert!(!response.siblings.is_empty());
     assert_eq!(
         devices.laptop.load(Ordering::SeqCst),
@@ -371,7 +368,6 @@ fn a_device_without_the_root_enrols_by_asking_one_that_holds_it() {
         0,
         "the enrolment answered before the server was needed"
     );
-    assert_eq!(response.cert.device_public_key, enrolled.pubkey);
 }
 
 /// A server nobody is signed in to holds the person's store, and no account of
@@ -383,7 +379,7 @@ fn a_server_that_holds_the_persons_store_finds_their_devices() {
     let laptop = certify(&root, &device_key(0x31), "The laptop");
     let phone = certify(&root, &device_key(0x41), "The phone");
     let server = certify(&root, &device_key(0x61), "The server");
-    let enrolled = enrolled_server(&root, &[laptop, phone, server]);
+    let _enrolled = enrolled_server(&root, &[laptop, phone, server]);
     let devices = Devices::new(&root, Answer::Enrol, Answer::NotKeyHolder);
 
     let registrar = PeerRegistrar::find(None, Some(devices.relays.clone()))
@@ -392,13 +388,16 @@ fn a_server_that_holds_the_persons_store_finds_their_devices() {
     let response = registrar
         .register(&request)
         .expect("the person's laptop enrols the server's boot key");
-    assert_eq!(response.cert.device_public_key, enrolled.pubkey);
     assert_eq!(
-        response.cert.boot_public_key,
+        response.cert.user_public_key,
+        root.verifying_key().to_bytes()
+    );
+    assert_eq!(
+        response.cert.device_public_key,
         boot_key.verifying_key().to_bytes()
     );
-    assert_eq!(response.cert.slot, request.slot);
-    response.cert.verify().expect("the person's root signed");
+    assert_eq!(response.cert.capabilities, DeviceCapabilities::nothing());
+    verify_device_cert(&response.cert).expect("the person's root signed");
     assert!(
         !response.siblings.is_empty(),
         "the token names devices to ask at boot"

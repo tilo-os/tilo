@@ -64,7 +64,7 @@ echo "== collaborative Files shipped-image contract ($mode) =="
 
 # Executables and the host FUSE prerequisite must be in the immutable image.
 for path in /usr/bin/fs /usr/libexec/tilo/tilo-launcher \
-            /usr/libexec/tilo/tilo-runtime-mcp \
+            /usr/libexec/tilo/tilo-runtime \
             /usr/libexec/tilo/tilo-install /usr/libexec/tilo/tilo-runtime-bundle \
             /usr/bin/fusermount3 /usr/bin/cage \
             /usr/libexec/tilo-session /usr/bin/tilo-session \

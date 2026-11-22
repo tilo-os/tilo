@@ -148,7 +148,6 @@ pub struct ServiceSessions {
     pub metrics: Arc<Metrics>,
     pub identity: LiveIdentity,
     pub(crate) handshake_trust: HandshakeTrust,
-    governed_access_update: Arc<AsyncMutex<()>>,
     pub state_root: PathBuf,
     pub(crate) shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
     /// The server ALPN's handler, and every session's context.
@@ -244,16 +243,11 @@ impl ServiceSessions {
             }) as Arc<dyn AppActionServer>),
             None => cfg.apps.clone(),
         };
-        // A person's own device serves its person alone: a server image
-        // retired in its state root serves nothing from then on.
-        let decommissioned = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser)
-            .then(|| cfg.state_root.join("decommissioned"));
         let handler = ServerProtocol {
             workspaces: workspaces.clone(),
             trust_policy: handshake_trust.live_policy.clone(),
             identity: live.clone(),
             metrics: metrics.clone(),
-            decommissioned,
             app_serving: wrap(&workspaces, own_server.clone()),
             carried_calls: Arc::default(),
             admin: Arc::default(),
@@ -276,7 +270,6 @@ impl ServiceSessions {
             metrics: metrics.clone(),
             identity: live,
             handshake_trust,
-            governed_access_update: Arc::new(AsyncMutex::new(())),
             state_root: cfg.state_root.clone(),
             shell_payloads: cfg.shell_payloads.clone(),
             handler,
@@ -305,7 +298,7 @@ impl ServiceSessions {
             // Sessions ask its governance what a device may do; the lock is set
             // before the endpoint routes any session to a service that governs here.
             let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
-            #[cfg(any(feature = "agents", feature = "web"))]
+            #[cfg(feature = "device-keys")]
             take_part(&sessions.handler.compactor, &workspaces);
         }
         Ok((
@@ -361,7 +354,6 @@ impl ServiceSessions {
         GovernedAccessWriter {
             workspaces: self.workspaces.clone(),
             handshake_trust: self.handshake_trust.clone(),
-            update: Arc::clone(&self.governed_access_update),
             state_root: self.state_root.clone(),
             shell_payloads: self.shell_payloads.clone(),
             environments: self.handler.environments.clone(),
@@ -441,7 +433,7 @@ impl ServiceSessions {
 /// and repair the stores they kept from a run before a page's writes waited for their record:
 /// writes stuck behind a change their writer never sent are folded away now, not at whatever
 /// write next brings each record's fold.
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "device-keys")]
 fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::workspaces::Workspaces) {
     compactor.with_group_keys(Arc::new(workspaces.clone()));
     let (repairing, compactor) = (workspaces.clone(), compactor.clone());
@@ -830,7 +822,7 @@ impl WorkspaceService {
     /// in memory. A start replays what the server retains, but it takes a
     /// write only into a record its governor already holds
     /// ([`crate::workspaces::Workspaces::keep_what_was_followed`]).
-    pub async fn shutdown(self) {
+    pub async fn shutdown(&self) {
         self.workspaces.keep_what_was_followed().await;
         self.sessions.shutdown().await;
     }
@@ -845,12 +837,28 @@ pub fn local_caller(cert: &DeviceCert) -> tilo_actions::remote::Caller {
 /// Where an embedder whose router is built before any workspace is placed on it
 /// installs the service its [`deferred_protocols`] forward to.
 #[derive(Clone, Default)]
-pub struct ServiceSlot(Arc<std::sync::RwLock<Option<Arc<WorkspaceService>>>>);
+pub struct ServiceSlot(Arc<Slot>);
+
+/// What a [`ServiceSlot`] holds: the service, and a count of its installs that a waiter for one
+/// follows.
+struct Slot {
+    service: std::sync::RwLock<Option<Arc<WorkspaceService>>>,
+    installs: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for Slot {
+    fn default() -> Self {
+        Self {
+            service: std::sync::RwLock::default(),
+            installs: tokio::sync::watch::Sender::new(0),
+        }
+    }
+}
 
 impl std::fmt::Debug for ServiceSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("ServiceSlot")
-            .field(&self.0.read_recover().is_some())
+            .field(&self.0.service.read_recover().is_some())
             .finish()
     }
 }
@@ -858,19 +866,35 @@ impl std::fmt::Debug for ServiceSlot {
 impl ServiceSlot {
     /// Forward this slot's connections to `service` from now on.
     pub fn install(&self, service: Arc<WorkspaceService>) {
-        *self.0.write_recover() = Some(service);
+        *self.0.service.write_recover() = Some(service);
+        self.0
+            .installs
+            .send_modify(|installs| *installs = installs.wrapping_add(1));
     }
 
     /// Refuse this slot's connections again, handing back the service it
     /// forwarded to.
     pub fn clear(&self) -> Option<Arc<WorkspaceService>> {
-        self.0.write_recover().take()
+        self.0.service.write_recover().take()
     }
 
     /// The service this slot forwards to.
     #[must_use]
     pub fn service(&self) -> Option<Arc<WorkspaceService>> {
-        self.0.read_recover().clone()
+        self.0.service.read_recover().clone()
+    }
+
+    /// The service this slot forwards to, once one is installed: what starts work on a device's
+    /// service that its embedder opens later than it builds what the work needs.
+    pub async fn installed(&self) -> Arc<WorkspaceService> {
+        let mut installs = self.0.installs.subscribe();
+        loop {
+            if let Some(service) = self.service() {
+                return service;
+            }
+            // The sender lives as long as this slot, which this call borrows.
+            let _ = installs.changed().await;
+        }
     }
 }
 
@@ -926,12 +950,13 @@ impl ProtocolHandler for Deferred {
 }
 
 /// Replaces a governed workspace's admitted members and the handshake
-/// allowlist derived from them, one replacement at a time.
+/// allowlist derived from them. Each workspace's governance hands it one
+/// replacement at a time; replacements of different workspaces run side by
+/// side, so no workspace's access write waits for another's.
 #[derive(Clone)]
 pub(crate) struct GovernedAccessWriter {
     workspaces: WorkspaceRegistry,
     handshake_trust: HandshakeTrust,
-    update: Arc<AsyncMutex<()>>,
     state_root: PathBuf,
     shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
     /// The browser environments this server placed: their devices are listed
@@ -1010,7 +1035,6 @@ impl GovernedAccessWriter {
                 "allow_any cannot serve governed workspace admission".into(),
             ));
         }
-        let _update = self.update.lock().await;
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
             self.state_root.clone(),
@@ -1048,13 +1072,13 @@ impl GovernedAccessWriter {
         .await;
         // Also after an I/O error the handshake union must reflect the
         // fail-closed ceiling. A successful write leaves the workspace
-        // holding exactly the roots it was asked for, so only its own
-        // contribution changes; an error leaves an intersection that only a
-        // full read of the workspace tells.
-        match &result {
-            Ok(_) => self.handshake_trust.settled(workspace_id, roots),
-            Err(_) => self.handshake_trust.refresh(&self.workspaces).await,
-        }
+        // holding exactly the roots it was asked for; an error leaves the
+        // intersection the workspace now holds.
+        let roots = match &result {
+            Ok(_) => roots,
+            Err(_) => workspace.lock().await.governed_user_roots.clone(),
+        };
+        self.handshake_trust.settled(workspace_id, roots);
         Ok(result?)
     }
 }
@@ -1089,7 +1113,7 @@ impl HandshakeTrust {
     }
 
     /// Rebuild every workspace's contribution by reading them, for a service
-    /// starting (or a write whose effect in memory only a read tells).
+    /// starting.
     pub(crate) async fn refresh(&self, workspaces: &WorkspaceRegistry) {
         if self.allow_any {
             return;
@@ -1324,9 +1348,6 @@ pub struct ServerProtocol {
     pub trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     pub identity: LiveIdentity,
     pub metrics: Arc<Metrics>,
-    /// The marker of a home peer retired in its state root, when this host is
-    /// one: it serves nothing from then on.
-    pub decommissioned: Option<PathBuf>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
     /// Set once when the service starts serving browsers: the workspaces whose
     /// calls it carries.
@@ -1416,15 +1437,6 @@ impl ServerProtocol {
     /// Take `connection`'s first stream and serve its sessions on a task of
     /// their own, so the iroh router can accept the next connection.
     async fn accept_streams(&self, connection: Connection) -> Result<(), AcceptError> {
-        if self
-            .decommissioned
-            .as_ref()
-            .is_some_and(|marker| marker.exists())
-        {
-            return Err(AcceptError::from_err(std::io::Error::other(
-                "home peer is decommissioned",
-            )));
-        }
         let connection = tilo_server_client::link::Link::iroh(connection);
         let binding = connection.offer_binding().await;
         let first = connection

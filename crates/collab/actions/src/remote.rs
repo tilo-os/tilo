@@ -215,18 +215,46 @@ pub const WORKSPACE_APPS: &str = "apps";
 /// The mail accounts a workspace keeps on its server, under its governance
 /// root (`workspace/mail-accounts`): `tilo.accounts`'s, reached by path.
 pub const WORKSPACE_MAIL_ACCOUNTS: &str = "mail-accounts";
+/// The people in a workspace, under its governance root (`workspace/members`).
+pub const WORKSPACE_MEMBERS: &str = "members";
+/// One person among a workspace's people (`workspace/members/<person>`, their user public key
+/// in hex): what changes their role and removes them is published on them.
+pub const WORKSPACE_MEMBER: &str = "members/*";
+/// The question a device of a person's asks the workspace's host before it signs a change to
+/// who is in the workspace: `{change, ...the change's arguments}`, where `change` is `member.add`
+/// or `remove-member`. Answered `{}` when the change is the device's to make.
+pub const WORKSPACE_MEMBER_ADMIT: &str = "member.admit";
+/// The invitations a workspace has open, under its governance root
+/// (`workspace/invitations`).
+pub const WORKSPACE_INVITATIONS: &str = "invitations";
+/// The addresses left at a workspace's entry while it takes people by
+/// invitation, under its governance root (`workspace/waiting`).
+pub const WORKSPACE_WAITING: &str = "waiting";
 
 /// Where a workspace's governance tree publishes the actions it grants by
 /// another name: the operation a grant and a policy name it by, the resource
 /// under the root it is on (none for the root itself) and its id there, as a
 /// person names it. An operation not listed is published on the root under its
-/// own name.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 10] = [
+/// own name; one listed on [`WORKSPACE_MEMBER`] is published on each person, who
+/// is its `person`.
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 22] = [
+    ("member.list", Some(WORKSPACE_MEMBERS), "list"),
+    ("member.add", Some(WORKSPACE_MEMBERS), "add"),
+    ("member.add", Some(WORKSPACE_MEMBER), "role"),
+    ("remove-member", Some(WORKSPACE_MEMBER), "remove"),
+    ("member.name", Some(WORKSPACE_MEMBERS), "name"),
+    ("invite", Some(WORKSPACE_INVITATIONS), "invite"),
+    ("invitation.list", Some(WORKSPACE_INVITATIONS), "list"),
+    ("invitation.cancel", Some(WORKSPACE_INVITATIONS), "cancel"),
+    ("wait-list.list", Some(WORKSPACE_WAITING), "list"),
+    ("wait-list.remove", Some(WORKSPACE_WAITING), "unlist"),
+    ("wait-list.mail", Some(WORKSPACE_WAITING), "mail"),
     ("server.list", Some(WORKSPACE_SERVERS), "list"),
     ("server.add", Some(WORKSPACE_SERVERS), "add"),
     ("server.remove", Some(WORKSPACE_SERVERS), "remove"),
     ("server.move", Some(WORKSPACE_SERVERS), "move"),
     ("copies.set", Some(WORKSPACE_SERVERS), "copies"),
+    ("content.held", Some(WORKSPACE_SERVERS), "content"),
     ("install-app", Some(WORKSPACE_APPS), "install-app"),
     ("uninstall-app", Some(WORKSPACE_APPS), "uninstall-app"),
     ("upload-app-file", Some(WORKSPACE_APPS), "upload-app-file"),
@@ -248,13 +276,22 @@ pub fn workspace_governance_child(workspace: &str, child: Option<&str>) -> Strin
     }
 }
 
+/// The resource of the person `person` (their user public key in hex) among `workspace`'s people.
+#[must_use]
+pub fn workspace_member(workspace: &str, person: &str) -> String {
+    format!(
+        "{}/{person}",
+        workspace_governance_child(workspace, Some(WORKSPACE_MEMBERS))
+    )
+}
+
 /// The address `workspace`'s governance tree publishes the operation
-/// `operation` at.
+/// `operation` at, where it is not one person's.
 #[must_use]
 pub fn workspace_governance_address(workspace: &str, operation: &str) -> ActionAddress {
     match WORKSPACE_GOVERNANCE_PUBLISHED
         .iter()
-        .find(|(granted, _, _)| *granted == operation)
+        .find(|(granted, child, _)| *granted == operation && *child != Some(WORKSPACE_MEMBER))
     {
         Some((_, child, action)) => {
             ActionAddress::new(workspace_governance_child(workspace, *child), *action)
@@ -280,6 +317,11 @@ pub fn workspace_governance_operation(address: &ActionAddress) -> Option<(&str, 
         return None;
     }
     let action = address.action.as_str();
+    let child = if workspace_person(address).is_some() {
+        Some(WORKSPACE_MEMBER)
+    } else {
+        child
+    };
     let published = WORKSPACE_GOVERNANCE_PUBLISHED
         .iter()
         .find(|(_, at, published)| *at == child && *published == action);
@@ -294,6 +336,20 @@ pub fn workspace_governance_operation(address: &ActionAddress) -> Option<(&str, 
         }
         None => None,
     }
+}
+
+/// The person (their user public key in hex) `address` names among its workspace's people
+/// (`workspace/members/<person>`), when it names one.
+#[must_use]
+pub fn workspace_person(address: &ActionAddress) -> Option<&str> {
+    let named = address
+        .resource
+        .strip_prefix(workspace_governance_resource("").as_str())?;
+    let (members, person) = named.split_once('/')?.1.split_once('/')?;
+    (members == WORKSPACE_MEMBERS
+        && person.len() == 64
+        && person.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    .then_some(person)
 }
 
 /// Pairing a nearby device with the person's identity. The provider runs it —
@@ -342,29 +398,15 @@ pub mod identity_admin {
     /// The devices trusted under the workspace's identity, as [`FleetDevice`]s.
     pub const DEVICES: &str = "devices";
     /// Root-sign a device's permanent revocation (`device`, `reason`,
-    /// `confirm`).
+    /// `confirm`), answering the signed entry (`revocation`).
     pub const REVOKE: &str = "revoke";
     /// Name one of the person's devices (`device`, `name`): what their device
     /// lists read it by from now on. A page's API forwards it to the provider
     /// that keeps their record; it is no step of the device's own store.
     pub const RENAME: &str = "rename-device";
-    /// Root-revoke and stop a paired home server (`device`, `service`,
-    /// `confirm`).
-    pub const HOME_PEER_REMOVE: &str = "home-peer-remove";
-    /// Deliver the home-server removals that could not reach their server.
-    pub const HOME_PEER_RETRY: &str = "home-peer-retry-removals";
 
     /// Every step, in the order a catalogue lists them.
-    pub const STEPS: [&str; 8] = [
-        LIST,
-        ACTIVATE,
-        REMOVE,
-        PROTECT,
-        DEVICES,
-        REVOKE,
-        HOME_PEER_REMOVE,
-        HOME_PEER_RETRY,
-    ];
+    pub const STEPS: [&str; 6] = [LIST, ACTIVATE, REMOVE, PROTECT, DEVICES, REVOKE];
 
     #[must_use]
     pub fn target(step: &str) -> RemoteActionTarget {
@@ -908,6 +950,39 @@ impl ActionCallError {
         }
     }
 
+    /// This refusal as a caller is told it: the code the API documents
+    /// (`docs/tilo-sh/errors.md`), then what happened, so a caller reading the
+    /// typed answer gets the code and one reading the text still reads a
+    /// sentence that says what to do.
+    #[must_use]
+    pub fn said(&self) -> String {
+        match self {
+            // A caller that retries the same stale revision fails the same way:
+            // what to do instead is said.
+            Self::StaleRevision => "stale_revision: the resource changed since you read it. \
+                Call the action again with tilo_do, which runs it against the resource as it \
+                is now, or tilo_read the resource first to see what changed"
+                .to_owned(),
+            // Refused by the workspace's permissions: said as that, with where it is
+            // changed, never as an action the caller cannot name.
+            Self::NotPermitted => {
+                format!("not_permitted: {}", crate::Availability::NOT_ALLOWED_HERE)
+            }
+            // What the host could not run now is `unavailable`, the code the API
+            // documents; the host's own words follow rather than a restatement.
+            Self::Unavailable { reason } => format!("unavailable: {reason}"),
+            // No answer is not an answer that nothing is there: a workspace that just
+            // started may still be opening its documents, and answers when asked again.
+            Self::Unanswered => "unanswered: the workspace did not answer in time; it may \
+                still be opening its documents after it started, so ask again"
+                .to_owned(),
+            Self::InvalidRequest { reason } | Self::Refused { reason } => {
+                format!("{}: {reason}", self.code())
+            }
+            other => format!("{}: {other}", other.code()),
+        }
+    }
+
     /// Whether the same call, under the same invocation id, is worth making
     /// again: once the workspace serves the caller ([`Self::NotReady`]), or at
     /// once ([`Self::Unanswered`]).
@@ -1083,8 +1158,14 @@ pub trait ActionProvider {
     ///
     /// Wakeups may be spurious: the waiter reads again and tolerates finding nothing new. A provider
     /// that answers `Some` must resolve it within a bounded interval even when nothing changes,
-    /// so a change it failed to signal costs latency rather than a stalled waiter.
-    fn changed(&self, caller: &Caller, scope: WatchScope) -> Option<Pending<()>> {
+    /// so a change it failed to signal costs latency rather than a stalled waiter. A wait the
+    /// provider finds it cannot follow after all (the device it asks refuses it, or cannot be
+    /// asked) resolves at once with why: the waiter is told, never left to its deadline.
+    fn changed(
+        &self,
+        caller: &Caller,
+        scope: WatchScope,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
         let _ = (caller, scope);
         None
     }

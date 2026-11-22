@@ -711,11 +711,18 @@ impl ActionMeta {
         self.role.as_deref() == Some("initial")
     }
 
-    /// Whether only the platform applies it: a migration or an initial action, which no person,
-    /// agent or code invokes.
+    /// Whether it is an `opened action`: never offered, run by the platform as the person who opens
+    /// a resource of its type, wherever they open it from.
+    #[must_use]
+    pub fn is_opened(&self) -> bool {
+        self.role.as_deref() == Some("opened")
+    }
+
+    /// Whether only the platform applies it: a migration, an initial or an opened action, which no
+    /// person, agent or code invokes by name.
     #[must_use]
     pub fn platform_applies(&self) -> bool {
-        self.is_migration() || self.is_initial()
+        self.is_migration() || self.is_initial() || self.is_opened()
     }
 
     /// Whether it takes a `File`. A form cannot ask it — the person gives it with the chooser —
@@ -947,6 +954,14 @@ impl PackageMeta {
         self.actions
             .iter()
             .find(|a| a.is_initial() && self.target_type(a).is_some_and(|target| target.id == ty))
+    }
+
+    /// The `opened action` of the type `ty` (an id): what opening one of its resources does.
+    #[must_use]
+    pub fn opened_of(&self, ty: &str) -> Option<&ActionMeta> {
+        self.actions
+            .iter()
+            .find(|a| a.is_opened() && self.target_type(a).is_some_and(|target| target.id == ty))
     }
 
     /// The type of the resource `action` takes first: what a migration or an initial action

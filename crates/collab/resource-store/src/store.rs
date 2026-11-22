@@ -431,7 +431,10 @@ impl Store {
                     }),
                 ),
                 Change::Remove { kind, id } => {
-                    let Some(parent) = self.index.get(kind, id).and_then(|held| held.parent.clone())
+                    let Some(parent) = self
+                        .index
+                        .get(kind, id)
+                        .and_then(|held| held.parent.clone())
                     else {
                         continue;
                     };
@@ -578,13 +581,7 @@ impl Store {
     /// its fields last changed ([`CHANGED`] and the field's name), or when it was made for one no
     /// change after that wrote. Each is its version's time, as the stamp of the action that wrote
     /// it says. Reading them reads only the changes the documents took since they were last read.
-    fn reflected(
-        &self,
-        doc_id: &str,
-        readers: &str,
-        kind: &str,
-        id: &str,
-    ) -> Vec<(String, Cell)> {
+    fn reflected(&self, doc_id: &str, readers: &str, kind: &str, id: &str) -> Vec<(String, Cell)> {
         let mut touches = self
             .touches
             .lock()
@@ -603,7 +600,11 @@ impl Store {
                 continue;
             };
             for version in versions {
-                if version.stamp.as_ref().is_none_or(|stamp| stamp.at.is_empty()) {
+                if version
+                    .stamp
+                    .as_ref()
+                    .is_none_or(|stamp| stamp.at.is_empty())
+                {
                     continue;
                 }
                 let newer = |held: Option<&crate::history::Version>| {
@@ -1229,8 +1230,17 @@ impl Store {
             if let Some(doc) = self.docs.get(doc_id) {
                 let read = touches.entry(doc_id.clone()).or_default();
                 read.read(doc, doc_id);
+                // A document's changes stand in the order it took them in, which on a replica
+                // that took another's change after its own is not when they were written.
                 let own = read.versions_of(id).map(Vec::as_slice).unwrap_or_default();
-                ends.extend(if last { own.last() } else { own.first() }.cloned());
+                ends.extend(
+                    if last {
+                        own.iter().max_by_key(|version| order(version))
+                    } else {
+                        own.first()
+                    }
+                    .cloned(),
+                );
             }
         }
         let none = BTreeSet::new();
@@ -1249,10 +1259,16 @@ impl Store {
         drop(touches);
         // As [`Self::versions`] orders them: by when their writer wrote them, a document's own
         // in its order, so the same one ends it.
+        // The first is its making, whatever its content's document numbers that change.
         let mut end = if last {
             ends.into_iter().max_by_key(order)
         } else {
-            ends.into_iter().min_by_key(order)
+            ends.into_iter().min_by_key(|version| {
+                (
+                    version.kind != crate::history::VersionKind::Made,
+                    order(version),
+                )
+            })
         }?;
         if last
             && end.kind == crate::history::VersionKind::Removed
@@ -1398,11 +1414,7 @@ impl Store {
         // keeps its resources in the order of their newest version.
         let mut docs: Vec<(&str, Option<(&str, &str)>)> = Vec::new();
         for doc_id in self.index.documents() {
-            if !self
-                .index
-                .readers(doc_id)
-                .is_some_and(may_read)
-            {
+            if !self.index.readers(doc_id).is_some_and(may_read) {
                 continue;
             }
             // `within` itself, by its own changes: what was made in it or removed from it is
@@ -1441,11 +1453,7 @@ impl Store {
             let Some(held) = self.index.get(kind, id) else {
                 continue;
             };
-            if self
-                .index
-                .readers(&held.doc)
-                .is_some_and(may_read)
-            {
+            if self.index.readers(&held.doc).is_some_and(may_read) {
                 docs.push((content.as_str(), Some((kind, id))));
             }
         }

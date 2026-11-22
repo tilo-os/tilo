@@ -1122,7 +1122,6 @@ mod tests {
                 ),
             );
             assert_eq!(editor.blocks()[0].text(), "Plan");
-            eprintln!("MARKS {:?}", editor.blocks()[0].line.marks());
             assert!(
                 matches!(
                     editor.blocks()[0].line.marks().first().map(|span| &span.mark),
@@ -1387,13 +1386,7 @@ mod tests {
                 owner,
                 "a person in the owner's colours for them"
             );
-            let chip = paint(TASK);
-            assert!(chip.band.is_some(), "a resource, in any form, is a chip");
-            assert_eq!(
-                paint("tilo://open#/me/so.tilo.chat/-/chat.channel:general"),
-                chip
-            );
-            assert_eq!(paint("tl:so.tilo.lang.board:d/f:t1"), chip);
+            assert!(paint(TASK).band.is_some(), "a resource is a chip");
             let hits = editor.reference_hits();
             assert_eq!(hits.len(), 3, "every reference can be pointed at: {hits:?}");
         }

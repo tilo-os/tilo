@@ -56,14 +56,16 @@
     {
       "id": "desktop-easy",
       "title": "The desktop is easy to use",
-      "intent": "Someone new to Tilo adds a strip, switches workspaces and finds their settings without being told how.",
+      "intent": "Someone new to Tilo adds a strip, switches workspaces, finds their settings and picks a light and a dark look without being told how, and finds what they arranged where they left it when they come back.",
       "walk": "shell",
       "driver": "shell/desktop-easy.py",
       "steps": [
         "A newcomer opens their workspace",
         "They add a strip",
         "They switch to another workspace and back",
-        "They find their settings"
+        "They find their settings",
+        "They pick a light and a dark look",
+        "They come back to their desk"
       ]
     },
     {
@@ -182,24 +184,6 @@
       ],
       "credentials": "A Microsoft 365 test tenant with a test user, its OAuth app registration and the user's password as check secrets.",
       "needs": "The test tenant's credentials; then the sign-in walked in the browser like any person's."
-    },
-    {
-      "id": "big-folder",
-      "title": "Copy a big folder in, and it is all there everywhere",
-      "intent": "Ada copies a large folder into their workspace through its mounted folder: a photo library of many small files and a few long videos. The folder lists at once, a second computer joins and shows the workspace in seconds without fetching it all, a photo and a video open there at once, the first computer restarts in seconds, and every file is still there and as copied on both.",
-      "walk": "mount",
-      "driver": "big-folder.mjs",
-      "stack": false,
-      "steps": [
-        "Ada copies the folder into their workspace folder",
-        "Ada browses the big folder",
-        "Ada’s second computer joins and shows the workspace",
-        "Ada opens a photo the second computer never fetched",
-        "Ada starts a video on the second computer",
-        "Ada restarts the first computer",
-        "Every file is still there, on both computers"
-      ],
-      "note": "Walked on the fs daemons and their mounts (two computers, one joining the other over the network) at one affordable size, set in big-folder.json; the terabyte rungs are the fs-workspace-scale check's."
     },
     {
       "id": "large-workspace",

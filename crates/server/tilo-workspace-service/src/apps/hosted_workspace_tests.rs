@@ -133,7 +133,7 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
             let action =
                 published_directory_action(&fixture.directory_state.borrow().row()).unwrap();
             let publish = |fixture: &LocalDirectoryFixture, action: &PublishedAction| {
-                fixture.state.surfaces.lock().unwrap().insert(
+                fixture.state.publishers.surfaces.lock().unwrap().insert(
                     fixture.peer_id,
                     PublishedSurface {
                         peer_id: fixture.peer_id,
@@ -256,6 +256,7 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
             // sent to the host as well.
             fixture
                 .state
+                .publishers
                 .surfaces
                 .lock()
                 .unwrap()

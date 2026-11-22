@@ -9,11 +9,11 @@
 
 #![cfg(target_os = "linux")]
 
-mod commit;
 mod desktop;
 mod frames;
 mod i18n;
 pub mod part_view;
+mod raster;
 mod session_platform;
 pub mod shell_part;
 mod well_policy;
@@ -188,6 +188,11 @@ impl AppProcess {
         self.api
             .publish_resources(Some(self.app.collect_resources()));
         ran
+    }
+
+    /// The app, to read what it shows now.
+    pub const fn app(&self) -> &App {
+        &self.app
     }
 
     /// The app, to hand it events of its own (external events, settings).

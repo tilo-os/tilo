@@ -32,6 +32,10 @@ pub const PROVIDER: &str = "tilo.device";
 pub const RESOURCE: &str = "devices";
 /// The action a computer with no certificate yet calls on the device that issued its ticket.
 pub const CERTIFY: &str = "certify";
+/// The action a daemon answers on its own workspace: serve a ticket for a new computer.
+pub const ISSUE: &str = "issue";
+/// The action a daemon answers on its own workspace: log in with a ticket another device issued.
+pub const LOG_IN: &str = "logIn";
 /// The scope a request names when it is that one call: no workspace, since the computer is in
 /// none yet.
 pub const SCOPE: &str = "tilo.new-device";

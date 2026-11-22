@@ -1,4 +1,3 @@
-
 //! The installer on the live medium, hosted as the imager app hosts it: its effects
 //! through the app's api.
 #![allow(

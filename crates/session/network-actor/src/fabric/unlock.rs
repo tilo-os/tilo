@@ -17,11 +17,14 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_seal::SecretKey;
 use tilo_unlock_protocol::{
-    APPROVAL_TIMEOUT_NS, BootId, BootKeyCert, CHALLENGE_LIFETIME_NS, Challenge, PROTOCOL_VERSION,
-    RefusalReason, SealedSiblingHalf, SiblingFrame, SlotId, UnlockHello, UnlockRequest,
-    approval_code, attest, open_sibling_half, seal_release,
+    APPROVAL_TIMEOUT_NS, BootId, CHALLENGE_LIFETIME_NS, Challenge, PROTOCOL_VERSION, RefusalReason,
+    SealedSiblingHalf, SiblingFrame, SlotId, UnlockHello, UnlockRequest, approval_code, attest,
+    open_sibling_half, seal_release,
 };
-use tilo_user_identity::{CertifiedFleet, DeviceCertification};
+use tilo_user_identity::{
+    CertifiedFleet, DeviceCapabilities, DeviceCert, DeviceCertification,
+    device_cert_signing_digest, verify_device_cert,
+};
 
 use crate::fabric::DeviceId;
 use crate::fabric::FabricError;
@@ -53,28 +56,44 @@ pub const MAX_ACCEPTED_BOOT_CHAINS: usize = 4;
 /// A device's enrolment for one key of its disk, kept in its own part of the person's store.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnlockEnrolment {
-    pub cert: BootKeyCert,
+    /// The root's certificate for the boot key, which grants nothing.
+    pub cert: DeviceCert,
+    /// The device whose disk this boot key unlocks: the one that asked for the
+    /// enrolment, which is not always the one that keeps it.
+    pub device_public_key: [u8; 32],
     pub sealed_half: SealedSiblingHalf,
+    /// The volume and key slot this enrolment unlocks; the request must ask
+    /// for exactly this one.
+    pub slot: SlotId,
+    /// The device's TPM attestation key, when it has one: what an
+    /// auto-approval's quote verifies under.
+    pub attestation_key: Option<Vec<u8>>,
     pub stamp: FabricStamp,
 }
 
 impl UnlockEnrolment {
-    /// Authored by the enrolled device itself, root-certified, bounded.
+    /// Authored by the device that keeps it, root-certified, bounded.
     pub fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
-        if &self.stamp.device != owner || owner.as_str() != hex::encode(self.cert.device_public_key)
+        if &self.stamp.device != owner
+            || verify_device_cert(&self.cert).is_err()
+            || self.cert.capabilities != DeviceCapabilities::nothing()
+            || self.sealed_half.sealed.len() > 256
         {
-            return Err(FabricError::ForeignAuthorship);
-        }
-        if self.cert.verify().is_err() || self.sealed_half.sealed.len() > 256 {
             return Err(FabricError::InvalidUnlockEnrolment);
         }
         Ok(())
     }
 
+    /// The device whose disk this boot key unlocks.
+    #[must_use]
+    pub fn device(&self) -> [u8; 32] {
+        self.device_public_key
+    }
+
     /// The certificate digest that names this enrolment.
     #[must_use]
     pub fn id(&self) -> Option<[u8; 32]> {
-        self.cert.signing_digest().ok()
+        device_cert_signing_digest(&self.cert).ok()
     }
 }
 
@@ -258,7 +277,7 @@ impl UnlockFabricState {
         let mut slots = BTreeSet::new();
         for enrolment in &self.enrolments {
             enrolment.validate(owner)?;
-            if !slots.insert(enrolment.cert.slot) {
+            if !slots.insert(enrolment.slot) {
                 return Err(FabricError::DuplicateItem);
             }
         }
@@ -305,8 +324,7 @@ pub fn merged_unlock_state<'a>(
     for state in snapshots {
         for enrolment in &state.enrolments {
             if enrolment.cert.user_public_key == *fleet.user_public_key()
-                && certification(&enrolment.cert.device_public_key)
-                    == DeviceCertification::Certified
+                && certification(&enrolment.device()) == DeviceCertification::Certified
                 && let Some(id) = enrolment.id()
             {
                 merged.enrolments.insert(id, enrolment.clone());
@@ -475,22 +493,24 @@ impl UnlockSibling {
             return Err(RefusalReason::UnsupportedVersion);
         }
         let cert = &hello.boot_cert;
-        if cert.user_public_key != *view.fleet.user_public_key() || cert.verify().is_err() {
+        if cert.user_public_key != *view.fleet.user_public_key()
+            || cert.capabilities != DeviceCapabilities::nothing()
+            || verify_device_cert(cert).is_err()
+        {
             return Err(RefusalReason::BadCertificate);
         }
-        match view.fleet.certification(&cert.device_public_key, now_ns) {
+        let id = device_cert_signing_digest(cert).map_err(|_| RefusalReason::BadCertificate)?;
+        let enrolment = view.enrolments.get(&id).ok_or(RefusalReason::NotEnrolled)?;
+        let device = enrolment.device();
+        match view.fleet.certification(&device, now_ns) {
             DeviceCertification::Certified => {}
             DeviceCertification::Revoked(_) => return Err(RefusalReason::Revoked),
             DeviceCertification::Uncertified => return Err(RefusalReason::BadCertificate),
         }
-        let id = cert
-            .signing_digest()
-            .map_err(|_| RefusalReason::BadCertificate)?;
-        let enrolment = view.enrolments.get(&id).ok_or(RefusalReason::NotEnrolled)?;
         if enrolment.cert != *cert {
             return Err(RefusalReason::NotEnrolled);
         }
-        self.charge(cert.device_public_key, now_ns)?;
+        self.charge(device, now_ns)?;
         if !view.key_holder {
             return Err(RefusalReason::NotAKeyHolder);
         }
@@ -527,12 +547,12 @@ impl UnlockSibling {
         now_ns: u64,
     ) -> SiblingFrame {
         let cert = &hello.boot_cert;
-        let device = cert.device_public_key;
         let (pending, enrolment) =
             match self.check_request(request, cert, challenge_nonce, view, now_ns) {
                 Ok(checked) => checked,
                 Err(reason) => return refuse(reason),
             };
+        let device = pending.device_public_key;
         // The person already answered this boot: it hears that answer again,
         // with a half sealed to this request's own key where they allowed
         // it, instead of asking them a second time.
@@ -549,7 +569,7 @@ impl UnlockSibling {
         if self.pending.len() >= MAX_PENDING {
             return refuse(RefusalReason::RateLimited);
         }
-        if auto_approved(request, cert, self.sibling_public_key, view).is_some() {
+        if auto_approved(request, &enrolment, self.sibling_public_key, view).is_some() {
             let frame = release(&pending, &enrolment, view);
             if matches!(frame, SiblingFrame::Released(_)) {
                 self.mark_served(device, request.boot_id);
@@ -568,7 +588,7 @@ impl UnlockSibling {
     fn check_request(
         &mut self,
         request: &UnlockRequest,
-        cert: &BootKeyCert,
+        cert: &DeviceCert,
         challenge_nonce: &[u8; 32],
         view: &UnlockView<'_>,
         now_ns: u64,
@@ -583,25 +603,24 @@ impl UnlockSibling {
             .ok_or(RefusalReason::UnknownChallenge)?;
         self.challenge_order
             .retain(|nonce| nonce != challenge_nonce);
-        let digest = request.verify(cert, &open.challenge, now_ns)?;
         // The fleet or the enrolments may have changed since the hello.
-        if let DeviceCertification::Revoked(_) =
-            view.fleet.certification(&cert.device_public_key, now_ns)
-        {
-            return Err(RefusalReason::Revoked);
-        }
         let enrolment = view
             .enrolments
             .get(&open.enrolment)
             .filter(|enrolment| enrolment.cert == *cert)
             .ok_or(RefusalReason::NotEnrolled)?
             .clone();
+        let device = enrolment.device();
+        if let DeviceCertification::Revoked(_) = view.fleet.certification(&device, now_ns) {
+            return Err(RefusalReason::Revoked);
+        }
+        let digest = request.verify(cert, enrolment.slot, &open.challenge, now_ns)?;
         Ok((
             PendingUnlock {
                 request_digest: digest,
                 approval_code: approval_code(&digest),
                 enrolment: open.enrolment,
-                device_public_key: cert.device_public_key,
+                device_public_key: device,
                 slot: request.slot,
                 boot_id: request.boot_id,
                 ephemeral_public: request.ephemeral_public,
@@ -745,18 +764,19 @@ fn refuse(reason: RefusalReason) -> SiblingFrame {
 /// request's TPM quote proves that chain for this exact request.
 fn auto_approved(
     request: &UnlockRequest,
-    cert: &BootKeyCert,
+    enrolment: &UnlockEnrolment,
     sibling_public_key: [u8; 32],
     view: &UnlockView<'_>,
 ) -> Option<[u8; 32]> {
-    let policy = view.auto_approvals.get(&cert.device_public_key)?;
+    let device = enrolment.device();
+    let policy = view.auto_approvals.get(&device)?;
     if policy.user_public_key != *view.fleet.user_public_key()
-        || policy.device_public_key != cert.device_public_key
+        || policy.device_public_key != device
         || policy.validate().is_err()
     {
         return None;
     }
-    let key = cert.attestation_key.as_deref()?;
+    let key = enrolment.attestation_key.as_deref()?;
     let quote = request.attestation.as_ref()?;
     let challenge = Challenge {
         version: PROTOCOL_VERSION,
@@ -765,7 +785,7 @@ fn auto_approved(
         expires_at_ns: 0,
     };
     let nonce = attest::qualifying_data(
-        cert,
+        &enrolment.cert,
         &challenge,
         &request.boot_id,
         &request.ephemeral_public,

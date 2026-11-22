@@ -231,7 +231,6 @@ pub(crate) struct HostCommand {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Finished {
     pub(crate) success: bool,
-    pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
 }
 
@@ -519,7 +518,6 @@ pub(crate) fn run_bounded(command: &HostCommand, stop: &AtomicBool) -> Result<Fi
             let output = result.map_err(|error| error.to_string())?;
             return Ok(Finished {
                 success: output.status.success(),
-                stdout: output.stdout,
                 stderr: output.stderr,
             });
         }

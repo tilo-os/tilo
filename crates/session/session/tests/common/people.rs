@@ -46,6 +46,11 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
+use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::{
+    CatalogueQuery, CatalogueRow, Confirmation, ReceiptStatus, RemoteActionFrame,
+    RemoteActionMessage, RemoteActionTarget,
+};
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_server_protocol::directory::{EntryJoin, Listing, entry_path};
@@ -165,11 +170,9 @@ impl Site {
             let server = tilo_server::daemon::Server::start_with_relay_mode(
                 tilo_server::ServerConfig {
                     state_root: state.path().join("host"),
-                    // Devices of this machine find the site on loopback, as they do on a person's
-                    // own network.
-                    iroh_listen: "127.0.0.1:0".parse().expect("a loopback address"),
                     ..tilo_server::ServerConfig::default()
-                },
+                }
+                .on_loopback(),
                 tilo_server::daemon::ServerIdentity {
                     user_public_key: owner.public,
                     device_signing_key: host_key.clone(),
@@ -487,8 +490,7 @@ pub fn show(device: &Device, site: &Site) {
         holds_workspace(device, site)
     });
     let shown = device.act(
-        "so.tilo.session",
-        "desktop:chrome\u{1f}switch-workspace",
+        &at("so.tilo.session", "desktop:chrome", "switch-workspace"),
         &json!({"workspace": site.workspace}),
     );
     assert!(
@@ -666,7 +668,7 @@ pub fn shared_invitation(device: &Device, role: &str, person: [u8; 32]) -> Invit
         device,
         &json!({"role": role, "recipient": hex::encode(person)}),
     );
-    let update = &answer["answer"]["receipt"]["update"];
+    let update = &answer["update"];
     assert_eq!(
         update["state"],
         json!("succeeded"),
@@ -684,11 +686,10 @@ pub fn shared_invitation(device: &Device, role: &str, person: [u8; 32]) -> Invit
 /// shows, as the app sharing what is on screen asks it.
 pub fn shell_answer(device: &Device, args: &serde_json::Value) -> serde_json::Value {
     device.act_wait(
-        tilo_actions::remote::session_actions::PROVIDER,
-        &format!(
-            "{}\u{1f}{}",
+        &at(
+            tilo_actions::remote::session_actions::PROVIDER,
             tilo_actions::remote::session_actions::INVITE_RESOURCE,
-            tilo_actions::remote::session_actions::ISSUE_INVITATION
+            tilo_actions::remote::session_actions::ISSUE_INVITATION,
         ),
         args,
     )
@@ -899,7 +900,7 @@ impl Person {
             IdentityStorage::Files,
         )
         .expect("this person's identity");
-        let record = tilo_identity_client::resolve_active_identity(&identity_dir)
+        let record = tilo_identity::store::resolve_active_identity(&identity_dir)
             .expect("the identity this machine provisioned for the person");
         let root = tilo_identity::store::load_from_path(record).expect("the person's root key");
         Self {
@@ -1543,6 +1544,8 @@ impl Device {
         // waiting for a change is waited for rather than reported as one that did not answer.
         let held = request
             .get("wait_ms")
+            .or_else(|| request.pointer("/message/Invoke/wait_ms"))
+            .or_else(|| request.pointer("/message/Observe/wait_ms"))
             .and_then(Value::as_u64)
             .map_or(Duration::ZERO, Duration::from_millis);
         stream
@@ -1780,48 +1783,36 @@ impl Device {
         self.install("so.tilo.model-providers", model_providers_install());
     }
 
-    /// The provider and id this device lists for the running `app`'s `operation`, once the app
-    /// published it: a provider the session names by the app's live connection.
-    pub fn app_action(&self, app: &str, operation: &str) -> (String, String) {
+    /// What this device lists for the running `app`'s `operation`, once the app published it: a
+    /// provider the session names by the app's live connection.
+    pub fn app_action(&self, app: &str, operation: &str) -> RemoteActionTarget {
         let until = tilo_test_env::hang_deadline();
         loop {
-            let listed = self.actions()["answer"]["actions"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let named = listed.iter().find(|row| {
-                row["application"] == app
-                    && row["operation"] == operation
-                    && row["provider"]
-                        .as_str()
-                        .is_some_and(|provider| provider.parse::<u64>().is_ok())
-            });
-            if let Some(row) = named {
-                return (
-                    row["provider"].as_str().expect("a provider").to_owned(),
-                    row["id"].as_str().expect("an action's id").to_owned(),
-                );
+            let listed = self.actions();
+            if let Some(row) = listed.iter().find(|row| {
+                row.app_id == app
+                    && row
+                        .action
+                        .as_ref()
+                        .is_some_and(|action| action.address.action == operation)
+                    && row.provider.parse::<u64>().is_ok()
+            }) {
+                return target(row);
             }
             assert!(
                 std::time::Instant::now() < until,
-                "{} never published {app}'s {operation}; it lists {app}'s {} of {} actions, and \
-                 the rows' titles: {:?}\n{}",
+                "{} never published {app}'s {operation}; it lists {app}'s {:?} of {} actions\n{}",
                 self.label,
                 listed
                     .iter()
-                    .filter(|row| row["application"] == app)
-                    .map(|row| format!(
+                    .filter(|row| row.app_id == app)
+                    .filter_map(|row| Some(format!(
                         "{} by {}",
-                        row["operation"].as_str().unwrap_or_default(),
-                        row["provider"].as_str().unwrap_or_default()
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                listed.len(),
-                listed
-                    .iter()
-                    .map(|row| row["title"].as_str().unwrap_or_default().to_owned())
+                        row.action.as_ref()?.address.action,
+                        row.provider
+                    )))
                     .collect::<Vec<_>>(),
+                listed.len(),
                 self.warnings(),
             );
             std::thread::sleep(std::time::Duration::from_millis(200));
@@ -1829,12 +1820,12 @@ impl Device {
     }
 
     /// Invoke the running `app`'s `operation` with `args` and wait until it settled, as a program
-    /// of the person's does: the receipt, the person's confirmation given where it asked first.
+    /// of the person's does: how it ended, the person's confirmation given where it asked first.
     pub fn app_act(&self, app: &str, operation: &str, args: &Value) -> Value {
-        let (provider, id) = self.app_action(app, operation);
-        let answer = self.act_wait(&provider, &id, args);
-        if answer["err"]["code"].as_str() == Some("needs_confirmation") {
-            return self.act_confirming(&provider, &id, args);
+        let target = self.app_action(app, operation);
+        let answer = self.act_wait(&target, args);
+        if answer["err"]["code"].as_str() == Some(CONFIRMATION_REQUIRED) {
+            return self.act_confirming(&target, args);
         }
         answer
     }
@@ -1854,9 +1845,41 @@ impl Device {
         self.install("so.tilo.file-explorer", files_install());
     }
 
-    /// The actions this device publishes now.
-    pub fn actions(&self) -> Value {
-        self.ask(&json!({"op": "actions_enumerate"}))
+    /// What this device publishes now, every page of it: its resources and their actions.
+    pub fn actions(&self) -> Vec<CatalogueRow> {
+        let mut query = CatalogueQuery {
+            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        };
+        let mut rows = Vec::new();
+        loop {
+            let RemoteActionMessage::CatalogueResponse { result, .. } =
+                self.frame(RemoteActionMessage::CatalogueRequest {
+                    correlation: 1,
+                    query: query.clone(),
+                })
+            else {
+                panic!("{} answered a listing with something else", self.label);
+            };
+            let page = result.unwrap_or_else(|error| panic!("{} lists: {error}", self.label));
+            rows.extend(page.rows);
+            if page.exhausted || page.next_cursor.is_empty() {
+                return rows;
+            }
+            query.revision = Some(page.revision);
+            query.cursor = page.next_cursor;
+        }
+    }
+
+    /// The one action frame `message` asked of this device's session, and its answer.
+    pub fn frame(&self, message: RemoteActionMessage) -> RemoteActionMessage {
+        let asked = serde_json::to_value(RemoteActionFrame::new(message)).expect("a frame");
+        let answer = self.ask(&asked);
+        serde_json::from_value::<RemoteActionFrame>(answer.clone())
+            .unwrap_or_else(|error| {
+                panic!("{} answered {asked} with {answer}: {error}", self.label)
+            })
+            .message
     }
 
     /// Map a window of `app` called `title` on this device, as an app starting its own
@@ -1868,7 +1891,7 @@ impl Device {
     /// Open the installed app `app` on this device, as a person starting it does: what an
     /// installed desktop opens from its applications list.
     pub fn open(&self, app: &str) {
-        let answer = self.act("applications", app, &json!({}));
+        let answer = self.act(&self.open_target(app), &json!({}));
         assert!(
             answer.get("err").is_none(),
             "{} opens {app}: {answer}\n{}",
@@ -1877,54 +1900,92 @@ impl Device {
         );
     }
 
-    /// Invoke `id` of `provider` on this device, as a program of the person's does, and return the
-    /// receipt.
-    pub fn act(&self, provider: &str, id: &str, args: &Value) -> Value {
-        self.ask(&json!({
-            "op": "actions_invoke",
-            "provider": provider,
-            "id": id,
-            "args": args,
-        }))
+    /// The workspace's open of the installed app `app`, as this device lists it.
+    pub fn open_target(&self, app: &str) -> RemoteActionTarget {
+        let resource = format!("{}{app}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX);
+        tilo_test_env::wait_for(format!("{} offering to open {app}", self.label), || {
+            self.offered(&resource, tilo_actions::remote::APPLICATION_OPEN_ACTION)
+        })
     }
 
-    /// [`Self::act`] held open until the invocation settles, as `tilo-control` does when it waits:
-    /// the answer says how the action ended, and carries the value it returned when it returns one.
-    pub fn act_wait(&self, provider: &str, id: &str, args: &Value) -> Value {
-        self.invoke(provider, id, args, false)
+    /// What this device publishes as `resource`'s `action`, whoever publishes it.
+    pub fn offered(&self, resource: &str, action: &str) -> Option<RemoteActionTarget> {
+        self.actions()
+            .iter()
+            .find(|row| {
+                row.action.as_ref().is_some_and(|offered| {
+                    offered.address.resource == resource && offered.address.action == action
+                })
+            })
+            .map(target)
+    }
+
+    /// Invoke `target` on this device, as a program of the person's does, answered once it is
+    /// admitted: `{"update": …}` with where it stands, or `{"err": {"code", "message"}}`.
+    pub fn act(&self, target: &RemoteActionTarget, args: &Value) -> Value {
+        self.invoke(target, args, None, false)
+    }
+
+    /// [`Self::act`] followed until the invocation settles: the update it ended with carries the
+    /// value it returned when it returns one.
+    pub fn act_wait(&self, target: &RemoteActionTarget, args: &Value) -> Value {
+        self.invoke(target, args, None, true)
     }
 
     /// [`Self::act_wait`], with the person's own confirmation of an action that asked first: what
     /// pressing Allow in its prompt answers.
-    pub fn act_confirming(&self, provider: &str, id: &str, args: &Value) -> Value {
-        self.invoke(provider, id, args, true)
+    pub fn act_confirming(&self, target: &RemoteActionTarget, args: &Value) -> Value {
+        self.invoke(target, args, Some(Confirmation::Confirmed), true)
     }
 
-    /// [`Self::act_wait`], with what the person said when the action asked first (`confirmed`),
-    /// followed until it settles.
-    fn invoke(&self, provider: &str, id: &str, args: &Value, confirmed: bool) -> Value {
-        let started = self.ask(&json!({
-            "op": "actions_invoke",
-            "provider": provider,
-            "id": id,
-            "args": args,
-            "confirmed": confirmed,
-        }));
-        let Some(number) = started["answer"]["receipt"]["broker_invocation_id"].as_u64() else {
-            return started;
+    fn invoke(
+        &self,
+        target: &RemoteActionTarget,
+        args: &Value,
+        confirmation: Option<Confirmation>,
+        follow: bool,
+    ) -> Value {
+        let request = super::invocation(target, args, confirmation, follow.then_some(10_000));
+        let invocation = request.invocation;
+        let RemoteActionMessage::Receipt(receipt) =
+            self.frame(RemoteActionMessage::Invoke(request))
+        else {
+            panic!("{} answered an invocation with something else", self.label);
+        };
+        let mut state = match receipt.status {
+            ReceiptStatus::Rejected { error } => {
+                return json!({"err": {"code": error.code(), "message": error.to_string()}});
+            }
+            ReceiptStatus::Accepted => InvocationUpdate::Accepted { invocation },
+            ReceiptStatus::Completed { output } => {
+                InvocationUpdate::Succeeded { invocation, output }
+            }
+            ReceiptStatus::Failed { error } => InvocationUpdate::Failed { invocation, error },
+            ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled {
+                invocation,
+                message,
+            },
         };
         let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let answer = self.ask(&json!({
-                "op": "actions_status",
-                "invocation_id": number,
-                "wait_ms": 30_000,
-            }));
-            match answer["answer"]["receipt"]["update"]["state"].as_str() {
-                Some("accepted" | "progress") if Instant::now() < deadline => {}
-                _ => return answer,
+        while follow && !state.is_terminal() && Instant::now() < deadline {
+            let RemoteActionMessage::Update {
+                state: Some(now), ..
+            } = self.frame(RemoteActionMessage::Observe {
+                correlation: 1,
+                invocation,
+                wait_ms: Some(10_000),
+                seen: None,
+            })
+            else {
+                break;
+            };
+            let read = now.read_answered;
+            state = now.update;
+            if read {
+                break;
             }
         }
+        json!({"update": state})
     }
 
     /// Press the control named `named` , as an assistive technology activates it.
@@ -2245,4 +2306,37 @@ fn threads_of(control: &Path) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The code an action that asks the person first is refused with until they confirm it.
+pub const CONFIRMATION_REQUIRED: &str = "action_confirmation_required";
+
+/// What `row` invokes.
+pub fn target(row: &CatalogueRow) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: row.provider.clone(),
+        address: row
+            .action
+            .as_ref()
+            .expect("a row with an action")
+            .address
+            .clone(),
+    }
+}
+
+/// The action `action` of `resource` that `provider` publishes.
+pub fn at(provider: &str, resource: &str, action: &str) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: provider.to_owned(),
+        address: tilo_actions::ActionAddress::new(resource, action),
+    }
+}
+
+/// The session's own verb that makes a new workspace, as the workspace menu invokes it.
+pub fn new_workspace() -> RemoteActionTarget {
+    at(
+        tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
+        "desktop:chrome",
+        "new-workspace",
+    )
 }

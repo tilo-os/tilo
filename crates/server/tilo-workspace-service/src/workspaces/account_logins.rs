@@ -5,9 +5,8 @@
 //! member's device that may use Passwords signs in with that one entry, read from its own copy
 //! of the vault document ([`super::vault`]). Nothing here asks another device.
 //!
-//! Each call is decided for whoever it is made for before anything is read: the workspace's
-//! policy must let them read Passwords' vault, the decision every reader of that document is
-//! held to ([`super::vault::may_read_vault`]). A password leaves the vault only to sign in at
+//! Each call is decided once, before anything is read, for the device it comes from
+//! ([`Workspaces::using_vault`]). A password leaves the vault only to sign in at
 //! the places its entry names, and each release is written down in the entry's uses first.
 
 use accounts::person::PersonAccounts;
@@ -32,16 +31,31 @@ pub const MAY_NOT_USE_PASSWORDS: &str = "Your role in this workspace does not in
                                          vault. Ask an owner of the workspace to let you use \
                                          Passwords.";
 
+/// What a release the workspace's rules ask about first is answered with, until the person
+/// asking answers yes ([`Workspaces::account_secret`]'s `confirmed`).
+pub const ASKS_FIRST: &str = "The workspace asks you first before this account's password leaves \
+                              its vault.";
+
+/// The words for somebody who may not read the app asking to sign in.
+pub const MAY_NOT_READ_APP: &str = "Your role in this workspace does not let you use this app, so \
+                                    it signs in to none of the workspace's accounts. Ask an owner \
+                                    of the workspace to let you use it.";
+
+/// The words for a device the workspace does not count as one of its members' now.
+pub const NOT_A_MEMBER_DEVICE: &str = "This device is not one of this workspace's now, so it signs \
+                                       in to none of the workspace's accounts.";
+
+/// The words for a device that is not the person's own.
+pub const NOT_ON_A_FOREIGN_DEVICE: &str = "This device is not one of your own, so no account's \
+                                           password is handed to it. Sign in from your own \
+                                           device.";
+
 /// The words for an account whose vault entry is gone.
 pub const ENTRY_GONE: &str = "This account's password is no longer in the workspace's vault. \
                               Sign the account in again in Settings.";
 
 /// The words for an entry of the vault that no enabled account of the workspace signs in with.
 pub const NOT_NAMED: &str = "No account of this workspace signs in with that entry of its vault";
-
-/// The words for an account that names no entry of the vault.
-pub const NO_ENTRY: &str =
-    "This account keeps no password in the workspace's vault yet. Sign it in in Settings.";
 
 /// A login an account signs in with, as the vault keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,7 +69,7 @@ pub struct AccountLogin {
 }
 
 /// The route the workspace's accounts record travels on in `workspace`.
-#[cfg(test)]
+#[cfg(all(test, any(feature = "agents", feature = "apps")))]
 fn accounts_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
     tilo_peer_state::document_frame::DocumentRoute {
         app_id: accounts::person::ACCOUNTS_OWNER.to_owned(),
@@ -83,20 +97,72 @@ fn said(error: String) -> String {
 }
 
 impl Workspaces {
-    /// Whether the workspace's policy lets `by` use the workspace's vault: read Passwords'
-    /// vault document, for their whole acting.
-    pub async fn may_use_vault(&self, workspace: &str, by: &Caller) -> bool {
-        self.policy_of(workspace)
+    /// That `by` may use the workspace's vault and, signing `app` in, read `app` there: the one
+    /// decision every route to an account's password takes. The device `by` asks from must be
+    /// a member's now, with its role and approved keys, bounded by `by`'s acting (an agent's
+    /// approval and its turn's rules); a password is released only to the person's own device.
+    /// Where the rules ask first, the person's own yes (`confirmed`, never an agent's) lets it.
+    pub(crate) async fn using_vault(
+        &self,
+        workspace: &str,
+        by: &Caller,
+        app: Option<&str>,
+        confirmed: bool,
+    ) -> Result<(), String> {
+        use tilo_action_policy::{ActionKind, Answer, Context};
+        let now = tilo_clock::wall();
+        let device = by.device_public_key().ok_or(NOT_A_MEMBER_DEVICE)?;
+        let state = self
+            .workspace(workspace)
             .await
-            .is_some_and(|policy| super::vault::may_read_vault(&policy, workspace, by))
-    }
-
-    async fn using_vault(&self, workspace: &str, by: &Caller) -> Result<(), String> {
-        if self.may_use_vault(workspace, by).await {
-            Ok(())
-        } else {
-            Err(MAY_NOT_USE_PASSWORDS.to_owned())
+            .map_err(|_| NOT_A_MEMBER_DEVICE.to_owned())?;
+        let access = state
+            .lock()
+            .await
+            .peer()
+            .permissions(*device, now)
+            .map_err(|_| NOT_A_MEMBER_DEVICE.to_owned())?;
+        if app.is_some() && access.acting.foreign_device {
+            return Err(NOT_ON_A_FOREIGN_DEVICE.to_owned());
         }
+        let access = access.invoked_by(by.acting()).granted(by.granted(&[]));
+        let asked = confirmed && by.agent_called().is_none();
+        let reads = |node: &tilo_action_policy::TreePath, refused: &str| match access.answer(
+            node,
+            ActionKind::Read,
+            &Context::at_time(now),
+        ) {
+            Answer::Allow => Ok(()),
+            Answer::Ask if asked => Ok(()),
+            Answer::Ask => Err(ASKS_FIRST.to_owned()),
+            Answer::Deny => {
+                let person = access.person_id().unwrap_or_default();
+                tracing::warn!(
+                    %workspace,
+                    person,
+                    role = ?access.policy.role_of(person),
+                    members = access.policy.members.len(),
+                    %node,
+                    "the workspace's rules on this device refused its person"
+                );
+                Err(refused.to_owned())
+            }
+        };
+        reads(
+            &collab_types::document_node(
+                workspace,
+                super::vault::APP,
+                tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+            ),
+            MAY_NOT_USE_PASSWORDS,
+        )?;
+        if let Some(app) = app {
+            reads(
+                &tilo_action_policy::TreePath::workspace(workspace).app(app),
+                MAY_NOT_READ_APP,
+            )?;
+        }
+        Ok(())
     }
 
     /// Keep `password` as `login` in `workspace`'s vault, for `by`: in the entry `item` names
@@ -114,7 +180,8 @@ impl Workspaces {
         login: AccountLogin,
         password: Zeroizing<String>,
     ) -> Result<ItemRef, String> {
-        self.using_vault(workspace, by).await?;
+        // The person typing the password is the yes a rule that asks first waits for.
+        self.using_vault(workspace, by, None, true).await?;
         let id = item.and_then(|item| ItemId::parse(item.id()));
         let AccountLogin {
             title,
@@ -143,7 +210,9 @@ impl Workspaces {
     /// ([`accounts::email::password_item`]), released only for the servers that account names
     /// now, with the use written into the entry first, saying which app signed in to which
     /// account. Any kind of account and any app: what decides is whether `by` may use
-    /// Passwords.
+    /// Passwords. A grant a provider's own page left is released as its access token alone.
+    /// Where the workspace's rules ask first, it is released once the person said yes
+    /// (`confirmed`); until then it is answered with [`ASKS_FIRST`].
     ///
     /// # Errors
     /// `by` may not use the vault, no enabled account names the entry, the account names no
@@ -152,10 +221,11 @@ impl Workspaces {
         &self,
         workspace: &str,
         by: &Caller,
-        app: &str,
+        (app, confirmed): (&str, bool),
         item: &ItemRef,
     ) -> Result<Released, String> {
-        self.using_vault(workspace, by).await?;
+        self.using_vault(workspace, by, Some(app), confirmed)
+            .await?;
         let held = self.workspace_accounts(workspace).await?;
         let store = held.store();
         let account = store
@@ -179,20 +249,30 @@ impl Workspaces {
             account.display_name.as_str()
         };
         let what = format!("{app} signed in to {name}");
-        self.changing_vault(workspace, |items| {
-            items.use_as_kept(
-                &id,
-                &places,
-                &who,
-                UsedFor {
-                    using: SIGN_IN,
-                    what: &what,
-                    allowed: None,
-                },
-            )
-        })
+        let released = self
+            .changing_vault(workspace, |items| {
+                items.use_as_kept(
+                    &id,
+                    &places,
+                    &who,
+                    UsedFor {
+                        using: SIGN_IN,
+                        what: &what,
+                        allowed: None,
+                    },
+                )
+            })
+            .await
+            .map_err(said)?;
+        // A grant a provider's page left is handed out as the access token it holds now, never
+        // with the refresh token that renews it.
+        super::person_settings::oauth_grant::signs_in_with(
+            self.vault_at(workspace),
+            &self.workspace_root(workspace),
+            account,
+            released,
+        )
         .await
-        .map_err(said)
     }
 
     /// Whether `workspace`'s vault keeps the entry `item` names, on this device.
@@ -275,7 +355,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// The record does not hold the account, or does not take the write on this device.
-    #[cfg(test)]
+    #[cfg(all(test, any(feature = "agents", feature = "apps")))]
     pub(crate) async fn name_account_password(
         &self,
         workspace: &str,

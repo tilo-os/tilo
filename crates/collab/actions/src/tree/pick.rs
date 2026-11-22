@@ -7,7 +7,7 @@ use crate::{ActionDescriptor, OperationKind};
 /// The names programs give the types of resources: what tells
 /// whether a segment written the way a program types a type (`tasks.Task`)
 /// names a resource of `resource_type`.
-pub trait TypeNames {
+pub trait TypeNames: Send + Sync {
     /// Whether `name` is what a program calls `resource_type`.
     fn calls(&self, name: &str, resource_type: &str) -> bool;
 }

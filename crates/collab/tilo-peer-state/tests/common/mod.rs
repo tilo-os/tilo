@@ -5,7 +5,6 @@
 )]
 
 use ed25519_dalek::SigningKey;
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -36,33 +35,7 @@ pub fn device_with(
     (key, cert)
 }
 
-/// An endpoint whose identity is the device `key`.
-pub async fn endpoint(key: &SigningKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .secret_key(SecretKey::from_bytes(&key.to_bytes()))
-        .bind()
-        .await
-        .unwrap()
-}
-
-/// A localhost endpoint with no relay whose identity is the device `key`.
-pub async fn localhost_endpoint(key: &SigningKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .secret_key(SecretKey::from_bytes(&key.to_bytes()))
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
-pub fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    EndpointAddr::new(endpoint.id()).with_ip_addr(std::net::SocketAddr::from((
-        std::net::Ipv4Addr::LOCALHOST,
-        endpoint.bound_sockets().first().unwrap().port(),
-    )))
-}
+pub use tilo_peer_state::loopback::{addr, endpoint as localhost_endpoint};
 
 /// The workspace `workspace`, made by `a` with `roster` in it, held as an
 /// empty peer.

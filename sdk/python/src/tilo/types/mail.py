@@ -141,7 +141,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
+    __surface__ = "so.tilo.mail@f043af2c68620b30"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -197,7 +197,7 @@ class Account(Resource):
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
+    __surface__ = "so.tilo.mail@f043af2c68620b30"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -207,7 +207,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
+    __surface__ = "so.tilo.mail@f043af2c68620b30"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -382,13 +382,13 @@ class Thread(Resource):
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
+    __surface__ = "so.tilo.mail@f043af2c68620b30"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
+    __surface__ = "so.tilo.mail@f043af2c68620b30"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -448,7 +448,7 @@ class Message(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
+    __surface__ = "so.tilo.mail@f043af2c68620b30"
     m2g6zrle: str  # from
     hd3o4gkq: str  # to
     cwukhrvn: str  # cc
@@ -497,21 +497,11 @@ class Draft(Resource):
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
+    __surface__ = "so.tilo.mail@f043af2c68620b30"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
     bag7bf25: list[Entry[Thread]]  # recovered_mail
-    fezdozrd: list[str]  # recovered_conversations
-    swilesl6: list[str]  # recovered_signatures
-    @property
-    def _5upxgb6g(self) -> list[str]:
-        """recovered_drafts (`5upxgb6g` on the wire)."""
-        return self.fields["5upxgb6g"]
-
-    @_5upxgb6g.setter
-    def _5upxgb6g(self, value: list[str]) -> None:
-        self.edit("5upxgb6g", value=value)
     @property
     def _4ow5ydy5(self) -> int:
         """hold (`4ow5ydy5` on the wire)."""
@@ -528,25 +518,6 @@ class Mail(Resource):
     def set_hold_many(self, items: list[SetHoldArgs]) -> list[dict[str, Any]]:
         """Runs `set_hold` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_hold", items)
-
-    def recover_previous(self,
-        *,
-        drafts: list[list[str]] | None = None,
-        labels: list[str] | None = None,
-        conversations: list[list[list[str]]] | None = None,
-        signatures: list[list[str]] | None = None,
-    ) -> int:
-        """Copies data from the earlier private mailbox into this workspace."""
-        args: dict[str, Any] = {}
-        if drafts is not None:
-            args["drafts"] = drafts
-        if labels is not None:
-            args["labels"] = labels
-        if conversations is not None:
-            args["conversations"] = conversations
-        if signatures is not None:
-            args["signatures"] = signatures
-        return self.action("recover_previous", **args)
 
     def new_draft(self) -> Draft:
         """Starts a message from the first account."""
@@ -637,10 +608,10 @@ class Mail(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_hold", "set_hold_many", "recover_previous", "new_draft", "prepare_calendar_invitation", "deliver_message", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many"})
+    __actions__ = frozenset({"set_hold", "set_hold_many", "new_draft", "prepare_calendar_invitation", "deliver_message", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many"})
 
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@7a6c0cd1ad5b7840"
+    __surface__ = "so.tilo.mail@f043af2c68620b30"
 

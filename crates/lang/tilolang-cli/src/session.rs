@@ -8,6 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use ui::tilo_actions::remote::{self, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget};
+
 pub(crate) const SESSION_SCRIPT: &str = "dist/dev/nested-session.sh";
 pub(crate) const BUILD_DIR: &str = "target/nested-session";
 /// The variable naming a nested-session build elsewhere than the checkout's [`BUILD_DIR`]: a build
@@ -104,20 +106,19 @@ const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// hands its shell as `TILO_SYSTEM_INTERFACES`, not the host image's.
 const SYSTEM_INTERFACES: &str = "os/usr/share/tilo/system-interfaces.toml";
 
-/// How long a session may take to offer an app it
-/// installed: the most the shell holds one listing (30
-/// s).
+/// How long a session may take to offer an app it installed.
 const OFFER_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long the session may hold an action's answer while it runs, in milliseconds.
+const ACTION_WAIT: u32 = 5_000;
+/// The prefix of a window's resource address, before its tab.
+const WINDOW_PREFIX: &str = "desktop:tab:";
 
-/// Whether a listing answer has `app`'s `applications` row.
-fn offers(answer: &serde_json::Value, app: &str) -> bool {
-    answer
-        .get("actions")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|rows| {
-            rows.iter()
-                .any(|row| row["provider"] == "applications" && row["id"] == app)
-        })
+/// The session's own `action` of `resource`.
+fn shell(resource: &str, action: &str) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: remote::SESSION_ACTIONS_PROVIDER.to_owned(),
+        address: ui::tilo_actions::ActionAddress::new(resource, action),
+    }
 }
 
 pub(crate) struct Peer {
@@ -303,86 +304,118 @@ impl Peer {
         )
     }
 
-    /// Open `app` through the session's own action, or
-    /// bring its window to the front when it has one.
+    /// Open `app` through the workspace's own open of it, or bring its window to the front when it
+    /// has one.
     pub(crate) fn open(&self, bin: &Path, app: &str) -> Result<(), String> {
-        self.invoke(bin, "applications", app)
+        let open = self.wait_offered(bin, app)?;
+        self.invoke(bin, open, &format!("opening {app}"))
     }
 
-    /// Wait until the session's catalogue offers `app` (its
-    /// `applications` action): a session just started indexes the apps
-    /// it installed as it comes up, and an app it has not indexed yet
-    /// cannot be opened.
-    pub(crate) fn wait_offered(&self, bin: &Path, app: &str) -> Result<(), String> {
+    /// Wait until the session's catalogue offers to open `app`, and answer that open: a session
+    /// just started indexes the apps it installed as it comes up, and an app it has not indexed
+    /// yet cannot be opened.
+    pub(crate) fn wait_offered(&self, bin: &Path, app: &str) -> Result<RemoteActionTarget, String> {
+        let resource = format!("{}{app}", remote::APPLICATION_RESOURCE_PREFIX);
         let started = std::time::Instant::now();
-        let mut seen: Option<String> = None;
-        let mut held = false;
         loop {
-            let left = if held {
-                OFFER_WAIT.saturating_sub(started.elapsed())
-            } else {
-                std::time::Duration::ZERO
-            };
-            let mut request = serde_json::json!({
-                "op": "actions_enumerate",
-                "query": app,
-                "kinds": ["application"],
-                "detail": "compact",
-                "wait_ms": u64::try_from(left.as_millis()).unwrap_or(u64::MAX),
-            });
-            if let (Some(revision), Some(fields)) = (&seen, request.as_object_mut()) {
-                fields.insert("after_revision".into(), revision.clone().into());
+            if let Some(open) =
+                self.offered(bin, app, &resource, remote::APPLICATION_OPEN_ACTION)?
+            {
+                return Ok(open);
             }
-            let text = output(
-                self.command(&bin.join("tilo-control"))
-                    .arg("raw")
-                    .arg(request.to_string()),
-                "listing the session's applications",
-            )?;
-            let response: serde_json::Value = serde_json::from_str(text.trim())
-                .map_err(|error| format!("listing the session's applications: {error}"))?;
-            let Some(answer) = response.get("answer") else {
-                return Err(format!(
-                    "listing the session's applications: {}",
-                    response.get("err").unwrap_or(&response)
-                ));
-            };
-            if offers(answer, app) {
-                return Ok(());
+            if started.elapsed() > OFFER_WAIT {
+                return Err(format!("the session does not offer to open {app}"));
             }
-            if !held {
-                held = true;
-                continue;
-            }
-            // Only a listing the shell held until it settled can be
-            // asked for the next one; a wait that ran out answers
-            // unsettled.
-            let revision = answer
-                .get("settled")
-                .and_then(serde_json::Value::as_bool)
-                .filter(|settled| *settled)
-                .and_then(|_| answer.get("revision")?.as_str());
-            match revision {
-                Some(revision) if started.elapsed() < OFFER_WAIT => {
-                    seen = Some(revision.to_owned());
-                }
-                _ => {
-                    return Err(format!(
-                        "the session does not offer {app}: no `applications {app}` in its \
-                         catalogue"
-                    ));
-                }
-            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 
-    fn invoke(&self, bin: &Path, provider: &str, action: &str) -> Result<(), String> {
-        output(
+    /// What the session lists, among the rows that mention `needle`, as `resource`'s `action`.
+    fn offered(
+        &self,
+        bin: &Path,
+        needle: &str,
+        resource: &str,
+        action: &str,
+    ) -> Result<Option<RemoteActionTarget>, String> {
+        let mut query = remote::CatalogueQuery {
+            needle: needle.to_owned(),
+            max_results: remote::MAX_CATALOGUE_PAGE,
+            ..remote::CatalogueQuery::default()
+        };
+        loop {
+            let asked = RemoteActionMessage::CatalogueRequest {
+                correlation: 1,
+                query: query.clone(),
+            };
+            let RemoteActionMessage::CatalogueResponse { result, .. } =
+                self.ask(bin, asked, "listing the session's actions")?
+            else {
+                return Err("the session answered a listing with something else".to_owned());
+            };
+            let page = result.map_err(|error| format!("listing the session's actions: {error}"))?;
+            let found = page.rows.into_iter().find_map(|row| {
+                let address = row.action?.address;
+                (address.resource == resource && address.action == action).then_some(
+                    RemoteActionTarget {
+                        provider: row.provider,
+                        address,
+                    },
+                )
+            });
+            if found.is_some() || page.exhausted || page.next_cursor.is_empty() {
+                return Ok(found);
+            }
+            query.revision = Some(page.revision);
+            query.cursor = page.next_cursor;
+        }
+    }
+
+    /// Invoke `target`, and wait until it ran.
+    fn invoke(&self, bin: &Path, target: RemoteActionTarget, what: &str) -> Result<(), String> {
+        let invocation = ui::tilo_actions::InvocationId::new();
+        let asked = RemoteActionMessage::Invoke(remote::InvokeRequest {
+            invocation,
+            target,
+            argument: remote::InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: Some(ACTION_WAIT),
+            appearance: None,
+            signed: None,
+        });
+        let RemoteActionMessage::Receipt(receipt) = self.ask(bin, asked, what)? else {
+            return Err(format!("{what}: the session answered with something else"));
+        };
+        match receipt.status {
+            remote::ReceiptStatus::Accepted | remote::ReceiptStatus::Completed { .. } => Ok(()),
+            remote::ReceiptStatus::Failed { error } => Err(format!("{what}: {}", error.message)),
+            remote::ReceiptStatus::Rejected { error } => Err(format!("{what}: {error}")),
+            remote::ReceiptStatus::Cancelled { .. } => Err(format!("{what}: cancelled")),
+        }
+    }
+
+    /// Ask `message` of the session's control socket, as `tilo-control` sends a frame there.
+    fn ask(
+        &self,
+        bin: &Path,
+        message: RemoteActionMessage,
+        what: &str,
+    ) -> Result<RemoteActionMessage, String> {
+        let frame = RemoteActionFrame::new(message)
+            .encode()
+            .map_err(|error| format!("{what}: {error}"))?;
+        let answer = output(
             self.command(&bin.join("tilo-control"))
-                .args(["actions", "invoke", provider, action, "--wait"]),
-            &format!("{provider} {action}"),
-        )
-        .map(drop)
+                .arg("raw")
+                .arg(String::from_utf8_lossy(&frame).as_ref()),
+            what,
+        )?;
+        RemoteActionFrame::decode(answer.trim().as_bytes())
+            .map(|frame| frame.message)
+            .map_err(|error| format!("{what}: {error}: {answer}"))
     }
 
     /// The tabs showing a window of `app`: each as its group and tab id.
@@ -411,8 +444,11 @@ impl Peer {
     /// package and the runtime it names, with its data.
     pub(crate) fn restart(&self, bin: &Path, app: &str) -> Result<(), String> {
         for (group, tab) in self.tabs_of(bin, app)? {
-            self.invoke(bin, "desktop-windows", &format!("tab.focus:{group}:{tab}"))?;
-            self.invoke(bin, "actions", "tab.close")?;
+            self.invoke(
+                bin,
+                shell(&format!("{WINDOW_PREFIX}{tab}"), "close-tab"),
+                "closing",
+            )?;
             // A window closes when its app has let it go: the tab is reopenable once it is gone.
             let asked = std::time::Instant::now();
             while self.tabs_of(bin, app)?.contains(&(group, tab)) {
@@ -421,7 +457,7 @@ impl Peer {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            self.invoke(bin, "actions", "tab.reopen")?;
+            self.invoke(bin, shell("desktop:chrome", "reopen-closed"), "reopening")?;
         }
         Ok(())
     }
@@ -462,19 +498,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn a_session_names_its_apps_and_its_build;
-
-        phase an_app_is_offered_by_its_applications_row_alone;
-        {
-            let answer = serde_json::json!({"actions": [
-                {"provider": "app-actions", "id": "so.tilo.lang.counter"},
-                {"provider": "applications", "id": "so.tilo.lang.counter.other"},
-            ]});
-            assert!(!offers(&answer, "so.tilo.lang.counter"));
-            let answer = serde_json::json!({"actions": [
-                {"provider": "applications", "id": "so.tilo.lang.counter"},
-            ]});
-            assert!(offers(&answer, "so.tilo.lang.counter"));
-        }
 
         phase the_build_is_the_one_the_environment_names_else_the_checkouts;
         {

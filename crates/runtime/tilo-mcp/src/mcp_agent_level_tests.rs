@@ -2,8 +2,9 @@
 //! a cost that does not grow with what the app holds, and a resource found wherever it falls
 //! in a level whose first read stops at its bound.
 
-use super::super::{DEFAULT_WAIT_MS, LEVEL_PAGES, RESTART_PAUSE_MAX, restart_pause};
+use super::super::DEFAULT_WAIT_MS;
 use super::*;
+use tilo_actions::tree::{LEVEL_PAGES, RESTART_PAUSE_MAX, restart_pause};
 
 tilo_test_env::scenario! {
     fn a_call_reads_the_directory_once_at_a_cost_that_does_not_grow;

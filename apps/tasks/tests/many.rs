@@ -13,7 +13,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 mod common;
 
 use common::{chain, held};
@@ -375,15 +374,17 @@ fn a_list_answers_the_issues_it_made() {
 }
 
 /// Lists of new issues cost the same however many issues the tracker already holds: each list
-/// reads back the bodies it wrote and none of the issues before it, and the lists made once the
-/// tracker holds a thousand issues take about as long as the first ones did.
+/// reads back the bodies it wrote and none of the issues before it, and every step of making a
+/// list runs as often in a later part of the tracker as at the same place in the part before.
 #[test]
 fn each_list_of_new_issues_costs_the_same_however_many_came_before() {
     const LIST: usize = 200;
     const LISTS: usize = 7;
+    // Two lists to a part, so the lists fill four of them.
+    const PER_PART: usize = 2;
+    let _parts = ui::framework::PartLimits::scoped(PER_PART * LIST, usize::MAX);
     let mut app = open();
-    let mut lists = Vec::with_capacity(LISTS);
-    let mut sections = Vec::with_capacity(LISTS);
+    let mut work: Vec<std::collections::BTreeMap<&'static str, usize>> = Vec::with_capacity(LISTS);
     for list in 0..LISTS {
         let issues: Vec<Value> = (list * LIST..(list + 1) * LIST)
             .map(|at| {
@@ -394,42 +395,48 @@ fn each_list_of_new_issues_costs_the_same_however_many_came_before() {
                 })
             })
             .collect();
-        let began = std::time::Instant::now();
         let ((), observed) = ui::tilo_resource::profiling::observe(|| {
             app.call_on(&chain(), "create-many", json!({ "issues": issues }))
                 .expect("the issues are made");
         });
-        let took = began.elapsed();
-        let calls = |phase: &str| {
+        work.push(
             observed
                 .iter()
-                .find(|sample| sample.phase == phase)
-                .map_or(0, |sample| sample.calls)
-        };
-        lists.push((took, calls("rich_text.read.written")));
-        sections.push(calls("rich_text.read.parts"));
+                .map(|sample| (sample.phase, sample.calls))
+                .collect(),
+        );
     }
     assert_eq!(held(&app).len(), LIST * LISTS);
-    let read: Vec<usize> = lists.iter().map(|(_, bodies)| *bodies).collect();
-    assert!(
-        read.iter().all(|bodies| *bodies == LIST),
-        "each list reads back its own {LIST} bodies, no more: {read:?}"
-    );
-    assert!(
-        sections.iter().all(|sections| *sections == 0),
-        "no list reads a body section by section from the document: {sections:?}"
-    );
-    // The first list also opens the part; the median of three steadies a busy machine.
-    let median = |lists: &[(std::time::Duration, usize)]| {
-        let mut took: Vec<_> = lists.iter().map(|(took, _)| *took).collect();
-        took.sort_unstable();
-        took[took.len() / 2]
-    };
-    let early = median(&lists[1..4]);
-    let late = median(&lists[LISTS - 3..]);
-    assert!(
-        late < early * 3 / 2,
-        "the lists after {} issues took {late:?}, the early ones {early:?}: {lists:?}",
-        LIST * (LISTS - 3)
-    );
+    for list in &work {
+        let bodies = ["rich_text.read.written", "rich_text.read.parts"].map(|read| list.get(read));
+        assert_eq!(
+            bodies,
+            [Some(&LIST), None],
+            "each list reads its own bodies whole: {list:?}"
+        );
+    }
+    // The first part also opens the tracker, so the lists from the third part on are each set
+    // beside the list at the same place in the part before.
+    for later in 2 * PER_PART..LISTS {
+        let before = later - PER_PART;
+        let parts = later / PER_PART + 1;
+        for (phase, ran) in &work[later] {
+            let then = work[before].get(phase).copied().unwrap_or(0);
+            // Following the parts a window holds compares each part's heads once a pass: it
+            // grows with the parts, by no more than one part's share, and with nothing they hold.
+            let within = if *phase == "framework.live_sync" {
+                ran * (parts - 1) <= then * parts
+            } else {
+                *ran <= then
+            };
+            assert!(
+                within,
+                "after {} issues, making a list ran {phase} {ran} times, against {then} a part \
+                 before: {:?} against {:?}",
+                later * LIST,
+                work[later],
+                work[before]
+            );
+        }
+    }
 }

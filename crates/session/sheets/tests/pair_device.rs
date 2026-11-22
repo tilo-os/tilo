@@ -1,7 +1,6 @@
 //! "Add a device": the sheet as a person meets it while a machine asks to
 //! join over the internet — what the machine is, and the answers offered.
 
-
 use std::rc::Rc;
 
 use tilo_sheets::pair_device::{self, AddDevice, PairDeviceEffect, WaitingMachine};

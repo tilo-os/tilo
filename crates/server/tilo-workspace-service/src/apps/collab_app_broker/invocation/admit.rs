@@ -25,7 +25,6 @@ impl AppBrokerState {
                 .reports_a_change(offered.1.contract.need().kind)
                 || (offered.1.operation_kind != tilo_actions::OperationKind::Document
                     && local_report.is_some_and(|report| !report.mutation_hashes.is_empty()))
-                || provenance.durable.is_some()
                 || !matches!(
                     provenance.origin.as_ref(),
                     Some(InvocationCaller::Local { .. })
@@ -55,7 +54,6 @@ impl AppBrokerState {
             context,
         } = inputs;
         let AdmissionProvenance {
-            durable,
             revision,
             origin,
             retained_time,
@@ -63,21 +61,18 @@ impl AppBrokerState {
         if turns::is_answer(&offered.0.app_id, &offered.1) {
             return Err("an agent answers a turn only when the host hands it one".into());
         }
-        let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
-        let owner = match durable {
-            Some(context) => context.owner()?,
-            None => self.invocation_owner(origin.as_ref(), &offered.0.route.cluster_id, actor)?,
-        };
+        let continuing = ContinuingCaller::admitted(caller, origin.as_ref());
+        let owner = self.invocation_owner(origin.as_ref(), &offered.0.route.cluster_id, actor)?;
         owner.validate()?;
         // In native workspaces an agent acts only in an agent session that still goes, never on
         // a workspace grant alone.
         let session = self.agent_session_of(caller, origin.as_ref(), &offered.0.route.cluster_id);
         if actor.is_agent() && !actor.is_app() && self.confines_agents(&offered.0.route.cluster_id)
         {
-            match (durable, &session) {
-                (None, Some(Ok(_))) => {}
-                (None, Some(Err(ended))) => return Err(ended.clone()),
-                _ => return Err("an agent acts only in an agent session".into()),
+            match &session {
+                Some(Ok(_)) => {}
+                Some(Err(ended)) => return Err(ended.clone()),
+                None => return Err("an agent acts only in an agent session".into()),
             }
         }
         // Never trust an envelope's invoker: the host sets it.
@@ -86,8 +81,8 @@ impl AppBrokerState {
         // connection: an envelope names no device.
         let context = invoker::working_from(
             context,
-            match (durable, &session) {
-                (None, Some(Ok(going))) => going.origin.as_ref(),
+            match &session {
+                Some(Ok(going)) => going.origin.as_ref(),
                 _ => None,
             },
         );
@@ -132,7 +127,7 @@ impl AppBrokerState {
         } else {
             None
         };
-        if original_time.is_some() && (durable.is_some() || retained_time.is_some()) {
+        if original_time.is_some() && retained_time.is_some() {
             return Err("duplicate original invocation ownership".into());
         }
         let local_time = if let Some(InvocationCaller::Local { time, .. }) = &origin {
@@ -142,14 +137,12 @@ impl AppBrokerState {
             None
         };
         let retained_time = original_time.or(retained_time);
-        let policy_time = match (durable, retained_time) {
-            (Some(context), None) => self.checked_policy_time(context.time())?.0,
-            (None, Some(original)) => self.checked_policy_time(Some(original))?.0,
-            (None, None) => match &origin {
+        let policy_time = match retained_time {
+            Some(original) => self.checked_policy_time(Some(original))?.0,
+            None => match &origin {
                 Some(InvocationCaller::Local { .. }) => local_time.cloned(),
                 _ => self.registered_policy_time()?,
             },
-            (Some(_), Some(_)) => return Err("duplicate original invocation time ownership".into()),
         };
         let now = self.checked_policy_time(policy_time.as_ref())?.1 / 1_000_000_000;
 
@@ -182,8 +175,8 @@ impl AppBrokerState {
         // What the person allowed an agent session for every later step like
         // one it asked about: decided with the workspace's grants, as an
         // answer granted there is.
-        let answers = match (durable, session) {
-            (None, Some(Ok(going))) => going.answers,
+        let answers = match session {
+            Some(Ok(going)) => going.answers,
             _ => Vec::new(),
         };
         // Every check of this admission is decided on one committed sample,
@@ -207,7 +200,7 @@ impl AppBrokerState {
                 actor.admit_published_in(workspace, now, (&offered.0, &offered.1))
             })??;
 
-        if (durable.is_some() || execution.is_some())
+        if execution.is_some()
             && !self
                 .stable_invocation_subscribers
                 .lock()
@@ -222,7 +215,7 @@ impl AppBrokerState {
             .lock()
             .map_err(|_| "invocation journal unavailable")?;
         let journal = journal_guard.as_mut().map_err(|error| error.clone())?;
-        if (durable.is_some() || owner.verified_actor().is_some()) && journal.is_none() {
+        if owner.verified_actor().is_some() && journal.is_none() {
             return Err("action_evidence_unavailable: admission journal unavailable".into());
         }
         // What this admission is, decided before the confirmation is looked
@@ -232,9 +225,9 @@ impl AppBrokerState {
             .invocation_id
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| "invocation handle space exhausted")?;
-        let authoritative = durable
-            .map(DurableContext::invocation)
-            .or_else(|| execution.as_ref().map(ExecutionScope::invocation))
+        let authoritative = execution
+            .as_ref()
+            .map(ExecutionScope::invocation)
             .or(match &origin {
                 Some(InvocationCaller::NativePerson { invocation, .. }) => Some(*invocation),
                 _ => None,
@@ -244,12 +237,9 @@ impl AppBrokerState {
         }) {
             return Err("requested invocation does not match admitted ownership".into());
         }
-        let invocation = match durable {
-            Some(context) => context.invocation(),
-            None => requested.or(authoritative).unwrap_or_else(|| {
-                tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)))
-            }),
-        };
+        let invocation = requested
+            .or(authoritative)
+            .unwrap_or_else(|| tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))));
         let mut receipt_context = tilo_actions::ActionContext::for_resource(
             &offered.1.resource,
             &offered.1.resource_kind,
@@ -276,7 +266,6 @@ impl AppBrokerState {
                     argument,
                     revision,
                     original_request,
-                    durable,
                     local_report,
                     typed_local_arguments: typed_local_arguments.as_ref(),
                     receipt_context: &receipt_context,
@@ -288,7 +277,6 @@ impl AppBrokerState {
         // answer from here; a peer's or a run's ownership carries its own, and
         // a report is admitted through its own receipts.
         if local_report.is_none()
-            && durable.is_none()
             && let (Some(journal), Some(intent)) = (journal.as_ref(), intent.as_ref())
             && let Some(record) = self.retained_invocation(
                 journal,
@@ -334,16 +322,7 @@ impl AppBrokerState {
                 || grant.actor != *actor.member()
                 || grant.host_approved.as_ref().is_some_and(|binding| {
                     binding.workspace != offered.0.route.cluster_id
-                        || Some(binding.invocation)
-                            != requested
-                                .or_else(|| durable.map(DurableContext::invocation))
-                                .or_else(|| execution.as_ref().map(ExecutionScope::invocation))
-                                .or(match &origin {
-                                    Some(InvocationCaller::NativePerson { invocation, .. }) => {
-                                        Some(*invocation)
-                                    }
-                                    _ => None,
-                                })
+                        || Some(binding.invocation) != requested.or(authoritative)
                         || binding.publication != self.approval_publication(&binding.provider)
                         || match original_request {
                             Some(request) => {
@@ -375,16 +354,6 @@ impl AppBrokerState {
                 owner: owner.clone(),
             };
             let intent = intent.ok_or("invocation intent unavailable")?;
-            if let Some(context) = durable {
-                context.before_admission(
-                    self,
-                    peer_id,
-                    &offered,
-                    sender
-                        .as_ref()
-                        .ok_or("application invocation stream unavailable")?,
-                )?;
-            }
             if local_report.is_some() {
                 self.local_report_receipts
                     .lock()
@@ -498,7 +467,7 @@ impl AppBrokerState {
                 offered.0.route.clone(),
                 &offered.1,
                 revision,
-                durable.map(DurableContext::origin).or(origin),
+                origin,
                 policy_time.clone(),
                 execution.as_ref().map(ExecutionScope::lease),
             ),

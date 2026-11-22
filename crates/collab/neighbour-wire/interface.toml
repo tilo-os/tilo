@@ -22,7 +22,6 @@ sources = [
     "crates/collab/neighbour-wire/src/lib.rs",
     "crates/collab/collab-types/src/own_resource.rs",
     "crates/collab/neighbour-wire/src/actions.rs",
-    "crates/collab/neighbour-wire/src/offer.rs",
     "crates/collab/neighbour-wire/src/colorimetry.rs",
     "crates/collab/neighbour-wire/src/hdr_metadata.rs",
     "crates/collab/actions/src/document_sync.rs",
@@ -50,7 +49,7 @@ sources = [
     "crates/collab/collab-types/src/peer.rs",
     "crates/collab/collab-types/src/presence/shell.rs",
 ]
-roots = ["Hello", "HelloAck", "HelloAck2", "HelloRefused", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "ActionServiceFrame", "crates/collab/neighbour-wire/src/offer.rs:Answer"]
+roots = ["Hello", "HelloAck", "HelloAck2", "HelloRefused", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "ActionServiceFrame", "crates/collab/neighbour-wire/src/placement.rs:Answer"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
@@ -157,6 +156,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DeltaSegment::Copy.offset" = "#0 u32"
 "DeltaSegment::Literal" = "#1 tuple(Vec<u8>)"
 "DeviceAction" = "struct"
+"DeviceAction.agent" = "#6 Option<HandedAgent>"
 "DeviceAction.message" = "#4 RemoteActionMessage with=message_frame"
 "DeviceAction.placement" = "#5 Option<Vec<u8>> with=serde_bytes"
 "DeviceAction.request_id" = "#1 Uuid"
@@ -420,6 +420,9 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "FrameworkChange::structure" = "#2 unit"
 "FrameworkChange::transfer" = "#3 unit"
 "FrameworkChange::upgrade" = "#4 unit"
+"HandedAgent" = "struct"
+"HandedAgent.client" = "#0 String"
+"HandedAgent.session" = "#1 String"
 "Hdr10Metadata" = "struct"
 "Hdr10Metadata.light" = "#1 ContentLightLevel"
 "Hdr10Metadata.mastering" = "#0 MasteringDisplayColorVolume"

@@ -59,7 +59,7 @@ tilo_test_env::scenario! {
         for peer_id in [fixture.peer_id, survivor] {
             fixture
                 .state
-                .surfaces
+                .publishers.surfaces
                 .lock()
                 .expect("published surfaces")
                 .insert(
@@ -89,7 +89,7 @@ tilo_test_env::scenario! {
         assert!(
             !fixture
                 .state
-                .surfaces
+                .publishers.surfaces
                 .lock()
                 .expect("published surfaces")
                 .contains_key(&fixture.peer_id)
@@ -104,7 +104,7 @@ tilo_test_env::scenario! {
         assert!(
             fixture
                 .state
-                .surfaces
+                .publishers.surfaces
                 .lock()
                 .expect("published surfaces")
                 .contains_key(&survivor)
@@ -419,7 +419,7 @@ tilo_test_env::scenario! {
             (2, (cluster.clone(), actor, Arc::downgrade(&slow))),
         ]);
         let publish = |peer: u64, resource: Option<&str>| {
-            let mut surfaces = state.surfaces.lock().unwrap();
+            let mut surfaces = state.publishers.surfaces.lock().unwrap();
             match resource {
                 Some(resource) => {
                     surfaces.insert(peer, catalogue_surface(peer, &cluster, resource))
@@ -475,7 +475,7 @@ tilo_test_env::scenario! {
             ..
         } = counting_catalogue_state("same");
         state
-            .surfaces
+            .publishers.surfaces
             .lock()
             .unwrap()
             .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
@@ -535,7 +535,7 @@ tilo_test_env::scenario! {
             ..
         } = counting_catalogue_state("owner");
         state
-            .surfaces
+            .publishers.surfaces
             .lock()
             .unwrap()
             .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
@@ -574,7 +574,7 @@ tilo_test_env::scenario! {
             ..
         } = counting_catalogue_state("owner");
         state
-            .surfaces
+            .publishers.surfaces
             .lock()
             .unwrap()
             .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));

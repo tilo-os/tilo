@@ -81,9 +81,9 @@ impl DocumentRead {
         if !store.reaches_person(&channel, &self.reader) {
             return false;
         }
-        let own = declared.filter(|own| own.names(document)).or_else(|| {
-            collab_types::OwnResource::recognise_in(app, document, &access.policy)
-        });
+        let own = declared
+            .filter(|own| own.names(document))
+            .or_else(|| collab_types::OwnResource::recognise_in(app, document, &access.policy));
         if own.as_ref().is_some_and(|own| own.owner != self.reader) {
             return false;
         }
@@ -368,7 +368,9 @@ mod tests {
         let channel = neighbour_wire::app_document_group(APP, &record);
         let document = checkpoint(
             channel,
-            NeighbourPayloads.document_body(&source, &route, operation).unwrap(),
+            NeighbourPayloads
+                .document_body(&source, &route, operation)
+                .unwrap(),
         );
         store
             .retain_checkpoint(&channel, &crate::transport::encode(&document).unwrap())

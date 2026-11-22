@@ -119,7 +119,7 @@ idents = ["device fleet", "certified fleet", "fleet store"]
 generic = ["fleet"]
 
 [[word]]
-row = "ceremony, tilo-identity-ceremony"
+row = "ceremony"
 idents = ["ceremony"]
 
 [[word]]

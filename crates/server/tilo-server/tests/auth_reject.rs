@@ -81,10 +81,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
 
         let tmp = tempfile::tempdir().unwrap();
         let state_root = tmp.path().to_path_buf();
-        let cfg = tilo_server::ServerConfig {
-            state_root: state_root.clone(),
-            ..Default::default()
-        };
+        let cfg = tilo_server::ServerConfig::loopback(state_root.clone());
         let identity = tilo_server::daemon::ServerIdentity {
             user_public_key: user.user_pk,
             device_signing_key: server_dev.sk.clone(),
@@ -128,10 +125,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         let device_key = device.device_pubkey();
         let state = tempfile::tempdir().unwrap();
         let server = crate::common::start_server(
-            tilo_server::ServerConfig {
-                state_root: state.path().to_path_buf(),
-                ..Default::default()
-            },
+            tilo_server::ServerConfig::loopback(state.path().to_path_buf()),
             tilo_server::daemon::ServerIdentity {
                 user_public_key: user.user_pk,
                 device_signing_key: server_dev.sk,
@@ -189,10 +183,7 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
     let device_key = device.device_pubkey();
     let state = tempfile::tempdir().unwrap();
     let server = crate::common::start_server(
-        tilo_server::ServerConfig {
-            state_root: state.path().to_path_buf(),
-            ..Default::default()
-        },
+        tilo_server::ServerConfig::loopback(state.path().to_path_buf()),
         tilo_server::daemon::ServerIdentity {
             user_public_key: user.user_pk,
             device_signing_key: server_dev.sk,
@@ -255,7 +246,6 @@ async fn management_alpn_rejects_member_admitted_by_live_policy() {
     let bob = TestUser::fresh("Bob");
     let server_dev = alice.enrol("home-server", DeviceCapabilities::member());
     let server_key = server_dev.device_pubkey();
-    let alice_laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let bob_laptop = bob.enrol("member-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let server = crate::common::start_server(
@@ -285,7 +275,9 @@ async fn management_alpn_rejects_member_admitted_by_live_policy() {
             cert,
             sk,
             RevocationList::new(),
-            tilo_server::transport::HomePeerManagementRequest::Status,
+            tilo_server::transport::HomePeerManagementRequest::HoldAdmin {
+                endpoint: endpoint.addr(),
+            },
         )
     };
 
@@ -299,10 +291,8 @@ async fn management_alpn_rejects_member_admitted_by_live_policy() {
     )
     .await
     .expect("the live policy admits the member on the server ALPN");
-    // Management answers the owner's device and refuses Bob's.
-    manage(alice_laptop.cert, alice_laptop.sk)
-        .await
-        .expect("the owner's device manages its home peer");
+    // Management refuses Bob's device at its handshake, which admits the
+    // owner's devices alone (`HandshakeTrust::OwnerDevicesOnly`).
     assert!(
         manage(bob_laptop.cert, bob_laptop.sk).await.is_err(),
         "a member must not pass the management handshake"

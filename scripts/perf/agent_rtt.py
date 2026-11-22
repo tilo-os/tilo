@@ -9,8 +9,8 @@ capability check as the palette, runs the action and writes the answer, and
 the clock stops when the whole answer line has arrived. Parsing the answer
 in Python is not counted.
 
-`actions_invoke` answers once the action is admitted, which for an app
-action means accepted, not done. `wait_ms` holds the answer until the
+An invocation frame is answered once the action is admitted, which for an
+app action means accepted, not done. `wait_ms` holds the answer until the
 invocation settles, so a "complete" sample here is one round trip whose
 receipt is terminal; it is checked on every sample, never assumed. A shell
 action runs before its answer is written, so for it accept and complete
@@ -19,17 +19,17 @@ coincide; an app action (`--app`) shows the difference.
 Workloads, each `--warmup` calls then `--samples` timed calls on one
 persistent connection:
 
-  agent.list.local               actions_enumerate, query ""
+  agent.list.local               the catalogue's first page
   agent.state_dump.local         state_dump
-  agent.invoke.local.noop.accept actions_invoke of the no-op, no wait
+  agent.invoke.local.noop.accept an invocation of the no-op, no wait
   agent.invoke.local.noop        the same with wait_ms: a terminal receipt
   agent.invoke.local.throughput  microseconds per completed no-op while
                                  `--clients` connections invoke at once,
                                  one sample per second of `--duration`
-  agent.invoke.local.app.accept  with --app PROVIDER:ID only
+  agent.invoke.local.app.accept  with --app PROVIDER:RESOURCE#ACTION only
   agent.invoke.local.app         the same, complete (wait_ms)
 
-The no-op is `so.tilo.session/desktop:chrome␟reopen-closed` (`tilo_session::
+The no-op is `so.tilo.session:desktop:chrome#reopen-closed` (`tilo_session::
 desktop_surface::ChromeEffect::ReopenClosed`): a session service action that
 needs no consent, and with nothing closed reopens nothing and changes nothing.
 
@@ -70,8 +70,11 @@ sys.path.insert(0, str(REPO / "scripts" / "headless-examples"))
 import record  # noqa: E402
 import real_apps  # noqa: E402
 
-NOOP = ("so.tilo.session", "desktop:chrome\u001freopen-closed")
-TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
+NOOP = ("so.tilo.session", "desktop:chrome", "reopen-closed")
+TERMINAL = frozenset({"succeeded", "failed", "cancelled", "rejected"})
+# How each receipt status reads in the records.
+STATES = {"Completed": "succeeded", "Failed": "failed", "Cancelled": "cancelled",
+          "Rejected": "rejected"}
 # Generous: the answer leaves as soon as the invocation settles.
 WAIT_MS = 5000
 
@@ -127,21 +130,19 @@ def answer_of(line: bytes, what: str) -> Any:
 
 
 def receipt_state(answer: Any) -> str | None:
-    """The receipt state an `actions_invoke` answer carries, if any."""
-    if not isinstance(answer, dict):
+    """Where an invocation frame's receipt says it stands, if it carries one."""
+    try:
+        status = answer["message"]["Receipt"]["status"]
+    except (KeyError, TypeError):
         return None
-    receipt = answer.get("receipt")
-    if not isinstance(receipt, dict):
-        return None
-    update = receipt.get("update")
-    return update.get("state") if isinstance(update, dict) else None
+    if status == "Accepted":
+        return "accepted"
+    return STATES.get(next(iter(status), None)) if isinstance(status, dict) else None
 
 
-def invoke_payload(address: tuple[str, str], wait: bool) -> dict[str, Any]:
-    payload: dict[str, Any] = {"op": "actions_invoke", "provider": address[0], "id": address[1]}
-    if wait:
-        payload["wait_ms"] = WAIT_MS
-    return payload
+def invoke_payload(address: tuple[str, str, str], wait: bool) -> Callable[[], bytes]:
+    """A fresh invocation of `address` per call: an invocation's id names one run."""
+    return lambda: request(real_apps.invocation(*address, None, WAIT_MS if wait else None))
 
 
 def check_complete(answer: Any, what: str) -> None:
@@ -160,21 +161,22 @@ def check_admitted(answer: Any, what: str) -> None:
         raise BenchError(f"{what}: the invocation ended {state}: {json.dumps(answer)[:400]}")
 
 
-def measure(conn: Connection, line: bytes, warmup: int, samples: int,
+def measure(conn: Connection, line: Callable[[], bytes], warmup: int, samples: int,
             check: Callable[[bytes], None]) -> list[float]:
     """Milliseconds per round trip; every answer, warm-up included, is checked."""
     for _ in range(warmup):
-        _, answer = conn.round_trip(line)
+        _, answer = conn.round_trip(line())
         check(answer)
     timings = []
     for _ in range(samples):
-        elapsed, answer = conn.round_trip(line)
+        sent = line()
+        elapsed, answer = conn.round_trip(sent)
         check(answer)
         timings.append(elapsed / 1e6)
     return timings
 
 
-def throughput(socket_path: str, address: tuple[str, str], clients: int,
+def throughput(socket_path: str, address: tuple[str, str, str], clients: int,
                duration: float) -> tuple[list[float], dict[str, Any]]:
     """Microseconds per completed call in each whole second, all clients together.
 
@@ -183,7 +185,7 @@ def throughput(socket_path: str, address: tuple[str, str], clients: int,
     """
     if clients < 1 or duration < 1:
         raise BenchError("throughput needs at least one client and one second")
-    line = request(invoke_payload(address, wait=True))
+    line = invoke_payload(address, wait=True)
     seconds = int(duration)
     per_second = [0] * seconds
     latencies: list[float] = []
@@ -204,7 +206,7 @@ def throughput(socket_path: str, address: tuple[str, str], clients: int,
             begin = start_ns[0]
             end = begin + seconds * 1_000_000_000
             while True:
-                elapsed, answer = conn.round_trip(line)
+                elapsed, answer = conn.round_trip(line())
                 done = time.perf_counter_ns()
                 if done > end:
                     break
@@ -288,32 +290,38 @@ def shell_session(shell: Path, log: Path, timeout: int) -> Iterator[tuple[str, P
         shutil.rmtree(profile, ignore_errors=True)
 
 
-def parse_address(text: str) -> tuple[str, str]:
-    provider, separator, ident = text.partition(":")
-    if not separator or not provider or not ident:
-        raise argparse.ArgumentTypeError(f"{text!r} must be PROVIDER:ID")
-    return provider, ident
+def parse_address(text: str) -> tuple[str, str, str]:
+    provider, separator, rest = text.partition(":")
+    resource, hash_, action = rest.rpartition("#")
+    if not separator or not provider or not hash_ or not resource or not action:
+        raise argparse.ArgumentTypeError(f"{text!r} must be PROVIDER:RESOURCE#ACTION")
+    return provider, resource, action
 
 
 def run(args: argparse.Namespace, socket_path: str) -> list[tuple[str, str, list[float], dict[str, Any]]]:
     """Every selected workload: (KPI, unit, samples, meta)."""
     results: list[tuple[str, str, list[float], dict[str, Any]]] = []
     noop = args.noop
-    common = {"transport": args.transport, "address": f"{noop[0]}/{noop[1]}",
+    common = {"transport": args.transport, "address": f"{noop[0]}:{noop[1]}#{noop[2]}",
               "warmup": args.warmup}
     conn = Connection(socket_path)
     try:
         last: dict[str, Any] = {}
 
         def listing(line: bytes) -> None:
-            answer = answer_of(line, "actions_enumerate")
-            if not isinstance(answer, dict) or not answer.get("actions"):
-                raise BenchError("actions_enumerate listed no action")
-            last.update(rows=len(answer["actions"]), total=answer.get("total"),
-                        response_bytes=len(line))
+            answer = answer_of(line, "listing")
+            try:
+                rows = answer["message"]["CatalogueResponse"]["result"]["Ok"]["rows"]
+            except (KeyError, TypeError):
+                raise BenchError(f"the listing was refused: {line[:400]!r}") from None
+            if not rows:
+                raise BenchError("the listing listed no action")
+            last.update(rows=len(rows), response_bytes=len(line))
 
+        listed = request(real_apps.frame(
+            {"CatalogueRequest": {"correlation": 1, "query": {"max_results": 256}}}))
         results.append(("agent.list.local", "ms", measure(
-            conn, request({"op": "actions_enumerate", "query": ""}), args.warmup, args.samples,
+            conn, lambda: listed, args.warmup, args.samples,
             listing), {**common, "address": "", **last}))
         last.clear()
 
@@ -322,26 +330,26 @@ def run(args: argparse.Namespace, socket_path: str) -> list[tuple[str, str, list
             last["response_bytes"] = len(line)
 
         results.append(("agent.state_dump.local", "ms", measure(
-            conn, request({"op": "state_dump"}), args.warmup, args.samples, dump),
+            conn, lambda: request({"op": "state_dump"}), args.warmup, args.samples, dump),
             {**common, "address": "", **last}))
 
-        accepted = request(invoke_payload(noop, wait=False))
+        accepted = invoke_payload(noop, wait=False)
         results.append(("agent.invoke.local.noop.accept", "ms", measure(
             conn, accepted, args.warmup, args.samples,
             lambda line: check_admitted(answer_of(line, "no-op"), "no-op")), common))
-        complete = request(invoke_payload(noop, wait=True))
+        complete = invoke_payload(noop, wait=True)
         results.append(("agent.invoke.local.noop", "ms", measure(
             conn, complete, args.warmup, args.samples,
             lambda line: check_complete(answer_of(line, "no-op"), "no-op")),
             {**common, "wait_ms": WAIT_MS}))
 
         if args.app:
-            app = {**common, "address": f"{args.app[0]}/{args.app[1]}"}
+            app = {**common, "address": f"{args.app[0]}:{args.app[1]}#{args.app[2]}"}
             results.append(("agent.invoke.local.app.accept", "ms", measure(
-                conn, request(invoke_payload(args.app, wait=False)), args.warmup, args.samples,
+                conn, invoke_payload(args.app, wait=False), args.warmup, args.samples,
                 lambda line: check_admitted(answer_of(line, "app"), "app")), app))
             results.append(("agent.invoke.local.app", "ms", measure(
-                conn, request(invoke_payload(args.app, wait=True)), args.warmup, args.samples,
+                conn, invoke_payload(args.app, wait=True), args.warmup, args.samples,
                 lambda line: check_complete(answer_of(line, "app"), "app")),
                 {**app, "wait_ms": WAIT_MS}))
     finally:
@@ -384,9 +392,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--samples", type=int, default=1000)
     parser.add_argument("--warmup", type=int, default=100)
     parser.add_argument("--noop", type=parse_address, default=NOOP,
-                        help="the no-op action, PROVIDER:ID (default %(default)s)")
+                        help="the no-op action, PROVIDER:RESOURCE#ACTION (default %(default)s)")
     parser.add_argument("--app", type=parse_address,
-                        help="also time this app action, PROVIDER:ID, accept and complete")
+                        help="also time this app action, PROVIDER:RESOURCE#ACTION, accept and "
+                             "complete")
     parser.add_argument("--clients", type=int, default=8,
                         help="concurrent clients for the throughput run; 0 skips it")
     parser.add_argument("--duration", type=float, default=10.0,

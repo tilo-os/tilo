@@ -2,7 +2,6 @@
 //! Photos on a freshly installed profile, finds the manifest's `required` names, activates `action`
 //! and waits for every `after_action` name.
 
-
 use photos::PhotosShell;
 use ui::accesskit::Action as AkAction;
 use ui::framework::testing::TestApp;

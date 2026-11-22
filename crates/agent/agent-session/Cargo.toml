@@ -36,8 +36,8 @@ tilo-actions = { path = "../../collab/actions" }
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.
 tilo-automation = { path = "../../collab/automation" }
-# The transforms a program's steps ask its person's model for, as the agent app publishes them.
-agent = { path = "../../../apps/agent" }
+# The kinds of work a transform's model is chosen by.
+agent-provider-config = { path = "../provider-config" }
 # The apps an agent can open in a browser session: those whose manifests declare
 # the web platform.
 activity = { path = "../../../apps/activity" }

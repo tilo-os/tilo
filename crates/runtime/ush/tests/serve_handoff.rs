@@ -6,7 +6,6 @@
 //! assertions are on bytes that came back from `bash` running inside it, and on what it left
 //! on the host.
 
-
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;

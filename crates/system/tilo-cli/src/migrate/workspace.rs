@@ -4,7 +4,7 @@
 //! A migration is the agent on this computer acting for the person, so it goes the agent's way
 //! in: a connection to this computer's peer, the service `tilo login` leaves running, which
 //! holds the device's one session with the workspace for every `tilo mcp` and `tilo` command
-//! of this computer ([`crate::mcp::held`], [`crate::service`]), or, for a hosted workspace, the
+//! of this computer (`tilo-runtime --hold`, [`crate::service`]), or, for a hosted workspace, the
 //! API with the key this computer holds ([`crate::api`]). Either way it asks the workspace's apps
 //! to do their own ordinary actions. Every action of one run names that run, so History shows the
 //! run as one entry under the agent's name, the person sees each record arrive in their tab, and
@@ -189,20 +189,19 @@ impl Held {
     /// # Errors
     /// This computer is not logged in, or its peer could not be reached.
     pub fn connect() -> Result<Self> {
-        use crate::mcp::held;
         let login = crate::login::Place::here(crate::identity::paths())?;
         let (key, _) =
             crate::login::load(&login)?.ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
         crate::login::trust_test_certificates()?;
-        let place = held::Place::of(login.dir(), &key.verifying_key().to_bytes())
+        let place = tilo_api::daemon::DaemonPlace::of(login.dir(), &key.verifying_key().to_bytes())
             .map_err(|why| anyhow!(why))?;
-        let stream = if let Some(stream) = held::connect(&place) {
+        let stream = if let Some(stream) = place.connect() {
             stream
         } else {
             // A peer that is there is waited for, not replaced: it may be busy with a change, and
             // a connection that failed once is not a reason to stop it.
             crate::service::start()?;
-            held::connect(&place).ok_or_else(|| {
+            place.connect().ok_or_else(|| {
                 anyhow!(
                     "Tilo's background sync isn't answering on this computer yet. Run `tilo \
                      status` to see how it stands, then try again."

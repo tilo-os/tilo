@@ -90,16 +90,47 @@ fn superseded_by(key: &SurfaceKey, retained: &SurfaceKey) -> bool {
             .is_some_and(|((roles, _), (retained_roles, _))| roles == retained_roles)
 }
 
-/// Starts `app_id` in a workspace in place of the host's launcher. Tests
-/// stand in for launching the installed app with one.
-/// Where an app runs with no window, in place of the host's
+/// Where an app runs with no window in a test, in place of the host's
 /// ([`crate::apps::services::LauncherServices::windowless`]).
+#[cfg(test)]
 pub(super) type WindowlessStarter = Arc<
     dyn Fn(&str, &str) -> Result<Option<crate::apps::services::WindowlessStart>, String>
         + Send
         + Sync,
 >;
 
+/// The host's launcher a test puts in place, starting apps only as its [`WindowlessStarter`] does.
+#[cfg(test)]
+pub(super) struct TestStarts(WindowlessStarter);
+
+#[cfg(test)]
+impl crate::apps::services::LauncherServices for TestStarts {
+    fn applications(&self) -> Vec<crate::apps::services::LaunchableApplication> {
+        Vec::new()
+    }
+    fn launch(
+        &self,
+        _: &str,
+        _: &tilo_desktop_model::Workspace,
+        _: Option<&str>,
+        _: &LaunchPlace,
+    ) -> Result<(), String> {
+        Err("a test starts apps only without a window".into())
+    }
+    fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+        false
+    }
+    fn windowless(
+        &self,
+        app: &str,
+        workspace: &str,
+    ) -> Result<Option<crate::apps::services::WindowlessStart>, String> {
+        (self.0)(app, workspace)
+    }
+}
+
+/// Starts `app_id` in a workspace in place of the host's launcher. Tests
+/// stand in for launching the installed app with one.
 pub(super) type AppLauncher = Arc<
     dyn Fn(&str, &tilo_desktop_model::Workspace, Option<&str>, &LaunchPlace) -> Result<(), String>
         + Send
@@ -258,10 +289,8 @@ pub(super) struct LaunchableCatalogue {
     surfaces: Mutex<BTreeMap<SurfaceKey, PublishedSurface>>,
     store: Mutex<Option<CatalogueStore>>,
     launcher: Mutex<Option<AppLauncher>>,
+    #[cfg(test)]
     windowless: Mutex<Option<WindowlessStarter>>,
-    /// The connected apps the host runs with no window, by peer id: they
-    /// take actions on their records, never an `open`.
-    pub(super) windowless_peers: Mutex<std::collections::HashSet<u64>>,
     delivery_timeout: Mutex<Duration>,
     views: Mutex<ActorViews>,
 }
@@ -272,8 +301,8 @@ impl LaunchableCatalogue {
             surfaces: Mutex::new(BTreeMap::new()),
             store: Mutex::new(None),
             launcher: Mutex::new(None),
+            #[cfg(test)]
             windowless: Mutex::new(None),
-            windowless_peers: Mutex::new(std::collections::HashSet::new()),
             delivery_timeout: Mutex::new(DELIVERY_TIMEOUT),
             views: Mutex::new(ActorViews::default()),
         }
@@ -436,10 +465,11 @@ impl LaunchableCatalogue {
         self.launcher.lock_recover().clone()
     }
 
-    /// Where apps run with no window, in place of the host's, if one
-    /// was installed.
-    pub(super) fn windowless(&self) -> Option<WindowlessStarter> {
-        self.windowless.lock_recover().clone()
+    /// Where apps run with no window, in place of the host's, if a test
+    /// installed one.
+    #[cfg(test)]
+    pub(super) fn windowless(&self) -> Option<TestStarts> {
+        self.windowless.lock_recover().clone().map(TestStarts)
     }
 
     #[cfg(test)]
@@ -560,8 +590,9 @@ mod tests {
         up: PublishedSurface,
     ) -> tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        (state.invocation_subscribers.lock().expect("subscribers")).insert(up.peer_id, tx);
+        (state.publishers.streams.lock().expect("subscribers")).insert(up.peer_id, tx);
         state
+            .publishers
             .surfaces
             .lock()
             .expect("surfaces")
@@ -993,7 +1024,7 @@ mod tests {
             notes.app_id = NOTES.into();
             notes.route = CrdtRoute::app(NOTES, &workspace);
             notes.actions = vec![action("write", tilo_actions::ConfirmationPolicy::None)];
-            state.surfaces.lock().expect("surfaces").insert(5, notes);
+            state.publishers.surfaces.lock().expect("surfaces").insert(5, notes);
             let mut notes_stream = state.capture_invocations_for_test(5);
             let (streams, launches, places) = app_comes_up_placed(&state, 8);
 
@@ -1020,7 +1051,7 @@ mod tests {
             let mut stream = streams.try_recv().expect("the app came up");
             assert_eq!(stream.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
 
-            state.surfaces.lock().expect("surfaces").remove(&8);
+            state.publishers.surfaces.lock().expect("surfaces").remove(&8);
             let owner = Caller::local_person("owner").in_workspace(&workspace);
             let provider = offered_provider(&state, &owner, "new-window")
                 .expect("offered again once the app closed");
@@ -1163,7 +1194,7 @@ mod tests {
                 format!("{}drafts", tilo_action_policy::edits::QUIET_REMOVAL_TAG),
             ];
             edits.actions = vec![field_edit];
-            state.surfaces.lock().expect("surfaces").insert(5, edits);
+            state.publishers.surfaces.lock().expect("surfaces").insert(5, edits);
             let mut app = state.capture_invocations_for_test(5);
             let owner = Caller::local_person("owner").in_workspace(&workspace);
             let edit = |edit: serde_json::Value| {
@@ -1233,7 +1264,7 @@ mod tests {
             );
             let (state, workspace) = broker(&workspace);
             state
-                .surfaces
+                .publishers.surfaces
                 .lock()
                 .expect("surfaces")
                 .insert(5, surface(5, &workspace));
@@ -1341,7 +1372,7 @@ mod tests {
             workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::UNDOABLE);
             let (state, workspace, fanout) = broker_with_fanout(&workspace);
             state
-                .surfaces
+                .publishers.surfaces
                 .lock()
                 .expect("surfaces")
                 .insert(5, surface_with_an_entry(5, &workspace));
@@ -1404,7 +1435,7 @@ mod tests {
             workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::UNDOABLE);
             let (state, workspace, fanout) = broker_with_fanout(&workspace);
             state
-                .surfaces
+                .publishers.surfaces
                 .lock()
                 .expect("surfaces")
                 .insert(5, surface(5, &workspace));
@@ -1485,7 +1516,7 @@ mod tests {
             send.contract.kind = tilo_actions::ActionKind::Outside;
             published.actions.push(send);
             state
-                .surfaces
+                .publishers.surfaces
                 .lock()
                 .expect("surfaces")
                 .insert(5, published);
@@ -1543,6 +1574,7 @@ mod tests {
         use runtime_collab::event::CollabEvent;
         let (state, workspace, fanout) = broker_with_fanout(&workspace());
         state
+            .publishers
             .surfaces
             .lock()
             .unwrap()
@@ -1758,8 +1790,8 @@ mod tests {
             page.operation_kind = tilo_actions::OperationKind::View;
             up.actions.push(page);
             state
-                .launchable
-                .windowless_peers
+                .publishers
+                .windowless
                 .lock()
                 .expect("windowless")
                 .insert(9);
@@ -1806,7 +1838,7 @@ mod tests {
                 .try_recv()
                 .expect("the first ask came up the instance");
             for action in &mut state
-                .surfaces
+                .publishers.surfaces
                 .lock()
                 .expect("surfaces")
                 .get_mut(&9)
@@ -1946,13 +1978,14 @@ mod tests {
                 let first = stream.lock().expect("stream").take();
                 if let Some(tx) = first {
                     state
-                        .launchable
-                        .windowless_peers
+                        .publishers
+                        .windowless
                         .lock()
                         .expect("windowless")
                         .insert(peer_id);
                     state
-                        .invocation_subscribers
+                        .publishers
+                        .streams
                         .lock()
                         .expect("subscribers")
                         .insert(peer_id, tx);
@@ -1961,7 +1994,12 @@ mod tests {
                         tilo_actions::remote::APPLICATION_OPEN_ACTION,
                         tilo_actions::ConfirmationPolicy::None,
                     ));
-                    state.surfaces.lock().expect("surfaces").insert(peer_id, up);
+                    state
+                        .publishers
+                        .surfaces
+                        .lock()
+                        .expect("surfaces")
+                        .insert(peer_id, up);
                 }
                 Ok(Some(started(Ok(()))))
             }));
@@ -2625,16 +2663,10 @@ mod tests {
         std::thread::spawn(move || invoke(&state, &caller, &provider, action, None))
     }
 
-    /// Wait until `waiters` launches have started and are each parked on
-    /// the broker's publisher-change signal.
-    fn wait_for_parked_launches(
-        state: &Arc<AppBrokerState>,
-        launches: &Arc<Mutex<Vec<String>>>,
-        waiters: usize,
-    ) {
-        tilo_test_env::wait_until("each launch to wait for its app to publish", || {
-            launches.lock().expect("launches").len() == waiters
-                && state.surface_changes.receiver_count() == waiters
+    /// Wait until the app's one launch started.
+    fn wait_for_the_launch(launches: &Arc<Mutex<Vec<String>>>) {
+        tilo_test_env::wait_until("the app to be launched", || {
+            !launches.lock().expect("launches").is_empty()
         });
     }
 
@@ -2643,9 +2675,8 @@ mod tests {
 
         phase launch_then_deliver_wakes_on_publication_without_polling;
         // A launch waits on the broker's publication signal, not on a timer:
-        // while the app is still starting, the waiting invocation holds a
-        // receiver of that signal, and the app publishing its action and
-        // opening its stream admits the invocation. The delivery timeout is the
+        // the app publishing its action and opening its stream once it was
+        // launched admits the invocation. The delivery timeout is the
         // hang bound, so nothing but the publication can end the wait in time.
         {
             let (state, workspace) = broker(&workspace());
@@ -2655,7 +2686,7 @@ mod tests {
             let provider = offered_provider(&state, &owner, "new-window").expect("offered");
 
             let invoking = invoke_in_background(&state, &owner, &provider, "new-window");
-            wait_for_parked_launches(&state, &launches, 1);
+            wait_for_the_launch(&launches);
             let mut stream = state.capture_invocations_for_test(8);
             state.replace_published_surfaces_for_test(vec![surface(8, &workspace)]);
 
@@ -2668,7 +2699,7 @@ mod tests {
                 "new-window"
             );
             tilo_test_env::wait_until("the finished wait to drop its receiver", || {
-                state.surface_changes.receiver_count() == 0
+                state.publishers.changes.receiver_count() == 0
             });
         }
 
@@ -2685,7 +2716,7 @@ mod tests {
                 let provider = offered_provider(&state, &owner, "new-window").expect("offered");
 
                 let invoking = invoke_in_background(&state, &owner, &provider, "new-window");
-                wait_for_parked_launches(&state, &launches, 1);
+                wait_for_the_launch(&launches);
                 let mut stream = if surface_first {
                     state.replace_published_surfaces_for_test(vec![surface(8, &workspace)]);
                     assert!(
@@ -2719,8 +2750,9 @@ mod tests {
 
         phase concurrent_launch_waiters_all_wake_on_one_publication;
         // Many invocations of a closed app wait at once without a thread
-        // each: every one parks on the same signal, and one publication
-        // admits them all.
+        // each: one launch of the app runs for all of them, and one
+        // publication admits them all, also when the app publishes before
+        // every ask has begun to wait for it.
         {
             const WAITERS: usize = 16;
             let (state, workspace) = broker(&workspace());
@@ -2732,7 +2764,7 @@ mod tests {
             let invoking = (0..WAITERS)
                 .map(|_| invoke_in_background(&state, &owner, &provider, "new-window"))
                 .collect::<Vec<_>>();
-            wait_for_parked_launches(&state, &launches, WAITERS);
+            wait_for_the_launch(&launches);
             let mut stream = state.capture_invocations_for_test(8);
             state.replace_published_surfaces_for_test(vec![surface(8, &workspace)]);
 
@@ -2748,6 +2780,7 @@ mod tests {
                 delivered = delivered.saturating_add(1);
             }
             assert_eq!(delivered, WAITERS);
+            assert_eq!(launches.lock().expect("launches").len(), 1);
         }
 
         phase launch_then_deliver_stops_when_caller_abandons;
@@ -2781,10 +2814,10 @@ mod tests {
                     signed: None,
                 },
             );
-            wait_for_parked_launches(&state, &launches, 1);
+            wait_for_the_launch(&launches);
             drop(answer);
             tilo_test_env::wait_until("the abandoned wait to end", || {
-                state.surface_changes.receiver_count() == 0
+                state.publishers.changes.receiver_count() == 0
             });
 
             let mut stream = state.capture_invocations_for_test(8);
@@ -2828,7 +2861,7 @@ mod tests {
     struct OccupiedLaunchPool {
         _serial: std::sync::MutexGuard<'static, ()>,
         release: Arc<(Mutex<bool>, std::sync::Condvar)>,
-        _answers: Vec<AdmissionAnswer>,
+        _answers: Vec<(Arc<AppBrokerState>, AdmissionAnswer)>,
     }
 
     impl Drop for OccupiedLaunchPool {
@@ -2839,35 +2872,41 @@ mod tests {
         }
     }
 
-    /// Occupy the production delivery pool with four authorized host calls.
-    /// The guard releases them even when the regression assertion panics.
+    /// Occupy the production delivery pool with four authorized host calls,
+    /// each of its own broker: one broker launches an app in a workspace once
+    /// at a time. The guard releases them even when the regression assertion
+    /// panics.
     fn occupy_launch_pool() -> OccupiedLaunchPool {
         static SATURATION: Mutex<()> = Mutex::new(());
         let serial = SATURATION.lock().expect("saturation fixture");
-        let (state, workspace) = broker(&workspace());
-        state.launchable.retain(&surface(7, &workspace));
         let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
-        let held = release.clone();
         let (started, launches) = std::sync::mpsc::channel();
-        state.launchable.replace_launcher_for_test(
-            Arc::new(move |_, _, _, _| {
-                started.send(()).expect("launch started");
-                let (released, wake) = &*held;
-                let guard = released.lock().expect("release");
-                drop(
-                    wake.wait_while(guard, |released| !*released)
-                        .expect("release wait"),
+        let answers = (0..LAUNCH_CALLS)
+            .map(|_| {
+                let (state, workspace) = broker(&workspace());
+                state.launchable.retain(&surface(7, &workspace));
+                let (held, started) = (release.clone(), started.clone());
+                state.launchable.replace_launcher_for_test(
+                    Arc::new(move |_, _, _, _| {
+                        started.send(()).expect("launch started");
+                        let (released, wake) = &*held;
+                        let guard = released.lock().expect("release");
+                        drop(
+                            wake.wait_while(guard, |released| !*released)
+                                .expect("release wait"),
+                        );
+                        Ok(())
+                    }),
+                    tilo_test_env::hang_bound(),
                 );
-                Ok(())
-            }),
-            tilo_test_env::hang_bound(),
-        );
+                let answer = launch_answer(&state, &workspace);
+                (state, answer)
+            })
+            .collect();
         let pool = OccupiedLaunchPool {
             _serial: serial,
             release,
-            _answers: (0..LAUNCH_CALLS)
-                .map(|_| launch_answer(&state, &workspace))
-                .collect(),
+            _answers: answers,
         };
         for _ in 0..LAUNCH_CALLS {
             tilo_test_env::recv("every launcher worker to enter the host call", &launches);
@@ -2898,12 +2937,12 @@ mod tests {
             let (_streams, launches) = app_comes_up_as(&state, 8);
             let answer = launch_answer(&state, &workspace);
             tilo_test_env::wait_until("the queued launch to subscribe", || {
-                state.surface_changes.receiver_count() == 1
+                state.publishers.changes.receiver_count() == 1
             });
             drop(answer);
             tilo_test_env::wait_until(
                 "queued abandonment before a launcher worker is free",
-                || state.surface_changes.receiver_count() == 0,
+                || state.publishers.changes.receiver_count() == 0,
             );
             drop(pool);
             drain_launch_queue();

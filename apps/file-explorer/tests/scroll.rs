@@ -1,6 +1,5 @@
 //! Driven scrolling tests for the file list and the grid.
 
-
 use file_explorer::FileExplorerWidget;
 use file_explorer::model::ViewMode;
 use ui::headless::Framed;

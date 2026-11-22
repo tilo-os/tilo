@@ -2,7 +2,6 @@
 //! Typing a valid `#rrggbb` updates `picker.color()`; invalid
 //! input is ignored without throwing the picker into a bad state.
 
-
 use std::collections::HashMap;
 
 use automerge::AutoCommit;

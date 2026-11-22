@@ -14,10 +14,9 @@ use anyhow::Context as _;
 use iroh::endpoint::{Endpoint, presets};
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler, Router};
 use iroh_base::EndpointAddr;
-use tilo_clock::Clock;
 use tokio::task::JoinHandle;
 
-use tilo_user_identity::{RevocationList, verify_revocation_entry};
+use tilo_user_identity::RevocationList;
 
 use crate::config::ServerConfig;
 
@@ -27,49 +26,12 @@ use crate::peer::WorkspaceRegistry;
 use crate::policy::TrustPolicy;
 use crate::service::ServerProtocol;
 use crate::transport::{
-    ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, DISCOVERY_ALPN,
-    HomePeerManagementRequest, HomePeerManagementResponse, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
+    ALPN, ContentEndpointRequest, DISCOVERY_ALPN, HomePeerManagementRequest,
+    HomePeerManagementResponse, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
 };
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_service::Reaching;
-
-#[derive(serde::Deserialize)]
-struct FullReplicaStatusProof {
-    state: String,
-    full_content_replication: bool,
-    updated_at_ms: u64,
-    #[serde(default)]
-    filesystem_endpoints: Vec<EndpointAddr>,
-}
-
-/// The headless replica's completeness proof: the status file it writes,
-/// honoured only while the replica that wrote it is alive. The running
-/// replica holds its liveness lock beside the file
-/// ([`fs::full_replica::replica_is_running`]), which the kernel releases
-/// when it exits however it exits; a stamp recent by `clock` also counts,
-/// for a replica that keeps no lock (#4224: the replica used to restamp
-/// the file every second to stay recent).
-#[derive(Clone)]
-struct ReplicaProof {
-    path: PathBuf,
-    clock: Arc<dyn Clock>,
-}
-
-impl ReplicaProof {
-    fn current(&self) -> Option<FullReplicaStatusProof> {
-        std::fs::read(&self.path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<FullReplicaStatusProof>(&bytes).ok())
-            .filter(|proof| {
-                proof.state == "ready"
-                    && proof.full_content_replication
-                    && !proof.filesystem_endpoints.is_empty()
-                    && (self.clock.now_ms().saturating_sub(proof.updated_at_ms) <= 5_000
-                        || fs::full_replica::replica_is_running(&self.path))
-            })
-    }
-}
 
 /// Failure modes for `Server::start`.
 #[derive(Debug, thiserror::Error)]
@@ -189,8 +151,6 @@ pub struct Server {
     /// to the shell/fs orchestrators because service claims were intersected
     /// with the verified certificate at startup.
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
-    /// Atomic filesystem completeness proof shared with the headless replica.
-    full_replica: ReplicaProof,
     /// What the routes a page asks before its session answer with.
     web: Box<WebContext>,
     /// The workspaces this server governs; absent when it hosts no workspace authority.
@@ -312,27 +272,25 @@ pub struct ServerHandle {
     pub metrics: Arc<Metrics>,
     /// Effective device-mesh policy for routing and replication consumers.
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
-    full_replica: ReplicaProof,
 }
 
-/// Verify `cert`'s device's delegation against the server's user `own_user`
-/// and put it in the server's agent register, replacing an earlier one: what
-/// confines an agent to its delegated workspaces from its next envelope on. Both
-/// paths that tell a server about an agent come here
-/// ([`Server::register_agent`], `ServerAgentLink::register`), so neither can
-/// register one the other leaves unconfined.
+/// Verify `cert`'s device's delegation against the person the agent acts for,
+/// the root its certificate names, and put it in the server's agent register,
+/// replacing an earlier one: what confines an agent to its delegated workspaces
+/// from its next envelope on. Both paths that tell a server about an agent come
+/// here ([`Server::register_agent`], `ServerAgentLink::register`), so neither
+/// can register one the other leaves unconfined.
 ///
 /// # Errors
 ///
-/// The delegation is not `own_user`'s, or names another device.
+/// The delegation is not the agent's person's, or names another device.
 pub(crate) fn register_agent_in(
     agents: &crate::peer::AgentRegistry,
-    own_user: &[u8; 32],
     cert: &tilo_user_identity::DeviceCert,
     delegation: &tilo_server_protocol::delegation::Delegation,
 ) -> Result<(), String> {
     delegation
-        .verify(own_user, tilo_clock::unix_now_ns())
+        .verify(&cert.user_public_key, tilo_clock::unix_now_ns())
         .map_err(|error| error.to_string())?;
     if cert.device_public_key != delegation.device_public_key {
         return Err("the delegation names another device".into());
@@ -369,7 +327,6 @@ impl Server {
             reaching_of(&relay_mode),
             Vec::new(),
             Servers::desktop(None),
-            Arc::new(tilo_clock::SystemClock),
         ))
         .await
     }
@@ -408,7 +365,6 @@ impl Server {
             reaching,
             protocols,
             Servers::desktop(None),
-            Arc::new(tilo_clock::SystemClock),
         ))
         .await
     }
@@ -457,7 +413,6 @@ impl Server {
             Reaching::ByRelay,
             Vec::new(),
             Servers::desktop(app_serving),
-            Arc::new(tilo_clock::SystemClock),
         ))
         .await
     }
@@ -480,31 +435,6 @@ impl Server {
             reaching_of(&relay_mode),
             Vec::new(),
             Servers::desktop(app_serving),
-            Arc::new(tilo_clock::SystemClock),
-        ))
-        .await
-    }
-
-    /// [`Server::start`], judging how recent the full-replica status stamp
-    /// is by `replica_clock` instead of the wall clock.
-    ///
-    /// # Errors
-    ///
-    /// The same as [`Server::start`].
-    pub async fn start_with_replica_clock(
-        cfg: ServerConfig,
-        identity: ServerIdentity,
-        replica_clock: Arc<dyn Clock>,
-    ) -> Result<Self, ServerError> {
-        Box::pin(Self::start_inner(
-            cfg,
-            identity,
-            None,
-            None,
-            Reaching::ByRelay,
-            Vec::new(),
-            Servers::desktop(None),
-            replica_clock,
         ))
         .await
     }
@@ -524,7 +454,6 @@ impl Server {
         reaching: Reaching,
         additional_protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
         servers: Servers,
-        replica_clock: Arc<dyn Clock>,
     ) -> Result<Self, ServerError> {
         let Servers {
             app_serving,
@@ -538,17 +467,15 @@ impl Server {
             .and_then(|server| server.content())
             .unwrap_or_else(|| crate::content::stores(&cfg.state_root));
         validate_additional_protocols(&additional_protocols)?;
-        import_home_peer(&mut cfg)?;
         validate_server_identity(&identity)?;
         if cfg.work.takes_nothing() {
             return Err(ServerError::Identity(
                 "a device that takes no work serves no workspace".into(),
             ));
         }
-        // The composite process starts server + filesystem protocols; live
-        // workspace control uses server's non-retained presence track, and app
+        // Live workspace control uses server's non-retained presence track, and app
         // serving needs an app action server supplied by an embedding process.
-        let mut available_services = crate::mesh::ServiceCapabilities::home_peer();
+        let mut available_services = crate::mesh::ServiceCapabilities::relay_only();
         available_services.app_serving = app_serving.is_some();
         cfg.services = cfg.services.limited_to(&available_services);
         let app_serving = app_serving.filter(|_| cfg.services.app_serving);
@@ -560,10 +487,6 @@ impl Server {
             filesystem_endpoints: Vec::new(),
         });
         std::fs::create_dir_all(&cfg.state_root)?;
-        let full_replica = ReplicaProof {
-            path: cfg.full_replica_status.clone(),
-            clock: replica_clock,
-        };
         // The packet relay this server is reached through when it starts none of its own: one it
         // cannot reach leaves it reachable by nobody, which its start says rather than serving.
         let mut reached_through = None;
@@ -673,6 +596,10 @@ impl Server {
         if let (Some(workspace_keys), Some(governed)) = (&workspace_keys, &governed) {
             workspace_keys.attach(governed);
         }
+        // The links its invitations hand over open the server's web entry.
+        if let (Some(entry), Some(governed)) = (&cfg.web_entry, &governed) {
+            let _ = governed.invite_at(entry);
+        }
         let workspaces = sessions.workspaces.clone();
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();
@@ -687,23 +614,13 @@ impl Server {
             workspaces: workspaces.clone(),
             identity: live.clone(),
             trust_policy: live_trust_policy.clone(),
-            mesh_profile: mesh_profile.clone(),
-            full_replica: full_replica.clone(),
-            home_peer_bundle: cfg.home_peer_bundle.clone(),
-            decommissioned: handler.decommissioned.clone(),
             agents: handler.agents.clone(),
             environments: handler.environments.clone(),
         };
-        // A server enrolled into its person's identity: a host of theirs alone,
-        // given the workspaces' content to keep when it was enrolled.
-        let enrolled_server = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser)
-            && cfg.home_peer_bundle.exists();
+        // A server enrolled into its person's identity: a host of theirs alone.
+        let enrolled_server = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
         let management = ManagementProtocol {
-            endpoint: endpoint.clone(),
             identity: live.clone(),
-            mesh_profile: mesh_profile.clone(),
-            full_replica: full_replica.clone(),
-            state_root: cfg.state_root.clone(),
             workspaces: governed.clone().filter(|_| enrolled_server),
         };
         let certification = crate::certification::CertificationProtocol::new(
@@ -918,7 +835,6 @@ impl Server {
             live_origin,
             background_tasks,
             mesh_profile,
-            full_replica: full_replica.clone(),
             web,
             workspaces: governed,
             content,
@@ -991,12 +907,11 @@ impl Server {
             node_addr: self.endpoint.addr(),
             metrics: self.sessions.metrics.clone(),
             mesh_profile: self.mesh_profile.clone(),
-            full_replica: self.full_replica.clone(),
         }
     }
 
     /// Tell the host that the device `cert` certifies is an agent: verify
-    /// its root-signed delegation against this server's user and confine the
+    /// its root-signed delegation against the person it acts for and confine the
     /// device to the delegated workspaces from its next envelope on, then put it
     /// on the roster of each workspace this server governs that the delegation
     /// names, as an approved grant does ([`crate::workspaces::Workspaces::reconcile_agent`]).
@@ -1005,7 +920,7 @@ impl Server {
     ///
     /// # Errors
     ///
-    /// The delegation is not this server's user's, names another device, or
+    /// The delegation is not the agent's person's, names another device, or
     /// does not verify.
     #[cfg_attr(
         not(feature = "agents"),
@@ -1019,12 +934,7 @@ impl Server {
         cert: &tilo_user_identity::DeviceCert,
         delegation: tilo_server_protocol::delegation::Delegation,
     ) -> Result<(), String> {
-        register_agent_in(
-            &self.web.server.agents,
-            &self.web.server.identity.user_public_key,
-            cert,
-            &delegation,
-        )?;
+        register_agent_in(&self.web.server.agents, cert, &delegation)?;
         // The governed workspaces it names put it on their rosters.
         #[cfg(feature = "agents")]
         if let Some(workspaces) = self.workspaces() {
@@ -1130,23 +1040,6 @@ impl Server {
     }
 }
 
-/// A home-peer workspace's filesystem ticket and the server workspaces it
-/// backs.
-fn home_peer_server_workspaces(
-    workspace: &fs::full_replica::HomePeerBundle,
-) -> Result<(fs::Ticket, Vec<WorkspaceId>), ServerError> {
-    let ticket = fs::Ticket::decode(&workspace.ticket)
-        .map_err(|error| ServerError::Identity(format!("invalid home-peer ticket: {error}")))?;
-    let server_workspace_ids = if workspace.server_workspace_ids.is_empty() {
-        // Bundles exported before workspace bindings existed have one stable
-        // fallback shard. New enrollment always writes explicit ids.
-        vec![crate::WorkspaceId::from(ticket.workspace_id())]
-    } else {
-        workspace.server_workspace_ids.clone()
-    };
-    Ok((ticket, server_workspace_ids))
-}
-
 /// The site name a keeper's web entry names: `tilo.sh` for
 /// `https://tilo.sh/app/`. One without a web entry is no site and goes by its
 /// server's name alone.
@@ -1158,31 +1051,6 @@ fn site_name(web_entry: &str) -> String {
         .next()
         .unwrap_or_default()
         .to_owned()
-}
-
-/// Check the home-peer bundle the filesystem worker consumes and, when there
-/// is one, serve full-content replication. Which workspaces this server holds is
-/// not the bundle's to say: the workspaces' own governance admits it as one of
-/// their hosts.
-fn import_home_peer(cfg: &mut ServerConfig) -> Result<(), ServerError> {
-    if !cfg.home_peer_bundle.exists() {
-        return Ok(());
-    }
-    let text = std::fs::read_to_string(&cfg.home_peer_bundle)?;
-    let bundle: fs::full_replica::HomePeerSet = toml::from_str(&text)
-        .map_err(|error| ServerError::Identity(format!("invalid home-peer bundle: {error}")))?;
-    fs::full_replica::validate_home_peer_set(&bundle)
-        .map_err(|error| ServerError::Identity(error.to_string()))?;
-    if bundle.status_file != cfg.full_replica_status {
-        return Err(ServerError::Identity(
-            "home-peer status path differs from server status path".into(),
-        ));
-    }
-    for workspace in &bundle.workspaces {
-        home_peer_server_workspaces(workspace)?;
-    }
-    cfg.services.full_content_replication = true;
-    Ok(())
 }
 
 /// The servers of this server's person that its enrollment named, earlier
@@ -1367,37 +1235,14 @@ async fn ask_to_be_admitted(
 }
 
 impl ServerHandle {
-    /// Services safe to advertise at this instant.  The filesystem proof is
-    /// read for every advertisement, so an edit immediately withdraws the
-    /// full-content claim until its new blobs are resident.
+    /// The services this server offers: its configured ones, limited to what it started.
     pub fn advertised_services(&self) -> crate::mesh::ServiceCapabilities {
-        let mut services = self.mesh_profile.services.clone();
-        services.full_content_replication &= !self.filesystem_endpoints().is_empty();
-        services
-    }
-
-    /// Filesystem endpoints that proved complete residency in the current
-    /// heartbeat. Consumers use these for blob and namespace protocols while
-    /// retaining `node_addr` for server traffic.
-    pub fn filesystem_endpoints(&self) -> Vec<EndpointAddr> {
-        self.full_replica
-            .current()
-            .map(|proof| {
-                proof
-                    .filesystem_endpoints
-                    .into_iter()
-                    .filter(|endpoint| endpoint.id.as_bytes() == &self.mesh_profile.device)
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.mesh_profile.services.clone()
     }
 
     /// Current profile safe to publish to placement/discovery consumers.
     pub fn mesh_profile(&self) -> crate::mesh::DeviceMeshProfile {
-        let mut profile = (*self.mesh_profile).clone();
-        profile.services = self.advertised_services();
-        profile.filesystem_endpoints = self.filesystem_endpoints();
-        profile
+        (*self.mesh_profile).clone()
     }
 }
 
@@ -1455,12 +1300,7 @@ async fn bind_endpoint(
         None => Endpoint::builder(presets::N0),
     };
     let builder = builder.transport_config(tilo_server_client::host::transport());
-    // A host bound to its own loopback is reachable from no router, so the
-    // portmapper's UPnP probe and name lookups would open a port nothing could
-    // use: it stays off there. Every other host — every address, or one on a
-    // network — keeps it, because that port is how other devices reach without
-    // the relay.
-    let builder = if cfg.iroh_listen.ip().is_loopback() {
+    let builder = if cfg.asks_router_for_port() {
         builder
     } else {
         builder.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
@@ -1668,12 +1508,6 @@ struct DiscoveryProtocol {
     workspaces: WorkspaceRegistry,
     identity: LiveIdentity,
     trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
-    mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
-    full_replica: ReplicaProof,
-    home_peer_bundle: PathBuf,
-    /// The marker of a home peer retired in its state root, when this server is
-    /// one: it serves nothing from then on.
-    decommissioned: Option<PathBuf>,
     agents: crate::peer::AgentRegistry,
     environments: crate::environment::EnvironmentRegistry,
 }
@@ -1692,13 +1526,9 @@ impl DiscoveryProtocol {
 
 #[derive(Clone)]
 struct ManagementProtocol {
-    endpoint: Endpoint,
     identity: LiveIdentity,
-    mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
-    full_replica: ReplicaProof,
-    state_root: PathBuf,
-    /// The workspaces this host governs, its person's admin workspace among
-    /// them: where its name is kept.
+    /// The workspaces this host governs, its person's Servers workspace among
+    /// them.
     workspaces: Option<crate::workspaces::Workspaces>,
 }
 
@@ -1709,16 +1539,7 @@ impl std::fmt::Debug for ManagementProtocol {
 }
 
 impl ProtocolHandler for ManagementProtocol {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one authenticated management exchange must keep handshake, capability checks, durable mutation, response, and shutdown sequencing together"
-    )]
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        if self.state_root.join("decommissioned").exists() {
-            return Err(AcceptError::from_err(std::io::Error::other(
-                "home peer is decommissioned",
-            )));
-        }
         let (mut send, mut recv) = connection.accept_bi().await?;
         // Only the owner's devices manage the home peer, whatever the live
         // policy admits.
@@ -1732,13 +1553,10 @@ impl ProtocolHandler for ManagementProtocol {
             )
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let services = self.mesh_profile.services.clone();
         let request: HomePeerManagementRequest =
             postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
                 .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let mut decommissioned = false;
         match request {
-            HomePeerManagementRequest::Status => {}
             HomePeerManagementRequest::HoldAdmin { endpoint } => {
                 // A device of the person's holds their Servers workspace like
                 // any other workspace of theirs: it asks a server that holds
@@ -1752,80 +1570,6 @@ impl ProtocolHandler for ManagementProtocol {
                     .await
                     .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
             }
-            HomePeerManagementRequest::Rename { label } => {
-                if !peer.cert.capabilities.can_admit_devices {
-                    return Err(AcceptError::from_err(std::io::Error::other(
-                        "device is not authorized to rename home peers",
-                    )));
-                }
-                let label = label.trim();
-                if !crate::valid_home_peer_label(label) {
-                    return Err(AcceptError::from_err(std::io::Error::other(
-                        "home-peer name must be 1 to 80 bytes",
-                    )));
-                }
-                let workspaces = self.workspaces.as_ref().ok_or_else(|| {
-                    AcceptError::from_err(std::io::Error::other(
-                        "this home peer keeps no admin workspace",
-                    ))
-                })?;
-                let device = crate::servers::device_id(&self.identity.cert.device_public_key);
-                crate::servers::apply(
-                    workspaces,
-                    crate::servers::Servers::RENAME_SERVER.with((device, label.to_owned())),
-                )
-                .await
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
-                // The workspaces it holds show it by the name its entry gives
-                // it from now on, in the address each holder reads.
-                workspaces.name_holder(label).await;
-            }
-            HomePeerManagementRequest::Decommission { revocation } => {
-                if !peer.cert.capabilities.can_admit_devices {
-                    return Err(AcceptError::from_err(std::io::Error::other(
-                        "device is not authorized to remove home peers",
-                    )));
-                }
-                verify_revocation_entry(&revocation).map_err(|error| {
-                    AcceptError::from_err(std::io::Error::other(error.to_string()))
-                })?;
-                if revocation.user_public_key != self.identity.user_public_key
-                    || revocation.revoked_device_public_key != self.identity.cert.device_public_key
-                {
-                    return Err(AcceptError::from_err(std::io::Error::other(
-                        "revocation does not target this home peer",
-                    )));
-                }
-                // Its entry among the person's servers is retired first, while
-                // its device still signs: none of their devices counts it as
-                // serving anything from then on.
-                if let Some(workspaces) = &self.workspaces {
-                    let device = crate::servers::device_id(&self.identity.cert.device_public_key);
-                    crate::servers::apply(
-                        workspaces,
-                        crate::servers::Servers::RETIRE_SERVER.with(device),
-                    )
-                    .await
-                    .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
-                }
-                crate::store::append_revocation(&self.state_root, &revocation).map_err(
-                    |error| AcceptError::from_err(std::io::Error::other(error.to_string())),
-                )?;
-                // Apply it here too rather than wait for the log to be read
-                // back: this process stops serving its own revoked identity
-                // now. A conflicting entry is the log reader's to reject.
-                let applied = self.identity.revocations.write_recover().insert(revocation);
-                if matches!(applied, Ok(true)) {
-                    crate::authority_epoch::bump();
-                }
-                tilo_files::native::atomic::write_with_mode(
-                    &self.state_root.join("decommissioned"),
-                    b"decommissioned\n",
-                    0o600,
-                )
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-                decommissioned = true;
-            }
             HomePeerManagementRequest::AdmitServer { endpoint } => {
                 let workspaces = self.workspaces.as_ref().ok_or_else(|| {
                     AcceptError::from_err(std::io::Error::other(
@@ -1837,42 +1581,16 @@ impl ProtocolHandler for ManagementProtocol {
                     .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
             }
         }
-        // Its name is its entry's in the admin workspace, its certificate's
-        // until it has one.
-        let named = match &self.workspaces {
-            Some(workspaces) => crate::servers::read(workspaces)
-                .await
-                .ok()
-                .and_then(|servers| {
-                    servers
-                        .active(&self.identity.cert.device_public_key)
-                        .map(|server| server.label.clone())
-                }),
-            None => None,
-        };
-        let label = named.unwrap_or_else(|| self.identity.cert.device_label.clone());
-        let files_ready = self.full_replica.current().is_some();
         write_frame(
             &mut send,
             &postcard::to_allocvec(&HomePeerManagementResponse {
                 device_public_key: self.identity.cert.device_public_key,
-                server_endpoint: self.endpoint.addr(),
-                label: label.trim().to_string(),
-                files_ready,
-                services,
-                decommissioned,
             })
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
         )
         .await
         .map_err(AcceptError::from_err)?;
         send.finish().map_err(AcceptError::from_err)?;
-        if decommissioned && !cfg!(test) {
-            tokio::spawn(async {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                std::process::exit(0);
-            });
-        }
         connection.closed().await;
         Ok(())
     }
@@ -1894,15 +1612,6 @@ impl ProtocolHandler for DiscoveryProtocol {
         reason = "one authenticated discovery exchange keeps authorization, workspace lookup, content proof, and response framing in one security-reviewed sequence"
     )]
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        if self
-            .decommissioned
-            .as_ref()
-            .is_some_and(|marker| marker.exists())
-        {
-            return Err(AcceptError::from_err(std::io::Error::other(
-                "home peer is decommissioned",
-            )));
-        }
         let (mut send, mut recv) = connection.accept_bi().await?;
         // Any device the live policy admits may ask; the request is then
         // scoped to a workspace it belongs to.
@@ -1946,51 +1655,11 @@ impl ProtocolHandler for DiscoveryProtocol {
                 "workspace is not bound or not authorised on this server",
             )));
         }
-        let mut profile = (*self.mesh_profile).clone();
-        let proof = self.full_replica.current();
-        profile.filesystem_endpoints = proof
-            .as_ref()
-            .map(|proof| {
-                proof
-                    .filesystem_endpoints
-                    .iter()
-                    .filter(|endpoint| endpoint.id.as_bytes() == &profile.device)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        profile.services.full_content_replication &= !profile.filesystem_endpoints.is_empty();
-        let same_owner = peer.user_public_key == self.identity.user_public_key;
-        let filesystem_ticket = std::fs::read_to_string(&self.home_peer_bundle)
-            .ok()
-            .and_then(|text| toml::from_str::<fs::full_replica::HomePeerSet>(&text).ok())
-            .and_then(|set| {
-                let sole_workspace = same_owner && set.workspaces.len() == 1;
-                set.workspaces.into_iter().find(|bundle| {
-                    bundle.server_workspace_ids.contains(&request.workspace_id) || sole_workspace
-                })
-            })
-            .map(|bundle| bundle.ticket)
-            .ok_or_else(|| {
-                AcceptError::from_err(std::io::Error::other(
-                    "workspace has no authenticated filesystem binding",
-                ))
-            })?;
-        write_frame(
-            &mut send,
-            &postcard::to_allocvec(&ContentEndpointAdvertisement {
-                schema_version: 1,
-                workspace_id: request.workspace_id,
-                filesystem_endpoints: profile.filesystem_endpoints,
-                filesystem_ticket,
-            })
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        send.finish().map_err(AcceptError::from_err)?;
-        connection.closed().await;
-        Ok(())
+        // No workspace's files are bound to this server: they sync through the workspace's
+        // own tree, so there is no endpoint or binding to hand over.
+        Err(AcceptError::from_err(std::io::Error::other(
+            "this server keeps no Files binding: a workspace's files sync through the workspace",
+        )))
     }
 }
 
@@ -2004,7 +1673,6 @@ pub use crate::frame::{read_frame, write_frame};
 )]
 mod tests {
     use super::*;
-    use tilo_clock::unix_now_ns;
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, DeviceIdentity, UserIdentity, sign_device_cert,
     };
@@ -2052,116 +1720,6 @@ mod tests {
             server.device_signing_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
             let error = validate_server_identity(&server).unwrap_err();
             assert!(error.to_string().contains("does not match"));
-        }
-
-        phase a_home_peer_bundle_serves_full_content_replication;
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let status = temp.path().join("status.json");
-            let bundle_path = temp.path().join("home-peer.toml");
-            let ticket = fs::Ticket {
-                node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
-                workspace: [9; 32],
-            };
-            let bundle = fs::full_replica::HomePeerSet {
-                status_file: status.clone(),
-                workspaces: vec![fs::full_replica::HomePeerBundle {
-                    ticket: ticket.encode().unwrap(),
-                    cache_dir: temp.path().join("cache"),
-                    capability_json: "[]".into(),
-                    authority: None,
-                    members: Vec::new(),
-                    server_workspace_ids: vec![WorkspaceId::from_u128(42)],
-                }],
-            };
-            std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
-            let mut config = ServerConfig {
-                home_peer_bundle: bundle_path,
-                full_replica_status: status,
-                ..ServerConfig::default()
-            };
-
-            import_home_peer(&mut config).unwrap();
-            assert!(config.services.full_content_replication);
-        }
-    }
-
-    /// Write `status` as the full replica does, once, and return a clock
-    /// stopped at its stamp: the proof stays as recent as when it was written
-    /// however long starting the server or answering a discovery takes.
-    fn publish_status(
-        path: &std::path::Path,
-        status: &fs::full_replica::FullReplicaStatus,
-    ) -> Arc<dyn Clock> {
-        fs::full_replica::save_status(path, status).unwrap();
-        let stamped = fs::full_replica::load_status(path)
-            .unwrap()
-            .unwrap()
-            .updated_at_ms;
-        Arc::new(tilo_clock::FixedClock(stamped))
-    }
-
-    tilo_test_env::scenario! {
-        fn a_replica_proof_holds_while_its_stamp_or_its_lock_does;
-
-        phase a_replica_proof_lapses_five_seconds_after_its_stamp;
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let path = temp.path().join("status.json");
-            let mut status = fs::full_replica::FullReplicaStatus::syncing();
-            status.state = "ready".into();
-            status.full_content_replication = true;
-            status.filesystem_endpoints.push(EndpointAddr::new(
-                iroh::SecretKey::from_bytes(&[7; 32]).public(),
-            ));
-            fs::full_replica::save_status(&path, &status).unwrap();
-            let stamped = fs::full_replica::load_status(&path)
-                .unwrap()
-                .unwrap()
-                .updated_at_ms;
-            let proof_at = |now_ms: u64| {
-                ReplicaProof {
-                    path: path.clone(),
-                    clock: Arc::new(tilo_clock::FixedClock(now_ms)),
-                }
-                .current()
-            };
-            assert!(proof_at(stamped.saturating_add(5_000)).is_some());
-            assert!(proof_at(stamped.saturating_add(5_001)).is_none());
-        }
-
-        phase a_running_replica_keeps_its_proof_without_restamping_it;
-        // #4224. A replica that holds its liveness lock keeps its ready
-        // proof without restamping it; the proof lapses the moment the lock
-        // is released (the replica exited), however old the stamp.
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let path = temp.path().join("status.json");
-            let mut status = fs::full_replica::FullReplicaStatus::syncing();
-            status.state = "ready".into();
-            status.full_content_replication = true;
-            status.filesystem_endpoints.push(EndpointAddr::new(
-                iroh::SecretKey::from_bytes(&[7; 32]).public(),
-            ));
-            let alive = fs::full_replica::ReplicaLiveness::hold(&path).unwrap();
-            fs::full_replica::save_status(&path, &status).unwrap();
-            let stamped = fs::full_replica::load_status(&path)
-                .unwrap()
-                .unwrap()
-                .updated_at_ms;
-            let an_hour_later = ReplicaProof {
-                path,
-                clock: Arc::new(tilo_clock::FixedClock(stamped.saturating_add(3_600_000))),
-            };
-            assert!(
-                an_hour_later.current().is_some(),
-                "a live replica's proof must not depend on how recently it was written"
-            );
-            drop(alive);
-            assert!(
-                an_hour_later.current().is_none(),
-                "the proof of a replica that exited must lapse"
-            );
         }
     }
 
@@ -2235,7 +1793,8 @@ mod tests {
                     state_root: state.path().to_path_buf(),
                     services: crate::mesh::ServiceCapabilities::personal_server(),
                     ..ServerConfig::default()
-                },
+                }
+                .on_loopback(),
                 identity(DeviceCapabilities::member()),
             )
             .await
@@ -2244,55 +1803,17 @@ mod tests {
             let services = server.handle().mesh_profile().services;
             assert!(services.workspace_replication);
             assert!(services.inbound_server);
-            assert!(!services.full_content_replication);
             assert!(!services.app_serving);
             assert!(!services.compute);
             assert!(services.remote_control_server);
             server.shutdown().await;
         }
-        // Phase `ready_profile_serializes_the_direct_filesystem_endpoint`.
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let status_path = temp.path().join("full-replica.json");
-            let server_identity = identity(DeviceCapabilities::member());
-            let filesystem_endpoint = EndpointAddr::new(
-                iroh::SecretKey::from_bytes(&server_identity.device_signing_key.to_bytes())
-                    .public(),
-            )
-            .with_ip_addr("127.0.0.1:43210".parse().unwrap());
-            let mut status = fs::full_replica::FullReplicaStatus::syncing();
-            status.state = "ready".into();
-            status.full_content_replication = true;
-            status
-                .filesystem_endpoints
-                .push(filesystem_endpoint.clone());
-            let status_clock = publish_status(&status_path, &status);
-            let server = Server::start_with_replica_clock(
-                ServerConfig {
-                    state_root: temp.path().join("server-state"),
-                    full_replica_status: status_path.clone(),
-                    services: crate::mesh::ServiceCapabilities::home_peer(),
-                    ..ServerConfig::default()
-                },
-                server_identity,
-                status_clock,
-            )
-            .await
-            .unwrap();
-
-            let profile = server.handle().mesh_profile();
-            let wire = serde_json::to_vec(&profile).unwrap();
-            let published: crate::mesh::DeviceMeshProfile = serde_json::from_slice(&wire).unwrap();
-            assert_eq!(published.content_endpoint(), Some(filesystem_endpoint));
-            assert!(published.services.full_content_replication);
-            server.shutdown().await;
-        }
-        // Phase `authenticated_discovery_returns_filesystem_not_server_endpoint`.
+        // Phase `an_enrolled_servers_updates_take_turns_among_its_persons_servers`.
         {
             let temp = tempfile::tempdir().unwrap();
             let (root, user) = UserIdentity::generate("owner", 1);
             let (host_key, host) = DeviceIdentity::generate("home", 2);
-            let (client_key, client) = DeviceIdentity::generate("laptop", 3);
+            let (_, client) = DeviceIdentity::generate("laptop", 3);
             let (admin_key, admin) = DeviceIdentity::generate("primary", 5);
             let mut server_cert = DeviceCert {
                 user_public_key: user.public_key,
@@ -2327,55 +1848,25 @@ mod tests {
             sign_device_cert(&mut server_cert, &root).unwrap();
             sign_device_cert(&mut client_cert, &root).unwrap();
             sign_device_cert(&mut admin_cert, &root).unwrap();
-            let filesystem =
-                EndpointAddr::new(iroh::SecretKey::from_bytes(&host_key.to_bytes()).public())
-                    .with_ip_addr("127.0.0.1:40123".parse().unwrap());
-            let status_path = temp.path().join("status.json");
-            let mut status = fs::full_replica::FullReplicaStatus::syncing();
-            status.state = "ready".into();
-            status.full_content_replication = true;
-            status.filesystem_endpoints.push(filesystem.clone());
-            let status_clock = publish_status(&status_path, &status);
-            let owner_endpoint = EndpointAddr::new(iroh::SecretKey::from_bytes(&[91; 32]).public());
-            let workspace = [29; 32];
             // The workspace this server holds, and the one it does not.
             let given = WorkspaceId::from_u128(7);
-            let bundle_path = temp.path().join("home-peer.toml");
-            let bundle = fs::full_replica::HomePeerSet {
-                status_file: status_path.clone(),
-                workspaces: vec![fs::full_replica::HomePeerBundle {
-                    ticket: fs::Ticket {
-                        node: owner_endpoint.clone(),
-                        workspace,
-                    }
-                    .encode()
-                    .unwrap(),
-                    cache_dir: temp.path().join("replica"),
-                    capability_json: "[]".into(),
-                    authority: None,
-                    members: Vec::new(),
-                    server_workspace_ids: vec![given],
-                }],
-            };
-            std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
-            let server = Server::start_with_replica_clock(
+            let server = Server::start(
                 ServerConfig {
                     state_root: temp.path().join("server"),
-                    full_replica_status: status_path.clone(),
-                    home_peer_bundle: bundle_path,
-                    services: crate::mesh::ServiceCapabilities::home_peer(),
+                    trust_policy: TrustPolicy::AllowMatchingUser,
+                    services: crate::mesh::ServiceCapabilities::relay_only(),
                     // The relay runs its own packet relay on this machine's loopback, as the
                     // tests' hosts do: nothing here reaches number 0.
                     packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
                     ..ServerConfig::default()
-                },
+                }
+                .on_loopback(),
                 ServerIdentity {
                     user_public_key: user.public_key,
                     device_signing_key: host_key,
                     device_cert: server_cert.clone(),
                     revocations: RevocationList::new(),
                 },
-                status_clock,
             )
             .await
             .unwrap();
@@ -2389,10 +1880,11 @@ mod tests {
                     state_root: primary_state.path().to_path_buf(),
                     services: crate::mesh::ServiceCapabilities::personal_server(),
                     ..ServerConfig::default()
-                },
+                }
+                .on_loopback(),
                 ServerIdentity {
                     user_public_key: user.public_key,
-                    device_signing_key: admin_key.clone(),
+                    device_signing_key: admin_key,
                     device_cert: admin_cert.clone(),
                     revocations: RevocationList::new(),
                 },
@@ -2430,156 +1922,7 @@ mod tests {
                 .enter(&server_workspace, &client_cert)
                 .await
                 .unwrap();
-            assert_ne!(
-                server.node_addr().id.as_bytes(),
-                host.public_key.as_slice(),
-                "server transport discovery must not collide with the filesystem node"
-            );
-            let client_endpoint = test_server::direct_endpoint().await;
-            let discovered = crate::client::ServerClient::discover_content_endpoint(
-                &client_endpoint,
-                server.node_addr(),
-                given,
-                user.public_key,
-                host.public_key,
-                client_cert.clone(),
-                client_key.clone(),
-                RevocationList::new(),
-            )
-            .await
-            .unwrap();
-            assert_eq!(discovered, filesystem);
-            assert_ne!(discovered, server.node_addr());
-            let registration = crate::client::ServerClient::discover_content_peer(
-                &client_endpoint,
-                server.node_addr(),
-                given,
-                user.public_key,
-                host.public_key,
-                client_cert.clone(),
-                client_key.clone(),
-                RevocationList::new(),
-            )
-            .await
-            .unwrap();
-            let advertised_ticket = fs::Ticket::decode(&registration.ticket).unwrap();
-            assert_ne!(owner_endpoint, filesystem);
-            assert_eq!(advertised_ticket.node, owner_endpoint);
-            assert_ne!(advertised_ticket.node, registration.endpoint);
-            assert_eq!(advertised_ticket.workspace, workspace);
-            // A workspace the server does not hold is not discoverable through
-            // it, and discovery does not make one: a workspace enters a server
-            // by being made or handed over there, never by a device asking.
-            assert!(
-                crate::client::ServerClient::discover_content_peer(
-                    &client_endpoint,
-                    server.node_addr(),
-                    WorkspaceId::from_u128(99),
-                    user.public_key,
-                    host.public_key,
-                    client_cert.clone(),
-                    client_key.clone(),
-                    RevocationList::new(),
-                )
-                .await
-                .is_err()
-            );
-            assert!(
-                !server
-                    .sessions
-                    .workspaces
-                    .lock()
-                    .await
-                    .contains_key(&WorkspaceId::from_u128(99))
-            );
-            let wrong_device = [0x55; 32];
-            assert!(
-                crate::client::ServerClient::discover_content_endpoint(
-                    &client_endpoint,
-                    server.node_addr(),
-                    given,
-                    user.public_key,
-                    wrong_device,
-                    // The client certificate remains valid; only the enrolled host
-                    // device pin changes, proving discovery does not accept an
-                    // arbitrary host certificate at the derived service NodeId.
-                    client_cert.clone(),
-                    client_key.clone(),
-                    RevocationList::new(),
-                )
-                .await
-                .is_err()
-            );
-            let status = crate::client::ServerClient::manage_home_peer(
-                &client_endpoint,
-                server.node_addr(),
-                user.public_key,
-                host.public_key,
-                client_cert.clone(),
-                client_key.clone(),
-                RevocationList::new(),
-                HomePeerManagementRequest::Status,
-            )
-            .await
-            .unwrap();
-            assert_eq!(status.label, "home");
-            assert!(status.files_ready);
-            assert!(
-                crate::client::ServerClient::manage_home_peer(
-                    &client_endpoint,
-                    server.node_addr(),
-                    user.public_key,
-                    host.public_key,
-                    client_cert.clone(),
-                    client_key.clone(),
-                    RevocationList::new(),
-                    HomePeerManagementRequest::Rename {
-                        label: "Not authorized".into(),
-                    },
-                )
-                .await
-                .is_err()
-            );
-            assert!(
-                crate::client::ServerClient::manage_home_peer(
-                    &client_endpoint,
-                    server.node_addr(),
-                    user.public_key,
-                    host.public_key,
-                    admin_cert.clone(),
-                    admin_key.clone(),
-                    RevocationList::new(),
-                    HomePeerManagementRequest::Rename {
-                        label: "NAS\u{202e}hidden".into(),
-                    },
-                )
-                .await
-                .is_err()
-            );
-            let renamed = crate::client::ServerClient::manage_home_peer(
-                &client_endpoint,
-                server.node_addr(),
-                user.public_key,
-                host.public_key,
-                admin_cert.clone(),
-                admin_key.clone(),
-                RevocationList::new(),
-                HomePeerManagementRequest::Rename {
-                    label: "Living workspace NAS".into(),
-                },
-            )
-            .await
-            .unwrap();
-            assert_eq!(renamed.label, "Living workspace NAS");
-            // The name is the server's entry in its person's Servers workspace:
-            // no file of the host's own keeps it.
             let governed = server.workspaces().unwrap();
-            let servers = crate::servers::read(governed).await.unwrap();
-            assert_eq!(
-                servers.active(&host.public_key).unwrap().label,
-                "Living workspace NAS"
-            );
-            assert!(!temp.path().join("server/home-peer-name").exists());
             // Its OS update waits its turn in that admin workspace: the
             // update service asks on the server's socket, the server takes
             // the update lease and drains before it answers that the machine
@@ -2698,55 +2041,6 @@ mod tests {
                 "",
                 "it stays pending"
             );
-            let mut revocation = tilo_user_identity::RevocationEntry {
-                user_public_key: user.public_key,
-                revoked_device_public_key: host.public_key,
-                revoked_at_ns: unix_now_ns(),
-                reason: tilo_user_identity::RevocationReason::Retired,
-                signature: [0; 64],
-            };
-            tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
-            let removed = crate::client::ServerClient::manage_home_peer(
-                &client_endpoint,
-                server.node_addr(),
-                user.public_key,
-                host.public_key,
-                admin_cert.clone(),
-                admin_key.clone(),
-                RevocationList::new(),
-                HomePeerManagementRequest::Decommission { revocation },
-            )
-            .await
-            .unwrap();
-            assert!(removed.decommissioned);
-            assert!(temp.path().join("server/decommissioned").exists());
-            // A retired server serves nothing: it applies its own retirement
-            // and lets go of everything it holds, its person's admin
-            // workspace among them. Its entry stays retired where their
-            // devices read it.
-            let held = server.workspaces().unwrap();
-            tokio::time::timeout(Duration::from_secs(5), async {
-                while !held.list().await.is_empty() {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .expect("a decommissioned server lets go of everything it holds");
-            assert!(
-                crate::client::ServerClient::manage_home_peer(
-                    &client_endpoint,
-                    server.node_addr(),
-                    user.public_key,
-                    host.public_key,
-                    admin_cert,
-                    admin_key,
-                    RevocationList::new(),
-                    HomePeerManagementRequest::Status,
-                )
-                .await
-                .is_err()
-            );
-            client_endpoint.close().await;
             server.shutdown().await;
         }
     }

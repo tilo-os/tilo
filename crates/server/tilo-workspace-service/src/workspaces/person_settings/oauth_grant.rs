@@ -18,6 +18,7 @@ use account_credentials::{
     Capability, CredentialError, CredentialStore, OAuthIssuer, OAuthUse, RenewedGrant,
 };
 use accounts::vault_items::ItemKind;
+use tilo_actions::remote::person_vault::ItemRef;
 use tilo_oauth::{Registration, TokenSet};
 use zeroize::Zeroizing;
 
@@ -90,9 +91,22 @@ pub(crate) async fn access_token(
     let released = vault
         .use_sign_in(&reference, (ItemKind::Login, &places), by, SIGN_IN)
         .await?;
+    renewed(vault, root, account, (&reference, released.secret), use_).await
+}
+
+/// The access token the grant `grant` that `account` names at `reference` holds, renewed
+/// through the one shared path when it expired, and kept renewed. Must be called holding
+/// [`RENEWING`].
+async fn renewed(
+    vault: VaultAt<'_>,
+    root: &Path,
+    account: &accounts::Account,
+    (reference, grant): (&ItemRef, Zeroizing<String>),
+    use_: OAuthUse,
+) -> Result<String, String> {
     let secret = accounts::Secret {
         password: String::new(),
-        token: Some(released.secret.to_string()),
+        token: Some(grant.to_string()),
     };
     let renewing = renewal(root);
     let renewed = tokio::task::spawn_blocking(move || renewing.renew_grant(&secret, use_, false))
@@ -105,7 +119,7 @@ pub(crate) async fn access_token(
         }) => {
             if let Some(renewed) = keep.and_then(|keep| keep.token) {
                 vault
-                    .renew_sign_in(&reference, Zeroizing::new(renewed))
+                    .renew_sign_in(reference, Zeroizing::new(renewed))
                     .await?;
             }
             Ok(tokens.access_token)
@@ -122,6 +136,42 @@ pub(crate) async fn access_token(
             "That account's sign-in could not be renewed: {error}"
         )),
     }
+}
+
+/// What a device signs in to `account` with, from the sign-in `released` from its entry of the
+/// workspace's vault: a password as it is, and a grant its provider's own page left as the access
+/// token it holds now, renewed when it expired. A grant's refresh token never leaves this
+/// service: whoever signs in is handed only what reads mail or a calendar for the next hour.
+///
+/// # Errors
+/// The account names no provider this service renews grants of, or the grant was not renewed.
+pub(crate) async fn signs_in_with(
+    vault: VaultAt<'_>,
+    root: &Path,
+    account: &accounts::Account,
+    released: accounts::vault_items::Released,
+) -> Result<accounts::vault_items::Released, String> {
+    let grant = accounts::Secret {
+        password: String::new(),
+        token: Some(released.secret.to_string()),
+    };
+    if account_credentials::oauth_tokens(&grant).is_none() {
+        return Ok(released);
+    }
+    let reference = sign_in_of(&account.config).ok_or_else(|| SIGN_IN_AGAIN.to_owned())?;
+    let issuer = issuer_of(account)?;
+    let use_ = if account.type_id.as_str() == accounts::email::TYPE_ID {
+        OAuthUse::mail(issuer)
+    } else {
+        OAuthUse::calendar(issuer)
+    };
+    let _renewing = RENEWING.lock().await;
+    let token = renewed(vault, root, account, (&reference, released.secret), use_).await?;
+    Ok(accounts::vault_items::Released {
+        kind: released.kind,
+        username: released.username,
+        secret: Zeroizing::new(token),
+    })
 }
 
 /// Take a grant the provider will not renew out of the vault and out of `account`'s settings
@@ -192,10 +242,16 @@ pub(crate) fn issuer_of_account(root: &Path, account: &str) -> Result<OAuthIssue
     let kept = store
         .get(&accounts::AccountId::from(account.to_owned()))
         .ok_or_else(|| "That account is not kept here".to_string())?;
-    let provider = kept
+    issuer_of(kept)
+}
+
+/// The issuer `account` signs in with, from its settings: `provider` for a mail account,
+/// `calendar_provider` for the calendar server the same sign-in opened.
+fn issuer_of(account: &accounts::Account) -> Result<OAuthIssuer, String> {
+    let provider = account
         .config
         .get("provider")
-        .or_else(|| kept.config.get("calendar_provider"))
+        .or_else(|| account.config.get("calendar_provider"))
         .and_then(serde_json::Value::as_str);
     match provider {
         Some("google" | "google-drive") => Ok(OAuthIssuer::Google),

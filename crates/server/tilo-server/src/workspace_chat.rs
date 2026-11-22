@@ -58,12 +58,12 @@ pub(crate) fn settle_chat(
 mod tests {
     use super::*;
     use tilo_actions::MemberId;
-    use tilo_workspace_service::tl_records::RecordBytes;
+    use tilo_workspace_service::tl_records::ResourceStore;
 
     /// The workspace's Chat as a workspace starts with it: empty.
     fn empty_chat() -> Opened {
         Opened::open(
-            &RecordBytes::default(),
+            ResourceStore::in_memory(),
             &tl_chat::packages().unwrap(),
             tl_chat::viewer(),
             None,

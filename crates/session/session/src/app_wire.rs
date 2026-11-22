@@ -1385,7 +1385,6 @@ fn broker_services(
                     crate::machine_steps::MachineSteps::session(engine.clone()),
                     std::sync::Arc::new(crate::identity_admin::BrokerApi {
                         layout: layout_authority,
-                        admin: crate::identity_admin::IdentityAdmin::session(),
                         hosting,
                         engine: engine.clone(),
                     }),
@@ -1393,6 +1392,14 @@ fn broker_services(
                     // on: what Settings and the overview of their Tilo show,
                     // followed as the host's plans change.
                     crate::server_account::ServerAccountApi::session(),
+                    // The agent's transforms a shortcut's AI step and an app ask for, answered
+                    // by this device's agent engine with the workspace's model.
+                    std::sync::Arc::new(
+                        tilo_workspace_service::agents::assistant::Transforms::new(
+                            service.clone(),
+                            tilo_rt::app().handle().clone(),
+                        ),
+                    ),
                 ],
                 // An agent's task writes its programs; this session's links runs them as the
                 // steps of the run the task is in. An agent whose turn is worked in its own
@@ -2279,10 +2286,10 @@ mod tests {
         );
         assert_eq!(
             services.host_steps.len(),
-            6,
+            7,
             "the steps this session serves are the workspace's activity, device \
              pairing, identity administration, the person's hosting account, the machines they \
-             planned and its own actions"
+             planned, its own actions and its agents' transforms"
         );
         let providers: Vec<&str> = services
             .host_steps
@@ -2309,6 +2316,10 @@ mod tests {
             (
                 tilo_actions::remote::machines::PROVIDER,
                 "the installer's window and the command plan a machine",
+            ),
+            (
+                tilo_workspace_service::agents::assistant::transforms::PROVIDER,
+                "a shortcut's AI step and an app's ask are transformed by this device's agents",
             ),
         ] {
             assert!(

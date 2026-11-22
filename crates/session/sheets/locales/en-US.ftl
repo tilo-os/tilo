@@ -508,7 +508,6 @@ uninstall-entry-body = It's part of the system, so it stays on this computer and
 ## work in a workspace as an agent member.
 mcp-server-client = { $client } ({ $program })
 mcp-server-client-in-app = { $who }, in { $app }
-mcp-server-client-from-device = { $client }, from your device { $device }
 mcp-server-admission = Work in “{ $workspace }” as the agent { $agent }
 mcp-server-admission-detail = It joins this workspace as an observer: it reads what the workspace holds and does the actions it is granted, and you can remove it in the workspace’s settings at any time.
 mcp-server-no-workspace = There is no workspace here to work in.
@@ -797,6 +796,7 @@ pair-device-in-tilo = On a computer with Tilo, paste the link into Join a worksp
 pair-device-local-link = On the new Tilo device, choose Use my existing Tilo identity and paste this link. Compare the codes before approving.
 pair-device-nearby = Your new device can't reach this computer from elsewhere, so there is no link to show. Add it nearby instead: on the new device, choose Use my existing Tilo identity. Then, in Settings under Your devices, choose Add device and check both show the same code.
 pair-device-no-workspace = Open a workspace first: the link opens it on your new device.
+pair-device-no-host = This computer doesn't know where the workspace's host is yet. Open the workspace again, then add the device.
 pair-device-not-yours = This computer isn't signed in as you, so it can't let a new device in.
 pair-device-no-link = The link could not be made. Close this and try again.
 pair-device-waiting-title = Device requests

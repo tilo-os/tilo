@@ -1,7 +1,6 @@
 //! "Delete \<name\>?" as a person, a screen reader and an agent meet it:
 //! what goes with the workspace, and the answer being the person's own.
 
-
 use tilo_sheets::SheetState as _;
 use tilo_sheets::delete_workspace::{
     Asked, DeleteWorkspaceApp, DeleteWorkspaceEffect, DeleteWorkspaceState,

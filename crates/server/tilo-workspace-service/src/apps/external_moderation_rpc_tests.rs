@@ -131,14 +131,14 @@ mod external_moderation_rpc_tests {
             reason = "test code included into the broker module: clippy does not see the cfg(test) on its include!, so it reads the test's checks as production code"
         )]
         fn invoke(&self, peer: u64, resource: &str, action: &str, argument: &str) -> u64 {
-            let offered = self.state.surfaces.lock().unwrap()[&peer]
+            let offered = self.state.publishers.surfaces.lock().unwrap()[&peer]
                 .actions
                 .iter()
                 .find(|offered| offered.resource == resource && offered.action == action)
                 .unwrap()
                 .clone();
             let (actor, origin) = self.caller();
-            let surface = self.state.surfaces.lock().unwrap()[&peer].clone();
+            let surface = self.state.publishers.surfaces.lock().unwrap()[&peer].clone();
             let binding = self.state.offered_approval_binding(
                 actor.member(),
                 &(surface, offered.clone()),
@@ -334,11 +334,13 @@ mod external_moderation_rpc_tests {
                     let descriptor = descriptor(action);
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
-                    let offered = workspace.state.surfaces.lock().unwrap()[&980].actions[0].clone();
+                    let offered = workspace.state.publishers.surfaces.lock().unwrap()[&980].actions
+                        [0]
+                    .clone();
                     let (actor, origin) = workspace.caller();
                     let operation = operation(action == "appeal");
                     let exact = argument(&operation);
-                    let surface = workspace.state.surfaces.lock().unwrap()[&980].clone();
+                    let surface = workspace.state.publishers.surfaces.lock().unwrap()[&980].clone();
                     let binding = workspace.state.offered_approval_binding(
                         actor.member(),
                         &(surface, offered.clone()),
@@ -447,11 +449,13 @@ mod external_moderation_rpc_tests {
                     descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let _stream = target.handle.subscribe_stable_invocations().await.unwrap();
-                    let offered = workspace.state.surfaces.lock().unwrap()[&980].actions[0].clone();
+                    let offered = workspace.state.publishers.surfaces.lock().unwrap()[&980].actions
+                        [0]
+                    .clone();
                     let (actor, _) = workspace.caller();
                     assert!(actor.direct());
                     let exact = argument(&operation(action == "appeal"));
-                    let surface = workspace.state.surfaces.lock().unwrap()[&980].clone();
+                    let surface = workspace.state.publishers.surfaces.lock().unwrap()[&980].clone();
                     let binding = workspace.state.offered_approval_binding(
                         actor.member(),
                         &(surface, offered.clone()),

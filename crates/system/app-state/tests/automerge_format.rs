@@ -13,7 +13,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use automerge::marks::{ExpandMark, Mark};
 use automerge::sync::{self, SyncDoc};
 use automerge::transaction::{CommitOptions, Transactable};

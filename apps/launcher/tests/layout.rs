@@ -8,7 +8,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use launcher_app::{LauncherShell, LauncherSurface};
 use ui::framework::testing::HeadlessApp;
 use ui::vello::kurbo::Rect;

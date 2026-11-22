@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use store::StoreApp;
 use ui::headless::Framed;
 use ui::tilo_resource::Resource as _;

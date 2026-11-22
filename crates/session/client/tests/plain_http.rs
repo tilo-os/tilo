@@ -1,7 +1,6 @@
 //! Local review: the host also serves its browser routes as plain HTTP on a
 //! loopback address, and refuses a plain listener anywhere else.
 
-
 use std::sync::Arc;
 use tilo_server::web::{TlsSource, WebConfig};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};

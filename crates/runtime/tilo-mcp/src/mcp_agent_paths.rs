@@ -2,22 +2,8 @@
 //! the address an action answers by: an answer names a resource whole
 //! (`tasks.tracker/issues/7`), and that is a path the next call takes.
 
-use super::{
-    ActionDescriptor, ActionProvider, Failure, Level, Levels, McpServer, Node, ROOT_PEEK, Resolved,
-    Value, json,
-};
+use super::{ActionDescriptor, ActionProvider, Failure, McpServer, Value, json};
 use tilo_actions::tree::{Address, Segment, bind_choices};
-
-/// The app a name beginning with a kind names (`tasks.tracker` is the Tasks
-/// app's tracker), when the name is one kind and no app: a kind is the app's
-/// own name and one more word, and an item's kind names its collection after
-/// that (`tasks.issues.issues`, `tasks.issues.links`), where a package's id is
-/// a domain and its names.
-pub(super) fn kind_address(name: &str) -> Option<&str> {
-    let (app, kind) = name.split_once('.')?;
-    (!app.is_empty() && !kind.is_empty() && !kind.starts_with('.') && !kind.ends_with('.'))
-        .then_some(app)
-}
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `arguments` with each parameter of `descriptor` that picks a resource of
@@ -164,99 +150,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         arguments.insert(param.name.to_string(), Value::Object(reference));
         Ok(())
-    }
-
-    /// The resource `address` names, written either as its listing publishes
-    /// it (`chat.messages/messages/m1`) or in the stable form a link carries
-    /// (`chat.messages.messages:m1`): both name one resource, so both are
-    /// answered alike.
-    pub(super) async fn by_item_address(
-        &self,
-        app_id: &str,
-        provider: &str,
-        address: &str,
-        levels: &mut Levels,
-    ) -> Result<Option<Resolved>, String> {
-        if let Some(found) = self.by_address(app_id, provider, address, levels).await? {
-            return Ok(Some(found));
-        }
-        let Some(form) = tilo_actions::item_form_of(address) else {
-            return Ok(None);
-        };
-        self.by_address(app_id, provider, &form, levels).await
-    }
-
-    /// The resource the app lists under exactly `address`, with its actions
-    /// and what it holds: an answer's own naming of what it made or changed.
-    pub(super) async fn by_address(
-        &self,
-        app_id: &str,
-        provider: &str,
-        address: &str,
-        levels: &mut Levels,
-    ) -> Result<Option<Resolved>, String> {
-        let root = self.app_children(provider, levels).await?;
-        let mut found = root
-            .children
-            .iter()
-            .find(|node| node.address_is(address))
-            .cloned();
-        // What a folder of a resource holds is a level further down than
-        // the app's own listing reaches (`notes.notebook/page/<id>/body`).
-        if found.is_none() {
-            let containers: Vec<Node> = root
-                .children
-                .iter()
-                .filter(|node| node.container)
-                .take(ROOT_PEEK)
-                .cloned()
-                .collect();
-            let addressed = |level: &Level| -> Result<Option<Node>, String> {
-                Ok(level
-                    .whole_children()
-                    .iter()
-                    .find(|node| node.address_is(address))
-                    .cloned())
-            };
-            for container in containers {
-                // An address that begins with a container's key names one of the
-                // container's own, so its level is read on past its bound to find
-                // it; any other container is looked through as far as it was read.
-                let own = address
-                    .strip_prefix(container.key.as_str())
-                    .is_some_and(|rest| rest.starts_with('/'));
-                let node = if own {
-                    self.level_holding(provider, &container.id, levels, addressed)
-                        .await?
-                        .0
-                } else {
-                    addressed(&self.level(provider, &container.id, levels).await?)?
-                };
-                if let Some(node) = node {
-                    found = Some(node);
-                    break;
-                }
-            }
-        }
-        let Some(node) = found else {
-            return Ok(None);
-        };
-        let here = self.level(provider, &node.id, levels).await?;
-        Ok(Some(Resolved {
-            app_id: app_id.to_owned(),
-            provider: provider.to_owned(),
-            path: address.to_owned(),
-            actions: if here.own.is_empty() {
-                node.actions.clone()
-            } else {
-                here.own.clone()
-            },
-            children: here.children.clone(),
-            node: Some(node.clone()),
-            chain: vec![node],
-            levels: std::mem::take(levels),
-            revision: here.revision,
-        }))
     }
 }
 

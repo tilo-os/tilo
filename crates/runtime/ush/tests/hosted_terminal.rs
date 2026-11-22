@@ -4,7 +4,6 @@
 //! connection comes back to the host's session by its id. Whatever the host says, the device's
 //! own environment is never what opens.
 
-
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::{UnixListener, UnixStream};
