@@ -97,6 +97,8 @@ struct Member {
     inbox: Inbox,
     sent: Sent,
     route: RouteSpec,
+    /// The data home this member's process keeps under, when it keeps one.
+    _home: Option<tempfile::TempDir>,
 }
 
 fn wake() -> tilolang_tilo::background::Waker {
@@ -134,14 +136,12 @@ fn member_with_archive(
     let _ = manager.poll();
     let record =
         InstanceDocument::new(automerge::AutoCommit::new(), manager, route.clone(), person);
-    let mut host = TilolangProcess::new(None, wake());
-    let kept = tilolang_process::hosted::Kept {
-        documents: Rc::new(durable_store::MemoryStore::default()),
-        indexes: None,
-        earlier: Some(Rc::new(durable_store::MemoryStore::default())),
-        content: None,
-        chooser: None,
+    let home = archive.is_some().then(|| tempfile::tempdir().unwrap());
+    let mut host = match &home {
+        Some(home) => TilolangProcess::new(Some(home.path().to_path_buf()), wake()),
+        None => TilolangProcess::new(None, wake()),
     };
+    let kept = host.kept(MAIL).unwrap();
     if let Some(mut archive) = archive {
         let earlier = tilolang_tilo::member_document_of(MAIL, person).unwrap();
         let document = collab_types::document::DocumentId::parse(&earlier).unwrap();
@@ -217,6 +217,7 @@ fn member_with_archive(
         inbox,
         sent,
         route,
+        _home: home,
     }
 }
 
@@ -627,7 +628,6 @@ fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
         ada.settle();
         bo.settle();
         assert!(ada.answer(id).contains("Succeeded"), "{}", ada.answer(id));
-        eprintln!("recovery {id}: drafts {:?}", draft_subjects(&ada));
         let expected = ["Re: Launch plan for the autumn release"];
         assert_eq!(draft_subjects(&ada), expected);
         assert_eq!(draft_subjects(&bo), expected);

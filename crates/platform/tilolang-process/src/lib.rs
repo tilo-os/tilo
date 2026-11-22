@@ -377,7 +377,10 @@ impl TilolangProcess {
             // earlier Mail — kept in this directory, read once by the package's own conversion
             // (`earlier_documents`, the mailbox's recovery). Nothing writes it any more: a
             // conversion reads what a version before this one left, and a host keeps no live copy.
-            earlier: Some(Rc::new(durable_store::MemoryStore::default())),
+            // What an earlier version of the app left on this device, read once by the package's
+            // own conversion (a native app's resources, an earlier mailbox). Nothing writes it
+            // any more: the workspace is the one store, and a process keeps no live copy.
+            earlier: Some(Rc::new(app_state::FsStore::new(package.join("documents")))),
             content: None,
             chooser: None,
         })
