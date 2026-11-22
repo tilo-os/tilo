@@ -19,6 +19,7 @@
 //! holder that handed it over has handed everything over.
 
 use tilo_action_policy::GrantId;
+use tilo_user_identity::DeviceCert;
 
 use super::{GovernedWorkspace, Workspaces};
 
@@ -67,6 +68,21 @@ impl Workspaces {
         let state = governed.collaboration().clone();
         governed.commit(candidate, key, now, |_, _| Ok(state))?;
         self.settle(governed).await
+    }
+
+    /// Whether `caller` chooses `governed`'s servers: its owner does, and so
+    /// does the person an earlier build kept it for, whose first choice
+    /// hands it to them ([`Self::hand_kept_workspace_to`]). What is offered
+    /// to them has to say so, or they never reach the choice that makes it
+    /// theirs.
+    pub(super) fn may_choose_servers(
+        &self,
+        governed: &GovernedWorkspace,
+        caller: &DeviceCert,
+    ) -> bool {
+        Self::chooses_servers(governed, caller)
+            || (Self::speaks_for_person(governed, caller)
+                && self.kept_person(governed).ok().flatten() == Some(caller.user_public_key))
     }
 
     /// [`Self::hand_kept_workspace_over`] when `person` is the one `governed`

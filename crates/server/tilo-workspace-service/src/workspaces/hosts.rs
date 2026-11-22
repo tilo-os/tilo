@@ -527,12 +527,17 @@ impl Workspaces {
     /// never a device for being of the person whose host this is: every
     /// holder answers it alike.
     pub(super) fn chooses_servers(governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
-        let person = caller.user_public_key;
-        let speaks_for_person = caller.capabilities.agent.is_none()
+        Self::speaks_for_person(governed, caller)
+            && caller.user_public_key == governed.peer().owner()
+    }
+
+    /// Whether `caller` speaks for its person in `governed`: a device of theirs, or their
+    /// server key there, never an agent's grant.
+    pub(super) fn speaks_for_person(governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
+        caller.capabilities.agent.is_none()
             || caller
                 .capabilities
-                .own_key_in(governed.peer().workspace_id());
-        speaks_for_person && person == governed.peer().owner()
+                .own_key_in(governed.peer().workspace_id())
     }
 
     /// The servers keeping `workspace`, as its governance names them: this

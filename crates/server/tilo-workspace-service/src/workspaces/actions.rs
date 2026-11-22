@@ -1321,7 +1321,7 @@ impl Workspaces {
                             return false;
                         }
                         if verb.check == CHOOSES_SERVERS {
-                            return Self::chooses_servers(&workspace, &device);
+                            return self.may_choose_servers(&workspace, &device);
                         }
                         self.permits(
                             &device,

@@ -249,6 +249,80 @@ async fn the_server_a_workspace_was_made_on_is_named_among_its_holders() {
     within("the server it was made on stops", made_on.stop()).await;
 }
 
+/// What `host` answers `message` about `workspace` with, asked by `client`.
+async fn ask(
+    client: &tilo_server::ServerClient,
+    host: &crate::common::TestDevice,
+    workspace: &tilo_server_session::workspaces::WorkspaceSummary,
+    message: tilo_actions::remote::RemoteActionMessage,
+) -> tilo_actions::remote::RemoteActionMessage {
+    use tilo_actions::remote::RemoteActionFrame;
+    client
+        .send(Envelope::RemoteAction {
+            workspace_id: workspace.workspace_id,
+            version: tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+            to_device_public_key: host.device_pubkey(),
+            from_device_public_key: [0; 32],
+            from_user_public_key: [0; 32],
+            frame: RemoteActionFrame::new(message).encode().unwrap(),
+        })
+        .unwrap();
+    tilo_test_env::within("the holder answers", async {
+        loop {
+            match client.recv().await.expect("the session stays open") {
+                Envelope::RemoteAction { frame, .. } => {
+                    break RemoteActionFrame::decode(&frame).unwrap().message;
+                }
+                Envelope::RemoteActionUndeliverable { refusal, .. } => {
+                    panic!("the action was not delivered: {refusal}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+}
+
+/// The ids of the actions `host` offers `client` on `workspace`'s resource
+/// `child` of its governance tree: what a path such as `workspace/servers`
+/// is found among.
+async fn offered(
+    client: &tilo_server::ServerClient,
+    host: &crate::common::TestDevice,
+    workspace: &tilo_server_session::workspaces::WorkspaceSummary,
+    child: &str,
+) -> Vec<String> {
+    use tilo_actions::remote::{
+        CatalogueQuery, RemoteActionMessage, WORKSPACE_GOVERNANCE_PROVIDER,
+        workspace_governance_child, workspace_governance_resource,
+    };
+    let RemoteActionMessage::CatalogueResponse { result, .. } = ask(
+        client,
+        host,
+        workspace,
+        RemoteActionMessage::CatalogueRequest {
+            correlation: 1,
+            query: CatalogueQuery {
+                provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
+                parent_resource: Some(workspace_governance_resource(&workspace.workspace)),
+                ..CatalogueQuery::default()
+            },
+        },
+    )
+    .await
+    else {
+        panic!("a catalogue request is answered with a page");
+    };
+    let resource = workspace_governance_child(&workspace.workspace, Some(child));
+    result
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter(|row| row.resource.id == resource)
+        .filter_map(|row| row.action.map(|action| action.address.action))
+        .collect()
+}
+
 /// What `host` answers `action` of `workspace`'s governance with `argument`,
 /// asked by `client`.
 async fn govern(
@@ -259,8 +333,7 @@ async fn govern(
     argument: serde_json::Value,
 ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
     use tilo_actions::remote::{
-        InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-        RemoteActionTarget,
+        InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
     };
     let serde_json::Value::Object(argument) = argument else {
         panic!("arguments are an object");
@@ -277,31 +350,7 @@ async fn govern(
         appearance: None,
         signed: None,
     });
-    client
-        .send(Envelope::RemoteAction {
-            workspace_id: workspace.workspace_id,
-            version: tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-            to_device_public_key: host.device_pubkey(),
-            from_device_public_key: [0; 32],
-            from_user_public_key: [0; 32],
-            frame: RemoteActionFrame::new(message).encode().unwrap(),
-        })
-        .unwrap();
-    let answer = tilo_test_env::within("the holder answers", async {
-        loop {
-            match client.recv().await.expect("the session stays open") {
-                Envelope::RemoteAction { frame, .. } => {
-                    break RemoteActionFrame::decode(&frame).unwrap().message;
-                }
-                Envelope::RemoteActionUndeliverable { refusal, .. } => {
-                    panic!("the action was not delivered: {refusal}")
-                }
-                _ => {}
-            }
-        }
-    })
-    .await;
-    let RemoteActionMessage::Receipt(receipt) = answer else {
+    let RemoteActionMessage::Receipt(receipt) = ask(client, host, workspace, message).await else {
         panic!("an invocation is answered with a receipt");
     };
     match receipt.status {
@@ -425,6 +474,16 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
         hex::encode(old.device_pubkey()),
         hex::encode(main.device_pubkey()),
     );
+    // The workspace is still the server's, kept for Alice: its servers are
+    // offered to her all the same, at the path she finds them by, or she
+    // never reaches the choice that makes it hers.
+    let servers = offered(&client, &main, &workspace, "servers").await;
+    for action in ["list", "remove"] {
+        assert!(
+            servers.iter().any(|offered| offered == action),
+            "the person it is kept for is offered workspace/servers#{action}: {servers:?}"
+        );
+    }
     let listed = govern(
         &client,
         &main,
@@ -436,7 +495,9 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     .expect("the owner's key lists the workspace's servers");
     assert!(listed.to_string().contains(&old_key), "{listed}");
     assert!(
-        workspaces.is_owner(&workspace.workspace, alice.user_pk).await,
+        workspaces
+            .is_owner(&workspace.workspace, alice.user_pk)
+            .await,
         "choosing its servers, the person it is kept for owns it"
     );
     let removed = govern(
