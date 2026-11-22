@@ -280,30 +280,10 @@ async fn a_server_runs_one_broker_for_each_workspace_while_it_keeps_it() {
     assert_eq!(apps.workspaces(), BTreeSet::from([other]));
 }
 
-/// The keys a page's instance asks for, as the identity service a test's server runs hands
-/// them: each one the route's keys, whoever the service decided may have them.
+/// A page asking the server's identity service for its keys, on the connection it was opened
+/// with: decided as whoever its call names. Whether the keys were handed.
 #[cfg(feature = "agents")]
-struct RouteKeys;
-
-#[cfg(feature = "agents")]
-impl tilo_identity::sources::GroupKeySource for RouteKeys {
-    fn access(
-        &self,
-        _: tilo_desktop_model::WorkspaceId,
-        _: u64,
-    ) -> Option<Result<tilo_identity::sources::GroupKeys, String>> {
-        Some(Ok((
-            tilo_identity_client::wire::KeyAccess::Ready,
-            1,
-            b"the route's keys".to_vec(),
-        )))
-    }
-}
-
-/// A page's instance, asking the server's identity service on the connection its page was
-/// opened with: every request decided as whoever its call names.
-#[cfg(feature = "agents")]
-fn page_keys(socket: &std::path::Path, workspace: &str, call: [u8; 16]) -> Vec<u8> {
+fn page_keys(socket: &std::path::Path, workspace: &str, call: [u8; 16]) -> bool {
     use tilo_identity_client::wire::{
         FRAMING, HANDSHAKE_FRAMING, Handshake, PresentationHandshake, Request, Response,
     };
@@ -327,8 +307,8 @@ fn page_keys(socket: &std::path::Path, workspace: &str, call: [u8; 16]) -> Vec<u
     };
     FRAMING.write_value(&mut stream, &ask).unwrap();
     match FRAMING.read_value(&mut stream).unwrap().unwrap() {
-        Response::GroupKeys { keys, .. } => keys,
-        Response::Denied(_) => Vec::new(),
+        Response::GroupKeys { .. } => true,
+        Response::Denied(_) => false,
         other => panic!("the service answered {other:?}"),
     }
 }
@@ -352,12 +332,41 @@ async fn a_page_is_handed_keys_only_while_a_reader_who_may_read_it_reads() {
     let workspaces = host.workspaces().clone();
     let summary = workspaces.create("Team").await.unwrap();
     let (workspace, id) = (summary.workspace.clone(), summary.workspace_id);
+    // A person the workspace admits, who may read what it keeps.
+    let token = [3; 8];
+    let issued = workspaces
+        .pre_admit(
+            &owner,
+            crate::workspaces::PreAdmitRequest {
+                request_id: [3; 32],
+                grant: crate::workspaces::fixtures::signed_pre_admission(&workspace, &token),
+                recipient_user_public_key: None,
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
     let (_, reader) = crate::workspaces::fixtures::device_cert(
         &ed25519_dalek::SigningKey::from_bytes(&[3; 32]),
         "reader",
         tilo_user_identity::DeviceCapabilities::member(),
     );
-    crate::workspaces::fixtures::admit_view_reader(&workspaces, &workspace, &key, &reader).await;
+    let admitted = workspaces
+        .admit_proven(
+            issued.signed_invitation,
+            reader.clone(),
+            rand::random(),
+            "Reader",
+            Some(token.as_slice()),
+        )
+        .await;
+    assert!(
+        matches!(
+            admitted,
+            tilo_server_protocol::workspaces::JoinReply::Admitted { .. }
+        ),
+        "{admitted:?}"
+    );
     let (_, outsider) = crate::workspaces::fixtures::device_cert(
         &ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
         "outsider",
@@ -378,7 +387,12 @@ async fn a_page_is_handed_keys_only_while_a_reader_who_may_read_it_reads() {
     let _identity = tilo_identity::broker::spawn_signing(
         socket.clone(),
         std::sync::Arc::new(ServerWorkspaces::new(workspaces.clone(), runtime.clone())),
-        std::sync::Arc::new(RouteKeys),
+        // The server's own key service, as it runs beside its workspaces.
+        std::sync::Arc::new(
+            crate::workspace_keys::open(&dir.path().join("keys"), key.clone())
+                .unwrap()
+                .keys(),
+        ),
         std::sync::Arc::new(()),
         std::sync::Arc::new(CallerSigner::new(
             workspaces.clone(),
@@ -400,21 +414,21 @@ async fn a_page_is_handed_keys_only_while_a_reader_who_may_read_it_reads() {
 
     // A reader the workspace lets read is handed the route's keys while they read.
     let reading = readers.reading(id, "so.tilo.notes", verified(&reader));
-    assert_eq!(keys(reading.call()).await, b"the route's keys");
+    assert!(keys(reading.call()).await);
     // Someone the workspace does not have is handed none, page open or not.
     let outside = readers.reading(id, "so.tilo.notes", verified(&outsider));
-    assert!(keys(outside.call()).await.is_empty());
+    assert!(!keys(outside.call()).await);
     // A page of another app names nobody here.
     let elsewhere = readers.reading(id, "so.tilo.mail", verified(&reader));
-    assert!(keys(elsewhere.call()).await.is_empty());
+    assert!(!keys(elsewhere.call()).await);
     // Once the last reader has left, the page's call names nobody: nothing more is handed.
     let left = reading.call();
     drop(reading);
-    assert!(keys(left).await.is_empty());
+    assert!(!keys(left).await);
 
     // A reader the workspace removes while they read is refused on the page's next ask.
     let reading = readers.reading(id, "so.tilo.notes", verified(&reader));
-    assert_eq!(keys(reading.call()).await, b"the route's keys");
+    assert!(keys(reading.call()).await);
     workspaces
         .remove_member(
             &workspace,
@@ -426,5 +440,5 @@ async fn a_page_is_handed_keys_only_while_a_reader_who_may_read_it_reads() {
         )
         .await
         .unwrap();
-    assert!(keys(reading.call()).await.is_empty());
+    assert!(!keys(reading.call()).await);
 }
