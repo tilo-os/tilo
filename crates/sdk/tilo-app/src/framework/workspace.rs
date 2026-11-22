@@ -458,7 +458,7 @@ impl<P: Resource> WorkspaceResource<P> {
         )?;
         let reader = record
             .read(tilo_resource::Reader::<P>::read)
-            .ok_or(Unopened::Failed)?
+            .ok_or(Unopened::InUse)?
             .map_err(|error| {
                 tracing::warn!(kind = P::KIND, %error, "workspace record unreadable");
                 Unopened::Failed
@@ -872,12 +872,18 @@ fn opened_at_version(
         Ok(stored) => stored,
         // Nothing is wrong: the store wakes the window once it is here.
         Err(ui_core::resource::ResourceOpenError::Arriving) => return Err(Unopened::Arriving),
+        // Nor here: whatever has the store now lets go of it.
+        Err(
+            ui_core::resource::ResourceOpenError::Busy
+            | ui_core::resource::ResourceOpenError::Opening,
+        ) => return Err(Unopened::InUse),
+        Err(error) if error.writer_busy() => return Err(Unopened::InUse),
         Err(error) => {
             tracing::warn!(kind, %error, "the workspace's resource is unavailable");
             return Err(Unopened::Failed);
         }
     };
-    if stored.read(needs_migrate).ok_or(Unopened::Failed)?
+    if stored.read(needs_migrate).ok_or(Unopened::InUse)?
         && let Err(error) =
             stored.edit(false, |doc| migrate(doc).map_err(|error| error.to_string()))
     {
@@ -942,6 +948,9 @@ pub(crate) enum Unopened {
     /// The workspace has not delivered it yet: its store wakes the window once it has, or once
     /// the workspace answers that it holds none.
     Arriving,
+    /// Its store was in use: a pass of the view reads the app's store, which the workspace's
+    /// records share, and a record asked for then opens once the pass let go of it.
+    InUse,
     /// It cannot be opened, as the warning logged says.
     Failed,
 }
@@ -1244,6 +1253,19 @@ impl WorkspaceState {
                 let again = Self::asking_again::<P>(owner, id);
                 self.asked_while_building(&key);
                 self.unopened.borrow_mut().insert(key, (arrived, again));
+                None
+            }
+            Err(Unopened::InUse) => {
+                // Asked again in the window's next refresh, which is asked for: the store lets go
+                // when what reads it now is done, and nothing arrives to say so.
+                let again = Self::asking_again::<P>(owner, id);
+                self.asked_while_building(&key);
+                self.unopened
+                    .borrow_mut()
+                    .insert(key, (arrived.wrapping_add(1), again));
+                if let Some(window) = &self.wake {
+                    window.wake();
+                }
                 None
             }
             Err(Unopened::Failed) => {
