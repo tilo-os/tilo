@@ -27,7 +27,7 @@ import {mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, shellMetrics, machine, browserMemory, reloaded} from './waits.mjs';
+import {stepLimit, shellMetrics, machine, browserMemory, reloaded, keepRecoveryWords} from './waits.mjs';
 
 const [site, server, tiloBin, out] = process.argv.slice(2);
 if (!site || !server || !tiloBin || !out) {
@@ -207,6 +207,10 @@ const visit = async name => {
   await tab.send('Browser.grantPermissions', {origin: new URL(site).origin,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
   await tab.navigate(site);
+  // The join behind the held first screen founds this browser's person: the
+  // entry shows their 24 recovery words once, and the first screen waits for
+  // them to be kept.
+  await keepRecoveryWords(tab, `${name}: founded`);
   await until(tab, `document.documentElement.dataset.firstScreen !== undefined && !!document.getElementById('first-screen-agent')`,
     `${name}: the first screen`);
   return tab;

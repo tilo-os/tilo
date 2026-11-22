@@ -44,7 +44,7 @@ import {chmodSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {FIRST_SCREEN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, shellMetrics, machine, browserMemory} from './waits.mjs';
+import {stepLimit, shellMetrics, machine, browserMemory, confirmRecoveryWords} from './waits.mjs';
 import {mailLink, poll, pressText, waitForMail, waitingCard} from './shell.mjs';
 
 const [site, server, work, tiloBin, stack] = process.argv.slice(2);
@@ -436,7 +436,8 @@ const keepRecoveryWords = async page => {
   console.log(`ok: ${page.name} was shown the 24 recovery words, which restore their person (${person.slice(0, 12)}…)`);
   report.recovery = {...report.recovery, [page.name]: {words: shown.length, restores: person, screenshots: [`recovery-words-${page.name}-light.png`, `recovery-words-${page.name}-dark.png`]}};
   mark(`${page.name} was shown their 24 recovery words, which restore their person`);
-  await page.tab.evaluate(`document.querySelector('[data-card="recovery-words"] button.tilo-entry-primary').click()`);
+  // Kept, as a person presses it; the shared press every other founder uses.
+  await confirmRecoveryWords(page.tab);
   await until(page.tab, `!document.querySelector('[data-card="recovery-words"]')`, `${page.name}'s words card closing`, stepLimit(4));
 };
 

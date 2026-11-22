@@ -16,7 +16,7 @@
 // step failed or ran over its budget.
 import {execFileSync} from 'node:child_process';
 import {sleep} from '../../../../tools/web/chrome.mjs';
-import {stepLimit} from '../integration/waits.mjs';
+import {stepLimit, keepRecoveryWords} from '../integration/waits.mjs';
 import {leaveWaitListAddress, mailLink, poll, pressText, searcher, waitForMail, waitingCard}
   from '../integration/shell.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
@@ -143,6 +143,9 @@ try {
         if (await pressText(lin.tab, title)) break;
       }
     }
+    // The join founds the host's person: the entry shows their 24 recovery
+    // words once, and the workspace waits for them to be kept.
+    await keepRecoveryWords(lin.tab, 'the host: founded');
     await until(lin.tab, drawn, 'the owner link letting the host into the Lounge', stepLimit(4));
     await until(lin.tab, arrived, 'the Lounge arriving for the host', stepLimit(4));
     // A person arriving for the first time gives their name, so the people
@@ -196,6 +199,9 @@ try {
 
   await story.step('They arrive in a workspace of their own', async () => {
     const began = Date.now();
+    // The invitation founds Ada's person: the entry shows her 24 recovery
+    // words once, and the workspace waits for them to be kept.
+    await keepRecoveryWords(ada.tab, 'Ada: founded');
     await until(ada.tab, drawn, 'the invitation letting Ada in', stepLimit(4));
     await until(ada.tab, arrived, 'Ada’s workspace arriving', stepLimit(4));
     const own = await until(ada.tab, ownWorkspace, 'the workspace of Ada’s own, drawn', stepLimit(4));
