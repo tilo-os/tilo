@@ -1,3 +1,8 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "a test keeps what it serves until it ends, as the daemon does"
+)]
+
 //! A ticket: `tilo device add` on one computer serves one, and `tilo login` on another becomes
 //! one of the person's devices with it. Served on the issuer's one endpoint, and called as the
 //! daemon's `devices#logIn` action by the computer that logs in.
@@ -396,7 +401,7 @@ fn root_in(dir: std::path::PathBuf) -> RootSource {
 
 /// The device actions `Tickets` answers on `workspaces`' endpoint, with the workspace service's
 /// own protocols: what a daemon serves a computer that enters with a ticket.
-async fn serve(
+fn serve(
     workspaces: &super::workspaces::ServiceWorkspaces,
     tickets: &Tickets,
 ) -> iroh::protocol::Router {
@@ -432,12 +437,12 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
         Some(Arc::clone(&issuer)),
         place,
     );
-    let router = serve(&issuer, &tickets).await;
+    let router = serve(&issuer, &tickets);
 
-    let issued = ask_device(&tickets, ISSUE, json!({"capability": "member"}))
+    let printed = ask_device(&tickets, ISSUE, json!({"capability": "member"}))
         .await
         .expect("a device with the person's root issues a ticket without a login");
-    let text = issued["ticket"].as_str().unwrap();
+    let text = printed["ticket"].as_str().unwrap();
 
     // A second computer, holding no identity of the person's, logs in with it.
     let (desk_key, desk_cert) = enrol(
@@ -580,7 +585,7 @@ async fn a_ticket_that_names_a_plan_fills_its_plan() {
     })
     .to_string();
     tilo_workspace_service::workspaces::servers::apply(
-        &hosted,
+        hosted,
         tilo_workspace_service::workspaces::servers::Servers::PLAN_MACHINE
             .with((plan, "cupboard".into())),
     )
@@ -588,13 +593,13 @@ async fn a_ticket_that_names_a_plan_fills_its_plan() {
     .expect("the person plans a machine in their Servers workspace");
 
     let (desk_key, desk_cert) = enrol(&root, "the cupboard", DeviceCapabilities::member());
-    super::ticket::plan_entry(&hosted, None, plan_id, &desk_cert)
+    super::ticket::plan_entry(hosted, None, plan_id, &desk_cert)
         .await
         .expect("the certified machine's key is taken into its plan");
     let device = tilo_workspace_service::workspaces::servers::device_id(
         &desk_key.verifying_key().to_bytes(),
     );
-    let entry = tilo_workspace_service::workspaces::servers::read(&hosted)
+    let entry = tilo_workspace_service::workspaces::servers::read(hosted)
         .await
         .expect("the person's servers read")
         .servers
@@ -617,13 +622,13 @@ async fn a_ticket_that_names_a_server_leaves_its_entry() {
     let hosted = &host.hosted;
 
     let (desk_key, desk_cert) = enrol(&root, "home", DeviceCapabilities::primary());
-    super::ticket::server_entry(&hosted, None, &desk_cert, false)
+    super::ticket::server_entry(hosted, None, &desk_cert, false)
         .await
         .expect("the certified server is taken in among the person's servers");
     let device = tilo_workspace_service::workspaces::servers::device_id(
         &desk_key.verifying_key().to_bytes(),
     );
-    let entry = tilo_workspace_service::workspaces::servers::read(&hosted)
+    let entry = tilo_workspace_service::workspaces::servers::read(hosted)
         .await
         .expect("the person's servers read")
         .servers
@@ -690,7 +695,7 @@ async fn a_logged_in_issuers_server_ticket_leaves_the_entry_on_the_host() {
         Some(Arc::clone(&service)),
         place,
     );
-    let router = serve(&service, &tickets).await;
+    let router = serve(&service, &tickets);
     let issued = ask_device(&tickets, ISSUE, json!({"server": true}))
         .await
         .expect("a server ticket is issued from the logged-in device");

@@ -79,7 +79,7 @@ impl App {
 
     pub(super) fn vm_enrol_admin(&mut self, via: Option<&str>) -> Result<Outcome, CliError> {
         let key = self.admin_tool(&["key"])?;
-        let device = key.device.clone();
+        let device = key.device;
         let root = config::admin_identity_root(&self.registry_path);
         if let Some(via) = via {
             self.join_via(via, &root)?;

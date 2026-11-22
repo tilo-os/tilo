@@ -116,13 +116,9 @@ pub fn add(
             Adding::Member => "member",
             Adding::Admin => "admin",
         };
-        let mut args = json!({ "capability": capability });
-        if let Some(plan) = plan {
-            args["plan"] = json!(plan);
-        }
-        if server {
-            args["server"] = json!(true);
-        }
+        // A role the person did not ask for goes as null, which the daemon reads as none.
+        let args =
+            json!({ "capability": capability, "plan": plan, "server": server.then_some(true) });
         let issued = client
             .act(
                 &workspace,

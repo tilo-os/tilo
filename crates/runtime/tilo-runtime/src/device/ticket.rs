@@ -528,7 +528,7 @@ impl Tickets {
             .map(str::trim)
             .filter(|plan| !plan.is_empty())
             .map(str::to_owned);
-        let server = args.get("server").and_then(Value::as_bool) == Some(true);
+        let as_server = args.get("server").and_then(Value::as_bool) == Some(true);
         let here = self.0.login.as_ref().map(|(_, device)| device);
         let (user, capabilities) = match here {
             Some(here) => (here.cert.user_public_key, &here.cert.capabilities),
@@ -550,49 +550,10 @@ impl Tickets {
                 "This computer is logged in as another person than the one whose identity it holds."
             );
         }
-        let enter = match here {
-            Some(here) => {
-                let published = here
-                    .server_address
-                    .as_ref()
-                    .ok_or_else(|| anyhow!(tilo_api::daemon::enter::LOGIN_ENDED))?;
-                let mut reached = tilo_api::daemon::enter::reached_of(&published.endpoint_addr);
-                if reached.relay.is_none() {
-                    reached.relay.clone_from(&published.relay_url);
-                }
-                Entry {
-                    workspace: here.workspace.clone(),
-                    workspace_name: here.workspace_name.clone(),
-                    server_cert: here.server_cert.clone(),
-                    server: reached,
-                    site: here.site.clone(),
-                    host_origin: here.host_origin.clone(),
-                }
-            }
-            None => {
-                let founded = self.0.founded.as_ref().ok_or_else(|| {
-                    anyhow!("This computer holds no workspace another computer can enter.")
-                })?;
-                Entry {
-                    workspace: founded.workspace.clone(),
-                    workspace_name: Some(founded.name.clone()),
-                    // The session a computer enters over proves the certificate the workspace
-                    // service runs under, which is the device's own unless the service has one
-                    // of its own.
-                    server_cert: self.serving_cert(),
-                    server: tilo_api::daemon::enter::reached_of(&self.0.endpoint.addr()),
-                    site: FOUNDED_SITE.to_owned(),
-                    host_origin: format!(
-                        "{}{}",
-                        tilo_api::daemon::enter::IROH_ONLY,
-                        self.0.endpoint.id()
-                    ),
-                }
-            }
-        };
+        let enter = self.entry(here)?;
         let role = match plan {
             Some(plan) => Some(Role::Plan(plan)),
-            None if server => Some(Role::Server),
+            None if as_server => Some(Role::Server),
             None => None,
         };
         let admission = match role {
@@ -632,6 +593,47 @@ impl Tickets {
             .admit_uncertified(SCOPE, Arc::new(served.clone()));
         *self.0.outstanding.lock_recover() = Some(served);
         Ok(json!({"ticket": ticket.encode()}))
+    }
+
+    /// Where a computer this ticket adds enters: the server this computer's login names, or, with
+    /// no login, the workspace founded here through this daemon's endpoint.
+    fn entry(&self, here: Option<&Device>) -> Result<Entry> {
+        let Some(here) = here else {
+            let founded = self.0.founded.as_ref().ok_or_else(|| {
+                anyhow!("This computer holds no workspace another computer can enter.")
+            })?;
+            return Ok(Entry {
+                workspace: founded.workspace.clone(),
+                workspace_name: Some(founded.name.clone()),
+                // The session a computer enters over proves the certificate the workspace
+                // service runs under, which is the device's own unless the service has one
+                // of its own.
+                server_cert: self.serving_cert(),
+                server: tilo_api::daemon::enter::reached_of(&self.0.endpoint.addr()),
+                site: FOUNDED_SITE.to_owned(),
+                host_origin: format!(
+                    "{}{}",
+                    tilo_api::daemon::enter::IROH_ONLY,
+                    self.0.endpoint.id()
+                ),
+            });
+        };
+        let published = here
+            .server_address
+            .as_ref()
+            .ok_or_else(|| anyhow!(tilo_api::daemon::enter::LOGIN_ENDED))?;
+        let mut reached = tilo_api::daemon::enter::reached_of(&published.endpoint_addr);
+        if reached.relay.is_none() {
+            reached.relay.clone_from(&published.relay_url);
+        }
+        Ok(Entry {
+            workspace: here.workspace.clone(),
+            workspace_name: here.workspace_name.clone(),
+            server_cert: here.server_cert.clone(),
+            server: reached,
+            site: here.site.clone(),
+            host_origin: here.host_origin.clone(),
+        })
     }
 
     /// Wait for the ticket served now to certify a computer, while it lasts, then for that
