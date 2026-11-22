@@ -1257,7 +1257,7 @@ fn event_slider(slider: Slider, event: Option<&Event>) -> Slider {
     match event {
         Some(event) => {
             let event = event.clone();
-            slider.on_change(move |value| {
+            slider.on_change_view(move |value| {
                 event.fire(Some(crate::component::Value::Float(value)));
             })
         }

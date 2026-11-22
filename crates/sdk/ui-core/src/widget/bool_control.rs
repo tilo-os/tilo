@@ -386,7 +386,6 @@ impl BoolControl {
             id,
             None,
             self.binding.as_ref().and_then(|b| b.document_key()),
-            false,
         )
     }
 }

@@ -305,7 +305,8 @@ pub struct ColorSwatchPicker {
     hovered: Option<usize>,
     focused: bool,
     focus_index: usize,
-    /// Told each chosen index, as well as [`ColorSwatchPicker::take_choice`].
+    /// Told each chosen index through [`Self::change_verb`], as well as
+    /// [`ColorSwatchPicker::take_choice`].
     on_change: Option<Box<dyn FnMut(usize)>>,
     change_verb: Option<super::control_verb::ControlVerb<usize>>,
     action: Option<crate::widget::ActionEmitter<usize>>,
@@ -403,13 +404,6 @@ impl ColorSwatchPicker {
     /// What the palette is called now; `None` or empty leaves it unnamed.
     pub fn set_accessible_name(&mut self, name: Option<String>) {
         self.name = name.filter(|name| !name.is_empty());
-    }
-
-    /// Run `f` with each index the person chooses.
-    #[must_use]
-    pub fn on_change(mut self, f: impl FnMut(usize) + 'static) -> Self {
-        self.on_change = Some(Box::new(f));
-        self
     }
 
     /// Run `f` with each index the person chooses, the picker as control
@@ -620,10 +614,6 @@ impl ColorSwatchPicker {
         }
         if let Some(verb) = &mut self.change_verb {
             verb.emit(index);
-            return;
-        }
-        if let Some(on_change) = self.on_change.as_mut() {
-            on_change(index);
         }
     }
 }
@@ -638,6 +628,14 @@ impl crate::resources::PublishesResources for ColorSwatchPicker {
 }
 
 impl crate::widget::ResourceOperations for ColorSwatchPicker {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        if self.change_verb.is_some() {
+            &[CHANGE_SWATCH]
+        } else {
+            &[]
+        }
+    }
+
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,
@@ -668,39 +666,7 @@ impl crate::widget::ResourceOperations for ColorSwatchPicker {
 }
 
 impl crate::widget::controls::ActionControls for ColorSwatchPicker {
-    fn attach_controls(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.attach(domain, attachment);
-        }
-        if let Some(verb) = &mut self.change_verb {
-            verb.attach(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action
-            .as_mut()
-            .and_then(crate::widget::ActionEmitter::take)
-            .or_else(|| {
-                self.change_verb
-                    .as_mut()
-                    .and_then(super::control_verb::ControlVerb::take)
-            })
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-        if let Some(verb) = &mut self.change_verb {
-            verb.refresh_availability(allowed);
-        }
-    }
+    super::control_verb::action_and_verb_controls!();
 
     /// Each swatch is the control its semantic target names, bound to the
     /// picker's action.

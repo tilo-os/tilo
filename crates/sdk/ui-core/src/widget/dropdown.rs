@@ -1765,7 +1765,6 @@ impl crate::widget::controls::ActionControls for Dropdown {
             control_id,
             self.action.as_ref(),
             self.binding.as_ref().and_then(|b| b.document_key()),
-            false,
         )
     }
     fn refresh_control_action_availability(

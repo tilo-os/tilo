@@ -13,6 +13,7 @@ use crate::tilo_actions::{
 pub(crate) enum VerbArgument {
     Text,
     Integer,
+    Number,
     Flag,
 }
 
@@ -21,6 +22,7 @@ impl VerbArgument {
         match self {
             Self::Text => ParamType::Text,
             Self::Integer => ParamType::Integer,
+            Self::Number => ParamType::Number,
             Self::Flag => ParamType::Boolean,
         }
     }
@@ -29,6 +31,7 @@ impl VerbArgument {
         match self {
             Self::Text => serde_json::json!(args.text("value").unwrap_or_default()),
             Self::Integer => serde_json::json!(args.integer("value").unwrap_or_default()),
+            Self::Number => serde_json::json!(args.number("value").unwrap_or_default()),
             Self::Flag => serde_json::json!(args.boolean("value").unwrap_or_default()),
         }
     }
@@ -148,3 +151,44 @@ impl<A: serde::de::DeserializeOwned> ControlVerb<A> {
         Ok((payload.control == self.control).then_some(payload.value))
     }
 }
+
+/// How a control with an optional bound action `self.action` and an optional verb of its own
+/// `self.change_verb` joins its window's controls: both attach, report and refresh together.
+macro_rules! action_and_verb_controls {
+    () => {
+        fn attach_controls(
+            &mut self,
+            domain: &crate::ControlDomain,
+            attachment: crate::control_domain::DomainAttachment,
+        ) {
+            if let Some(action) = &mut self.action {
+                let _ = action.attach(domain, attachment);
+            }
+            if let Some(verb) = &mut self.change_verb {
+                verb.attach(domain, attachment);
+            }
+        }
+        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+            self.action
+                .as_mut()
+                .and_then(crate::widget::ActionEmitter::take)
+                .or_else(|| {
+                    self.change_verb
+                        .as_mut()
+                        .and_then(crate::widget::control_verb::ControlVerb::take)
+                })
+        }
+        fn refresh_control_action_availability(
+            &mut self,
+            allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+        ) {
+            if let Some(action) = &mut self.action {
+                action.refresh_availability(allowed);
+            }
+            if let Some(verb) = &mut self.change_verb {
+                verb.refresh_availability(allowed);
+            }
+        }
+    };
+}
+pub(crate) use action_and_verb_controls;

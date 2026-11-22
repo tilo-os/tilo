@@ -59,11 +59,11 @@ impl Described for Slider {
         } = props;
         let edits = value.clone();
         let mut slider = Self::from_state(&value.state)
-            .on_change(move |number| {
+            .with_id(key)
+            .on_change_view(move |number| {
                 edits.edited(Value::Float(number));
                 change.fire(Some(Value::Float(number)));
             })
-            .with_id(key)
             .with_enabled(enabled);
         if let Some(label) = label {
             slider = slider.with_accessible_name(&label);

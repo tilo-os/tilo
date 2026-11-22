@@ -37,7 +37,6 @@ pub struct DatePicker {
     accessible_name: Option<String>,
     selected: Date,
     month_view: (i16, i8),
-    on_change: Option<Box<dyn FnMut(Date)>>,
     choice: Option<DateChoice>,
     local_state: Option<BoxedBinding<Date>>,
     rect: Rect,
@@ -82,7 +81,6 @@ impl DatePicker {
             accessible_name: None,
             selected: initial,
             month_view: (initial.year(), initial.month()),
-            on_change: None,
             choice: None,
             local_state: None,
             rect: Rect::ZERO,
@@ -193,12 +191,6 @@ impl DatePicker {
         self.month_view
     }
 
-    #[must_use]
-    pub fn on_change<F: FnMut(Date) + 'static>(mut self, f: F) -> Self {
-        self.on_change = Some(Box::new(f));
-        self
-    }
-
     /// Called with the day chosen, by its ISO date: the picker, as control
     /// `id`, publishes choosing a day as its view action `select`, so a
     /// click, a key, a screen reader, a script and an agent choose through
@@ -255,8 +247,6 @@ impl DatePicker {
         self.publish_local_state();
         if let Some(choice) = &mut self.choice {
             choice.choice.emit(date.to_string());
-        } else if let Some(callback) = self.on_change.as_mut() {
-            callback(date);
         }
     }
 

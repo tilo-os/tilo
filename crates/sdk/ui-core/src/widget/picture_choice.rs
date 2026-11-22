@@ -48,6 +48,8 @@ struct Choice {
 }
 
 const TILE_ASPECT: f64 = 0.6;
+/// The choice's own view action: the tile a person chose.
+const CHANGE_PICTURE: &str = "tilo.ui.picture.change";
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -71,7 +73,9 @@ pub struct PictureChoice {
     last_cursor: Point,
     action: Option<ActionEmitter<usize>>,
     choice: Option<Choice>,
+    /// What hears each tile the person chooses, through [`Self::change_verb`].
     on_change: Option<Box<dyn FnMut(usize)>>,
+    change_verb: Option<super::control_verb::ControlVerb<usize>>,
     rect: Rect,
     narrowest: f64,
     /// The tallest a picture grows, however wide its tile: a wide window
@@ -107,6 +111,7 @@ impl PictureChoice {
             action: None,
             choice: None,
             on_change: None,
+            change_verb: None,
             rect: Rect::ZERO,
             narrowest: f64::from(metrics.picture_tile_min_width),
             tallest: f64::from(metrics.picture_tile_width) * TILE_ASPECT,
@@ -180,9 +185,19 @@ impl PictureChoice {
         self
     }
 
-    /// Run `f` with each index the person chooses (unbound choices only).
+    /// Run `f` with each index the person chooses (unbound choices only), the choice as
+    /// control `tilo.control:<id>` (its [`Self::with_id`], set first) publishing the choice as
+    /// its view action `change`: a press, a key, a screen reader and a script choose through
+    /// the same action.
     #[must_use]
-    pub fn on_change(mut self, f: impl FnMut(usize) + 'static) -> Self {
+    pub fn on_change_view(mut self, f: impl FnMut(usize) + 'static) -> Self {
+        self.change_verb = Some(super::control_verb::ControlVerb::new(
+            self.id.as_deref().unwrap_or("picture"),
+            "Change",
+            "change",
+            CHANGE_PICTURE,
+            super::control_verb::VerbArgument::Integer,
+        ));
         self.on_change = Some(Box::new(f));
         self
     }
@@ -257,8 +272,8 @@ impl PictureChoice {
         if let Some(choice) = self.choice.as_mut() {
             (choice.push)(index);
         }
-        if let Some(on_change) = self.on_change.as_mut() {
-            on_change(index);
+        if let Some(verb) = &mut self.change_verb {
+            verb.emit(index);
         }
     }
 
@@ -426,7 +441,11 @@ impl Widget for PictureChoice {
 
     crate::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn sync(&mut self, _state: &AppModel, _root: &ModelPath) {
         self.dirty = true;
@@ -682,9 +701,60 @@ impl Widget for PictureChoice {
     }
 }
 
+impl crate::resources::PublishesResources for PictureChoice {
+    fn resources(&self, _doc: &crate::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        self.change_verb
+            .iter()
+            .map(super::control_verb::ControlVerb::resource)
+            .collect()
+    }
+}
+
+impl crate::widget::ResourceOperations for PictureChoice {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        if self.change_verb.is_some() {
+            &[CHANGE_PICTURE]
+        } else {
+            &[]
+        }
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &crate::automerge::ObjId,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        let chosen = self
+            .change_verb
+            .as_ref()
+            .map(|verb| verb.start(op))
+            .transpose()?
+            .flatten();
+        let Some(index) = chosen else {
+            return crate::widget::resource_operation::start_by_default(self, op, doc, path);
+        };
+        if index >= self.options.len() {
+            return Err(format!("no picture `{index}`"));
+        }
+        self.set_selected(Some(index));
+        if let Some(on_change) = self.on_change.as_mut() {
+            on_change(index);
+        }
+        Ok(Some(super::ResourceOperationStart::Completed(
+            crate::tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
 impl crate::widget::controls::ActionControls for PictureChoice {
-    crate::widget::controls::optional_emitter_controls!();
+    super::control_verb::action_and_verb_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        if self.action.is_none()
+            && let Some(verb) = &self.change_verb
+        {
+            return vec![verb.metadata(self.id.as_deref().unwrap_or("picture"))];
+        }
         match &self.action {
             Some(action) => (0..self.options.len())
                 .map(|index| action.metadata(self.option_id(index)))

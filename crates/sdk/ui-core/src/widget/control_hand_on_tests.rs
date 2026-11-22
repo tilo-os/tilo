@@ -52,7 +52,7 @@ fn view(model: &Rc<RefCell<Model>>) -> Vec<Box<dyn Widget>> {
         ),
         Box::new(
             Slider::from_state(&crate::LocalState::new(m.level))
-                .on_change(move |value| level.borrow_mut().level = value),
+                .on_change_view(move |value| level.borrow_mut().level = value),
         ),
         Box::new(Badge::count(m.unread)),
     ]

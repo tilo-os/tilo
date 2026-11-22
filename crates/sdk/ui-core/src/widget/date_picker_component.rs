@@ -35,7 +35,7 @@ impl Default for DatePickerProps {
 impl Described for DatePicker {
     type Props = DatePickerProps;
 
-    fn from_props(_key: &str, props: DatePickerProps) -> Self {
+    fn from_props(key: &str, props: DatePickerProps) -> Self {
         let DatePickerProps {
             value,
             marked,
@@ -44,7 +44,7 @@ impl Described for DatePicker {
         } = props;
         let shown = value.clone();
         let mut picker = Self::from_text_state(&value.state)
-            .on_change(move |day| {
+            .on_view(key, move |day| {
                 shown.edited(crate::component::Value::Text(day.to_string()));
             })
             .marked(

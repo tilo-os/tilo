@@ -160,20 +160,14 @@ macro_rules! optional_emitter_controls {
 pub use crate::optional_emitter_controls;
 
 /// A value control's binding: its action, else the collaborative document key it writes, else its
-/// legacy change callback, else its semantic action.
+/// semantic action.
 pub(crate) fn value_control_bindings<I>(
     control_id: &str,
     action: Option<&super::ActionEmitter<I>>,
     document_key: Option<&str>,
-    has_callback: bool,
 ) -> Vec<ControlBindingMetadata> {
     if let Some(action) = action {
         return vec![action.metadata(control_id)];
-    }
-    if has_callback {
-        // A callback-only value control reaches no API, so it is no
-        // binding: the inventory names what an agent can invoke.
-        return Vec::new();
     }
     let kind = if let Some(key) = document_key {
         ControlBindingKind::CollaborativeDocument(key.to_owned())
