@@ -37,7 +37,6 @@ pub mod lease;
 #[cfg(target_os = "linux")]
 #[cfg(unix)]
 pub mod loader_preflight;
-pub mod managed;
 pub mod manifest;
 #[cfg(target_os = "linux")]
 pub mod memory_monitor;
@@ -77,6 +76,3 @@ pub mod services;
 pub mod system_authority;
 #[cfg(target_os = "linux")]
 pub mod system_stats;
-
-#[cfg(test)]
-mod managed_tests;

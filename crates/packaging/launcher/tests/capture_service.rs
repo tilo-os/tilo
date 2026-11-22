@@ -163,12 +163,12 @@ type = "cli"
     ] {
         std::fs::write(metadata.join(name), bytes).unwrap();
     }
-    let mut row = launcher::managed::agent_package_row(
+    let mut row = package_store::InstalledPackage::detached(
+        PACKAGE,
         packed.id().to_hex(),
         installed,
         metadata.join("manifest.toml"),
     );
-    row.id = PACKAGE.into();
     row.version = "1.0.0".into();
     row.publisher_key_hex = publisher_hex;
     row.runtime = "tilo-runtime/2026.10.1".into();

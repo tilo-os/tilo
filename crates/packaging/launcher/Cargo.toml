@@ -25,13 +25,6 @@ path = "src/main.rs"
 name = "tilo-signal-provider"
 path = "src/bin/tilo-signal-provider.rs"
 
-[[bin]]
-name = "managed-tree-fixture"
-path = "tests/fixtures/managed-tree/main.rs"
-test = false
-bench = false
-required-features = ["managed-tree-test"]
-
 [lib]
 name = "launcher"
 path = "src/lib.rs"
@@ -41,8 +34,8 @@ path = "src/lib.rs"
 # in a release build. Debug builds always honour them; shipped images never
 # enable this.
 dev-overrides = ["package-store/dev-overrides"]
-# Explicit opt-in Linux process-tree qualification fixture.
-managed-tree-test = ["dep:tilo-test-env"]
+# Explicit opt-in qualification for the native tests that need real root and kernel facilities.
+native-qualification = []
 # Explicit signed-worker/FUSE alias qualification; no authority constructor.
 native-home-alias-qualification = []
 
@@ -124,8 +117,6 @@ tilo-rt.workspace = true
 # which the launcher's filtered accessibility proxy forwards.
 zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
-# Bounds the process-tree fixture's waits (`managed-tree-test`).
-tilo-test-env = { path = "../../dev/test-env", optional = true }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

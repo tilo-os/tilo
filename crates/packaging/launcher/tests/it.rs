@@ -27,9 +27,6 @@ mod system_view;
 #[path = "workspace_confinement.rs"]
 mod workspace_confinement;
 
-#[path = "managed.rs"]
-mod managed;
-
 #[cfg(target_os = "linux")]
 #[path = "netproxy.rs"]
 mod netproxy;

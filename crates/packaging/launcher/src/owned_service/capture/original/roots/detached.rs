@@ -271,7 +271,7 @@ fn decode(bytes: &[u8]) -> io::Result<PathBuf> {
 }
 
 #[cfg(test)]
-#[cfg(feature = "managed-tree-test")]
+#[cfg(feature = "native-qualification")]
 mod tests {
     use super::super::{FIRST_FD, OriginalMountedInput};
     use super::*;

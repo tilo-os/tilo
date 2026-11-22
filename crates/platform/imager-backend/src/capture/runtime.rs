@@ -157,12 +157,12 @@ impl TrustedCaptureService {
         }
         let payload = sidecar.join("service/payload");
         let manifest_path = metadata.join("manifest.toml");
-        let mut installed = launcher::managed::agent_package_row(
+        let mut installed = package_store::InstalledPackage::detached(
+            PACKAGE,
             pins.package_hash.clone(),
             payload.clone(),
             manifest_path.clone(),
         );
-        installed.id = PACKAGE.into();
         installed.version = manifest.package.version;
         installed
             .publisher_key_hex

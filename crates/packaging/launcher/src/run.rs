@@ -27,8 +27,6 @@ use seccomp_fds::SeccompFds;
 mod entrypoint_runtime;
 mod seccomp_fds;
 mod verified_installation;
-#[cfg(test)]
-pub(crate) use verified_installation::verified_launch_installation_against;
 pub(crate) use verified_installation::{verified_launch_installation, verified_launch_publisher};
 pub mod tilolang_process;
 
@@ -1299,7 +1297,7 @@ pub fn launch_app(
     payload_root: &Path,
     opts: &LaunchOptions,
 ) -> Result<ExitStatus, LaunchError> {
-    launch_with_context(manifest, payload_root, opts, None, None)
+    launch_with_context(manifest, payload_root, opts, None)
 }
 
 pub fn launch_supervised_gui(
@@ -1323,7 +1321,7 @@ pub fn launch_supervised_gui(
     if pinned.bwrap_bin.is_none() {
         pinned.bwrap_bin = Some("/usr/bin/bwrap".into());
     }
-    launch_with_context(&manifest, payload_root, &pinned, None, Some(owner))
+    launch_with_context(&manifest, payload_root, &pinned, Some(owner))
 }
 
 pub(crate) fn verified_original_manifest(
@@ -2336,7 +2334,7 @@ fn spawn_and_wait(
     egress: &crate::egress_proxy::EgressDecision,
     egress_proxy: Option<&crate::sandbox::EgressProxyBind>,
     observer: Option<(
-        &dyn crate::managed::EnrolledProcessObserver,
+        &dyn EnrolledProcessObserver,
         Option<PathBuf>,
     )>,
 ) -> Result<ExitStatus, LaunchError> {
@@ -2363,13 +2361,13 @@ fn spawn_and_wait(
     });
     SeccompFds::prepend_bwrap_args(&mut argv);
     let target_projection =
-        observer.and_then(crate::managed::EnrolledProcessObserver::target_projection);
+        observer.and_then(EnrolledProcessObserver::target_projection);
     if let Some(target) = target_projection {
         target.prepare_filter(&seccomp_fds.baseline)?;
         target.splice_baseline_argv(&mut argv)?;
     }
     let original_baseline = observer
-        .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        .and_then(EnrolledProcessObserver::capture_projection)
         .map(|capture| capture.original_baseline_filter(&seccomp_fds.baseline))
         .transpose()?
         .flatten();
@@ -2377,11 +2375,11 @@ fn spawn_and_wait(
         lease.splice_argv(&mut argv)?;
     }
     let original_identity = observer
-        .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        .and_then(EnrolledProcessObserver::capture_projection)
         .and_then(crate::owned_service::CaptureAdmission::original_sandbox_account_identity)
         .or_else(|| {
             observer
-                .and_then(crate::managed::EnrolledProcessObserver::retained_io_projection)
+                .and_then(EnrolledProcessObserver::retained_io_projection)
                 .map(crate::owned_service::RetainedIoAdmission::identity)
         })
         .or_else(|| {
@@ -2398,17 +2396,17 @@ fn spawn_and_wait(
     };
 
     if observer
-        .and_then(crate::managed::EnrolledProcessObserver::namespace_init_fd)
+        .and_then(EnrolledProcessObserver::namespace_init_fd)
         .is_some()
     {
         // Only the stricter owned-service path asks for PID 1 supervision.
         if !argv.iter().any(|arg| arg == "--unshare-all")
             || (opts.bwrap_bin.as_deref() != Some(Path::new("/usr/bin/bwrap"))
                 && observer
-                    .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+                    .and_then(EnrolledProcessObserver::capture_projection)
                     .is_none()
                 && observer
-                    .and_then(crate::managed::EnrolledProcessObserver::retained_io_projection)
+                    .and_then(EnrolledProcessObserver::retained_io_projection)
                     .is_none()
                 && target_projection.is_none())
         {
@@ -2431,7 +2429,7 @@ fn spawn_and_wait(
     // Validate the canonical full namespace plan above BEFORE the root-only original-source token
     // replaces its user-namespace component.
     if let Some(capture) =
-        observer.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        observer.and_then(EnrolledProcessObserver::capture_projection)
     {
         capture.splice_original_bootstrap(&mut argv)?;
     }
@@ -2446,7 +2444,7 @@ fn spawn_and_wait(
         .clone()
         .unwrap_or_else(|| PathBuf::from("bwrap"));
     if let Some(io) =
-        observer.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection)
+        observer.and_then(EnrolledProcessObserver::retained_io_projection)
     {
         io.splice_credentials(&mut argv)?;
     }
@@ -2454,11 +2452,11 @@ fn spawn_and_wait(
         target.splice_credentials(&mut argv)?;
     }
     let mut cmd = if let Some(capture) =
-        observer.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        observer.and_then(EnrolledProcessObserver::capture_projection)
     {
         capture.command()
     } else if let Some(io) =
-        observer.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection)
+        observer.and_then(EnrolledProcessObserver::retained_io_projection)
     {
         io.native()?.command()
     } else if let Some(target) = target_projection {
@@ -2468,7 +2466,7 @@ fn spawn_and_wait(
     };
     cmd.args(&argv);
     clear_bwrap_environment(&mut cmd);
-    if observer.is_some_and(crate::managed::EnrolledProcessObserver::owns_process_group) {
+    if observer.is_some_and(EnrolledProcessObserver::owns_process_group) {
         cmd.process_group(0);
     }
     if observer.is_some() {
@@ -2500,12 +2498,12 @@ fn spawn_and_wait(
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
         .collect();
     service_fds.extend(seccomp_fds.child_fds(host_account_fd));
-    if let Some(fd) = observer.and_then(crate::managed::EnrolledProcessObserver::namespace_init_fd)
+    if let Some(fd) = observer.and_then(EnrolledProcessObserver::namespace_init_fd)
     {
         service_fds.push((fd, crate::services::SERVICE_NAMESPACE_CHILD_FD));
     }
     if let Some(capture) =
-        observer.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        observer.and_then(EnrolledProcessObserver::capture_projection)
     {
         service_fds.extend(capture.descriptor_pairs());
     }
@@ -2513,12 +2511,12 @@ fn spawn_and_wait(
         lease.splice_pairs(&mut service_fds)?;
     }
     if let Some(io) =
-        observer.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection)
+        observer.and_then(EnrolledProcessObserver::retained_io_projection)
     {
         service_fds.extend(io.pairs()?);
     }
     if let Some(retained) =
-        observer.and_then(crate::managed::EnrolledProcessObserver::retained_view)
+        observer.and_then(EnrolledProcessObserver::retained_view)
     {
         service_fds.extend(retained.descriptor_pairs()?);
     }
@@ -2562,7 +2560,7 @@ fn spawn_and_wait(
 
     // SAFETY: pre_exec runs in the child after fork, before exec.
     let private_service = observer
-        .and_then(crate::managed::EnrolledProcessObserver::namespace_init_fd)
+        .and_then(EnrolledProcessObserver::namespace_init_fd)
         .is_some();
     unsafe {
         cmd.pre_exec(move || {
@@ -2809,7 +2807,7 @@ pub fn launch_with(
             "original signed package requires manifest-backed run".into(),
         ));
     }
-    launch_with_context(manifest, payload_root, opts, None, None)
+    launch_with_context(manifest, payload_root, opts, None)
 }
 
 pub(crate) fn validate_owned_service_options(opts: &LaunchOptions) -> Result<(), LaunchError> {
@@ -2846,6 +2844,37 @@ fn join_beside<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
+/// A process owner that admits, spawns and supervises one launch on the launcher's behalf: the
+/// owned-service, capture and ordinary-namespace paths each implement it so the launch pipeline can
+/// check their authority before the child exists and hand the child back for supervision.
+pub(crate) trait EnrolledProcessObserver {
+    fn retained_view(&self) -> Option<&crate::retained_view::RetainedViewAdmission> {
+        None
+    }
+    fn target_projection(&self) -> Option<&crate::owned_service::TargetProjectionAdmission> {
+        None
+    }
+    fn retained_io_projection(&self) -> Option<&crate::owned_service::RetainedIoAdmission> {
+        None
+    }
+    fn capture_projection(&self) -> Option<&crate::owned_service::CaptureAdmission> {
+        None
+    }
+    fn reviewed_network_hosts(&self) -> std::io::Result<Option<Vec<String>>> {
+        Ok(None)
+    }
+
+    fn namespace_init_fd(&self) -> Option<std::os::fd::RawFd> {
+        None
+    }
+    fn owns_process_group(&self) -> bool {
+        false
+    }
+    fn before_spawn(&self) -> std::io::Result<()>;
+    fn child_created(&self);
+    fn supervise(&self, child: std::process::Child) -> std::io::Result<std::process::ExitStatus>;
+}
+
 /// What the host prepares before a sandbox can be described: the verified runtime bundle, if any, and
 /// the app's writable directories.
 struct LaunchHost {
@@ -2860,21 +2889,15 @@ fn prepare_launch_host(
     manifest: &ManifestView,
     payload_root: &Path,
     opts: &LaunchOptions,
-    enrolled: Option<&crate::services::EnrolledServiceContext>,
-    owner: Option<&dyn crate::managed::EnrolledProcessObserver>,
+    owner: Option<&dyn EnrolledProcessObserver>,
 ) -> Result<LaunchHost, LaunchError> {
     // A resolved bundle wins over --minimal-libs and skips the loader-bind stopgap entirely.
     let retained_io =
-        owner.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection);
+        owner.and_then(EnrolledProcessObserver::retained_io_projection);
     let target_projection =
-        owner.and_then(crate::managed::EnrolledProcessObserver::target_projection);
-    let runtime = if enrolled.is_some() {
-        Some(
-            crate::managed::verify_runtime(manifest, opts)
-                .map_err(LaunchError::InvalidServiceLaunch)?,
-        )
-    } else if let Some(capture) =
-        owner.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        owner.and_then(EnrolledProcessObserver::target_projection);
+    let runtime = if let Some(capture) =
+        owner.and_then(EnrolledProcessObserver::capture_projection)
     {
         Some(capture.resolve_runtime(manifest)?)
     } else if let Some(io) = retained_io {
@@ -2896,15 +2919,6 @@ fn prepare_launch_host(
         io.launch_dirs()?
     } else if let Some(target) = target_projection {
         target.launch_dirs()?
-    } else if let Some(services) = enrolled {
-        (
-            crate::appdir::prepare_host_app_dir(
-                services.data_home(),
-                Some(&services.binding().workspace),
-                &services.binding().app,
-            )?,
-            crate::appdir::prepare_local_person_dir(services.data_home(), &services.binding().app)?,
-        )
     } else {
         resolve_launch_dirs(manifest, opts)?
     };
@@ -2916,22 +2930,6 @@ fn prepare_launch_host(
     })
 }
 
-pub(crate) fn run_enrolled(
-    manifest: &ManifestView,
-    payload_root: &Path,
-    opts: &LaunchOptions,
-    services: &mut crate::services::EnrolledServiceContext,
-    observer: &dyn crate::managed::EnrolledProcessObserver,
-) -> Result<ExitStatus, LaunchError> {
-    launch_with_context(
-        manifest,
-        payload_root,
-        opts,
-        Some((services, observer)),
-        None,
-    )
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "one ordered launch pipeline; splitting it would scatter the policy checks that must precede spawn"
@@ -2940,31 +2938,24 @@ pub(crate) fn launch_with_context(
     manifest: &ManifestView,
     payload_root: &Path,
     opts: &LaunchOptions,
-    mut enrolled: Option<(
-        &mut crate::services::EnrolledServiceContext,
-        &dyn crate::managed::EnrolledProcessObserver,
-    )>,
-    native_owner: Option<&dyn crate::managed::EnrolledProcessObserver>,
+    native_owner: Option<&dyn EnrolledProcessObserver>,
 ) -> Result<ExitStatus, LaunchError> {
     let retained_io =
-        native_owner.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection);
+        native_owner.and_then(EnrolledProcessObserver::retained_io_projection);
     let target_projection =
-        native_owner.and_then(crate::managed::EnrolledProcessObserver::target_projection);
-    if (retained_io.is_some() || target_projection.is_some()) && enrolled.is_some()
-        || retained_io.is_some() && target_projection.is_some()
-    {
+        native_owner.and_then(EnrolledProcessObserver::target_projection);
+    if retained_io.is_some() && target_projection.is_some() {
         return Err(LaunchError::InvalidServiceLaunch(
-            "Mixed retained/enrolled authority".into(),
+            "Mixed retained authority".into(),
         ));
     }
     let retained_view =
-        native_owner.and_then(crate::managed::EnrolledProcessObserver::retained_view);
+        native_owner.and_then(EnrolledProcessObserver::retained_view);
     if retained_view.is_some()
-        && (enrolled.is_some()
-            || retained_io.is_some()
+        && (retained_io.is_some()
             || target_projection.is_some()
             || native_owner
-                .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+                .and_then(EnrolledProcessObserver::capture_projection)
                 .is_some())
     {
         return Err(LaunchError::InvalidServiceLaunch(
@@ -3017,13 +3008,7 @@ pub(crate) fn launch_with_context(
             tilo_startup_metrics::handoff_mark("required-runtimes-verified");
             bundles
         })?;
-        let host = prepare_launch_host(
-            manifest,
-            payload_root,
-            opts,
-            enrolled.as_ref().map(|(services, _)| &**services),
-            native_owner,
-        );
+        let host = prepare_launch_host(manifest, payload_root, opts, native_owner);
         Ok::<_, LaunchError>((join_beside(dbus), host, join_beside(required)))
     })?;
     tilo_startup_metrics::handoff_mark("dbus-joined");
@@ -3051,19 +3036,10 @@ pub(crate) fn launch_with_context(
         capabilities.allow_network = !hosts.is_empty();
         capabilities.net_hosts = hosts;
     }
-    if enrolled.is_some() {
-        capabilities.participation = crate::capabilities::Participation::Author;
-    }
-
     // Connect only after cold runtime verification, loader preflight and host preparation.
     let egress = crate::egress_proxy::egress_decision(manifest, &capabilities, payload_root);
     let package_id = manifest.package_id.as_str();
-    let resolved = if let Some((services, _)) = enrolled.as_mut() {
-        let binding = services.binding().clone();
-        services
-            .take_for_launch(&binding, &manifest.sandbox.services)
-            .map_err(LaunchError::InvalidServiceLaunch)?
-    } else {
+    let resolved = {
         // A window whose instance a tilolang host runs holds none of the app's data: it gets no
         // collaboration connection (the host's instance has the app's own).
         let mut services = manifest.sandbox.services.clone();
@@ -3177,10 +3153,9 @@ pub(crate) fn launch_with_context(
     )?;
     let latency_sensitive = is_native_game_launch(manifest, opts);
     splice_cli_setenv(&mut argv, extra_setenv)?;
-    if enrolled.is_none()
-        && binds
-            .iter()
-            .any(|bind| bind.name == crate::services::COLLAB_SERVICE)
+    if binds
+        .iter()
+        .any(|bind| bind.name == crate::services::COLLAB_SERVICE)
     {
         splice_cli_setenv(
             &mut argv,
@@ -3213,17 +3188,6 @@ pub(crate) fn launch_with_context(
             )),
         )?;
     }
-    if let Some((services, _)) = enrolled.as_ref() {
-        splice_cli_setenv(
-            &mut argv,
-            Some((
-                "TILO_MANAGED_AGENT_CONTEXT".into(),
-                services
-                    .agent_context_json()
-                    .map_err(LaunchError::InvalidServiceLaunch)?,
-            )),
-        )?;
-    }
     splice_game_ntsync(&mut argv, latency_sensitive)?;
     let mut ro_paths = splice_runtime_mounts_with(
         &mut argv,
@@ -3232,24 +3196,24 @@ pub(crate) fn launch_with_context(
         &required_runtimes,
     )?;
     if native_owner
-        .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        .and_then(EnrolledProcessObserver::capture_projection)
         .is_some()
     {
         crate::owned_service::capture::splice(&mut argv, &mut ro_paths);
         if let Some(capture) =
-            native_owner.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+            native_owner.and_then(EnrolledProcessObserver::capture_projection)
         {
             capture.splice_archive(&mut argv, &mut ro_paths);
         }
     }
     if native_owner
-        .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        .and_then(EnrolledProcessObserver::capture_projection)
         .is_some_and(crate::owned_service::CaptureAdmission::has_output)
     {
         crate::owned_service::capture::splice_output(&mut argv);
     }
     splice_workspace_id_bind(&mut argv, opts)?;
-    if enrolled.is_none() && retained_io.is_none() && target_projection.is_none() {
+    if retained_io.is_none() && target_projection.is_none() {
         splice_tool_context(&mut argv)?;
     }
     splice_app_dir(&mut argv, &app_dir, &person_dir, &capabilities)?;
@@ -3292,19 +3256,19 @@ pub(crate) fn launch_with_context(
     )?;
 
     if native_owner
-        .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        .and_then(EnrolledProcessObserver::capture_projection)
         .is_some()
     {
         crate::owned_service::capture::splice_shim_data(&mut argv)?;
         if let Some(capture) =
-            native_owner.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+            native_owner.and_then(EnrolledProcessObserver::capture_projection)
         {
             capture.splice_inventory_scratch_policy(&mut argv)?;
         }
     }
 
     if native_owner
-        .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
+        .and_then(EnrolledProcessObserver::capture_projection)
         .is_some_and(crate::owned_service::CaptureAdmission::has_output)
     {
         let position = argv
@@ -3332,7 +3296,7 @@ pub(crate) fn launch_with_context(
         crate::owned_service::capture::splice_shim_data(&mut argv)?;
     }
     if let Some(retained) =
-        native_owner.and_then(crate::managed::EnrolledProcessObserver::retained_view)
+        native_owner.and_then(EnrolledProcessObserver::retained_view)
     {
         retained.splice(&mut argv)?;
     }
@@ -3347,17 +3311,12 @@ pub(crate) fn launch_with_context(
         },
         &egress,
         egress_proxy.as_ref(),
-        native_owner
-            .map(|observer| {
-                (
-                    observer,
-                    opts.data_home.as_deref().and_then(debug_output_log),
-                )
-            })
-            .or_else(|| {
-                enrolled
-                    .map(|(services, observer)| (observer, debug_output_log(services.data_home())))
-            }),
+        native_owner.map(|observer| {
+            (
+                observer,
+                opts.data_home.as_deref().and_then(debug_output_log),
+            )
+        }),
     );
     if result.is_ok()
         && let Some(namespace) = &mut headless_console
@@ -3367,8 +3326,9 @@ pub(crate) fn launch_with_context(
     result
 }
 
-/// Debug-only, off by default: when the launching host sets `TILO_LAUNCHER_DEBUG_STDERR=1`, a managed
-/// child's stdout and stderr go to a bounded log file in its data home instead of `/dev/null`.
+/// Debug-only, off by default: when the launching host sets `TILO_LAUNCHER_DEBUG_STDERR=1`, a
+/// supervised child's stdout and stderr go to a bounded log file in its data home instead of
+/// `/dev/null`.
 pub const DEBUG_STDERR_ENV: &str = "TILO_LAUNCHER_DEBUG_STDERR";
 /// Upper bound of one launch's captured output.
 const DEBUG_OUTPUT_LIMIT: usize = 1024 * 1024;
@@ -4457,7 +4417,7 @@ mod managed_spawn_policy_tests {
         checked: AtomicUsize,
         spawned: AtomicUsize,
     }
-    impl crate::managed::EnrolledProcessObserver for CurrentPolicy {
+    impl EnrolledProcessObserver for CurrentPolicy {
         fn before_spawn(&self) -> std::io::Result<()> {
             self.checked.fetch_add(1, AtomicOrdering::SeqCst);
             if self.allowed {
@@ -4482,7 +4442,7 @@ mod managed_spawn_policy_tests {
         supervised: AtomicUsize,
         own_group: AtomicBool,
     }
-    impl crate::managed::EnrolledProcessObserver for NativeOwner {
+    impl EnrolledProcessObserver for NativeOwner {
         fn owns_process_group(&self) -> bool {
             true
         }
@@ -4510,7 +4470,7 @@ mod managed_spawn_policy_tests {
         checked: AtomicUsize,
         spawned: AtomicUsize,
     }
-    impl crate::managed::EnrolledProcessObserver for OrdinaryPrivateService {
+    impl EnrolledProcessObserver for OrdinaryPrivateService {
         fn namespace_init_fd(&self) -> Option<RawFd> {
             Some(self.info.as_raw_fd())
         }

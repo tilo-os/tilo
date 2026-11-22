@@ -182,7 +182,7 @@ mod tests {
         assert!(read_bytes(OWNERSHIP, &unsealed).is_err());
     }
     #[test]
-    #[cfg(feature = "managed-tree-test")]
+    #[cfg(feature = "native-qualification")]
     fn root_captured_baseline_is_exact_sealed_and_refuses_substitution() {
         // This opt-in native fixture requires real root; absence is a failure.
         assert_eq!(rustix::process::geteuid().as_raw(), 0);

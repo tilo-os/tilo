@@ -96,6 +96,36 @@ impl InstalledPackage {
     pub fn user_managed(&self) -> bool {
         !self.system
     }
+
+    /// A row for a package whose payload and signed evidence live outside the store, at the paths
+    /// given: the imager's own capture worker and the launcher's qualification fixtures lay a
+    /// package out that way. Only the signed root, the payload and the manifest are named here, so a
+    /// caller that needs more fills the remaining fields before verifying.
+    pub fn detached(
+        id: impl Into<String>,
+        package_id_hex: String,
+        payload_root: PathBuf,
+        manifest_path: PathBuf,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            version: String::new(),
+            package_id_hex,
+            payload_root,
+            manifest_path,
+            publisher_key_hex: String::new(),
+            pinned: false,
+            installed_at: 0,
+            last_used: 0,
+            attested_by: String::new(),
+            cli_commands: Vec::new(),
+            runtime: String::new(),
+            source: String::new(),
+            held: false,
+            payload_bytes: 0,
+            system: false,
+        }
+    }
 }
 
 /// An app installed under an id another app of the same publisher names as its earlier one

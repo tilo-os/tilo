@@ -1,9 +1,6 @@
 //! Signed services whose successful exit proves their private PID namespace has
 //! finished. Ordinary bwrap leader exit is deliberately not this proof.
-use crate::{
-    managed::EnrolledProcessObserver,
-    run::{LaunchError, LaunchOptions},
-};
+use crate::run::{EnrolledProcessObserver, LaunchError, LaunchOptions};
 use std::{
     fs::File,
     io::{self, Read},
@@ -605,7 +602,7 @@ fn run_admitted_inner(
     owner.target_projection = target_projection;
     owner.target_connected = Mutex::new(target_connected);
     let status =
-        crate::run::launch_with_context(&manifest, &launch.payload, &options, None, Some(&owner));
+        crate::run::launch_with_context(&manifest, &launch.payload, &options, Some(&owner));
     // Even errors return only after canonical ServiceChild teardown.
     if owner.shutdown.load(Ordering::Acquire)
         && let Some(observed) = observed_shutdown

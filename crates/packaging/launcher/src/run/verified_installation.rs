@@ -36,18 +36,6 @@ pub(crate) fn verified_launch_publisher(
     verified_launch_publisher_against(installed, manifest_path, payload_root, expected, &revoked)
 }
 
-#[cfg(test)]
-pub(crate) fn verified_launch_installation_against(
-    installed: &package_store::InstalledPackage,
-    manifest_path: &Path,
-    payload_root: &Path,
-    expected: &str,
-    revoked: &tilo_app_package::RevocationList,
-) -> Result<ManifestView, LaunchError> {
-    verified_launch_publisher_against(installed, manifest_path, payload_root, expected, revoked)
-        .map(|(manifest, _)| manifest)
-}
-
 fn verified_launch_publisher_against(
     installed: &package_store::InstalledPackage,
     manifest_path: &Path,

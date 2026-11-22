@@ -240,5 +240,5 @@ pub(super) fn with_source_filesystem_access<T>(
 }
 
 #[cfg(test)]
-#[cfg(all(target_os = "linux", feature = "managed-tree-test"))]
+#[cfg(all(target_os = "linux", feature = "native-qualification"))]
 mod native_tests;

@@ -3,8 +3,8 @@
 //! This is kernel process ownership, not a filesystem admission.
 
 use crate::{
-    managed::EnrolledProcessObserver,
     owned_service::{NamespaceOwner, ServiceAuthority, ServiceCancellation},
+    run::EnrolledProcessObserver,
 };
 use std::os::fd::AsFd;
 use std::{
