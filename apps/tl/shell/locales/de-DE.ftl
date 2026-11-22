@@ -12,9 +12,6 @@ d-nkjtmr33 = Sicht
 d-kna5sco4 = Stil
     .doc = Der Stil, den die Person zeigt, als Ansichtsreferenz: ein Paket und eine Ansicht (`so.tilo.shell:strips`, `me.styles:timeline`).
 
-d-6b2coqll = Im Fokus
-    .doc = Die Leiste vorn, nach ihrem Schlüssel; leer für keine.
-
 d-cejnvssb = Shell
     .doc = Der eigene Shell-Datensatz der Person, erreichbar als `shell` (`root shell: Shell`).
     .noun = { $count ->
@@ -277,11 +274,6 @@ d-7j7tzynq = Zeigen als
 
 d-7j7tzynq-style = Stil
 
-d-dkylvhw4 = Nach vorn
-    .doc = Macht die Leiste `strip` zur vorderen: was ein Druck auf die Kopfzeile einer Spalte tut.
-
-d-dkylvhw4-strip = Leiste
-
 d-zoqbhs7o = Einrichten
     .doc = Womit eine neue Shell beginnt: die Teile der Leiste und des Docks, in der Reihenfolge, in der die voreingestellte Shell sie zeigt.
 
@@ -465,8 +457,6 @@ d-tnecawb6-title = Titel
 
 d-b3rfswle = Platz zeigen
     .doc = Zeigt den Platz `place` und holt seine Leiste mit nach vorn: was das Wählen eines Tabs tut und dieselbe Anordnungsaktion, die ein Skript oder ein Agent ausführt.
-
-d-b3rfswle-strip = Leiste
 
 d-b3rfswle-place = Platz
 
@@ -909,8 +899,6 @@ d-4vtnv5px-place = Platz
 d-mtt6d3af = Hier als Tab
     .doc = Macht den Platz, dessen Fensterleiste auf die Reihe `s` gezogen wurde, zu einem Tab dieser Reihe. So zieht eine Person die Leiste eines Fensters auf die eines anderen, um Tabs zu bilden, und „In … als Tab verschieben“ im Fenstermenü führt dieselbe Anordnungsaktion aus.
 
-d-mtt6d3af-v = V
-
 d-mtt6d3af-s = S
 
 d-mtt6d3af-target = Ziel
@@ -926,8 +914,6 @@ d-n2ez6yop-at = Bei
 
 d-d64rg4sw = Eigenes Fenster
     .doc = Gibt dem Platz `place` ein eigenes Fenster: was das Herausziehen eines Tabs aus seiner Fensterleiste tut, als das eigene `split-right` der Shell für das vordere Fenster.
-
-d-d64rg4sw-s = S
 
 d-d64rg4sw-place = Platz
 
