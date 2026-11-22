@@ -545,6 +545,24 @@ bash tools/ci/publish/host-seal.sh seal "$work/update-built" "$work/update-seale
   || die 'could not seal the update'
 signed_image "$work/update-sealed" "$work/update-signed"
 rm -rf "$work/update-built" "$work/update-sealed"
+# What the registry serves is a release of its own, sealed and signed the same way: the
+# next image the server's channel publishes, not the update the rollback above stages and
+# leaves behind. A registry never serves that one again as news.
+registry_ref=localhost/tilo-host:assurance-registry
+mkdir -p "$work/registry-built"
+printf 'FROM localhost/tilo-host:sealed\nRUN echo %s > /usr/lib/tilo/host-assurance-registry\n' "$target" \
+  > "$work/registry-built/Containerfile"
+podman build -q -t "$registry_ref" -f "$work/registry-built/Containerfile" "$work/registry-built" >/dev/null \
+  || die 'cannot build the image the registry serves'
+rm -rf "$work/registry-built"
+mkdir -p "$work/registry-built"
+save_archive "$registry_ref" "$work/registry-built"
+cp "$sealed/rpms-source" "$work/registry-built/rpms-source"
+bash tools/ci/publish/host-seal.sh seal "$work/registry-built" "$work/registry-sealed" 2> >(tee /dev/console >&2) \
+  || die 'could not seal the image the registry serves'
+signed_image "$work/registry-sealed" "$work/registry-signed"
+rm -rf "$work/registry-built" "$work/registry-sealed"
+podman rmi -f "$registry_ref" >/dev/null 2>&1 || true
 podman create --name host-assurance-unsigned localhost/tilo-host:sealed >/dev/null
 podman cp host-assurance-unsigned:/boot/EFI/Linux/. "$work/unsigned"
 podman rm host-assurance-unsigned >/dev/null
@@ -590,12 +608,12 @@ printf 'host-assurance\n' > "$work/registry/sigstore.pass"
 skopeo generate-sigstore-key --output-prefix "$work/registry/sigstore" \
   --passphrase-file "$work/registry/sigstore.pass" >/dev/null \
   || die 'cannot make the signing key the registry update is signed with'
-mv "$work/update-signed/image.oci.tar" "$work/registry/update.oci.tar"
-staged_digest=$(cat "$work/update-signed/digest")
+mv "$work/registry-signed/image.oci.tar" "$work/registry/update.oci.tar"
+staged_digest=$(cat "$work/registry-signed/digest")
 cp "$work/registry/sigstore.pub" "$work/mnt/registry-update.pub"
 cp os/tests/registry_update_check.sh "$work/mnt/registry_update_check.sh"
 umount "$work/mnt"
-rm -rf "$work/update-signed" "$work/unsigned"
+rm -rf "$work/update-signed" "$work/registry-signed" "$work/unsigned"
 qemu-img convert -f raw -O qcow2 "$work/update.raw" "$work/update.qcow2"
 rm -f "$work/update.raw"
 # The floor's authority runs the image's own tilo-rollback on this side: it drives no TPM
@@ -1053,6 +1071,11 @@ say 'the disk is sealed to this machine and opens by itself'
 # machine seals its own: the shipped tilo-rollback enrol, against the signed
 # PCR 11 prediction of the generation it runs and this machine's live PCR 7 —
 # the seal tilo-disk-encrypt enrol makes on a machine the installer runs on.
+# What userspace measured into PCR 11 after the boot image: a seal checked against the live
+# PCRs is checked against the phases measured since the initrd started.
+as_root 'echo "PCR 11 now: $(tpm2_pcrread sha256:11 | sed -n "s/^ *11 *: *//p")"
+grep -ao "\"string\":\"[^\"]*\"" /run/log/systemd/tpm2-measure.log 2>/dev/null | tr "\n" " "; echo
+systemctl is-enabled systemd-pcrphase.service systemd-pcrphase-initrd.service systemd-pcrphase-sysinit.service 2>&1 | tr "\n" " "' >&2 || true
 refuse 'this machine seals the volume it booted, with no secret' '
 set -eu
 mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
