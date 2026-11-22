@@ -1685,6 +1685,14 @@ impl Layout {
         if !change(&mut tree, action, by_the_person, &catalog)? {
             return Ok(());
         }
+        // A place the person puts on the layout comes to the front in the same change, so the shell
+        // shows what just arrived; one an agent puts beside its turn leaves the keyboard where the
+        // person has it.
+        if let LayoutAction::Place { place, .. } = action
+            && by_the_person
+        {
+            bring_to_front(&mut tree, *place);
+        }
         self.handle.replace_tree(tree.clone());
         if let Some(place) = brought {
             self.handle.focus_tab(place);
@@ -1722,6 +1730,35 @@ pub fn step_context(asked: &Actor, action: &LayoutAction) -> tilo_actions::Actio
         // A step of its own, and when it was made beside the person's steps of other records.
         gesture: Some(tilo_actions::ActionId::new()),
         ..tilo_actions::ActionContext::default()
+    }
+}
+
+/// Make the place `place` the one in front of `tree`: its workspace, its strip, its window and
+/// its tab, as a focus of it would.
+fn bring_to_front(tree: &mut Tree, place: TabId) {
+    let found = tree.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip
+                .window_groups
+                .iter()
+                .find(|group| group.tabs.iter().any(|tab| tab.id == place))
+                .map(|group| (workspace.id(), strip.id, group.id))
+        })
+    });
+    let Some((workspace, strip, group)) = found else {
+        return;
+    };
+    tree.active = workspace;
+    tree.active_strip.insert(workspace, strip);
+    tree.set_active_group(strip, group);
+    if let Some(held) = tree
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.strips)
+        .flat_map(|strip| &mut strip.window_groups)
+        .find(|held| held.id == group)
+    {
+        held.activate_tab(place);
     }
 }
 
