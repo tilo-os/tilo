@@ -21,25 +21,25 @@ conversion = "crates/server/tilo-workspace-service/src/workspaces/agent_roster.r
 kind = "browser.address-book"
 app = "browser"
 change = "left-own"
-conversion = "apps/browser/src/resource.rs:open_profile"
+conversion = "apps/browser/src/resource.rs:open_record"
 
 [[change]]
 kind = "browser.browsing-history"
 app = "browser"
 change = "left-own"
-conversion = "apps/browser/src/resource.rs:open_profile"
+conversion = "apps/browser/src/resource.rs:open_record"
 
 [[change]]
 kind = "browser.page-record"
 app = "browser"
 change = "left-own"
-conversion = "apps/browser/src/resource.rs:open_profile"
+conversion = "apps/browser/src/resource.rs:open_record"
 
 [[change]]
 kind = "browser.personal-bookmarks"
 app = "browser"
 change = "left-own"
-conversion = "apps/browser/src/resource.rs:open_profile"
+conversion = "apps/browser/src/resource.rs:open_record"
 
 [[change]]
 kind = "canvas.recent-artworks"
