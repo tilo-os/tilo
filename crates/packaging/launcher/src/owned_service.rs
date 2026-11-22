@@ -151,6 +151,32 @@ pub trait ServiceAuthority: Send + Sync {
 const AUTHORITY_RECHECK: Duration = Duration::from_millis(250);
 /// SIGTERM grace before the private namespace init is killed.
 const STOP_GRACE: Duration = Duration::from_secs(3);
+
+/// What woke a supervisor, counted in a test: how it learned to stop is the proof that a
+/// cancellation rings it awake and only what cannot ring waits for a recheck, where a time would
+/// vary with everything else the machine runs.
+#[cfg(test)]
+mod woke {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// Rechecks: one per [`super::AUTHORITY_RECHECK`], and the first wait's probe.
+    pub(super) static RECHECKS: AtomicUsize = AtomicUsize::new(0);
+    /// Whether the last SIGTERM followed a ring rather than a timer.
+    pub(super) static TERMED_ON_RING: AtomicBool = AtomicBool::new(false);
+
+    pub(super) fn recheck() {
+        RECHECKS.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(super) fn termed(rang: bool) {
+        TERMED_ON_RING.store(rang, Ordering::Release);
+    }
+}
+#[cfg(not(test))]
+mod woke {
+    pub(super) fn recheck() {}
+    pub(super) fn termed(_: bool) {}
+}
 #[derive(Default)]
 struct CancelState {
     cancelled: AtomicBool,
@@ -1090,26 +1116,31 @@ impl EnrolledProcessObserver for NamespaceOwner {
                 // Killed: nothing is left to do but observe the exit.
                 Some(_) => (None, None),
             };
-            match bounded_command::wait_child_or(&mut owned.child, ring, deadline)? {
-                bounded_command::Wakeup::Exited(status) => {
-                    let init = owned.init.as_ref().ok_or(io::ErrorKind::InvalidData)?;
-                    if status.success() && !forced && exited(init)? {
-                        if let Some(io) = &self.retained_io {
-                            io.confirm_removal_retirement()?;
+            let woken_by_ring =
+                match bounded_command::wait_child_or(&mut owned.child, ring, deadline)? {
+                    bounded_command::Wakeup::Exited(status) => {
+                        let init = owned.init.as_ref().ok_or(io::ErrorKind::InvalidData)?;
+                        if status.success() && !forced && exited(init)? {
+                            if let Some(io) = &self.retained_io {
+                                io.confirm_removal_retirement()?;
+                            }
+                            self.quiescent.store(true, Ordering::Release);
+                            self.shutdown.store(true, Ordering::Release);
+                            owned.init.take();
                         }
-                        self.quiescent.store(true, Ordering::Release);
-                        self.shutdown.store(true, Ordering::Release);
-                        owned.init.take();
+                        // An outer failure is not proof that the private namespace stopped.
+                        return Ok(status);
                     }
-                    // An outer failure is not proof that the private namespace stopped.
-                    return Ok(status);
-                }
-                // Drain before checking, so a cancel racing the check rings again.
-                bounded_command::Wakeup::Woken => wake.drain(),
-                bounded_command::Wakeup::Deadline => {}
-            }
+                    // Drain before checking, so a cancel racing the check rings again.
+                    bounded_command::Wakeup::Woken => {
+                        wake.drain();
+                        true
+                    }
+                    bounded_command::Wakeup::Deadline => false,
+                };
             let now = Instant::now();
             if stopping.is_none() && now >= recheck {
+                woke::recheck();
                 recheck = now
                     .checked_add(AUTHORITY_RECHECK)
                     .ok_or(io::ErrorKind::InvalidData)?;
@@ -1126,6 +1157,7 @@ impl EnrolledProcessObserver for NamespaceOwner {
                 && self.target_projection.as_ref().is_none_or(TargetProjectionAdmission::begin_exposure_stop)
             {
                 owned.signal(libc::SIGTERM)?;
+                woke::termed(woken_by_ring);
                 stopping = Some(
                     now.checked_add(STOP_GRACE)
                         .ok_or(io::ErrorKind::InvalidData)?,
@@ -1616,40 +1648,43 @@ mod tests {
         assert!(status.success());
         assert!(running.owner.quiescent.load(Ordering::Acquire));
     }
+    /// A cancellation rings the supervisor awake and reaches the provider without waiting for the
+    /// next recheck; a revocation, which cannot ring, stops the service at the recheck after it.
+    /// Counted by what woke the supervisor, not timed.
     #[test]
-    fn cancellation_and_revocation_latency() {
+    fn cancellation_rings_and_revocation_waits_one_recheck() {
         let mut running = Running::with_script(WAITING_PROVIDER);
         let tid = running.worker_tid.to_string();
-        // Cancel right after a recheck: only the cancellation ring, not the next recheck, can then
-        // deliver SIGTERM well inside one period.
+        // Cancel right after a recheck, so the ring and the next recheck cannot coincide.
         let ticked = context_switches(&tid);
         let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
         while context_switches(&tid) == ticked && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(1));
         }
-        let cancelled = Instant::now();
         running.owner.cancellation.cancel();
         let termed = running.root.path().join("termed");
-        while !termed.exists() && cancelled.elapsed() < Duration::from_secs(5) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        let latency = cancelled.elapsed();
+        tilo_test_env::wait_until("the cancellation to reach the provider", || termed.exists());
         running.worker.take().unwrap().join().unwrap().unwrap();
-        println!("cancellation reached the provider in {latency:?}");
         assert!(
-            latency < Duration::from_millis(150),
-            "cancellation took {latency:?} to reach the provider"
+            woke::TERMED_ON_RING.load(Ordering::Acquire),
+            "the cancellation waited for a recheck to reach the provider"
         );
 
         let mut running = Running::start();
-        let revoked = Instant::now();
+        let before = woke::RECHECKS.load(Ordering::Acquire);
         running.authority.0.store(false, Ordering::Release);
         running.worker.take().unwrap().join().unwrap().unwrap();
-        println!("revocation stopped the service in {:?}", revoked.elapsed());
+        let rechecks = woke::RECHECKS
+            .load(Ordering::Acquire)
+            .saturating_sub(before);
         assert!(
-            revoked.elapsed() < AUTHORITY_RECHECK + Duration::from_secs(2),
-            "revocation took {:?}",
-            revoked.elapsed()
+            !woke::TERMED_ON_RING.load(Ordering::Acquire),
+            "a revocation rang nothing, yet the supervisor stopped on a ring"
+        );
+        // The recheck under way when it was revoked, and the one after it.
+        assert!(
+            rechecks <= 2,
+            "the revocation took {rechecks} rechecks to stop the service"
         );
     }
     tilo_test_env::scenario! {
