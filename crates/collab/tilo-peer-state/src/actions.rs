@@ -560,10 +560,13 @@ impl ActionService {
         // A device asks as itself and nobody else: the connection already
         // says which device is there.
         if remote != source {
-            return Err(ActionCallError::NotPermitted);
+            return Err(not_permitted(
+                source,
+                "it came over another device's connection",
+            ));
         }
         if signed.verify(&source).is_err() {
-            return Err(ActionCallError::NotPermitted);
+            return Err(not_permitted(source, "its signature does not verify"));
         }
         if action.target != self.device() {
             return Err(ActionCallError::Refused {
@@ -608,8 +611,18 @@ impl ActionService {
             .ok_or_else(|| ActionCallError::Refused {
                 reason: "this device does not hold that workspace".into(),
             })?;
-        let authority = authority.map_err(|error| refusal_of(&error))?;
-        let certificate = certificate.ok_or(ActionCallError::NotPermitted)?;
+        let authority = authority.map_err(|error| {
+            tracing::warn!(
+                device = %hex::encode(&source[..4]),
+                workspace = %action.workspace,
+                %error,
+                "a device's request is refused: the workspace gives it no authority"
+            );
+            refusal_of(&error)
+        })?;
+        let certificate = certificate.ok_or_else(|| {
+            not_permitted(source, "the workspace lists no certificate for the device")
+        })?;
         // The device is its own actor when its person delegated it: an
         // agent is the agent, a bot the bot, never the person.
         let caller = match &authority.acting.by {
@@ -873,6 +886,13 @@ impl Bucket {
             .mul_add(rate.per_second, self.changes)
             >= rate.capacity
     }
+}
+
+/// A request from `source` refused for `why`, which the host's log keeps: the caller reads
+/// only that it may not, as a stranger would.
+fn not_permitted(source: [u8; 32], why: &str) -> tilo_actions::remote::ActionCallError {
+    tracing::debug!(device = %hex::encode(&source[..4]), why, "a device's request is refused");
+    tilo_actions::remote::ActionCallError::NotPermitted
 }
 
 /// Why the workspace's roster leaves a device without authority, as the

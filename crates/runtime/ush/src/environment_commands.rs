@@ -579,11 +579,21 @@ impl EnvironmentCommands {
         // Only the workspace's host asks: a device of this member's own
         // operator. Anyone else could name an account that is not theirs.
         if caller.user_public_key() != Some(&self.0.operator) {
+            tracing::debug!(
+                caller = ?caller.user_public_key().map(|key| hex::encode(&key[..4])),
+                operator = %hex::encode(&self.0.operator[..4]),
+                "a request for a workspace's machine is refused: its caller is not this member's operator"
+            );
             return Err(ActionCallError::NotPermitted);
         }
         let workspace = caller
             .workspace()
-            .ok_or(ActionCallError::NotPermitted)?
+            .ok_or_else(|| {
+                tracing::debug!(
+                    "a request for a workspace's machine is refused: it names no workspace"
+                );
+                ActionCallError::NotPermitted
+            })?
             .to_owned();
         let asked = match action {
             environment_commands::RUN => Asked::Command(argument(request)?),
