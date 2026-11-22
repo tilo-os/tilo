@@ -186,36 +186,6 @@ impl Entry {
     }
 }
 
-/// The host the site's `entry.json` is `entry` names (`home.host.info`): who
-/// it is and where it is dialled. A site writes the host's own
-/// `web-host.json` there as one JSON string
-/// (`container/entrypoint.sh`), which a page parses the same way
-/// (`site-host.mjs`).
-#[must_use]
-pub fn entry_host(entry: &serde_json::Value) -> Option<tilo_server_protocol::web::PageHost> {
-    serde_json::from_str(entry.pointer("/home/host/info")?.as_str()?).ok()
-}
-
-/// The entry of the site whose `entry.json` is `entry` to the workspace it
-/// keeps on the server at `host_origin`: its origin and path. Only HTTPS, but
-/// for an entry on loopback.
-#[must_use]
-pub fn site_entry(entry: &serde_json::Value, host_origin: &str) -> Option<(String, String)> {
-    let home = entry.get("home")?;
-    let home_host = home.pointer("/host/origin")?.as_str()?;
-    if home_host.trim_end_matches('/') != host_origin.trim_end_matches('/') {
-        return None;
-    }
-    let admission = home.get("admission")?.as_str()?;
-    let (scheme, rest) = admission.split_once("://")?;
-    let (authority, path) = rest.split_at(rest.find('/')?);
-    let secure = tilo_net::Url::parse(admission).is_ok_and(|url| tilo_net::secure_origin(&url));
-    if authority.is_empty() || !secure {
-        return None;
-    }
-    Some((format!("{scheme}://{authority}"), path.to_owned()))
-}
-
 /// A computer that is now one of the person's devices.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct SignIn {
@@ -250,23 +220,7 @@ pub struct Admission {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::{PairingLink, entry_host};
-
-    /// A site names its host as the web entry writes it (`entry.json`): the
-    /// host's own `web-host.json` in one JSON string (`container/entrypoint.sh`),
-    /// which this reads; an object there is not a form a site writes.
-    #[test]
-    fn reads_the_host_a_site_names_in_its_entry() {
-        let info = include_str!("../../../../os/containers/tilo-api/host-info.json");
-        let named = serde_json::json!({"home": {"host": {"origin": "https://server.example.test", "info": info}}});
-        let host = entry_host(&named).expect("the host the site names");
-        assert_eq!(host.origin.as_deref(), Some("https://server.example.test"));
-        assert!(host.address.is_some(), "the host names where it answers");
-        let object = serde_json::json!({
-            "home": {"host": {"info": serde_json::from_str::<serde_json::Value>(info).unwrap()}}
-        });
-        assert!(entry_host(&object).is_none());
-    }
+    use super::PairingLink;
 
     /// The workspace every test login code opens.
     const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
