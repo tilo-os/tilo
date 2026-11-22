@@ -419,8 +419,8 @@ impl View<'_> {
     }
 
     /// Every resource holding a text that is not blank, by path, with its schema and those
-    /// texts in field order ([`Texts`]): what search finds of the package. One pass over the index's
-    /// fields; a resource the open writes touched is read through them.
+    /// texts in [`text_fields`]' order ([`Texts`]): what search finds of the package. One pass
+    /// over the index's fields; a resource the open writes touched is read through them.
     pub fn every_text(&self) -> Result<Vec<Texts>, IndexError> {
         let mut out = Vec::new();
         let mut seen = BTreeSet::new();
@@ -435,10 +435,8 @@ impl View<'_> {
             let Some(schema) = held.ty.as_deref().and_then(lookup) else {
                 continue;
             };
-            let texts: Vec<FieldValue> = schema
-                .fields
-                .iter()
-                .filter(|f| f.kind.holds_text())
+            let texts: Vec<FieldValue> = text_fields(schema)
+                .into_iter()
                 .filter_map(|f| held.texts.get(&f.id))
                 .filter(|text| !crate::reads::is_blank(text))
                 .cloned()
@@ -512,11 +510,11 @@ impl View<'_> {
         Ok(out)
     }
 
-    /// The texts of the resource at `path`, in field order, that are not blank: what search
-    /// finds it by, as stored (read for a reader by whoever shows them).
+    /// The texts of the resource at `path`, in [`text_fields`]' order, that are not blank: what
+    /// search finds it by, as stored (read for a reader by whoever shows them).
     pub fn texts(&self, path: &str, schema: &TypeSchema) -> Result<Vec<FieldValue>, IndexError> {
         let mut out = Vec::new();
-        for field in schema.fields.iter().filter(|f| f.kind.holds_text()) {
+        for field in text_fields(schema) {
             if let Some(text) = self
                 .field(path, &field.id)?
                 .and_then(crate::reads::text_value)
@@ -645,4 +643,23 @@ fn first_line(text: &FieldValue) -> FieldValue {
         }
         other => other.clone(),
     }
+}
+
+/// The fields of `schema` that hold text, the one the type says names its documents
+/// (`(title: subject)`) first and the rest in field order: what search reads as a resource's
+/// name, and the words under it.
+fn text_fields(schema: &TypeSchema) -> Vec<&FieldSchema> {
+    let mut fields: Vec<&FieldSchema> = schema
+        .fields
+        .iter()
+        .filter(|field| field.kind.holds_text())
+        .collect();
+    if let Some(title) = schema.title.as_deref()
+        && let Some(at) = fields.iter().position(|field| field.id == title)
+        && at > 0
+    {
+        let named = fields.remove(at);
+        fields.insert(0, named);
+    }
+    fields
 }
