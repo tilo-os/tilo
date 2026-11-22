@@ -291,12 +291,12 @@ class AssemblyNamespaces(unittest.TestCase):
             # The cohort names what ships, so a leftover binary cannot join it.
             self.assertEqual(environment['COHORT_APPS'], cohort.replace(',', ' '))
             self.assertEqual(int(environment['REQUIRE_MIN']), cohort.count(',') + 1)
-            args.app = 'notes'
-            args.cohort = 'notes'
+            args.app = 'terminal'
+            args.cohort = 'terminal'
             with patch.object(ASSEMBLER, 'run') as run:
                 ASSEMBLER.package_inside(args)
             self.assertNotIn('COHORT_TAPP_DIR', run.call_args.kwargs['env'])
-            self.assertEqual(run.call_args.kwargs['env']['COHORT_APPS'], 'notes')
+            self.assertEqual(run.call_args.kwargs['env']['COHORT_APPS'], 'terminal')
 
     def test_developer_capture_is_readable_in_owned_namespace_but_outside_component_tree(self):
         with tempfile.TemporaryDirectory(prefix='assembly-compiler-') as directory:
@@ -561,7 +561,7 @@ class TilolangPackages(unittest.TestCase):
     """The tilolang packages the image plans ship in a swap too, through the
     release's own packing, never a second one."""
 
-    PLAN = {'apps': ['notes'], 'tilolang': [
+    PLAN = {'apps': ['terminal'], 'tilolang': [
         {'app': 'tl-discussion', 'dir': 'apps/tl/discussion',
          'id': 'so.tilo.lang.discussion', 'version': '0.1.0',
          'runtime': 'tilolang/0.1.0+tilolang'},
@@ -601,7 +601,7 @@ class TilolangPackages(unittest.TestCase):
             plan_path.write_text(json.dumps(self.PLAN))
             args = SimpleNamespace(
                 repo=SOURCE.parents[2], target_dir=stage, stage=stage,
-                profile='thin-app', features='', app=None, cohort='notes',
+                profile='thin-app', features='', app=None, cohort='terminal',
                 compiler_interface_out=None, compiler_capture=None,
                 plan=self.PLAN, app_plan=plan_path)
             with patch.object(ASSEMBLER, 'run') as run:
@@ -609,7 +609,7 @@ class TilolangPackages(unittest.TestCase):
             environment = run.call_args.kwargs['env']
             self.assertEqual(environment['APP_PLAN'], str(plan_path))
             self.assertEqual(environment['TILOLANG_BIN'], str(stage / 'release/tilolang'))
-            self.assertEqual(environment['COHORT_APPS'], 'notes tl-discussion tl-notes')
+            self.assertEqual(environment['COHORT_APPS'], 'terminal tl-discussion tl-notes')
             self.assertEqual(environment['REQUIRE_MIN'], '3')
 
     def test_the_tilolang_host_ships_stripped_for_the_runtime_bundle(self):
