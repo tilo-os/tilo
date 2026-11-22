@@ -24,13 +24,12 @@ pub fn app() -> &'static str {
     })
 }
 
-/// The packages Chat's record is read and changed through, compiled once for the server.
+/// The packages Chat's record is read and changed through, built into the server.
 ///
 /// # Errors
 /// A package does not compile, which is a bug of this build.
 pub fn packages() -> Result<Packages, String> {
-    static COMPILED: OnceLock<Result<Packages, String>> = OnceLock::new();
-    COMPILED.get_or_init(asks::chat_packages).clone()
+    asks::chat_packages()
 }
 
 /// The member a record is opened as on this server: Chat itself, so nothing a mention in it

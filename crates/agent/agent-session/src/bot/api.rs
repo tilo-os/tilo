@@ -55,10 +55,10 @@ pub trait ApiMember: Send {
     fn offered(&self) -> Vec<(DocumentRoute, Vec<CatalogueRow>)>;
     /// Whether the record at `route` is held.
     fn holds(&self, route: &DocumentRoute) -> bool;
-    /// The record at `route` as the bot may read it now: its whole document,
-    /// `None` for one the workspace holds none of, the refusal for one the
-    /// bot may not read.
-    fn record(&self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String>;
+    /// The record at `route` as the bot may read it now: its whole document, or what its
+    /// package's read answers of a tilolang app's; absent for one the workspace holds none of,
+    /// the refusal for one the bot may not read.
+    fn record(&self, route: &DocumentRoute) -> Result<ResourceCopy, String>;
     /// Invoke as `invoker` within `context` and commit the change.
     /// `confirmed`: the run confirmed it, from the grant's advance consent,
     /// for an action whose contract asks for confirmation.
@@ -603,11 +603,9 @@ impl<P: ApiMember + 'static> ResourceReads for BotReads<P> {
             cluster_id: member.workspace().to_owned(),
             document: address.record.clone(),
         };
-        match member.record(&route) {
-            Ok(Some(document)) => Ok(ResourceCopy::Document(document)),
-            Ok(None) => Ok(ResourceCopy::Absent),
-            Err(reason) => Err(ActionCallError::Refused { reason }),
-        }
+        member
+            .record(&route)
+            .map_err(|reason| ActionCallError::Refused { reason })
     }
 
     /// Nothing but the run itself writes the copies while it reads them, so

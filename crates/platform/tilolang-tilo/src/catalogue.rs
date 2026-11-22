@@ -373,7 +373,8 @@ fn longer_type_name(kind: &str) -> String {
 }
 
 /// The app a tilolang resource kind belongs to and its type: `tl.<app>.<Type>`.
-fn tilolang_kind(kind: &str) -> Option<(&str, &str)> {
+#[must_use]
+pub fn tilolang_kind(kind: &str) -> Option<(&str, &str)> {
     let rest = kind.strip_prefix("tl.")?;
     let (app, name) = rest.rsplit_once('.')?;
     name.starts_with(|c: char| c.is_ascii_uppercase())

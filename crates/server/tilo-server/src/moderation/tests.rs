@@ -58,6 +58,7 @@ fn flooded_workspace() -> Opened {
         &RecordBytes::default(),
         &tl_chat::packages().unwrap(),
         tl_chat::viewer(),
+        None,
     )
     .unwrap();
     let general = tl_chat::new_channel(&mut chat, &person(OWNER), ("general", ""), None).unwrap();

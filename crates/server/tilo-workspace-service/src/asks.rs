@@ -41,17 +41,11 @@ pub const AGENT_APP: &str = "so.tilo.lang.agent";
 /// # Errors
 /// A package does not compile, which is a bug of this build.
 pub fn chat_packages() -> Result<Packages, String> {
-    Packages::compile(&[
-        (
-            include_str!("../../../../apps/tl/agent/app.tl"),
-            include_str!("../../../../apps/tl/agent/app.ids"),
-        ),
-        (
-            include_str!("../../../../apps/tl/chat/app.tl"),
-            include_str!("../../../../apps/tl/chat/app.ids"),
-        ),
-    ])
+    crate::tl_records::built_in(CHAT_APP)?.ok_or_else(|| format!("{CHAT_APP} is not built in"))
 }
+
+/// tilolang Chat's app id.
+const CHAT_APP: &str = "so.tilo.lang.chat";
 
 /// Where an ask or a reply stands, as the agent package's `AskState` says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

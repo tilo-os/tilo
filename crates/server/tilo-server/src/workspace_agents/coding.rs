@@ -406,7 +406,6 @@ impl super::ServerAgents {
         (mut turn, mut reply): (Turn, Reply),
         going: &going::Going,
     ) -> (Ask, Result<(), String>) {
-        reply.taken().await;
         self.sub_began(&scope.workspace, &turn).await;
         let from_starter = turn.line.as_ref().is_some_and(|line| line.from_starter);
         let began = turn.ask.clone();
@@ -675,7 +674,6 @@ impl super::ServerAgents {
                 }
                 *turn = next;
                 *reply = scope.reply(turn);
-                reply.taken().await;
                 match tools_of(reply) {
                     Ok(tools) => *work.heard.tools.lock_recover() = Some(tools),
                     Err(why) => return Outcome::Failed(why),

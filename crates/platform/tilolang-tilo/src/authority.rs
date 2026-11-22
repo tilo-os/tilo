@@ -244,6 +244,11 @@ impl Authority for TiloAuthority {
             .contains(&(app.to_owned(), host.to_ascii_lowercase()))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one decision read in order: the node acted on, the person and their delegation, \
+                  then each author of the code that led here"
+    )]
     fn decide(&self, invoker: &Actor, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
         let access = (self.access)();
         let state = self.state.borrow();

@@ -70,11 +70,7 @@ fn world() -> World {
         let todo = apps.replica(TODO);
         todo.host.set_clock(tilolang_tilo::host::system_time);
     }
-    for app in [
-        "so.tilo.notes",
-        "so.tilo.chat",
-        "so.tilo.lang.board",
-    ] {
+    for app in ["so.tilo.notes", "so.tilo.chat", "so.tilo.lang.board"] {
         let mut other = apps.replica(app);
         let package = other.host.package(app).unwrap();
         let scenario = package.meta.scenarios.first().unwrap().action.clone();

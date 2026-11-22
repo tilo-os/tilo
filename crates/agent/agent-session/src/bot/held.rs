@@ -14,13 +14,18 @@
 //! has it with what the bot's runs changed since: what the bot's record reads
 //! answer ([`ApiMember::record`]), for any record the bot follows,
 //! whether or not it acts on it.
+//!
+//! A tilolang app's record is held beside them ([`HeldDocuments::hold_tilolang`]): opened
+//! through the app's package, its resources published as every tilolang resource is
+//! (`tl.<app>.<Type>`), so the bot's steps find, type, invoke and read its actions on the same
+//! path as a native record's, and a read answers what the core read answers of it.
 
 use std::collections::BTreeMap;
 
 use collab_types::DocumentMutation;
 use serde_json::{Map, Value};
 use tilo_actions::api::{ActionAddress, ApiError};
-use tilo_actions::remote::CatalogueRow;
+use tilo_actions::remote::{CatalogueRow, ResourceCopy};
 use tilo_actions::{ActionContext, ActionInvoker, ActionOutput, Actor, MemberId};
 use tilo_peer_state::document_frame::DocumentRoute;
 
@@ -29,6 +34,37 @@ use super::item_json::{OutboxRow, outbox_entries};
 use crate::apps::{AppCatalogue, ReplicaActor, Seed};
 use crate::worker::ConfinedReplica;
 use ui::permissions::policy;
+
+/// A tilolang app's record of the workspace as a bot holds it: the documents that keep it, as the
+/// workspace has them with what the bot's runs changed since, read and changed through the app's
+/// package on the calling thread.
+pub trait TilolangRecord: Send {
+    /// Every action its resources publish, each in the row of the resource holding it.
+    ///
+    /// # Errors
+    /// The record does not open through its package.
+    fn rows(&self) -> Result<Vec<CatalogueRow>, String>;
+    /// Run the published action `address` with `arguments` as `invoker`, its change recorded
+    /// with `context` (the run and step it is, what caused it).
+    ///
+    /// # Errors
+    /// As any call of a published action: unknown, refused, invalid arguments.
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &Map<String, Value>,
+        invoker: &ActionInvoker,
+        context: &ActionContext,
+    ) -> Result<ActionOutput, ApiError>;
+    /// What the core read answers of `resource` (a published id; empty for the workspace's
+    /// documents of the app) for `reader`.
+    ///
+    /// # Errors
+    /// The record does not open, or the read is refused.
+    fn read(&self, resource: &str, reader: &Actor) -> Result<Value, String>;
+    /// Its documents as held now, each whole, by document id (`""` for the app's own).
+    fn documents(&self) -> BTreeMap<String, Vec<u8>>;
+}
 
 /// One installation's replicas of the workspace's records.
 pub struct HeldDocuments {
@@ -47,6 +83,8 @@ pub struct HeldDocuments {
     changed: Vec<(DocumentRoute, DocumentMutation)>,
     /// Each record's whole document, as read.
     copies: BTreeMap<DocumentRoute, Vec<u8>>,
+    /// The tilolang apps' records, by app.
+    tilolang: BTreeMap<String, Box<dyn TilolangRecord>>,
 }
 
 impl HeldDocuments {
@@ -68,6 +106,28 @@ impl HeldDocuments {
             waiting: BTreeMap::new(),
             changed: Vec::new(),
             copies: BTreeMap::new(),
+            tilolang: BTreeMap::new(),
+        }
+    }
+
+    /// Hold `record`, the record of the tilolang app `app`, in place of the one held before.
+    pub fn hold_tilolang(&mut self, app: &str, record: Box<dyn TilolangRecord>) {
+        self.tilolang.insert(app.to_owned(), record);
+    }
+
+    /// The documents of the tilolang app `app`'s record as the runs left them: what the host
+    /// writes into the workspace of them is what they gained since it held them.
+    #[must_use]
+    pub fn tilolang_documents(&self, app: &str) -> Option<BTreeMap<String, Vec<u8>>> {
+        Some(self.tilolang.get(app)?.documents())
+    }
+
+    /// The route a tilolang app's record is offered and invoked on.
+    fn tilolang_route(&self, app: &str) -> DocumentRoute {
+        DocumentRoute {
+            app_id: app.to_owned(),
+            cluster_id: self.workspace.clone(),
+            document: String::new(),
         }
     }
 
@@ -215,6 +275,7 @@ impl HeldDocuments {
     /// the workspace keeps it. For a change the workspace refused, which must not
     /// stay in the bot's copy under its later changes.
     pub fn forget(&mut self, route: &DocumentRoute) {
+        self.tilolang.remove(&route.app_id);
         let holder = self.holder(route).clone();
         self.replicas.remove(&holder);
         let mut dropped = vec![holder.clone()];
@@ -247,21 +308,44 @@ impl ApiMember for HeldDocuments {
     fn offered(&self) -> Vec<(DocumentRoute, Vec<CatalogueRow>)> {
         // A record held beside another is offered through it: the chain
         // its app publishes, as in a window.
-        self.replicas
+        let mut offered: Vec<_> = self
+            .replicas
             .iter()
             .map(|(route, replica)| (route.clone(), replica.survey_rows()))
-            .collect()
+            .collect();
+        for (app, record) in &self.tilolang {
+            match record.rows() {
+                Ok(rows) => offered.push((self.tilolang_route(app), rows)),
+                Err(error) => {
+                    tracing::warn!(%app, %error, "a tilolang record the bot holds offers nothing");
+                }
+            }
+        }
+        offered
     }
 
     fn holds(&self, route: &DocumentRoute) -> bool {
         self.replicas.contains_key(route)
+            || (route.document.is_empty() && self.tilolang.contains_key(&route.app_id))
     }
 
-    fn record(&self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String> {
+    fn record(&self, route: &DocumentRoute) -> Result<ResourceCopy, String> {
+        if let Some(record) = self.tilolang.get(&route.app_id) {
+            if !self.may_read(&self.tilolang_route(&route.app_id)) {
+                return Err(tilo_actions::remote::RESOURCE_READ_REFUSED.to_owned());
+            }
+            return record
+                .read(&route.document, &Actor::Member(self.member.clone()))
+                .map(ResourceCopy::Read);
+        }
         if !self.may_read(route) {
             return Err(tilo_actions::remote::RESOURCE_READ_REFUSED.to_owned());
         }
-        Ok(self.copies.get(route).cloned())
+        Ok(self
+            .copies
+            .get(route)
+            .cloned()
+            .map_or(ResourceCopy::Absent, ResourceCopy::Document))
     }
 
     fn invoke(
@@ -273,6 +357,11 @@ impl ApiMember for HeldDocuments {
         context: &ActionContext,
         confirmed: bool,
     ) -> Result<ActionOutput, ApiError> {
+        if route.document.is_empty()
+            && let Some(record) = self.tilolang.get_mut(&route.app_id)
+        {
+            return record.invoke(address, arguments, invoker, context);
+        }
         let replica = self
             .replicas
             .get(route)
@@ -334,7 +423,7 @@ impl ApiMember for HeldDocuments {
                     .then_some(context)
             })
         };
-        self.replicas.iter().find_map(|(route, replica)| {
+        let native = self.replicas.iter().find_map(|(route, replica)| {
             // A step on a record held beside this one is recorded there,
             // and answered for the route it was invoked on.
             replica
@@ -345,6 +434,14 @@ impl ApiMember for HeldDocuments {
                     })
                 })
                 .map(|context| (route.clone(), context))
+        });
+        native.or_else(|| {
+            self.tilolang.iter().find_map(|(app, record)| {
+                record.documents().values().find_map(|bytes| {
+                    let doc = automerge::Automerge::load(bytes).ok()?;
+                    recorded(&doc).map(|context| (self.tilolang_route(app), context))
+                })
+            })
         })
     }
 
@@ -432,10 +529,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             held.record(&route("so.tilo.chat")),
-            Ok(Some(b"emoji".to_vec()))
+            Ok(ResourceCopy::Document(b"emoji".to_vec()))
         );
         assert_eq!(held.record(&route("so.tilo.notes")).ok(), None);
         held.forget(&route("so.tilo.chat"));
-        assert_eq!(held.record(&route("so.tilo.chat")), Ok(None));
+        assert_eq!(
+            held.record(&route("so.tilo.chat")),
+            Ok(ResourceCopy::Absent)
+        );
     }
 }

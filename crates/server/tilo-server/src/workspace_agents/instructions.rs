@@ -1,21 +1,6 @@
 //! Instructions the hosted model receives for a turn.
 
-use chat::recall::Recalled;
-use tilo_model_gateway::host_backend::protocol::{Message, Role};
-
 use super::{Turn, learned, shares, sub_agents};
-
-pub(super) fn history(entries: &[Recalled]) -> Vec<Message> {
-    entries
-        .iter()
-        .map(|entry| match entry {
-            Recalled::Context(text) => Message::text(Role::User, text.trim_start().to_owned()),
-            Recalled::Person(text) => Message::text(Role::User, text.clone()),
-            Recalled::Agent(text) => Message::text(Role::Assistant, text.clone()),
-            Recalled::Other { name, text } => Message::text(Role::User, format!("{name}: {text}")),
-        })
-        .collect()
-}
 
 /// What the agent is told before every ask: what every agent a host runs is told, and after it
 /// what its keeper told it about how to work for them ([`super::Agent::told`]), when they told it

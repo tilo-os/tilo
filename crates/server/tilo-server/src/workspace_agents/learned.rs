@@ -93,7 +93,7 @@ pub(super) fn keeper_asking(agent: &Agent, person: &str) -> Option<[u8; 32]> {
 pub(super) fn keeps(turn: &Turn) -> Option<[u8; 32]> {
     match &turn.ask {
         Ask::Asked { private: true, .. } => keepers_own(&turn.agent, &turn.person),
-        Ask::Asked { .. } | Ask::Message { .. } | Ask::Issue { .. } => None,
+        Ask::Asked { .. } | Ask::Issue { .. } => None,
     }
 }
 

@@ -23,20 +23,36 @@
 //! bound to its thread, so the call runs on a blocking thread of its own and hands back only what
 //! the caller's closure returns.
 //!
+//! A program a device runs (a bot, a person's event) holds an app's record as [`ProgramRecord`]:
+//! its resources published as every tilolang resource is ([`Opened::rows`]), each step a call of
+//! a published action ([`Opened::invoke_published`]), each read the core read. Only the packages
+//! built into this build ([`built_in`]) run here; an app a workspace installed is untrusted code
+//! and runs only on a device that has it open.
+//!
 //! Who may do what is decided where every member's write is decided: the workspace admits the
 //! written change against the app's surface and the member's grants. The caller names the member
 //! it acts as; code on this device that calls here is the device's own.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use automerge::ChangeHash;
-use tilo_actions::{ActionContext, ActionFacet, ActionInvoker, InvocationId};
-use tilolang_tilo::action::DynAction;
+use serde_json::{Map, Value as Json};
+use tilo_actions::remote::CatalogueRow;
+use tilo_actions::{
+    ActionAddress, ActionContext, ActionFacet, ActionInvoker, ActionOutput, ApiError, InvocationId,
+    ResourceSpec,
+};
+use tilo_agent_session::bot::held::TilolangRecord;
+use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks, FIRST};
 use tilolang_tilo::host::Host;
+use tilolang_tilo::meta::MetaExt as _;
+use tilolang_tilo::publish::{Caller, Planner, Publications, publish_package, resource_id};
 use tilolang_tilo::runtime::{Actor, InvokeOutcome, ResourceRef, Value};
 
+/// The app and type a tilolang resource kind (`tl.<app>.<Type>`) names.
+pub use tilolang_tilo::catalogue::tilolang_kind;
 /// The tilolang runtime's values, references and stores, as a record is read and changed with.
 pub use tilolang_tilo::runtime;
 
@@ -77,6 +93,82 @@ impl Packages {
             .last()
             .map_or("", |package| package.meta.app.as_str())
     }
+
+    /// The id the app's declaration keeps for its action published as `name`: what a change it
+    /// made records.
+    #[must_use]
+    pub fn action_id(&self, name: &str) -> Option<String> {
+        let package = self.0.last()?;
+        Some(package.meta.action_published_as(name)?.id.clone())
+    }
+
+    /// The name the app publishes the action whose declaration id is `id`: what a change it made
+    /// is read as, since history keeps the id a rename does not disturb.
+    #[must_use]
+    pub fn action_name(&self, id: &str) -> Option<String> {
+        let package = self.0.last()?;
+        package
+            .meta
+            .actions
+            .iter()
+            .find(|declared| declared.id == id)
+            .map(|declared| declared.name.clone())
+    }
+}
+
+/// The sources of the packages built into this build, each app after those it uses.
+const BUILT_IN: &[&[(&str, &str)]] = &[
+    &[
+        (
+            include_str!("../../../../apps/tl/agent/app.tl"),
+            include_str!("../../../../apps/tl/agent/app.ids"),
+        ),
+        (
+            include_str!("../../../../apps/tl/chat/app.tl"),
+            include_str!("../../../../apps/tl/chat/app.ids"),
+        ),
+    ],
+    &[
+        (
+            include_str!("../../../../apps/tl/discussion/app.tl"),
+            include_str!("../../../../apps/tl/discussion/app.ids"),
+        ),
+        (
+            include_str!("../../../../apps/tl/tasks/app.tl"),
+            include_str!("../../../../apps/tl/tasks/app.ids"),
+        ),
+    ],
+];
+
+/// The packages `app`'s record is read through when the app is built into this build, compiled
+/// once: what runs in this device's own process. `None` for any other app, a workspace's
+/// installed one included.
+///
+/// # Errors
+/// A built-in package does not compile, which is a bug of this build.
+pub fn built_in(app: &str) -> Result<Option<Packages>, String> {
+    static COMPILED: OnceLock<Result<Vec<Packages>, String>> = OnceLock::new();
+    let compiled = COMPILED.get_or_init(|| {
+        BUILT_IN
+            .iter()
+            .map(|sources| Packages::compile(sources))
+            .collect()
+    });
+    Ok(compiled
+        .as_ref()
+        .map_err(Clone::clone)?
+        .iter()
+        .find(|packages| packages.app() == app)
+        .cloned())
+}
+
+/// Why a program over the app `app`, which this build does not carry, does not run here.
+#[must_use]
+pub fn runs_elsewhere(app: &str) -> String {
+    format!(
+        "this program's app {app} runs only on a device that has it open: this server runs only \
+         the apps built into it"
+    )
 }
 
 /// An app's record of a workspace as bytes: its document (the app's primary, `""`) and the
@@ -263,6 +355,113 @@ impl Opened {
         Ok(value)
     }
 
+    /// The app's root resource, made the first time it is wanted, as a launcher opening the app
+    /// makes it: what the app's own actions are published on.
+    ///
+    /// # Errors
+    /// The package has no root, or making it does not apply.
+    pub fn open_root(&mut self) -> Result<ResourceRef, String> {
+        let root = self
+            .host
+            .root_of(&self.app)
+            .map_err(|error| error.to_string())?;
+        self.commit()?;
+        Ok(root)
+    }
+
+    /// What plans an action of the record for `invoker`, or for the host's viewer.
+    fn planner(&self, invoker: Option<&ActionInvoker>) -> Arc<dyn Planner> {
+        let handle = self.host.handle();
+        match invoker.map(Caller::from) {
+            Some(caller) => Arc::new(handle.with_caller(move || Some(caller.clone()))),
+            None => Arc::new(handle),
+        }
+    }
+
+    /// Every resource of the record as the action API publishes it, its app's own actions
+    /// beside them, each planned by `planner`.
+    fn published(&self, planner: &Arc<dyn Planner>) -> Vec<ResourceSpec> {
+        let mut out: Vec<ResourceSpec> = Publications::new(&self.host)
+            .everything(&self.host, planner)
+            .into_iter()
+            .map(std::rc::Rc::unwrap_or_clone)
+            .collect();
+        let words = self.host.runtime().words();
+        for package in self.host.packages() {
+            if package.meta.app != self.app {
+                continue;
+            }
+            let resource = publish_package(&package.meta, planner, &*words);
+            if !resource.actions.is_empty() {
+                out.push(resource);
+            }
+        }
+        out
+    }
+
+    /// Every action the record's resources publish, each in the row of the resource holding it,
+    /// as a catalogue lists them.
+    #[must_use]
+    pub fn rows(&self) -> Vec<CatalogueRow> {
+        let resources = self.published(&self.planner(None));
+        tilo_actions::api::survey_placed(&resources)
+            .into_iter()
+            .map(|placed| CatalogueRow::for_placed_action("", &self.app, placed))
+            .collect()
+    }
+
+    /// Run the published action `address` with `arguments` as `invoker`: found among the
+    /// record's published resources, its arguments typed by its declared parameters, planned by
+    /// its own code and applied where the record's manifest places its edits, recorded with what
+    /// `context` says of the run it is a step of. A `read` answers the core read, as `invoker`
+    /// reads.
+    ///
+    /// # Errors
+    /// As any call of a published action: unknown, unavailable, invalid arguments, refused.
+    pub fn invoke_published(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &Map<String, Json>,
+        invoker: &ActionInvoker,
+        context: &ActionContext,
+    ) -> Result<ActionOutput, ApiError> {
+        let resources = self.published(&self.planner(Some(invoker)));
+        let encoded = tilo_actions::api::encode_json(&resources, address, arguments)?;
+        if encoded.type_id == tilo_resource::read::TYPE {
+            let args = if encoded.payload.is_empty() {
+                Json::Null
+            } else {
+                tilo_actions::decode_json(&encoded.payload)
+                    .map_err(|error| ApiError::InvalidArguments(error.to_string()))?
+            };
+            return self
+                .host
+                .answer_read(&args, &Caller::from(invoker).reader())
+                .map(|value| ActionOutput {
+                    value: Some(value),
+                    resources: Vec::new(),
+                })
+                .map_err(ApiError::Failed);
+        }
+        if encoded.type_id != ACTION_TYPE {
+            return Err(ApiError::Unknown(address.clone()));
+        }
+        let action: DynAction = serde_json::from_slice(&encoded.payload)
+            .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
+        self.apply_as(&action, Some((invoker, context)))
+            .map_err(ApiError::Failed)?;
+        self.host.sync(&self.chunks);
+        self.commit().map_err(ApiError::Failed)?;
+        let made = self
+            .host
+            .take_returned(&action.action_id)
+            .map(|made| resource_id(&action.app, &made.id_string()));
+        Ok(ActionOutput {
+            value: None,
+            resources: made.into_iter().collect(),
+        })
+    }
+
     /// Apply every action the host committed since the last call to the record, and take the
     /// record back into the host; again while taking it in commits more (a mention's ask).
     fn commit(&mut self) -> Result<(), String> {
@@ -281,8 +480,21 @@ impl Opened {
     /// Apply `action` where its edits belong: each chunk it writes holds its part as one change,
     /// and every part names the one invocation the action ran in.
     fn apply(&mut self, action: &DynAction) -> Result<(), String> {
+        self.apply_as(action, None)
+    }
+
+    /// [`Self::apply`], recorded as `step`'s invoker's when given, with the run, step and cause
+    /// its context names.
+    fn apply_as(
+        &mut self,
+        action: &DynAction,
+        step: Option<(&ActionInvoker, &ActionContext)>,
+    ) -> Result<(), String> {
         let actor = action.invoker();
-        let invoker = ActionInvoker::admitted(&actor.clone().into());
+        let invoker = step.map_or_else(
+            || ActionInvoker::admitted(&actor.clone().into()),
+            |(invoker, _)| invoker.clone(),
+        );
         let invocation = action
             .authorship
             .invocation
@@ -291,7 +503,7 @@ impl Opened {
         let mut first = false;
         for (chunk, part) in self.chunks.parts_of(action) {
             let encoded = part.encode().map_err(|error| error.to_string())?;
-            let context = ActionContext::for_resource(
+            let mut context = ActionContext::for_resource(
                 part.resources().first().copied().unwrap_or("workspace"),
                 &part.kind,
                 &part.kind,
@@ -300,6 +512,12 @@ impl Opened {
             .with_source_invocation(Some(invocation))
             .in_gesture(action.authorship.gesture)
             .with_invoker(invoker.clone());
+            if let Some((_, step)) = step {
+                context.group.clone_from(&step.group);
+                context.facets.clone_from(&step.facets);
+                context.caused_by.clone_from(&step.caused_by);
+                context.purpose.clone_from(&step.purpose);
+            }
             let context = match &self.run_of {
                 Some(shortcut) => {
                     context.with_facet(ActionFacet::new("shortcut", shortcut.clone()))
@@ -361,6 +579,225 @@ impl Opened {
 #[must_use]
 pub fn member(id: tilo_actions::MemberId) -> Actor {
     Actor::Member(id)
+}
+
+/// What the documents `after` gained since the record stood as `before`, one change per
+/// document: the whole document for one `before` lacked.
+///
+/// # Errors
+/// A document does not load.
+pub fn written_since(
+    before: &RecordBytes,
+    after: &BTreeMap<String, Vec<u8>>,
+) -> Result<Vec<Written>, String> {
+    let mut written = Vec::new();
+    for (document, bytes) in after {
+        let Some(was) = before.documents.get(document) else {
+            written.push(Written {
+                document: document.clone(),
+                changes: bytes.clone(),
+                founding: true,
+            });
+            continue;
+        };
+        if was == bytes {
+            continue;
+        }
+        let heads = automerge::Automerge::load(was)
+            .map_err(|error| error.to_string())?
+            .get_heads();
+        let now = automerge::Automerge::load(bytes).map_err(|error| error.to_string())?;
+        if now.get_heads() != heads {
+            written.push(Written {
+                document: document.clone(),
+                changes: now.save_after(&heads),
+                founding: false,
+            });
+        }
+    }
+    Ok(written)
+}
+
+/// An app's record as a program run on this device holds it: its documents as the workspace has
+/// them with what the program's steps changed since, opened through the app's packages for each
+/// step, so every step reads what the steps before it wrote.
+pub struct ProgramRecord {
+    packages: Packages,
+    record: RecordBytes,
+    /// The workspace's policy, which bounds what each reader of the run reads.
+    policy: Option<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>,
+}
+
+impl ProgramRecord {
+    /// `record` as the workspace holds it now, read through `packages` under `policy`.
+    #[must_use]
+    pub const fn new(
+        packages: Packages,
+        record: RecordBytes,
+        policy: Option<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>,
+    ) -> Self {
+        Self {
+            packages,
+            record,
+            policy,
+        }
+    }
+
+    /// The record opened as its app, so nothing a mention in it asks is made here for anyone.
+    fn open(&self) -> Result<Opened, String> {
+        let app = runtime::ids::AppId::from(self.packages.app());
+        let mut opened = Opened::open(
+            &self.record,
+            &self.packages,
+            Actor::App(app),
+            self.policy.clone(),
+        )?;
+        opened.open_root()?;
+        Ok(opened)
+    }
+
+    /// Keep what `written` changed in the record's documents.
+    fn keep(&mut self, written: Vec<Written>) -> Result<(), String> {
+        for write in written {
+            let bytes = match self.record.documents.get(&write.document) {
+                Some(bytes) if !write.founding => {
+                    let mut doc =
+                        automerge::Automerge::load(bytes).map_err(|error| error.to_string())?;
+                    doc.load_incremental(&write.changes)
+                        .map_err(|error| error.to_string())?;
+                    doc.save()
+                }
+                _ => write.changes,
+            };
+            self.record.documents.insert(write.document, bytes);
+        }
+        Ok(())
+    }
+}
+
+/// The `record` a whole-app read asks for: every resource of the app with its collections
+/// expanded, references kept as ids. What a program planning over a whole app reads, such as a
+/// bridge that mirrors a chat.
+pub const TREE: &str = "tree";
+
+/// How deep a whole-app read expands collections: a conversation's channels, their messages and
+/// threads, and a thread's messages. References are never followed, so a loop back to a parent
+/// costs nothing and no bound is needed beyond this.
+const TREE_DEPTH: usize = 5;
+
+impl TilolangRecord for ProgramRecord {
+    fn rows(&self) -> Result<Vec<CatalogueRow>, String> {
+        Ok(self.open()?.rows())
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &Map<String, Json>,
+        invoker: &ActionInvoker,
+        context: &ActionContext,
+    ) -> Result<ActionOutput, ApiError> {
+        let mut opened = self.open().map_err(ApiError::Failed)?;
+        let output = opened.invoke_published(address, arguments, invoker, context)?;
+        self.keep(opened.written()).map_err(ApiError::Failed)?;
+        Ok(output)
+    }
+
+    fn read(&self, resource: &str, reader: &Actor) -> Result<Json, String> {
+        let opened = self.open()?;
+        let host = opened.host();
+        if resource == TREE {
+            return tree_read(host, reader);
+        }
+        let args = if resource.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::json!({ "item": resource })
+        };
+        host.answer_read(&args, reader)
+    }
+
+    fn documents(&self) -> BTreeMap<String, Vec<u8>> {
+        self.record.documents.clone()
+    }
+}
+
+/// The whole app as the core read answers it: its documents list, each root resource with every
+/// collection expanded ([`TREE_DEPTH`] levels), and each reference kept as `{type, id, label}`.
+fn tree_read(host: &Host, reader: &Actor) -> Result<Json, String> {
+    let mut documents = host.answer_read(&serde_json::json!({}), reader)?;
+    if let Some(records) = documents.get_mut("records").and_then(Json::as_array_mut) {
+        for record in records.iter_mut() {
+            let Some(item) = record.get("item").and_then(Json::as_str).map(str::to_owned) else {
+                continue;
+            };
+            let whole = tree_item(host, &item, reader, TREE_DEPTH)?;
+            if let (Json::Object(dst), Json::Object(src)) = (&mut *record, whole)
+                && let Some(fields) = src.get("fields")
+            {
+                dst.insert("fields".into(), fields.clone());
+            }
+        }
+    }
+    Ok(documents)
+}
+
+/// `item`, one resource of the app, with each collection field's items deepened by `depth` more
+/// levels: each collection is read whole (`items` and `next`, page by page), never only its first
+/// page, since a chat's newest message is its last.
+fn tree_item(host: &Host, item: &str, reader: &Actor, depth: usize) -> Result<Json, String> {
+    let mut answer = host.answer_read(&serde_json::json!({ "item": item }), reader)?;
+    if depth == 0 {
+        return Ok(answer);
+    }
+    // A collection reads as a page (`{items}`); a list, set or map projects with its `count`.
+    let collections: Vec<String> = answer
+        .get("fields")
+        .and_then(Json::as_object)
+        .map(|fields| {
+            fields
+                .iter()
+                .filter(|(_, value)| {
+                    value.get("items").and_then(Json::as_array).is_some()
+                        && value.get("count").is_none()
+                })
+                .map(|(name, _)| name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    for name in collections {
+        let mut rows: Vec<Json> = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let mut ask = serde_json::json!({ "item": item, "field": name });
+            if let Some(after) = &after {
+                ask["after"] = Json::String(after.clone());
+            }
+            let page = host.answer_read(&ask, reader)?;
+            if let Some(items) = page.get("items").and_then(Json::as_array) {
+                rows.extend(items.iter().cloned());
+            }
+            after = page.get("next").and_then(Json::as_str).map(str::to_owned);
+            if after.is_none() {
+                break;
+            }
+        }
+        for row in &mut rows {
+            let Some(child) = row.get("item").and_then(Json::as_str).map(str::to_owned) else {
+                continue;
+            };
+            let whole = tree_item(host, &child, reader, depth - 1)?;
+            if let (Json::Object(dst), Json::Object(src)) = (&mut *row, whole)
+                && let Some(fields) = src.get("fields")
+            {
+                dst.insert("fields".into(), fields.clone());
+            }
+        }
+        if let Some(fields) = answer.get_mut("fields").and_then(Json::as_object_mut) {
+            fields.insert(name, serde_json::json!({ "items": rows }));
+        }
+    }
+    Ok(answer)
 }
 
 impl crate::workspaces::Workspaces {

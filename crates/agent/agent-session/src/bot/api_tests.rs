@@ -54,11 +54,15 @@ impl ApiMember for FakeMember {
         route.document.starts_with("rec-")
     }
 
-    fn record(&self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String> {
+    fn record(&self, route: &DocumentRoute) -> Result<ResourceCopy, String> {
         if route.document == "secret" {
             return Err("not the bot's to read".into());
         }
-        Ok(self.records.get(&route.document).cloned())
+        Ok(self
+            .records
+            .get(&route.document)
+            .cloned()
+            .map_or(ResourceCopy::Absent, ResourceCopy::Document))
     }
 
     fn invoke(

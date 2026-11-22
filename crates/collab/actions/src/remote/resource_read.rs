@@ -36,6 +36,10 @@ pub struct ResourceAddress {
 pub enum ResourceCopy {
     /// The record's committed content: an Automerge document, whole.
     Document(Vec<u8>),
+    /// The resource as its app's package reads it: what the core read answers of it, who
+    /// made each item and when included. A tilolang app's records are read this way, never as
+    /// the documents that keep them.
+    Read(serde_json::Value),
     /// The workspace holds no such record: nothing was ever written to it.
     Absent,
 }
@@ -227,8 +231,13 @@ pub fn readings_of(
                 Err(ActionCallError::Unavailable { .. }) => None,
                 Err(error) => return Err(error),
             };
+            let read;
             let bytes: &[u8] = match &copy {
                 Some(ResourceCopy::Document(bytes)) => bytes,
+                Some(ResourceCopy::Read(value)) => {
+                    read = value.to_string();
+                    read.as_bytes()
+                }
                 Some(ResourceCopy::Absent) => b"",
                 None => b"unavailable",
             };
@@ -402,6 +411,7 @@ impl ResourceCopy {
     pub fn readable(&self) -> Result<serde_json::Value, String> {
         match self {
             Self::Absent => Ok(serde_json::Value::Null),
+            Self::Read(value) => Ok(value.clone()),
             Self::Document(bytes) => {
                 let doc = automerge::Automerge::load(bytes).map_err(|error| error.to_string())?;
                 let mut value =

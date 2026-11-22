@@ -202,7 +202,6 @@ pub(super) fn team_turn(
             conversation: format!("sub-agents/{sub_agent}"),
             cause: asked.at.id_string(),
             request,
-            history: Vec::new(),
             asked: said,
             typed,
             line,
@@ -210,6 +209,7 @@ pub(super) fn team_turn(
                 app: app.to_owned(),
                 ask: asked.at.id_string(),
                 ty: asked.at.ty.clone(),
+                key: asked.mention.clone(),
                 attempt,
                 // Nothing around a team's ask is read for its turn.
                 private: false,

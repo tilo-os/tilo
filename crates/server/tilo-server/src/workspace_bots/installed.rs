@@ -6,7 +6,12 @@
 //! run unattended through the bot's API ([`BotApi`]) over its own
 //! replicas of the workspace's records, and what a run changed is published by
 //! the governor signed by the bot's own device, so every member admits it
-//! as the bot's. An outbox entry a step queues is handed to the connector's
+//! as the bot's. A tilolang app built into the server is followed and acted on
+//! the same way, its record held through its package
+//! ([`tilo_workspace_service::tl_records::ProgramRecord`]); what a run changed
+//! of it is a member write for the bot, signed by this device. A program over
+//! an app the workspace installed does not run here: that app's code runs only
+//! on a device that has it open. An outbox entry a step queues is handed to the connector's
 //! worker. A schedule's fire time and a trigger's one moment come round on
 //! this host too: each fires the bot the same way, and no member's device
 //! runs a bot installed here.
@@ -51,6 +56,7 @@ use tilo_user_identity::DeviceCert;
 use super::kept::KeptFile;
 use crate::workspaces::{MemberMark, Workspaces};
 use tilo_content::{ContentStore, WorkspaceStores};
+use tilo_workspace_service::tl_records::{self, Packages, ProgramRecord, RecordBytes};
 
 // The field a connector's records keep their outbox under, which the bot's
 // grant lets it settle.
@@ -235,6 +241,12 @@ pub struct BotRunner {
     shortcut: Arc<Shortcut>,
     /// Apps whose records the bot reads and acts on.
     apps: BTreeSet<String>,
+    /// Of those, the tilolang apps built into the server, each with the packages its record is
+    /// read through.
+    tilolang: BTreeMap<String, Packages>,
+    /// Apps the program's steps name that this server neither runs nor connects to: one the
+    /// workspace installed is refused when the program runs.
+    elsewhere: BTreeSet<String>,
     held: Arc<Mutex<HeldDocuments>>,
     api: Arc<BotApi<HeldDocuments>>,
     /// What the program keeps between its runs: its counts and its note.
@@ -290,8 +302,27 @@ impl BotRunner {
         connectors: BTreeMap<String, Arc<ConnectorProcess>>,
         state_file: PathBuf,
     ) -> Result<Self, String> {
-        let shortcut = bot.shortcut()?;
+        let mut shortcut = bot.shortcut()?;
         let catalogue = AppCatalogue::native();
+        let mut tilolang = BTreeMap::new();
+        for trigger in &mut shortcut.triggers {
+            let TriggerSpec::ResourceChanged { kind, actions, .. } = trigger else {
+                continue;
+            };
+            let Some((app, _)) = tl_records::tilolang_kind(kind) else {
+                continue;
+            };
+            let packages =
+                tl_records::built_in(app)?.ok_or_else(|| tl_records::runs_elsewhere(app))?;
+            // A trigger names an action as the catalogue publishes it; a tilolang change
+            // records the id its declaration keeps.
+            for action in actions.iter_mut() {
+                if let Some(id) = packages.action_id(action) {
+                    *action = id;
+                }
+            }
+            tilolang.insert(app.to_owned(), packages);
+        }
         let mut apps: BTreeSet<String> = shortcut
             .triggers
             .iter()
@@ -303,12 +334,17 @@ impl BotRunner {
             })
             .collect();
         apps.extend(connectors.keys().cloned());
-        apps.extend(
-            tilo_automation::requirements::requirements(&shortcut)
-                .apps
-                .into_iter()
-                .filter(|app| catalogue.get(app).is_some()),
-        );
+        let mut elsewhere = BTreeSet::new();
+        for app in tilo_automation::requirements::requirements(&shortcut).apps {
+            if catalogue.get(&app).is_some() {
+                apps.insert(app);
+            } else if let Some(packages) = tl_records::built_in(&app)? {
+                tilolang.insert(app, packages);
+            } else {
+                elsewhere.insert(app);
+            }
+        }
+        apps.extend(tilolang.keys().cloned());
         let installer = hex::encode(host.user_public_key);
         let access = bot_access(
             &workspace,
@@ -357,6 +393,8 @@ impl BotRunner {
             bot,
             shortcut: Arc::new(shortcut),
             apps,
+            tilolang,
+            elsewhere,
             held,
             api,
             keeps,
@@ -634,9 +672,11 @@ impl BotRunner {
             // part of a chat's messages) is what happened since: read whole.
             // So is a record every app of the workspace opens (the workspace's
             // emoji), which its first change creates.
+            let tilolang = self.tilolang.contains_key(&app);
             let part = collab_types::document::DocumentId::parse(&record)
                 .is_some_and(|record| record.chain_part().is_some())
-                || collab_types::workspace_document(&app, &record).is_some();
+                || collab_types::workspace_document(&app, &record).is_some()
+                || (tilolang && !record.is_empty());
             let since = match self.progress.records.get(&key).cloned() {
                 Some(since) => since,
                 None if part && self.follows_app(&app) => Vec::new(),
@@ -646,22 +686,32 @@ impl BotRunner {
                 }
             };
             // A part is of its own resource (a chat's messages), as its
-            // record names it.
-            let kind = collaboration::resource::identity(&doc)
-                .map(|checkout| checkout.kind.as_str().to_owned())
-                .or_else(|| {
-                    self.catalogue
-                        .get(&app)
-                        .map(|definition| definition.resource_type.as_str().to_owned())
-                })
-                .unwrap_or_default();
-            for (event, _) in tilo_agent_session::bot::events_since(
+            // record names it. A tilolang record keeps resources of every
+            // type of its app: each change is of the kind it says it wrote.
+            let kind = (!tilolang).then(|| {
+                collaboration::resource::identity(&doc)
+                    .map(|checkout| checkout.kind.as_str().to_owned())
+                    .or_else(|| {
+                        self.catalogue
+                            .get(&app)
+                            .map(|definition| definition.resource_type.as_str().to_owned())
+                    })
+                    .unwrap_or_default()
+            });
+            // A tilolang app's changes name their action by the declaration id history keeps,
+            // which survives a rename; the program plans by the name the app publishes, so the
+            // id is read back to its name here.
+            let packages = self.tilolang.get(&app);
+            for (mut event, _) in tilo_agent_session::bot::events_since(
                 &self.workspace,
                 &record,
-                &kind,
+                kind.as_deref(),
                 doc.document(),
                 &since,
             ) {
+                if let Some(packages) = packages {
+                    name_tilolang_action(packages, &mut event);
+                }
                 firings.extend(
                     tilo_automation::dispatch::dispatch(&armed, Event::Record(&event)).firings,
                 );
@@ -893,12 +943,41 @@ impl BotRunner {
 
     /// Run `firing` through the bot's API and publish what it changed.
     async fn fire(&self, firing: &Firing) -> Result<Fired, String> {
+        for app in &self.elsewhere {
+            if self
+                .workspaces
+                .installed_package(&self.workspace, app)
+                .await
+                .is_some()
+            {
+                return Err(tl_records::runs_elsewhere(app));
+            }
+        }
         // The replicas are brought up to the workspace's records first, so the
         // run reads what members did up to now: each app's own records,
         // then the parts of the chains they keep beside them. A record the
         // bot cannot hold is left out of the run (and said), not every run
-        // with it.
+        // with it. A tilolang app's record is held whole, through its package.
+        let mut tilolang = BTreeMap::new();
+        let policy = self
+            .workspaces
+            .policy_of(&self.workspace)
+            .await
+            .map(std::sync::Arc::new);
+        for (app, packages) in &self.tilolang {
+            let record = self.workspaces.tl_record(&self.workspace, app).await?;
+            self.held.lock_recover().hold_tilolang(
+                app,
+                Box::new(ProgramRecord::new(
+                    packages.clone(),
+                    record.clone(),
+                    policy.clone(),
+                )),
+            );
+            tilolang.insert(app.clone(), record);
+        }
         let mut routes = self.routes().await?;
+        routes.retain(|(app, _)| !self.tilolang.contains_key(app));
         routes.sort_by_key(|(_, record)| {
             collab_types::document::DocumentId::parse(record)
                 .is_some_and(|record| record.chain_part().is_some())
@@ -998,7 +1077,39 @@ impl BotRunner {
                 return Ok(Fired::Refused(reason));
             }
         }
+        for (app, before) in tilolang {
+            if let Err(refusal) = self.publish_tilolang(&app, &before).await {
+                self.held.lock_recover().forget(&DocumentRoute {
+                    app_id: app.clone(),
+                    cluster_id: self.workspace.clone(),
+                    document: String::new(),
+                });
+                self.api.forget_steps();
+                let reason = format!("the workspace refused the bot's change to {app}: {refusal}");
+                tracing::warn!(installation = %self.bot.installation, run = %firing.invocation.0, %app, %refusal, "bot change refused; the run goes again");
+                return Ok(Fired::Refused(reason));
+            }
+        }
         Ok(Fired::Ran(Box::new(report)))
+    }
+
+    /// Write what a run changed of the tilolang app `app`'s record, held from `before`, as a
+    /// member write for the bot: each change names the bot, and this device signs it.
+    async fn publish_tilolang(&self, app: &str, before: &RecordBytes) -> Result<(), String> {
+        let Some(after) = self.held.lock_recover().tilolang_documents(app) else {
+            return Ok(());
+        };
+        let written = tl_records::written_since(before, &after)?;
+        if written.is_empty() {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if self.refuse_for_test() {
+            return Err("refused for the test".into());
+        }
+        self.workspaces
+            .write_tl(&self.workspace, app, written)
+            .await
     }
 
     /// Who is in the workspace, by name and in what role, as of now: `{"members":
@@ -1266,6 +1377,17 @@ fn bot_access(
         tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::bot(installation)),
         grants,
     )
+}
+
+/// Read a tilolang change's action back to the name its app publishes it under, so a program
+/// plans by `send`, `relay` and the like rather than by the declaration id history keeps (which
+/// survives a rename). Its kind is already `tl.<app>.<Type>`, the resource the change wrote.
+fn name_tilolang_action(packages: &Packages, event: &mut tilo_automation::dispatch::DocumentEvent) {
+    if let tilo_actions::entry::Did::Verb(call) = &mut event.did
+        && let Some(name) = packages.action_name(&call.action.action)
+    {
+        call.action.action = name;
+    }
 }
 
 /// What changed in the workspace's membership from `before` to `after`, as

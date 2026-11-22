@@ -66,6 +66,7 @@ mod tests {
             &RecordBytes::default(),
             &tl_chat::packages().unwrap(),
             tl_chat::viewer(),
+            None,
         )
         .unwrap()
     }

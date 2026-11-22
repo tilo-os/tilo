@@ -37,7 +37,7 @@ type Place = (String, String, String);
 
 fn place(workspace: &str, turn: &Turn) -> Place {
     let at = match &turn.ask {
-        Ask::Message { .. } | Ask::Asked { .. } => turn.conversation.clone(),
+        Ask::Asked { .. } => turn.conversation.clone(),
         Ask::Issue {
             record,
             issue,
@@ -118,7 +118,7 @@ impl Going {
     }
 
     fn hand(&self, turn: Turn, reading: Option<Reading>) -> Handed {
-        if !turn.typed || turn.person != self.person || !matches!(turn.ask, Ask::Message { .. }) {
+        if !turn.typed || turn.person != self.person || !matches!(turn.ask, Ask::Asked { .. }) {
             return Handed::Left;
         }
         // Held from here on, as `take` holds it while the turn goes on: what is handed is
@@ -276,15 +276,17 @@ mod tests {
                 ..Agent::default()
             },
             person: "ada".to_owned(),
-            ask: Ask::Message {
-                part: "part".to_owned(),
-                message: message.to_owned(),
-                attempt: 0,
+            ask: Ask::Asked {
+                app: "so.tilo.chat".to_owned(),
+                ask: message.to_owned(),
+                ty: "Ask".to_owned(),
+                key: message.to_owned(),
+                attempt: 1,
+                private: true,
             },
             conversation: "ada with scout".to_owned(),
             cause: message.to_owned(),
             request: message.to_owned(),
-            history: Vec::new(),
             asked: message.to_owned(),
             typed: true,
             line: None,

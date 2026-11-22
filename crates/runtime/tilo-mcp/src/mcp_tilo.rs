@@ -1487,6 +1487,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 use base64::Engine as _;
                 json!({"ok": {"document": base64::engine::general_purpose::STANDARD.encode(bytes)}})
             }
+            Ok(Ok(tilo_actions::remote::ResourceCopy::Read(read))) => json!({"ok": {"read": read}}),
             Ok(Ok(tilo_actions::remote::ResourceCopy::Absent)) => json!({"absent": true}),
             Ok(Err(error)) => {
                 let name = app_names(&[app.to_owned()]).join("");

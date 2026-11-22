@@ -222,7 +222,6 @@ fn turn_of(
         conversation,
         cause: asked.at.id_string(),
         request,
-        history: Vec::new(),
         asked: said,
         // What an event of theirs asked, they did not write.
         typed: asked
