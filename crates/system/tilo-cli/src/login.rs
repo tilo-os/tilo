@@ -948,7 +948,7 @@ mod tests {
 
     #[test]
     fn a_login_takes_a_ticket_and_names_what_else_it_was_given() {
-        let said = login("K7Q-MX2P", None).unwrap_err().to_string();
+        let said = login("K7Q-MX2P", None, None).unwrap_err().to_string();
         assert!(said.contains("is not a Tilo ticket"), "{said}");
         assert!(said.contains("tilo device add"), "{said}");
         let reached = tilo_device_identity::login::Reached {
