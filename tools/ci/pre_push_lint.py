@@ -508,16 +508,18 @@ def unified_features(root: Path, selected: Iterable[str]) -> list[str]:
 
 
 def lint_runs(root: Path, selection: Selection, formatting: list[str]) -> list[Lint]:
-    """The runs the check makes: formatting, and the host lint.
+    """The runs the check makes: the pinned rustfmt, formatting, and the host lint.
 
     Each command is also the line a failure prints to rerun it.
     """
     cargo = cargo_command()
     native = selection.native
     selected = [item for name in native for item in ("-p", name)]
-    runs = []
+    runs = [Lint("rustfmt pinned", ["bash", str(TOOLS / "ci/check-rustfmt-pin.sh")],
+                 native, False, None, False)]
     if formatting:
-        runs.append(Lint("rustfmt", formatting, native, False, None, False))
+        label = "rustfmt" if formatting[0] != "t" else "fmt (t)"
+        runs.append(Lint(label, formatting, native, False, None, False))
     runs.append(Lint("clippy (native)",
                      [*cargo, "clippy", "--locked", *selected, *unified_features(root, native),
                       "--all-targets", "--keep-going", "--", "-D", "warnings"], native, True))
@@ -762,12 +764,12 @@ def main(argv: list[str]) -> int:
     if git(root, "status", "--porcelain").stdout.strip():
         say("pre-push: the worktree has uncommitted changes; the lint covers the files on disk, which "
             "is not quite the pushed commit")
-    formatting = formatting_run(root, push) if rustfmt_available() else []
-    if not formatting:
-        say("pre-push: rustfmt is not installed, so formatting is not checked here")
+    # A machine without rustfmt of its own formats through t, whose `fmt` check runs the
+    # pinned toolchain; one with a rustfmt must hold the pinned version (the run below).
+    formatting = formatting_run(root, push) if rustfmt_available() else ["t", "test", "fmt"]
     say(f"pre-push: linting {packages(len(selection.native))}")
     runs = lint_runs(root, selection, formatting)
-    checked = (f"{'clippy and rustfmt' if formatting else 'clippy'} "
+    checked = (f"{'clippy and rustfmt' if formatting else 'clippy (no rustfmt on PATH)'} "
                f"for {packages(len(selection.native))}")
     pending = []
     for run, key in zip(runs, lint_keys(root, selection.metadata, runs)):
