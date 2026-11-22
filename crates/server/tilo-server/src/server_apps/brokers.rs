@@ -19,6 +19,8 @@ use tilo_workspace_service::apps::services::{
     LauncherServices, ProcessServices, WorkspaceAuthority,
 };
 
+use tilo_workspace_service::apps::caller_signer::{self, VerifiedCaller};
+
 use super::{BrokerParts, ProcessStart, ServerLauncher, spawn_broker};
 use crate::workspaces::Workspaces;
 
@@ -48,6 +50,37 @@ impl ServerWorkspaces {
             let (name, peer) = workspaces.governed_copy(workspace).await?;
             describe(workspace, &name, &peer)
         })
+    }
+
+    /// The apps `workspace` installed, each the release it runs, by app id.
+    #[must_use]
+    pub fn installed(&self, workspace: WorkspaceId) -> Vec<tilo_peer_state::InstalledApp> {
+        let workspaces = self.workspaces.clone();
+        block_on(&self.runtime, async move {
+            workspaces
+                .governed_copy(workspace)
+                .await
+                .map(|(_, peer)| peer.governance().app_versions())
+                .unwrap_or_default()
+        })
+    }
+
+    /// What `workspace` allows `caller` now ([`caller_signer::allowed`]).
+    ///
+    /// # Errors
+    /// The server keeps no such workspace, or the caller's device is not on its list.
+    pub fn allowed(
+        &self,
+        workspace: WorkspaceId,
+        caller: &VerifiedCaller,
+    ) -> Result<tilo_action_policy::MemberAccess, String> {
+        caller_signer::allowed(&self.workspaces, &self.runtime, workspace, caller)
+    }
+
+    /// The runtime the server keeps its workspaces on.
+    #[must_use]
+    pub const fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.runtime
     }
 
     /// The `.tapp` file `workspace` installed as `app`, as the server keeps it.
@@ -101,6 +134,7 @@ impl WorkspaceAuthority for OneWorkspace {
 /// A workspace's broker, running, and what reaches its apps through it.
 struct Running {
     _broker: BrokerHandle,
+    launcher: Arc<ServerLauncher>,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
 }
@@ -149,6 +183,20 @@ impl ServerApps {
     #[must_use]
     pub fn workspaces(&self) -> BTreeSet<WorkspaceId> {
         self.running().keys().copied().collect()
+    }
+
+    /// The workspaces this server keeps, as its apps ask about them.
+    #[must_use]
+    pub const fn server_workspaces(&self) -> &ServerWorkspaces {
+        &self.workspaces
+    }
+
+    /// The launcher of `workspace`'s broker, while it runs.
+    #[must_use]
+    pub fn launcher(&self, workspace: WorkspaceId) -> Option<Arc<ServerLauncher>> {
+        self.running()
+            .get(&workspace)
+            .map(|running| Arc::clone(&running.launcher))
     }
 
     /// The socket `workspace`'s broker listens on.
@@ -290,7 +338,7 @@ impl ServerApps {
                     self.workspaces.workspaces.clone(),
                 ))),
                 journal_root: Some(self.journals.join(workspace.to_string())),
-                launcher: Some(launcher as Arc<dyn LauncherServices>),
+                launcher: Some(Arc::clone(&launcher) as Arc<dyn LauncherServices>),
                 ..ProcessServices::default()
             },
             channels: Arc::clone(&channels),
@@ -298,6 +346,7 @@ impl ServerApps {
         })?;
         Ok(Running {
             _broker: broker,
+            launcher,
             channels,
             fanout,
         })

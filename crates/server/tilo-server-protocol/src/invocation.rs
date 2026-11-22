@@ -272,7 +272,11 @@ pub fn verify_recorded(
     let cert = signer_of(signed, workspace, revocations, statement.issued_at_ns)?;
     let person = hex::encode(cert.user_public_key);
     let names_signer = context.invoker.as_ref().is_some_and(|invoker| {
-        [invoker.acting.person_id(), invoker.acting.acted_for_person()].contains(&Some(&person))
+        [
+            invoker.acting.person_id(),
+            invoker.acting.acted_for_person(),
+        ]
+        .contains(&Some(&person))
     });
     if !names_signer {
         return Err(InvocationError::NotInvoker);

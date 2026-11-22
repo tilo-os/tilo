@@ -70,7 +70,28 @@ impl WorkspacePackages {
         app: &str,
         tapp: &[u8],
     ) -> Result<launcher::run::tilolang_process::VerifiedInstance, String> {
+        self.named(workspace, app, tapp)
+            .map(|(verified, _)| verified)
+    }
+
+    /// [`Self::verified`], with the name the package gives its app, when it gives one.
+    ///
+    /// # Errors
+    /// As [`Self::verified`].
+    pub fn named(
+        &self,
+        workspace: &str,
+        app: &str,
+        tapp: &[u8],
+    ) -> Result<
+        (
+            launcher::run::tilolang_process::VerifiedInstance,
+            Option<String>,
+        ),
+        String,
+    > {
         let store = self.store(workspace)?;
+        let mut name = None;
         let installed = store
             .install(
                 tapp,
@@ -79,6 +100,7 @@ impl WorkspacePackages {
                     if id != app {
                         return Err(format!("the package is {id}, not {app}"));
                     }
+                    name.clone_from(&meta.manifest.package.name);
                     Ok(package_store::Admission {
                         pinned: false,
                         attested_by: String::new(),
@@ -90,13 +112,14 @@ impl WorkspacePackages {
             )
             .map_err(|error| format!("{app} was refused: {error}"))?
             .package;
-        launcher::run::tilolang_process::verified_instance(
+        let verified = launcher::run::tilolang_process::verified_instance(
             &installed,
             &installed.manifest_path,
             &installed.payload_root,
             &installed.package_id_hex,
         )
-        .map_err(|error| format!("{app} does not verify: {error}"))
+        .map_err(|error| format!("{app} does not verify: {error}"))?;
+        Ok((verified, name))
     }
 }
 
@@ -172,9 +195,13 @@ mod app_launcher;
 #[cfg(feature = "agents")]
 mod brokers;
 #[cfg(feature = "agents")]
+mod pages;
+#[cfg(feature = "agents")]
 pub use app_launcher::{ProcessStart, ServerLauncher};
 #[cfg(feature = "agents")]
 pub use brokers::{ServerApps, ServerWorkspaces};
+#[cfg(feature = "agents")]
+pub use pages::{Readers, Reading, ServerPages};
 
 /// The processes this server runs its workspaces' apps in: started through its launcher, each
 /// running the package its workspace installed, as `packages` verifies it, and keeping what it
@@ -212,9 +239,15 @@ pub struct Device {
 /// until the server stops: the content store they keep their files in, under `state_root`, the
 /// identity service that signs their changes as this device for the callers they serve, and
 /// one broker for each workspace, each running the workspace's packages in this server's
-/// processes. A server that cannot run apps says why once, and keeps serving its workspaces.
+/// processes. Their pages show beside those of `pages`, the server's own, when it shows any. A
+/// server that cannot run apps says why once, and keeps serving its workspaces.
 #[cfg(feature = "agents")]
-pub async fn serve(workspaces: crate::workspaces::Workspaces, device: Device, state_root: PathBuf) {
+pub async fn serve(
+    workspaces: crate::workspaces::Workspaces,
+    device: Device,
+    state_root: PathBuf,
+    pages: Option<std::sync::Arc<dyn crate::app_serving::AppActionServer>>,
+) {
     let apps = state_root.join("apps");
     let content = match ContentService::start(
         &apps.join("content"),
@@ -241,13 +274,15 @@ pub async fn serve(workspaces: crate::workspaces::Workspaces, device: Device, st
         tracing::warn!(%error, "this server's apps have no identity service, so none runs");
         return;
     }
+    // Every request a page's instance makes is decided as the one who reads the page.
+    let readers = std::sync::Arc::new(Readers::default());
     let signer = tilo_workspace_service::apps::caller_signer::CallerSigner::new(
         workspaces,
         runtime,
         tilo_device_identity::persist::IdentityPaths::under(&device.identity_root),
         device.cert.user_public_key,
-        // Who made each call is the broker's to say; until it does, every write is refused.
-        std::sync::Arc::new(tilo_workspace_service::apps::caller_signer::NoCalls),
+        std::sync::Arc::clone(&readers)
+            as std::sync::Arc<dyn tilo_workspace_service::apps::caller_signer::Callers>,
     );
     let identity = match tilo_identity::broker::spawn_signing(
         identity_socket,
@@ -262,9 +297,10 @@ pub async fn serve(workspaces: crate::workspaces::Workspaces, device: Device, st
             return;
         }
     };
+    let packages = data_home.join("tilo").join("workspace-packages");
     let processes = server_processes(
         server.clone(),
-        WorkspacePackages::new(data_home.join("tilo").join("workspace-packages")),
+        WorkspacePackages::new(packages.clone()),
         data_home,
     );
     if let Err(error) = &processes {
@@ -277,6 +313,13 @@ pub async fn serve(workspaces: crate::workspaces::Workspaces, device: Device, st
         device.cert.device_public_key,
         processes,
     );
+    if let Some(pages) = pages {
+        pages.host_pages(std::sync::Arc::new(ServerPages::new(
+            std::sync::Arc::clone(&apps),
+            WorkspacePackages::new(packages),
+            readers,
+        )));
+    }
     apps.run().await;
     drop((identity, content));
 }

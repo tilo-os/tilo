@@ -4,7 +4,6 @@
 //! that connection and runs what the broker delivers there as its invoker's step. An instance ends
 //! when its window closes.
 
-
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -37,6 +36,9 @@ mod indexes;
 /// The native Notes app's notebook, carried over once by the tilolang Notes a session starts.
 #[path = "process/native_notes.rs"]
 mod native_notes;
+/// An instance's window laid out in its own process and asked for as a page.
+#[path = "process/page.rs"]
+mod page;
 /// Tasks in a hosted window, and Today reading it from Tasks' own document.
 #[path = "process/tasks.rs"]
 mod tasks;
@@ -2966,14 +2968,9 @@ fn running_from_the_store(
     let mut host = TilolangProcess::new(Some(storage.to_path_buf()), wake());
     let kept = host.kept(APP).unwrap();
     // What the host's read hands over, and nothing of it on this device.
-    let record = InstanceDocument::open_read(
-        manager,
-        None,
-        &kept.documents,
-        person,
-        "tl.test.counter",
-    )
-    .expect("the document opens");
+    let record =
+        InstanceDocument::open_read(manager, None, &kept.documents, person, "tl.test.counter")
+            .expect("the document opens");
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
     let hosted = Hosted::with_document(
@@ -3092,7 +3089,10 @@ fn a_form_asking_for_a_required_text_takes_it_before_it_answers() {
     }]);
     settle(&mut host, &mut window);
     let form = window.form.as_ref().expect("the action asks for a tag");
-    assert!(!form.ready, "a form asking a required text is not whole yet");
+    assert!(
+        !form.ready,
+        "a form asking a required text is not whole yet"
+    );
     submit_form(&mut window);
     settle(&mut host, &mut window);
     assert!(
