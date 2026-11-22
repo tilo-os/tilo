@@ -10,7 +10,7 @@ use tilo_actions::remote::person_telling::{self, Kind, ToldList};
 /// What the person finds they were told, as their own device reads it from the server once it
 /// is on again.
 async fn told_to(up: &Up, (browser, device): (&Device, &Device), workspace: &str) -> ToldList {
-    let mut page = Browser::open_at(&up.server, browser, device, workspace).await;
+    let mut page = Browser::open_at(&up.hosted, browser, device, workspace).await;
     let listed = page
         .invoke_on(
             person_telling::PROVIDER,
@@ -62,7 +62,7 @@ async fn a_turn_a_reminder_started_tells_its_person_how_it_ended_and_their_own_a
 
     // The moment comes. The server asks their assistant, and the assistant answers.
     let (first, _) = up.asked_by_a_cause(&workspace).await;
-    let agents = up.agents(Some(says_what_is_due()));
+    let agents = up.agents(&workspace, Some(says_what_is_due())).await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
     agents.answer(&workspace, &turns[0]).await.unwrap();
@@ -85,7 +85,7 @@ async fn a_turn_a_reminder_started_tells_its_person_how_it_ended_and_their_own_a
     });
     up.take(&workspace, &theirs, workspace_events::SET_UP, &set_up);
     let second = asked_as(&up, &workspace, "Stand up").await;
-    let agents = up.agents(None);
+    let agents = up.agents(&workspace, None).await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
     agents.answer(&workspace, &turns[0]).await.unwrap();
@@ -108,7 +108,7 @@ async fn a_turn_a_reminder_started_tells_its_person_how_it_ended_and_their_own_a
         .await
         .expect("what acts for the person asks their agent");
     let third = chat::cause::message_id(&MemberId::person(person), "plan-1");
-    let agents = up.agents(Some(says_what_is_due()));
+    let agents = up.agents(&workspace, Some(says_what_is_due())).await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
     agents.answer(&workspace, &turns[0]).await.unwrap();

@@ -85,6 +85,7 @@ fn shares_a_letter(conversation: &Id, asked: &Arc<Mutex<Vec<ModelRequest>>>) -> 
 /// conversation: the share's message as the server keeps it, the agent's own, made for its
 /// person as the server pinned it.
 async fn shared_by_a_turn(
+    served: &crate::harness::hosted::Hosted,
     actions: &Actions,
     workspaces: &Workspaces,
     workspace: &str,
@@ -102,7 +103,7 @@ async fn shared_by_a_turn(
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = worked(workspaces, actions, shares_a_letter(&conversation, &asked));
+    let agents = worked(served, workspace, shares_a_letter(&conversation, &asked)).await;
     // Boxed: the server's own futures stay out of the future of the test that waits here.
     let turns = Box::pin(agents.turns(workspace)).await.unwrap();
     assert_eq!(turns.len(), 1, "her message is the agent's turn: {turns:?}");
@@ -218,8 +219,14 @@ async fn a_person_ends_from_any_device_the_share_their_agent_made_and_nobody_els
     team!(
         root, browser, actions, workspaces, workspace, page, person, served, device
     );
-    let (shared, made) =
-        shared_by_a_turn(&actions, &workspaces, &workspace, (&root, &browser)).await;
+    let (shared, made) = shared_by_a_turn(
+        &served,
+        &actions,
+        &workspaces,
+        &workspace,
+        (&root, &browser),
+    )
+    .await;
     let bo = another_member(&actions, &workspaces, &workspace, &device).await;
     // What acts for the person and did not make the share.
     let planner = themselves(&root, &browser, &workspace)

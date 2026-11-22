@@ -240,7 +240,9 @@ fn written(reply: &chat::chat::Message) -> (u64, Option<AgentFinish>) {
 /// it ended.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_grows_while_its_model_writes_it() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let (theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
@@ -260,7 +262,7 @@ async fn a_reply_grows_while_its_model_writes_it() {
         "plan the launch",
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     let going = begin!(agents, workspace);
 
     let grown = reads(
@@ -303,7 +305,9 @@ async fn a_reply_grows_while_its_model_writes_it() {
 /// the conversation: the first words go into the reply at once and the rest together.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_answer_written_fast_is_few_changes() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let (_theirs, _lets_go) = writing(&workspaces, &workspace, [vec![Writes("word "); 300]]).await;
     let first = write_to_agent(
         &actions,
@@ -313,7 +317,7 @@ async fn an_answer_written_fast_is_few_changes() {
         "count to three hundred",
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     begin!(agents, workspace).await.unwrap().unwrap();
 
     let reply = ended(&workspaces, &workspace, &first).await;
@@ -332,7 +336,9 @@ async fn an_answer_written_fast_is_few_changes() {
 /// writes after the tool stands a paragraph below.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn words_before_a_tool_stay_and_the_answer_stands_below_them() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let (theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
@@ -350,7 +356,7 @@ async fn words_before_a_tool_stay_and_the_answer_stands_below_them() {
         "what is planned?",
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     let going = begin!(agents, workspace);
 
     // The tool was used and the model is asked again: what it wrote before stands there.
@@ -387,7 +393,9 @@ async fn words_before_a_tool_stay_and_the_answer_stands_below_them() {
 /// answer. The reply keeps the words that came and says it was stopped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_ends_the_models_call_and_the_reply_keeps_what_came() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let (theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
@@ -402,7 +410,7 @@ async fn a_stop_ends_the_models_call_and_the_reply_keeps_what_came() {
         "plan the launch",
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     agents.look(&workspace).await.unwrap();
     reads(&workspaces, &workspace, &first, "The launch is").await;
     assert_eq!(theirs.let_go.load(Ordering::SeqCst), 0);
@@ -437,7 +445,9 @@ async fn a_stop_ends_the_models_call_and_the_reply_keeps_what_came() {
 /// reply keeps the words that came, and says below them that the model did not answer and why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_answer_that_breaks_off_keeps_what_came_and_says_why() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let (_theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
@@ -452,7 +462,7 @@ async fn an_answer_that_breaks_off_keeps_what_came_and_says_why() {
         "plan the launch",
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     begin!(agents, workspace).await.unwrap().unwrap();
 
     let reply = ended(&workspaces, &workspace, &first).await;
@@ -470,7 +480,9 @@ async fn an_answer_that_breaks_off_keeps_what_came_and_says_why() {
 /// stays, and the answer stands a paragraph below it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_answer_of_a_call_asked_again_stands_below_what_came() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let (_theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
@@ -490,7 +502,7 @@ async fn the_answer_of_a_call_asked_again_stands_below_what_came() {
         "plan the launch",
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     begin!(agents, workspace).await.unwrap().unwrap();
 
     let reply = ended(&workspaces, &workspace, &first).await;
@@ -508,7 +520,9 @@ async fn the_answer_of_a_call_asked_again_stands_below_what_came() {
 /// read is taken away, and the answer is not lost behind them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_that_grew_on_a_server_that_stopped_gets_its_answer_below() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let (theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
@@ -526,7 +540,7 @@ async fn a_reply_that_grew_on_a_server_that_stopped_gets_its_answer_below() {
         "plan the launch",
     )
     .await;
-    let dying = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let dying = worked(&served, &workspace, never_asked(Arc::default())).await;
     let going = begin!(dying, workspace);
     reads(&workspaces, &workspace, &first, "The launch is").await;
     // The server's process ends: its turn is dropped where it stands, and the call nobody
@@ -536,7 +550,7 @@ async fn a_reply_that_grew_on_a_server_that_stopped_gets_its_answer_below() {
     drop(dying);
     theirs.go_on();
 
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     begin!(agents, workspace).await.unwrap().unwrap();
     let reply = ended(&workspaces, &workspace, &first).await;
     assert_eq!(
@@ -553,7 +567,9 @@ async fn a_reply_that_grew_on_a_server_that_stopped_gets_its_answer_below() {
 /// in the thread of the agent that started it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_sub_agents_reply_grows_in_its_own_conversation() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let ada = themselves(&root, &browser, &workspace);
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let own = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent("writer")]);
@@ -574,7 +590,7 @@ async fn a_sub_agents_reply_grows_in_its_own_conversation() {
         ],
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     starts(
         &workspaces,
         &workspace,
@@ -716,7 +732,7 @@ async fn a_reply_whose_end_chat_refused_is_not_taken_for_answered() {
         ],
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     let going = begin!(agents, workspace);
     let grown = reads(&workspaces, &workspace, &asked, "The plan is ready.").await;
     assert!(

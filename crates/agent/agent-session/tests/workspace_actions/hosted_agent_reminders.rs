@@ -7,9 +7,6 @@ use super::*;
 use tilo_actions::remote::ReceiptStatus;
 use tilo_actions::remote::workspace_events::{self, Ended, EventView, Events, Sort};
 use tilo_server::{
-    ServerConfig as Config,
-    agents::{AgentOptions, start_workspace_documents},
-    daemon::{Server, ServerIdentity as Identity},
     workspace_bots::events::{Authority, WorkspaceEvents},
     workspaces::Workspaces,
 };
@@ -21,8 +18,7 @@ type Agents = ServerAgents;
 /// A server that is up, as tilo.sh keeps one: its workspaces' documents served, and its people's
 /// events kept going from its start.
 struct Up {
-    server: Server,
-    agents: tilo_agent_session::AgentService,
+    hosted: crate::harness::hosted::Hosted,
     actions: Actions,
     events: WorkspaceEvents,
     workspaces: Workspaces,
@@ -32,60 +28,45 @@ impl Up {
     /// The server of `root`'s person on `device`, on the state under `state`. On the state a
     /// server before it kept, it is that server after a restart.
     async fn on(root: &SigningKey, device: &Device, state: &std::path::Path) -> Self {
-        let cfg = Config {
-            state_root: state.join("server"),
-            packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
-            ..Default::default()
-        };
-        let identity = Identity {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_signing_key: device.key.clone(),
-            device_cert: device.cert.clone(),
-            revocations: RevocationList::new(),
-        };
-        let (server, agents, roster) = start_workspace_documents(
-            cfg,
-            identity,
-            AgentOptions {
-                state_dir: state.join("agents"),
-                catalogue: Some(Arc::new(crate::common::catalogue)),
-                feedback_reviewer: None,
-                shell: None,
-                browsers: None,
-            },
+        let hosted = crate::harness::hosted::start(
+            root,
+            device,
+            state,
+            crate::harness::hosted::Options::offering(crate::common::catalogue),
         )
-        .await
-        .unwrap();
-        let workspaces = server.workspaces().unwrap().clone();
+        .await;
         Self {
-            server,
-            agents,
-            actions: roster.actions,
-            events: roster
+            actions: hosted.roster.actions.clone(),
+            events: hosted
+                .roster
                 .events
+                .clone()
                 .expect("a server that keeps workspaces keeps their people's events"),
-            workspaces,
+            workspaces: hosted.workspaces().unwrap().clone(),
+            hosted,
         }
     }
 
     /// Stop the server, as when its process ends: nothing of it goes on.
     async fn down(self) {
         let Self {
-            server,
-            agents,
+            hosted,
             actions,
             events,
             workspaces,
         } = self;
-        agents.shutdown();
+        hosted.agents.shutdown();
         drop((actions, events, workspaces));
-        server.shutdown().await;
+        hosted.server.shutdown().await;
     }
 
-    /// The agents this server keeps working, with `model`: their tools reach its people's
-    /// events.
-    fn agents(&self, model: Option<Model>) -> Agents {
-        Agents::for_test(self.workspaces.clone(), self.actions.clone(), model)
+    /// The agents this server keeps working in `workspace`, with `model`: their tools reach its
+    /// people's events.
+    async fn agents(&self, workspace: &str, model: Option<Model>) -> Agents {
+        self.hosted
+            .approving(workspace, &[SCOUT])
+            .await
+            .scripted(model)
             .with_events(Some(self.events.clone()))
     }
 
@@ -186,7 +167,7 @@ async fn team_on(
 ) -> (Up, String, Browser) {
     let up = Up::on(root, device, state).await;
     let workspace = up.workspaces.create("Team").await.unwrap().workspace;
-    let page = Browser::open_at(&up.server, browser, device, &workspace).await;
+    let page = Browser::open_at(&up.hosted, browser, device, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &up.workspaces, &workspace, &person, None).await;
     let catalogue = crate::common::catalogue();
@@ -294,7 +275,7 @@ async fn reminded(
                 as Box<dyn tilo_agent_session::model::PlanTurns>)
         })
     };
-    let agents = up.agents(Some(model));
+    let agents = up.agents(workspace, Some(model)).await;
     let turns = agents.turns(workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     agents.answer(workspace, &turns[0]).await.unwrap();
@@ -347,7 +328,7 @@ async fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_persons
         MemberId::agent(reminder.id.as_str()),
         "the reminder asked, never the person"
     );
-    let agents = up.agents(Some(says_what_is_due()));
+    let agents = up.agents(&workspace, Some(says_what_is_due())).await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
     assert_eq!(
@@ -415,7 +396,12 @@ async fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_persons
         "nothing more was asked"
     );
     assert!(
-        up.agents(None).turns(&workspace).await.unwrap().is_empty(),
+        up.agents(&workspace, None)
+            .await
+            .turns(&workspace)
+            .await
+            .unwrap()
+            .is_empty(),
         "and no turn is owed a second time"
     );
     up.down().await;
@@ -460,7 +446,7 @@ async fn a_reminder_due_while_its_server_was_down_starts_its_turn_once_the_serve
         message.cause.as_ref().map(|cause| cause.label.as_str()),
         Some("Call home")
     );
-    let agents = up.agents(Some(says_what_is_due()));
+    let agents = up.agents(&workspace, Some(says_what_is_due())).await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
     agents.answer(&workspace, &turns[0]).await.unwrap();
@@ -491,7 +477,14 @@ async fn a_reminder_due_while_its_server_was_down_starts_its_turn_once_the_serve
         2,
         "the reminder and its answer, nothing else"
     );
-    assert!(up.agents(None).turns(&workspace).await.unwrap().is_empty());
+    assert!(
+        up.agents(&workspace, None)
+            .await
+            .turns(&workspace)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(invocations(&up.events_of(&workspace, &me)[0]).0, 1);
     up.down().await;
 }
@@ -574,12 +567,17 @@ impl Killed {
         .await;
         page.peer.close();
         let asked = Arc::new(Mutex::new(Vec::new()));
-        let agents = up.agents(Some(waits(
-            vec![looks(), says("Nothing is due today.")],
-            usize::MAX,
-            &asked,
-            &Arc::new(Hold::default()),
-        )));
+        let agents = up
+            .agents(
+                &workspace,
+                Some(waits(
+                    vec![looks(), says("Nothing is due today.")],
+                    usize::MAX,
+                    &asked,
+                    &Arc::new(Hold::default()),
+                )),
+            )
+            .await;
         let turns = agents.turns(&workspace).await.unwrap();
         assert_eq!(turns.len(), 1, "{turns:?}");
         agents.answer(&workspace, &turns[0]).await.unwrap();
@@ -619,15 +617,20 @@ impl Killed {
 /// what its model answers is taken, and nothing is owed for it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn after_a_kill_a_start_asks_its_model_for_an_ended_turn_at_most_once() {
-    let killed = Killed::as_an_answer_ended().await;
+    let killed = Box::pin(Killed::as_an_answer_ended()).await;
     let up = Up::on(&killed.root, &killed.device, killed.state.path()).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = up.agents(Some(waits(
-        vec![says("Nothing is due today.")],
-        usize::MAX,
-        &asked,
-        &Arc::new(Hold::default()),
-    )));
+    let agents = up
+        .agents(
+            &killed.workspace,
+            Some(waits(
+                vec![says("Nothing is due today.")],
+                usize::MAX,
+                &asked,
+                &Arc::new(Hold::default()),
+            )),
+        )
+        .await;
     // What the server's own look does, three times over: it starts every turn that is owed.
     for _ in 0..3 {
         for turn in agents.turns(&killed.workspace).await.unwrap() {
@@ -647,7 +650,7 @@ async fn after_a_kill_a_start_asks_its_model_for_an_ended_turn_at_most_once() {
 /// and its steps, and nothing is owed that would say or do any of it a second time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_server_killed_as_an_answer_ended_starts_with_the_answer_ended_and_owes_no_turn() {
-    let killed = Killed::as_an_answer_ended().await;
+    let killed = Box::pin(Killed::as_an_answer_ended()).await;
     let up = Up::on(&killed.root, &killed.device, killed.state.path()).await;
     let part = conversation_part(&up.workspaces, &killed.workspace).await;
     let reply = part
@@ -668,7 +671,12 @@ async fn a_server_killed_as_an_answer_ended_starts_with_the_answer_ended_and_owe
         2,
         "their message and its answer, nothing else"
     );
-    let owed = up.agents(None).turns(&killed.workspace).await.unwrap();
+    let owed = up
+        .agents(&killed.workspace, None)
+        .await
+        .turns(&killed.workspace)
+        .await
+        .unwrap();
     assert!(
         owed.is_empty(),
         "no turn is owed for a message that was answered: {owed:?}"

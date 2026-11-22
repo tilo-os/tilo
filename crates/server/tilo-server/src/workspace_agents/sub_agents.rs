@@ -182,24 +182,21 @@ pub(super) fn worked_here(agent: &Agent) -> bool {
         .is_none_or(|sub| sub.runs == sub::RUNS_ON_HOST)
 }
 
-/// A turn this server works, and the bound its calls carry.
-type OnTurn = (
-    tilo_action_policy::turn::Turn,
-    Vec<tilo_action_policy::Rule>,
-);
-
 /// The turn of a lead's that `delivery` is written on, as `roster` holds the two agents now.
 ///
 /// Only a job or a note a sub-agent gave a sub-agent of its own team has one: both are listed
 /// and work for the person the message is for, this server works the lead, and the other was
 /// started under it. Then this server worked the lead's turns itself, in the lead's own
-/// conversation, and the bound is the one the lead's keeper set on it. The list keeps who gave
+/// conversation. The list keeps who gave
 /// a job or a note and not which message the lead's turn answered then, so the turn named is
 /// the one the lead's own job began: every later turn of a sub-agent is work on that job.
 ///
 /// None for everything else, which stays outside a turn: what a person's own agent gave, and
 /// whatever a sub-agent would give upward, beside itself or for another person.
-fn lead_turn(roster: &WorkspaceAgents, delivery: &Delivery) -> Option<OnTurn> {
+fn lead_turn(
+    roster: &WorkspaceAgents,
+    delivery: &Delivery,
+) -> Option<tilo_action_policy::turn::Turn> {
     let lead = roster.get(&Id::from_raw(delivery.by.clone()))?;
     let above = lead.sub.as_ref()?;
     let under = roster.agents.iter().find(|agent| {
@@ -221,12 +218,9 @@ fn lead_turn(roster: &WorkspaceAgents, delivery: &Delivery) -> Option<OnTurn> {
         &MemberId::person(lead.keeper.as_str()),
         &key_of(&lead.id.0, JOB),
     );
-    Some((
-        tilo_action_policy::turn::Turn::new(
-            chat::summons::conversation_address(&Id::from_raw(above.conversation.clone())),
-            job.to_string(),
-        ),
-        lead.bound_rules().unwrap_or_default(),
+    Some(tilo_action_policy::turn::Turn::new(
+        chat::summons::conversation_address(&Id::from_raw(above.conversation.clone())),
+        job.to_string(),
     ))
 }
 
@@ -677,30 +671,6 @@ impl ServerAgents {
         }
     }
 
-    /// The person `person` as their own device is admitted in `workspace`, and the server's
-    /// action service there.
-    async fn person_in(
-        &self,
-        workspace: &str,
-        person: &str,
-    ) -> Result<(WorkspaceActionProvider, Caller), String> {
-        let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
-        // The person as the workspace's list of its agents names a keeper.
-        let key: [u8; 32] = tilo_action_policy::PersonId::parse(person)
-            .ok()
-            .and_then(|person| person.root())
-            .ok_or("a sub-agent works for a person")?;
-        let device = self
-            .workspaces
-            .person_device(workspace_id, key)
-            .await
-            .ok_or("the person a sub-agent works for is admitted here on no device")?;
-        Ok((
-            WorkspaceActionProvider::new(self.actions.clone(), workspace_id),
-            Caller::authenticated(key, device).in_workspace(workspace),
-        ))
-    }
-
     /// Carry what a look found owed to the sub-agents of `workspace`: each job and note the
     /// list holds is written into its sub-agent's conversation, as the words of the agent
     /// that gave it, and a note that is there reaches the turn of its sub-agent that is going.
@@ -811,8 +781,8 @@ impl ServerAgents {
             .is_some_and(|roster| roster.get(&Id::from_raw(id.to_owned())).is_some())
     }
 
-    /// The turn `delivery` is written on when a lead gave it to one of its own team, with the
-    /// bound of that turn ([`lead_turn`]); none for what any other agent gave.
+    /// The turn `delivery` is written on when a lead gave it to one of its own team
+    /// ([`lead_turn`]); none for what any other agent gave.
     ///
     /// # Errors
     /// The list could not be read, or the lead's words name a member of the workspace.
@@ -820,7 +790,7 @@ impl ServerAgents {
         &self,
         workspace: &str,
         delivery: &Delivery,
-    ) -> Result<Option<OnTurn>, String> {
+    ) -> Result<Option<tilo_action_policy::turn::Turn>, String> {
         let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let Some(roster) = self
             .read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &document)
@@ -846,20 +816,27 @@ impl ServerAgents {
     /// service holds it to what the list keeps for the agent. What a sub-agent gave one of its
     /// own team is this server's to carry as well, and outside a turn nothing is taken in a
     /// sub-agent's name but the three writes its own rules let it, of which asking an agent is
-    /// none. So that one message is written for the lead's turn ([`lead_turn`]), with the bound
-    /// the lead's keeper set on it, as every call of a turn this server works is, and through
-    /// the service as it serves everyone. It is carried as plain words only: words that name a
-    /// member of the workspace are not written, as a sub-agent's own turn is taken none
-    /// ([`admits`]), so nothing a lead gives its team reaches a member or asks another agent.
+    /// none. So that one message is written for the lead's turn ([`lead_turn`]), as every call
+    /// of a turn this server works is, and through the service as it serves everyone. It is
+    /// carried as plain words only: words that name a member of the workspace are not written,
+    /// as a sub-agent's own turn is taken none ([`admits`]), so nothing a lead gives its team
+    /// reaches a member or asks another agent.
     async fn deliver(&self, workspace: &str, delivery: &Delivery) -> Result<(), String> {
-        let (service, person) = self.person_in(workspace, &delivery.person).await?;
-        let caller = person
-            .delegated_to(delivery.by.clone())
-            .named(&delivery.by_name);
+        let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
+        let person: [u8; 32] = tilo_action_policy::PersonId::parse(&delivery.person)
+            .ok()
+            .and_then(|person| person.root())
+            .ok_or("a sub-agent works for a person")?;
+        let agents = self.agents(workspace).await?;
+        let by = agents
+            .get(&delivery.by)
+            .ok_or("the agent that gave it no longer works here")?;
+        let caller = self.agent_caller(workspace_id, by, person).await?;
         let caller = match self.of_lead(workspace, delivery).await? {
-            Some((turn, bound)) => caller.on_turn(turn, bound),
+            Some(turn) => caller.on_roster_turn(turn, by.created_at, person),
             None => caller,
         };
+        let service = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
         let label = cut(delivery.by_name.trim(), LABEL_BYTES);
         ask_agent(
             &service,
@@ -1005,11 +982,13 @@ impl ServerAgents {
         }
         // The server's own write, so through the service as it serves everyone: the one kept to
         // the sub-agent's conversation takes of Chat only the three writes of its turn.
-        let service = WorkspaceActionProvider::new(self.actions.clone(), acting.workspace_id);
         if let Err(error) = self
             .tell_starter(
                 &acting.workspace,
-                (&acting.person, &service),
+                (
+                    &acting.agent,
+                    &WorkspaceActionProvider::new(self.actions.clone(), acting.workspace_id),
+                ),
                 turn,
                 (stands, said),
             )
@@ -1022,15 +1001,15 @@ impl ServerAgents {
     /// Tell the agent that started `turn`'s sub-agent how its work ended, in the starter's own
     /// conversation, as the sub-agent's news: the starter answers it there like any ask.
     ///
-    /// The server writes it for the turn that ended, so the caller carries that turn and the
-    /// bound the sub-agent's keeper set on it, as every call of a turn this server works does.
+    /// The server writes it for the turn that ended, so the caller carries that turn, as every
+    /// call of a turn this server works does.
     /// Outside a turn nothing is taken in a sub-agent's name but what its own rules let it, and
     /// asking an agent is none of that: this one message upward is the server's, never a call
     /// of the sub-agent's model, whose turn is served kept to its own conversation.
     async fn tell_starter(
         &self,
         workspace: &str,
-        (person, service): (&Caller, &WorkspaceActionProvider),
+        (agent, service): (&Caller, &WorkspaceActionProvider),
         turn: &Turn,
         (stands, said): (Stands, &str),
     ) -> Result<(), String> {
@@ -1075,14 +1054,11 @@ impl ServerAgents {
             job = sub.job.lines().next().unwrap_or_default(),
             conversation = turn.conversation,
         );
-        let caller = person
-            .clone()
-            .delegated_to(turn.agent.id.0.clone())
-            .named(&turn.agent.name)
-            .on_turn(
-                tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone()),
-                turn.agent.bound_rules().unwrap_or_default(),
-            );
+        let caller = agent.clone().on_roster_turn(
+            tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone()),
+            turn.agent.created_at,
+            *agent.turn_person().ok_or("the turn works for nobody")?,
+        );
         let label = format!(
             "{}: {how}",
             cut(turn.agent.name.trim(), LABEL_BYTES.saturating_sub(24))
@@ -1398,8 +1374,8 @@ mod tests {
         let to_worker = given("lead", &own("worker"), "ada");
 
         // A lead's job to its worker: the lead's turn in the lead's own conversation, the one its
-        // own job began, with the bound its keeper set on the lead.
-        let (turn, bound) = lead_turn(&list, &to_worker)
+        // own job began.
+        let turn = lead_turn(&list, &to_worker)
             .expect("a lead's job to its worker is written on the lead's turn");
         assert_eq!(
             turn.conversation,
@@ -1409,21 +1385,6 @@ mod tests {
             turn.message,
             chat::cause::message_id(&MemberId::person("ada"), &key_of("lead", JOB)).to_string()
         );
-        assert!(bound.is_empty(), "nothing narrows this lead: {bound:?}");
-        let refusal = tilo_action_policy::Rule::new(
-            tilo_action_policy::TreePath::workspace("w").app("so.tilo.notes"),
-            tilo_action_policy::KindSet::READ,
-            tilo_action_policy::Answer::Deny,
-        );
-        let narrowed = with_lead(&list, |lead| {
-            lead.bound = vec![tilo_workspace_agent::Bound::of(&refusal)];
-        });
-        let (_, bound) = lead_turn(&narrowed, &to_worker).expect("a narrowed lead's job as well");
-        assert!(
-            bound.len() == 1 && bound[0].answer == tilo_action_policy::Answer::Deny,
-            "the turn carries what the lead's keeper bounded the lead to: {bound:?}"
-        );
-
         // Everything else stays outside a turn, where the list's own rules for the agent decide.
         for (what, by, to, person) in [
             (

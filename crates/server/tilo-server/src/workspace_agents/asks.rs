@@ -171,14 +171,14 @@ impl AsksInConversation for InConversation {
         caller: &Caller,
         asked: AskedInTurn,
     ) -> Option<Pending<Result<(), String>>> {
-        // An agent a person's own session was handed to, inside a turn:
+        // An agent of this server's own, working inside a turn for the person who asked:
         // nothing else is a turn of this server's.
         let acting = caller.acting();
-        if acting.app().is_some() || !acting.is_agent() || !caller.is_session_delegated() {
+        if acting.app().is_some() || !acting.is_agent() || caller.roster_created_at().is_none() {
             return None;
         }
         let turn = caller.turn()?.clone();
-        let person = *caller.user_public_key()?;
+        let person = *caller.turn_person()?;
         let agent = acting.agent_id()?.to_owned();
         let workspace = caller.workspace()?.to_owned();
         if WorkspaceId::parse(&workspace) != Some(workspace_id) {
@@ -534,9 +534,10 @@ fn allowed(
     actions: &WorkspaceActions,
     workspace_id: WorkspaceId,
     caller: &Caller,
-    request: InvokeRequest,
+    mut request: InvokeRequest,
 ) -> Result<Value, String> {
     let invocation = request.invocation;
+    actions.sign_for(workspace_id, caller, &mut request)?;
     let answered = actions
         .serve_allowed(workspace_id, caller, request)
         .ok_or("the server's workspace actions are not running")?
@@ -652,15 +653,15 @@ impl Agents {
         let agent = agents
             .get(&agent)
             .ok_or("this server has no such agent in that workspace")?;
-        let device = self
+        if self
             .workspaces
             .person_device(workspace_id, person)
             .await
-            .ok_or("the person asked is admitted there on no device")?;
-        let asker = Caller::authenticated(person, device)
-            .in_workspace(&*workspace)
-            .delegated_to(agent.id.0.clone())
-            .named(&agent.name);
+            .is_none()
+        {
+            return Err("the person asked is admitted there on no device".to_owned());
+        }
+        let asker = self.agent_caller(workspace_id, agent, person).await?;
         let place = self
             .workspaces
             .summary(&workspace)
@@ -794,13 +795,9 @@ impl Agents {
         else {
             return;
         };
-        let Some(device) = self.workspaces.person_device(workspace_id, person).await else {
+        let Ok(caller) = self.agent_caller(workspace_id, &turn.agent, person).await else {
             return;
         };
-        let caller = Caller::authenticated(person, device)
-            .in_workspace(workspace)
-            .delegated_to(turn.agent.id.0.clone())
-            .named(&turn.agent.name);
         let author = MemberId::agent(&turn.agent.id.0);
         let theirs = MemberId::person(&turn.person);
         let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
@@ -867,29 +864,30 @@ impl Agents {
         parts
     }
 
-    /// The agent that asked `ask`, acting for its person now: as the turn
+    /// The agent that asked `ask`, working for its person now: as the turn
     /// that asked, which is what its invocation goes as, and outside any
     /// turn, which is how it says what came of the answer once that turn
-    /// has ended. `None` when the workspace admits the person on no device.
+    /// has ended. `None` when the workspace admits the person on no device,
+    /// or the agent has no approved key here any more.
     async fn asker_of(
         &self,
-        workspace: &str,
         workspace_id: WorkspaceId,
         ask: &KeptAsk,
         agent: &Agent,
     ) -> Option<([u8; 32], Caller, Caller)> {
         let mut person = [0; 32];
         hex::decode_to_slice(&ask.person, &mut person).ok()?;
-        let device = self.workspaces.person_device(workspace_id, person).await?;
+        self.workspaces.person_device(workspace_id, person).await?;
         let asked_in: AskedIn = serde_json::from_value(ask.asked_in.clone()).ok()?;
-        let outside = Caller::authenticated(person, device)
-            .in_workspace(workspace)
-            .delegated_to(agent.id.0.clone())
-            .named(&agent.name)
+        let outside = self
+            .agent_caller(workspace_id, agent, person)
+            .await
+            .ok()?
             .in_agent_session(asked_in.session);
-        let turn = outside.clone().on_turn(
+        let turn = outside.clone().on_roster_turn(
             tilo_action_policy::turn::Turn::new(asked_in.conversation, asked_in.cause),
-            agent.bound_rules().unwrap_or_default(),
+            agent.created_at,
+            person,
         );
         Some((person, turn, outside))
     }
@@ -923,9 +921,7 @@ impl Agents {
         found: &Found,
         answer: Answered,
     ) {
-        let Some((person, turn, outside)) = self
-            .asker_of(workspace, workspace_id, &found.ask, agent)
-            .await
+        let Some((person, turn, outside)) = self.asker_of(workspace_id, &found.ask, agent).await
         else {
             // Its person is admitted here on no device any more.
             self.workspaces.forget_ask(&found.ask);
@@ -1078,10 +1074,7 @@ impl Agents {
             return;
         };
         let workspace = found.ask.workspace.clone();
-        let Some((_, _, outside)) = self
-            .asker_of(&workspace, workspace_id, &found.ask, agent)
-            .await
-        else {
+        let Some((_, _, outside)) = self.asker_of(workspace_id, &found.ask, agent).await else {
             return;
         };
         let told = (chat::question::FAILED, Some(INTERRUPTED.to_owned()));

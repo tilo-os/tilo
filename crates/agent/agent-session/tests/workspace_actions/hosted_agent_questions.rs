@@ -11,7 +11,6 @@ use super::*;
 use std::sync::Mutex;
 use tilo_actions::remote::person_asking::{self, ActionName, Asked, Words};
 use tilo_server::{
-    daemon,
     workspace_agents::{
         Answered, Carried, Carries, ServerAgents, ServerAsk, WorkspaceActionProvider, invoke_named,
     },
@@ -54,7 +53,7 @@ enum Who<'a> {
 /// A server with one person, their assistant on it, and the workspace's own model.
 struct Hosted {
     /// The server itself, kept running until the test ends.
-    _server: daemon::Server,
+    server: crate::harness::hosted::Hosted,
     actions: tilo_agent_session::workspace_actions::WorkspaceActions,
     workspaces: Workspaces,
     workspace: String,
@@ -70,17 +69,23 @@ struct Hosted {
 
 impl Hosted {
     async fn start() -> Self {
+        Self::approved_for(&[]).await
+    }
+
+    /// [`Self::start`], its assistant approved for `apps` alone where any are named.
+    async fn approved_for(apps: &[&str]) -> Self {
         let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let holder = enrol(&root, "tilo-sh", DeviceCapabilities::member());
         let browser = enrol(&root, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
+        let server = crate::harness::hosted::start(
             &root,
             &holder,
             state.path(),
-            crate::common::catalogue,
+            crate::harness::hosted::Options::offering(crate::common::catalogue),
         )
         .await;
+        let actions = server.roster.actions.clone();
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let page = Browser::open_at(&server, &browser, &holder, &workspace).await;
@@ -109,9 +114,9 @@ impl Hosted {
             )
             .await
             .unwrap();
-        let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), None);
+        let agents = Box::pin(server.approving_for(&workspace, &[SCOUT], apps)).await;
         Self {
-            _server: server,
+            server,
             actions,
             workspaces,
             workspace,
@@ -134,8 +139,8 @@ impl Hosted {
 
     /// The server stops and starts again: whatever ran its agents is gone, and what works them now
     /// knows only what the documents and the server's own store hold.
-    fn restart(&mut self) {
-        self.agents = ServerAgents::for_test(self.workspaces.clone(), self.actions.clone(), None);
+    async fn restart(&mut self) {
+        self.agents = self.server.approving(&self.workspace, &[SCOUT]).await;
     }
 
     /// The person writes `words` to their assistant, and the server answers the one turn that
@@ -658,7 +663,7 @@ async fn an_action_that_asks_first_waits_in_the_conversation_and_is_done_once_on
     );
 
     // The server restarts, and the person answers a day later.
-    hosted.restart();
+    hosted.restart().await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     assert!(hosted.question(&id).await.waiting());
     let later = held.ts + A_DAY;
@@ -691,7 +696,7 @@ async fn an_action_that_asks_first_waits_in_the_conversation_and_is_done_once_on
     // It ran once: nothing is kept any more, and a later look finds nothing to do.
     assert!(hosted.workspaces.open_asks(&hosted.workspace).is_empty());
     hosted.agents.look(&hosted.workspace).await.unwrap();
-    hosted.restart();
+    hosted.restart().await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     let after = hosted.question(&id).await;
     assert_eq!(after.outcome, settled.outcome, "said once, for good");
@@ -1013,7 +1018,7 @@ async fn what_the_servers_own_code_asks_reaches_its_carrier_once_with_the_person
             .answers(Who::Herself, &id, chat::question::ALWAYS, None)
             .await
     );
-    hosted.restart();
+    hosted.restart().await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(heard.0.lock().unwrap().is_empty());
@@ -1194,7 +1199,7 @@ async fn an_answer_wakes_its_asker_once_a_day_later_and_after_a_restart() {
     assert_eq!(hosted.model.asked().len(), before, "and costs nothing");
 
     // The server restarts. A day later the person answers, and only answers.
-    hosted.restart();
+    hosted.restart().await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     assert!(hosted.caused(&key).await.is_empty());
     hosted
@@ -1247,7 +1252,7 @@ async fn an_answer_wakes_its_asker_once_a_day_later_and_after_a_restart() {
 
     // Once and only once, whatever the server does next.
     hosted.agents.look(&hosted.workspace).await.unwrap();
-    hosted.restart();
+    hosted.restart().await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     hosted.agents.look(&hosted.workspace).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1582,4 +1587,26 @@ async fn each_reply_names_the_model_that_wrote_it_across_a_switch() {
     assert_eq!(second.cost_micros, 300);
     assert_eq!(first.model, "gemini-main", "the first answer keeps its own");
     hosted.page.peer.close();
+}
+
+/// An assistant whose approval names no Books opens none: its open of a book is refused in
+/// words it can tell its person, and no book is started.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_approved_without_books_starts_no_book() {
+    let hosted = Hosted::approved_for(&[CHAT]).await;
+    hosted
+        .turn(
+            "Open a book.",
+            vec![
+                does("open", "ebook#open", serde_json::json!({})),
+                Reply::text("I may not."),
+            ],
+        )
+        .await;
+    let told = hosted.tool_results();
+    assert!(
+        told.contains("this agent was not approved to change"),
+        "{told}"
+    );
+    assert!(hosted.questions().await.is_empty(), "nobody was asked");
 }

@@ -819,29 +819,30 @@ impl ServerAgents {
         parts
     }
 
-    /// The agent that asked `ask`, acting for its person now: as the turn
+    /// The agent that asked `ask`, working for its person now: as the turn
     /// that asked, which is what the entry decides it by, and outside any
     /// turn, which is how it says what came of the answer once that turn
-    /// has ended. `None` when the workspace admits the person on no device.
+    /// has ended. `None` when the workspace admits the person on no device,
+    /// or the agent has no approved key here any more.
     async fn asker(
         &self,
-        workspace: &str,
         workspace_id: WorkspaceId,
         ask: &OpenAsk,
         agent: &Agent,
     ) -> Option<(Caller, Caller)> {
         let mut person = [0; 32];
         hex::decode_to_slice(&ask.person, &mut person).ok()?;
-        let device = self.workspaces.person_device(workspace_id, person).await?;
+        self.workspaces.person_device(workspace_id, person).await?;
         let asked_in: AskedIn = serde_json::from_value(ask.asked_in.clone()).ok()?;
-        let outside = Caller::authenticated(person, device)
-            .in_workspace(workspace)
-            .delegated_to(agent.id.0.clone())
-            .named(&agent.name)
+        let outside = self
+            .agent_caller(workspace_id, agent, person)
+            .await
+            .ok()?
             .in_agent_session(asked_in.session);
-        let turn = outside.clone().on_turn(
+        let turn = outside.clone().on_roster_turn(
             tilo_action_policy::turn::Turn::new(asked_in.conversation, asked_in.cause),
-            agent.bound_rules().unwrap_or_default(),
+            agent.created_at,
+            person,
         );
         Some((turn, outside))
     }
@@ -862,7 +863,7 @@ impl ServerAgents {
             shown,
             changed,
         } = answered;
-        let Some((turn, outside)) = self.asker(workspace, workspace_id, &ask, agent).await else {
+        let Some((turn, outside)) = self.asker(workspace_id, &ask, agent).await else {
             // Its person is admitted here on no device any more.
             self.workspaces.use_not_asked(&ask);
             return;
@@ -934,7 +935,7 @@ impl ServerAgents {
         let Some(agent) = agents.get(&ask.agent) else {
             return;
         };
-        let Some((_, outside)) = self.asker(&ask.workspace, workspace_id, &ask, agent).await else {
+        let Some((_, outside)) = self.asker(workspace_id, &ask, agent).await else {
             return;
         };
         let service = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);

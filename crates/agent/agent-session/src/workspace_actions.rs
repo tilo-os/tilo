@@ -425,9 +425,6 @@ impl WorkspaceActions {
     /// their own current access, and refuses what it does not allow.
     fn admits(&self, caller: &Caller, request: &InvokeRequest) -> bool {
         let on_resource = resource_of(&request.target.provider, "").is_some();
-        if caller.roster_created_at().is_some() {
-            return on_resource;
-        }
         let link_request =
             request.target.address.action == ui::tilo_resource::share::SHARE_LINK && on_resource;
         let on_workspace = provider_workspace(&request.target.provider).is_some();

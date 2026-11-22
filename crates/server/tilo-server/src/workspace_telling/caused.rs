@@ -17,7 +17,6 @@
 //! makes news of the answer, whatever kind it says it is, as what an agent
 //! tells is news.
 
-use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_telling::{Cause, Kind, Tell, Teller};
 use tilo_resource::Id;
 
@@ -68,8 +67,8 @@ fn their_event(events: Option<&WorkspaceEvents>, workspace: &str, author: Option
 }
 
 /// Tell the person `turn` was for how it ended as `outcome`, where a cause
-/// started it. `person` is that person as the turn acted for them in
-/// `workspace`, and `events` what this server carries out for its people.
+/// started it. `person` is that person, in `workspace`, and `events` what
+/// this server carries out for its people.
 ///
 /// A turn its person wrote for themselves tells nothing, nor one they
 /// stopped, nor one that left no words. A sub-agent's turn tells nothing
@@ -77,7 +76,7 @@ fn their_event(events: Option<&WorkspaceEvents>, workspace: &str, author: Option
 pub(crate) async fn turn_ended(
     workspaces: &Workspaces,
     events: Option<&WorkspaceEvents>,
-    person: &Caller,
+    person: &[u8; 32],
     workspace: &str,
     turn: &Turn,
     outcome: &Outcome,
@@ -97,9 +96,7 @@ pub(crate) async fn turn_ended(
         Outcome::Answered(words) | Outcome::Stopped(words) | Outcome::Failed(words) => words,
         Outcome::Cancelled => return,
     };
-    let Some(theirs) = person.user_public_key().copied() else {
-        return;
-    };
+    let theirs = *person;
     if words.trim().is_empty() {
         return;
     }

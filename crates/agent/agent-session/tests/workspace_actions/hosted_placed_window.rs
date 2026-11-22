@@ -145,11 +145,7 @@ async fn a_person_with_none_but_placed_devices_has_no_device_for_a_turn() {
     let person = hosted.root.verifying_key().to_bytes();
     let _window = enters(&hosted, &material).await;
     let window = material.device.device_public_key;
-    let placed = hosted
-        .server
-        .downcast_ref::<tilo_server::daemon::Server>()
-        .expect("the server of this test")
-        .environments();
+    let placed = hosted.server.environments();
     // The server's own list of the devices it placed takes each device the person still has
     // of their own, one after the other, as it took the window's: what a turn acts as is asked
     // after each.

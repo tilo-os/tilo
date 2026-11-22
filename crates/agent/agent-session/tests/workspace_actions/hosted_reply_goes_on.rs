@@ -353,7 +353,9 @@ fn stands(whole: &str, said: &[chat::chat::Message]) {
 /// where a word ends, each within what a message holds, and each says the answer ended.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_answer_longer_than_one_message_stands_whole_in_the_conversation() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     // The provider waits with sixty lines written past what one message holds.
     let waits_at = lines().saturating_sub(BEYOND / 2);
     let (theirs, _lets_go) = reporting(
@@ -378,7 +380,7 @@ async fn an_answer_longer_than_one_message_stands_whole_in_the_conversation() {
         "write the long report",
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     let going = begin!(agents, workspace);
 
     let midway = reads_to(
@@ -446,7 +448,9 @@ async fn an_answer_longer_than_one_message_stands_whole_in_the_conversation() {
 /// one after the other, are the answer, as for one that was written piece by piece.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_answer_that_arrives_whole_and_is_longer_than_one_message_stands_whole() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -458,10 +462,11 @@ async fn an_answer_that_arrives_whole_and_is_longer_than_one_message_stands_whol
     let whole = report(0, lines());
     let answered = whole.clone();
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         plays(&Arc::default(), move |_| says(&answered)),
-    );
+    )
+    .await;
     agents.look(&workspace).await.unwrap();
     let reply = ended(&workspaces, &workspace, &first).await;
     assert_eq!(
@@ -488,7 +493,9 @@ async fn an_answer_that_arrives_whole_and_is_longer_than_one_message_stands_whol
 /// provider ends where it stood, every message of the answer keeps the words that came and
 /// says it was stopped, and the reply says so for the turn.
 async fn a_stop_that_names_a_message_of_a_long_answer_ends_its_turn(nth: usize) {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let waits_at = lines().saturating_sub(BEYOND / 2);
     let (theirs, _lets_go) = reporting(
         &workspaces,
@@ -508,7 +515,7 @@ async fn a_stop_that_names_a_message_of_a_long_answer_ends_its_turn(nth: usize) 
         "write the long report",
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     agents.look(&workspace).await.unwrap();
     let midway = reads_to(
         &workspaces,
@@ -584,7 +591,9 @@ async fn a_stop_that_names_a_following_message_of_a_long_answer_ends_its_turn() 
 /// lost and none is written twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_long_answer_goes_on_below_its_newest_message_after_a_server_stopped() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let waits_at = lines().saturating_sub(BEYOND / 2);
     let (theirs, _lets_go) = reporting(
         &workspaces,
@@ -603,7 +612,7 @@ async fn a_long_answer_goes_on_below_its_newest_message_after_a_server_stopped()
         "write the long report",
     )
     .await;
-    let dying = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let dying = worked(&served, &workspace, never_asked(Arc::default())).await;
     let going = begin!(dying, workspace);
     let before = reads_to(
         &workspaces,
@@ -626,7 +635,7 @@ async fn a_long_answer_goes_on_below_its_newest_message_after_a_server_stopped()
     drop(dying);
     theirs.go_on();
 
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     begin!(agents, workspace).await.unwrap().unwrap();
     let reply = ended(&workspaces, &workspace, &first).await;
     assert_eq!(
@@ -659,7 +668,9 @@ async fn a_long_answer_goes_on_below_its_newest_message_after_a_server_stopped()
 /// the answer went on in holds words alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_thinking_and_the_steps_of_a_long_answer_stay_with_its_first_message() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let (theirs, _lets_go) = reporting(
         &workspaces,
         &workspace,
@@ -681,7 +692,7 @@ async fn the_thinking_and_the_steps_of_a_long_answer_stay_with_its_first_message
         "write the long report",
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     let going = begin!(agents, workspace);
     let deadline = tilo_test_env::hang_deadline();
     let midway = loop {
@@ -765,7 +776,9 @@ async fn the_thinking_and_the_steps_of_a_long_answer_stay_with_its_first_message
 /// it in the thread of the agent that started it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_sub_agents_long_answer_goes_on_in_its_own_conversation() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let ada = themselves(&root, &browser, &workspace);
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let own = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent("writer")]);
@@ -781,7 +794,7 @@ async fn a_sub_agents_long_answer_goes_on_in_its_own_conversation() {
         ],
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     starts(
         &workspaces,
         &workspace,
@@ -854,7 +867,9 @@ async fn a_sub_agents_long_answer_goes_on_in_its_own_conversation() {
 /// turn, none is made, and the other turn's answer is as it was.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_sub_agent_grows_no_message_but_those_its_server_derived_for_its_own_turn() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let ada = themselves(&root, &browser, &workspace);
     let (scout, writer) = (MemberId::agent(SCOUT), MemberId::agent("writer"));
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), scout.clone()]);
@@ -867,8 +882,8 @@ async fn a_sub_agent_grows_no_message_but_those_its_server_derived_for_its_own_t
     let (planned, then) = (Arc::clone(&plan), Arc::clone(&says_then));
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         plays(&asked, move |request| {
             if !of_sub_agent(request) {
                 return says("Told.");
@@ -879,7 +894,8 @@ async fn a_sub_agent_grows_no_message_but_those_its_server_derived_for_its_own_t
                 None => says(&then.lock().unwrap()),
             }
         }),
-    );
+    )
+    .await;
 
     // Its starter's thread holds a message and its starter's reply to it.
     let kept = writes_in(

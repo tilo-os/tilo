@@ -200,11 +200,11 @@ impl TurnTeam {
         decided.answer == Answer::Allow
     }
 
-    /// Whether the person `caller` acts for changes the workspace's own documents as a
+    /// Whether the person `caller` works for changes the workspace's own documents as a
     /// member: an editor or more, admitted now. The server's own person keeps theirs: a
     /// listing leaves the server's own account out, and its agents work all the same.
     async fn asker_edits(&self, caller: &Caller) -> bool {
-        let Some(person) = caller.user_public_key().map(hex::encode) else {
+        let Some(person) = caller.turn_person().map(hex::encode) else {
             return false;
         };
         let Ok((_, kept)) = self.workspaces.kept_membership(&self.workspace).await else {

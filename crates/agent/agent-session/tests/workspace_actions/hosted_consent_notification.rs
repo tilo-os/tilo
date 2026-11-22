@@ -24,17 +24,17 @@ const IMAP: &str = "imap://imap.example.test:993";
 const SMTP: &str = "smtp://smtp.example.test:465";
 const AGENT: &str = "scout";
 
-/// The caller a turn's tools act as: `person`'s session in `workspace`, handed to
-/// `AGENT` on a turn, on the device the workspace admits their work on now.
+/// The caller a turn's tools act as: `AGENT`, certified by `person`'s `device`, on a turn of
+/// theirs in `workspace`.
 fn on_turn(person: [u8; 32], device: [u8; 32], workspace: &str) -> Caller {
-    Caller::authenticated(person, device)
+    Caller::delegated_agent(AGENT, person, device)
         .in_workspace(workspace)
-        .delegated_to(AGENT)
         .named("Scout")
         .in_agent_session("agent-session:test")
-        .on_turn(
+        .on_roster_turn(
             tilo_action_policy::turn::Turn::new("conversation-1", "message-1"),
-            Vec::new(),
+            0,
+            person,
         )
 }
 

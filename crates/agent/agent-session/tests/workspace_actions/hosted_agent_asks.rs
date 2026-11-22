@@ -10,7 +10,7 @@ use tilo_actions::remote::Caller;
 /// as the tests beside this one set it up. The person's page joins: its device is the one the
 /// server admits their agent's turns on. No agent works on that device.
 macro_rules! team {
-    ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $person:ident) => {
+    ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $person:ident, $served:ident) => {
         team!(
             $root,
             $browser,
@@ -19,8 +19,8 @@ macro_rules! team {
             $workspace,
             $page,
             $person,
-            served,
-            device
+            $served,
+            _device
         );
     };
     // The same, for a test in which another person's page joins as well: it names what serves
@@ -30,13 +30,18 @@ macro_rules! team {
         let $device = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
         let $browser = enrol(&$root, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let ($served, $actions) = crate::harness::hosted::serving_documents_with_actions(
+        let $served = crate::harness::hosted::start(
             &$root,
             &$device,
             state.path(),
-            crate::common::catalogue,
+            crate::harness::hosted::Options::offering(crate::common::catalogue),
         )
         .await;
+        #[allow(
+            unused_variables,
+            reason = "not every test acts through the server's actions"
+        )]
+        let $actions = $served.roster.actions.clone();
         let $workspaces = $served.workspaces().unwrap().clone();
         let $workspace = $workspaces.create("Team").await.unwrap().workspace;
         let $page = Browser::open_at(&$served, &$browser, &$device, &$workspace).await;
@@ -316,7 +321,9 @@ async fn dies_at(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cause_asks_the_agent_on_the_host_once_for_the_person_it_names() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     // What asks here: another agent of the person's, acting for them, as a sub-agent with news
     // or the runner of their reminder does. The person is never an argument: the server says who
@@ -381,11 +388,10 @@ async fn a_cause_asks_the_agent_on_the_host_once_for_the_person_it_names() {
 
     // With no device on, the server reads it as the agent's one turn, for that person.
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(looks_then_answers(1_000, Arc::clone(&asked))),
-    );
+    let agents = served
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(looks_then_answers(1_000, Arc::clone(&asked)));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "the ask is the agent's one turn: {turns:?}");
     assert_eq!(
@@ -442,7 +448,9 @@ async fn a_cause_asks_the_agent_on_the_host_once_for_the_person_it_names() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits_for_it() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let written = (&root, &browser);
     let first = write_to_agent(
@@ -455,21 +463,17 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
     .await;
     let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
     let _opens = Opens(Arc::clone(&hold));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(waits(
-            vec![
-                looks(),
-                says("The launch is planned."),
-                says("The launch is planned and the room is booked."),
-                says("It is time to call mum."),
-            ],
-            1,
-            &asked,
-            &hold,
-        )),
-    );
+    let agents = served.approving(&workspace, &[SCOUT]).await.scripted(waits(
+        vec![
+            looks(),
+            says("The launch is planned."),
+            says("The launch is planned and the room is booked."),
+            says("It is time to call mum."),
+        ],
+        1,
+        &asked,
+        &hold,
+    ));
     agents.look(&workspace).await.unwrap();
     until("the turn reaches its second step", || {
         asked.lock().unwrap().len() == 2
@@ -561,7 +565,9 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
         scripted::{Linking, Reply, ScriptedProvider},
     };
 
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let written = (&root, &browser);
     let me = themselves(&root, &browser, &workspace);
     let first = write_to_agent(
@@ -574,16 +580,12 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
     .await;
     let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
     let _opens = Opens(Arc::clone(&hold));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(waits(
-            vec![looks(), says("The launch is planned.")],
-            1,
-            &asked,
-            &hold,
-        )),
-    );
+    let agents = served.approving(&workspace, &[SCOUT]).await.scripted(waits(
+        vec![looks(), says("The launch is planned.")],
+        1,
+        &asked,
+        &hold,
+    ));
     agents.look(&workspace).await.unwrap();
     until("the turn reaches its second step", || {
         asked.lock().unwrap().len() == 2
@@ -639,7 +641,7 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
         "and the budget?",
     )
     .await;
-    let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), None);
+    let agents = served.approving(&workspace, &[SCOUT]).await;
     agents.look(&workspace).await.unwrap();
     until("the keeper's model is asked", || theirs.asked().len() == 1).await;
     stop_agent(&actions, &workspace, &me, &second)
@@ -659,7 +661,9 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_taken_runs_once() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let written = (&root, &browser);
     let first = write_to_agent(
         &actions,
@@ -674,11 +678,12 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     // was asked what to do next.
     let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
     let _opens = Opens(Arc::clone(&hold));
-    let dying = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(waits(vec![looks(), says("never said")], 1, &asked, &hold)),
-    );
+    let dying = served.approving(&workspace, &[SCOUT]).await.scripted(waits(
+        vec![looks(), says("never said")],
+        1,
+        &asked,
+        &hold,
+    ));
     let turns = dying.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     dies_at(&dying, &workspace, &turns[0], &asked, 2).await;
@@ -701,11 +706,10 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     // The server that starts again reads the turn from the workspace. It does not take its steps a
     // second time: the reply says it was interrupted, and asking again is the person's to do.
     let again = Arc::new(Mutex::new(Vec::new()));
-    let restarted = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(looks_then_answers(1_000, Arc::clone(&again))),
-    );
+    let restarted = served
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(looks_then_answers(1_000, Arc::clone(&again)));
     let turns = restarted.turns(&workspace).await.unwrap();
     assert_eq!(
         turns.len(),
@@ -744,11 +748,12 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     .await;
     let (waiting, second_hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
     let _opens_second = Opens(Arc::clone(&second_hold));
-    let dying = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(waits(vec![says("never said")], 0, &waiting, &second_hold)),
-    );
+    let dying = served.approving(&workspace, &[SCOUT]).await.scripted(waits(
+        vec![says("never said")],
+        0,
+        &waiting,
+        &second_hold,
+    ));
     let turns = dying.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     dies_at(&dying, &workspace, &turns[0], &waiting, 1).await;
@@ -764,11 +769,10 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
         !chat::summons::left_begun(&part, second.as_str(), SCOUT, 0),
         "it had taken no step"
     );
-    let restarted = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(looks_then_answers(1_000, Arc::clone(&again))),
-    );
+    let restarted = served
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(looks_then_answers(1_000, Arc::clone(&again)));
     let turns = restarted.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     restarted.answer(&workspace, &turns[0]).await.unwrap();

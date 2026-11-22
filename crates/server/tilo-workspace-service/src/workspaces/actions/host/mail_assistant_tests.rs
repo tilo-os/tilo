@@ -318,12 +318,17 @@ async fn a_members_agent_reads_and_searches_and_its_changes_ask_first() {
         .unwrap();
     assert_eq!(allowing.count(), 1, "she was asked about the draft");
 
-    // In a turn this host runs for her: her agent with a device of hers
-    // behind it, as the host hands it the session.
-    let in_turn = setup
-        .ada()
-        .delegated_to(ASSISTANT)
-        .on_turn(Turn::new("chat/main", "message-1"), Vec::new());
+    // In a turn this host runs for her: her agent, certified by a device of hers.
+    let in_turn = Caller::delegated_agent(
+        ASSISTANT,
+        setup.device.user_public_key,
+        setup.device.device_public_key,
+    )
+    .on_roster_turn(
+        Turn::new("chat/main", "message-1"),
+        0,
+        setup.device.user_public_key,
+    );
     assert!(in_turn.turn().is_some(), "the turn is the caller's");
     let sent = json!({"account": ACCOUNT, "folder": "sent"});
     let turned = setup.ask(&in_turn, person_accounts::FETCH, sent).await;

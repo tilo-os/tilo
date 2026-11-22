@@ -170,12 +170,14 @@ fn names_any(shown: &str, others: &[&str]) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_main_agents_own_turn_starts_reads_notes_and_stops_its_sub_agents() {
     const DECK: &str = "Find the Q3 board deck in Files.";
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let ada = themselves(&root, &browser, &workspace);
     let thread = direct(&person, SCOUT);
     let plans = Plans::default();
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = worked(&workspaces, &actions, plans.model(&asked));
+    let agents = worked(&served, &workspace, plans.model(&asked)).await;
     on_roster(
         &workspaces,
         &workspace,
@@ -409,7 +411,9 @@ async fn a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it() {
     const LEAD: &str = "Build the feature with a team of your own.";
     const BESIDE: &str = "Find the Q3 board deck in Files.";
     const WORKER: &str = "Write the tests for the feature.";
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let ada = themselves(&root, &browser, &workspace);
     // The person is called Ada here, as their page says when it joins: the workspace's member
     // list is whom a name in a message is bound to.
@@ -430,7 +434,7 @@ async fn a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it() {
     let thread = direct(&person, SCOUT);
     let plans = Plans::default();
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = worked(&workspaces, &actions, plans.model(&asked));
+    let agents = worked(&served, &workspace, plans.model(&asked)).await;
     on_roster(
         &workspaces,
         &workspace,
@@ -952,12 +956,14 @@ async fn outside_a_turn(
 /// what the bound leaves it, and with the bound taken off it starts one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_team_is_answered_to_any_members_turn_of_the_agent() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let ada = themselves(&root, &browser, &workspace);
     let thread = direct(&person, SCOUT);
     let plans = Plans::default();
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = worked(&workspaces, &actions, plans.model(&asked));
+    let agents = worked(&served, &workspace, plans.model(&asked)).await;
     let start = json!({"name": "Find the deck", "job": "Find the Q3 board deck in Files."});
 
     // Another member writes to the agent: its turn acts for them.
@@ -1123,7 +1129,9 @@ async fn a_team_is_answered_to_any_members_turn_of_the_agent() {
 /// is decided by who the workspace's governance keeps, its own person among them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_servers_own_persons_turn_starts_a_sub_agent_where_peoples_own_workspaces_are_kept() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     assert!(
         workspaces
             .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
@@ -1148,7 +1156,7 @@ async fn the_servers_own_persons_turn_starts_a_sub_agent_where_peoples_own_works
     let thread = direct(&person, SCOUT);
     let plans = Plans::default();
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = worked(&workspaces, &actions, plans.model(&asked));
+    let agents = worked(&served, &workspace, plans.model(&asked)).await;
     plans.set(
         MAIN,
         "Find the deck.",

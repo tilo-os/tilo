@@ -195,7 +195,9 @@ async fn workspace_skills_are_shared_and_use_the_members_role() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hosted_agent_uses_the_same_workspace_skills_actions() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let owner = themselves(&root, &browser, &workspace);
     chat_action(
         &actions,
@@ -219,7 +221,7 @@ async fn a_hosted_agent_uses_the_same_workspace_skills_actions() {
             &json!({"how": CORRECTION}),
         )
     });
-    let agents = worked(&workspaces, &actions, model);
+    let agents = worked(&served, &workspace, model).await;
     let message = write_to_agent(
         &actions,
         &workspaces,

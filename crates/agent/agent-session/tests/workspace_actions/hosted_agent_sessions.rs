@@ -1,9 +1,8 @@
 //! A turn of an agent on the workspace's server is an agent session, as a connected agent's is:
 //! the people's pages read it as one, with what it was asked, whom it acted for, and the changes
 //! it made, grouped as that session's work.
-use super::hosted_agent_turns::{TASKS, file_issue, looks_then_answers, make_agent};
+use super::hosted_agent_turns::{SCOUT, TASKS, file_issue, looks_then_answers, make_agent};
 use super::*;
-use tilo_server::workspace_agents::ServerAgents;
 
 /// What the page's History reads of the agent's changes in `route`: each one's work group and
 /// purpose.
@@ -39,13 +38,14 @@ async fn a_turn_on_the_server_is_an_agent_session_the_page_reads() {
     let keeper = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &keeper,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = server.roster.actions.clone();
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let mut page = Browser::open_at(&server, &browser, &keeper, &workspace).await;
@@ -61,11 +61,10 @@ async fn a_turn_on_the_server_is_an_agent_session_the_page_reads() {
     .await;
     page.follow_chain(TASKS, tasks::issue_list::chain().chain_head().as_str());
 
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(looks_then_answers(1_000, Arc::default())),
-    );
+    let agents = server
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(looks_then_answers(1_000, Arc::default()));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     tilo_test_env::within("the turn ends", agents.answer(&workspace, &turns[0]))

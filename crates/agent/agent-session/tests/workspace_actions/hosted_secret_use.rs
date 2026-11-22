@@ -111,9 +111,8 @@ pub(super) fn files_holding(dir: &Path, needle: &[u8]) -> Vec<std::path::PathBuf
 
 /// A server with one person, their assistant on it, and the workspace's own model.
 pub(super) struct Hosted {
-    /// The server itself, kept running until the test ends: a test that needs something of
-    /// the server's own reads it here.
-    server: Box<dyn std::any::Any>,
+    /// The server itself, kept running until the test ends.
+    server: crate::harness::hosted::Hosted,
     pub(super) actions: tilo_agent_session::workspace_actions::WorkspaceActions,
     pub(super) workspaces: Workspaces,
     pub(super) workspace: String,
@@ -255,22 +254,18 @@ impl Hosted {
             );
             env
         });
-        let (server, actions) = tilo_server::agents::start_serving_documents(
-            crate::harness::hosted::on_this_machine(state.path()),
-            tilo_server::daemon::ServerIdentity {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_signing_key: server_device.key.clone(),
-                device_cert: server_device.cert.clone(),
-                revocations: tilo_user_identity::RevocationList::new(),
+        let server = crate::harness::hosted::start(
+            &root,
+            &server_device,
+            state.path(),
+            crate::harness::hosted::Options {
+                browsers: browsers.clone(),
+                ..crate::harness::hosted::Options::offering(crate::common::catalogue)
             },
-            Some(Arc::new(crate::common::catalogue)),
-            None,
-            None,
-            browsers.clone(),
         )
-        .await
-        .unwrap();
+        .await;
         drop(reached);
+        let actions = server.roster.actions.clone();
         let address = server.node_addr();
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
@@ -308,9 +303,12 @@ impl Hosted {
                 .push(format!("{account} with {password}"));
             Ok("signed in".into())
         });
-        let agents = Agents::for_test(workspaces.clone(), actions.clone(), None).placing(browsers);
+        let agents = server
+            .approving(&workspace, &[SCOUT])
+            .await
+            .placing(browsers);
         Self {
-            server: Box::new(server),
+            server,
             actions,
             workspaces,
             workspace,
@@ -328,6 +326,12 @@ impl Hosted {
 
     pub(super) fn person(&self) -> String {
         hex::encode(self.root.verifying_key().to_bytes())
+    }
+
+    /// The server stops and starts again: whatever ran its agents is gone, and what works them
+    /// now knows only what the documents and the server's own store hold.
+    pub(super) async fn restart(&mut self) {
+        self.agents = self.server.approving(&self.workspace, &[SCOUT]).await;
     }
 
     /// The person's conversation with their assistant.
@@ -1000,13 +1004,9 @@ async fn another_persons_item_is_refused_by_the_use_and_stays_unused() {
         .unwrap()
         .workspace;
     admit(&hosted, &elsewhere, &his_device).await;
-    let server = hosted
-        .server
-        .downcast_ref::<tilo_server::daemon::Server>()
-        .expect("the server the test started");
     // A member joins a workspace from a page of their own: only a device of the server's own
     // person asks the server to govern a workspace first.
-    let peer = Browser::session(server, &his_device, &hosted.served_by);
+    let peer = Browser::session(&hosted.server, &his_device, &hosted.served_by);
     let events = peer.events();
     let joined = tilo_server_protocol::WorkspaceId::parse(&elsewhere).expect("the workspace's id");
     peer.send(tilo_session_client::Cmd::Join(joined))

@@ -139,7 +139,7 @@ async fn on_their_device(
     (resource, action): (&str, &str),
     arguments: serde_json::Value,
 ) -> serde_json::Value {
-    let mut page = Browser::open_at(&up.server, browser, device, workspace).await;
+    let mut page = Browser::open_at(&up.hosted, browser, device, workspace).await;
     let argument = match arguments {
         serde_json::Value::Object(arguments) => InvokeArgument::Json(arguments),
         _ => InvokeArgument::None,
@@ -221,7 +221,7 @@ async fn fired(
         &Arc::new(Mutex::new(Vec::new())),
         &Arc::new(Hold::default()),
     );
-    let agents = up.agents(Some(model));
+    let agents = up.agents(workspace, Some(model)).await;
     let turns = agents.turns(workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
     agents.answer(workspace, &turns[0]).await.unwrap();

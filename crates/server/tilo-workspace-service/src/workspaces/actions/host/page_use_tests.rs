@@ -21,6 +21,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions as Service;
 use super::super::tests::{admit, caller, governed};
+use super::turn_use_tests::on_turn;
 use super::vault_tests::{ask, files_holding};
 use crate::workspaces::fixtures::test_host_taking_part as serving;
 use crate::workspaces::hosted_use::{
@@ -34,20 +35,6 @@ const SITE: &str = "https://example.test";
 const PAGE_USE: &str = "tilo.vault/fill-page";
 /// The seed RFC 6238 tests with, as the setup key a site shows for it.
 const SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
-
-/// The caller a turn's tools act as: `person`'s session in `workspace`, handed to `agent`
-/// on a turn.
-fn on_turn(person: &DeviceCert, workspace: &str, agent: &str) -> Caller {
-    Caller::authenticated(person.user_public_key, person.device_public_key)
-        .in_workspace(workspace)
-        .delegated_to(agent)
-        .named("Scout")
-        .in_agent_session("agent-session:test")
-        .on_turn(
-            tilo_action_policy::turn::Turn::new("conversation-1", "message-1"),
-            Vec::new(),
-        )
-}
 
 /// An item of `kind` kept for `place` by `who` from their own device, by its reference.
 async fn kept(

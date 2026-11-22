@@ -94,15 +94,20 @@ async fn links_model_in(workspaces: &Workspaces, workspace: &str) {
 
 /// The agents the server works, with coding agents worked on this computer by the scripted
 /// stand-in; and what the stand-in is started for, each time.
-fn coding_on(
-    workspaces: &Workspaces,
-    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+async fn coding_on(
+    served: &crate::harness::hosted::Hosted,
+    workspaces: &[&str],
     machine: &Arc<Local>,
 ) -> (Agents, Arc<Mutex<Vec<Start>>>) {
     machine.repository(REPOSITORY);
     let (harnesses, starts) = machine.stand_in();
     let machines: Arc<dyn Machines> = machine.clone();
-    let agents = Agents::for_test(workspaces.clone(), actions.clone(), None)
+    for workspace in &workspaces[1..] {
+        served.approving(workspace, &[SCOUT]).await;
+    }
+    let agents = served
+        .approving(workspaces[0], &[SCOUT])
+        .await
         .with_coding_by(machines, harnesses);
     (agents, starts)
 }
@@ -289,7 +294,7 @@ on_both_kinds! {
     a_job_alone_starts_nothing_unless_its_person_let_coding_agents_start_unasked,
     a_job_alone_starts_nothing_unless_its_person_let_coding_agents_start_unasked_where_its_machine_is_placed,
     |machine| {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(root, browser, actions, workspaces, workspace, page, person, served);
     let key = root.verifying_key().to_bytes();
     let theirs = links_model(
         &workspaces,
@@ -301,7 +306,7 @@ on_both_kinds! {
             Reply::text("Third one waits for your word."),
         ],
     ).await;
-    let (agents, _) = coding_on(&workspaces, &actions, &machine);
+    let (agents, _) = coding_on(&served, &[&workspace], &machine).await;
 
     // Nothing stands for its person: the job alone starts nothing.
     started_and_waiting(
@@ -411,7 +416,7 @@ on_both_kinds! {
     its_persons_words_start_it_with_its_job_and_what_it_says_is_relayed,
     its_persons_words_start_it_with_its_job_and_what_it_says_is_relayed_where_its_machine_is_placed,
     |machine| {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(root, browser, actions, workspaces, workspace, page, person, served);
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
         &workspaces,
@@ -423,7 +428,7 @@ on_both_kinds! {
             Reply::text("Fix hello is done: the README says hello."),
         ],
     ).await;
-    let (agents, starts) = coding_on(&workspaces, &actions, &machine);
+    let (agents, starts) = coding_on(&served, &[&workspace], &machine).await;
     let own = direct(&person, "fix-hello");
     let thread = direct(&person, SCOUT);
     started_and_waiting(
@@ -560,7 +565,7 @@ on_both_kinds! {
     words_written_while_it_works_and_a_note_after_reach_the_same_process,
     words_written_while_it_works_and_a_note_after_reach_the_same_process_where_its_machine_is_placed,
     |machine| {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(root, browser, actions, workspaces, workspace, page, person, served);
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
         &workspaces,
@@ -574,7 +579,7 @@ on_both_kinds! {
             Reply::text("Fix hello greeted the reader."),
         ],
     ).await;
-    let (agents, _) = coding_on(&workspaces, &actions, &machine);
+    let (agents, _) = coding_on(&served, &[&workspace], &machine).await;
     let own = direct(&person, "fix-hello");
     let copy = machine.files().join("code/hello.agents/fix-hello");
     started_and_waiting(
@@ -689,7 +694,7 @@ on_both_kinds! {
     its_person_stops_it_on_its_message_and_its_starter_on_its_item,
     its_person_stops_it_on_its_message_and_its_starter_on_its_item_where_its_machine_is_placed,
     |machine| {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(root, browser, actions, workspaces, workspace, page, person, served);
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
         &workspaces,
@@ -699,7 +704,7 @@ on_both_kinds! {
             Reply::text("The job is looked at."),
         ],
     ).await;
-    let (agents, starts) = coding_on(&workspaces, &actions, &machine);
+    let (agents, starts) = coding_on(&served, &[&workspace], &machine).await;
     let own = direct(&person, "fix-hello");
     let copy = machine.files().join("code/hello.agents/fix-hello");
     let lives = |coding: &Coding| {
@@ -876,7 +881,7 @@ on_both_kinds! {
     the_persons_key_is_nowhere_in_the_machine_or_in_what_the_workspace_keeps,
     the_persons_key_is_nowhere_in_the_machine_or_in_what_the_workspace_keeps_where_its_machine_is_placed,
     |machine| {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(root, browser, actions, workspaces, workspace, page, person, served);
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
         &workspaces,
@@ -887,7 +892,7 @@ on_both_kinds! {
             Reply::text("Fix hello is done."),
         ],
     ).await;
-    let (agents, _) = coding_on(&workspaces, &actions, &machine);
+    let (agents, _) = coding_on(&served, &[&workspace], &machine).await;
     let own = direct(&person, "fix-hello");
     let thread = direct(&person, SCOUT);
     started_and_waiting(
@@ -974,7 +979,7 @@ on_both_kinds! {
     a_coding_program_reads_nothing_of_the_main_thread_and_writes_only_where_it_works,
     a_coding_program_reads_nothing_of_the_main_thread_and_writes_only_where_it_works_where_its_machine_is_placed,
     |machine| {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(root, browser, actions, workspaces, workspace, page, person, served);
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
         &workspaces,
@@ -986,7 +991,7 @@ on_both_kinds! {
             Reply::text("Fix hello is done."),
         ],
     ).await;
-    let (agents, _) = coding_on(&workspaces, &actions, &machine);
+    let (agents, _) = coding_on(&served, &[&workspace], &machine).await;
     let own = direct(&person, "fix-hello");
     let thread = direct(&person, SCOUT);
 
@@ -1111,25 +1116,26 @@ on_both_kinds! {
 /// [`team!`], with a second workspace of the same person on the same server, joined from
 /// another device of theirs.
 macro_rules! two_teams {
-    ($root:ident, ($browser:ident, $second:ident), $actions:ident, $workspaces:ident, ($workspace:ident, $other:ident), ($page:ident, $other_page:ident), $person:ident) => {
+    ($root:ident, ($browser:ident, $second:ident), $actions:ident, $workspaces:ident, ($workspace:ident, $other:ident), ($page:ident, $other_page:ident), $person:ident, $served:ident) => {
         let ($root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let server = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
         let $browser = enrol(&$root, "browser", DeviceCapabilities::member());
         let $second = enrol(&$root, "laptop", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (serving, $actions) = crate::harness::hosted::serving_documents_with_actions(
+        let $served = crate::harness::hosted::start(
             &$root,
             &server,
             state.path(),
-            crate::common::catalogue,
+            crate::harness::hosted::Options::offering(crate::common::catalogue),
         )
         .await;
-        let $workspaces = serving.workspaces().unwrap().clone();
+        let $actions = $served.roster.actions.clone();
+        let $workspaces = $served.workspaces().unwrap().clone();
         let $person = hex::encode($root.verifying_key().to_bytes());
         let $workspace = $workspaces.create("Team").await.unwrap().workspace;
         let $other = $workspaces.create("Other").await.unwrap().workspace;
-        let $page = Browser::open_at(&serving, &$browser, &server, &$workspace).await;
-        let $other_page = Browser::open_at(&serving, &$second, &server, &$other).await;
+        let $page = Browser::open_at(&$served, &$browser, &server, &$workspace).await;
+        let $other_page = Browser::open_at(&$served, &$second, &server, &$other).await;
         let catalogue = crate::common::catalogue();
         let governor = $workspaces.governor().clone();
         for (page, workspace) in [(&$page, &$workspace), (&$other_page, &$other)] {
@@ -1170,7 +1176,8 @@ on_both_kinds! {
         workspaces,
         (workspace, other),
         (page, other_page),
-        person
+        person,
+        served
     );
     let ada = themselves(&root, &browser, &workspace);
     let ada_there = themselves(&root, &laptop, &other);
@@ -1190,7 +1197,7 @@ on_both_kinds! {
     // The other workspace keeps a model of its own: its agent works through that one, never
     // through this one's.
     links_model_in(&workspaces, &other).await;
-    let (agents, _) = coding_on(&workspaces, &actions, &machine);
+    let (agents, _) = coding_on(&served, &[&workspace, &other], &machine).await;
 
     // A coding agent of each workspace says where its model is.
     for (place, caller, (name, id)) in [
@@ -1296,7 +1303,7 @@ on_both_kinds! {
     the_days_limit_answers_a_coding_program_before_the_provider_is_asked,
     the_days_limit_answers_a_coding_program_before_the_provider_is_asked_where_its_machine_is_placed,
     |machine| {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(root, browser, actions, workspaces, workspace, page, person, served);
     let ada = themselves(&root, &browser, &workspace);
     on_roster(
         &workspaces,
@@ -1318,7 +1325,7 @@ on_both_kinds! {
             Reply::text("never asked"),
         ],
     ).await;
-    let (agents, _) = coding_on(&workspaces, &actions, &machine);
+    let (agents, _) = coding_on(&served, &[&workspace], &machine).await;
     let own = direct(&person, "fix-hello");
     started_and_waiting(
         &agents,

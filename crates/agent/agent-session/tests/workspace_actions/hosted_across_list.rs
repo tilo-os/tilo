@@ -101,10 +101,7 @@ fn listed_in(answered: &str) -> BTreeMap<String, String> {
 /// The server a test's fixture keeps, for what only the server itself holds: the list of the
 /// devices it placed.
 fn server_of(served: &Served) -> &tilo_server::daemon::Server {
-    served
-        .alive
-        .downcast_ref::<tilo_server::daemon::Server>()
-        .expect("the server of this test")
+    &served.alive
 }
 
 /// A person whose newest device in another workspace is one the server placed for a window:

@@ -10,21 +10,22 @@ const PROJECTS: &str =
 /// A workspace on a server with one person in its chat and their agent kept there. The person's
 /// page joins: its device is the one their agent's turns are admitted on.
 macro_rules! team {
-    ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident) => {
+    ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $served:ident) => {
         let ($root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let server = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
         let $browser = enrol(&$root, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (serving, $actions) = crate::harness::hosted::serving_documents_with_actions(
+        let $served = crate::harness::hosted::start(
             &$root,
             &server,
             state.path(),
-            crate::common::catalogue,
+            crate::harness::hosted::Options::offering(crate::common::catalogue),
         )
         .await;
-        let $workspaces = serving.workspaces().unwrap().clone();
+        let $actions = $served.roster.actions.clone();
+        let $workspaces = $served.workspaces().unwrap().clone();
         let $workspace = $workspaces.create("Team").await.unwrap().workspace;
-        let $page = Browser::open_at(&serving, &$browser, &server, &$workspace).await;
+        let $page = Browser::open_at(&$served, &$browser, &server, &$workspace).await;
         let person = hex::encode($root.verifying_key().to_bytes());
         make_agent(&$page, &$workspaces, &$workspace, &person, None).await;
         let catalogue = crate::common::catalogue();
@@ -38,8 +39,11 @@ macro_rules! team {
 
 /// Answer the one turn the workspace owes, with the model `$model`.
 macro_rules! answer_the_turn {
-    ($workspaces:ident, $actions:ident, $workspace:ident, $model:expr) => {
-        let agents = ServerAgents::for_test($workspaces.clone(), $actions.clone(), Some($model));
+    ($served:ident, $workspace:ident, $model:expr) => {
+        let agents = $served
+            .approving(&$workspace, &[SCOUT])
+            .await
+            .scripted($model);
         let turns = agents.turns(&$workspace).await.unwrap();
         assert_eq!(turns.len(), 1, "the message is the agent's turn: {turns:?}");
         tokio::time::timeout(
@@ -113,7 +117,7 @@ fn tool_answers(request: &ModelRequest) -> Vec<(String, bool)> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_a_server_answers_with_a_view_it_wrote() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, actions, workspaces, workspace, page, served);
     let question = write_to_agent(
         &actions,
         &workspaces,
@@ -124,8 +128,7 @@ async fn an_agent_on_a_server_answers_with_a_view_it_wrote() {
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     answer_the_turn!(
-        workspaces,
-        actions,
+        served,
         workspace,
         views_then_answers(
             vec![serde_json::json!({"source": PROJECTS, "reads": ["tasks"]})],
@@ -197,7 +200,7 @@ async fn an_agent_on_a_server_answers_with_a_view_it_wrote() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_view_a_model_may_not_post_is_refused_and_told_to_it() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, actions, workspaces, workspace, page, served);
     let question = write_to_agent(
         &actions,
         &workspaces,
@@ -228,8 +231,7 @@ async fn a_view_a_model_may_not_post_is_refused_and_told_to_it() {
     ];
     let asked = Arc::new(Mutex::new(Vec::new()));
     answer_the_turn!(
-        workspaces,
-        actions,
+        served,
         workspace,
         views_then_answers(
             refused.iter().map(|(input, _)| input.clone()).collect(),

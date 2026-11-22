@@ -13,21 +13,22 @@ const DOCUMENT: &str = "record";
 /// A workspace on a server with one person in its chat and their agent kept there. The person's
 /// page joins: its device is the one their agent's turns are admitted on.
 macro_rules! team {
-    ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident) => {
+    ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $served:ident) => {
         let ($root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let server = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
         let $browser = enrol(&$root, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (serving, $actions) = crate::harness::hosted::serving_documents_with_actions(
+        let $served = crate::harness::hosted::start(
             &$root,
             &server,
             state.path(),
-            crate::common::catalogue,
+            crate::harness::hosted::Options::offering(crate::common::catalogue),
         )
         .await;
-        let $workspaces = serving.workspaces().unwrap().clone();
+        let $actions = $served.roster.actions.clone();
+        let $workspaces = $served.workspaces().unwrap().clone();
         let $workspace = $workspaces.create("Team").await.unwrap().workspace;
-        let $page = Browser::open_at(&serving, &$browser, &server, &$workspace).await;
+        let $page = Browser::open_at(&$served, &$browser, &server, &$workspace).await;
         let person = hex::encode($root.verifying_key().to_bytes());
         make_agent(&$page, &$workspaces, &$workspace, &person, None).await;
         let catalogue = crate::common::catalogue();
@@ -41,8 +42,11 @@ macro_rules! team {
 
 /// Answer the one turn the workspace owes, with the model `$model`.
 macro_rules! answer_the_turn {
-    ($workspaces:ident, $actions:ident, $workspace:ident, $model:expr) => {
-        let agents = ServerAgents::for_test($workspaces.clone(), $actions.clone(), Some($model));
+    ($served:ident, $workspace:ident, $model:expr) => {
+        let agents = $served
+            .approving(&$workspace, &[SCOUT])
+            .await
+            .scripted($model);
         let turns = agents.turns(&$workspace).await.unwrap();
         assert_eq!(turns.len(), 1, "the message is the agent's turn: {turns:?}");
         tokio::time::timeout(
@@ -206,7 +210,7 @@ fn writes_then_shows(asked: &Arc<Mutex<Vec<ModelRequest>>>) -> Model {
 /// failure, and nothing is shared anywhere.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn where_a_document_is_shown_and_whose_share_it_is_are_never_the_models_to_say() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, actions, workspaces, workspace, page, served);
     write_to_agent(
         &actions,
         &workspaces,
@@ -242,8 +246,7 @@ async fn where_a_document_is_shown_and_whose_share_it_is_are_never_the_models_to
     ];
     let asked = Arc::new(Mutex::new(Vec::new()));
     answer_the_turn!(
-        workspaces,
-        actions,
+        served,
         workspace,
         calls_then_answers(
             refused
@@ -284,7 +287,7 @@ mod planted_words;
 /// decides, and what it answered is told to the model as a failure.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_thing_the_turn_cannot_read_is_not_shown() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, actions, workspaces, workspace, page, served);
     write_to_agent(
         &actions,
         &workspaces,
@@ -295,8 +298,7 @@ async fn a_thing_the_turn_cannot_read_is_not_shown() {
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     answer_the_turn!(
-        workspaces,
-        actions,
+        served,
         workspace,
         calls_then_answers(
             vec![
@@ -343,7 +345,7 @@ mod denied;
 /// carries the model's words.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_a_server_answers_with_the_document_it_wrote_shown_live() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, actions, workspaces, workspace, page, served);
     let question = write_to_agent(
         &actions,
         &workspaces,
@@ -355,7 +357,7 @@ async fn an_agent_on_a_server_answers_with_the_document_it_wrote_shown_live() {
     let person = hex::encode(root.verifying_key().to_bytes());
     let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
     let asked = Arc::new(Mutex::new(Vec::new()));
-    answer_the_turn!(workspaces, actions, workspace, writes_then_shows(&asked));
+    answer_the_turn!(served, workspace, writes_then_shows(&asked));
 
     // Taken out whole: no lock is held while the test asks the server anything more.
     let asked = asked.lock().unwrap().clone();
@@ -444,7 +446,7 @@ mod poem;
 /// conversation with another agent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_shares_only_into_the_conversation_it_answers_in() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, actions, workspaces, workspace, page, served);
     write_to_agent(
         &actions,
         &workspaces,
@@ -463,8 +465,7 @@ async fn a_turn_shares_only_into_the_conversation_it_answers_in() {
     };
     let asked = Arc::new(Mutex::new(Vec::new()));
     answer_the_turn!(
-        workspaces,
-        actions,
+        served,
         workspace,
         calls_then_answers(
             vec![
@@ -500,7 +501,7 @@ async fn a_turn_shares_only_into_the_conversation_it_answers_in() {
 /// before: the rule above holds only the conversation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_shares_a_window_into_its_conversation_through_the_action_tool() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, actions, workspaces, workspace, page, served);
     write_to_agent(
         &actions,
         &workspaces,
@@ -513,8 +514,7 @@ async fn a_turn_shares_a_window_into_its_conversation_through_the_action_tool() 
     let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
     let asked = Arc::new(Mutex::new(Vec::new()));
     answer_the_turn!(
-        workspaces,
-        actions,
+        served,
         workspace,
         calls_then_answers(
             vec![(

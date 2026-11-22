@@ -445,25 +445,26 @@ impl Carrier {
         self.carry_out_connect(&asker, claimed, typed).await;
     }
 
-    /// The agent that asked `ask`, acting for its person now: as the turn that asked, which is
-    /// what the entry decides it by. `None` when the agent works here no more, or the workspace
-    /// admits the person on no device.
+    /// The agent that asked `ask`, working for its person now: as the turn that asked, which is
+    /// what the entry decides it by. `None` when the agent works here no more or has no approved
+    /// key here, or the workspace admits the person on no device.
     pub(super) async fn connect_asker(&self, ask: &dyn PutAsk) -> Option<Asker> {
         let workspace = ask.in_workspace();
         let workspace_id = WorkspaceId::parse(workspace)?;
         let agent = self.agents(workspace).await.ok()?.remove(ask.by_agent())?;
         let mut person = [0; 32];
         hex::decode_to_slice(ask.of_person(), &mut person).ok()?;
-        let device = self.workspaces.person_device(workspace_id, person).await?;
+        self.workspaces.person_device(workspace_id, person).await?;
         let asked_in: AskedIn = serde_json::from_value(ask.put_in().clone()).ok()?;
-        let turn = Caller::authenticated(person, device)
-            .in_workspace(workspace)
-            .delegated_to(agent.id.0.clone())
-            .named(&agent.name)
+        let turn = self
+            .agent_caller(workspace_id, &agent, person)
+            .await
+            .ok()?
             .in_agent_session(asked_in.session)
-            .on_turn(
+            .on_roster_turn(
                 tilo_action_policy::turn::Turn::new(asked_in.conversation, asked_in.cause),
-                agent.bound_rules().unwrap_or_default(),
+                agent.created_at,
+                person,
             );
         Some(Asker {
             workspace_id,

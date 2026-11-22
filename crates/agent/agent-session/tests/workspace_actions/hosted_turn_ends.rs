@@ -17,7 +17,9 @@ fn begins_with(request: &ModelRequest, words: &str) -> bool {
 /// it was written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_look_that_read_before_an_answer_does_not_ask_the_message_again() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -28,10 +30,11 @@ async fn a_look_that_read_before_an_answer_does_not_ask_the_message_again() {
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         looks_then_answers(1_000, Arc::clone(&asked)),
-    );
+    )
+    .await;
     // What a look reads: the turn her message is owed.
     let read = agents.turns(&workspace).await.unwrap();
     assert_eq!(read.len(), 1, "{read:?}");
@@ -70,7 +73,9 @@ async fn a_look_that_read_before_an_answer_does_not_ask_the_message_again() {
 /// message, or a cause that asked for them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn_whatever_began_it() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let me = themselves(&root, &browser, &workspace);
     let scout = MemberId::agent(SCOUT);
 
@@ -86,15 +91,16 @@ async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn_whatever_began
     let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
     let _opens = Opens(Arc::clone(&hold));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         waits(
             vec![looks(), says("The launch is planned.")],
             1,
             &asked,
             &hold,
         ),
-    );
+    )
+    .await;
     agents.look(&workspace).await.unwrap();
     until("the turn reaches its second step", || {
         asked.lock().unwrap().len() == 2
@@ -131,10 +137,11 @@ async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn_whatever_began
     let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
     let _opens_again = Opens(Arc::clone(&hold));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         waits(vec![looks(), says("Mum is called.")], 1, &asked, &hold),
-    );
+    )
+    .await;
     agents.look(&workspace).await.unwrap();
     until("the reminder's turn reaches its second step", || {
         asked.lock().unwrap().len() == 2
@@ -166,7 +173,9 @@ async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn_whatever_began
 /// told the answer before them. Nothing of it goes into a second turn on her first message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_message_after_an_answer_gets_a_turn_of_its_own() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let written = (&root, &browser);
     let first = write_to_agent(
         &actions,
@@ -180,15 +189,16 @@ async fn the_message_after_an_answer_gets_a_turn_of_its_own() {
     let _opens = Opens(Arc::clone(&hold));
     // The model waits before it answers its second call, whichever turn asks it.
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         waits(
             vec![says("The launch is planned."), says("The cake is ordered.")],
             1,
             &asked,
             &hold,
         ),
-    );
+    )
+    .await;
     let read = agents.turns(&workspace).await.unwrap();
     assert_eq!(read.len(), 1, "{read:?}");
     agents.answer(&workspace, &read[0]).await.unwrap();
@@ -256,7 +266,9 @@ async fn the_message_after_an_answer_gets_a_turn_of_its_own() {
 /// of the same messages, and the one summary is kept once its question is answered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn her_next_message_does_not_wait_while_the_summary_is_written() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let written = (&root, &browser);
     let ada = themselves(&root, &browser, &workspace);
     // Much more than a turn is told as written. She stopped each of these, so none of them
@@ -284,8 +296,8 @@ async fn her_next_message_does_not_wait_while_the_summary_is_written() {
     let held = Arc::clone(&hold);
     // A question asked without tools is the summary's: the model waits before it answers it.
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         plays(&asked, move |request| {
             if request.tools.is_empty() {
                 held.pass();
@@ -296,7 +308,8 @@ async fn her_next_message_does_not_wait_while_the_summary_is_written() {
                 says("Nothing needs doing today.")
             }
         }),
-    );
+    )
+    .await;
     let summaries = |asked: &Arc<Mutex<Vec<ModelRequest>>>| {
         asked
             .lock()
@@ -392,7 +405,9 @@ async fn her_next_message_does_not_wait_while_the_summary_is_written() {
 /// does not hang on the second each was written in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_is_told_its_conversation_as_it_stands_when_it_begins() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let planner = themselves(&root, &browser, &workspace)
         .delegated_to("planner")
@@ -405,8 +420,8 @@ async fn a_turn_is_told_its_conversation_as_it_stands_when_it_begins() {
     let _opens = Opens(Arc::clone(&hold));
     // The model waits before it answers its first call.
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         waits(
             vec![
                 says("It is time to call mum."),
@@ -416,7 +431,8 @@ async fn a_turn_is_told_its_conversation_as_it_stands_when_it_begins() {
             &asked,
             &hold,
         ),
-    );
+    )
+    .await;
     let read = agents.turns(&workspace).await.unwrap();
     assert_eq!(read.len(), 1, "{read:?}");
     assert_eq!(read[0].cause, reminder.to_string(), "the reminder's turn");
@@ -476,7 +492,9 @@ async fn a_turn_is_told_its_conversation_as_it_stands_when_it_begins() {
 /// no model is asked a third time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_look_overtaken_by_the_next_turn_hands_that_turn_nothing() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let written = (&root, &browser);
     let first = write_to_agent(
         &actions,
@@ -490,15 +508,16 @@ async fn a_look_overtaken_by_the_next_turn_hands_that_turn_nothing() {
     let _opens = Opens(Arc::clone(&hold));
     // The model waits before it answers its second call: the one her second message's turn asks.
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         waits(
             vec![says("The launch is planned."), says("The cake is ordered.")],
             1,
             &asked,
             &hold,
         ),
-    );
+    )
+    .await;
 
     // A look reads: her first message is the turn. It does not enter yet.
     let overtaken = agents.read_look(&workspace).await.unwrap();
@@ -560,7 +579,9 @@ async fn a_look_overtaken_by_the_next_turn_hands_that_turn_nothing() {
 /// keeps its answer, the note's answer stands as it was written, and no model is asked again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_note_read_before_its_answer_is_not_handed_to_the_next_turn() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let ada = themselves(&root, &browser, &workspace);
     let own = chat::Chat::direct_id([
         MemberId::person(person.clone()),
@@ -576,8 +597,8 @@ async fn a_note_read_before_its_answer_is_not_handed_to_the_next_turn() {
     let (at_job, at_person) = (Arc::clone(&job_hold), Arc::clone(&person_hold));
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         plays(&asked, move |request| {
             if !of_sub_agent(request) {
                 return says("Told.");
@@ -595,7 +616,8 @@ async fn a_note_read_before_its_answer_is_not_handed_to_the_next_turn() {
                 says("Done.")
             }
         }),
-    );
+    )
+    .await;
     starts(
         &workspaces,
         &workspace,
@@ -723,7 +745,9 @@ async fn has_ended(workspaces: &Workspaces, workspace: &str, message: &Id) -> bo
 /// with the model's own answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_of_thirty_steps_ends_with_its_models_answer() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -734,10 +758,11 @@ async fn a_turn_of_thirty_steps_ends_with_its_models_answer() {
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         looks_then_says(30, "All thirty are tidied.", &asked),
-    );
+    )
+    .await;
     let read = agents.turns(&workspace).await.unwrap();
     assert_eq!(read.len(), 1, "{read:?}");
     agents.answer(&workspace, &read[0]).await.unwrap();
@@ -767,7 +792,9 @@ async fn a_turn_of_thirty_steps_ends_with_its_models_answer() {
 /// stop: her stop ends it at its next step, and no step follows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_that_never_answers_goes_on_until_its_person_stops_it() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let me = themselves(&root, &browser, &workspace);
     let first = write_to_agent(
         &actions,
@@ -778,7 +805,7 @@ async fn a_turn_that_never_answers_goes_on_until_its_person_stops_it() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = worked(&workspaces, &actions, plays(&asked, |_| looks()));
+    let agents = worked(&served, &workspace, plays(&asked, |_| looks())).await;
     agents.look(&workspace).await.unwrap();
     // A server that counted its asks would have ended the turn by itself before this.
     let deadline = tilo_test_env::hang_deadline();

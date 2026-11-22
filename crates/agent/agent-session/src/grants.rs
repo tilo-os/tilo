@@ -224,7 +224,7 @@ impl AgentSessions {
         );
     }
 
-    /// Sign the invocation `message` carries in `workspace` as the agent `device` names, with
+    /// Sign `request` in `workspace` as the agent `device` names, with
     /// its own key, while its session is open here: an agent's turn asks the workspace for
     /// nothing under any key but its own.
     ///
@@ -235,7 +235,7 @@ impl AgentSessions {
         &self,
         device: &[u8; 32],
         workspace: WorkspaceId,
-        message: &mut tilo_actions::remote::RemoteActionMessage,
+        request: &mut tilo_actions::remote::InvokeRequest,
     ) -> Result<(), String> {
         let (cert, key) = self
             .links
@@ -243,14 +243,17 @@ impl AgentSessions {
             .get(device)
             .map(|session| session.signer.clone())
             .ok_or("the agent's signing session is not open here")?;
-        tilo_server_protocol::invocation::sign_message_now(
+        request.signed = None;
+        let signed = tilo_server_protocol::invocation::sign_invocation_now(
             &workspace.to_string(),
-            message,
+            request,
             &cert,
             &key,
             tilo_clock::unix_now_ns(),
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        request.signed = Some(Box::new(signed));
+        Ok(())
     }
 
     /// Agent `device`'s session ended.

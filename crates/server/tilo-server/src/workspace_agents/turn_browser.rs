@@ -139,10 +139,7 @@ impl TurnBrowser {
     ) -> Result<InvocationUpdate, ActionCallError> {
         let until = later(OPEN_WAIT);
         loop {
-            if let Some(state) = self
-                .service
-                .actions
-                .observe(&self.service.workspace_caller(caller), &invocation)
+            if let Some(state) = self.service.actions.observe(caller, &invocation)
                 && state.update.is_terminal()
             {
                 return Ok(state.update);

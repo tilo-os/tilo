@@ -200,7 +200,9 @@ fn table(grown: &[(&Change, usize)], began: Instant, ended: Instant) -> String {
 /// How many changes that took, when they arrived and what they cost is printed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn four_hundred_words_reach_a_device_while_they_are_written() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let mut page = page;
     let theirs = Arc::new(Paced::default());
     workspaces.answer_models_with(theirs.clone());
@@ -233,7 +235,7 @@ async fn four_hundred_words_reach_a_device_while_they_are_written() {
         document: chat::parts::part(0).as_str().to_owned(),
     };
     page.follow_chain(CHAT, chat::parts::chain().chain_head().as_str());
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     let (answering, at, turn) = (agents.clone(), workspace.clone(), turns[0].clone());

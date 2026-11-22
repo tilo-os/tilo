@@ -23,7 +23,7 @@ struct Served {
     /// The workspaces made at the start with Ada's page on each, until a test sets one up.
     opened: Vec<(String, Browser)>,
     /// The server itself and what it keeps on its disk, kept until the test ends.
-    alive: Box<dyn std::any::Any>,
+    alive: crate::harness::hosted::Hosted,
     _state: tempfile::TempDir,
     actions: tilo_agent_session::workspace_actions::WorkspaceActions,
     workspaces: Workspaces,
@@ -182,13 +182,14 @@ impl Served {
             .expect("her root certifies the server's own device");
         let browser = enrol(&ada, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (served, actions) = crate::harness::hosted::serving_documents_with_actions(
+        let served = crate::harness::hosted::start(
             &ada,
             &server,
             state.path(),
-            crate::common::catalogue,
+            crate::harness::hosted::Options::offering(crate::common::catalogue),
         )
         .await;
+        let actions = served.roster.actions.clone();
         let workspaces = served.workspaces().unwrap().clone();
         let mut opened = Vec::new();
         for _ in 0..count {
@@ -198,7 +199,7 @@ impl Served {
         }
         Self {
             opened,
-            alive: Box::new(served),
+            alive: served,
             _state: state,
             actions,
             workspaces,
@@ -560,11 +561,11 @@ async fn answered_knowing(
     model: Model,
     placed: Option<tilo_server::environment::EnvironmentRegistry>,
 ) {
-    let agents = ServerAgents::for_test(
-        served.workspaces.clone(),
-        served.actions.clone(),
-        Some(model),
-    );
+    let agents = served
+        .alive
+        .approving(workspace, &[SCOUT])
+        .await
+        .scripted(model);
     let agents = if let Some(placed) = placed {
         agents.knowing_placed(placed)
     } else {

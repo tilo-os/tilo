@@ -140,7 +140,9 @@ async fn thought(
 /// arrives whole: the reply reads it, with the thinking beside it and never in it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_shows_its_model_thinking_and_keeps_an_answer_that_came_whole() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let (theirs, _lets_go) = thinking(&workspaces, &workspace, false).await;
     let first = write_to_agent(
         &actions,
@@ -150,7 +152,7 @@ async fn a_reply_shows_its_model_thinking_and_keeps_an_answer_that_came_whole() 
         "When is the launch?",
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     let (answering, at, turn) = (agents.clone(), workspace.clone(), turns[0].clone());
@@ -188,7 +190,9 @@ async fn a_reply_shows_its_model_thinking_and_keeps_an_answer_that_came_whole() 
 /// answer once, and what the model thought stands beside it and nowhere in it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_a_model_thought_stands_beside_the_words_it_then_writes() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let (theirs, _lets_go) = thinking(&workspaces, &workspace, true).await;
     let first = write_to_agent(
         &actions,
@@ -198,7 +202,7 @@ async fn what_a_model_thought_stands_beside_the_words_it_then_writes() {
         "When is the launch?",
     )
     .await;
-    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let agents = worked(&served, &workspace, never_asked(Arc::default())).await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     let (answering, at, turn) = (agents.clone(), workspace.clone(), turns[0].clone());

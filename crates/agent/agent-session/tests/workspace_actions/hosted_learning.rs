@@ -186,23 +186,24 @@ async fn admit(
 /// server, and Bo, another member. Ada's page joins once, so the server admits her agent's turns
 /// on its device; no agent is on it. `$ada` and `$bo` are each person's root key and device.
 macro_rules! team {
-    ($ada:ident, $bo:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident) => {
+    ($ada:ident, $bo:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $hosted:ident) => {
         let (ada_root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let (bo_root, _) = tilo_user_identity::UserIdentity::generate("Bo", 1);
         let server = enrol(&ada_root, "tilo-sh", DeviceCapabilities::member());
         let ada_browser = enrol(&ada_root, "browser", DeviceCapabilities::member());
         let bo_browser = enrol(&bo_root, "bo-browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (served, $actions) = crate::harness::hosted::serving_documents_with_actions(
+        let $hosted = crate::harness::hosted::start(
             &ada_root,
             &server,
             state.path(),
-            crate::common::catalogue,
+            crate::harness::hosted::Options::offering(crate::common::catalogue),
         )
         .await;
-        let $workspaces = served.workspaces().unwrap().clone();
+        let $actions = $hosted.roster.actions.clone();
+        let $workspaces = $hosted.workspaces().unwrap().clone();
         let $workspace = $workspaces.create("Team").await.unwrap().workspace;
-        let $page = Browser::open_at(&served, &ada_browser, &server, &$workspace).await;
+        let $page = Browser::open_at(&$hosted, &ada_browser, &server, &$workspace).await;
         let ada_person = hex::encode(ada_root.verifying_key().to_bytes());
         make_agent(&$page, &$workspaces, &$workspace, &ada_person, None).await;
         admit(&$workspaces, &server, &$workspace, &bo_browser).await;
@@ -227,19 +228,20 @@ struct Served<'a> {
 }
 
 impl<'a> Served<'a> {
-    /// The agents of `workspace`, every request their model is sent kept in `asked`.
-    fn new(
+    /// The agents `hosted` runs for `workspace`, every request their model is sent kept in
+    /// `asked`.
+    async fn new(
+        hosted: &crate::harness::hosted::Hosted,
         actions: &'a tilo_agent_session::workspace_actions::WorkspaceActions,
         workspaces: &'a Workspaces,
         workspace: &'a str,
         asked: &Arc<Mutex<Vec<ModelRequest>>>,
     ) -> Self {
         Self {
-            agents: ServerAgents::for_test(
-                workspaces.clone(),
-                actions.clone(),
-                Some(minded(Arc::clone(asked))),
-            ),
+            agents: hosted
+                .approving(workspace, &[SCOUT])
+                .await
+                .scripted(minded(Arc::clone(asked))),
             actions,
             workspaces,
             workspace,
@@ -380,12 +382,12 @@ fn published(message: &Id) -> String {
 /// when its model calls one by name: his words keep nothing about her, and he reads nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hosted_turn_keeps_what_its_keeper_tells_it_and_only_her_turns_know_it() {
-    team!(ada, bo, actions, workspaces, workspace, page);
+    team!(ada, bo, actions, workspaces, workspace, page, hosted);
     let (hers, his) = ((&ada.0, &ada.1), (&bo.0, &bo.1));
     let ada_key = ada.0.verifying_key().to_bytes();
     let bo_key = bo.0.verifying_key().to_bytes();
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let served = Served::new(&actions, &workspaces, &workspace, &asked);
+    let served = Served::new(&hosted, &actions, &workspaces, &workspace, &asked).await;
     assert!(
         workspaces.learned_about(&workspace).is_none(),
         "nothing is learned yet"
@@ -549,10 +551,10 @@ async fn a_hosted_turn_keeps_what_its_keeper_tells_it_and_only_her_turns_know_it
 /// no later turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn asked_what_it_knows_a_hosted_turn_answers_from_the_list_and_changes_it_on_her_word() {
-    team!(ada, bo, actions, workspaces, workspace, page);
+    team!(ada, bo, actions, workspaces, workspace, page, hosted);
     let hers = (&ada.0, &ada.1);
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let served = Served::new(&actions, &workspaces, &workspace, &asked);
+    let served = Served::new(&hosted, &actions, &workspaces, &workspace, &asked).await;
     for fact in ["Takes her coffee black.", "Works from Graz on Fridays."] {
         served.asked_of(hers, &format!("remember: {fact}")).await;
     }
@@ -646,12 +648,12 @@ async fn asked_what_it_knows_a_hosted_turn_answers_from_the_list_and_changes_it_
 /// that acts for him starts a turn in her own conversation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_started_for_the_keeper_is_hers_and_one_started_for_another_member_is_not() {
-    team!(ada, bo, actions, workspaces, workspace, page);
+    team!(ada, bo, actions, workspaces, workspace, page, hosted);
     let ada_key = ada.0.verifying_key().to_bytes();
     let bo_key = bo.0.verifying_key().to_bytes();
     let (ada_person, bo_person) = (hex::encode(ada_key), hex::encode(bo_key));
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let served = Served::new(&actions, &workspaces, &workspace, &asked);
+    let served = Served::new(&hosted, &actions, &workspaces, &workspace, &asked).await;
     served
         .asked_of((&ada.0, &ada.1), "remember: Takes her coffee black.")
         .await;

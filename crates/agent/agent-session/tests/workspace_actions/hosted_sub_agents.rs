@@ -54,13 +54,13 @@ fn plays(
     })
 }
 
-/// The agents the server works for `workspaces`, answered by `model`.
-fn worked(
-    workspaces: &Workspaces,
-    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+/// The agents `served` works in `workspace`, answered by `model`.
+async fn worked(
+    served: &crate::harness::hosted::Hosted,
+    workspace: &str,
     model: Model,
 ) -> ServerAgents {
-    ServerAgents::for_test(workspaces.clone(), actions.clone(), Some(model))
+    served.approving(workspace, &[SCOUT]).await.scripted(model)
 }
 
 /// What Chat's `post` is given for `text` in `conversation`, and its `ask-agent` with a `cause`.
@@ -367,7 +367,9 @@ async fn starts(workspaces: &Workspaces, workspace: &str, person: &str, (name, j
 /// the agent that started it first of all, while the same read by that agent is answered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_sub_agent_works_in_a_conversation_of_its_own_and_reads_nothing_of_its_starters() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let ada = themselves(&root, &browser, &workspace);
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
 
@@ -377,8 +379,8 @@ async fn a_sub_agent_works_in_a_conversation_of_its_own_and_reads_nothing_of_its
     let asked = Arc::new(Mutex::new(Vec::new()));
     let path = chat_messages.clone();
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         plays(&asked, move |request| {
             let told = said_in(request);
             let news = told.contains("Your sub-agent");
@@ -393,7 +395,8 @@ async fn a_sub_agent_works_in_a_conversation_of_its_own_and_reads_nothing_of_its
                 says("Noted.")
             }
         }),
-    );
+    )
+    .await;
 
     // The main thread holds something only it holds, and the person's own agent reads it.
     let secret = writes_in(
@@ -566,7 +569,9 @@ async fn a_sub_agent_works_in_a_conversation_of_its_own_and_reads_nothing_of_its
 /// conversation and is answered there, which its starter is not told.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_note_reaches_a_working_sub_agent_at_its_next_step_and_its_person_writes_into_it() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let ada = themselves(&root, &browser, &workspace);
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let own = chat::Chat::direct_id([
@@ -580,8 +585,8 @@ async fn a_note_reaches_a_working_sub_agent_at_its_next_step_and_its_person_writ
     let held = Arc::clone(&hold);
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         plays(&asked, move |request| {
             if !of_sub_agent(request) {
                 return says("Told.");
@@ -599,7 +604,8 @@ async fn a_note_reaches_a_working_sub_agent_at_its_next_step_and_its_person_writ
                 says("Done.")
             }
         }),
-    );
+    )
+    .await;
     starts(
         &workspaces,
         &workspace,
@@ -709,7 +715,9 @@ async fn a_note_reaches_a_working_sub_agent_at_its_next_step_and_its_person_writ
 /// ends the one it names while the others go on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn several_sub_agents_work_at_once_and_a_stop_ends_the_one_it_names() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let own = |agent: &str| {
         chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(agent)])
@@ -720,8 +728,8 @@ async fn several_sub_agents_work_at_once_and_a_stop_ends_the_one_it_names() {
     let held = Arc::clone(&hold);
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         plays(&asked, move |request| {
             if !of_sub_agent(request) {
                 return says("Told.");
@@ -732,7 +740,8 @@ async fn several_sub_agents_work_at_once_and_a_stop_ends_the_one_it_names() {
             }
             says("Done.")
         }),
-    );
+    )
+    .await;
     starts(
         &workspaces,
         &workspace,
@@ -850,13 +859,15 @@ async fn asks_for_one(
 /// starts nothing twice. What an agent asks under that kind starts nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn its_person_asks_for_a_sub_agent_and_the_server_starts_it() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let ada = themselves(&root, &browser, &workspace);
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         plays(&asked, |request| {
             if of_sub_agent(request) {
                 says("The deck is not in Files.")
@@ -864,7 +875,8 @@ async fn its_person_asks_for_a_sub_agent_and_the_server_starts_it() {
                 says("Told.")
             }
         }),
-    );
+    )
+    .await;
 
     asks_for_one(
         &actions,
@@ -1020,7 +1032,9 @@ fn refused_in_words(answer: &str) -> bool {
 /// person there, and the question waits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_sub_agent_writes_only_into_its_own_conversation() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let ada = themselves(&root, &browser, &workspace);
     // The person is called Ada here, as their page says when it joins: the workspace's member
     // list is whom a name in a message is bound to.
@@ -1050,8 +1064,8 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
     let main_thread = thread.as_str().to_owned();
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &workspaces,
-        &actions,
+        &served,
+        &workspace,
         plays(&asked, move |request| {
             let done = tool_answers(request).len();
             if of_sub_agent(request) {
@@ -1075,7 +1089,8 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
             }
             says("Told.")
         }),
-    );
+    )
+    .await;
 
     // The main thread holds something only it holds, and the person's own agent writes there
     // with the very call the sub-agent is refused below.

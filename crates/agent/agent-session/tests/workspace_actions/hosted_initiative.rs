@@ -6,9 +6,7 @@
 //! the turn itself: the model of a turn the server carries out finds `propose` among the tools
 //! that turn has, takes it, and is answered the proposal.
 
-use super::ServerAgents;
 use super::*;
-use crate::harness::hosted::serving_documents_with_actions as serving_with_actions;
 use tilo_actions::remote::workspace_initiative::{
     self, LookEnded, LookRound, Proposal, Proposals, State,
 };
@@ -165,13 +163,14 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
     let server_device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = serving_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &server_device,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = server.roster.actions.clone();
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let id = WorkspaceId::parse(&workspace).unwrap();
@@ -192,7 +191,7 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         "What could you do for me?",
     )
     .await;
-    let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), None);
+    let agents = server.approving(&workspace, &[SCOUT]).await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     let me = Caller::authenticated(
@@ -329,13 +328,14 @@ async fn the_model_of_a_hosted_turn_proposes_through_the_tools_its_turn_has() {
     let server_device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = serving_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &server_device,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = server.roster.actions.clone();
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
@@ -354,10 +354,10 @@ async fn the_model_of_a_hosted_turn_proposes_through_the_tools_its_turn_has() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(does_then_answers(
+    let agents = server
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(does_then_answers(
             vec![serde_json::json!({
                 "path": "tilo.initiative/proposals#propose",
                 "args": {
@@ -368,10 +368,9 @@ async fn the_model_of_a_hosted_turn_proposes_through_the_tools_its_turn_has() {
             })],
             "I put one piece of work in front of you: tidying the meeting notes.",
             Arc::clone(&asked),
-        )),
-    )
-    .with_events(Some(events))
-    .with_initiative(Some(initiative.clone()));
+        ))
+        .with_events(Some(events))
+        .with_initiative(Some(initiative.clone()));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     tokio::time::timeout(
@@ -428,13 +427,14 @@ async fn what_the_servers_own_services_answer_reaches_the_model_of_a_turn() {
     let server_device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = serving_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &server_device,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = server.roster.actions.clone();
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
@@ -451,10 +451,10 @@ async fn what_the_servers_own_services_answer_reaches_the_model_of_a_turn() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(does_then_answers(
+    let agents = server
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(does_then_answers(
             vec![
                 serde_json::json!({
                     "path": "tilo.initiative/look-round#turn-on",
@@ -464,10 +464,9 @@ async fn what_the_servers_own_services_answer_reaches_the_model_of_a_turn() {
             ],
             "I look round every hour now.",
             Arc::clone(&asked),
-        )),
-    )
-    .with_events(Some(events))
-    .with_initiative(Some(initiative));
+        ))
+        .with_events(Some(events))
+        .with_initiative(Some(initiative));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     tokio::time::timeout(
@@ -612,13 +611,14 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
     let server_device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = serving_with_actions(
+    let server = crate::harness::hosted::start(
         &root,
         &server_device,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
+    let actions = server.roster.actions.clone();
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
@@ -698,13 +698,12 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
     // The server owes the assistant the turn the look started and carries it out with the
     // workspace's own model, whose first call spends the look-round's day: it is asked nothing more.
     let unasked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(never_asked(Arc::clone(&unasked))),
-    )
-    .with_events(Some(events))
-    .with_initiative(Some(initiative.clone()));
+    let agents = server
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(never_asked(Arc::clone(&unasked)))
+        .with_events(Some(events))
+        .with_initiative(Some(initiative.clone()));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     assert_eq!(turns[0].person, person, "it works for the look's person");

@@ -248,6 +248,7 @@ fn asked(invocation: InvocationId, words: String) -> InvocationUpdate {
 /// What carries out a person's answer to a question about a connection of theirs.
 struct Answers {
     workspaces: Workspaces,
+    roster: super::Roster,
 }
 
 impl Answers {
@@ -339,11 +340,14 @@ impl Carries for Answers {
             let workspace = WorkspaceId::parse(&ask.workspace).ok_or_else(gone)?;
             let mut person = [0; 32];
             hex::decode_to_slice(&ask.person, &mut person).map_err(|_| gone())?;
-            let device = self
+            if self
                 .workspaces
                 .person_device(workspace, person)
                 .await
-                .ok_or_else(gone)?;
+                .is_none()
+            {
+                return Err(gone());
+            }
             let agent = self.asker(ask).await.ok_or_else(gone)?;
             if leave.is_some() {
                 let words = ask.kept.get("words").and_then(Value::as_str);
@@ -351,15 +355,14 @@ impl Carries for Answers {
                     return Err(CHANGED.to_owned());
                 }
             }
-            // The agent acting for its person now, on a turn of its own: what the entry
+            // The agent working for its person now, on a turn of its own: what the entry
             // decides the answer by.
-            let caller = Caller::authenticated(person, device)
-                .in_workspace(&*ask.workspace)
-                .delegated_to(agent.id.0.clone())
-                .named(&agent.name)
-                .on_turn(
+            let caller = super::agent_caller(&self.roster, workspace, &agent, person)
+                .await?
+                .on_roster_turn(
                     tilo_action_policy::turn::Turn::new(String::new(), ask.ask.clone()),
-                    agent.turn_rules(&ask.workspace),
+                    agent.created_at,
+                    person,
                 );
             let narrowed = narrowing(&agent, &ask.workspace);
             let hosted = HostedTurn {
@@ -376,8 +379,9 @@ impl Carries for Answers {
 
 /// What carries out the answers to the questions about connections. It is named when this
 /// server's agents start, because a person who answers after a restart starts no turn.
-pub(super) fn answers(workspaces: &Workspaces) -> Arc<dyn Carries> {
+pub(super) fn answers(workspaces: &Workspaces, roster: &super::Roster) -> Arc<dyn Carries> {
     Arc::new(Answers {
         workspaces: workspaces.clone(),
+        roster: roster.clone(),
     })
 }

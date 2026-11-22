@@ -829,20 +829,20 @@ struct ServerRecordsLink {
 }
 
 impl ServerRecordsLink {
-    /// The person a turn of this server acts for, and where their own store
-    /// is kept, when `caller` is such a turn's agent: one a person's own
-    /// session was handed to, working inside a turn. Nothing else is decided
-    /// by what stands for a person.
+    /// The person a turn of this server works for, and where their own store
+    /// is kept, when `caller` is such a turn's agent: this server's own,
+    /// working inside a turn. Nothing else is decided by what stands for a
+    /// person.
     fn turn_of(&self, caller: &Caller) -> Option<(&crate::workspaces::Workspaces, [u8; 32])> {
         let acting = caller.acting();
         if acting.app().is_some()
             || !acting.is_agent()
-            || !caller.is_session_delegated()
+            || caller.roster_created_at().is_none()
             || caller.turn().is_none()
         {
             return None;
         }
-        Some((self.workspaces.as_ref()?, *caller.user_public_key()?))
+        Some((self.workspaces.as_ref()?, *caller.turn_person()?))
     }
 
     /// The host an actor's address in `workspace` is at: the origin this host publishes its pages
@@ -910,7 +910,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         }
     }
 
-    /// On the approving devices of the person `caller` is or acts for: the
+    /// On the approving devices of the person `caller` is or works for: the
     /// host's own person's, or a member's own root, as their device requests
     /// are answered.
     fn ask_person(
@@ -919,7 +919,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         caller: &Caller,
         question: tilo_actions::remote::ConfirmationQuestion,
     ) -> Option<Pending<Result<tilo_actions::remote::ConfirmationReply, ActionCallError>>> {
-        let person = *caller.user_public_key()?;
+        let person = *caller.turn_person().or_else(|| caller.user_public_key())?;
         // The agent the person's device asks for, when the device asks over its own session.
         let agent_id = caller
             .acting()

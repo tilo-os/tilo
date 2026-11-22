@@ -6,7 +6,6 @@
 //! person is on for any of it, and a server that starts again reads the same from the workspace's
 //! documents.
 use super::*;
-use crate::harness::hosted::serving_documents_with_actions as serving_with_actions;
 use serde_json::{Value, json};
 use tasks::model::{StoppedWhy, TaskState};
 use tilo_actions::remote::{
@@ -35,8 +34,10 @@ struct Given {
     /// The part of the tracker's issues that keeps the issue.
     document: String,
     issue: Id,
-    /// The server and its state, kept for as long as the test lasts.
-    _held: Vec<Box<dyn std::any::Any>>,
+    /// The server.
+    served: crate::harness::hosted::Hosted,
+    /// Its state, kept for as long as the test lasts.
+    _state: tempfile::TempDir,
 }
 
 async fn given() -> Given {
@@ -44,8 +45,14 @@ async fn given() -> Given {
     let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (served, actions) =
-        serving_with_actions(&root, &server, state.path(), crate::common::catalogue).await;
+    let served = crate::harness::hosted::start(
+        &root,
+        &server,
+        state.path(),
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
+    )
+    .await;
+    let actions = served.roster.actions.clone();
     let workspaces = served.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&served, &browser, &server, &workspace).await;
@@ -76,7 +83,8 @@ async fn given() -> Given {
         workspace,
         document,
         issue,
-        _held: vec![Box::new(served), Box::new(state)],
+        served,
+        _state: state,
     }
 }
 
@@ -137,8 +145,11 @@ impl Given {
     }
 
     /// A server that just started: it holds nothing but the workspace's documents.
-    fn started(&self, model: Model) -> ServerAgents {
-        ServerAgents::for_test(self.workspaces.clone(), self.actions.clone(), Some(model))
+    async fn started(&self, model: Model) -> ServerAgents {
+        self.served
+            .approving(&self.workspace, &[SCOUT])
+            .await
+            .scripted(model)
     }
 
     /// The one turn the workspace owes the agent at `now_ms`.
@@ -292,7 +303,9 @@ async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on() 
     let asked = Arc::new(Mutex::new(Vec::new()));
 
     // The first session: the place is made before the model is asked, and the model is told where.
-    let agents = given.started(looks_then_answers(1_000, Arc::clone(&asked)));
+    let agents = given
+        .started(looks_then_answers(1_000, Arc::clone(&asked)))
+        .await;
     given.answered(&agents, now_ms()).await;
     let issue = given.held().await;
     let work = issue.work.clone().expect("the issue keeps its work");
@@ -336,7 +349,9 @@ async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on() 
 
     // While it waits nothing is owed and no model is asked, also by a server that starts now.
     let calls = asked.lock().unwrap().len();
-    let restarted = given.started(looks_then_answers(1_000, Arc::clone(&asked)));
+    let restarted = given
+        .started(looks_then_answers(1_000, Arc::clone(&asked)))
+        .await;
     for now in [now_ms(), until - 1] {
         given
             .nothing_owed(&restarted, now, "nothing is owed while it waits")
@@ -382,7 +397,9 @@ async fn an_agent_refused_files_starts_its_task_and_is_told_its_folder_was_not_m
     let given = given().await;
     given.refuses_the_agent_files().await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = given.started(looks_then_answers(1_000, Arc::clone(&asked)));
+    let agents = given
+        .started(looks_then_answers(1_000, Arc::clone(&asked)))
+        .await;
     given.answered(&agents, now_ms()).await;
 
     let work = given.held().await.work.expect("the issue keeps its work");
@@ -419,7 +436,9 @@ async fn an_agent_refused_files_starts_its_task_and_is_told_its_folder_was_not_m
 async fn a_task_resumes_on_the_reply_it_waited_for() {
     let given = given().await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = given.started(looks_then_answers(1_000, Arc::clone(&asked)));
+    let agents = given
+        .started(looks_then_answers(1_000, Arc::clone(&asked)))
+        .await;
     given.answered(&agents, now_ms()).await;
     let until = now_ms() + 2 * DAY_MS;
     given.waits_for_a_reply(until).await;
@@ -454,7 +473,9 @@ async fn a_task_stops_at_its_budget_with_a_plain_line_and_never_reads_as_done() 
         .expect("its person sets the budget");
     let asked = Arc::new(Mutex::new(Vec::new()));
     // Each call costs $1.50: the second passes the budget of $2.00.
-    let agents = given.started(looks_then_answers(1_500_000, Arc::clone(&asked)));
+    let agents = given
+        .started(looks_then_answers(1_500_000, Arc::clone(&asked)))
+        .await;
     given.answered(&agents, now_ms()).await;
     let work = given.held().await.work.unwrap();
     assert_eq!(
@@ -524,7 +545,7 @@ async fn a_task_stops_at_its_budget_with_a_plain_line_and_never_reads_as_done() 
 async fn a_task_whose_sessions_were_lost_stops_and_says_so() {
     let given = given().await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = given.started(slow(Arc::clone(&asked)));
+    let agents = given.started(slow(Arc::clone(&asked))).await;
     // Three times a session begins and the server dies while its model answers: it never ends.
     for lost in 1..=3 {
         let turn = given.owed(&agents, now_ms()).await;
@@ -621,7 +642,9 @@ fn on_automations(
 async fn a_task_goes_on_when_the_automation_it_waits_for_comes() {
     let given = given().await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = given.started(looks_then_answers(1_000, Arc::clone(&asked)));
+    let agents = given
+        .started(looks_then_answers(1_000, Arc::clone(&asked)))
+        .await;
     given.answered(&agents, now_ms()).await;
     let automations = WorkspaceEvents::start(given.workspaces.clone(), None);
     let set_up = |name: &str, at_ms: i64, instruction: &str| {
@@ -708,7 +731,9 @@ async fn a_task_goes_on_when_the_automation_it_waits_for_comes() {
 async fn an_issues_turn_read_before_its_answer_is_not_begun_again() {
     let given = given().await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = given.started(looks_then_answers(1_000, Arc::clone(&asked)));
+    let agents = given
+        .started(looks_then_answers(1_000, Arc::clone(&asked)))
+        .await;
 
     // What a look reads: the turn the issue is owed. It is answered, and its place is free.
     let read = given.answered(&agents, now_ms()).await;
@@ -764,8 +789,14 @@ async fn a_server_with_an_agent_founds_the_tracker_of_a_workspace_nobody_opened_
     let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (served, actions) =
-        serving_with_actions(&root, &server, state.path(), crate::common::catalogue).await;
+    let served = crate::harness::hosted::start(
+        &root,
+        &server,
+        state.path(),
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
+    )
+    .await;
+    let actions = served.roster.actions.clone();
     let workspaces = served.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let page = Browser::open_at(&served, &browser, &server, &workspace).await;
@@ -801,7 +832,10 @@ async fn a_server_with_an_agent_founds_the_tracker_of_a_workspace_nobody_opened_
     assert!(refused.is_err(), "nothing keeps a tracker yet: {refused:?}");
 
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), Some(slow(asked)));
+    let agents = served
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(slow(asked));
     let owed = agents.turns_at(&workspace, now_ms()).await.unwrap();
     assert!(owed.is_empty(), "no issue is given yet: {owed:?}");
 

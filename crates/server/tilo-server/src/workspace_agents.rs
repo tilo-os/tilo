@@ -143,10 +143,6 @@ const KEEP_WORK: &str = "record-work";
 #[derive(Clone)]
 pub struct WorkspaceActionProvider {
     actions: WorkspaceActions,
-    roster_caller: Option<Caller>,
-    /// The agents' signing sessions, whose keys sign what the agent's turn asks of the
-    /// workspace ([`tilo_agent_session::AgentSessions::sign_as`]).
-    signing: Option<tilo_agent_session::AgentSessions>,
     workspace: WorkspaceId,
     /// The events this device runs for its workspaces, where it runs any: what an agent sets up,
     /// pauses, changes and removes for the person its turn is for.
@@ -223,8 +219,6 @@ impl WorkspaceActionProvider {
     pub fn new(actions: WorkspaceActions, workspace: WorkspaceId) -> Self {
         Self {
             actions,
-            roster_caller: None,
-            signing: None,
             workspace,
             events: None,
             own: Vec::new(),
@@ -365,33 +359,12 @@ impl WorkspaceActionProvider {
         self
     }
 
-    /// The same service, whose turn's invocations as the agent `sessions` sign with the
-    /// agent's own key.
-    #[must_use]
-    fn signing_with(mut self, sessions: Option<tilo_agent_session::AgentSessions>) -> Self {
-        self.signing = sessions;
-        self
-    }
-
     /// The same service, kept to `own` for a turn of the sub-agent that writes there: of Chat it
     /// takes that turn's answer, its question and its words there, and nothing else.
     #[must_use]
     fn keeping_to(mut self, own: Option<sub_agents::Own>) -> Self {
         self.kept_to = own;
         self
-    }
-
-    fn workspace_caller<'a>(&self, person_work: &'a Caller) -> std::borrow::Cow<'a, Caller> {
-        let Some(roster) = &self.roster_caller else {
-            return std::borrow::Cow::Borrowed(person_work);
-        };
-        // MCP owns the turn's execution. Carry that same lease when the
-        // workspace call switches to the roster device.
-        let roster = roster.clone();
-        std::borrow::Cow::Owned(match person_work.execution_lease() {
-            Some(execution) => roster.in_execution(execution),
-            None => roster,
-        })
     }
 
     fn serve(
@@ -401,42 +374,20 @@ impl WorkspaceActionProvider {
     ) -> Pending<RemoteActionMessage> {
         // What a tool call asks of the workspace's action service is counted for its step.
         let asking = steps::asking(&message);
-        let caller = match &message {
-            RemoteActionMessage::Invoke(request)
-                if !tilo_actions::remote::is_ask(&request.target) =>
-            {
-                self.workspace_caller(caller)
-            }
-            RemoteActionMessage::Cancel { invocation }
-                if self.actions.observe(caller, invocation).is_none() =>
-            {
-                self.workspace_caller(caller)
-            }
-            _ => std::borrow::Cow::Borrowed(caller),
-        };
-        // What the agent asks of the workspace on its turn it asks under its own key.
-        if let RemoteActionMessage::Invoke(request) = &message
-            && caller.roster_created_at().is_some()
+        // What the agent asks of the workspace it asks under its own key.
+        if let RemoteActionMessage::Invoke(request) = &mut message
+            && let Err(reason) = self.actions.sign_for(self.workspace, caller, request)
         {
-            let invocation = request.invocation;
-            let signed = match (&self.signing, caller.device_public_key()) {
-                (Some(sessions), Some(device)) => {
-                    sessions.sign_as(device, self.workspace, &mut message)
-                }
-                _ => Err("the agent's signing session is not open here".to_owned()),
-            };
-            if let Err(reason) = signed {
-                return Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
-                    invocation,
-                    status: ReceiptStatus::Rejected {
-                        error: ActionCallError::Refused { reason },
-                    },
-                }));
-            }
+            return Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Rejected {
+                    error: ActionCallError::Refused { reason },
+                },
+            }));
         }
         let answer = self
             .actions
-            .serve(self.workspace, &caller, message)
+            .serve(self.workspace, caller, message)
             .unwrap_or_else(|| {
                 Pending::ready(RemoteActionMessage::CatalogueResponse {
                     correlation: 0,
@@ -543,12 +494,7 @@ impl ActionProvider for WorkspaceActionProvider {
         self.ended
             .as_ref()
             .and_then(|ended| ended.of(id))
-            .or_else(|| self.actions.observe(&self.workspace_caller(caller), id))
-            .or_else(|| {
-                self.roster_caller
-                    .as_ref()
-                    .and_then(|_| self.actions.observe(caller, id))
-            })
+            .or_else(|| self.actions.observe(caller, id))
             .or_else(|| self.answered.of(caller, id))
     }
 
@@ -774,15 +720,47 @@ pub struct LookRead {
     asks: Asks,
 }
 
+/// What runs each agent as its own approved key: where its approval is read, and the signing
+/// sessions that hold the keys.
+type Roster = (
+    crate::agents::ServerAgentLink,
+    tilo_agent_session::AgentSessions,
+);
+
+/// `agent` of `workspace` as its own approved key, working for `person`: what everything it
+/// does there goes as, each invocation signed by that key.
+///
+/// # Errors
+/// The agent has no keeper, or no approved signing session for the workspace.
+async fn agent_caller(
+    (server, sessions): &Roster,
+    workspace: WorkspaceId,
+    agent: &Agent,
+    person: [u8; 32],
+) -> Result<Caller, String> {
+    let keeper = tilo_action_policy::PersonId::parse(&agent.keeper)
+        .ok()
+        .and_then(|keeper| keeper.root())
+        .ok_or("the hosted agent has no keeper")?;
+    let device = server
+        .roster_session_device(sessions, workspace, &agent.id.0, &keeper)
+        .await
+        .filter(|device| {
+            sessions.matches_roster(device, workspace, &agent.id.0, &keeper, agent.created_at)
+        })
+        .ok_or("the hosted agent has no approved signing session for this workspace")?;
+    Ok(Caller::delegated_agent(agent.id.0.clone(), keeper, device)
+        .in_workspace(workspace.to_string())
+        .named(&agent.name)
+        .on_roster(agent.created_at, person))
+}
+
 /// The agents a host runs for the workspaces it governs.
 #[derive(Clone)]
 pub struct ServerAgents {
     workspaces: Workspaces,
     actions: WorkspaceActions,
-    roster: Option<(
-        crate::agents::ServerAgentLink,
-        tilo_agent_session::AgentSessions,
-    )>,
+    roster: Roster,
     /// A test's script, answering in a workspace that linked no model: `None` outside tests,
     /// where such a workspace is told what to link.
     model: Option<Model>,
@@ -816,47 +794,11 @@ impl ServerAgents {
         server: &crate::Server,
         sessions: tilo_agent_session::AgentSessions,
     ) -> Self {
-        Self::build(
-            workspaces,
-            actions,
-            None,
-            Some((server.agent_link(), sessions)),
-        )
-    }
-
-    /// A test's script answers in every workspace here that linked no model.
-    #[cfg(feature = "test-support")]
-    #[must_use]
-    pub fn scripted(mut self, model: Model) -> Self {
-        self.model = Some(model);
-        self
-    }
-
-    /// Exercise turn machinery in fixtures that do not provision peer sessions.
-    #[cfg(feature = "test-support")]
-    #[must_use]
-    pub fn for_test(
-        workspaces: Workspaces,
-        actions: WorkspaceActions,
-        model: Option<Model>,
-    ) -> Self {
-        Self::build(workspaces, actions, model, None)
-    }
-
-    fn build(
-        workspaces: Workspaces,
-        actions: WorkspaceActions,
-        model: Option<Model>,
-        roster: Option<(
-            crate::agents::ServerAgentLink,
-            tilo_agent_session::AgentSessions,
-        )>,
-    ) -> Self {
         let agents = Self {
             workspaces,
             actions,
-            roster,
-            model,
+            roster: (server.agent_link(), sessions),
+            model: None,
             going: Arc::default(),
             coding: None,
             events: None,
@@ -866,32 +808,35 @@ impl ServerAgents {
             placed: None,
         };
         // What a person answers about a connection of theirs is carried out from the start.
-        agents.carries(connections::WORD, connections::answers(&agents.workspaces));
+        agents.carries(
+            connections::WORD,
+            connections::answers(&agents.workspaces, &agents.roster),
+        );
         // What a turn asks its person is put to them in its conversation.
         agents.ask_in_conversations();
         agents.carry_sends();
         agents
     }
 
-    async fn roster_device(
+    /// A test's script answers in every workspace here that linked no model.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn scripted(mut self, model: impl Into<Option<Model>>) -> Self {
+        self.model = model.into();
+        self
+    }
+
+    /// `agent` of `workspace` as its own approved key, working for `person` ([`agent_caller`]).
+    ///
+    /// # Errors
+    /// As [`agent_caller`].
+    async fn agent_caller(
         &self,
         workspace: WorkspaceId,
         agent: &Agent,
-        keeper: [u8; 32],
-    ) -> Result<Option<[u8; 32]>, String> {
-        let Some((server, sessions)) = &self.roster else {
-            return Ok(None);
-        };
-        let denied =
-            || "the hosted agent has no approved signing session for this workspace".to_owned();
-        let device = server
-            .roster_session_device(sessions, workspace, &agent.id.0, &keeper)
-            .await
-            .filter(|device| {
-                sessions.matches_roster(device, workspace, &agent.id.0, &keeper, agent.created_at)
-            })
-            .ok_or_else(denied)?;
-        Ok(Some(device))
+        person: [u8; 32],
+    ) -> Result<Caller, String> {
+        agent_caller(&self.roster, workspace, agent, person).await
     }
 
     /// These agents, told the devices this server placed itself for its workspaces' windows:
@@ -1484,32 +1429,23 @@ impl ServerAgents {
             .ok()
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or("the ask names no person")?;
-        let device = self
+        if self
             .workspaces
-            .work_device(
-                workspace_id,
-                person,
-                &tilo_action_policy::MemberId::agent(turn.agent.id.0.clone()),
-            )
+            .person_device(workspace_id, person)
             .await
-            .ok_or("the person who asked is admitted here on no device")?;
-        let keeper = tilo_action_policy::PersonId::parse(&turn.agent.keeper)
-            .ok()
-            .and_then(|keeper| keeper.root())
-            .ok_or("the hosted agent has no keeper")?;
-        let roster = self
-            .roster_device(workspace_id, &turn.agent, keeper)
-            .await?
-            .map(|device| (keeper, device, turn.agent.created_at));
+            .is_none()
+        {
+            return Err("the person who asked is admitted here on no device".to_owned());
+        }
+        let agent = self.agent_caller(workspace_id, &turn.agent, person).await?;
         let mut scope = TurnScope {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
-                .signing_with(self.roster.as_ref().map(|(_, sessions)| sessions.clone()))
                 .offering(self.events.clone())
                 .offering_initiative(self.initiative.clone())
                 .keeping_to(self.own_of(workspace, turn).await)
                 .serving_ask(&turn.request),
-            person: Caller::authenticated(person, device).in_workspace(workspace),
-            roster,
+            agent,
+            person,
             workspace: workspace.to_owned(),
             workspace_id,
         };
@@ -1731,7 +1667,10 @@ impl ServerAgents {
                     (day, task) => day.or(task),
                 };
                 let keeping = keeping.as_ref();
-                work(model, &scope, &mut turn, budget, &mut reply, going, keeping).await
+                Box::pin(work(
+                    model, &scope, &mut turn, budget, &mut reply, going, keeping,
+                ))
+                .await
             }
         };
         let outcome = match &task {
@@ -2042,9 +1981,11 @@ pub use tilo_agent_turn::Outcome;
 /// turn goes on with.
 struct TurnScope {
     provider: WorkspaceActionProvider,
-    /// The person, as their own device is admitted here.
-    person: Caller,
-    roster: Option<([u8; 32], [u8; 32], i64)>,
+    /// The agent as its own approved key, working for the person who asked
+    /// ([`ServerAgents::agent_caller`]).
+    agent: Caller,
+    /// The person who asked.
+    person: [u8; 32],
     workspace: String,
     workspace_id: WorkspaceId,
 }
@@ -2069,22 +2010,13 @@ impl TurnScope {
         );
         let cause =
             tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone());
-        let in_session = |caller: Caller| {
-            caller
-                .named(&turn.agent.name)
-                .in_agent_session(&session)
-                .asked(&turn.asked)
-        };
-        let caller = in_session(self.person.clone().delegated_to(turn.agent.id.0.clone()))
-            .on_turn(cause.clone(), turn.agent.turn_rules(&self.workspace));
-        let mut provider = self.provider.clone();
-        provider.roster_caller = self.roster.map(|(keeper, device, created_at)| {
-            in_session(
-                Caller::delegated_agent(turn.agent.id.0.clone(), keeper, device)
-                    .in_workspace(&self.workspace),
-            )
-            .on_roster_turn(cause, created_at)
-        });
+        let caller = self
+            .agent
+            .clone()
+            .in_agent_session(&session)
+            .asked(&turn.asked)
+            .on_roster_turn(cause, turn.agent.created_at, self.person);
+        let provider = self.provider.clone();
         // A sub-agent's turn grows the messages its answer goes on in, and whoever keeps it
         // to its own writes reads which those are.
         let followed = self

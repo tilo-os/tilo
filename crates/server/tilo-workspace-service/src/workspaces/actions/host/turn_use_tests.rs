@@ -37,18 +37,19 @@ const IMAP: &str = "imap://imap.example.test:993";
 const SMTP: &str = "smtp://smtp.example.test:465";
 const MAIL_USE: &str = "tilo.accounts/add-mail-with-item";
 
-/// The caller a turn's tools act as: `person`'s session in `workspace`,
-/// handed to `agent` on a turn.
+/// The caller a turn's tools act as: `agent`, certified by `person`'s device, on a turn of
+/// theirs in `workspace`.
 pub(super) fn on_turn(person: &DeviceCert, workspace: &str, agent: &str) -> Caller {
-    Caller::authenticated(person.user_public_key, person.device_public_key)
+    Caller::delegated_agent(agent, person.user_public_key, person.device_public_key)
         .in_workspace(workspace)
-        .delegated_to(agent)
         .named("Scout")
         .in_agent_session("agent-session:test")
-        .on_turn(
-            tilo_action_policy::turn::Turn::new("conversation-1", "message-1"),
-            Vec::new(),
-        )
+        .on_roster_turn(turn(), 0, person.user_public_key)
+}
+
+/// The turn a test's agent works.
+pub(super) fn turn() -> tilo_action_policy::turn::Turn {
+    tilo_action_policy::turn::Turn::new("conversation-1", "message-1")
 }
 
 fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
@@ -513,17 +514,18 @@ async fn an_answer_is_claimed_once_and_not_carried_out_again_after_the_server_st
 pub(super) fn not_hosted_turns(ada: &DeviceCert, workspace: &str) -> Vec<(&'static str, Caller)> {
     let hers = hex::encode(ada.user_public_key);
     let session = || Caller::authenticated(ada.user_public_key, ada.device_public_key);
-    let turn = || tilo_action_policy::turn::Turn::new("conversation-1", "message-1");
-    let on_another_device = Caller::authenticated(ada.user_public_key, [7; 32])
+    let scout = || Caller::delegated_agent("scout", ada.user_public_key, ada.device_public_key);
+    let confined_elsewhere = scout()
+        .in_workspace("00000000-0000-4000-8000-000000000000")
+        .on_roster_turn(turn(), 0, ada.user_public_key);
+    let unconfined = scout().on_roster_turn(turn(), 0, ada.user_public_key);
+    let outside_a_turn = scout()
+        .in_workspace(workspace)
+        .on_roster(0, ada.user_public_key);
+    let handed = session()
         .in_workspace(workspace)
         .delegated_to("scout")
-        .on_turn(turn(), Vec::new());
-    let confined_elsewhere = session()
-        .in_workspace("00000000-0000-4000-8000-000000000000")
-        .delegated_to("scout")
-        .on_turn(turn(), Vec::new());
-    let unconfined = session().delegated_to("scout").on_turn(turn(), Vec::new());
-    let outside_a_turn = session().in_workspace(workspace).delegated_to("scout");
+        .in_agent_session("agent-session:test");
     let bot =
         Caller::bot("bot", ada.user_public_key, ada.device_public_key).in_workspace(workspace);
     let member = Caller::local_agent("scout").acting_for(hers.clone());
@@ -536,16 +538,13 @@ pub(super) fn not_hosted_turns(ada: &DeviceCert, workspace: &str) -> Vec<(&'stat
         ("an app", app),
         ("a turn confined to no workspace", unconfined),
         ("a turn confined to another workspace", confined_elsewhere),
-        (
-            "a turn on a device she is not admitted on",
-            on_another_device,
-        ),
+        ("an agent her own device hands its session to", handed),
     ]
 }
 
 /// Every caller that is not a turn this server carries out is refused before the vault is
 /// opened: a person, an agent with no turn, an agent admitted as a member, a bot, an app, a turn
-/// confined elsewhere and a turn on a device the workspace does not admit that person on. Any
+/// confined elsewhere and an agent a person's own device hands its session to. Any
 /// member's ask of the workspace's agent is such a turn: Bo's ask of the agent Ada asks uses the
 /// same workspace item, and its use asks him, the person who asked.
 #[tokio::test]

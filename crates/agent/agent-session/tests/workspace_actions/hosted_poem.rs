@@ -152,7 +152,7 @@ fn the_share(part: &chat::parts::ChatMessages) -> (Id, Shared) {
 /// theirs to read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_poem_is_written_then_shown_live_then_changed_and_its_share_ended_by_its_person() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, actions, workspaces, workspace, page, served);
     let mut page = page;
     let person = hex::encode(root.verifying_key().to_bytes());
     let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
@@ -167,7 +167,7 @@ async fn a_poem_is_written_then_shown_live_then_changed_and_its_share_ended_by_i
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    answer_the_turn!(workspaces, actions, workspace, writes_the_poem(&asked));
+    answer_the_turn!(served, workspace, writes_the_poem(&asked));
     // Taken out whole: no lock is held while the test asks the server anything more.
     let asked = asked.lock().unwrap().clone();
     let wrote = told(&asked);
@@ -192,7 +192,7 @@ async fn a_poem_is_written_then_shown_live_then_changed_and_its_share_ended_by_i
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    answer_the_turn!(workspaces, actions, workspace, shows_the_poem(&asked));
+    answer_the_turn!(served, workspace, shows_the_poem(&asked));
     let asked = asked.lock().unwrap().clone();
     let showed = told(&asked);
     assert!(
@@ -257,7 +257,7 @@ async fn a_poem_is_written_then_shown_live_then_changed_and_its_share_ended_by_i
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    answer_the_turn!(workspaces, actions, workspace, adds_a_line(&asked));
+    answer_the_turn!(served, workspace, adds_a_line(&asked));
     let asked = asked.lock().unwrap().clone();
     let added = told(&asked);
     assert!(

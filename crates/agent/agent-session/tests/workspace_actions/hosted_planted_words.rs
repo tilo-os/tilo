@@ -105,7 +105,7 @@ async fn once_ended(
 /// ends that share themselves, whatever the document said.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_a_document_says_changes_neither_where_a_turn_shares_nor_who_ends_a_share() {
-    team!(root, browser, actions, workspaces, workspace, page);
+    team!(root, browser, actions, workspaces, workspace, page, served);
     write_to_agent(
         &actions,
         &workspaces,
@@ -118,12 +118,7 @@ async fn what_a_document_says_changes_neither_where_a_turn_shares_nor_who_ends_a
     let own = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let elsewhere = chat::Chat::direct_id([MemberId::person(person), MemberId::agent("other")]);
     let asked = Arc::new(Mutex::new(Vec::new()));
-    answer_the_turn!(
-        workspaces,
-        actions,
-        workspace,
-        follows_the_document(&elsewhere, &asked)
-    );
+    answer_the_turn!(served, workspace, follows_the_document(&elsewhere, &asked));
     // Taken out whole: no lock is held while the test asks the server anything more.
     let asked = asked.lock().unwrap().clone();
     let told = told(&asked);

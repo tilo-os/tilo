@@ -539,10 +539,11 @@ impl WorkspaceEvents {
                 })
             }
             Authority::Turn => {
-                // A turn has no device behind it: it is the member acting as
-                // themselves.
+                // A turn has no device behind it: it is the agent working for
+                // the person who asked, or the member acting as themselves.
                 let person = caller
-                    .user_public_key()
+                    .turn_person()
+                    .or_else(|| caller.user_public_key())
                     .copied()
                     .ok_or(ActionCallError::UnknownAction)?;
                 if !workspaces
@@ -766,7 +767,9 @@ fn asker_of(caller: &Caller) -> Option<Asker> {
         None
     } else if acting.is_person() {
         Some(Asker::Person)
-    } else if acting.is_agent() && caller.is_session_delegated() {
+    } else if acting.is_agent()
+        && (caller.is_session_delegated() || caller.roster_created_at().is_some())
+    {
         Some(Asker::Assistant)
     } else {
         None
