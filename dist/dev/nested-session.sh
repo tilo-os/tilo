@@ -106,8 +106,8 @@ done
 
 host_runtime=${XDG_RUNTIME_DIR:-}
 host_display=
-# --print-runtime starts nothing, so it asks for no display.
-if ((!headless && !print_runtime)); then
+# --print-runtime and --prepare-only start nothing, so they ask for no display.
+if ((!headless && !print_runtime && !prepare_only)); then
     [[ -n $host_runtime ]] || die "XDG_RUNTIME_DIR is unset"
     [[ -n ${WAYLAND_DISPLAY:-} ]] || die "run this from a Wayland desktop session (WAYLAND_DISPLAY is unset), or pass --headless"
     case $WAYLAND_DISPLAY in
