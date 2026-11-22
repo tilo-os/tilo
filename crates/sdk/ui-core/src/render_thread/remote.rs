@@ -671,9 +671,7 @@ impl Worker {
                     session.ring.release(sequence);
                     return Ok(self.dropped(&why));
                 }
-                ServiceMessage::Refused { why } => {
-                    tracing::warn!(?why, "the render service refused a registration");
-                }
+                ServiceMessage::Refused { why } => refused_registration(&why),
                 other => tracing::debug!(?other, "unexpected render service message"),
             }
         }
@@ -823,6 +821,22 @@ impl Worker {
         }
         FrameOutcome::Skipped
     }
+}
+
+/// The service refused a font or image this app registered. Every frame that draws it names a
+/// resource the service never took, so each would be refused in turn and the window would show
+/// nothing, for good: an app over its limits is broken, and stops here with the reason.
+#[allow(
+    clippy::panic,
+    reason = "a refused registration leaves every later frame undrawable; the app stops naming \
+              why rather than showing an empty window forever"
+)]
+fn refused_registration(why: &Refusal) -> ! {
+    tracing::error!(
+        ?why,
+        "the render service refused a font or image this app registered"
+    );
+    panic!("the render service refused a font or image this app registered: {why:?}");
 }
 
 /// Whether a frame the service dropped is drawn again at once, whole.
