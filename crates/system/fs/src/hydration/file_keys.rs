@@ -92,6 +92,9 @@ const IDLE_KEY_LINKS: usize = 16;
 pub struct FileKeys {
     workspace: WorkspaceId,
     read: Arc<ReadKeys>,
+    /// The keys the last save read once it had sealed its file: what the next save seals with,
+    /// which its own read after sealing checks.
+    sealing: Arc<Mutex<Option<ContentKeys>>>,
 }
 
 impl FileKeys {
@@ -151,6 +154,7 @@ impl FileKeys {
         Self {
             workspace,
             read: Arc::new(read),
+            sealing: Arc::default(),
         }
     }
 
@@ -177,9 +181,18 @@ impl FileKeys {
             };
             return write_sealed_chunks(store, &keys, self.workspace, manifest, source).await;
         }
-        let keys = self.access().await?;
+        // Outside a run, the keys the last save checked seal the file, and one read after sealing
+        // says whether they are still the workspace's: a file sealed under keys that moved, before
+        // or while it was saved, is refused, and the next save seals with the keys read here.
+        let held = self.sealing.lock_recover().clone();
+        let keys = match held {
+            Some(keys) => keys,
+            None => self.access().await?,
+        };
         let hash = write_sealed_chunks(store, &keys, self.workspace, manifest, source).await?;
-        let current = self.access().await?;
+        let current = self.access().await;
+        *self.sealing.lock_recover() = current.as_ref().ok().cloned();
+        let current = current?;
         ensure!(
             (current.workspace(), current.epoch()) == (keys.workspace(), keys.epoch()),
             "file access changed while it was saved",
@@ -733,12 +746,57 @@ mod tests {
             saved >= 510,
             "{saved} of 512 files saved: only the broken connection's fail"
         );
+        let reads = service.reads.load(Ordering::SeqCst);
+        assert!(
+            reads <= 512 + 16 + 20,
+            "{reads} key reads for 512 files: one each, beside each writer's first and the broken connection's"
+        );
         let most = service.most_at_once.load(Ordering::SeqCst);
         assert!(most > 1, "key reads went one at a time ({most} at most)");
         let opened = service.opened.load(Ordering::SeqCst);
         assert!(
             opened <= 16 + 1,
             "{opened} connections opened for 16 writers and one broken connection"
+        );
+    }
+
+    /// A save seals with the keys the save before it read, and its own read after sealing finds
+    /// whether they are still the workspace's: a file sealed under keys that moved since is
+    /// refused, and the next one seals under the keys that took their place.
+    #[tokio::test]
+    async fn a_file_sealed_under_keys_that_moved_is_refused() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (old, new) = (
+            group_keys().to_bytes().unwrap().to_vec(),
+            group_keys().to_bytes().unwrap().to_vec(),
+        );
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&reads);
+        // The keys move after the first save read them twice.
+        let source = FileKeys::from_session(WorkspaceId::new(), move || {
+            let read = counted.fetch_add(1, Ordering::SeqCst);
+            Ok(ContentKeys::from_bytes(if read < 2 { &old } else { &new })?)
+        });
+        let store = crate::store::ContentStore::memory();
+        let save = |file: u8| {
+            let data = vec![file; 4096];
+            let (manifest, _) = content::build(&data, None);
+            let source = source.clone();
+            let store = &store;
+            async move { source.save(store, &manifest, data.as_slice()).await }
+        };
+        save(1).await.unwrap();
+        assert!(
+            save(2).await.is_err(),
+            "a file sealed under keys that had moved was kept"
+        );
+        save(3).await.unwrap();
+        save(4).await.unwrap();
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            5,
+            "one key read per file after the first"
         );
     }
 
