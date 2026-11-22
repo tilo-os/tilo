@@ -97,8 +97,6 @@ pub mod placed_terminals;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod public_avatars;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod server_apps;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod servers;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod state_lock;
