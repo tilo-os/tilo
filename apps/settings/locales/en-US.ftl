@@ -2068,6 +2068,7 @@ accounts-nextcloud-calendars = Connect calendars
 accounts-nextcloud-calendar-caption = Uses this Nextcloud account’s existing sign-in. Choose which calendars to sync, then save to confirm. Files and mail stay unchanged.
 accounts-calendar-discover = Find calendars
 accounts-calendar-details-changed = Account details changed during discovery. Find calendars again to check the new details.
+accounts-no-session = This window has no connection to the session, so the account’s password cannot be read. Open Settings again.
 accounts-calendars-title = Choose calendars
 accounts-calendars-caption = Review the calendars to connect. New setups select all readable calendars; existing selections are kept. Only selected calendars will sync. Nothing is saved until you confirm.
 accounts-calendar-select = Select

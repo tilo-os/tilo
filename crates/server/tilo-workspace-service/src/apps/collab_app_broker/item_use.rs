@@ -5,6 +5,12 @@ use std::sync::Arc;
 
 use super::{BrokerError, wire};
 
+/// What an app is told when its connection is not a person's own.
+const NOT_A_PERSONS_APP: &str = "Only a person's own app keeps or uses an account's password.";
+
+/// What an app is told when this device keeps no workspace vault to answer from.
+const NO_VAULT_HERE: &str = "This device cannot reach the workspace's passwords right now.";
+
 /// What an app that is not Browser is told when it asks for a vault item's text.
 const ITEMS_ARE_BROWSERS: &str =
     "Only Browser has a field of a page filled from a vault item, so nothing was released.";
@@ -80,29 +86,40 @@ fn delegate_account_secret(
     context: &crate::apps::services::BrowserServiceSessionRequestContext,
     command: runtime_collab::BrowserServiceSessionCommand,
 ) -> Result<wire::Answer<zeroize::Zeroizing<Vec<u8>>>, BrokerError> {
-    let refused = || BrokerError::failed("private service-session request refused".into());
-    if context.workspace_id().is_empty()
-        || context.person().is_empty()
-        || context.revalidate().is_err()
-    {
-        return Err(refused());
+    // Each refusal says why, for the person whose app asked: the app shows it as the reason
+    // their password was not kept or used.
+    let refused = |reason: String| {
+        tracing::warn!(app = context.app_id(), %reason, "an account's password was refused to an app");
+        BrokerError::failed(reason)
+    };
+    if context.workspace_id().is_empty() || context.person().is_empty() {
+        return Err(refused(NOT_A_PERSONS_APP.to_owned()));
     }
-    let service = service.cloned().ok_or_else(refused)?;
+    context.revalidate().map_err(refused)?;
+    let service = service
+        .cloned()
+        .ok_or_else(|| refused(NO_VAULT_HERE.to_owned()))?;
     service
         .authorize_command(context, &command)
-        .map_err(|_| refused())?;
+        .map_err(refused)?;
     let answering = service.account_secret(context, command.clone());
     let context = context.clone();
     Ok(Box::pin(async move {
+        let refused = |reason: String| {
+            tracing::warn!(app = context.app_id(), %reason, "an account's password was refused to an app");
+            BrokerError::failed(reason)
+        };
         // What the service says is said to the app: a refusal designed for its person.
         let reply = answering.await.map_err(BrokerError::failed)?;
-        context.revalidate().map_err(|_| refused())?;
+        context.revalidate().map_err(refused)?;
         service
             .authorize_command(&context, &command)
-            .map_err(|_| refused())?;
+            .map_err(refused)?;
         if !reply.matches(&command) {
-            return Err(refused());
+            return Err(refused(NO_VAULT_HERE.to_owned()));
         }
-        reply.encode().map_err(|_| refused())
+        reply
+            .encode()
+            .map_err(|error| refused(error.to_string()))
     }))
 }

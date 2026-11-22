@@ -44,43 +44,97 @@ impl AccountsPane {
         self.form_error = Some(t("accounts-checking"));
         self.form_saving = true;
         let round = self.form_round;
+        // An account whose sign-in is the workspace's vault's has none on this device: the
+        // session releases it to Settings for the calendars to be found with, and the device's
+        // vault keeps nothing of it, before or after.
+        if let Some(item) = accounts::email::password_item(&account.config).map(str::to_owned) {
+            use ui::collaboration::browser_service_sessions::{
+                BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
+            };
+            let asked = self
+                .session_secrets
+                .as_ref()
+                .ok_or_else(|| t("accounts-no-session"))
+                .and_then(|client| {
+                    client.request(Command::ReleaseAccountSecret { item: item.clone() }, None)
+                });
+            let pending = match asked {
+                Ok(pending) => pending,
+                Err(error) => {
+                    self.form_saving = false;
+                    self.form_error = Some(error);
+                    return Ok(());
+                }
+            };
+            self.run_in_queue(move |_| {
+                Step::vault(
+                    move |_| pending.wait(),
+                    move |pane, reply| {
+                        let secret = match reply {
+                            Ok(Reply::AccountSecret {
+                                item: released,
+                                secret,
+                            }) if released == item => {
+                                Ok((None, accounts::Secret::password(secret.as_str())))
+                            }
+                            Ok(_) => Err("The session answered something else".to_owned()),
+                            Err(error) => Err(error),
+                        };
+                        pane.discover_nextcloud_calendars(round, account, secret)
+                    },
+                )
+            });
+            self.changed = true;
+            return Ok(());
+        }
         let kept = account.clone();
         self.run_in_queue(move |_| {
             Step::vault(
-                move |vault| Self::prepare_secret(&mut vault.open(), Some(&kept), &kept, ""),
-                move |pane, secret| {
-                    if pane.form_round != round {
-                        return Step::Done;
-                    }
-                    pane.form_saving = false;
-                    match secret {
-                        Ok(secret)
-                            if !secret.password.is_empty()
-                                && pane.account_root.store().get(&account.id) == Some(&account) =>
-                        {
-                            pane.calendar_baseline =
-                                Some((Some(account.clone()), Some(secret.clone())));
-                            let tester = std::sync::Arc::clone(&pane.account_tester);
-                            let (sender, receiver) = crate::channel::sync_channel(1);
-                            let _ = crate::device_read::thread(
-                                "settings-calendar-discovery",
-                                Box::new(move || {
-                                    let _ =
-                                        sender.send(tester.discover_calendars(&account, &secret));
-                                }),
-                            );
-                            pane.form_probe = Some(ProbeJob::new(receiver));
-                        }
-                        Ok(_) => pane.form_error = Some(t("accounts-calendar-details-changed")),
-                        Err(error) => pane.form_error = Some(error),
-                    }
-                    pane.changed = true;
-                    Step::Done
+                move |vault| {
+                    Self::prepare_secret(&mut vault.open(), Some(&kept), &kept, "")
+                        .map(|secret| (Some(secret.clone()), secret))
                 },
+                move |pane, secret| pane.discover_nextcloud_calendars(round, account, secret),
             )
         });
         self.changed = true;
         Ok(())
+    }
+
+    /// Find the calendars `account` offers, signing in with `secret`: the one this device's vault
+    /// keeps for it (then also the baseline a save checks the vault against), or the one the
+    /// workspace's vault released, which this device's vault never keeps.
+    fn discover_nextcloud_calendars(
+        &mut self,
+        round: u64,
+        account: accounts::Account,
+        secret: Result<(Option<accounts::Secret>, accounts::Secret), String>,
+    ) -> Step {
+        if self.form_round != round {
+            return Step::Done;
+        }
+        self.form_saving = false;
+        match secret {
+            Ok((kept, secret))
+                if !secret.password.is_empty()
+                    && self.account_root.store().get(&account.id) == Some(&account) =>
+            {
+                self.calendar_baseline = Some((Some(account.clone()), kept));
+                let tester = std::sync::Arc::clone(&self.account_tester);
+                let (sender, receiver) = crate::channel::sync_channel(1);
+                let _ = crate::device_read::thread(
+                    "settings-calendar-discovery",
+                    Box::new(move || {
+                        let _ = sender.send(tester.discover_calendars(&account, &secret));
+                    }),
+                );
+                self.form_probe = Some(ProbeJob::new(receiver));
+            }
+            Ok(_) => self.form_error = Some(t("accounts-calendar-details-changed")),
+            Err(error) => self.form_error = Some(error),
+        }
+        self.changed = true;
+        Step::Done
     }
 
     pub(super) fn calendar_choice_rows(&self) -> Vec<LiveRow> {

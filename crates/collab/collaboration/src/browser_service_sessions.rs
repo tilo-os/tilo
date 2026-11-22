@@ -117,6 +117,9 @@ impl Client {
         })
     }
 }
+/// What a request the session did not answer before its deadline is told.
+const UNANSWERED: &str = "This device did not answer in time. Try again.";
+
 pub struct Pending {
     busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
     received: Receiver<Result<BrowserServiceSessionReply, String>>,
@@ -132,7 +135,7 @@ impl Pending {
         let result = match self.received.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) if crate::time::now() < self.deadline => return None,
-            Err(_) => Err("This account could not be opened".into()),
+            Err(_) => Err(UNANSWERED.into()),
         };
         self.done = true;
         self.busy.store(false, std::sync::atomic::Ordering::Release);
@@ -146,7 +149,7 @@ impl Pending {
         let result = self
             .received
             .recv_timeout(left)
-            .unwrap_or_else(|_| Err("This account could not be opened".into()));
+            .unwrap_or_else(|_| Err(UNANSWERED.into()));
         self.done = true;
         self.busy.store(false, std::sync::atomic::Ordering::Release);
         result

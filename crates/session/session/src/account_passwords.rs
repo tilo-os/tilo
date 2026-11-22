@@ -25,7 +25,7 @@ use tilo_workspace_service::workspaces::account_logins::AccountLogin;
 
 /// Where what happens to the workspace's account passwords is logged: with the session's own
 /// account of what it did, which a session's log keeps.
-const LOG: &str = tilo_startup_metrics::ACCOUNT_PASSWORDS_TARGET;
+pub(crate) const LOG: &str = tilo_startup_metrics::ACCOUNT_PASSWORDS_TARGET;
 
 /// What an app is told when its ask is not one it may make.
 pub(crate) const REFUSED: &str = "This account's secret is not available to this app";
@@ -48,6 +48,7 @@ pub(crate) async fn answer(
     } else {
         "release"
     };
+    tracing::info!(target: LOG, app, asked, "an app asked for an account's password to be kept or released");
     let answered = answering(workspaces, workspace, app, by, command).await;
     if let Err(error) = &answered {
         tracing::warn!(target: LOG, app, asked, %error, "an account's password was not kept or released");

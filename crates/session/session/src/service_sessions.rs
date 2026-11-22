@@ -171,11 +171,15 @@ impl BrowserServiceSessionServices for ServiceSessions {
         let ready = |answer: Result<Reply, String>| -> ItemAnswering {
             Box::pin(std::future::ready(answer))
         };
+        let not_yet = |why: &str| -> ItemAnswering {
+            tracing::warn!(target: crate::account_passwords::LOG, app = context.app_id(), why, "an account's password was asked for before this device holds its workspaces");
+            ready(Err(crate::account_passwords::NO_VAULT_YET.into()))
+        };
         let Some(service) = self.service.service() else {
-            return ready(Err(crate::account_passwords::NO_VAULT_YET.into()));
+            return not_yet("its own workspace service is not open yet");
         };
         let Ok(tasks) = tilo_rt::try_app() else {
-            return ready(Err(crate::account_passwords::NO_VAULT_YET.into()));
+            return not_yet("the session's tasks are not running");
         };
         let workspaces = service.workspaces().clone();
         let workspace = context.workspace_id().to_owned();

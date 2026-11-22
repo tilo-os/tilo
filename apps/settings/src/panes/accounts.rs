@@ -2531,7 +2531,7 @@ impl AccountsPane {
     ) -> Result<accounts::Secret, String> {
         let mut secret = vault.get(&account.id).unwrap_or_default();
         if password.trim().is_empty()
-            && account.type_id.as_str() == accounts::email::TYPE_ID
+            && keeps_password_in_vault(account)
             && accounts::email::password_item(&account.config).is_some()
         {
             // Its password is the workspace's vault's, which signs it in as it stands.

@@ -351,6 +351,24 @@ fn published_error(error: &runtime_portal::NotAvailable) -> String {
     error.to_string()
 }
 
+/// What an app is told when the session did not answer for an account's password in time.
+const ACCOUNT_SECRET_UNANSWERED: &str = "This device did not answer in time. Try again.";
+
+/// What an app is told when the session did not answer `command`: an account's password kept or
+/// released is refused with the session's reason, which is written for the person; Browser's
+/// website sessions say only that the account did not open.
+fn service_session_refusal(
+    command: &runtime_collab::BrowserServiceSessionCommand,
+    error: runtime_portal::NotAvailable,
+) -> String {
+    tracing::warn!(%error, "the session refused a service-session request");
+    match error {
+        runtime_portal::NotAvailable::Refused(reason) if command.account_secret() => reason,
+        _ if command.account_secret() => ACCOUNT_SECRET_UNANSWERED.to_owned(),
+        _ => "This account could not be opened".to_owned(),
+    }
+}
+
 /// Have the connected transport's worker send the app's unsent settings
 /// writes ([`super::channel_settings`]). Without a connected transport they
 /// wait for the primary route, whose join sends them.
@@ -4270,10 +4288,18 @@ async fn drive_shovel(
                         route.channel.browser_service_session_command(&command),
                     )
                     .await
-                    .map_err(|_| "This account could not be opened".to_owned())
-                    .and_then(|result| {
-                        result.map_err(|_| "This account could not be opened".to_owned())
+                    .map_err(|_| {
+                        tracing::warn!(
+                            app = %spec.app_id,
+                            "the session did not answer a service-session request in time"
+                        );
+                        if command.account_secret() {
+                            ACCOUNT_SECRET_UNANSWERED.to_owned()
+                        } else {
+                            "This account could not be opened".to_owned()
+                        }
                     })
+                    .and_then(|result| result.map_err(|error| service_session_refusal(&command, error)))
                 } else {
                     Err("This account could not be opened".to_owned())
                 };

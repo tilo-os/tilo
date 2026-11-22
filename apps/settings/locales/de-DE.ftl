@@ -2068,6 +2068,7 @@ accounts-nextcloud-calendars = Kalender verbinden
 accounts-nextcloud-calendar-caption = Nutzt die bestehende Nextcloud-Anmeldung. Wähle die zu synchronisierenden Kalender und bestätige mit Speichern. Dateien und E-Mail bleiben unverändert.
 accounts-calendar-discover = Kalender suchen
 accounts-calendar-details-changed = Die Kontodaten wurden während der Suche geändert. Suche erneut nach Kalendern, um die neuen Angaben zu prüfen.
+accounts-no-session = Dieses Fenster ist nicht mit der Sitzung verbunden, daher kann das Passwort des Kontos nicht gelesen werden. Öffne die Einstellungen erneut.
 accounts-calendars-title = Kalender auswählen
 accounts-calendars-caption = Prüfe die zu verbindenden Kalender. Neue Einrichtungen wählen alle lesbaren Kalender aus; eine bestehende Auswahl bleibt erhalten. Nur ausgewählte Kalender werden synchronisiert. Nichts wird vor deiner Bestätigung gespeichert.
 accounts-calendar-select = Auswählen
