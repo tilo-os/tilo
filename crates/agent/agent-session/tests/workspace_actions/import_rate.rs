@@ -13,6 +13,11 @@
 //! one list the import is writing when it starts, never for a list begun
 //! between two of its pages: a listing takes about as long as one of the
 //! import's lists, where it took one list per page.
+//!
+//! What the import and the person's calls cost is counted on every run: the
+//! bytes each list reads and writes, late as early, and the lists that land
+//! while one listing reads. How fast they are is held to its floors by the
+//! throughput check, which runs the timed test alone.
 
 use super::api::ISSUER;
 use super::api_on_server::{api_on_server, approved_key, headers, json_of};
@@ -36,6 +41,37 @@ const CALL_CEILING: Duration = Duration::from_secs(10);
 /// middle: about one, the list it began beside. Waiting for a list at each of
 /// its pages took three to four.
 const LISTING_IN_LISTS: f64 = 1.75;
+
+/// The bytes this process read and wrote so far, as the kernel counts them.
+/// Each test runs in a process of its own.
+fn bytes_moved() -> u64 {
+    let counted = std::fs::read_to_string("/proc/self/io").unwrap();
+    let field = |name: &str| {
+        counted
+            .lines()
+            .find_map(|line| line.strip_prefix(name)?.trim().parse::<u64>().ok())
+            .unwrap()
+    };
+    field("rchar:").saturating_add(field("wchar:"))
+}
+
+/// One of the import's lists: how long it took, and the bytes the process
+/// moved meanwhile.
+#[derive(Clone, Copy, Debug)]
+struct List {
+    took: Duration,
+    moved: u64,
+}
+
+/// One of the person's calls: how many of the import's lists had landed when
+/// it began and when it answered, and how long it took.
+#[derive(Clone, Copy, Debug)]
+struct Call {
+    kind: &'static str,
+    began: usize,
+    answered: usize,
+    took: Duration,
+}
 
 /// One key's calls of the API, held by whoever makes them.
 #[derive(Clone)]
@@ -125,8 +161,9 @@ fn median(took: &mut [Duration]) -> Duration {
     took.get(took.len() / 2).copied().unwrap_or_default()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_import_keeps_its_pace_while_the_person_works_beside_it() {
+/// The import, each list of it waited for at most the hang bound, beside the
+/// person's calls.
+async fn import_beside_the_person() -> (Vec<List>, Vec<Call>) {
     if std::env::var_os("RUST_LOG").is_some() {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -181,24 +218,31 @@ async fn an_import_keeps_its_pace_while_the_person_works_beside_it() {
     let beside = {
         let (base, landed, done) = (base.clone(), Arc::clone(&landed), Arc::clone(&done));
         tokio::spawn(async move {
-            let mut calls: Vec<(usize, &'static str, Duration)> = Vec::new();
+            let mut calls: Vec<Call> = Vec::new();
             let mut made = 0;
+            let call = |kind, began, started: Instant| Call {
+                kind,
+                began,
+                answered: landed.load(Ordering::Acquire),
+                took: started.elapsed(),
+            };
             while !done.load(Ordering::Acquire) {
-                let at = landed.load(Ordering::Acquire);
-                let began = Instant::now();
-                person.list(&base).await;
-                calls.push((at, "ls", began.elapsed()));
-                let at = landed.load(Ordering::Acquire);
-                let began = Instant::now();
-                person
-                    .act(
+                let (at, started) = (landed.load(Ordering::Acquire), Instant::now());
+                tilo_test_env::within("the person's listing beside the import", person.list(&base))
+                    .await;
+                calls.push(call("ls", at, started));
+                let (at, started) = (landed.load(Ordering::Acquire), Instant::now());
+                tilo_test_env::within(
+                    "the person's own issue beside the import",
+                    person.act(
                         &base,
                         issues,
                         "create",
                         &json!({ "title": format!("The person's own {made}") }),
-                    )
-                    .await;
-                calls.push((at, "create", began.elapsed()));
+                    ),
+                )
+                .await;
+                calls.push(call("create", at, started));
                 made += 1;
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -208,11 +252,16 @@ async fn an_import_keeps_its_pace_while_the_person_works_beside_it() {
 
     let mut lists = Vec::with_capacity(LISTS);
     for list in 0..LISTS {
-        let began = Instant::now();
-        let answer = importer
-            .act(&base, issues, "create-many", &listed(list * LIST))
-            .await;
-        lists.push(began.elapsed());
+        let (began, before) = (Instant::now(), bytes_moved());
+        let answer = tilo_test_env::within(
+            format!("list {list} of the import"),
+            importer.act(&base, issues, "create-many", &listed(list * LIST)),
+        )
+        .await;
+        lists.push(List {
+            took: began.elapsed(),
+            moved: bytes_moved().saturating_sub(before),
+        });
         let made = answer["made"]
             .as_array()
             .or_else(|| answer["value"]["made"].as_array())
@@ -222,13 +271,67 @@ async fn an_import_keeps_its_pace_while_the_person_works_beside_it() {
     }
     done.store(true, Ordering::Release);
     let calls = beside.await.unwrap();
+    for list in &lists {
+        println!("a list of {LIST} issues: {list:?}");
+    }
+    for call in &calls {
+        println!("{call:?}");
+    }
+    assert!(
+        calls.len() >= 4,
+        "the person's calls ran beside the import: {calls:?}"
+    );
+    (lists, calls)
+}
 
+/// The middle of `counts`.
+fn middle(counts: &mut [u64]) -> u64 {
+    counts.sort_unstable();
+    counts.get(counts.len() / 2).copied().unwrap_or_default()
+}
+
+/// The later lists move about what the first did, into a tracker ten times
+/// as big, and a listing beside the import waits for the list it began
+/// beside, never for one list per page: at most the list under way and the
+/// next land while it reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_import_keeps_its_pace_while_the_person_works_beside_it() {
+    let (lists, calls) = Box::pin(import_beside_the_person()).await;
+    let moved =
+        |lists: &[List]| middle(&mut lists.iter().map(|list| list.moved).collect::<Vec<_>>());
+    let (first, last) = (moved(&lists[..LISTS / 2]), moved(&lists[LISTS / 2..]));
+    assert!(
+        last.saturating_mul(4) <= first.saturating_mul(5),
+        "the import's lists moved {last} bytes late, {first} early"
+    );
+    let mut landed_meanwhile: Vec<u64> = calls
+        .iter()
+        .filter(|call| call.kind == "ls" && call.began < LISTS)
+        .map(|call| u64::try_from(call.answered.saturating_sub(call.began)).unwrap())
+        .collect();
+    let meanwhile = middle(&mut landed_meanwhile);
+    assert!(
+        meanwhile <= 2,
+        "{meanwhile} of the import's lists landed while a listing beside it read, in the middle: \
+         {landed_meanwhile:?}"
+    );
+}
+
+/// The import lands at its floor, and the person's calls answer within a few
+/// of its lists, as fast late as early. Timed, so the throughput check runs it
+/// alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "timed: the throughput check runs it alone"]
+async fn an_import_lands_at_its_floor_while_the_person_works_beside_it() {
+    let (lists, calls) = Box::pin(import_beside_the_person()).await;
+    let mut lists: Vec<Duration> = lists.iter().map(|list| list.took).collect();
+    let calls: Vec<(usize, &str, Duration)> = calls
+        .iter()
+        .map(|call| (call.began, call.kind, call.took))
+        .collect();
     let took: Duration = lists.iter().sum();
     let rate = (LIST * LISTS) as f64 / took.as_secs_f64();
     println!("lists of {LIST} issues took {lists:?}: {rate:.0} issues a second");
-    for (at, call, took) in &calls {
-        println!("{call:>6} with {at:>2} lists landed: {took:?}");
-    }
     assert!(
         rate >= RATE_FLOOR,
         "{} issues landed at {rate:.0} a second, under {RATE_FLOOR}",
@@ -246,10 +349,6 @@ async fn an_import_keeps_its_pace_while_the_person_works_beside_it() {
 
     // Every call answered within a few lists' time, and the later half of the
     // import answered the person as fast as the first.
-    assert!(
-        calls.len() >= 4,
-        "the person's calls ran beside the import: {calls:?}"
-    );
     let slowest = calls.iter().map(|(_, _, took)| *took).max().unwrap();
     assert!(
         slowest <= CALL_CEILING,
@@ -263,7 +362,7 @@ async fn an_import_keeps_its_pace_while_the_person_works_beside_it() {
         .map(|(_, _, took)| *took)
         .collect();
     let listing = median(&mut listings);
-    let list = median(&mut lists.clone());
+    let list = median(&mut lists);
     assert!(
         listing.as_secs_f64() <= list.as_secs_f64() * LISTING_IN_LISTS,
         "a listing beside the import took {listing:?} in the middle, a list {list:?}: {listings:?}"

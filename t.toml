@@ -1499,15 +1499,17 @@ on = ["dispatch"]
 # `tilo-agent-session`'s `it` binary with `--run-ignored only`: the same binary, the same units and
 # the same nextest path as `test-x86_64`'s build of that package, so the compiler cache serves its
 # compiles instead of resolving a `cargo nextest -p` command's own graph and compiling them again.
-# It is a family of its own because the test is `#[ignore]`d, which the plain `test-x86_64` run
-# leaves out; `t test throughput` runs it, and `unify` makes the units the family build's.
+# It is a family of its own because its tests are `#[ignore]`d, which the plain `test-x86_64` run
+# leaves out: they are timed, so they run alone, the workspace's speed however full and an
+# import's floors beside a person's calls. `t test throughput` runs them, and `unify` makes the
+# units the family build's.
 [[cargo]]
 name = "throughput"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 requires = ["arch=x86_64"]
 wrapper = ["bash", "tools/ci/nextest.sh"]
-args = ["--locked", "--profile", "ci", "--tests", "--run-ignored", "only", "-E", "test(=workspace_actions::throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full)"]
+args = ["--locked", "--profile", "ci", "--tests", "--run-ignored", "only", "-E", "test(=workspace_actions::throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full) | test(=workspace_actions::import_rate::an_import_lands_at_its_floor_while_the_person_works_beside_it) | test(=workspace_actions::api_beside_import::an_import_into_another_app_never_slows_a_keys_listings)", "--test-threads", "1"]
 unify = "workspace-unify"
 packages = ["tilo-agent-session"]
 # The sizes it runs at are the ci profile's `throughput` setup step, not this family's environment:

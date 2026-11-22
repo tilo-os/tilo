@@ -4,6 +4,9 @@
 //! server as `tilo ls -w` asks it. The sheets are another app's writes: every listing answers at
 //! once, the last as fast as the first, and a folder of more files than a page holds lists whole,
 //! never "kept changing" for writes to Sheets.
+//!
+//! That every listing answers whole beside the writes is checked on every run; how fast it
+//! answers, by the throughput check, which runs the timed test alone.
 
 use super::api::ISSUER;
 use super::api_on_server::{api_on_server, approved_key};
@@ -54,11 +57,33 @@ async fn timed<T>(call: impl std::future::Future<Output = T>) -> (Duration, T) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_import_into_another_app_never_slows_a_keys_listings() {
+async fn a_keys_listings_answer_whole_beside_an_import_into_another_app() {
     Box::pin(beside_an_import()).await;
 }
 
-async fn beside_an_import() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "timed: the throughput check runs it alone"]
+async fn an_import_into_another_app_never_slows_a_keys_listings() {
+    let rounds = Box::pin(beside_an_import()).await;
+    for (round, took) in rounds.iter().enumerate() {
+        for (call, elapsed) in took {
+            assert!(
+                *elapsed < CALL_BUDGET,
+                "listing {call} in round {round} took {elapsed:?} beside the import"
+            );
+        }
+    }
+    let slowest = |took: &[(&str, Duration)]| took.iter().map(|(_, took)| *took).max().unwrap();
+    let (first, last) = (slowest(&rounds[1]), slowest(&rounds[ROUNDS - 1]));
+    assert!(
+        last <= first * 3 + Duration::from_millis(150),
+        "no listing grows slower than the ones before it: {first:?} early, {last:?} at the end"
+    );
+}
+
+/// The key's listings, round after round beside the import, each with how long it took. Every
+/// listing answers whole, and every round finds the import writing.
+async fn beside_an_import() -> Vec<Vec<(&'static str, Duration)>> {
     let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -130,7 +155,7 @@ async fn beside_an_import() {
     }
 
     // The key lists beside it.
-    let mut rounds: Vec<Vec<(&str, Duration)>> = Vec::with_capacity(ROUNDS);
+    let mut rounds: Vec<Vec<(&'static str, Duration)>> = Vec::with_capacity(ROUNDS);
     let mut during_rounds: Vec<usize> = Vec::with_capacity(ROUNDS);
     for round in 0..ROUNDS {
         let before = written.load(Ordering::Relaxed);
@@ -168,19 +193,5 @@ async fn beside_an_import() {
             "the import wrote nothing while round {round} listed: {during_rounds:?}"
         );
     }
-
-    for (round, took) in rounds.iter().enumerate() {
-        for (call, elapsed) in took {
-            assert!(
-                *elapsed < CALL_BUDGET,
-                "listing {call} in round {round} took {elapsed:?} beside the import"
-            );
-        }
-    }
-    let slowest = |took: &[(&str, Duration)]| took.iter().map(|(_, took)| *took).max().unwrap();
-    let (first, last) = (slowest(&rounds[1]), slowest(&rounds[ROUNDS - 1]));
-    assert!(
-        last <= first * 3 + Duration::from_millis(150),
-        "no listing grows slower than the ones before it: {first:?} early, {last:?} at the end"
-    );
+    rounds
 }
