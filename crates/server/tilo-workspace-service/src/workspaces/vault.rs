@@ -720,7 +720,7 @@ pub(crate) fn may_read_vault(
 mod tests {
 
     use super::*;
-    use crate::workspaces::fixtures::{governor, test_host_taking_part};
+    use crate::workspaces::fixtures::{governor, test_host};
 
     /// What this device keeps in the vault it reads back, opened under the document's keys,
     /// with a use written beside it; what it forgets is gone.
@@ -728,7 +728,7 @@ mod tests {
     async fn what_a_device_keeps_in_the_vault_it_reads_back() {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let server = test_host_taking_part(scratch.path(), &key, &cert).await;
+        let server = test_host(scratch.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Vault").await.unwrap().workspace;
 

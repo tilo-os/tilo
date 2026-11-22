@@ -25,7 +25,7 @@ use test_http::{Reply, Responder};
 use super::scripted::Linking;
 use super::*;
 use crate::workspaces::fixtures::TestHost;
-use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
+use crate::workspaces::tests::{governor, test_host};
 
 const ADA: WorkspaceId = WorkspaceId::from_u128(7);
 const KEY: &str = "sk-ada-wire-secret";

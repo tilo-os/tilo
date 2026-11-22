@@ -15,7 +15,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::super::tests::{admit_device, governed};
 use crate::workspaces::Workspaces;
-use crate::workspaces::fixtures::test_host_taking_part as test_host;
+use crate::workspaces::fixtures::test_host;
 use crate::workspaces::tests::governor;
 use collab_types::work_delegation::WorkDelegation;
 

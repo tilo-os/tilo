@@ -28,7 +28,7 @@ use super::turn_use_tests::on_turn;
 use super::vault_tests::{ask, files_holding};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnUse, UseAnswer};
-use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
+use crate::workspaces::tests::{governor, test_host};
 
 /// A made-up key: no service ever issued it, and it opens nothing.
 const KEY: &str = "made-up-key-for-tests-0123456789abcdef";

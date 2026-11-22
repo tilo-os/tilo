@@ -909,7 +909,7 @@ mod tests {
     use tilo_mail_session::InboxSeen;
 
     use super::testing::{Watched, keep, told};
-    use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
+    use crate::workspaces::tests::{governor, test_host};
 
     /// Two workspaces this host keeps, by their ids.
     async fn two(workspaces: &crate::workspaces::Workspaces) -> (String, String) {

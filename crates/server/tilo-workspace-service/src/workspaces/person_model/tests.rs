@@ -21,7 +21,7 @@ use agent_provider_config::protocol::{Content, Message, Role, StreamStatus, Tool
 use super::scripted::{Linking, Reply, ScriptedProvider};
 use super::*;
 use crate::workspaces::person_settings::save_provider_config;
-use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
+use crate::workspaces::tests::{governor, test_host};
 
 const ADA: WorkspaceId = WorkspaceId::from_u128(7);
 const BO: WorkspaceId = WorkspaceId::from_u128(9);

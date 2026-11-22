@@ -412,7 +412,7 @@ impl GovernedWorkspace {
     /// server holds as a member of the workspace's channels: members of a hosted workspace seal
     /// every write, so without that no one could open a call in any Chat
     /// somebody had written to.
-    async fn call_binding(
+    pub(super) async fn call_binding(
         &self,
         app: &str,
         record: &str,

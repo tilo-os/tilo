@@ -8,7 +8,7 @@ use chat::projection::ChatProjection as _;
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
-use crate::workspaces::fixtures::{governor, test_host, test_host_taking_part};
+use crate::workspaces::fixtures::{governor, test_host};
 use serde_json::Value;
 use tilo_action_policy::{Answer, KindSet, TreePath};
 use tilo_actions::MemberId;
@@ -77,7 +77,7 @@ pub(super) async fn bot_server_taking_part(
 ) -> crate::workspaces::fixtures::TestHost {
     let _ = AppCatalogue::native();
     crate::surfaces::decide_receipt(&state.join("surfaces"));
-    test_host_taking_part(state, key, cert).await
+    test_host(state, key, cert).await
 }
 
 /// A new member of `workspace` of their own person, admitted through its entry

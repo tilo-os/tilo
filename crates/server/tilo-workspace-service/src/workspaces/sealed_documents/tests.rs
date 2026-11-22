@@ -9,7 +9,7 @@ use super::super::Workspaces;
 use super::super::tests::governor_with;
 use super::fixtures::{SealingMember, governor_published, member_device};
 use super::*;
-use crate::workspaces::fixtures::test_host_taking_part;
+use crate::workspaces::fixtures::test_host;
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
 use tilo_server_protocol::WorkspaceId;
@@ -116,7 +116,7 @@ pub(super) async fn lounge() -> Lounge {
 async fn lounge_reading(capacity: usize) -> Lounge {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let server = test_host_taking_part(dir.path(), &key, &cert).await;
+    let server = test_host(dir.path(), &key, &cert).await;
     lounge_on(dir, server, key, cert, capacity).await
 }
 
@@ -771,7 +771,7 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
     const LOBBY: &str = "lobby";
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let server = test_host_taking_part(dir.path(), &key, &cert).await;
+    let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
@@ -863,7 +863,7 @@ async fn retained_once(
 async fn a_record_of_a_sealed_workspace_is_sealed_from_its_first_write() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let server = test_host_taking_part(dir.path(), &key, &cert).await;
+    let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
@@ -897,7 +897,7 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
     const NOTE: &str = "tab:0000000000000001";
     let dir = tempfile::tempdir().unwrap();
     let (key, ada) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let server = test_host_taking_part(dir.path(), &key, &ada).await;
+    let server = test_host(dir.path(), &key, &ada).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
@@ -977,7 +977,7 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
 async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let server = test_host_taking_part(dir.path(), &key, &cert).await;
+    let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (member_key, _) = member_device(&workspaces, &created.workspace, (&key, &cert), 3).await;
@@ -1665,7 +1665,7 @@ async fn a_page_reads_a_part_only_the_link_kept() {
         .await
         .part(&workspaces, &workspace, &older)
         .await;
-    let ((), message) = device.seal(&workspace, |doc| {
+    let ((), message) = device.founds(&workspace, |doc| {
         doc.put(ROOT, "title", "the device's older part").unwrap();
         doc.commit_edit("fixture", "title");
     });
@@ -1884,7 +1884,7 @@ async fn a_member_write_is_taken_in_while_the_disk_keeps_the_last() {
 async fn a_document_that_needs_keys_of_its_own_opens_its_group_for_a_read() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let server = test_host_taking_part(dir.path(), &key, &cert).await;
+    let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Demo").await.unwrap();
     let route = tilo_peer_state::document_frame::DocumentRoute {

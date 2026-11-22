@@ -16,7 +16,7 @@ use super::accounts_tests::asking;
 use tilo_server_protocol::WorkspaceId;
 
 use crate::workspaces::Workspaces;
-use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
+use crate::workspaces::tests::{governor, test_host};
 
 /// What an action answered.
 fn answered<T: serde::de::DeserializeOwned>(receipt: InvocationReceipt) -> T {

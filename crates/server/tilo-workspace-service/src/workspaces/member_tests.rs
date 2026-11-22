@@ -995,12 +995,8 @@ async fn a_copy_taking_in_its_kept_writes_lets_the_devices_other_work_run_meanwh
     // The serving device seals what it writes, as a device taking part in the workspace's key
     // groups does: a sealed write is what a copy keeps until its keys open it.
     let (serving_key, serving_cert) = governor();
-    let serving = super::super::fixtures::test_host_taking_part(
-        serving_state.path(),
-        &serving_key,
-        &serving_cert,
-    )
-    .await;
+    let serving =
+        super::super::fixtures::test_host(serving_state.path(), &serving_key, &serving_cert).await;
     let (serving, device, created, invitation) = invited(serving, &serving_cert, "Kept", 46).await;
     let workspace = created.workspace.clone();
     let member = member_service(member_state.path(), device).await;

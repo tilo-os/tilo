@@ -10,7 +10,7 @@ use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
     admit_view_reader, device_cert, entry_join, governor, governor_with, restricted_until,
-    signed_pre_admission, test_host, test_host_taking_part, test_host_with_grants,
+    signed_pre_admission, test_host, test_host_with_grants,
 };
 
 mod access_projection;
@@ -409,7 +409,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
             .await
             .err()
             .unwrap(),
-        "this host takes part in no channel of the source's workspace",
+        "source channel keys unavailable",
         "the authorized reader reaches the existing-key boundary without creating channel state"
     );
     assert_eq!(
@@ -576,7 +576,7 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
 
 #[cfg(feature = "agents")]
 #[tokio::test]
-async fn governor_application_authoring_survives_publication_tail_rollover() {
+async fn an_app_record_authored_here_survives_its_publication_tail_rolling_over() {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -653,7 +653,7 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
             .unwrap()
             .map(|(value, _)| value.as_u64()),
         Some(Some(1)),
-        "rollover must publish the new governor mutation into the retained source"
+        "rollover must publish the new change into the kept source"
     );
     server.shutdown().await;
 }
@@ -889,15 +889,11 @@ async fn assert_canonical_chat_preparation(
             .await
             .unwrap()
     );
-    let prepared = {
-        let current = workspaces.workspace(workspace).await.unwrap();
-        current
-            .lock()
-            .await
-            .peer()
-            .document("so.tilo.chat", "")
-            .expect("canonical Chat record exists")
-    };
+    let prepared = workspaces
+        .resource_document(workspace, "so.tilo.chat", "")
+        .await
+        .unwrap()
+        .expect("canonical Chat record exists");
     assert!(!prepared.is_empty());
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key);
@@ -910,7 +906,7 @@ async fn assert_canonical_chat_preparation(
     let retained = workspaces
         .resource_view_document(workspace_id, &caller, &source)
         .await
-        .expect("the already-owned governor primary has a signed retained source");
+        .expect("the already-owned primary has a signed kept source");
     let mut original = automerge::AutoCommit::load(&prepared).unwrap();
     let mut arrived = automerge::AutoCommit::load(&retained.bytes).unwrap();
     assert_eq!(arrived.get_heads(), original.get_heads());
@@ -927,19 +923,15 @@ async fn assert_canonical_chat_preparation(
             .await
             .unwrap()
     );
-    {
-        let current = workspaces.workspace(workspace).await.unwrap();
-        assert_eq!(
-            current
-                .lock()
-                .await
-                .peer()
-                .document("so.tilo.chat", "")
-                .unwrap(),
-            prepared,
-            "preparing again must preserve the actual original document"
-        );
-    }
+    assert_eq!(
+        workspaces
+            .resource_document(workspace, "so.tilo.chat", "")
+            .await
+            .unwrap()
+            .unwrap(),
+        prepared,
+        "preparing again must preserve the actual original document"
+    );
 }
 
 /// The workspace's copy of `record` of `app`, when it has one.
@@ -949,17 +941,19 @@ async fn workspace_resource(
     workspace: &str,
     (app, record): (&str, &str),
 ) -> Option<automerge::AutoCommit> {
-    let current = workspaces.workspace(workspace).await.unwrap();
-    let bytes = current.lock().await.peer().document(app, record);
+    let bytes = workspaces
+        .resource_document(workspace, app, record)
+        .await
+        .unwrap();
     bytes.map(|bytes| automerge::AutoCommit::load(&bytes).unwrap())
 }
 
-/// The governor starts a workspace record no app factory makes, such as the
+/// The host starts a workspace record no app factory makes, such as the
 /// shared desktop, then changes it in place: the record keeps its graph, an
 /// unchanged pass publishes nothing, and another certificate is refused.
 #[cfg(feature = "agents")]
 #[tokio::test]
-async fn governor_authors_a_workspace_record_no_factory_makes() {
+async fn the_host_authors_a_workspace_record_no_factory_makes() {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
     let scratch = tempfile::tempdir().unwrap();
@@ -1027,7 +1021,7 @@ async fn governor_authors_a_workspace_record_no_factory_makes() {
     clippy::too_many_lines,
     reason = "one authoring pass: granted, written, read back through the native view and the voice binding"
 )]
-async fn governor_application_authoring_preserves_native_view_and_voice_binding() {
+async fn an_authored_chat_keeps_its_native_view_and_voice_binding() {
     use chat::projection::ChatProjection as _;
 
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
@@ -1035,10 +1029,7 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
     let (key, cert) = governor();
     let server = test_host(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces();
-    let created = workspaces
-        .create("Native governor authoring")
-        .await
-        .unwrap();
+    let created = workspaces.create("Native host authoring").await.unwrap();
     let catalogue = tilo_agent_session::AppCatalogue::native();
     assert_unprepared_authoring_refused(workspaces, &created.workspace, &cert, &catalogue).await;
     workspaces
@@ -1135,26 +1126,27 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
     let retained = workspaces
         .resource_view_document(created.workspace_id, &caller, &source)
         .await
-        .expect("native replay accepts the actual governor-authored publication");
+        .expect("native replay accepts the actual publication the host authored");
     let mut doc = automerge::AutoCommit::load(&retained.bytes).unwrap();
     assert!(doc.get(ROOT, "preserved_native_marker").unwrap().is_some());
     let current = workspaces.workspace(&created.workspace).await.unwrap();
     let guard = current.lock().await;
     let binding = guard
-        .peer()
-        .media()
-        .resolve_media_binding("so.tilo.chat", "", &voice)
+        .call_binding("so.tilo.chat", "", &voice)
+        .await
         .expect("the same native source resolves through production voice admission");
     assert_eq!(binding.channel_id, voice);
+    drop(guard);
+    let committed = workspaces
+        .resource_document(&created.workspace, "so.tilo.chat", "")
+        .await
+        .unwrap()
+        .expect("the workspace reads its Chat");
     assert_eq!(
         doc.get_heads(),
-        guard
-            .peer()
-            .plaintext_complete_heads("so.tilo.chat", "")
-            .unwrap(),
-        "native view bytes and the governor's voice binding share the committed graph"
+        automerge::AutoCommit::load(&committed).unwrap().get_heads(),
+        "native view bytes and the voice binding share the committed graph"
     );
-    drop(guard);
     server.shutdown().await;
 }
 
@@ -1485,17 +1477,12 @@ impl AskedForKeys {
     }
 }
 
-/// security.md, "What a workspace host reads and originates": a host that runs
-/// no channel service takes part in no channel and holds no channel key, and
-/// keeps what the workspace's channels are made of like any other governance,
-/// for whoever takes part.
+/// A host keeps what the workspace's channels are made of like any other
+/// governance, for whoever takes part: a member's request for a channel's group
+/// is kept for the devices that link later.
 #[tokio::test]
-async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
+async fn a_host_keeps_what_its_members_send_for_a_channels_group() {
     let asked = a_member_asks_for_a_channel(DeviceCapabilities::member()).await;
-    assert!(
-        asked.workspaces.device_keys().is_none(),
-        "a host runs no channel service and holds no channel keys"
-    );
     assert!(
         asked.retains_the_request(),
         "the workspace retained the member's request for its channels"
@@ -1519,40 +1506,28 @@ async fn a_request_the_server_kept_is_not_kept_again_as_the_hosts() {
     asked.shut_down().await;
 }
 
-/// A decision does not wait for workspace in its workspace owner's queue. With
-/// the owner stalled on the workspace's first change and more changes behind it
-/// than its queue holds, every decision still settles and answers, and a
-/// pre-admission still takes the workspace; once the owner moves, every change
-/// is retained, in the order the workspace published them.
+/// Every decision is kept when it is answered, and what it published is carried
+/// on the workspace's link in the order the workspace published it: a host that
+/// stops right after the last answer starts with all of them, and a
+/// pre-admission among them takes the workspace as it stands.
 #[tokio::test]
-async fn decisions_settle_while_their_workspace_owner_is_stalled() {
+async fn every_decision_is_kept_and_carried_once_it_is_answered() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Public").await.unwrap();
-    let records = workspaces.inner.records.clone();
-    // The creation's own changes are retained before the owner stalls.
-    records.retained(created.workspace_id).unwrap();
-    let root = dir
-        .path()
-        .join("workspaces")
-        .join(created.workspace_id.to_string());
-    let (release, reached) = crate::workspace_files::test_barrier::install(&root, "state-persist");
-    // Each name is one governance change: more than the owner queues.
+    // Each name is one governance change.
     for index in 0..48 {
         tilo_test_env::within(
-            format!("rename {index} while the owner is stalled"),
+            format!("rename {index}"),
             workspaces.rename(&created.workspace, &format!("Public {index}")),
         )
         .await
         .unwrap();
     }
-    tilo_test_env::within("the owner stalls on the first change", reached)
-        .await
-        .unwrap();
     tilo_test_env::within(
-        "a pre-admission while the owner is stalled",
+        "a pre-admission among the renames",
         workspaces.pre_admit(
             &cert,
             PreAdmitRequest {
@@ -1565,36 +1540,33 @@ async fn decisions_settle_while_their_workspace_owner_is_stalled() {
     )
     .await
     .unwrap();
-    drop(release);
-    // Every change is kept once the owner moves.
-    let retained = records.retained(created.workspace_id).unwrap();
-    let published: Vec<Vec<u8>> = {
+    {
         let governed = workspaces.workspace(&created.workspace).await.unwrap();
         let governed = governed.lock().await;
-        governed
-            .record
-            .outgoing
-            .iter()
-            .filter(|publication| !publication.checkpoint)
-            .map(|publication| publication.bytes.to_vec())
-            .collect()
-    };
-    assert!(
-        published.len() >= 48,
-        "{} changes published",
-        published.len()
-    );
-    let host = cert.device_public_key;
-    let mut bodies = retained
-        .iter()
-        .filter(|body| body.author == host)
-        .map(|body| &body.body);
-    for change in &published {
         assert!(
-            bodies.any(|body| body == change),
-            "a published change is retained, after the ones published before it"
+            governed.record.outgoing.len() >= 48,
+            "{} changes published",
+            governed.record.outgoing.len()
+        );
+        assert_eq!(
+            governed.record.published,
+            governed.record.outgoing.len(),
+            "every change the workspace published is carried on its link once answered"
         );
     }
+    server.shutdown().await;
+
+    let server = test_host(dir.path(), &key, &cert).await;
+    assert_eq!(
+        server
+            .workspaces()
+            .summary(&created.workspace)
+            .await
+            .unwrap()
+            .name,
+        "Public 47",
+        "the host starts again with every decision it answered"
+    );
     server.shutdown().await;
 }
 
@@ -2085,26 +2057,18 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
 
     let (c, c_cert) = guest_device();
     entry_join(&workspaces, &cert, &workspace, (&c, &c_cert), 21).await;
-    // What a device joining now replays: every frame the device store serves of the
-    // workspace from its first, the history a newcomer's link catches up from.
-    let mut replayed = Vec::new();
-    let mut cursors = Vec::new();
-    loop {
-        let round = workspaces
-            .inner
-            .store
-            .replay(
-                created.workspace_id,
-                &cursors,
-                tilo_peer_state::store::Budget::default(),
-            )
-            .unwrap();
-        tilo_peer_state::store::advance(&mut cursors, &round.frames);
-        replayed.extend(round.frames);
-        if !round.more {
-            break;
-        }
-    }
+    // What a device joining now is sent: a workspace's history reaches a device
+    // over its link, whose holder sends the workspace and a signed checkpoint of
+    // each of its records, as the link's catch-up builds them.
+    let replayed = {
+        let governed = workspaces.workspace(&workspace).await.unwrap();
+        let governed = governed.lock().await;
+        let mut holder = governed.peer().clone();
+        holder
+            .publication_mut()
+            .bootstrap_messages(&key, SystemTime::now())
+            .unwrap()
+    };
     assert!(
         !replayed.is_empty(),
         "a device joining the workspace is replayed the workspace"

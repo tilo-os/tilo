@@ -412,7 +412,10 @@ impl GroupKeys for TestGroupKeys {
     }
 }
 
-/// A certified host of `cert`'s device keeping its state under `state_root`.
+/// A certified host of `cert`'s device keeping its state under `state_root`,
+/// taking part in its workspaces' channels as every server that governs
+/// workspaces does: what its members seal it opens, and what it writes itself
+/// it seals.
 ///
 /// # Panics
 ///
@@ -433,25 +436,20 @@ pub async fn test_host_with_grants(
     cert: &DeviceCert,
     grants: Option<usize>,
 ) -> TestHost {
-    host_on(state_root, key, cert, None, grants).await
+    host_on(
+        state_root,
+        key,
+        cert,
+        DeviceKeyGroups {
+            keys: Arc::<TestGroupKeys>::default(),
+            sink: None,
+        },
+        grants,
+    )
+    .await
 }
 
-/// The same host, run on a device that takes part in its workspaces' channels,
-/// as a server whose device owns workspaces does: what its members seal it opens,
-/// and what it writes itself it seals.
-///
-/// # Panics
-///
-/// The endpoint cannot bind or the host cannot open.
-pub async fn test_host_taking_part(
-    state_root: &Path,
-    key: &SigningKey,
-    cert: &DeviceCert,
-) -> TestHost {
-    test_host_holding(state_root, key, cert, Arc::default()).await
-}
-
-/// [`test_host_taking_part`] whose device holds `keys`: the same keys open
+/// [`test_host`] whose device holds `keys`: the same keys open
 /// what a host before it on the same state sealed, as a device's channel
 /// service keeps its keys across a restart.
 ///
@@ -468,19 +466,19 @@ pub async fn test_host_holding(
         state_root,
         key,
         cert,
-        Some(DeviceKeyGroups { keys, sink: None }),
+        DeviceKeyGroups { keys, sink: None },
         None,
     )
     .await
 }
 
 /// `cert`'s device hosting under `state_root`, taking part in the workspaces'
-/// channels through `channels` when it is given.
+/// channels through `channels`.
 async fn host_on(
     state_root: &Path,
     key: &SigningKey,
     cert: &DeviceCert,
-    channels: Option<DeviceKeyGroups>,
+    channels: DeviceKeyGroups,
     grants: Option<usize>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -515,7 +513,7 @@ async fn host_on(
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
-        channels,
+        Some(channels),
     )
     .await
     .expect("the host opens");

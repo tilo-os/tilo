@@ -14,7 +14,7 @@ use tilo_actions::remote::person_accounts;
 
 use super::super::tests::{admit, caller, governed, settled};
 use super::accounts_tests::asking;
-use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
+use crate::workspaces::tests::{governor, test_host};
 
 /// What the judge of addresses says of a name it refuses.
 const INSIDE: &str = "answers with an address of this machine or its network";

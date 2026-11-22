@@ -24,8 +24,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
-use crate::workspaces::fixtures::test_host_holding;
-use crate::workspaces::fixtures::test_host_taking_part as test_host;
+use crate::workspaces::fixtures::{test_host, test_host_holding};
 use crate::workspaces::tests::{governor, guest_device};
 use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 

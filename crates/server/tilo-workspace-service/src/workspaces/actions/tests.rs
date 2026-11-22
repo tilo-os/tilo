@@ -21,9 +21,7 @@ use super::{
     ServiceWorkspaceActions, UNLIST, VERBS, WAIT_LIST,
 };
 use crate::app_serving::AppActionServer as _;
-use crate::workspaces::tests::{
-    governor, guest_device, signed_pre_admission, test_host_taking_part as test_host,
-};
+use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 

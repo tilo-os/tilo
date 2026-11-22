@@ -22,7 +22,7 @@ use super::super::ServiceWorkspaceActions as Served;
 use super::super::tests::{admit, caller, governed, settled};
 use crate::connections::ASKS_FIRST;
 use crate::connections::stand_in::StandIn;
-use crate::workspaces::fixtures::test_host_taking_part as start_serving;
+use crate::workspaces::fixtures::test_host as start_serving;
 use crate::workspaces::tests::governor;
 use crate::workspaces::{AsksPeople, PersonAnswer};
 

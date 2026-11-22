@@ -14,7 +14,7 @@ use tilo_actions::remote::{
 };
 
 use super::super::tests::{admit, caller, governed, settled};
-use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
+use crate::workspaces::tests::{governor, test_host};
 
 /// A request of one of the accounts actions, with `argument` when it has one.
 pub(super) fn asking(action: &str, argument: Value) -> InvokeRequest {

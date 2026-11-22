@@ -27,7 +27,7 @@ use tilo_actions::{ActionAddress, InvocationId};
 
 use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::person_settings::calendars::{self as held, fake_caldav};
-use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
+use crate::workspaces::tests::{governor, test_host};
 
 /// The password of the made-up account.
 const PASSWORD: &str = "a made-up password";

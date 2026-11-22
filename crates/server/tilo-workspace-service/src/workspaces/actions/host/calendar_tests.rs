@@ -40,7 +40,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use super::super::ServiceWorkspaceActions as HolderActions;
 use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::fixtures::TestHost as TestHolder;
-use crate::workspaces::fixtures::test_host_taking_part as test_holder;
+use crate::workspaces::fixtures::test_host as test_holder;
 use crate::workspaces::person_asking::Allowing;
 use crate::workspaces::person_settings::calendars::{self as held, fake_caldav};
 use crate::workspaces::tests::governor;
