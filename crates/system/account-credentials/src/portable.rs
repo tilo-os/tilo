@@ -285,8 +285,7 @@ pub fn import_password_sealed_accounts(
 }
 
 /// Authenticate the full artifact and exact selection before touching destination
-/// ownership. Intended for explicit private ownership roots, including staging roots;
-/// installed-user consumption must use [`adopt_installed_accounts`].
+/// ownership. Intended for explicit private ownership roots, including staging roots.
 /// Exact retries succeed; conflicting accounts are never overwritten.
 pub fn import_password_sealed_accounts_matching(
     root: &Path,
@@ -309,26 +308,6 @@ pub fn import_sealed_accounts(
     setup_binding: &[u8],
 ) -> Result<Vec<AccountId>, PortableError> {
     import_bundle(root, &open_bundle(sealed, key, setup_binding)?)
-}
-
-/// Adopt into the current installed user's canonical configuration root only.
-/// Neither root nor a privileged process impersonating the target may consume
-/// credentials. Run this after entering the destination user's login context.
-/// The caller must authenticate the supplied binding and expected IDs.
-#[cfg(unix)]
-pub fn adopt_installed_accounts(
-    artifact: &PasswordSealedAccounts,
-    password: &[u8],
-    target: &PortableBinding,
-    expected: &[AccountId],
-) -> Result<Vec<AccountId>, PortableError> {
-    let real = rustix::process::getuid().as_raw();
-    let effective = rustix::process::geteuid().as_raw();
-    if real == 0 || real != target.uid || effective != target.uid {
-        return Err(PortableError::WrongUser);
-    }
-    let root = accounts::config_root().ok_or(PortableError::StorageUnavailable)?;
-    import_password_sealed_accounts_matching(&root, artifact, password, target.as_bytes(), expected)
 }
 
 fn load_store(root: &Path) -> Result<AccountStore, PortableError> {
@@ -483,8 +462,6 @@ impl PasswordSealedAccounts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
-    use tilo_test_env::SpawnUnderEnvLock as _;
     const PASSWORD: &[u8] = b"a long transport password";
 
     fn source(root: &Path) -> AccountId {
@@ -717,201 +694,5 @@ mod tests {
             );
             assert!(!to.exists());
         }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn installed_adoption_succeeds_as_private_target_user() {
-        use std::os::unix::{fs::PermissionsExt, process::CommandExt};
-
-        const PAYLOAD: &str = "TILO_ACCOUNT_ADOPTION_TEST_PAYLOAD";
-        if let Some(payload) = std::env::var_os(PAYLOAD) {
-            check_installed_adoption(Path::new(&payload));
-        } else {
-            let temp = tempfile::tempdir().unwrap();
-            let from = temp.path().join("from");
-            let id = source(&from);
-            let real = rustix::process::getuid().as_raw();
-            if real == 0 {
-                // Root in a capability-less job sandbox cannot give the
-                // fixture to the target user or become it. Require the
-                // capability where it exists (the micro-VM check sets
-                // TILO_REQUIRE_CHOWN=1) and skip with that reason elsewhere.
-                tilo_test_env::require_capability!(
-                    Chown,
-                    tilo_test_env::switch_identity(65534),
-                    "the adoption fixture gives its files to the target user and becomes it"
-                );
-            }
-            let uid = if real == 0 { 65534 } else { real };
-            let gid = if real == 0 {
-                65534
-            } else {
-                rustix::process::getgid().as_raw()
-            };
-            let target = PortableBinding::new("operation", "disk", "person", uid).unwrap();
-            let artifact = seal_selected_accounts_with_password(
-                &from,
-                std::slice::from_ref(&id),
-                PASSWORD,
-                target.as_bytes(),
-            )
-            .unwrap();
-            let home = temp.path().join("home");
-            let config = home.join("config");
-            std::fs::create_dir_all(&config).unwrap();
-            let artifact_path = temp.path().join("artifact");
-            let binding_path = temp.path().join("binding.json");
-            let expected_path = temp.path().join("expected.json");
-            std::fs::write(&artifact_path, artifact.as_bytes()).unwrap();
-            std::fs::write(&binding_path, target.as_bytes()).unwrap();
-            std::fs::write(&expected_path, serde_json::to_vec(&vec![id]).unwrap()).unwrap();
-            // The private parent must also be traversable by the dropped uid.
-            // Only this test's directories and transport inputs change owner;
-            // the source vault remains in the producing process's ownership.
-            for path in [
-                temp.path(),
-                &home,
-                &config,
-                &artifact_path,
-                &binding_path,
-                &expected_path,
-            ] {
-                if real == 0 {
-                    std::os::unix::fs::chown(path, Some(uid), Some(gid)).unwrap();
-                }
-                let mode = if path.is_dir() { 0o700 } else { 0o600 };
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
-            }
-            // Bound the child so a wedged fixture fails the job instead of
-            // stalling it; timeout exits 124 and the status check below fails.
-            let mut child = std::process::Command::new("timeout");
-            child
-                .args(["--kill-after=5", "60"])
-                .arg(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "portable::tests::installed_adoption_succeeds_as_private_target_user",
-                    "--nocapture",
-                ])
-                .env(PAYLOAD, temp.path())
-                .env("HOME", &home)
-                .env("XDG_CONFIG_HOME", &config);
-            if real == 0 {
-                // The runner's TMPDIR ancestors may be root-private. Pass our
-                // directory through stdin so the child can traverse its own
-                // private inputs without granting access to those ancestors.
-                let child_root = Path::new("/dev/fd/0");
-                child
-                    .stdin(std::fs::File::open(temp.path()).unwrap())
-                    .env(PAYLOAD, child_root)
-                    .env("HOME", child_root.join("home"))
-                    .env("XDG_CONFIG_HOME", child_root.join("home/config"));
-                // CommandExt changes both real and effective identities before
-                // exec, rather than impersonating the user with only an euid.
-                child.gid(gid).uid(uid);
-            }
-            let output = child.output_locked().unwrap();
-            assert!(
-                output.status.success(),
-                "installed adoption helper failed: {}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            // An incorrectly filtered helper would otherwise exit successfully
-            // after executing zero tests.
-            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
-        }
-    }
-
-    #[cfg(unix)]
-    fn check_installed_adoption(payload: &Path) {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
-        let (domain, operation, disk, user, uid): (String, String, String, String, u32) =
-            serde_json::from_slice(&std::fs::read(payload.join("binding.json")).unwrap()).unwrap();
-        assert_eq!(domain, "tilo-account-target/v1");
-        assert_ne!(uid, 0);
-        assert_eq!(rustix::process::getuid().as_raw(), uid);
-        assert_eq!(rustix::process::geteuid().as_raw(), uid);
-        let target = PortableBinding::new(&operation, &disk, &user, uid).unwrap();
-        let expected: Vec<AccountId> =
-            serde_json::from_slice(&std::fs::read(payload.join("expected.json")).unwrap()).unwrap();
-        let artifact =
-            PasswordSealedAccounts::from_bytes(&std::fs::read(payload.join("artifact")).unwrap())
-                .unwrap();
-        let home = payload.join("home");
-        let config = home.join("config");
-        for path in [payload, &home, &config] {
-            let metadata = std::fs::metadata(path).unwrap();
-            assert_eq!(metadata.uid(), uid);
-            assert_eq!(metadata.gid(), rustix::process::getgid().as_raw());
-            assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
-        }
-        let root = config.join("tilo");
-        assert_eq!(accounts::config_root().unwrap(), root);
-        for wrong in [
-            PortableBinding::new("wrong-operation", &disk, &user, uid).unwrap(),
-            PortableBinding::new(&operation, "wrong-disk", &user, uid).unwrap(),
-            PortableBinding::new(&operation, &disk, "wrong-user", uid).unwrap(),
-        ] {
-            assert_eq!(
-                adopt_installed_accounts(&artifact, PASSWORD, &wrong, &expected),
-                Err(PortableError::CredentialUnavailable)
-            );
-            assert_eq!(std::fs::read_dir(&config).unwrap().count(), 0);
-        }
-        assert_eq!(
-            adopt_installed_accounts(&artifact, PASSWORD, &target, &[AccountId::new("other")]),
-            Err(PortableError::InvalidConfiguration)
-        );
-        assert!(!root.exists());
-        assert_eq!(
-            adopt_installed_accounts(&artifact, PASSWORD, &target, &expected).unwrap(),
-            expected
-        );
-        let key_path = accounts::vault_dir_in(&root).join("vault.key");
-        let key = std::fs::read(&key_path).unwrap();
-        let metadata = std::fs::read(accounts::store_path_in(&root)).unwrap();
-        assert_eq!(
-            adopt_installed_accounts(&artifact, PASSWORD, &target, &expected).unwrap(),
-            expected
-        );
-        assert_eq!(std::fs::read(&key_path).unwrap(), key);
-        assert_eq!(
-            std::fs::read(accounts::store_path_in(&root)).unwrap(),
-            metadata
-        );
-        let store = AccountStore::load_in(&root);
-        assert_eq!(store.len(), 1);
-        assert!(store.get(&expected[0]).unwrap().owner.is_none());
-        let vault = SecretVault::open_read_only_in(&root);
-        assert!(vault.recovery_error().is_none());
-        assert_eq!(
-            vault.get(&expected[0]).unwrap(),
-            Secret::password("private account password")
-        );
-        assert!(vault.get(&AccountId::new("not-chosen")).is_none());
-        assert_eq!(
-            std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        for path in [key_path, accounts::store_path_in(&root)] {
-            assert_eq!(std::fs::metadata(path).unwrap().uid(), uid);
-        }
-        assert!(!home.join(".config").exists());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn installed_adoption_refuses_foreign_uid_before_authentication() {
-        let foreign = rustix::process::getuid().as_raw().saturating_add(1).max(1);
-        let target = PortableBinding::new("operation", "target", "person", foreign).unwrap();
-        // Deliberately invalid artifact: identity refusal must precede decoding
-        // and cannot create either metadata or a vault.
-        assert_eq!(
-            adopt_installed_accounts(&PasswordSealedAccounts(Vec::new()), PASSWORD, &target, &[]),
-            Err(PortableError::WrongUser)
-        );
     }
 }

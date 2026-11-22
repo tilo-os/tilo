@@ -65,7 +65,7 @@ mod spotify_identity;
 #[cfg(feature = "store")]
 pub mod storage;
 #[cfg(feature = "store")]
-pub use spotify_identity::{SpotifyIdentity, with_verified_spotify_access_token};
+pub use spotify_identity::SpotifyIdentity;
 
 pub use clients::{COPILOT_TOKEN_ENDPOINT, ClientEntry, ClientTable, Scopes};
 #[cfg(feature = "store")]
