@@ -550,7 +550,16 @@ fn validate_member_change(change: &tilo_action_policy::Change) -> Result<(), Str
         | Change::SetRole { person, .. }
         | Change::SetMemberRoles { person, .. }
         | Change::SetMemberCustomRole { person, .. }
-        | Change::TransferOwnership { person } => person,
+        | Change::TransferOwnership { person }
+        | Change::AddAgent {
+            for_person: person, ..
+        } => {
+            if let Change::AddAgent { agent, .. } = change {
+                valid_agent_id(agent)?;
+            }
+            person
+        }
+        Change::RemoveAgent { agent } => return valid_agent_id(agent),
         Change::Grant(grant) if grant.id.as_str().trim().is_empty() => {
             return Err("a grant needs an id".into());
         }

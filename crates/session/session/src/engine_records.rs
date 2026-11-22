@@ -156,6 +156,11 @@ impl EngineRecords {
         self.0.read_documents(None);
     }
 
+    /// The workspaces' copy, once the session holds one.
+    pub(crate) fn engine(&self) -> Option<Arc<Engine>> {
+        self.0.engine.borrow().clone()
+    }
+
     /// Whether the workspaces' copy is here and holds `workspace`: where a record kept in it is
     /// written and read.
     pub(crate) fn holds(&self, workspace: &str) -> bool {
