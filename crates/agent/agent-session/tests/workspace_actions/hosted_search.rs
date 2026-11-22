@@ -153,6 +153,10 @@ macro_rules! service {
 #[path = "hosted_step_timing.rs"]
 mod step_timing;
 
+/// The note of a step holds no tool back.
+#[path = "hosted_step_notes.rs"]
+mod step_notes;
+
 impl Served {
     /// A server with `count` workspaces on it, Ada's page open on each.
     async fn start(count: usize) -> Self {
@@ -1103,6 +1107,91 @@ async fn a_find_reads_no_folder_document_and_no_file_once_the_folder_is_indexed(
             assert_eq!(file_read, 0, "a settled find reads no file");
         }
     }
+    page.peer.close();
+}
+
+/// A hosted turn's tools reach a tilolang app built into its server: Chat's record is listed
+/// through the package the server runs it from, a message is read by its words, and an action of
+/// Chat's on it is carried out as the agent, on its person's behalf.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_lists_reads_and_changes_a_tl_app_through_its_package() {
+    let mut served = Served::start(1).await;
+    let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
+    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
+    let her_agent = on_a_turn(
+        &ada,
+        SCOUT,
+        (&conversation_with(&served.ada, SCOUT), &said),
+        Vec::new(),
+    );
+    // What Chat publishes is listed under the app, through the record's own package.
+    let (listed, failed) = served
+        .tool(
+            &workspace,
+            &her_agent,
+            "tilo_ls",
+            serde_json::json!({"path": "chat"}),
+        )
+        .await;
+    assert!(!failed, "Chat is listed: {listed}");
+    assert!(
+        listed.contains("tl.so.tilo.chat"),
+        "the listing names Chat's resources: {listed}"
+    );
+    // The search names her message by the path the tools take, as it names any resource.
+    let (found, failed) = served
+        .tool(
+            &workspace,
+            &her_agent,
+            "tilo_find",
+            serde_json::json!({"query": "heron"}),
+        )
+        .await;
+    assert!(!failed, "her message is found: {found}");
+    let path = found
+        .lines()
+        .find(|line| line.contains("tl.so.tilo.chat"))
+        .and_then(|line| line.split("  ").next())
+        .expect("her message is found by its words")
+        .to_owned();
+    // Her message reads by the words she said.
+    let (read, failed) = served
+        .tool(
+            &workspace,
+            &her_agent,
+            "tilo_read",
+            serde_json::json!({"path": path.clone()}),
+        )
+        .await;
+    assert!(!failed, "the message reads: {read}");
+    assert!(read.contains("heron"), "the message's words: {read}");
+    assert!(!read.contains("true"), "it is not pinned yet: {read}");
+    // Chat's own action on it is carried out as her agent, on her behalf.
+    let (pinned, failed) = served
+        .tool(
+            &workspace,
+            &her_agent,
+            "tilo_do",
+            serde_json::json!({
+                "path": format!("{path}#pin"),
+                "args": {"pinned": true},
+            }),
+        )
+        .await;
+    assert!(!failed, "Chat's pin runs: {pinned}");
+    let (read, failed) = served
+        .tool(
+            &workspace,
+            &her_agent,
+            "tilo_read",
+            serde_json::json!({"path": path.clone()}),
+        )
+        .await;
+    assert!(!failed, "the message reads again: {read}");
+    assert!(
+        read.contains("true"),
+        "the message is pinned, as it was written: {read}"
+    );
     page.peer.close();
 }
 

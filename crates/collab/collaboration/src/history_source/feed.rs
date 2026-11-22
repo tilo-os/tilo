@@ -12,7 +12,7 @@
 //! What is kept is bounded ([`KEPT`]), and lives as long as the host keeps the log: a cursor from
 //! before a restart, or one whose changes were let go of, reads on from now.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::remote::{ChangePage, ResourceChanged};
@@ -34,6 +34,10 @@ pub struct ChangeLog {
     epoch: String,
     /// Each record's revision and heads when last read.
     seen: HashMap<DocumentKey, ([u8; 32], Vec<ChangeHash>)>,
+    /// Each record kept in a resource store, by the versions of it already taken in: each by
+    /// its change and the resource it is a version of. A change reaching this host late is
+    /// still news, wherever it falls in the record's order.
+    versions_seen: HashMap<DocumentKey, HashSet<(String, String)>>,
     /// The changes kept, each with its sequence number, oldest first.
     kept: VecDeque<(u64, ResourceChanged)>,
     /// The sequence number of the last change taken in.
@@ -54,6 +58,7 @@ impl ChangeLog {
         Self {
             epoch: uuid::Uuid::new_v4().simple().to_string(),
             seen: HashMap::new(),
+            versions_seen: HashMap::new(),
             kept: VecDeque::new(),
             last: 0,
             primed: false,
@@ -100,6 +105,41 @@ impl ChangeLog {
             self.seen.insert(route.clone(), (now, heads));
         }
         self.primed = true;
+    }
+
+    /// Take in `record`, kept in a resource store, as its `versions` stand now: each as the
+    /// record's history lists it, oldest first, with its `change` and its `resource`. A
+    /// version not yet committed names no change, and is taken in once it does. Call it before
+    /// [`Self::take_in`], which ends the first look.
+    pub fn take_in_versions(&mut self, record: &DocumentKey, versions: Vec<serde_json::Value>) {
+        let primed = self.primed;
+        let known = self.versions_seen.contains_key(record);
+        let mut news = Vec::new();
+        let seen = self.versions_seen.entry(record.clone()).or_default();
+        for entry in versions {
+            let key = |name: &str| {
+                entry
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            let (change, resource) = (key("change"), key("resource"));
+            if change.is_empty() || !seen.insert((change, resource)) {
+                continue;
+            }
+            // A record that arrived after the first look is news whole.
+            if known || primed {
+                news.push(entry);
+            }
+        }
+        for entry in news {
+            self.keep(ResourceChanged {
+                app: record.0.clone(),
+                record: record.1.clone(),
+                entry,
+            });
+        }
     }
 
     fn keep(&mut self, change: ResourceChanged) {
@@ -238,5 +278,50 @@ mod tests {
         let page = restarted.page(Some(&log.page(None, None).cursor), None);
         assert!(page.changes.is_empty());
         assert!(page.cursor.starts_with(&restarted.epoch));
+    }
+
+    /// A version of a record kept in a resource store, as its history lists it.
+    fn version(change: &str, resource: &str) -> serde_json::Value {
+        serde_json::json!({ "change": change, "resource": resource })
+    }
+
+    #[test]
+    fn a_store_record_tells_each_version_once_late_ones_too() {
+        let mut log = ChangeLog::new();
+        let chat = route("chat");
+        log.take_in_versions(&chat, vec![version("a", "m1")]);
+        log.take_in(&[], |_| None, |_| None, &crate::history_source::TestWords);
+        // What the record held when the follower started is no news.
+        let start = log.page(None, None);
+        assert!(start.changes.is_empty());
+
+        // A version made later, one that reached this host late though made before it, and one
+        // not committed yet.
+        let now = vec![
+            version("a", "m1"),
+            version("late", "m2"),
+            version("b", "m1"),
+            version("", "m3"),
+        ];
+        log.take_in_versions(&chat, now.clone());
+        let page = log.page(Some(&start.cursor), None);
+        let changes: Vec<&str> = page
+            .changes
+            .iter()
+            .map(|change| change.entry["change"].as_str().unwrap())
+            .collect();
+        assert_eq!(changes, ["late", "b"], "{page:?}");
+
+        // Taken in again, nothing is news; the committed version is, once it names its change.
+        log.take_in_versions(&chat, now);
+        log.take_in_versions(&chat, vec![version("c", "m3")]);
+        let page = log.page(Some(&page.cursor), None);
+        assert_eq!(page.changes.len(), 1, "{page:?}");
+        assert_eq!(page.changes[0].entry["change"], "c");
+
+        // A store record that arrives after the first look is news whole.
+        log.take_in_versions(&route("tasks"), vec![version("t", "task1")]);
+        let page = log.page(Some(&page.cursor), None);
+        assert_eq!(page.changes.len(), 1, "{page:?}");
     }
 }

@@ -235,6 +235,43 @@ async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
     host.shutdown().await;
 }
 
+/// An agent's answer to an ask is taken under the ask's own lease, and only by a device the
+/// workspace lets open the ask: never on the word of the engine asking.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ask_is_taken_under_its_own_lease_by_a_device_that_opens_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let ask = |app: &str| Turn::Ask {
+        app: app.to_owned(),
+        ask: "root-asks/ask-1".to_owned(),
+    };
+
+    let elsewhere = "a workspace this device does not hold";
+    let refused = takes_turn(workspaces, elsewhere, &ask("so.tilo.agent")).await;
+    assert_eq!(
+        refused.err(),
+        Some(NotTaken::Ineligible(Ineligible::CannotOpen)),
+        "a device that cannot open the ask does not take it"
+    );
+
+    let claim = takes_turn(workspaces, &workspace, &ask("so.tilo.agent"))
+        .await
+        .unwrap();
+    assert_eq!(
+        workspaces
+            .lease_holder(&workspace, "ask/root-asks/ask-1")
+            .await
+            .unwrap(),
+        Some(cert.device_public_key),
+        "the ask's lease is named by the ask alone"
+    );
+    claim.release().await;
+    host.shutdown().await;
+}
+
 /// A member device asks the host to take a turn over the device action
 /// service: the host claims it, answers that it runs, and the device follows it
 /// to the output; asked again, it answers the same run. A device the workspace

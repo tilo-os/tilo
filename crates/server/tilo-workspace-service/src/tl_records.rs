@@ -332,6 +332,59 @@ impl Opened {
             .collect()
     }
 
+    /// Every version of the record's resources, oldest first, each as its history lists it
+    /// ([`tilolang_tilo::resource_service::version_entry`]). A version of a resource not every
+    /// member may read names the members who may as `readers`, the way a change only some
+    /// members read is listed, so that what passes it on tells it to them alone: the store's
+    /// versions as a feed of the workspace's changes reads them.
+    ///
+    /// # Errors
+    /// The store did not read a resource's versions.
+    pub fn changes(&self) -> Result<Vec<Json>, String> {
+        let planner = self.planner(None);
+        let trees = Publications::new(&self.host).everything(&self.host, &planner);
+        let mut versions = Vec::new();
+        for tree in &trees {
+            let app = tilolang_tilo::publish::app_of(tree.id.as_str())
+                .unwrap_or(&self.app)
+                .to_owned();
+            versions.extend(
+                tilolang_tilo::resource_service::versions(&self.host, tree)?
+                    .into_iter()
+                    .map(|version| (app.clone(), version)),
+            );
+        }
+        versions.sort_by(|(_, a), (_, b)| a.order().cmp(&b.order()));
+        let everyone = self.host.runtime().members().len();
+        let store = self.host.store();
+        Ok(versions
+            .into_iter()
+            .map(|(app, version)| {
+                let mut entry =
+                    tilolang_tilo::resource_service::version_entry(&self.host, &app, &version);
+                let readers = store
+                    .type_of_id(&version.resource)
+                    .and_then(|ty| ResourceRef::parse_id(&version.resource, ty))
+                    .map(|at| self.readers(&at));
+                if let Some(readers) = readers.filter(|readers| readers.len() < everyone)
+                    && let Some(fields) = entry.as_object_mut()
+                {
+                    let named: Vec<Json> = readers
+                        .iter()
+                        .filter_map(|who| match who {
+                            Actor::Member(member) => {
+                                Some(Json::String(tilo_actions::contract::reader_name(member)))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    fields.insert("readers".to_owned(), Json::Array(named));
+                }
+                entry
+            })
+            .collect())
+    }
+
     /// Mark what is invoked from here on as a run of the Shortcut `shortcut` (an event, a
     /// reminder) acting for its person: each change it makes is a step of that run, so what
     /// reads the workspace's changes knows its own output by it rather than by who it acted as.
@@ -705,6 +758,25 @@ fn tree_item(host: &Host, item: &str, reader: &Actor, depth: usize) -> Result<Js
     Ok(answer)
 }
 
+/// One published action of a tilolang record of a workspace, as a host applies it: the app, who
+/// reads and invokes it, the action and its arguments, and whether it only reads.
+pub struct RecordCall<'a> {
+    /// The record's app, as its package and its resources name it.
+    pub app: &'a str,
+    /// The person the action's reads answer, and as whom it is written.
+    pub viewer: Actor,
+    /// Who invokes it, as the API admitted the caller.
+    pub invoker: &'a ActionInvoker,
+    /// The run the invocation is a step of, as the host stamps it on what it changes.
+    pub context: &'a ActionContext,
+    /// The action's address in the resource's vocabulary, its resource resolved.
+    pub address: &'a ActionAddress,
+    /// Its arguments, as the action API binds them.
+    pub arguments: &'a Map<String, Json>,
+    /// Whether it reads the record rather than changing it: nothing it wrote on the way is kept.
+    pub read: bool,
+}
+
 impl crate::workspaces::Workspaces {
     /// `app`'s record of `workspace`, as this device's workspace service holds it, its commands
     /// waiting on the reactor this is called on.
@@ -735,6 +807,110 @@ impl crate::workspaces::Workspaces {
         route: &tilo_peer_state::document_frame::DocumentRoute,
         person: &str,
     ) -> Option<Arc<[ui::search::index_publication::IndexEntry]>> {
+        let opened = self.opened_to_read(workspace, route, person)?;
+        Some(tilolang_tilo::search::entries(opened.host()).into())
+    }
+
+    /// What `route`'s record of `workspace` publishes, each action in the row of the resource
+    /// holding it, read as `person` reads it through its app's built-in package: what a caller
+    /// is offered of a tilolang app no catalogue holds and no `.tapp` installs. `None` for an app
+    /// this build runs no package of, or a record that does not open. Nothing is written.
+    pub fn record_rows(
+        &self,
+        workspace: &str,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+        person: &str,
+    ) -> Option<Vec<CatalogueRow>> {
+        Some(self.opened_to_read(workspace, route, person)?.rows())
+    }
+
+    /// Apply `call`, a published action of an app's record of `workspace`, through the app's
+    /// built-in package. A read answers the core read as the person the caller acts for reads
+    /// it, from a record that takes no write. A write reaches the workspace's store as it is
+    /// made ([`Self::record_command`]), stamped with the caller as its invoker: whether they may
+    /// was decided under their grants by the host that admitted the call.
+    ///
+    /// # Errors
+    /// This build carries no package of the app, the record does not open, the action is
+    /// unknown, refused or fails, or the workspace refused what it wrote.
+    pub async fn apply_record_action(
+        &self,
+        workspace: &str,
+        call: RecordCall<'_>,
+    ) -> Result<ActionOutput, ApiError> {
+        let RecordCall {
+            app,
+            viewer,
+            invoker,
+            context,
+            address,
+            arguments,
+            read,
+        } = call;
+        let packages =
+            built_in(app)
+                .map_err(ApiError::Failed)?
+                .ok_or_else(|| ApiError::Unavailable {
+                    code: "runs_elsewhere".into(),
+                    reason: runs_elsewhere(app),
+                })?;
+        let record = if read {
+            self.record_to_read(workspace, app)
+        } else {
+            self.tl_record(workspace, app).map_err(ApiError::Failed)?
+        };
+        let policy = self.policy_of(workspace).await.map(Arc::new);
+        let (invoker, context) = (invoker.clone(), context.clone());
+        let (address, arguments) = (address.clone(), arguments.clone());
+        tokio::task::spawn_blocking(move || {
+            Opened::open(record.store(), &packages, viewer, policy)
+                .map_err(ApiError::Failed)?
+                .invoke_published(&address, &arguments, &invoker, &context)
+        })
+        .await
+        .map_err(|error| ApiError::Failed(error.to_string()))?
+    }
+
+    /// The changes of `route`'s record of `workspace`, each version of its resources as its
+    /// history lists it, read through its app's built-in package ([`Opened::changes`]). `None`
+    /// for an app this build runs no package of, or a record that does not read now. Nothing is
+    /// written.
+    pub fn record_changes(
+        &self,
+        workspace: &str,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+    ) -> Option<Vec<Json>> {
+        let owner = self.policy_now(workspace)?.owner?;
+        let opened = self.opened_to_read(workspace, route, &owner)?;
+        match opened.changes() {
+            Ok(changes) => Some(changes),
+            Err(error) => {
+                tracing::warn!(app = %route.app_id, %error, "a record's versions do not read");
+                None
+            }
+        }
+    }
+
+    /// `app`'s record of `workspace` to be read on this thread, waiting as a search does: it
+    /// takes no write.
+    fn record_to_read(&self, workspace: &str, app: &str) -> Record {
+        Record {
+            workspaces: self.clone(),
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+            runtime: None,
+        }
+    }
+
+    /// `route`'s record of `workspace` opened on this thread through its app's built-in package
+    /// as `person` reads it, taking no write. `None` for an app this build runs no package of,
+    /// or a record that does not open.
+    fn opened_to_read(
+        &self,
+        workspace: &str,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+        person: &str,
+    ) -> Option<Opened> {
         let packages = match built_in(&route.app_id) {
             Ok(packages) => packages?,
             Err(error) => {
@@ -742,22 +918,16 @@ impl crate::workspaces::Workspaces {
                 return None;
             }
         };
-        let record = Record {
-            workspaces: self.clone(),
-            workspace: workspace.to_owned(),
-            app: route.app_id.clone(),
-            runtime: None,
-        };
+        let record = self.record_to_read(workspace, &route.app_id);
         let viewer = Actor::Member(tilo_actions::MemberId::person(person.to_owned()));
         let policy = self.policy_now(workspace).map(Arc::new);
-        let opened = match Opened::open(record.store(), &packages, viewer, policy) {
-            Ok(opened) => opened,
+        match Opened::open(record.store(), &packages, viewer, policy) {
+            Ok(opened) => Some(opened),
             Err(error) => {
-                tracing::warn!(app = %route.app_id, %error, "a record search reads does not open");
-                return None;
+                tracing::warn!(app = %route.app_id, %error, "a record read does not open");
+                None
             }
-        };
-        Some(tilolang_tilo::search::entries(opened.host()).into())
+        }
     }
 
     /// Open `packages`' app's record of `workspace` for `viewer` and run `work` on it: what

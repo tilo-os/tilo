@@ -1,7 +1,7 @@
 //! The asks of a workspace's tilolang records that the agents on this server answer, and the
 //! replies they write.
 //!
-//! An ask is the agent package's resource (`so.tilo.lang.agent`), read and written through
+//! An ask is the agent package's resource (`so.tilo.agent`), read and written through
 //! [`crate::asks`]: a mention of a hosted agent in a Chat message asks it, and
 //! its answer is the ask's reply, which Chat shows under the message. This server is one of the
 //! workspace's devices: it answers an ask only where [`crate::work::takes_turn`] gives it the

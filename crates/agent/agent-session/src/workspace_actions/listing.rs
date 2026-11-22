@@ -183,6 +183,11 @@ impl Worker {
         // An app this device has only a package of is listed from the surface
         // its package carries, paged the way a mounted resource's own listing is.
         if self.catalogue.get(&route.app_id).is_none() {
+            // A record whose app this host runs from its own package is listed
+            // from what it publishes, read through that package.
+            if let Some(rows) = self.package_page(workspace_id, bounded, route, query, window) {
+                return rows;
+            }
             let rows = self
                 .packaged_descriptors(workspace_id, bounded, route)?
                 .into_iter()

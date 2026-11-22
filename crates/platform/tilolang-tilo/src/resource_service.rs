@@ -714,18 +714,23 @@ pub fn history(
     let listed: Vec<Json> = versions
         .into_iter()
         .skip(total.saturating_sub(last))
-        .map(|(app, version)| {
-            let published = resource_id(&app, &version.resource);
-            let label = history_label(host, &version.resource);
-            let mut entry = serde_json::to_value(&version).unwrap_or_default();
-            if let Some(entry) = entry.as_object_mut() {
-                entry.insert("resource".to_owned(), Json::String(published));
-                entry.insert("label".to_owned(), Json::String(label));
-            }
-            entry
-        })
+        .map(|(app, version)| version_entry(host, &app, &version))
         .collect();
     Ok(serde_json::json!({ "versions": listed, "total": total }))
+}
+
+/// `version`, of a resource of `app` that `host` reads, as its history lists it: the version,
+/// its resource by the id it is published under, and the label the app's history calls it by.
+#[must_use]
+pub fn version_entry(host: &Host, app: &str, version: &Version) -> Json {
+    let published = resource_id(app, &version.resource);
+    let label = history_label(host, &version.resource);
+    let mut entry = serde_json::to_value(version).unwrap_or_default();
+    if let Some(entry) = entry.as_object_mut() {
+        entry.insert("resource".to_owned(), Json::String(published));
+        entry.insert("label".to_owned(), Json::String(label));
+    }
+    entry
 }
 
 /// What the app's history calls the resource `id` (as [`ResourceRef::id_string`] writes it): an

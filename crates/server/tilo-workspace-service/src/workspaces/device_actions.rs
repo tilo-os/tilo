@@ -430,15 +430,16 @@ impl super::Workspaces {
         .await
     }
 
-    /// Whether `device` may open the record `job` is about in `workspace` now.
-    pub(crate) async fn opens_job_record(
+    /// Whether `device` may open `resource` of `app` in `workspace` now: the record a turn of
+    /// work is about.
+    pub(crate) async fn opens_record(
         &self,
         device: [u8; 32],
         workspace: &str,
-        job: &Job,
+        (app, resource): (&str, &str),
     ) -> bool {
         self.reads_peer(workspace, |peer| {
-            peer.opens_app_record(device, &job.app, &job.resource, tilo_clock::wall())
+            peer.opens_app_record(device, app, resource, tilo_clock::wall())
         })
         .await
     }

@@ -1041,13 +1041,33 @@ impl Worker {
             Some(cluster_id) => self.documents(Some(workspace_id), &state, &cluster_id),
             None => Vec::new(),
         };
-        let records: Vec<DocumentKey> = routes
-            .iter()
-            .map(|route| (route.app_id.clone(), route.document.clone()))
-            .collect();
         let cluster_id = state.workspace.clone().unwrap_or_default();
         let reads = state.reads.clone();
+        // A record whose app this host runs from its own package is kept in the workspace's
+        // resource store, and its changes are the store's versions of it, read where it is kept.
+        // A record this host runs no package of reads as this device's replica holds it.
+        let link = self.shared.link.get().cloned();
+        let mut stored: Vec<(DocumentKey, Vec<serde_json::Value>)> = Vec::new();
+        let mut records: Vec<DocumentKey> = Vec::new();
+        for route in &routes {
+            let key: DocumentKey = (route.app_id.clone(), route.document.clone());
+            let Some(link) = link
+                .as_ref()
+                .filter(|link| link.runs_package_record(workspace_id, route))
+            else {
+                records.push(key);
+                continue;
+            };
+            // A record this host cannot read now is listed once it can, whole, which is what a
+            // record that arrives after the first look is.
+            if let Some(versions) = link.package_record_changes(workspace_id, route) {
+                stored.push((key, versions));
+            }
+        }
         let log = &mut self.membership(workspace_id)?.changes;
+        for (record, versions) in stored {
+            log.take_in_versions(&record, versions);
+        }
         log.take_in(
             &records,
             |(app, record)| {

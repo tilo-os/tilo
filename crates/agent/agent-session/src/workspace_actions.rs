@@ -82,6 +82,7 @@ mod naming;
 mod opened;
 mod opened_file;
 mod outcome;
+mod package_record;
 mod packaged;
 mod pages;
 mod part_load;
@@ -108,8 +109,8 @@ pub use crate::worker::PersonRegion;
 pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
 pub use link::{
-    AskedInTurn, AsksInConversation, HostDevice, PackagedCall, ViewDocument, ViewReadPolicy,
-    WorkspaceDocumentsLink,
+    AskedInTurn, AsksInConversation, HostDevice, PackageRecordCall, PackagedCall, ViewDocument,
+    ViewReadPolicy, WorkspaceDocumentsLink,
 };
 pub use terminal::{
     Opened, Opening, Recorder, ShellRan, TERMINAL_APP, Watching, WorkspaceShell, person_of,
@@ -2121,6 +2122,11 @@ impl Worker {
         state: &WorkspaceState,
     ) -> Result<Vec<tilo_actions::ActionDescriptor>, String> {
         if self.catalogue.get(&route.app_id).is_none() {
+            // A record whose app this host runs from its own package is listed
+            // from what it publishes, read through that package.
+            if let Some(rows) = self.package_rows(workspace_id, bounded, route) {
+                return Ok(rows?.into_iter().filter_map(|row| row.action).collect());
+            }
             return self.packaged_descriptors(workspace_id, bounded, route);
         }
         if let Some(who) = bounded {
@@ -2261,6 +2267,14 @@ impl Worker {
                         .ok()
                         .flatten()
                         .is_some()
+                    // A record whose app this host runs from its own package is read where the
+                    // host keeps it, never from this replica: whether the replica can open it
+                    // now says nothing of what the host holds.
+                    || workspace_id.is_some_and(|workspace_id| {
+                        self.shared.link.get().is_some_and(|link| {
+                            link.runs_package_record(workspace_id, route)
+                        })
+                    })
             })
             .collect()
     }

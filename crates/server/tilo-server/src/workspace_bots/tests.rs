@@ -11,7 +11,7 @@
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
-use crate::workspaces::fixtures::{governor, test_host, test_host_taking_part};
+use crate::workspaces::fixtures::{governor, test_host_taking_part};
 use automerge::AutoCommit;
 use serde_json::Value;
 use tilo_action_policy::{Answer, KindSet, TreePath};
@@ -70,26 +70,14 @@ pub(super) fn owner_root() -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&[1; 32])
 }
 
-/// A server that decides what members and bots change against the surfaces
-/// of the apps it serves, as a workspace server does.
+/// A server that decides what members and bots change against the surfaces of the apps it
+/// serves, and takes part in its workspaces' channels, as a server that governs workspaces does.
 pub(super) async fn bot_server(
     state: &std::path::Path,
     key: &ed25519_dalek::SigningKey,
     cert: &DeviceCert,
 ) -> crate::workspaces::fixtures::TestHost {
     // The native apps name their surfaces as the host first runs them.
-    let _ = AppCatalogue::native();
-    crate::surfaces::decide_receipt(&state.join("surfaces"));
-    test_host(state, key, cert).await
-}
-
-/// The same host run on a device that takes part in its workspaces' channels,
-/// as a server whose device owns workspaces does.
-pub(super) async fn bot_server_taking_part(
-    state: &std::path::Path,
-    key: &ed25519_dalek::SigningKey,
-    cert: &DeviceCert,
-) -> crate::workspaces::fixtures::TestHost {
     let _ = AppCatalogue::native();
     crate::surfaces::decide_receipt(&state.join("surfaces"));
     test_host_taking_part(state, key, cert).await
@@ -1830,7 +1818,7 @@ async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_
     let (key, cert) = crate::workspaces::fixtures::governor_with(
         tilo_user_identity::DeviceCapabilities::member(),
     );
-    let server = bot_server_taking_part(scratch.path(), &key, &cert).await;
+    let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let bot = greeter();
@@ -2004,7 +1992,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     let (key, cert) = crate::workspaces::fixtures::governor_with(
         tilo_user_identity::DeviceCapabilities::member(),
     );
-    let server = bot_server_taking_part(scratch.path(), &key, &cert).await;
+    let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     // A guest takes part in the chat's record, under the keys its members seal it with.

@@ -79,7 +79,7 @@ pub(super) async fn person_with_an_assistant(
     scratch: &std::path::Path,
 ) -> (Workspaces, String, DeviceCert, impl Sized) {
     let (key, cert) = governor();
-    let holder = super::bot_server_taking_part(scratch, &key, &cert).await;
+    let holder = super::bot_server(scratch, &key, &cert).await;
     let workspaces = holder.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let owner = hex::encode(cert.user_public_key);

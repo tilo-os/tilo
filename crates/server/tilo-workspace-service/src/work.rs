@@ -97,12 +97,12 @@ pub enum Turn {
         /// What runs.
         job: Job,
     },
-    /// An agent's answer to an ask of it, by the ask's id in the record of the app `app` that
-    /// keeps it. The agent engine asks only for the agents this device runs.
+    /// An agent's answer to an ask of it: the ask's record, kept by the app `app`. Its lease is
+    /// the ask's id alone, which names it wherever it is read.
     Ask {
-        /// The app whose record keeps the ask.
+        /// The app whose record keeps the ask, which this device must be let open.
         app: String,
-        /// The ask.
+        /// The ask, by its record id.
         ask: String,
     },
 }
@@ -112,7 +112,7 @@ impl Turn {
     fn lease(&self) -> String {
         match self {
             Self::Invocation { id, .. } => format!("invocation/{}", id.0),
-            Self::Ask { app, ask } => format!("ask/{app}/{ask}"),
+            Self::Ask { ask, .. } => format!("ask/{ask}"),
         }
     }
 }
@@ -306,7 +306,10 @@ async fn eligibility(
                 return Err(Ineligible::AtCapacity);
             }
             let device = workspaces.serving_certificate().device_public_key;
-            if !workspaces.opens_job_record(device, workspace, job).await {
+            if !workspaces
+                .opens_record(device, workspace, (&job.app, &job.resource))
+                .await
+            {
                 return Err(Ineligible::CannotOpen);
             }
             if !workspaces.permits_job(*requester, workspace, job).await {
@@ -314,7 +317,13 @@ async fn eligibility(
             }
             Ok(())
         }
-        Turn::Ask { .. } => Ok(()),
+        Turn::Ask { app, ask } => {
+            let device = workspaces.serving_certificate().device_public_key;
+            if !workspaces.opens_record(device, workspace, (app, ask)).await {
+                return Err(Ineligible::CannotOpen);
+            }
+            Ok(())
+        }
     }
 }
 

@@ -351,7 +351,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
     use crate::workspaces::person_model::{Interaction, ProviderProtocol};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = super::bot_server_taking_part(scratch.path(), &key, &cert).await;
+    let server = super::bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let models = ScriptedProvider::answering([Reply::text("Looked.").costing(600_000)]);
@@ -760,8 +760,8 @@ async fn keeps_an_assistant(
 async fn what_the_assistant_and_its_server_did_themselves_is_not_news_to_a_look() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    // A server that takes its own count of what an agent spent.
-    let server = test_host(scratch.path(), &key, &cert).await;
+    // A server that takes its own count of what an agent spent, in the workspace it governs.
+    let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let person = hex::encode(cert.user_public_key);

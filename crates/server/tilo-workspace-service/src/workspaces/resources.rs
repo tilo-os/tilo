@@ -626,14 +626,16 @@ impl GovernedWorkspace {
         } else {
             self.workspace().to_owned()
         };
+        // A write that founds its document opens the group when it has none yet, as a record's
+        // first content does on every write path: the write lands sealed rather than failing.
+        let founding = !peer.holds_document(app, &write.doc);
         let keys = self
             .device
             .as_ref()
             .ok_or("this device holds no group keys")?
-            .group_keys(&group, &write.readers, isolated)
+            .group_keys(&group, &write.readers, isolated || founding)
             .await
             .ok_or("this device holds no keys of the document's readers yet")??;
-        let founding = !peer.holds_document(app, &write.doc);
         let bytes = if founding {
             if !write.change.deps().is_empty() {
                 return Err("the workspace has not opened this resource's signed history".into());

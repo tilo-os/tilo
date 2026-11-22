@@ -1,5 +1,5 @@
 //! Asks of agents and their replies, read and written through the agent package
-//! (`so.tilo.lang.agent`) on a tilolang record ([`crate::tl_records`]).
+//! (`so.tilo.agent`) on a tilolang record ([`crate::tl_records`]).
 //!
 //! An ask is a resource of the agent package, kept in the record of whichever app it was made
 //! in: a mention in a Chat message makes one in Chat's record, one in a note in Notes'. It is
@@ -32,7 +32,7 @@ pub use tilolang_tilo::runtime::{Actor, ResourceRef};
 pub use tilolang_tilo::runtime::rich::Reference;
 
 /// The agent package.
-pub const AGENT_APP: &str = "so.tilo.lang.agent";
+pub const AGENT_APP: &str = "so.tilo.agent";
 
 /// The agent package and tilolang Chat, which uses it: the record a mention in a conversation
 /// asks in.
