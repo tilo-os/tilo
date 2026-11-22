@@ -161,13 +161,8 @@ impl Command {
     }
 
     fn entry(&self) -> MenuEntry {
-        let run = self.press.runner();
-        let entry = if self.destructive {
-            MenuEntry::destructive(self.label.clone(), move || run())
-        } else {
-            MenuEntry::new(self.label.clone(), move || run())
-        }
-        .for_press(self.press.clone());
+        let entry = MenuEntry::bound(self.label.clone(), self.press.clone())
+            .with_destructive(self.destructive);
         let entry = match self.icon {
             Some(icon) => entry.with_icon(icon),
             None => entry,

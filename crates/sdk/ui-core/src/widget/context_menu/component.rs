@@ -1,7 +1,5 @@
 //! A menu's commands and the button that opens them as described components.
 
-use std::rc::Rc;
-
 use crate::component::{Component, Described, Event, OfferedAction, PartType, ResourceId, Source};
 use crate::icons::Icon;
 use crate::widget::{ButtonRole, MenuEntry, Press};
@@ -41,25 +39,13 @@ pub struct MenuItemProps {
 }
 
 impl MenuItemProps {
-    /// What choosing it does, taken out of the props: the action the view bound to it, or the
-    /// view's own event, and the command that does it.
-    fn take_run(&mut self) -> (Press, Rc<dyn Fn()>) {
-        let press = Press::of(std::mem::take(&mut self.choose));
-        let run = press.runner();
-        (press, run)
-    }
-
-    /// The command as a menu row.
+    /// The command as a menu row: choosing it presses the action the view bound to it, or
+    /// reports the view's own event.
     #[must_use]
     pub fn into_item(mut self) -> MenuItem {
-        let (press, run) = self.take_run();
+        let press = Press::of(std::mem::take(&mut self.choose));
         let props = self;
-        let item = if props.destructive {
-            MenuItem::destructive_action(props.label, move || run())
-        } else {
-            MenuItem::action(props.label, move || run())
-        }
-        .for_press(press);
+        let item = MenuItem::bound(props.label, press).with_destructive(props.destructive);
         let item = match props.icon {
             Some(icon) => item.with_icon(icon),
             None => item,
@@ -88,14 +74,9 @@ impl MenuItemProps {
     /// The command as an entry of a context menu.
     #[must_use]
     pub fn into_entry(mut self) -> MenuEntry {
-        let (press, run) = self.take_run();
+        let press = Press::of(std::mem::take(&mut self.choose));
         let props = self;
-        let entry = if props.destructive {
-            MenuEntry::destructive(props.label, move || run())
-        } else {
-            MenuEntry::new(props.label, move || run())
-        }
-        .for_press(press);
+        let entry = MenuEntry::bound(props.label, press).with_destructive(props.destructive);
         let entry = match props.icon {
             Some(icon) => entry.with_icon(icon),
             None => entry,

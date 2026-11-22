@@ -63,8 +63,6 @@ pub(crate) struct HeaderBar {
     presented: Presented,
     row: Row,
     menu: ContextMenu,
-    /// The History menu's rows, in menu order; `None` for a separator.
-    menu_commands: Vec<Option<ControlInvocation>>,
     history_button: Rect,
     requests: Requests,
     menu_requested: Rc<RefCell<bool>>,
@@ -96,20 +94,15 @@ impl HeaderBar {
             .find(|command| command.group == CommandGroup::Search);
 
         let mut menu = ContextMenu::new();
-        let mut menu_commands = Vec::new();
         let mut previous = None;
         for command in &history {
             if previous.is_some_and(|group| group != command.group) {
                 menu.push(MenuItem::separator());
-                menu_commands.push(None);
             }
             previous = Some(command.group);
-            menu.push(
-                MenuItem::selection(command.label.clone())
-                    .for_action(command.binding.address().clone())
-                    .with_enabled(command.enabled),
-            );
-            menu_commands.push(command.invocation());
+            let press =
+                crate::widget::Press::of(crate::component::Event::Action(command.binding.clone()));
+            menu.push(MenuItem::bound(command.label.clone(), press).with_enabled(command.enabled));
         }
 
         let open_menu = menu_requested.clone();
@@ -171,7 +164,6 @@ impl HeaderBar {
             presented: presented(title, commands),
             row,
             menu,
-            menu_commands,
             history_button: Rect::ZERO,
             requests,
             menu_requested,
@@ -248,12 +240,11 @@ impl HeaderBar {
         }
     }
 
+    /// Hand the host the command a chosen row pressed.
     fn drain_menu(&mut self) {
-        let chosen = self
-            .menu
-            .take_selection()
-            .and_then(|row| self.menu_commands.get(row).cloned().flatten());
-        if let Some(invocation) = chosen {
+        while let Some(invocation) =
+            crate::widget::controls::ActionControls::take_control_invocation(&mut self.menu)
+        {
             self.requests
                 .borrow_mut()
                 .push_back(HeaderRequest::Command(invocation));

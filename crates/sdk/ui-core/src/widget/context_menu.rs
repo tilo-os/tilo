@@ -142,6 +142,15 @@ impl MenuItem {
         }
     }
 
+    /// A row that presses what the view bound to it: the action it names runs through the
+    /// menu's ownership when it is chosen, as a control's own press does, and the open menu
+    /// publishes the row as that action. Every menu of the shell and the toolkit builds its
+    /// rows this way.
+    #[must_use]
+    pub fn bound(label: impl Into<String>, press: crate::widget::Press) -> Self {
+        Self::command(label.into(), std::rc::Rc::new(|| {})).for_press(press)
+    }
+
     pub fn action<F>(label: impl Into<String>, action: F) -> Self
     where
         F: Fn() + 'static,
@@ -1276,11 +1285,17 @@ impl ContextMenu {
             } if self.ask_row() == Some(idx) => self.ask_typed(),
             MenuItem::Action {
                 action,
+                press,
                 enabled: true,
                 ..
             } => {
-                let cb = action.clone();
-                cb();
+                // A bound row presses its action; a row built around a callback runs it.
+                if press.is_none() {
+                    let cb = action.clone();
+                    cb();
+                } else {
+                    press.clone().run();
+                }
                 if self.own_rows.is_none_or(|own| idx < own) {
                     self.selection = Some(idx);
                 }

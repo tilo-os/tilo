@@ -42,6 +42,19 @@ impl MenuEntry {
         }
     }
 
+    /// A command that presses what the view bound to it (`press`): the row runs the action
+    /// itself, and the menu names it as the row's binding.
+    #[must_use]
+    pub fn bound(label: impl Into<String>, press: crate::widget::Press) -> Self {
+        Self {
+            item: MenuItem::selection(label),
+            run: None,
+            press: crate::widget::Press::default(),
+            more: None,
+        }
+        .for_press(press)
+    }
+
     /// A command that takes something away, styled as such.
     pub fn destructive(label: impl Into<String>, run: impl Fn() + 'static) -> Self {
         Self {
@@ -157,7 +170,11 @@ impl MenuEntry {
                 {
                     *action = run;
                 }
-                item
+                if entry.press.is_none() {
+                    item
+                } else {
+                    item.for_press(entry.press)
+                }
             })
             .collect();
         let mut row = MenuItem::submenu(label, members);
@@ -452,7 +469,9 @@ impl ContextMenuArea {
     /// that.
     pub fn open_over(&mut self, anchor: Rect, at_pointer: Option<Point>) -> bool {
         let entries = (self.entries)(self.content.as_ref(), at_pointer);
-        let offered = entries.iter().any(|entry| entry.run.is_some());
+        let offered = entries
+            .iter()
+            .any(|entry| entry.run.is_some() || !entry.press.is_none());
         let mut menu = ContextMenu::new();
         self.runs.clear();
         self.presses.clear();
