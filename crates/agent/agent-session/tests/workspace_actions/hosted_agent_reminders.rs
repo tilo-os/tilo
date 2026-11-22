@@ -635,7 +635,7 @@ impl Killed {
 /// what its model answers is taken, and nothing is owed for it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn after_a_kill_a_start_asks_its_model_for_an_ended_turn_at_most_once() {
-    let killed = Killed::as_an_answer_ended().await;
+    let killed = Box::pin(Killed::as_an_answer_ended()).await;
     let up = Up::on(&killed.root, &killed.device, killed.state.path()).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = up.agents(Some(waits(
@@ -663,7 +663,7 @@ async fn after_a_kill_a_start_asks_its_model_for_an_ended_turn_at_most_once() {
 /// and nothing is owed that would say any of it a second time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_server_killed_as_an_answer_ended_starts_with_the_answer_ended_and_owes_no_turn() {
-    let killed = Killed::as_an_answer_ended().await;
+    let killed = Box::pin(Killed::as_an_answer_ended()).await;
     let up = Up::on(&killed.root, &killed.device, killed.state.path()).await;
     let all = asks_now(&up.workspaces, &killed.workspace, &killed.person).await;
     assert_eq!(all.len(), 1, "their ask, nothing else: {all:?}");
