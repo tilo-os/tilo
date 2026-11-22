@@ -44,8 +44,8 @@ fn field(doc: &[u8], name: &str) -> Option<String> {
     value.into_string().ok()
 }
 
-/// Wait until `done` holds of `sync`'s store.
-async fn until(sync: &PersonalSync, done: impl Fn(&PersonalStore) -> bool + Sync) {
+/// Wait until `done` holds of `sync`'s store: what it waits for is `what`.
+async fn until(sync: &PersonalSync, what: &str, done: impl Fn(&PersonalStore) -> bool + Sync) {
     let mut changes = sync.changes();
     tokio::time::timeout(Duration::from_secs(30), async {
         while !sync.read(&done) {
@@ -53,7 +53,7 @@ async fn until(sync: &PersonalSync, done: impl Fn(&PersonalStore) -> bool + Sync
         }
     })
     .await
-    .expect("the stores converge");
+    .unwrap_or_else(|_| panic!("waited 30 s for {what}"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -87,7 +87,10 @@ async fn two_devices_of_one_person_converge_on_their_own_documents() {
     });
 
     // B catches up from A, then reads the record A wrote.
-    until(&b, |store| store.holds_document(APP, RECORD)).await;
+    until(&b, "B to take in A's record", |store| {
+        store.holds_document(APP, RECORD)
+    })
+    .await;
     let read = b.store().document(APP, RECORD).unwrap();
     assert_eq!(field(&read, "theme").as_deref(), Some("dark"));
     assert_eq!(b.store().rows(), a.store().rows());
@@ -95,7 +98,7 @@ async fn two_devices_of_one_person_converge_on_their_own_documents() {
     // B writes; A converges to it live.
     b.publish(|store, key, now| store.publish(APP, RECORD, &change("accent", "blue"), key, now))
         .unwrap();
-    until(&a, |store| {
+    until(&a, "A to take in B's accent", |store| {
         store
             .document(APP, RECORD)
             .is_some_and(|doc| field(&doc, "accent").is_some())
@@ -226,7 +229,7 @@ async fn an_apps_record_written_on_one_device_is_read_on_another() {
         let a_addr = addr(&a_endpoint);
         async move { b.connect(&b_endpoint, a_addr).await }
     });
-    until(&b, |store| {
+    until(&b, "the phone to hold the app's record", |store| {
         store.holds_document(NOTES, route.document.as_deref().unwrap())
     })
     .await;
@@ -254,7 +257,7 @@ async fn an_apps_record_written_on_one_device_is_read_on_another() {
         )
     })
     .unwrap();
-    until(&a, |store| {
+    until(&a, "the laptop to read the phone's chapter", |store| {
         store
             .document(NOTES, route.document.as_deref().unwrap())
             .is_some_and(|doc| field(&doc, "chapter").as_deref() == Some("four"))
@@ -380,8 +383,11 @@ async fn a_refused_write_reaches_its_author_over_the_link_and_the_next_one() {
 
     // B catches up on the record, and A holds B's certificate.
     let meeting = Meeting::of(&a, &a_key, &b, &b_key).await;
-    until(&b, |store| store.holds_document(APP, RECORD)).await;
-    until(&a, |store| {
+    until(&b, "B to take in A's record", |store| {
+        store.holds_document(APP, RECORD)
+    })
+    .await;
+    until(&a, "A to hold B's certificate", |store| {
         store
             .devices()
             .iter()
@@ -414,7 +420,10 @@ async fn a_refused_write_reaches_its_author_over_the_link_and_the_next_one() {
     // B links again: A's record takes none of the write, A files its verdict,
     // and B hears it on the stream that carried the write.
     let meeting = Meeting::of(&a, &a_key, &b, &b_key).await;
-    until(&b, |store| !store.write_refusals().is_empty()).await;
+    until(&b, "B to hear A refuse its write", |store| {
+        !store.write_refusals().is_empty()
+    })
+    .await;
     let heard = b.store().write_refusals();
     assert_eq!(heard.len(), 1, "one verdict, one author: {heard:?}");
     assert_eq!(heard[0].by, a_key.verifying_key().to_bytes());
@@ -449,7 +458,7 @@ async fn a_refused_write_reaches_its_author_over_the_link_and_the_next_one() {
 
     // The next link teaches B from what A kept: no live receipt was needed.
     let meeting = Meeting::of(&a, &a_key, &b, &b_key).await;
-    until(&b, |store| {
+    until(&b, "B to hear A's kept refusal on the next link", |store| {
         store
             .write_refusals()
             .iter()
@@ -538,7 +547,7 @@ async fn a_device_answer_kept_on_one_device_answers_there_and_is_revoked_from_an
     let linked = Linked::up(&a, &a_key, &b, &b_key).await;
 
     let answers = collab_types::person_document_id(tilo_peer_state::DEVICE_ANSWERS_KIND);
-    until(&b, |store| {
+    until(&b, "B to hold the answer A kept", |store| {
         store.holds_document("so.tilo.identity", &answers)
     })
     .await;
@@ -558,7 +567,7 @@ async fn a_device_answer_kept_on_one_device_answers_there_and_is_revoked_from_an
         on_b.revoke(&seen[0].answer.device, RECORDER, DeviceCap::Camera)
             .unwrap()
     );
-    until(&a, |store| {
+    until(&a, "A to see the answer B took back", |store| {
         store
             .document("so.tilo.identity", &answers)
             .is_some_and(|doc| AutoCommit::load(&doc).unwrap().keys(ROOT).count() == 0)

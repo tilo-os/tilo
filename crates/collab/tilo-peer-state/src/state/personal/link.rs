@@ -278,12 +278,18 @@ impl PersonalSync {
         // below its sequence, and the rest follow it.
         let live = self.0.outgoing.subscribe();
         let changes = self.0.changed.subscribe();
+        // What this device hands a sibling it already holds a certificate of
+        // is its store as the link found it, taken before anything the
+        // sibling says is admitted: a write made while the two were apart
+        // reaches the sibling, which decides it, even when the sibling's
+        // first word is that this device was taken away.
+        let documents = self.documents_for(remote)?;
         let send = connection
             .open_uni()
             .await
             .map_err(|error| error.to_string())?;
         let receiving = self.receive_all(remote, connection);
-        let sending = self.send_to(send, remote, live, changes);
+        let sending = self.send_to(send, remote, documents, live, changes);
         tokio::select! {
             result = receiving => result,
             result = sending => result,
@@ -292,14 +298,16 @@ impl PersonalSync {
 
     /// Say who this device is, and nothing of the person's documents until
     /// the store holds a certificate that makes `remote` one of their
-    /// devices: one it held when the link started, or the one `remote` shows
-    /// on it. Its catch-up follows then, on this link, and after it every
-    /// write published while it stays one of them.
+    /// devices: one it held when the link started, whose catch-up is
+    /// `documents`, or the one `remote` shows on it. Its catch-up follows
+    /// then, on this link, and after it every write published while it stays
+    /// one of them.
     #[cfg(not(target_arch = "wasm32"))]
     async fn send_to<W: tokio::io::AsyncWrite + Unpin>(
         &self,
         mut send: W,
         remote: [u8; 32],
+        documents: Option<Vec<NeighbourMsg>>,
         mut live: broadcast::Receiver<NeighbourMsg>,
         mut changes: watch::Receiver<u64>,
     ) -> Result<(), String> {
@@ -312,7 +320,11 @@ impl PersonalSync {
         for message in &greeting {
             write_message(&mut send, message).await?;
         }
+        let mut documents = documents;
         let documents = loop {
+            if let Some(documents) = documents.take() {
+                break documents;
+            }
             if let Some(documents) = self.documents_for(remote)? {
                 break documents;
             }
@@ -645,7 +657,8 @@ mod tests {
             let a = a.clone();
             let remote = b_key.device_public_key();
             let changes = a.changes();
-            async move { a.send_to(sent, remote, live, changes).await }
+            let documents = a.documents_for(remote).unwrap();
+            async move { a.send_to(sent, remote, documents, live, changes).await }
         });
 
         let greeting = read_message(&mut frames).await.unwrap().unwrap();
