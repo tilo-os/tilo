@@ -19,7 +19,8 @@ use crate::engine::{Engine, Founder, ServiceAnswer};
 /// state, the keys of the workspaces' groups the test makes, and the reads and writes the
 /// session's roles make through it.
 pub(crate) struct TestService {
-    service: tilo_workspace_service::service::ServiceSlot,
+    /// The workspaces the service holds, once it opened.
+    workspaces: Box<dyn Fn() -> Option<tilo_workspace_service::workspaces::Workspaces>>,
     reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
     writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     keys: Arc<TestGroupKeys>,
@@ -29,11 +30,7 @@ impl TestService {
     /// The workspaces the service holds, as this device's own roles reach them.
     #[expect(clippy::expect_used, reason = "the fixture opened the service")]
     pub(crate) fn workspaces(&self) -> tilo_workspace_service::workspaces::Workspaces {
-        self.service
-            .service()
-            .expect("the device's own workspace service")
-            .workspaces()
-            .clone()
+        (self.workspaces)().expect("the device's own workspace service")
     }
 
     /// What reads the documents of the workspaces the service holds, as the session's roles read
@@ -101,12 +98,20 @@ pub(crate) fn serve(engine: &Arc<Engine>) -> TestService {
         }),
         |founder| Arc::new(OnRuntime(founder)),
     );
+    let reads = Arc::new(
+        tilo_workspace_service::apps::service_reads::ServiceDocuments::on(service.clone()),
+    );
+    let writes = Arc::new(
+        tilo_workspace_service::apps::service_writes::ServiceWrites::on(service.clone()),
+    );
     TestService {
-        service: service.clone(),
-        reads: Arc::new(
-            tilo_workspace_service::apps::service_reads::ServiceDocuments::on(service.clone()),
-        ),
-        writes: Arc::new(tilo_workspace_service::apps::service_writes::ServiceWrites::on(service)),
+        workspaces: Box::new(move || {
+            service
+                .service()
+                .map(|service| service.workspaces().clone())
+        }),
+        reads,
+        writes,
         keys,
     }
 }

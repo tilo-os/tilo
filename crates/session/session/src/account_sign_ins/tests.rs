@@ -6,7 +6,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion"
+    clippy::significant_drop_tightening,
+    reason = "in a test these are the assertion, and each test keeps its session to its end"
 )]
 
 use std::io::Write as _;
@@ -90,7 +91,7 @@ fn until_waiting(served: &Served, count: usize) {
     let started = Instant::now();
     while served.device.changes().waiting() != count {
         assert!(
-            started.elapsed() < sign_ins::LONGEST_WAIT / 5,
+            started.elapsed() < sign_ins::LONGEST_WAIT.checked_div(5).unwrap(),
             "the session holds {} asks open, not {count}",
             served.device.changes().waiting(),
         );

@@ -1358,6 +1358,22 @@ pub struct Entry {
     pub records: crate::platform::records::Changes,
 }
 
+/// The live session's relay role, when this device may serve one: one more protocol on the
+/// endpoint this session binds, among `beside`, and every protocol the endpoint serves then.
+#[cfg(target_os = "linux")]
+fn live_beside(
+    engine: Option<&Arc<Engine>>,
+    wake: &Arc<dyn Fn() + Send + Sync>,
+    beside: &mut tilo_network_actor::own_service::Protocols,
+) -> (Option<crate::live::Live>, Vec<Vec<u8>>) {
+    let mut live = engine.map(|engine| crate::live::Live::new(Arc::clone(engine), Arc::clone(wake)));
+    if let Some(live) = &mut live {
+        beside.extend(live.protocols());
+    }
+    let served = beside.iter().map(|(alpn, _)| alpn.clone()).collect();
+    (live, served)
+}
+
 impl Client {
     /// Take part in the peer network: bind this device's endpoint, start the peer actor,
     /// and from then on hear the workspaces the session joins. `beside` is what else this session
@@ -1405,22 +1421,13 @@ impl Client {
         let versions = crate::network::install(fabric.as_ref(), questions, &answering);
         // The channels' side of the peer network is the engine's, opened before the peer network starts.
         let link = engine.as_ref().and_then(|engine| engine.link());
-        let network_link = link.clone();
-        let enrolling = engine.clone();
+        let (network_link, enrolling) = (link.clone(), engine.clone());
         let device_actions = Arc::new(std::sync::OnceLock::new());
         let serving = Arc::clone(&device_actions);
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
         let binding = network::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
         let reached = binding.reached.clone();
-        // The live session's relay role, when this device may serve one, is one more protocol on the
-        // endpoint this session binds.
-        let mut live = engine
-            .as_ref()
-            .map(|engine| crate::live::Live::new(Arc::clone(engine), Arc::clone(&wake)));
-        if let Some(live) = &mut live {
-            beside.extend(live.protocols());
-        }
-        let served: Vec<Vec<u8>> = beside.iter().map(|(alpn, _)| alpn.clone()).collect();
+        let (mut live, served) = live_beside(engine.as_ref(), &wake, &mut beside);
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
             .spawn(move || {
