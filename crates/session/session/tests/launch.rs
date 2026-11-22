@@ -892,15 +892,20 @@ fn a_window_whose_held_tab_left_still_describes_its_controls() {
     // The held tab leaves the layout before the window maps.
     session.desktop().with_policy(|policy| {
         let mut tree = policy.handle().read(Clone::clone);
-        assert!(tree.close_tab(held).is_some(), "the held tab was on the shell");
+        assert!(
+            tree.close_tab(held).is_some(),
+            "the held tab was on the shell"
+        );
         policy.handle().replace_tree(tree);
     });
     session
         .desktop()
         .with_policy(|policy| policy.map(window_of(11, PROBE, pid)).unwrap());
-    until(&mut session, "the app's window is on the session", |session| {
-        groups(session) == vec![vec![PROBE_NAME.to_owned()]]
-    });
+    until(
+        &mut session,
+        "the app's window is on the session",
+        |session| groups(session) == vec![vec![PROBE_NAME.to_owned()]],
+    );
     let tab = session
         .desktop()
         .with_policy(|policy| policy.tab_of(11))

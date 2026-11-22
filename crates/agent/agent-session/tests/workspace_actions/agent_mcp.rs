@@ -513,12 +513,7 @@ impl Guest {
 pub(super) async fn agent_opens_sheets(server: &McpServer<SessionActions>, browser: &mut Browser) {
     let (opened, failed) = tool(server, "tilo_do", json!({"path": "sheets#open"})).await;
     assert!(!failed, "{opened}");
-    let (wrote, failed) = tool(
-        server,
-        "tilo_do",
-        json!({"path": "sheets#new-sheet"}),
-    )
-    .await;
+    let (wrote, failed) = tool(server, "tilo_do", json!({"path": "sheets#new-sheet"})).await;
     assert!(!failed, "{wrote}");
     let notes = server
         .acted()

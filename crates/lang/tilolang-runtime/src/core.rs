@@ -455,34 +455,41 @@ impl Core {
 }
 
 impl Core {
+    // One arm per group of the host's imports: the table is read as what the ABI offers, so it
+    // is kept whole rather than split into functions named after the table's groups.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the ABI's import table, one arm per group it offers"
+    )]
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
             Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen,
             ActUndo, Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
             BytesLength, CallFn, ChangeView, CollCount, CollCounted, CollEmpty, CollInsert,
-            CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace,
-            CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DateShow, DayParse,
-            DayPart, DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef,
-            DurationText, Earlier, EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs,
-            EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FileAt,
-            FileFiles, FileOfBytes, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit,
-            Filters, Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
-            FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef,
-            Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop,
-            InvocationPush, Invoke, Invoker, IsError, MadeFrom, IsSome, JsonDecode, JsonEncode, JsonParse,
-            Keep, Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf,
-            ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
-            ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew,
-            MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup,
-            MayRead, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType,
-            Outside, OutsideAt, PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query,
-            QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText,
-            ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF,
-            ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
-            RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichRelinked,
-            RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI,
-            SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps, StrCmp,
-            StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
+            CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
+            CollPlace, CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DateShow,
+            DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe,
+            DescribeRef, DurationText, Earlier, EditField, EntryParts, EnumGetF, EnumGetH,
+            EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue,
+            FieldChanged, FileAt, FileFiles, FileOfBytes, FileOfText, FilePart, FileSize, FileText,
+            FileZip, FilterLit, Filters, Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo,
+            FloatClamp, FloatFloor, FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo,
+            FloatToStr, ForeignRef, Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin,
+            IntToStr, InvocationPop, InvocationPush, Invoke, Invoker, IsError, IsSome, JsonDecode,
+            JsonEncode, JsonParse, Keep, Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH,
+            ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI,
+            ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH, MapGetValue,
+            MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue,
+            MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, MemberOf, Members, Mentions, MetaOf,
+            MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed,
+            Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat,
+            RandomId, RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH,
+            RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI,
+            ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty,
+            RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichRelinked, RichTime, RowOpen,
+            RunChanges, SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF,
+            SpaceI, Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat,
+            StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
             StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
             StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan,
             Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
@@ -528,15 +535,17 @@ impl Core {
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
-            | ResTextSet | CollInsert | CollInsertAs | CollInsertKeyed | CollRemove | CollMove | CollMoveTo
-            | CollMoveAmong | CollPlace | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd
-            | MapSetRemove | MapGetH | MapGetValue | MapKeys | MapKeysValue | MapNew
-            | MapPutValue | MapRemoveValue | RecNew | RecSetI | RecSetF | RecSetH | RefLit
-            | RefEq | RefIs | RefId | ResourceRef | Earlier => self.resource_import(imp, a),
+            | ResTextSet | CollInsert | CollInsertAs | CollInsertKeyed | CollRemove | CollMove
+            | CollMoveTo | CollMoveAmong | CollPlace | SetAdd | SetRemove | MapPut | MapRemove
+            | MapSetAdd | MapSetRemove | MapGetH | MapGetValue | MapKeys | MapKeysValue
+            | MapNew | MapPutValue | MapRemoveValue | RecNew | RecSetI | RecSetF | RecSetH
+            | RefLit | RefEq | RefIs | RefId | ResourceRef | Earlier => {
+                self.resource_import(imp, a)
+            }
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
-            | OutsideAt | Withdraw | ModelCall | Notify | Invoker | MadeFrom | ActorEq | ActorName
-            | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed | InvocationPush
-            | InvocationPop => self.effect_import(imp, a),
+            | OutsideAt | Withdraw | ModelCall | Notify | Invoker | MadeFrom | ActorEq
+            | ActorName | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed
+            | InvocationPush | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
             | WebText | BytesLength => self.web_import(imp, a),
             FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
@@ -549,7 +558,7 @@ impl Core {
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
             | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
-            WorkspaceMembers | Members | MayRead | Speakers | ActorKind | ActorRole => {
+            WorkspaceMembers | Members | MayRead | Speakers | ActorKind | ActorRole | MemberOf => {
                 self.members_import(imp, a)
             }
             EditField => self.edit_field(a),

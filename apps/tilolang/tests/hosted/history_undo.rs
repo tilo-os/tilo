@@ -7,7 +7,7 @@ use ui::tilo_actions::{ActionContext, ActionInvoker};
 
 use super::Session;
 
-const TASKS: &str = "so.tilo.lang.tasks";
+const TASKS: &str = "so.tilo.tasks";
 const RUN: &str = "issue-7@8000000000000001";
 
 /// An agent's run of `issue-7`, acting for ada, as the broker stamps its changes.

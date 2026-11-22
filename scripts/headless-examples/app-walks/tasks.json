@@ -1,0 +1,89 @@
+{
+  "app": "tasks",
+  "said": "Tasks",
+  "tl": {
+    "id": "so.tilo.tasks",
+    "package": "tasks"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Tasks on an empty tracker",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "wait_for": "New task"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "new-task",
+      "said": "Add a task and give it a title",
+      "ops": [
+        {
+          "press_any": [
+            "New task"
+          ]
+        },
+        {
+          "wait_for": {
+            "prefix": "What to do"
+          }
+        },
+        {
+          "type": "Ship the beta"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "wait_for": "Ship the beta"
+        }
+      ]
+    },
+    {
+      "id": "search",
+      "said": "Find the task through the system's search",
+      "ops": [
+        {
+          "search": {
+            "tl": "Ship the beta"
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "search-open",
+      "said": "Open the task the search found",
+      "ops": [
+        {
+          "key": "Enter"
+        }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same task in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        },
+        {
+          "key": "Escape"
+        }
+      ]
+    }
+  ]
+}

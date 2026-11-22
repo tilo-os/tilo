@@ -1,7 +1,7 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
-d-so-tilo-lang-tasks = Tasks
+d-so-tilo-tasks = Tasks
 
 d-75ojxgs3 = Task
     .doc = Something to do: what, by when, by whom, and in which project.
@@ -40,6 +40,18 @@ d-4sriymst = Priority
 d-3pf74ifm = Parent
     .doc = The task it is a subtask of, to any depth; none for a task of its own.
 
+d-hieqyjbd = Labels
+    .doc = The words people sort it by across projects, such as "bug" or "errand".
+
+d-dx56rteo = Waiting for
+    .doc = What it waits for before anyone goes on with it, in a few words ("the landlord's reply"); empty while it waits for nothing.
+
+d-ijyumxsp = Waiting until
+    .doc = The latest moment its wait ends, whether or not what it waits for came.
+
+d-5ctcihsn = Waiting on
+    .doc = The automation that ends its wait early when it runs, by its id: what an agent doing it waits on.
+
 d-75ojxgs3-filter-inbox = Inbox
 
 d-75ojxgs3-filter-today = Today
@@ -50,6 +62,8 @@ d-75ojxgs3-filter-done = Done
 
 d-75ojxgs3-filter-assigned_to_me = Assigned to me
 
+d-75ojxgs3-filter-waiting = Waiting
+
 d-75ojxgs3-filter-due = Due
 
 d-75ojxgs3-filter-project = Project
@@ -57,6 +71,8 @@ d-75ojxgs3-filter-project = Project
 d-75ojxgs3-filter-priority = Priority
 
 d-75ojxgs3-filter-parent = Parent
+
+d-75ojxgs3-filter-labels = Labels
 
 d-75ojxgs3-filter-assignee = Assignee
 
@@ -130,6 +146,9 @@ d-rs3ubifz-assignee = Assignee
 d-rs3ubifz-title = Title
 
 d-rs3ubifz-remind = Remind
+
+d-fe2o2tb2 = Carry native tracker
+    .doc = The tracker the native Tasks app kept before this app took its id over, carried into this one once.
 
 d-zjuy7y7f = New project
     .doc = Starts a project.
@@ -208,6 +227,36 @@ d-kglmmfa7 = High
 d-lrdm4l3c = Urgent
     .doc = Marks a task as urgent.
     .w-it-is-urgent-already = It is urgent already
+
+d-ceofvpxq = Wait for…
+    .doc = Puts a task on hold until what it waits for comes, or until `until` at the latest: whoever is doing it goes on with it then, a person or an agent alike.
+    .did = put on hold
+    .w-it-is-done-already = It is done already
+    .w-say-what-it-waits-for = Say what it waits for
+    .w-the-wait-ends-in-the-past = The wait ends in the past
+
+d-ceofvpxq-what = What
+
+d-ceofvpxq-until = Until
+
+d-ceofvpxq-on = On
+
+d-5lnjbzff = Stop waiting
+    .doc = Ends a task's wait: what it waited for came, and whoever is doing it goes on with it.
+    .did = went on with
+    .w-it-waits-for-nothing = It waits for nothing
+
+d-kxdmkonh = Label…
+    .doc = Gives a task a label.
+    .w-name-the-label = Name the label
+
+d-kxdmkonh-name = Name
+
+d-k2feee4k = Remove label
+    .doc = Takes a label off a task.
+    .w-it-has-no-such-label = It has no such label
+
+d-k2feee4k-name = Name
 
 d-laxsa3x6 = Project
     .doc = Files a task under a project the person picks.
@@ -317,6 +366,12 @@ d-g4wmwcnr = Set priority high~present
 
 d-lvbdxuzj = Set priority urgent~present
 
+d-xtncracu = Wait~present
+
+d-ehugci6o = Label~present
+
+d-4nqmnjpc = Unlabel~present
+
 d-day53wfn = Unfile~present
 
 d-mg3c777a = Move to~present
@@ -339,6 +394,9 @@ d-q4eq7oqv = To do
 
 d-doqleehr = Task item
     .w-what-to-do = What to do
+    .w-waiting-for-until = Waiting for { $waiting_for }, until { $u }
+    .w-waiting-for = Waiting for { $waiting_for }
+    .w-stop-waiting = Stop waiting
     .w-anything-worth-remembering-about-it = Anything worth remembering about it.
     .w-inbox = Inbox
     .w-remind = Remind
@@ -369,6 +427,9 @@ d-ypbiaiq3 = Task outline row
 
 d-mtmufg3w = Task page
     .w-what-to-do = What to do
+    .w-waiting-for-until = Waiting for { $waiting_for }, until { $u }
+    .w-waiting-for = Waiting for { $waiting_for }
+    .w-stop-waiting = Stop waiting
     .w-anything-worth-remembering-about-it = Anything worth remembering about it.
     .w-inbox = Inbox
     .w-remind = Remind

@@ -620,7 +620,7 @@ mod tests {
                 hash: "ab".repeat(32),
                 name: Some("plan.md".into()),
             }),
-            installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
+            installed: [("so.tilo.tasks".into(), "so.tilo.lang.todo".into())].into(),
             access: Some(MemberAccess::person(
                 tilo_action_policy::WorkspacePolicy::new(
                     "7a110d00-0000-4000-8000-000000000001",

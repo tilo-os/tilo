@@ -521,9 +521,9 @@ mod tests {
         std::fs::create_dir_all(&user).unwrap();
         let tasks = install(
             tmp.path(),
-            "so.tilo.lang.tasks",
+            "so.tilo.tasks",
             &manifest(
-                "id = \"so.tilo.lang.tasks\"\nversion = \"2.0.0\"\nkind = \"app\"\n\
+                "id = \"so.tilo.tasks\"\nversion = \"2.0.0\"\nkind = \"app\"\n\
                  previously = [\"so.tilo.lang.todo\"]",
                 "[entrypoint]\nbin = \"bin/tilolang-app\"\ntype = \"gui\"\n",
             ),
@@ -549,19 +549,19 @@ mod tests {
         std::fs::write(
             &registry,
             format!(
-                "{}[[taken-over]]\nid = \"so.tilo.lang.todo\"\nby = \"so.tilo.lang.tasks\"\n",
+                "{}[[taken-over]]\nid = \"so.tilo.lang.todo\"\nby = \"so.tilo.tasks\"\n",
                 row(&tasks, "aa")
             ),
         )
         .unwrap();
         let found = read_one(&catalog, "so.tilo.lang.todo").unwrap().unwrap();
-        assert_eq!(found.app_id, "so.tilo.lang.tasks");
+        assert_eq!(found.app_id, "so.tilo.tasks");
         assert_eq!(found.previously(), ["so.tilo.lang.todo"]);
         assert_eq!(
             earlier_ids(&catalog)
                 .unwrap()
                 .successor("so.tilo.lang.todo"),
-            Some("so.tilo.lang.tasks")
+            Some("so.tilo.tasks")
         );
 
         // Both installed: one publisher makes them one app, listed once under the new id;
@@ -584,7 +584,7 @@ mod tests {
             .into_iter()
             .map(|app| app.app_id.to_string())
             .collect();
-        assert_eq!(ids, ["so.tilo.lang.tasks"]);
+        assert_eq!(ids, ["so.tilo.tasks"]);
         std::fs::write(
             &registry,
             format!("{}{}", row(&todo, "bb"), row(&tasks, "aa")),
@@ -831,7 +831,7 @@ mod tests {
         let app = app_of(
             tmp.path(),
             &manifest(
-                "id = \"so.tilo.lang.tasks\"\nname = \"Tasks\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+                "id = \"so.tilo.tasks\"\nname = \"Tasks\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
                  [package.names]\nde-DE = \"Aufgaben\"",
                 "[entrypoint]\nbin = \"bin/tasks\"\ntype = \"gui\"\n",
             ),

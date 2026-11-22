@@ -1835,7 +1835,7 @@ params = []
                     0,
                 )
             };
-            let tasks = keys_of("so.tilo.lang.tasks");
+            let tasks = keys_of("so.tilo.tasks");
             assert!(
                 matches!(tasks, Response::GroupKeys { .. }),
                 "Today reads Tasks' record: {tasks:?}"
@@ -1923,7 +1923,7 @@ params = []
         }
 
         fn reads_documents_of(&self, reader: &str, owner: &str) -> bool {
-            reader == "so.tilo.lang.today" && owner == "so.tilo.lang.tasks"
+            reader == "so.tilo.lang.today" && owner == "so.tilo.tasks"
         }
     }
 

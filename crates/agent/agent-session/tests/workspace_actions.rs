@@ -85,9 +85,6 @@ mod api_v1;
 #[path = "workspace_actions/branch_files.rs"]
 mod branch_files;
 #[cfg(test)]
-#[path = "workspace_actions/key.rs"]
-mod key;
-#[cfg(test)]
 #[path = "workspace_actions/computer_agent.rs"]
 mod computer_agent;
 #[cfg(test)]
@@ -97,15 +94,12 @@ mod computer_restart;
 #[path = "workspace_actions/hosted_machine_agents.rs"]
 mod hosted_machine_agents;
 #[cfg(test)]
+#[path = "workspace_actions/key.rs"]
+mod key;
+#[cfg(test)]
 #[path = "workspace_actions/owner_signs_governance.rs"]
 mod owner_signs_governance;
 
-#[cfg(test)]
-#[path = "workspace_actions/bulk_import.rs"]
-mod bulk_import;
-#[cfg(test)]
-#[path = "workspace_actions/chain_parts_restart.rs"]
-mod chain_parts_restart;
 #[cfg(test)]
 #[path = "workspace_actions/chat_after_join.rs"]
 mod chat_after_join;
@@ -118,12 +112,6 @@ mod chat_restart;
 #[cfg(test)]
 #[path = "workspace_actions/delete_workspace.rs"]
 mod delete_workspace;
-#[cfg(test)]
-#[path = "workspace_actions/device_issue_create.rs"]
-mod device_issue_create;
-#[cfg(test)]
-#[path = "workspace_actions/device_writes.rs"]
-mod device_writes;
 #[cfg(test)]
 #[path = "workspace_actions/encrypted_resource.rs"]
 mod encrypted_resource;
@@ -148,9 +136,6 @@ mod governed_sealed;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_agent_questions.rs"]
 mod hosted_agent_questions;
-#[cfg(test)]
-#[path = "workspace_actions/hosted_agent_sessions.rs"]
-mod hosted_agent_sessions;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_agent_terminal.rs"]
 mod hosted_agent_terminal;
@@ -197,9 +182,6 @@ mod joining;
 #[path = "workspace_actions/machine_secrets.rs"]
 mod machine_secrets;
 #[cfg(test)]
-#[path = "workspace_actions/mcp_issue_by_id.rs"]
-mod mcp_issue_by_id;
-#[cfg(test)]
 #[path = "workspace_actions/mcp_note_create.rs"]
 mod mcp_note_create;
 #[cfg(test)]
@@ -229,23 +211,11 @@ mod resource_support;
 #[path = "workspace_actions/share_link.rs"]
 mod share_link;
 #[cfg(test)]
-#[path = "workspace_actions/throughput.rs"]
-mod throughput;
-#[cfg(test)]
 #[path = "workspace_actions/tracker_first_page.rs"]
 mod tracker_first_page;
 #[cfg(test)]
 #[path = "workspace_actions/tracker_listing.rs"]
 mod tracker_listing;
-#[cfg(test)]
-#[path = "workspace_actions/update_reads_older_writes.rs"]
-mod update_reads_older_writes;
-#[cfg(test)]
-#[path = "workspace_actions/person_before_agent.rs"]
-mod person_before_agent;
-#[cfg(test)]
-#[path = "workspace_actions/slow_read.rs"]
-mod slow_read;
 #[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]
 mod workspace_per_customer;

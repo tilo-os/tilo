@@ -1,9 +1,9 @@
-//! The ids apps were published under before (`app so.tilo.lang.tasks "Tasks" (previously:
+//! The ids apps were published under before (`app so.tilo.tasks "Tasks" (previously:
 //! so.tilo.lang.todo)`): the one lookup every place that keeps an app id reads through.
 //!
 //! What was kept under an earlier id (documents, grants, windows, references) stays as written and
-//! is the renamed app's: a grant on `app:so.tilo.lang.todo` covers `app:so.tilo.lang.tasks`,
-//! `tl.so.tilo.lang.todo.TodoItem` is the kind `tl.so.tilo.lang.tasks.TodoItem`. Nothing is
+//! is the renamed app's: a grant on `app:so.tilo.lang.todo` covers `app:so.tilo.tasks`,
+//! `tl.so.tilo.lang.todo.TodoItem` is the kind `tl.so.tilo.tasks.TodoItem`. Nothing is
 //! rewritten.
 //!
 //! Who builds the table decides whom to believe: the installed catalogue honours a claim only
@@ -215,7 +215,7 @@ mod tests {
 
     fn tasks() -> EarlierIds {
         let mut ids = EarlierIds::new();
-        ids.insert("so.tilo.lang.tasks", ["so.tilo.lang.todo"]);
+        ids.insert("so.tilo.tasks", ["so.tilo.lang.todo"]);
         ids
     }
 
@@ -226,8 +226,8 @@ mod tests {
         {
             let ids = tasks();
             let node = TreePath::workspace("r")
-                .app("so.tilo.lang.tasks")
-                .kind("tl.so.tilo.lang.tasks.TodoItem")
+                .app("so.tilo.tasks")
+                .kind("tl.so.tilo.tasks.TodoItem")
                 .resource("i1")
                 .action("check");
             let old = TreePath::workspace("r").app("so.tilo.lang.todo");
@@ -242,13 +242,13 @@ mod tests {
             );
             // Another app's kind, or a kind that only starts like it, stays as written.
             let other = TreePath::workspace("r")
-                .app("so.tilo.lang.tasks")
-                .kind("tl.so.tilo.lang.tasksx.Item");
+                .app("so.tilo.tasks")
+                .kind("tl.so.tilo.tasksx.Item");
             assert!(!ids.covers(&old.kind("tl.so.tilo.lang.todox.Item").rest(), &other));
             // The earlier app's node is not the renamed one's: a grant on Tasks says nothing of an
             // app still called Todo elsewhere.
             assert!(!ids.covers(
-                &TreePath::workspace("r").app("so.tilo.lang.tasks"),
+                &TreePath::workspace("r").app("so.tilo.tasks"),
                 &TreePath::workspace("r").app("so.tilo.lang.todo")
             ));
         }
@@ -262,23 +262,23 @@ mod tests {
             );
             assert_eq!(
                 ids.successor("so.tilo.lang.todo"),
-                Some("so.tilo.lang.tasks")
+                Some("so.tilo.tasks")
             );
             assert_eq!(ids.of("com.example.other"), ["com.example.old"]);
             assert_eq!(ids.current("so.tilo.notes"), "so.tilo.notes");
-            assert_eq!(ids.documents_under("so.tilo.lang.tasks"), "so.tilo.lang.todo");
+            assert_eq!(ids.documents_under("so.tilo.tasks"), "so.tilo.lang.todo");
             assert_eq!(
                 ids.documents_under("so.tilo.notes"),
                 "so.tilo.notes"
             );
-            assert!(ids.names("so.tilo.lang.todo", "so.tilo.lang.tasks"));
+            assert!(ids.names("so.tilo.lang.todo", "so.tilo.tasks"));
             assert_eq!(
                 ids.current_resource("tl:so.tilo.lang.todo:abc"),
-                Some("tl:so.tilo.lang.tasks:abc".to_owned())
+                Some("tl:so.tilo.tasks:abc".to_owned())
             );
             assert_eq!(
                 ids.current_resource("tl:so.tilo.lang.todo"),
-                Some("tl:so.tilo.lang.tasks".to_owned())
+                Some("tl:so.tilo.tasks".to_owned())
             );
             assert_eq!(ids.current_resource("tl:so.tilo.notes:abc"), None);
             assert_eq!(ids.current_resource("notes.page"), None);
@@ -289,8 +289,8 @@ mod tests {
     fn a_decision_without_a_table_reads_what_the_process_registered() {
         use crate::{ActionKind, Answer, Context, Grant, Grantee, KindSet, decide};
         let node = TreePath::workspace("r")
-            .app("so.tilo.lang.tasks")
-            .kind("tl.so.tilo.lang.tasks.TodoItem")
+            .app("so.tilo.tasks")
+            .kind("tl.so.tilo.tasks.TodoItem")
             .action("check");
         let grant = Grant::new(
             "todo",
@@ -304,9 +304,9 @@ mod tests {
         let cx = Context::at(0);
         let before = decide([&grant], &grantees, &node, ActionKind::Undoable, &cx);
         assert_eq!(before.answer, Answer::Deny);
-        register("so.tilo.lang.tasks", ["so.tilo.lang.todo"]);
+        register("so.tilo.tasks", ["so.tilo.lang.todo"]);
         let after = decide([&grant], &grantees, &node, ActionKind::Undoable, &cx);
         assert_eq!(after.answer, Answer::Allow);
-        assert_eq!(held_current("so.tilo.lang.todo"), "so.tilo.lang.tasks");
+        assert_eq!(held_current("so.tilo.lang.todo"), "so.tilo.tasks");
     }
 }

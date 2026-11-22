@@ -230,9 +230,9 @@ mod tests {
     #[test]
     fn a_resource_reference_round_trips_in_the_one_form() {
         let task = Embed::resource(
-            "so.tilo.lang.tasks",
-            "tl.so.tilo.lang.tasks.Task",
-            "tl:so.tilo.lang.tasks:t1",
+            "so.tilo.tasks",
+            "tl.so.tilo.tasks.Task",
+            "tl:so.tilo.tasks:t1",
         );
         let written = task.mark_value();
         assert!(written.starts_with('{'), "{written}");

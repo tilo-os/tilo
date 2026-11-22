@@ -1,6 +1,6 @@
 # Aufgaben auf Deutsch. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
 
-d-so-tilo-lang-tasks = Aufgaben
+d-so-tilo-tasks = Aufgaben
 
 d-75ojxgs3 = Aufgabe
     .doc = Etwas zu tun: was, bis wann, von wem und in welchem Projekt.
@@ -39,6 +39,18 @@ d-4sriymst = Priorität
 d-3pf74ifm = Übergeordnet
     .doc = Die Aufgabe, deren Teilaufgabe sie ist, beliebig tief; keine für eine eigene Aufgabe.
 
+d-hieqyjbd = Etiketten
+    .doc = Die Wörter, nach denen Menschen sie über Projekte hinweg sortieren, etwa „Fehler“ oder „Besorgung“.
+
+d-dx56rteo = Wartet auf
+    .doc = Worauf sie wartet, bevor jemand weitermacht, in wenigen Worten („die Antwort des Vermieters“); leer, solange sie auf nichts wartet.
+
+d-ijyumxsp = Wartet bis
+    .doc = Der späteste Zeitpunkt, zu dem ihr Warten endet, ob das Erwartete kam oder nicht.
+
+d-5ctcihsn = Wartet durch
+    .doc = Die Automatisierung, die ihr Warten früh beendet, wenn sie läuft, nach ihrer id: worauf ein Agent wartet, der sie bearbeitet.
+
 d-75ojxgs3-filter-inbox = Eingang
 
 d-75ojxgs3-filter-today = Heute
@@ -48,6 +60,10 @@ d-75ojxgs3-filter-upcoming = Anstehend
 d-75ojxgs3-filter-done = Erledigt
 
 d-75ojxgs3-filter-assigned_to_me = Mir zugewiesen
+
+d-75ojxgs3-filter-waiting = Wartend
+
+d-75ojxgs3-filter-labels = Etiketten
 
 d-75ojxgs3-filter-due = Fällig
 
@@ -115,6 +131,9 @@ d-d6avlyc5 = Dringend
 
 d-rs3ubifz = Neue Aufgabe
     .doc = Legt eine Aufgabe im Eingang oder in `p` an, in der Liste `s` seines Boards: der Eintrag am Ende einer Liste füllt `title` mit den Worten, die sonst niemand dort aufnimmt, dazu den Tag, den Zeitpunkt und die Person, die er nennt, sodass „Vermieter fr 10 Uhr anrufen @Bo“ eine Aufgabe ist, fällig Freitag um zehn, für Bo.
+
+d-fe2o2tb2 = Native Aufgaben übernehmen
+    .doc = Die Aufgabenliste, die die native Aufgaben-App führte, bevor diese App ihre id übernahm, einmalig in diese übernommen.
 
 d-zjuy7y7f = Neues Projekt
     .doc = Beginnt ein Projekt.
@@ -185,6 +204,36 @@ d-lrdm4l3c = Dringend
     .doc = Markiert eine Aufgabe als dringend.
     .w-it-is-urgent-already = Sie ist schon dringend
 
+d-ceofvpxq = Warten auf …
+    .doc = Legt eine Aufgabe auf Eis, bis das kommt, worauf sie wartet, oder spätestens bis `until`: Wer sie macht, macht dann weiter, ob Mensch oder Agent.
+    .did = auf Eis gelegt
+    .w-it-is-done-already = Sie ist schon erledigt
+    .w-say-what-it-waits-for = Sag, worauf sie wartet
+    .w-the-wait-ends-in-the-past = Das Warten endet in der Vergangenheit
+
+d-ceofvpxq-what = Worauf
+
+d-ceofvpxq-until = Bis
+
+d-ceofvpxq-on = Durch
+
+d-5lnjbzff = Warten beenden
+    .doc = Beendet das Warten einer Aufgabe: Worauf sie wartete, ist gekommen, und wer sie macht, macht weiter.
+    .did = weitergegangen mit
+    .w-it-waits-for-nothing = Sie wartet auf nichts
+
+d-kxdmkonh = Beschriften …
+    .doc = Gibt einer Aufgabe ein Etikett.
+    .w-name-the-label = Benenne das Etikett
+
+d-kxdmkonh-name = Name
+
+d-k2feee4k = Etikett entfernen
+    .doc = Nimmt einer Aufgabe ein Etikett ab.
+    .w-it-has-no-such-label = Sie hat kein solches Etikett
+
+d-k2feee4k-name = Name
+
 d-laxsa3x6 = Projekt
     .doc = Legt eine Aufgabe in einem Projekt ab, das die Person wählt.
 
@@ -201,6 +250,7 @@ d-berwb3de = Verschieben nach
 
 d-he6qkhh4 = Einrücken
     .doc = Verschiebt eine Aufgabe unter die Aufgabe, die die Ansicht direkt über ihr in ihrer Gruppe zeigt, wie es `Ctrl+]` tut.
+    .w-nothing-over-it-to-move-under = Nichts darüber, worunter sie rücken könnte
 
 d-khy6tj7s = Ausrücken
     .doc = Verschiebt eine Aufgabe unter ihrer übergeordneten hervor, direkt hinter sie, wie es `Ctrl+[` in einer Gliederung tut.
@@ -262,6 +312,12 @@ d-g4wmwcnr = Priorität hoch~present
 
 d-lvbdxuzj = Priorität dringend~present
 
+d-xtncracu = Warten~present
+
+d-ehugci6o = Beschriften~present
+
+d-4nqmnjpc = Etikett entfernen~present
+
 d-day53wfn = Aus Projekt nehmen~present
 
 d-mg3c777a = Verschieben nach~present
@@ -283,6 +339,9 @@ d-q4eq7oqv = Zu erledigen
     .w-nothing-to-do = Nichts zu tun
 
 d-doqleehr = Aufgabe
+    .w-waiting-for-until = Wartet auf { $waiting_for }, bis { $u }
+    .w-waiting-for = Wartet auf { $waiting_for }
+    .w-stop-waiting = Warten beenden
     .w-what-to-do = Was zu tun ist
     .w-anything-worth-remembering-about-it = Alles, was sich darüber zu merken lohnt.
     .w-inbox = Eingang
@@ -313,6 +372,9 @@ d-rj4l44km = Aufgabenzusammenfassung
 d-ypbiaiq3 = Zeile der Aufgabengliederung
 
 d-mtmufg3w = Aufgabenseite
+    .w-waiting-for-until = Wartet auf { $waiting_for }, bis { $u }
+    .w-waiting-for = Wartet auf { $waiting_for }
+    .w-stop-waiting = Warten beenden
     .w-what-to-do = Was zu tun ist
     .w-anything-worth-remembering-about-it = Alles, was sich darüber zu merken lohnt.
     .w-inbox = Eingang

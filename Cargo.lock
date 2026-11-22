@@ -17215,15 +17215,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tasks-model-wasm"
-version = "0.1.0"
-dependencies = [
- "tasks-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17641,6 +17632,7 @@ dependencies = [
  "photos",
  "poker",
  "postcard",
+ "remote-model",
  "rustls",
  "scratchpad",
  "seccompiler",
@@ -17654,7 +17646,6 @@ dependencies = [
  "snippets",
  "speed-test",
  "tasks",
- "tasks-model",
  "tempfile",
  "terminal",
  "test-http",
@@ -20604,7 +20595,6 @@ dependencies = [
  "publisher-model-wasm",
  "remote-model-wasm",
  "scratchpad-model-wasm",
- "tasks-model-wasm",
  "workspace-hack",
 ]
 
@@ -23799,6 +23789,7 @@ dependencies = [
  "rcgen",
  "registry-server",
  "registry-types",
+ "remote-model",
  "reqwest",
  "runtime-bundle",
  "runtime-collab",
@@ -23811,7 +23802,6 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "store",
- "tasks-model",
  "tempfile",
  "test-http",
  "thiserror 2.0.21",
@@ -29426,7 +29416,6 @@ dependencies = [
  "target-lexicon",
  "tasks",
  "tasks-model",
- "tasks-model-wasm",
  "tempfile",
  "tendril",
  "termcolor",

@@ -1,7 +1,6 @@
 //! The runtime with the Counter package installed: a person's click runs the action, and history
 //! names them.
 
-
 use crate::change_marks::{Driven as _, settle};
 use tilolang_tilo::action::resource_ids;
 

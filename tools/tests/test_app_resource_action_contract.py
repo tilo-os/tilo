@@ -761,8 +761,8 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
 
     def test_an_app_whose_record_a_model_crate_declares_is_a_framework_host(self):
-        """Tasks keeps the `tasks.tracker` record in `apps/tasks-model`, shared
-        with the agent that works its issues: the app hosts the framework app
+        """An app can keep its record in a model crate beside it, shared with
+        whatever else reads it: the app hosts the framework app
         and the model crate declares the record, so the app publishes its
         actions without a surface of its own."""
 

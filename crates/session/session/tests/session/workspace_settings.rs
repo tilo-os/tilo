@@ -1394,7 +1394,10 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     let limit = shown_review(&session).limit.expect("the day's limit");
     assert_eq!(limit.summary, "No limit", "nobody set a day yet");
     assert_eq!(limit.today, "$0 today");
-    assert!(limit.can_choose, "the person here may change the workspace's agents");
+    assert!(
+        limit.can_choose,
+        "the person here may change the workspace's agents"
+    );
     app.harness()
         .perform_named(
             "ws-agent-limit-field",
@@ -1505,8 +1508,5 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
         ["Agent 1", "Agent 2"],
         "Chat numbers the admitted agents around the names here: {held:?}"
     );
-    assert!(
-        held.iter().all(|(_, _, _, active, ..)| *active),
-        "{held:?}"
-    );
+    assert!(held.iter().all(|(_, _, _, active, ..)| *active), "{held:?}");
 }

@@ -134,7 +134,7 @@ fn a_dev_session_installs_the_apps_and_not_the_parts_they_are_made_with(session:
         "Discussion is no app of the session's: {apps:?}"
     );
     // The part itself rides in the apps made with it.
-    for app in ["so.tilo.lang.tasks", "so.tilo.notes"] {
+    for app in ["so.tilo.tasks", "so.tilo.notes"] {
         let found = app_catalogue::apps::read_one_from_env(app)
             .ok()
             .flatten()
@@ -168,10 +168,7 @@ fn the_installed_apps_connectors_are_planned_from_their_manifests(session: &DevS
     };
     let apps = Apps::with_launcher(environment, None, Some(launcher.path().to_owned()));
     let workspace = apps.workspace_named("workspace-1");
-    for (app, origin) in [
-        ("so.tilo.tube", "youtube"),
-        ("so.tilo.mail", "imap"),
-    ] {
+    for (app, origin) in [("so.tilo.tube", "youtube"), ("so.tilo.mail", "imap")] {
         let planned = apps
             .plan_connector(app, origin, &workspace)
             .unwrap_or_else(|why| {

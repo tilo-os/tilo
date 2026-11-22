@@ -1080,12 +1080,16 @@ fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
         "and says why it is not here: {note}"
     );
     // The layout is read off the loop, so the tab it lays in is drawn on the frame after.
-    until(&mut session, "the tab names the app where its window would be", |session| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label == "Gone")
-    });
+    until(
+        &mut session,
+        "the tab names the app where its window would be",
+        |session| {
+            session
+                .accessible_labels()
+                .iter()
+                .any(|label| label == "Gone")
+        },
+    );
     assert!(
         session
             .desktop()

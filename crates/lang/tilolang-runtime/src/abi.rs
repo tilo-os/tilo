@@ -241,6 +241,7 @@ imports! {
     (Versions, "versions", "i", "i"),
     (Links, "links", "i", "i"),
     (Earlier, "earlier", "i", "i"),
+    (MemberOf, "member_of", "i", "i"),
     (VersionEnd, "version_end", "ii", "i"),
     (FieldChanged, "field_changed", "ii", "i"),
     (RunChanges, "run_changes", "i", "i"),

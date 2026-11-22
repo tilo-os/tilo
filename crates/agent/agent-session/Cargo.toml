@@ -163,6 +163,8 @@ discord = { path = "../../../apps/discord" }
 # The page holder a test reads a peer's workspace through: the workspace service's document
 # core over the replica the peer's session admits into, as a page reads it.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys", "session-pages"] }
+# The packaged app the packaged-model test installs: its native reader checks what the action wrote.
+remote-model = { path = "../../../apps/remote-model" }
 # The crate's own test support, for its integration tests.
 tilo-agent-session = { path = ".", features = ["test-support"] }
 tilo-session-actions = { path = "../../session/session-actions" }
@@ -194,7 +196,6 @@ tilo-paths.workspace = true
 # test installs Tasks into a server that never built it.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-model-engine = { path = "../../lang/tilo-model-engine" }
-tasks-model = { path = "../../../apps/tasks-model" }
 tilo-server = { path = "../../server/tilo-server", features = ["agents", "test-support"] }
 # The workspace's machine secrets.
 tilo-environment = { path = "../../runtime/environment" }
