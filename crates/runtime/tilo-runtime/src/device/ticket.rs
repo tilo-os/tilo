@@ -238,6 +238,16 @@ impl Tickets {
             && matches!(request.target.address.action.as_str(), ISSUE | LOG_IN)
     }
 
+    /// What the issued certificate grants, as `args` names it: a member device, or one that
+    /// administers the person's others. The person who runs `tilo device add` chooses it; the
+    /// ticket the new computer brings carries no capability of its own.
+    fn capability(args: &Value) -> tilo_user_identity::DeviceCapabilities {
+        match args.get("capability").and_then(Value::as_str) {
+            Some("admin") => tilo_user_identity::DeviceCapabilities::administrator(),
+            _ => tilo_user_identity::DeviceCapabilities::member(),
+        }
+    }
+
     /// Take `request`, one of [`Self::answers`]' actions: its receipt.
     pub(crate) fn invoke(
         &self,
@@ -254,7 +264,7 @@ impl Tickets {
         let action = request.target.address.action.clone();
         let waiting = action == LOG_IN || args.get("wait").and_then(Value::as_bool) == Some(true);
         if !waiting {
-            let update = match self.issue() {
+            let update = match self.issue(&args) {
                 Ok(value) => succeeded(invocation, value),
                 Err(error) => failed(invocation, &format!("{error:#}")),
             };
@@ -298,13 +308,18 @@ impl Tickets {
 
     /// Serve a ticket for a new computer, approved by the person's root on this computer: the
     /// ticket as the one string the person hands on.
-    fn issue(&self) -> Result<Value> {
+    fn issue(&self, args: &Value) -> Result<Value> {
         let here = self
             .0
             .login
             .as_ref()
             .map(|(_, device)| device)
             .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
+        // A device puts on a ticket only what it holds itself: the same rule every grant follows.
+        let capability = Self::capability(args);
+        if !capability.grants_no_more_than(&here.cert.capabilities) {
+            bail!("this device isn't an administrator, so it can't add one");
+        }
         let root = super::person::root()?.ok_or_else(|| {
             anyhow!(
                 "This computer does not hold your identity, so it cannot add a device: run \
@@ -337,6 +352,7 @@ impl Tickets {
             ticket.clone(),
             here.cert.user_public_key,
             enter,
+            capability,
             Arc::new(RootApprover {
                 root,
                 device: self.0.key.clone(),

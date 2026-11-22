@@ -10,13 +10,40 @@ use serde_json::{Value, json};
 use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    CERTIFY, CertifyInput, Entry, LOG_IN, PROVIDER, RESOURCE, SCOPE, Ticket,
+    CERTIFY, CertifyInput, Entry, ISSUE, LOG_IN, PROVIDER, RESOURCE, SCOPE, Ticket,
 };
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
 use tilo_peer_state::new_device::ServedTicket;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::ticket::{RootApprover, Tickets};
+
+#[tokio::test]
+async fn a_member_device_cannot_issue_an_admin_ticket() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (key, cert) = enrol(&root, "laptop", DeviceCapabilities::member());
+    let endpoint = endpoint(&key).await;
+    let login = tilo_device_identity::login::Device {
+        site: "https://tilo.test/".into(),
+        host_origin: "https://eu1.tilo.test".into(),
+        workspace: "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".into(),
+        workspace_name: None,
+        agent: "Claude Code".into(),
+        cert: cert.clone(),
+        server_cert: cert.clone(),
+        server_address: None,
+    };
+    let state = tempfile::tempdir().unwrap();
+    let place = tilo_device_identity::login::Place::at(
+        state.path().to_path_buf(),
+        tilo_device_identity::IdentityPaths::under(state.path().join("keys")),
+    );
+    let tickets = Tickets::new(key.clone(), cert, endpoint, Some((key, login)), place);
+    let refused = ask_device(&tickets, ISSUE, json!({"capability": "admin"}))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("isn't an administrator"), "{refused}");
+}
 
 /// A device `root` certified, and its key.
 fn enrol(
@@ -227,6 +254,7 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
         ticket.clone(),
         root.verifying_key().to_bytes(),
         enter,
+        DeviceCapabilities::member(),
         Arc::new(RootApprover {
             root: root.clone(),
             device: laptop_key.clone(),

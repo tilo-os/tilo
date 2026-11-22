@@ -22,6 +22,15 @@ use tilo_user_identity::{DeviceCert, RevocationReason};
 use crate::api::{Client, Reach};
 use crate::login::{self, Device};
 
+/// What a computer added with a ticket becomes.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum Adding {
+    /// An ordinary member device.
+    Member,
+    /// A device that administers the person's other devices.
+    Admin,
+}
+
 /// How long a revocation is waited for to show in the person's list.
 const REVOKED_WAIT: Duration = Duration::from_secs(20);
 
@@ -71,7 +80,7 @@ fn person_here() -> Result<(SigningKey, Device, crate::identity::Person)> {
 ///
 /// # Errors
 /// This computer cannot add devices, or no computer came before the ticket ran out.
-pub fn add(json: bool) -> Result<ExitCode> {
+pub fn add(json: bool, adding: Adding) -> Result<ExitCode> {
     login::trust_test_certificates()?;
     crate::identity::convert_earlier()?;
     let login_place = login::Place::here(crate::identity::paths())?;
@@ -87,12 +96,16 @@ pub fn add(json: bool) -> Result<ExitCode> {
             json: false,
         })?;
         let workspace = here.workspace.clone();
+        let capability = match adding {
+            Adding::Member => "member",
+            Adding::Admin => "admin",
+        };
         let issued = client
             .act(
                 &workspace,
                 "devices",
                 tilo_device_identity::login::ISSUE,
-                &json!({}),
+                &json!({ "capability": capability }),
                 "Add a device",
             )
             .await?;
@@ -106,7 +119,13 @@ pub fn add(json: bool) -> Result<ExitCode> {
         } else {
             eprintln!("On the computer to add, run:");
             println!("tilo login {ticket}");
-            eprintln!("The ticket works once, for 10 minutes. Waiting for it…");
+            eprintln!(
+                "The ticket works once, for 10 minutes. It adds the computer as {}.",
+                match adding {
+                    Adding::Member => "an ordinary device",
+                    Adding::Admin => "an administrator of your other devices",
+                }
+            );
         }
         let done = client
             .act(

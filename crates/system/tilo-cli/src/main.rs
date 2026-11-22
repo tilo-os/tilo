@@ -492,6 +492,10 @@ enum DeviceCmd {
                       logs in with it reaches this one directly, and this one certifies it as your device."
     )]
     Add {
+        /// What the new computer is: an ordinary member device, or one that administers your
+        /// other devices.
+        #[arg(long, value_enum, default_value_t = device::Adding::Member)]
+        capability: device::Adding,
         /// Print the ticket and the device's certificate as JSON lines.
         #[arg(long)]
         json: bool,
@@ -1516,7 +1520,7 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         DeviceCmd::Health { gpu: _, json } => health::run_gpu(json),
-        DeviceCmd::Add { json } => device::add(json),
+        DeviceCmd::Add { capability, json } => device::add(json, capability),
         DeviceCmd::Ls { json } => device::list(json),
         DeviceCmd::Revoke {
             device: which,
