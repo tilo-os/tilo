@@ -287,6 +287,32 @@ fn a_program_whose_server_no_longer_asks_after_it_is_ended() {
 }
 
 #[test]
+fn a_program_is_kept_while_its_server_waits_for_its_next_change() {
+    let dir = tempfile::tempdir().unwrap();
+    // Kept for less than one wait for a change lasts while the program says nothing.
+    let member = member(dir.path()).leaving_programs_after(Duration::from_millis(200));
+    let program = tilo_test_env::script(dir.path().join("repeats"), REPEATS).unwrap();
+    let agent = tilo_test_env::sibling_binary("linux-vm-agent", "tilo-linux-vm-agent");
+    let ours = server("ws-1");
+    let start = serving(program.path(), &agent);
+    let id = start.invocation;
+    answered(member.invoke(&ours, start)).unwrap();
+    let mut followed = Followed::default();
+    followed.until_printed(&member, &ours, id, "with hello\n");
+
+    // The program waits for input and says nothing; its server waits for its next change
+    // each time. Those waits are its server asking after it, so it is not ended.
+    for _ in 0..3 {
+        followed.look(&member, &ours, id);
+        assert!(
+            followed.ended.is_none(),
+            "ended while its server waited on it: {:?}",
+            followed.ended
+        );
+    }
+}
+
+#[test]
 fn a_member_without_machines_says_so_as_the_programs_end() {
     let dir = tempfile::tempdir().unwrap();
     let member = EnvironmentCommands::new(
