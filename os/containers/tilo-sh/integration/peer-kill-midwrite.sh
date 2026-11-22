@@ -44,6 +44,7 @@ finish() {
   unmount_scratch
   if [[ $status != 0 ]]; then
     for log in "$logs"/*.log; do echo "== $log" >&2; tail -n 40 "$log" >&2 || true; done
+    declare -F daemon_logs >/dev/null && daemon_logs
   fi
   rm -rf "$scratch"
   exit "$status"

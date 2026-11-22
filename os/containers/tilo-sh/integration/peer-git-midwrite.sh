@@ -48,6 +48,7 @@ finish() {
   unmount_scratch
   if [[ $status != 0 ]]; then
     for log in "$logs"/*.log; do echo "== $log" >&2; tail -n 20 "$log" >&2 || true; done
+    declare -F daemon_logs >/dev/null && daemon_logs
     # A failed check keeps no outputs: what the holders warned of goes into its log, each kind
     # once with how often and when first, the numbers in it left out.
     echo "== what the holders warned of" >&2

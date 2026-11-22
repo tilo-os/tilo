@@ -44,6 +44,7 @@ finish() {
   du -ab "$scratch" 2>/dev/null | sort -n | tail -n 30 >"$logs/kept-sizes.txt" || true
   if [[ $status != 0 ]]; then
     for log in "$logs"/*.log; do echo "== $log" >&2; tail -n 40 "$log" >&2 || true; done
+    declare -F daemon_logs >/dev/null && daemon_logs
   fi
   rm -rf "$scratch"
   exit "$status"
