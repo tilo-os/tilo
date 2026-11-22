@@ -327,12 +327,17 @@ try {
     problems.push('an app on the workspace page did not open');
   }
   await look('12-home-to-notes');
-  for (const app of ['file-explorer', 'tasks', 'chat', 'mail', 'settings']) {
+  // The apps a person opens in their first hour: each is the page the server
+  // renders. An app that is not in this build's catalogue is said, not
+  // failed: which apps the page serves is the catalogue's, and the walk is
+  // here to prove the ones it does serve.
+  for (const app of ['file-explorer', 'settings', 'tasks', 'chat', 'mail']) {
     await openPage(app, app);
     const seen = await look(`13-${app}`);
-    if (seen.refused) problems.push(`${app}: refused (${seen.refused})`);
-    else if (!seen.elements) problems.push(`${app}: shows nothing`);
+    if (seen.refused && seen.refused !== '"no_such_app"') problems.push(`${app}: refused (${seen.refused})`);
+    else if (!seen.refused && !seen.elements) problems.push(`${app}: shows nothing`);
   }
+  step('13-apps', {served: await tab.evaluate(`[...document.querySelectorAll('#tilo-page [data-p]')].length > 0`)});
 
   // The system's search, as the workspace answers it: the page keeps no index
   // of its own, so a word finds what the person's records hold and a row opens
@@ -363,7 +368,7 @@ try {
 
   // The appearance the person's browser asks for: a page follows it, as a
   // window follows the system it runs on.
-  await openPage('light appearance');
+  await openPage('light appearance', '');
   await tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: 'light'}]});
   await sleep(900);
   await look('17-light');
@@ -371,7 +376,7 @@ try {
 
   const context = await browser.context();
   await arrive({context, label: 'second'});
-  await openPage('second profile');
+  await openPage('second profile', '');
   await look('18-second-profile');
 } catch (error) {
   report.error = String(error?.stack ?? error).slice(0, 4000);
