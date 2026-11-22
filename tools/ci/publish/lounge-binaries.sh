@@ -8,6 +8,10 @@
 # programs (e2e, the tilo.sh stack) builds `lounge-check`
 # instead: the same code and the same opt-level without the whole-program link,
 # which is most of a run and buys nothing a check can see.
+#
+# The apps these programs run (the launcher, the runtimes and the packages) are
+# lounge-apps.sh's. Only its `lounge-check` launcher is built with
+# `dev-overrides`; no program of the image's `release` build ever is.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 usage='usage: lounge-binaries.sh OUT [PROFILE]'

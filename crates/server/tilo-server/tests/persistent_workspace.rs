@@ -86,7 +86,7 @@ fn spawn_workspace(
         .arg(root_file)
         .arg("--workspace-id-file")
         .arg(state.join("workspace-id"))
-        .args(["--seed-app", "so.tilo.chat"])
+        .args(["--chat-channel", "general"])
         .args(extra)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -408,9 +408,9 @@ fn a_persistent_workspace_keeps_serving_across_restarts() {
         (workspace, id)
     };
 
-    let (workspace, id) = started(&["--seed-app", "so.tilo.chat"]);
+    let (workspace, id) = started(&[]);
     workspace.stop();
-    let (workspace, again) = started(&["--seed-app", "so.tilo.chat"]);
+    let (workspace, again) = started(&[]);
     workspace.stop();
     assert_eq!(again, id, "the volume's workspace is the one it serves");
 }

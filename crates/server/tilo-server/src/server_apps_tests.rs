@@ -313,33 +313,20 @@ fn page_keys(socket: &std::path::Path, workspace: &str, call: [u8; 16]) -> bool 
     }
 }
 
+/// A person `workspace` admits by an invitation its owner `owner` made, as their device.
 #[cfg(feature = "agents")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the host serves its workspaces until the test ends"
-)]
-async fn a_page_is_handed_keys_only_while_a_reader_who_may_read_it_reads() {
-    use tilo_workspace_service::apps::caller_signer::{CallerSigner, Callers, VerifiedCaller};
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = crate::workspaces::fixtures::governor();
-    let host = crate::workspaces::fixtures::test_host_taking_part(
-        &dir.path().join("server"),
-        &key,
-        &owner,
-    )
-    .await;
-    let workspaces = host.workspaces().clone();
-    let summary = workspaces.create("Team").await.unwrap();
-    let (workspace, id) = (summary.workspace.clone(), summary.workspace_id);
-    // A person the workspace admits, who may read what it keeps.
+async fn admitted_reader(
+    workspaces: &crate::workspaces::Workspaces,
+    owner: &tilo_user_identity::DeviceCert,
+    workspace: &str,
+) -> tilo_user_identity::DeviceCert {
     let token = [3; 8];
     let issued = workspaces
         .pre_admit(
-            &owner,
+            owner,
             crate::workspaces::PreAdmitRequest {
                 request_id: [3; 32],
-                grant: crate::workspaces::fixtures::signed_pre_admission(&workspace, &token),
+                grant: crate::workspaces::fixtures::signed_pre_admission(workspace, &token),
                 recipient_user_public_key: None,
                 inviter_name: None,
             },
@@ -367,6 +354,30 @@ async fn a_page_is_handed_keys_only_while_a_reader_who_may_read_it_reads() {
         ),
         "{admitted:?}"
     );
+    reader
+}
+
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the host serves its workspaces until the test ends"
+)]
+async fn a_page_is_handed_keys_only_while_a_reader_who_may_read_it_reads() {
+    use tilo_workspace_service::apps::caller_signer::{CallerSigner, Callers, VerifiedCaller};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = crate::workspaces::fixtures::governor();
+    let host = crate::workspaces::fixtures::test_host_taking_part(
+        &dir.path().join("server"),
+        &key,
+        &owner,
+    )
+    .await;
+    let workspaces = host.workspaces().clone();
+    let summary = workspaces.create("Team").await.unwrap();
+    let (workspace, id) = (summary.workspace.clone(), summary.workspace_id);
+    // A person the workspace admits, who may read what it keeps.
+    let reader = admitted_reader(&workspaces, &owner, &workspace).await;
     let (_, outsider) = crate::workspaces::fixtures::device_cert(
         &ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
         "outsider",

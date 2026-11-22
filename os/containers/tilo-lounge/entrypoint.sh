@@ -80,7 +80,7 @@ TILO_WORKSPACES_WAIT_LIST_MAX TILO_WORKSPACES_CONTACT TILO_WORKSPACES_LOCAL
 TILO_WORKSPACES_MAIL_FROM TILO_WORKSPACES_RESEND_KEY_FILE TILO_WORKSPACES_RESEND_URL TILO_WORKSPACES_MAIL_TEMPLATES
 TILO_WORKSPACES_PUBLIC_API TILO_WORKSPACES_LIVE_ORIGIN
 TILO_WORKSPACES_DEFAULT_ROLE TILO_WORKSPACES_CHAT_CHANNELS TILO_WORKSPACES_FEEDBACK_CHANNEL
-TILO_WORKSPACES_SEED_APPS TILO_WORKSPACES_REFOUND TILO_WORKSPACES_BOTS TILO_WORKSPACES_LAYOUT
+TILO_WORKSPACES_PACKAGES TILO_WORKSPACES_REFOUND TILO_WORKSPACES_BOTS TILO_WORKSPACES_LAYOUT
 TILO_WORKSPACES_ROOT_FILE TILO_WORKSPACES_OPERATOR_SOCKET
 TILO_WORKSPACES_PERSON_STORAGE_GB TILO_WORKSPACES_IROH_LISTEN TILO_WORKSPACES_HOLD_FOR TILO_WORKSPACES_CALL_OWN_NETWORK TILO_WORKSPACES_OWNERS
 TILO_WORKSPACES_OPENAI_SIGN_IN TILO_WORKSPACES_CHATGPT_BACKEND TILO_WORKSPACES_OPENAI_API
@@ -258,10 +258,16 @@ set -- "$@" $(comma_flags "${TILO_WORKSPACES_OWNERS-}" --owner)
 # a stdin to write to.
 set -- "$@" --operator-socket "${TILO_WORKSPACES_OPERATOR_SOCKET:-$dir/operator.sock}"
 
-# A chat with no channel has nowhere for a visitor's first message to go, and
-# the workspace's apps are its Chat unless the deployment says otherwise.
+# A chat with no channel has nowhere for a visitor's first message to go: the
+# workspace has its Chat, opening with these, unless the deployment names none.
 set -- "$@" $(comma_flags "${TILO_WORKSPACES_CHAT_CHANNELS-general}" --chat-channel)
-set -- "$@" $(comma_flags "${TILO_WORKSPACES_SEED_APPS-so.tilo.chat}" --seed-app)
+# The apps the workspace runs: the signed packages the image ships, each
+# installed as the version of its app the workspace runs.
+packages=${TILO_WORKSPACES_PACKAGES:-}
+if [ -n "$packages" ]; then
+  [ -d "$packages" ] || fail "TILO_WORKSPACES_PACKAGES names no directory: $packages"
+  set -- "$@" --packages "$packages"
+fi
 # Records whose retained history lost the base its deltas were written over:
 # founded again at start from what the workspace still reads, their old
 # history archived beside the replay, never deleted. Named as

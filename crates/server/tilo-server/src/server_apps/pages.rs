@@ -242,7 +242,7 @@ impl HostedPages for ServerPages {
             .server_workspaces()
             .runtime()
             .spawn_blocking(move || {
-                done.complete(pages.open_now(workspace_id, &app, reader, show))
+                done.complete(pages.open_now(workspace_id, &app, reader, show));
             });
         answer
     }
