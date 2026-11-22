@@ -17,7 +17,6 @@ use imager_backend::destination::disks::Disk;
 use imager_backend::destination::private_io;
 use imager_backend::destination::probes::{ProtectionReport, SystemProtection};
 use install_profile_model::plan::Plan;
-use ui::tilo_actions::ActionAddress;
 use ui::tilo_actions::remote::Confirmation;
 
 pub const SCHEMA: u32 = 1;
@@ -1152,12 +1151,15 @@ fn invoke_confirmed(
         _ => Map::new(),
     };
     let (action, resource) = id.split_once('@').unwrap_or((id, ""));
-    app.invoke_published(
-        &ActionAddress::new(resource, action),
-        &args,
-        confirmation.as_ref(),
-    )
-    .map(|_| ())
+    let published: Vec<_> = app
+        .published()
+        .iter()
+        .map(|row| ui::tilo_actions::Exports::exported(row).clone())
+        .collect();
+    let address = ui::tilo_actions::api::published(&published, resource, action)
+        .ok_or_else(|| format!("{resource} publishes no {action}"))?;
+    app.invoke_published(&address, &args, confirmation.as_ref())
+        .map(|_| ())
 }
 
 #[allow(

@@ -10,7 +10,6 @@ use super::*;
 use crate::setup::destination::effects::{DestinationEffect, STORAGE, reviewed_digest};
 use automerge::AutoCommit;
 use imager_backend::destination::disks::LINUX_FILESYSTEM_GUID;
-use ui::tilo_actions::ActionAddress;
 use ui::tilo_actions::remote::{
     CatalogueQuery, CatalogueRow, Confirmation, InvokeRequest, ReceiptStatus, RemoteActionFrame,
     RemoteActionMessage, RemoteActionTarget, frame_line,
@@ -164,10 +163,17 @@ fn invoke(app: &mut InstallerApp, _doc: &mut AutoCommit, id: &str, args: &Value)
     let mut arguments = args.as_object().cloned().unwrap_or_default();
     let phrase = arguments.remove("confirmation_phrase");
     let confirmed = arguments.remove("confirm");
+    let published: Vec<_> = app
+        .published()
+        .iter()
+        .map(|row| ui::tilo_actions::Exports::exported(row).clone())
+        .collect();
+    let address = ui::tilo_actions::api::published(&published, resource, action)
+        .unwrap_or_else(|| panic!("{resource} publishes no {action}"));
     let mut request = InvokeRequest::plain(
         RemoteActionTarget {
             provider: crate::setup::destination::effects::PROVIDER.into(),
-            address: ActionAddress::new(resource, action),
+            address,
         },
         arguments,
     );
