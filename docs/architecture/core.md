@@ -140,18 +140,18 @@ which is most of what happens in a workspace. It runs on the person's
 devices, like everything else, and does whatever it or its person starts it
 on.
 
-Asking an agent is a resource of its own type: who asked, what, and on which
-resource. A mention in a chat message, a note or a task, or an ask from the
-canvas creates one, and the agent's reply is a resource linked to it. A person has at most
-one open ask of an agent in one place: their newer messages there while it is open are
-added to it, and it closes when the reply ends. The
-agent engine runs inside each device's one daemon and reads asks; it never
-reads an app's own fields. Which eligible device takes a turn is decided in
+An agent is a member, and it is notified the way a member is, through the
+system's notifications: when it is mentioned anywhere, sent a direct message,
+assigned a task, and on a few other conditions by default, each of which can be
+changed per agent. A notification starts a turn, and the agent answers where it
+was notified: in the chat, on the task, in the note. There is no separate record
+of asking. The agent engine runs inside each device's one daemon and reads the
+agent's notifications; it never reads an app's own fields. Which eligible device takes a turn is decided in
 one function, `tilo_workspace_service::work::takes_turn`: an eligible device
-claims the ask with an ordinary change, the earliest claim wins, and a claim
+claims the turn with an ordinary change, the earliest claim wins, and a claim
 that writes nothing for a minute may be taken over. A lease is workspace state
 every device reads. The host declares `workspace` as one read-only resource with a tilolang
-schema, and its `leases` are keyed by the record they are about (`ask/<the ask's id>`); a
+schema, and its `leases` are keyed by the agent and the place it was notified about; a
 lease's `device` is the device whose claim stands now. A
 require reads it like any record (`workspace.leases.get(...)`), and `workspace.members` and
 `workspace.me` move onto the same resource, so the host fields under `workspace.` go. A require sees the device that signed an
@@ -163,7 +163,7 @@ of every record it is in: a direct conversation between Ada and her agent
 is sealed for Ada and the agent, never for Ada alone. A device that runs the
 agent, the tilo.sh server included, holds the agent's keys and so opens
 exactly the records the agent reads, and no others. A device that cannot
-open the record an ask is about is not eligible to take its turn.
+open the record a notification is about is not eligible to take its turn.
 A sub-agent or coding agent that an agent starts acts as its starter's
 approved key, narrowed to its own conversation: a grant only narrows what
 its giver holds. Any device of the person an agent acts for may approve
@@ -173,7 +173,7 @@ than both of them may do: the agent's own grants and the grants of the person
 whose message it answers, the smaller of the two on every resource. Ada's
 agent answering Bo reads and changes only what Ada's agent and Bo both may. A turn that has no approved caller writes its refusal into the
 conversation, with the reason, and ends. It is written as the device that took
-the turn, whose grant is that one notice on that one ask. A handed node
+the turn, whose grant is that one notice in that one place. A handed node
 for a sub-agent is decided together with its signer and only narrows it.
 
 A member change (add, role, remove) is an ordinary action on
