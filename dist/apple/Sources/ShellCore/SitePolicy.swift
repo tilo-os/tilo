@@ -47,6 +47,11 @@ public struct SitePolicy: Equatable, Sendable {
         guard destination(of: url) == .inside else { return false }
         // What is no page of the site (a blank page, a blob of the page's) shows nothing of Tilo.
         guard let only, SitePolicy.origin(of: url) != nil else { return true }
+        // The page the server renders names its app in the path: `/w/<workspace>/<app>`.
+        // It is the app's own page, as the one-app entry's route is, and the entry hands
+        // every admitted browser to it.
+        let pathParts = url.path(percentEncoded: true).split(separator: "/", omittingEmptySubsequences: false)
+        if pathParts.count == 4, pathParts[0].isEmpty, pathParts[1] == "w", pathParts[3] == only { return true }
         guard url.path(percentEncoded: true) == "/app/", let fragment = url.fragment(percentEncoded: true),
               let route = fragment.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
         else { return false }

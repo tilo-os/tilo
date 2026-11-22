@@ -304,6 +304,12 @@ final class SitePolicyTests: XCTestCase {
             ("https://tilo.sh/#/me", false),
             ("https://tilo.sh/#/me/so.tilo.assistant", false),
             ("https://tilo.sh/#/@eu1.tilo.sh/w/\(workspace)/so.tilo.assistant", false),
+            // The page the server renders, which the entry hands every admitted browser to:
+            // an app's own when the path names it, and nothing of this app otherwise.
+            ("https://tilo.sh/w/\(workspace)/so.tilo.chat", true),
+            ("https://tilo.sh/w/\(workspace)/so.tilo.assistant", false),
+            ("https://tilo.sh/w/\(workspace)", false),
+            ("https://tilo.sh/w/\(workspace)/", false),
             // Another app alone, an app whose name only begins the same, the app named further on.
             ("https://tilo.sh/app/#/me/so.tilo.chat", false),
             ("https://tilo.sh/app/#/me/so.tilo.assistant-notes", false),
