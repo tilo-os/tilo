@@ -291,6 +291,10 @@ fn report_command(app_dir: &Path, executable: &Path) -> Result<ProcessCommand> {
 /// with a user namespace mapping this process's ids, as the launcher starts an
 /// app it granted no network. Nothing else about the process changes.
 #[cfg(target_os = "linux")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the platform with no namespace to give returns the command itself"
+)]
 fn with_network_namespace(command: ProcessCommand) -> ProcessCommand {
     let (uid, gid) = (
         rustix::process::getuid().as_raw(),
