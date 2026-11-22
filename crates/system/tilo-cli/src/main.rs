@@ -384,6 +384,10 @@ enum Cmd {
         /// when not given.
         #[arg(long)]
         agent: Option<String>,
+        /// How your other devices name this computer. The agent and the
+        /// hostname when not given.
+        #[arg(long, conflicts_with_all = ["new_identity", "recovery_key"])]
+        label: Option<String>,
     },
     /// Tilo's MCP server over stdio, for the agent on this computer
     /// (an agent adds it to its own MCP configuration).
@@ -1381,9 +1385,16 @@ fn run(cli: Cli) -> Result<ExitCode> {
             json,
             ..
         } => identity::new_identity(name.as_deref(), json),
-        Cmd::Login { ticket, agent, .. } => {
-            login::login(ticket.as_deref().unwrap_or_default(), agent.as_deref())
-        }
+        Cmd::Login {
+            ticket,
+            agent,
+            label,
+            ..
+        } => login::login(
+            ticket.as_deref().unwrap_or_default(),
+            agent.as_deref(),
+            label.as_deref(),
+        ),
         Cmd::Mcp => mcp::serve(),
         Cmd::Folders { json, cmd } => folders::run(cmd.unwrap_or(folders::FoldersCmd::List), json),
         Cmd::Settings { cmd } => settings::run(cmd).map(|()| ExitCode::SUCCESS),

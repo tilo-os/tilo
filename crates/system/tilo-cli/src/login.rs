@@ -532,13 +532,14 @@ fn not_a_ticket(text: &str) -> anyhow::Error {
     )
 }
 
-/// `tilo login <ticket> [--agent NAME]`: this computer becomes one of the person's devices, as
-/// the device that issued the ticket has their root certify it, and enters their workspace.
+/// `tilo login <ticket> [--agent NAME] [--label NAME]`: this computer becomes one of the
+/// person's devices, as the device that issued the ticket has their root certify it, and enters
+/// their workspace.
 ///
 /// # Errors
 /// The text is no ticket, the issuing device is not reached, the ticket is spent or wrong, the
 /// person declined, or the answer cannot be kept.
-pub fn login(ticket: &str, agent: Option<&str>) -> Result<ExitCode> {
+pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<ExitCode> {
     crate::identity::convert_earlier()?;
     Ticket::parse(ticket).map_err(|_| not_a_ticket(ticket))?;
     let agent = agent::given(agent);
@@ -548,7 +549,7 @@ pub fn login(ticket: &str, agent: Option<&str>) -> Result<ExitCode> {
         .map_err(anyhow::Error::msg)?;
     ensure_daemon(&place)?;
     let runtime = runtime()?;
-    let said = label(&agent.name, &hostname());
+    let said = named.map_or_else(|| label(&agent.name, &hostname()), str::to_owned);
     eprintln!("Asking your device to add this computer; it may ask you to approve it…");
     runtime.block_on(async {
         let client = Client::open(crate::api::Reach {
