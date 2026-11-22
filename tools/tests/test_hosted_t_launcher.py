@@ -2,11 +2,13 @@
 
 os/hosted-guest/t is what /usr/local/bin/t is in a workspace's VM. It runs
 against a local HTTP server in the t server's place, so the download the
-launcher makes is the one checked: the request path, the Authorization header
-following the server's redirect, the cached copy, and the arguments it execs
-the program with. Nothing here talks to the real t server.
+launcher makes is the one checked: the request t's own self-update makes, the
+Authorization header, the SHA-256 the server states for its build, the cached
+copy, and the arguments it execs the program with. Nothing here talks to the real t server.
 """
+import hashlib
 import http.server
+import platform
 import os
 from pathlib import Path
 import shutil
@@ -20,6 +22,7 @@ import unittest
 REPO = Path(__file__).resolve().parents[2]
 LAUNCHER = REPO / 'os/hosted-guest/t'
 TOKEN = 's3cret-workspace-token'
+CLIENT = f'/v1/client?target={platform.machine()}-unknown-linux-gnu&file=t'
 
 
 def an_elf():
@@ -58,19 +61,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with self.server.lock:
             self.server.requests.append((self.path, self.headers.get('Authorization')))
         mode = self.server.mode
-        if self.path == '/download/t':
-            self.redirect('/repos/download/t')
-        elif self.path == '/repos/download/t':
+        if self.path == CLIENT:
             if mode == 'login' or self.headers.get('Authorization') != f'Bearer {TOKEN}':
-                self.redirect('/login?next=%2Frepos%2Fdownload%2Ft')
+                self.redirect('/login?next=%2Fv1%2Fclient')
             elif mode == 'broken':
                 self.page('upstream failed', status=500)
             else:
+                elf = self.server.elf
+                stated = hashlib.sha256(b'other build' if mode == 'mismatch' else elf).hexdigest()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/octet-stream')
-                self.send_header('Content-Length', str(len(self.server.elf)))
+                self.send_header('X-T-Sha256', stated)
+                self.send_header('Content-Length', str(len(elf)))
                 self.end_headers()
-                self.wfile.write(self.server.elf)
+                self.wfile.write(elf)
         elif self.path.startswith('/login'):
             self.page('<html><body>log in</body></html>')
         else:
@@ -126,10 +130,7 @@ class LauncherTest(unittest.TestCase):
         done = self.run_launcher('hello', 'world', T_TOKEN=TOKEN)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout, 'hello world\n')
-        self.assertEqual([path for path, _ in self.server.requests],
-                         ['/download/t', '/repos/download/t'])
-        self.assertEqual([header for _, header in self.server.requests],
-                         [f'Bearer {TOKEN}', f'Bearer {TOKEN}'])
+        self.assertEqual(self.server.requests, [(CLIENT, f'Bearer {TOKEN}')])
         cache = self.cached()
         self.assertEqual(cache.read_bytes(), self.server.elf)
         self.assertTrue(cache.stat().st_mode & stat.S_IXUSR)
@@ -155,8 +156,16 @@ class LauncherTest(unittest.TestCase):
         self.server.mode = 'login'
         done = self.run_launcher('--help', T_TOKEN=TOKEN)
         self.assertEqual(done.returncode, 1)
-        self.assertIn('Bearer', done.stderr)
-        self.assertIn('/download/t', done.stderr)
+        self.assertIn('x-t-sha256', done.stderr)
+        self.assertIn('/v1/client', done.stderr)
+        self.assertFalse(self.cached().exists())
+        self.assertEqual(list((self.home / '.cache' / 't').glob('.t.*')), [])
+
+    def test_a_download_unlike_the_stated_build_is_refused_and_not_cached(self):
+        self.server.mode = 'mismatch'
+        done = self.run_launcher('--help', T_TOKEN=TOKEN)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('x-t-sha256', done.stderr)
         self.assertFalse(self.cached().exists())
         self.assertEqual(list((self.home / '.cache' / 't').glob('.t.*')), [])
 

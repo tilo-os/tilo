@@ -71,11 +71,12 @@ to disk:
 | `T_SERVER` | The t server the workspace runs on | `https://t.tilo.so` |
 | `T_TOKEN` | A token that server accepts, granted to the workspace from its vault | the launcher names the vault item to grant and exits 1 |
 
-The download is `T_SERVER/download/t` with `Authorization: Bearer <T_TOKEN>`,
-following the server's redirect to `/repos/download/t`. The launcher caches
-the answer only when it is the program itself: a server that answers a browser
-login fails the first call with a message naming the header it must accept,
-and nothing is cached.
+The download is the one `t`'s own self-update makes: the server's build for
+the VM, `T_SERVER/v1/client?target=<triple>&file=t`, with `Authorization:
+Bearer <T_TOKEN>`. The launcher caches it only when it matches the SHA-256 the
+server states for its build (`x-t-sha256`): a page in its place, a login or an
+error, fails the first call and nothing is cached. From then on `t` keeps
+itself on the server's build.
 
 ### git
 
