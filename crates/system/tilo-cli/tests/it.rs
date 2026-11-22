@@ -238,7 +238,7 @@ fn tilo_mcp_idles_small() {
         .env("XDG_CONFIG_HOME", home.path().join("config"))
         .env("XDG_DATA_HOME", home.path().join("data"))
         .env("XDG_RUNTIME_DIR", home.path().join("run"))
-        .env_remove("TILO_DEVICE_DIR")
+        .env_remove("TILO_IDENTITY_ROOT")
         .env_remove(tilo_paths::login::AGENT_SOCKET_ENV)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

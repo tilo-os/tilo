@@ -34,7 +34,7 @@ use tilo_server_protocol::web::API_PREFIX;
 use tilo_session_client::device::Device as Entered;
 
 use crate::agent::{self, Agent, Tool};
-pub use tilo_api::client::device::{Device, LOGIN_DAMAGED, device_dir, load, store};
+pub use tilo_api::client::device::{Device, LOGIN_DAMAGED, Place, load, store};
 
 /// The site `tilo login` resolves codes at, unless `--site` or
 /// [`SITE_ENV`] names another.
@@ -130,16 +130,19 @@ pub struct Pending {
     pub entered: bool,
 }
 
-/// Keep `pending` beside this computer's device key.
+/// The file beside this computer's login that names the tab following it.
+const PENDING_FILE: &str = "tab.json";
+
+/// Keep `pending` beside this computer's login.
 fn store_pending(dir: &Path, pending: &Pending) -> Result<()> {
-    let _ = std::fs::remove_file(dir.join("login.json"));
-    std::fs::write(dir.join("login.json"), serde_json::to_vec_pretty(pending)?)?;
+    let _ = std::fs::remove_file(dir.join(PENDING_FILE));
+    std::fs::write(dir.join(PENDING_FILE), serde_json::to_vec_pretty(pending)?)?;
     Ok(())
 }
 
 /// The login this computer last made, when it left a tab following it.
 fn load_pending(dir: &Path) -> Option<Pending> {
-    serde_json::from_slice(&std::fs::read(dir.join("login.json")).ok()?).ok()
+    serde_json::from_slice(&std::fs::read(dir.join(PENDING_FILE)).ok()?).ok()
 }
 
 /// Tell the tab that followed this computer's login that its agent has
@@ -151,8 +154,9 @@ fn load_pending(dir: &Path) -> Option<Pending> {
 /// itself when its own check passed. A tab that has moved on is not told
 /// anything twice, and nothing is said about it.
 pub(crate) fn report_tools_added() {
-    let Ok(dir) = device_dir() else { return };
-    let Some(mut pending) = load_pending(&dir) else {
+    let Ok(place) = Place::here() else { return };
+    let dir = place.dir();
+    let Some(mut pending) = load_pending(dir) else {
         return;
     };
     if pending.tools_added {
@@ -176,11 +180,30 @@ pub(crate) fn report_tools_added() {
     });
     pending.tools_added = true;
     pending.entered = false;
-    let _ = store_pending(&dir, &pending);
+    let _ = store_pending(dir, &pending);
 }
 
 pub fn logged_in() -> bool {
-    device_dir().is_ok_and(|dir| dir.join("key").exists())
+    Place::here().is_ok_and(|place| place.logged_in())
+}
+
+/// This computer's one device key, the one its session keeps, made now when it has none: every
+/// login of this computer is a certificate for it, never a key of its own.
+///
+/// # Errors
+/// A Tilo desktop serves this login, so it is a device already, or the key cannot be read or
+/// kept.
+fn this_device_key() -> Result<SigningKey> {
+    if tilo_api::client::desktop_socket().is_some() {
+        bail!(
+            "This computer's Tilo desktop is one of your devices already: `tilo` commands and \
+             agents here act through it, with no login of their own."
+        );
+    }
+    let (key, _) =
+        tilo_device_identity::persist::load_or_create_device_key(&crate::identity::paths())
+            .context("reading this computer's device key")?;
+    Ok(key)
 }
 
 pub(crate) fn hostname() -> String {
@@ -398,18 +421,17 @@ pub(crate) async fn connect(
         device.site,
         host_of(&device.host_origin),
         device.workspace,
-        device.user
+        device.user()
     ))
     .map_err(|error| anyhow!(error))?;
     let host = server_of(device).await?;
-    let (cert, server_cert) = device.certs()?;
     let signed = SignIn {
         link,
         agent: device.agent.clone(),
-        label: device.label.clone(),
+        label: device.label().to_owned(),
         server: host,
-        cert,
-        server_cert,
+        cert: device.cert.clone(),
+        server_cert: device.server_cert.clone(),
     };
     let entry = entry_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
     Ok(Entered::enter_lent(entry.as_ref(), &signed, Arc::new(key.clone()), lent).await?)
@@ -446,21 +468,20 @@ async fn connect_over_iroh(
 
 /// `device` signed in at the server dialed over iroh at `address`.
 fn signed_over_iroh(device: &Device, address: &ServerAddress) -> Result<SignIn> {
-    let (cert, server_cert) = device.certs()?;
     Ok(SignIn {
         link: PairingLink {
             site: device.site.clone(),
             host_origin: device.host_origin.clone(),
             workspace: uuid::Uuid::parse_str(&device.workspace)
                 .map_err(|_| anyhow!(LOGIN_ENDED))?,
-            user_public_key: cert.user_public_key,
+            user_public_key: device.cert.user_public_key,
             invite: None,
         },
         agent: device.agent.clone(),
-        label: device.label.clone(),
+        label: device.label().to_owned(),
         server: tilo_server_client::ServerAddress::published(address),
-        cert,
-        server_cert,
+        cert: device.cert.clone(),
+        server_cert: device.server_cert.clone(),
     })
 }
 
@@ -620,7 +641,7 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
                     ..named
                 }
             });
-    let key = SigningKey::from_bytes(&rand::random());
+    let key = this_device_key()?;
     let label = label(&agent.name, &hostname());
     let cert = held_device_cert(&person, &key, &label)?;
     let address = ServerAddress {
@@ -642,11 +663,9 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
         host_origin: format!("{IROH_ONLY}{}", server.endpoint_addr.id),
         workspace: grant.workspace_id.to_string(),
         workspace_name: None,
-        user: hex::encode(person.public_key()),
         agent: agent.name.clone(),
-        label,
-        cert: hex::encode(postcard::to_allocvec(&cert)?),
-        server_cert: hex::encode(postcard::to_allocvec(&server.device_certificate)?),
+        cert,
+        server_cert: server.device_certificate,
         server_address: Some(address.clone()),
     };
     let runtime = runtime()?;
@@ -661,11 +680,11 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
         workspace_name,
         ..device
     };
-    store(&device_dir()?, &key, &device)?;
+    store(&Place::here()?, &device)?;
     println!(
         "Joined: this computer is one of {} devices, \"{}\", in the workspace.\n{}",
         person.whose(),
-        device.label,
+        device.label(),
         which_agent(&agent.name)
     );
     entered_after_login(&runtime, &key, &device, &agent)
@@ -1108,19 +1127,17 @@ pub fn login(code: &str, agent: Option<&str>, site: Option<&str>) -> Result<Exit
 }
 
 /// The device a sign-in made of this computer, as the login keeps it.
-fn device_of(signed: &SignIn) -> Result<Device> {
-    Ok(Device {
+fn device_of(signed: &SignIn) -> Device {
+    Device {
         site: signed.link.site.clone(),
         host_origin: signed.link.host_origin.clone(),
         workspace: signed.link.workspace_id(),
         workspace_name: None,
-        user: hex::encode(signed.link.user_public_key),
         agent: signed.agent.clone(),
-        label: signed.label.clone(),
-        cert: hex::encode(postcard::to_allocvec(&signed.cert)?),
-        server_cert: hex::encode(postcard::to_allocvec(&signed.server_cert)?),
+        cert: signed.cert.clone(),
+        server_cert: signed.server_cert.clone(),
         server_address: None,
-    })
+    }
 }
 
 fn upper_first(text: &str) -> String {
@@ -1134,17 +1151,18 @@ fn upper_first(text: &str) -> String {
 /// tools to the agent, and enter the workspace.
 async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<ExitCode> {
     let link = PairingLink::parse(link).map_err(|error| anyhow!(error))?;
-    let dir = device_dir()?;
-    let key = SigningKey::from_bytes(&rand::random());
+    let place = Place::here()?;
+    let dir = place.dir();
+    let key = this_device_key()?;
     let server_web = Origin::new(&http(), &link.host_origin);
     eprintln!("Waiting for the person's tab to approve this computer…");
     let signed = certify(&server_web, &link, &agent.name, &key).await?;
     // The server names this computer: the name asked for, or the next numbered
     // one another device of the person reads by.
     let label = signed.label.clone();
-    let mut device = device_of(&signed)?;
+    let mut device = device_of(&signed);
     device.workspace_name = workspace_name(&server_web, &device.workspace).await;
-    store(&dir, &key, &device)?;
+    store(&place, &device)?;
     // The tab follows this login; what the agent confirms afterwards is told
     // to it through what is kept here.
     let mut pending = Pending {
@@ -1153,7 +1171,7 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
         tools_added: false,
         entered: false,
     };
-    store_pending(&dir, &pending)?;
+    store_pending(dir, &pending)?;
     reporter.step(Step::LoggedIn).await;
     let days = signed.cert.expires_at_ns.map_or(0, |end| {
         end.saturating_sub(signed.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
@@ -1163,7 +1181,7 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     let tools = add_tools(agent, &tilo, &agent::System);
     if let Tools::Added(tool) = &tools {
         pending.tools_added = true;
-        store_pending(&dir, &pending)?;
+        store_pending(dir, &pending)?;
         reporter.step(Step::ToolsAdded).await;
         if tool.restart().is_some() {
             reporter.step(Step::Restart).await;
@@ -1217,7 +1235,7 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
                 reporter.step(Step::Entered).await;
             } else {
                 pending.entered = true;
-                store_pending(&dir, &pending)?;
+                store_pending(dir, &pending)?;
             }
         }
         Err(error) => {
@@ -1245,14 +1263,13 @@ async fn sign_in_tab(reporter: &Reporter<'_>) -> Result<ExitCode> {
     let (root, key, cert) = if let Some(person) = crate::identity::held()? {
         (Some(person.root), person.device, person.cert)
     } else {
-        let Some((key, device)) = load(&device_dir()?)? else {
+        let Some((key, device)) = load(&Place::here()?)? else {
             bail!(
                 "This is a sign-in code, which needs a computer already logged in to Tilo, and \
                  this one isn't. In Tilo, choose \"Set up with your agent\" instead."
             );
         };
-        let (cert, _) = device.certs()?;
-        (None, key, cert)
+        (None, key, device.cert)
     };
     vouch_with_code(
         reporter.host,
@@ -1331,13 +1348,12 @@ pub fn login_held(
     let runtime = runtime()?;
     let (key, device, others) =
         runtime.block_on(enter_with_a_held_key(person, &agent, &site, workspace))?;
-    let dir = device_dir()?;
-    store(&dir, &key, &device)?;
+    store(&Place::here()?, &device)?;
     println!(
         "Logged in: this computer holds {} identity, which made it \"{}\", one of its \
          devices.\n{}",
         person.whose(),
-        device.label,
+        device.label(),
         which_agent(&agent.name)
     );
     if others > 0 {
@@ -1354,7 +1370,7 @@ pub fn login_held(
 
 /// After a login without a tab: Tilo's tools added to the agent, the workspace entered once to say
 /// it opens, its folder put on this computer, and what to do next.
-/// Enter a workspace as a device of `person` with a key this computer makes now: the server takes
+/// Enter a workspace as a device of `person` with this computer's one device key: the server takes
 /// the key in, and the computer enters `workspace` (by name or id), else the first of their own
 /// there ([`choose_workspace`]); the peer it starts takes in every other workspace the person has
 /// there. Answers the key, the device, and how many other workspaces there are.
@@ -1375,7 +1391,7 @@ async fn enter_with_a_held_key(
         .as_ref()
         .map(tilo_server_client::ServerAddress::published)
         .ok_or_else(|| anyhow!("{origin} takes no device connections"))?;
-    let key = SigningKey::from_bytes(&rand::random());
+    let key = this_device_key()?;
     let label = label(&agent.name, &hostname());
     let cert = held_device_cert(person, &key, &label)?;
     let user = person.user();
@@ -1432,11 +1448,9 @@ async fn enter_with_a_held_key(
         host_origin: origin,
         workspace: id,
         workspace_name: Some(name),
-        user,
         agent: agent.name.clone(),
-        label,
-        cert: hex::encode(postcard::to_allocvec(&cert)?),
-        server_cert: hex::encode(postcard::to_allocvec(&info.server_cert)?),
+        cert,
+        server_cert: info.server_cert.clone(),
         server_address: None,
     };
     anyhow::Ok((key, device, others))
@@ -1574,25 +1588,92 @@ pub(crate) fn host_of(origin: &str) -> &str {
 
 pub(crate) const NOT_LOGGED_IN: &str = "This computer is not logged in to Tilo. Ask the person to open tilo.sh, choose \"Set up with your agent\" and paste you the prompt it copies; it has you run tilo login with their code, like: tilo login K7Q-MX2P";
 
+/// A login kept below `dir` for a test, as `tilo login` keeps one: `env` names `dir`'s `state`
+/// and `identity` as this account's state directory and this computer's identity root, `key`
+/// becomes its device key, and `device` its login.
+#[cfg(test)]
+pub(crate) fn keep_for_test(
+    env: &mut tilo_test_env::ScopedEnv,
+    dir: &Path,
+    key: &SigningKey,
+    device: &Device,
+) {
+    env.set("XDG_STATE_HOME", dir.join("state"))
+        .set("TILO_IDENTITY_ROOT", dir.join("identity"));
+    let place = Place::here().unwrap();
+    tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
+    store(&place, device).unwrap();
+}
+
+/// A member certificate `root` signs for `key`, named `label`, for a test.
+#[cfg(test)]
+pub(crate) fn certified_for_test(
+    root: &SigningKey,
+    key: &SigningKey,
+    label: &str,
+) -> tilo_user_identity::DeviceCert {
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: label.to_owned(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: now.saturating_sub(60_000_000_000),
+        expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+    cert
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Mutex;
 
-    fn device() -> Device {
-        Device {
+    /// The person's root, this computer's device key, and the login they made of it.
+    fn device() -> (SigningKey, SigningKey, Device) {
+        let root = SigningKey::from_bytes(&[3; 32]);
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let cert = certified_for_test(&root, &key, "Claude Code on build-box");
+        let device = Device {
             site: "https://tilo.sh/".into(),
             host_origin: "https://eu1.tilo.sh".into(),
             workspace: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0".into(),
             workspace_name: Some("Studio".into()),
-            user: "ab".repeat(32),
             agent: "Claude Code".into(),
-            label: "Claude Code on build-box".into(),
-            cert: "00".into(),
-            server_cert: "00".into(),
+            server_cert: certified_for_test(&root, &root, "eu1.tilo.sh"),
+            cert,
             server_address: None,
-        }
+        };
+        (root, key, device)
+    }
+
+    /// The login an earlier tilo kept in `dir` with `key` of its own.
+    fn earlier_login(dir: &Path, key: &SigningKey, device: &Device) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("key"), key.to_bytes()).unwrap();
+        let hexed = |cert: &tilo_user_identity::DeviceCert| {
+            hex::encode(postcard::to_allocvec(cert).unwrap())
+        };
+        std::fs::write(
+            dir.join("device.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "site": device.site,
+                "host_origin": device.host_origin,
+                "workspace": device.workspace,
+                "workspace_name": device.workspace_name,
+                "user": device.user(),
+                "agent": device.agent,
+                "label": device.label(),
+                "cert": hexed(&device.cert),
+                "server_cert": hexed(&device.server_cert),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
     }
 
     fn listed(
@@ -1652,45 +1733,108 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_login_keeps_its_device_and_the_tab_it_came_from;
 
-        phase the_device_is_kept_for_this_account_only_and_read_back;
+        phase the_login_is_a_certificate_for_this_computers_one_device_key;
         {
             use std::os::unix::fs::PermissionsExt as _;
             let dir = tempfile::tempdir().unwrap();
-            let place = dir.path().join("device");
-            let key = SigningKey::from_bytes(&[7; 32]);
-            store(&place, &key, &device()).unwrap();
-            assert_eq!(
-                std::fs::metadata(place.join("key"))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
+            let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+            let place = Place::at(dir.path().join("device"), keys.clone());
+            let (root, key, device) = device();
+            assert!(load(&place).unwrap().is_none(), "nobody logged in yet");
+            assert!(
+                store(&place, &device).is_err(),
+                "a login certifies this computer's device key, and it has none yet"
             );
+            tilo_device_identity::persist::adopt_device_key(&keys, &key.to_bytes()).unwrap();
+            store(&place, &device).unwrap();
+            assert!(place.logged_in());
             assert_eq!(
-                std::fs::metadata(&place).unwrap().permissions().mode() & 0o777,
+                std::fs::metadata(place.dir()).unwrap().permissions().mode() & 0o777,
                 0o700
             );
             let (read, kept) = load(&place).unwrap().unwrap();
             assert_eq!(read.to_bytes(), key.to_bytes());
-            assert_eq!(kept, device());
-            // A key others can read is closed to them and used, not refused.
-            std::fs::set_permissions(place.join("key"), std::fs::Permissions::from_mode(0o644))
-                .unwrap();
-            assert!(load(&place).unwrap().is_some());
+            assert_eq!(kept, device);
             assert_eq!(
-                std::fs::metadata(place.join("key"))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
+                tilo_device_identity::persist::read_device_cert(
+                    &keys.device_cert_for_user(&root.verifying_key().to_bytes())
+                )
+                .unwrap(),
+                device.cert,
+                "the certificate is kept with the device key, for the person it names"
             );
-            // A key that is not a key says what to do, not what it holds.
-            std::fs::write(place.join("key"), b"short").unwrap();
+            assert!(
+                !place.dir().join("key").exists(),
+                "no key is kept beside the login"
+            );
+            // A certificate for a key this computer no longer has asks for a new login.
+            let other = SigningKey::from_bytes(&[8; 32]);
+            let stale = Device {
+                cert: certified_for_test(&root, &other, "Claude Code on build-box"),
+                ..device
+            };
+            tilo_device_identity::persist::write_device_cert(
+                &keys.device_cert_for_user(&root.verifying_key().to_bytes()),
+                &stale.cert,
+            )
+            .unwrap();
             let said = load(&place).unwrap_err().to_string();
-            assert_eq!(said, LOGIN_DAMAGED);
-            assert!(load(&dir.path().join("none")).unwrap().is_none());
+            assert!(said.contains("`tilo login` again"), "{said}");
+            // A login that is not one says what to do, not what it holds.
+            std::fs::write(place.dir().join("login.json"), b"{}").unwrap();
+            assert_eq!(load(&place).unwrap_err().to_string(), LOGIN_DAMAGED);
+        }
+
+        phase an_earlier_logins_own_key_becomes_this_computers_device_key;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+            let place = Place::at(dir.path().join("device"), keys.clone());
+            let (_, key, device) = device();
+            earlier_login(place.dir(), &key, &device);
+            std::fs::write(place.dir().join("folders.json"), b"{}").unwrap();
+            assert!(place.logged_in());
+            let (read, kept) = load(&place).unwrap().unwrap();
+            assert_eq!(read.to_bytes(), key.to_bytes());
+            assert_eq!(kept, device);
+            assert_eq!(
+                tilo_device_identity::persist::load_device_key(&keys)
+                    .unwrap()
+                    .to_bytes(),
+                key.to_bytes(),
+                "the earlier key is this computer's device key now"
+            );
+            assert!(!place.dir().join("key").exists());
+            assert!(!place.dir().join("device.json").exists());
+            assert!(
+                place.dir().join("folders.json").exists(),
+                "what the login keeps beside it stays"
+            );
+            assert_eq!(load(&place).unwrap().unwrap().1, device, "read back as kept");
+        }
+
+        phase an_earlier_login_on_a_computer_with_its_own_device_key_logs_in_again;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+            let place = Place::at(dir.path().join("device"), keys.clone());
+            let (_, key, device) = device();
+            let session = SigningKey::from_bytes(&[9; 32]);
+            tilo_device_identity::persist::adopt_device_key(&keys, &session.to_bytes()).unwrap();
+            earlier_login(place.dir(), &key, &device);
+            let said = load(&place).unwrap_err().to_string();
+            assert!(said.contains("`tilo login` again"), "{said}");
+            assert_eq!(
+                tilo_device_identity::persist::load_device_key(&keys)
+                    .unwrap()
+                    .to_bytes(),
+                session.to_bytes(),
+                "the computer's own device key stays"
+            );
+            assert!(
+                place.dir().join("key").exists(),
+                "the earlier login stays until the new one is kept"
+            );
         }
 
         phase a_login_leaves_the_tab_for_the_agent_to_confirm;
@@ -1703,6 +1847,14 @@ mod tests {
                 entered: false,
             };
             store_pending(dir.path(), &pending).unwrap();
+            assert!(
+                !Place::at(
+                    dir.path().to_owned(),
+                    tilo_device_identity::IdentityPaths::under(dir.path())
+                )
+                .logged_in(),
+                "a tab following a login is no login"
+            );
             assert_eq!(load_pending(dir.path()), Some(pending));
             assert_eq!(load_pending(&dir.path().join("none")), None);
         }

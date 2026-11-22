@@ -119,7 +119,10 @@ impl Place {
         let Some(dir) = self.lock.parent() else {
             return true;
         };
-        match crate::login::load(dir) {
+        match crate::login::load(&crate::login::Place::at(
+            dir.to_owned(),
+            crate::identity::paths(),
+        )) {
             Ok(Some((key, _))) => key.verifying_key().to_bytes()[..8] == self.key,
             // A login mid-write reads as none; the next look answers for it.
             _ => true,
@@ -2051,13 +2054,16 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let runtime_dir = tempfile::tempdir().unwrap();
         let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-        let key = log_in(state.path(), &root);
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_DEVICE_DIR", state.path())
-            .set("XDG_RUNTIME_DIR", runtime_dir.path())
+        let key = log_in(&mut env, state.path(), &root);
+        env.set("XDG_RUNTIME_DIR", runtime_dir.path())
             .remove(tilo_api::client::KEY_ENV)
             .remove(tilo_api::client::DESKTOP_ENV);
-        let place = Place::of(state.path(), &key.verifying_key().to_bytes()).unwrap();
+        let place = Place::of(
+            crate::login::Place::here().unwrap().dir(),
+            &key.verifying_key().to_bytes(),
+        )
+        .unwrap();
         assert_eq!(
             device::held_api().unwrap(),
             Some(place.api.clone()),
@@ -2184,8 +2190,13 @@ mod tests {
         !server.drain_requests().is_empty()
     }
 
-    /// This computer logged in under `dir` as a device `root` certified: its key.
-    fn log_in(dir: &Path, root: &ed25519_dalek::SigningKey) -> ed25519_dalek::SigningKey {
+    /// This computer logged in under `dir`, as `env` names it, as a device `root` certified: its
+    /// key.
+    fn log_in(
+        env: &mut tilo_test_env::ScopedEnv,
+        dir: &Path,
+        root: &ed25519_dalek::SigningKey,
+    ) -> ed25519_dalek::SigningKey {
         let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let cert = certified(root, &key);
         let login = crate::login::Device {
@@ -2193,14 +2204,12 @@ mod tests {
             host_origin: "https://eu1.tilo.test".into(),
             workspace: "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".into(),
             workspace_name: Some("Studio".into()),
-            user: hex::encode(root.verifying_key().to_bytes()),
             agent: "Claude Code".into(),
-            label: "Claude Code on build-box".into(),
-            cert: hex::encode(postcard::to_allocvec(&cert).unwrap()),
-            server_cert: "00".into(),
+            server_cert: cert.clone(),
+            cert,
             server_address: None,
         };
-        crate::login::store(dir, &key, &login).unwrap();
+        crate::login::keep_for_test(env, dir, &key, &login);
         key
     }
 

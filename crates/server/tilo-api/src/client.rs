@@ -1118,30 +1118,22 @@ pub fn api_url(api: Option<&str>) -> String {
 ///
 /// `None` when this computer did not log in.
 pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
-    let dir = device::device_dir()?;
-    let Some((key, device)) = device::load(&dir)? else {
+    let Some((key, device)) = device::load(&device::Place::here()?)? else {
         return Ok(None);
     };
-    // The login keeps the certificate as postcard bytes; the key file holds
-    // the canonical encoding of the same certificate, which is what `Direct`
-    // reads back.
-    let cert: tilo_user_identity::DeviceCert = postcard::from_bytes(
-        &hex::decode(&device.cert).map_err(|_| anyhow!(device::LOGIN_DAMAGED))?,
-    )
-    .map_err(|_| anyhow!(device::LOGIN_DAMAGED))?;
-    let canonical = tilo_user_identity::canonical::canonical_bytes(&cert)
+    let canonical = tilo_user_identity::canonical::canonical_bytes(&device.cert)
         .map_err(|_| anyhow!(device::LOGIN_DAMAGED))?;
     Ok(Some(crate::direct::KeyFile {
         host: device.host_origin.clone(),
         // The site the device logged in with: links this key asks the host
         // for are built on it, as the site's own page builds them.
         site: Some(device.site.trim_end_matches('/').to_owned()),
-        name: name.map_or_else(|| device.label.clone(), str::to_owned),
+        name: name.map_or_else(|| device.label().to_owned(), str::to_owned),
         key: hex::encode(key.to_bytes()),
         cert: hex::encode(canonical),
         reached_at: match &device.server_address {
             Some(address) => Some(crate::server::ServerInfo {
-                server_cert: device.certs()?.1,
+                server_cert: device.server_cert.clone(),
                 address: Some(address.clone()),
             }),
             None => None,
@@ -1175,7 +1167,8 @@ pub fn held_api_for(reach: Reach<'_>) -> Result<Option<std::path::PathBuf>> {
         (None, None) => None,
     };
     if let Some(secret) = named {
-        let Ok(Some((key, _))) = device::device_dir().and_then(|dir| device::load(&dir)) else {
+        let Ok(Some((key, _))) = device::Place::here().and_then(|place| device::load(&place))
+        else {
             return Ok(None);
         };
         if !crate::constant_time_eq(
@@ -1307,11 +1300,10 @@ mod tests {
         phase a_key_file_needs_no_login_this_computer_can_read;
         {
             let root = std::env::temp_dir().join(format!("tilo-key-file-{}", std::process::id()));
-            let device = root.join("device");
-            std::fs::create_dir_all(&device).expect("a device directory");
-            // A login gone stale: its key is no key at all.
-            std::fs::write(device.join("key"), b"stale").expect("a stale key");
-            std::fs::write(device.join("device.json"), b"{}").expect("a stale login");
+            let login = root.join("state/tilo/device");
+            std::fs::create_dir_all(&login).expect("a login directory");
+            // A login gone stale: it names no device at all.
+            std::fs::write(login.join("login.json"), b"{}").expect("a stale login");
             let file = root.join("key.json");
             let person = crate::tests::Person::new(7);
             let key_file = crate::direct::KeyFile::new(
@@ -1324,9 +1316,11 @@ mod tests {
             std::fs::write(&file, serde_json::to_vec(&key_file).expect("a key file"))
                 .expect("the key file");
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_DEVICE_DIR", &device).remove(KEY_ENV);
+            env.set("XDG_STATE_HOME", root.join("state"))
+                .set("TILO_IDENTITY_ROOT", root.join("identity"))
+                .remove(KEY_ENV);
             assert!(
-                device::load(&device).is_err(),
+                device::load(&device::Place::here().expect("a place")).is_err(),
                 "the login this computer holds cannot be read"
             );
             let reached = held_api_for(Reach {

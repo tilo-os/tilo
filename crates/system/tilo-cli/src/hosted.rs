@@ -1913,7 +1913,7 @@ mod tests {
         let mut cert = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Ada's laptop".into(),
+            device_label: "Claude Code on build-box".into(),
             capabilities: tilo_user_identity::DeviceCapabilities::member(),
             // A minute of slack, as the login's own certificates have: the
             // clock that verifies it is not the clock that issued it.
@@ -1928,16 +1928,13 @@ mod tests {
             host_origin: "https://eu1.tilo.test".into(),
             workspace: "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".into(),
             workspace_name: Some("Studio".into()),
-            user: hex::encode(root.verifying_key().to_bytes()),
             agent: "Claude Code".into(),
-            label: "Claude Code on build-box".into(),
-            cert: hex::encode(postcard::to_allocvec(&cert).unwrap()),
-            server_cert: "00".into(),
+            cert: cert.clone(),
+            server_cert: cert.clone(),
             server_address: None,
         };
-        crate::login::store(dir.path(), &key, &device).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_DEVICE_DIR", dir.path());
+        crate::login::keep_for_test(&mut env, dir.path(), &key, &device);
 
         let file = api::login_key(None)
             .unwrap()
@@ -2086,7 +2083,8 @@ mod tests {
     fn a_new_key_reaches_the_workspace_its_name_names() {
         let device = tempfile::tempdir().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_DEVICE_DIR", device.path())
+        env.set("XDG_STATE_HOME", device.path().join("state"))
+            .set("TILO_IDENTITY_ROOT", device.path().join("identity"))
             .set(api::KEY_ENV, "tilo_sk_test");
         let api_server = test_http::Responder::handle(|request: &test_http::Request| {
             let (status, body) = match (request.method.as_str(), request.target.as_str()) {

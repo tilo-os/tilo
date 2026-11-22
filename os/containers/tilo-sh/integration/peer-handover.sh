@@ -42,7 +42,7 @@ eval "$(bash "$stack" env | grep '^export TILO_SITE=\|^export TILO_API_URL=')"
 mkdir -p "$scratch/home" "$scratch/state" "$scratch/config" "$scratch/runtime"
 chmod 700 "$scratch/runtime"
 # Started in the background as an array, not a function, so `$!` is the tilo process itself.
-computer=(env -u DBUS_SESSION_BUS_ADDRESS -u TILO_API_KEY -u TILO_DEVICE_DIR
+computer=(env -u DBUS_SESSION_BUS_ADDRESS -u TILO_API_KEY
   HOME="$scratch/home" XDG_STATE_HOME="$scratch/state" XDG_CONFIG_HOME="$scratch/config"
   TILO_IDENTITY_ROOT="$scratch/identity"
   XDG_RUNTIME_DIR="$scratch/runtime" TILO_SITE="$TILO_SITE" TILO_API_URL="$TILO_API_URL")

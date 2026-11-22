@@ -3,7 +3,6 @@
 //! (`crates/agent/agent-session/tests/workspace_actions/api_programs.rs`), and against a
 //! session's own API in the session's own tests.
 
-
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -17,7 +16,7 @@ fn repl(args: &[&str], state: &Path, runtime: &Path) -> String {
         .args(["--color", "never"])
         .env("XDG_STATE_HOME", state)
         .env("XDG_RUNTIME_DIR", runtime)
-        .env("TILO_DEVICE_DIR", state.join("device"))
+        .env("TILO_IDENTITY_ROOT", state.join("identity"))
         .env_remove("TILO_API_KEY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

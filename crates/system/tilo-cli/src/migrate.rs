@@ -176,7 +176,7 @@ impl Target {
                 workspace::Hosted::workspace_id(self.reach(), workspace)
             }
             Self::Device => Ok(
-                crate::login::load(&crate::login::device_dir()?)?.map_or_else(
+                crate::login::load(&crate::login::Place::here()?)?.map_or_else(
                     || "this-computer".to_owned(),
                     |(_, device)| device.workspace,
                 ),

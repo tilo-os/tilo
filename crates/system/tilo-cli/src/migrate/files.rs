@@ -297,17 +297,17 @@ pub enum Sink {
 /// The folder the workspace `id` has on this computer, when the peer has it mounted.
 #[must_use]
 pub fn mounted_folder(id: &str) -> Option<PathBuf> {
-    let dir = crate::login::device_dir().ok()?;
-    let folders = crate::peer::folders::Folders::load(&dir).ok()?;
+    let login = crate::login::Place::here().ok()?;
+    let folders = crate::peer::folders::Folders::load(login.dir()).ok()?;
     let folder = folders.workspaces.get(id)?;
     (!folder.removed && is_mounted(&folder.path)).then(|| folder.path.clone())
 }
 
 /// Every workspace folder this computer keeps, so a home review does not list them.
 fn mounted_folders() -> Vec<PathBuf> {
-    crate::login::device_dir()
+    crate::login::Place::here()
         .ok()
-        .and_then(|dir| crate::peer::folders::Folders::load(&dir).ok())
+        .and_then(|login| crate::peer::folders::Folders::load(login.dir()).ok())
         .map(|folders| {
             folders
                 .workspaces

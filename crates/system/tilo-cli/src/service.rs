@@ -33,8 +33,9 @@ pub(crate) const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 /// The environment the service carries over from the login that installed
 /// it: where the device is kept, and what a test's HTTPS trusts.
 const CARRIED: &[&str] = &[
-    "TILO_DEVICE_DIR",
+    "TILO_IDENTITY_ROOT",
     crate::login::TEST_CA_ENV,
+    "XDG_DATA_HOME",
     "XDG_STATE_HOME",
 ];
 
@@ -119,9 +120,10 @@ pub(crate) fn stop() -> Result<()> {
 }
 
 fn place() -> Result<crate::mcp::held::Place> {
-    let dir = crate::login::device_dir()?;
-    let (key, _) = crate::login::load(&dir)?.context(crate::login::NOT_LOGGED_IN)?;
-    crate::mcp::held::Place::of(&dir, &key.verifying_key().to_bytes()).map_err(anyhow::Error::msg)
+    let place = crate::login::Place::here()?;
+    let (key, _) = crate::login::load(&place)?.context(crate::login::NOT_LOGGED_IN)?;
+    crate::mcp::held::Place::of(place.dir(), &key.verifying_key().to_bytes())
+        .map_err(anyhow::Error::msg)
 }
 
 /// What a command sees about the peer from outside, without waiting on an answer.
@@ -680,13 +682,18 @@ mod tests {
     fn the_unit_runs_the_holder_with_the_logins_environment() {
         let unit = unit(
             Path::new("/home/ada/.local/bin/tilo"),
-            &[("TILO_DEVICE_DIR", "/home/ada/state/tilo/device".to_owned())],
+            &[(
+                "TILO_IDENTITY_ROOT",
+                "/home/ada/state/tilo/identity".to_owned(),
+            )],
         );
         assert!(
             unit.contains("ExecStart=\"/home/ada/.local/bin/tilo\" mcp --hold\n"),
             "{unit}"
         );
-        assert!(unit.contains("Environment=\"TILO_DEVICE_DIR=/home/ada/state/tilo/device\"\n"));
+        assert!(
+            unit.contains("Environment=\"TILO_IDENTITY_ROOT=/home/ada/state/tilo/identity\"\n")
+        );
         assert!(
             unit.contains(&format!("TimeoutStopSec={}\n", STOP_TIMEOUT.as_secs())),
             "a stop is given its whole budget before the holder is killed: {unit}"

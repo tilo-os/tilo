@@ -2110,22 +2110,21 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
         let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let cert = crate::login::certified_for_test(&root, &key, "Claude Code on build-box");
         let device = crate::login::Device {
             site: "https://tilo.sh/".into(),
             host_origin: "https://eu1.tilo.test".into(),
             workspace: ENTERED.into(),
             workspace_name: Some("Studio".into()),
-            user: "00".into(),
             agent: "Claude Code".into(),
-            label: "Claude Code on build-box".into(),
-            cert: "00".into(),
-            server_cert: "00".into(),
+            server_cert: cert.clone(),
+            cert,
             server_address: None,
         };
-        crate::login::store(dir.path(), &key, &device).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_DEVICE_DIR", dir.path());
+        crate::login::keep_for_test(&mut env, dir.path(), &key, &device);
         env.remove(api::KEY_ENV);
 
         let members = || Cmd::Workspace {

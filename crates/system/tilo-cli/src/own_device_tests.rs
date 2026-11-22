@@ -140,11 +140,9 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
         host_origin: "https://eu1.tilo.test".into(),
         workspace: workspace.clone(),
         workspace_name: Some("Studio".into()),
-        user: hex::encode(root.verifying_key().to_bytes()),
         agent: "Claude Code".into(),
-        label: "Claude Code on laptop".into(),
-        cert: hex::encode(postcard::to_allocvec(&laptop_cert).unwrap()),
-        server_cert: hex::encode(postcard::to_allocvec(&server_cert).unwrap()),
+        cert: laptop_cert.clone(),
+        server_cert: server_cert.clone(),
         server_address: Some(tilo_server_protocol::web::ServerAddress {
             endpoint_addr: server.node_addr(),
             relay_url: None,

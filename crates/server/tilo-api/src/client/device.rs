@@ -1,116 +1,280 @@
-//! This computer's own login, as `tilo login` keeps it: the device key the
-//! person's root certified for this computer, and what it reaches. Every
-//! program of the login that acts as the person reads it here: `tilo`, and
-//! `tilolang repl`.
+//! This computer's own login, as `tilo login` keeps it: what the login
+//! reaches, with this computer's one device key and the certificate the
+//! person's root signed for it kept where every Tilo program of this
+//! computer keeps them ([`IdentityPaths`]). Every program of the login that
+//! acts as the person reads it here: `tilo`, and `tilolang repl`.
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tilo_device_identity::IdentityPaths;
+use tilo_device_identity::persist::{
+    adopt_device_key, load_device_key, read_device_cert, write_device_cert,
+};
+use tilo_user_identity::DeviceCert;
 
 /// What a login this computer cannot read says.
 pub const LOGIN_DAMAGED: &str = "This computer's Tilo login is damaged: ask the person for a new code from their Tilo tab \
      (Set up with your agent).";
 
-/// Where this account keeps the device: `$XDG_STATE_HOME/tilo/device`.
-///
-/// # Errors
-/// This account has no state directory.
-pub fn device_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("TILO_DEVICE_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
-    Ok(tilo_paths::state_dir()
-        .context("this account has no state directory (no HOME)")?
-        .join("tilo/device"))
+/// What a login says whose certificate is for a device key this computer no longer has.
+const LOGIN_STALE: &str = "This computer's Tilo login is for a device key it no longer has: \
+     `tilo login` again (with a new code from your Tilo tab, unless this computer holds your identity).";
+
+/// The file in [`Place::dir`] a login is kept in.
+const LOGIN_FILE: &str = "login.json";
+
+/// The files in [`Place::dir`] an earlier tilo kept a login in, with a device key of its own:
+/// read once, and removed once the login is kept with this computer's one device key.
+const EARLIER_KEY: &str = "key";
+const EARLIER_LOGIN: &str = "device.json";
+
+/// Where this account keeps its login and what the login keeps on this computer (its folders,
+/// its holder's state): `$XDG_STATE_HOME/tilo/device`. The device key and its certificates are
+/// this computer's, kept where its session keeps them.
+#[derive(Clone, Debug)]
+pub struct Place {
+    dir: PathBuf,
+    keys: IdentityPaths,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+impl Place {
+    /// This account's place: its state directory's, with the device key its session keeps.
+    ///
+    /// # Errors
+    /// This account has no state directory.
+    pub fn here() -> Result<Self> {
+        Ok(Self {
+            dir: tilo_paths::state_dir()
+                .context("this account has no state directory (no HOME)")?
+                .join("tilo/device"),
+            keys: tilo_identity::provisioning::collaboration_identity_paths(),
+        })
+    }
+
+    /// A login kept in `dir`, with the device key and certificates `keys` names.
+    #[must_use]
+    pub fn at(dir: PathBuf, keys: IdentityPaths) -> Self {
+        Self { dir, keys }
+    }
+
+    /// The directory the login is kept in.
+    #[must_use]
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// This computer's device key and certificates.
+    #[must_use]
+    pub fn keys(&self) -> &IdentityPaths {
+        &self.keys
+    }
+
+    /// Whether this computer logged in, without reading the device key: a process that reads it
+    /// makes itself undumpable.
+    #[must_use]
+    pub fn logged_in(&self) -> bool {
+        self.dir.join(LOGIN_FILE).exists() || self.dir.join(EARLIER_KEY).exists()
+    }
+}
+
+/// A login: where this computer goes, and as which device of the person.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     pub site: String,
     pub host_origin: String,
     pub workspace: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_name: Option<String>,
-    pub user: String,
     pub agent: String,
-    pub label: String,
-    pub cert: String,
-    pub server_cert: String,
+    /// The certificate the person's root signed for this computer's device key.
+    pub cert: DeviceCert,
+    /// The host's own certificate, as the login was answered it.
+    pub server_cert: DeviceCert,
     /// Where the server is dialed over iroh, as its signed invitation named it: a server reached
     /// that way only (behind a NAT, through a packet relay) has no web origin to ask.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_address: Option<crate::server::ServerAddress>,
 }
 
 impl Device {
-    /// The device's certificate and the host's.
-    ///
-    /// # Errors
-    /// The login is damaged.
-    pub fn certs(
-        &self,
-    ) -> Result<(
-        tilo_user_identity::DeviceCert,
-        tilo_user_identity::DeviceCert,
-    )> {
-        let read = |hexed: &str| -> Result<tilo_user_identity::DeviceCert> {
-            hex::decode(hexed)
-                .ok()
-                .and_then(|bytes| postcard::from_bytes(&bytes).ok())
-                .ok_or_else(|| anyhow!(LOGIN_DAMAGED))
-        };
-        Ok((read(&self.cert)?, read(&self.server_cert)?))
+    /// How the person's devices name this computer.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.cert.device_label
+    }
+
+    /// The person's user public key, hex.
+    #[must_use]
+    pub fn user(&self) -> String {
+        hex::encode(self.cert.user_public_key)
     }
 }
 
-/// Keep `key` and `device` in `dir`: the key readable by this account only,
-/// both replaced in one rename each.
+/// A login as [`LOGIN_FILE`] keeps it: the certificate is kept with the device key, and found by
+/// the person it names.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Kept {
+    site: String,
+    host_origin: String,
+    workspace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_name: Option<String>,
+    user: String,
+    agent: String,
+    /// The host's certificate, its canonical bytes in hex.
+    server_cert: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    server_address: Option<crate::server::ServerAddress>,
+}
+
+/// Keep `device` in `place`: its certificate beside this computer's device key, which it must
+/// certify, and the rest in [`LOGIN_FILE`]. A login an earlier tilo kept with a key of its own
+/// is removed.
 ///
 /// # Errors
-/// The files cannot be written.
-pub fn store(dir: &Path, key: &SigningKey, device: &Device) -> Result<()> {
-    let write = |name: &str, bytes: &[u8]| -> Result<()> {
-        tilo_files::native::atomic::write_private(&dir.join(name), bytes)?;
-        Ok(())
+/// The certificate is for another key than this computer's, or the files cannot be written.
+pub fn store(place: &Place, device: &Device) -> Result<()> {
+    let key = load_device_key(&place.keys).context("reading this computer's device key")?;
+    if device.cert.device_public_key != key.verifying_key().to_bytes() {
+        bail!("the login's certificate is for another device key than this computer's");
+    }
+    write_device_cert(
+        &place
+            .keys
+            .device_cert_for_user(&device.cert.user_public_key),
+        &device.cert,
+    )?;
+    let kept = Kept {
+        site: device.site.clone(),
+        host_origin: device.host_origin.clone(),
+        workspace: device.workspace.clone(),
+        workspace_name: device.workspace_name.clone(),
+        user: device.user(),
+        agent: device.agent.clone(),
+        server_cert: hex::encode(tilo_user_identity::canonical::canonical_bytes(
+            &device.server_cert,
+        )?),
+        server_address: device.server_address.clone(),
     };
-    write("key", &key.to_bytes())?;
-    write("device.json", &serde_json::to_vec_pretty(device)?)?;
+    tilo_files::native::atomic::write_private(
+        &place.dir.join(LOGIN_FILE),
+        &serde_json::to_vec_pretty(&kept)?,
+    )?;
+    for earlier in [EARLIER_KEY, EARLIER_LOGIN] {
+        match std::fs::remove_file(place.dir.join(earlier)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(anyhow!(error).context("removing the earlier login"));
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 
-/// The key and the device kept in `dir`; `None` when this computer did not
+/// This computer's device key and the login kept in `place`; `None` when this computer did not
 /// log in.
 ///
 /// # Errors
-/// The login is damaged.
-pub fn load(dir: &Path) -> Result<Option<(SigningKey, Device)>> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let key_path = dir.join("key");
-    if !key_path.exists() {
-        return Ok(None);
-    }
-    // The key is this account's alone: one others can read is closed to
-    // them here, rather than asking the person to log in over a mode bit.
-    if std::fs::metadata(&key_path)?.permissions().mode() & 0o077 != 0
-        && std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).is_err()
-    {
-        return Err(anyhow!(LOGIN_DAMAGED));
-    }
+/// The login is damaged, or its certificate is for a device key this computer no longer has.
+pub fn load(place: &Place) -> Result<Option<(SigningKey, Device)>> {
     let damaged = |what: &str, why: &dyn std::fmt::Display| {
         tracing::debug!(%why, "reading this computer's Tilo {what}");
         anyhow!(LOGIN_DAMAGED)
     };
-    let bytes: [u8; 32] = std::fs::read(&key_path)
-        .map_err(|error| damaged("key", &error))?
-        .try_into()
-        .map_err(|_| anyhow!(LOGIN_DAMAGED))?;
-    let device: Device = serde_json::from_slice(
-        &std::fs::read(dir.join("device.json")).map_err(|error| damaged("login", &error))?,
-    )
-    .map_err(|error| damaged("login", &error))?;
-    Ok(Some((SigningKey::from_bytes(&bytes), device)))
+    if place.dir.join(EARLIER_KEY).exists() {
+        return take_earlier(place).map(Some);
+    }
+    let bytes = match std::fs::read(place.dir.join(LOGIN_FILE)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(damaged("login", &error)),
+    };
+    let kept: Kept = serde_json::from_slice(&bytes).map_err(|error| damaged("login", &error))?;
+    let user: [u8; 32] = hex::decode(&kept.user)
+        .ok()
+        .and_then(|user| user.try_into().ok())
+        .ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
+    let key = load_device_key(&place.keys).map_err(|error| damaged("device key", &error))?;
+    let cert = read_device_cert(&place.keys.device_cert_for_user(&user))
+        .map_err(|error| damaged("device certificate", &error))?;
+    if cert.device_public_key != key.verifying_key().to_bytes() || cert.user_public_key != user {
+        bail!(LOGIN_STALE);
+    }
+    let server_cert = hex::decode(&kept.server_cert)
+        .ok()
+        .and_then(|bytes| tilo_user_identity::canonical::from_canonical_bytes(&bytes).ok())
+        .ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
+    Ok(Some((
+        key,
+        Device {
+            site: kept.site,
+            host_origin: kept.host_origin,
+            workspace: kept.workspace,
+            workspace_name: kept.workspace_name,
+            agent: kept.agent,
+            cert,
+            server_cert,
+            server_address: kept.server_address,
+        },
+    )))
+}
+
+/// A login an earlier tilo kept in `place` with a device key of its own, kept with this
+/// computer's one device key now: the earlier key becomes it when the computer has none yet. A
+/// computer that has one already keeps it, and its login is made again (`tilo login`), since the
+/// person's root certified the other key.
+fn take_earlier(place: &Place) -> Result<(SigningKey, Device)> {
+    /// The login as the earlier tilo kept it.
+    #[derive(Deserialize)]
+    struct Earlier {
+        site: String,
+        host_origin: String,
+        workspace: String,
+        #[serde(default)]
+        workspace_name: Option<String>,
+        agent: String,
+        cert: String,
+        server_cert: String,
+        #[serde(default)]
+        server_address: Option<crate::server::ServerAddress>,
+    }
+    let seed: [u8; 32] = std::fs::read(place.dir.join(EARLIER_KEY))
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
+    let kept: Earlier = std::fs::read(place.dir.join(EARLIER_LOGIN))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
+    let cert = |hexed: &str| -> Result<DeviceCert> {
+        hex::decode(hexed)
+            .ok()
+            .and_then(|bytes| postcard::from_bytes(&bytes).ok())
+            .ok_or_else(|| anyhow!(LOGIN_DAMAGED))
+    };
+    let device = Device {
+        site: kept.site,
+        host_origin: kept.host_origin,
+        workspace: kept.workspace,
+        workspace_name: kept.workspace_name,
+        agent: kept.agent,
+        cert: cert(&kept.cert)?,
+        server_cert: cert(&kept.server_cert)?,
+        server_address: kept.server_address,
+    };
+    let key = match load_device_key(&place.keys) {
+        Ok(key) => key,
+        Err(_) if !place.keys.device_privkey.exists() => {
+            adopt_device_key(&place.keys, &seed).context("keeping this computer's device key")?
+        }
+        Err(error) => return Err(anyhow!(error).context("reading this computer's device key")),
+    };
+    if key.to_bytes() != seed {
+        bail!(LOGIN_STALE);
+    }
+    store(place, &device)?;
+    Ok((key, device))
 }
 
 /// The workspace this computer's login entered: its id, and the name the
@@ -120,7 +284,7 @@ pub fn load(dir: &Path) -> Result<Option<(SigningKey, Device)>> {
 /// # Errors
 /// The login is damaged.
 pub fn entered_workspace() -> Result<Option<(String, String)>> {
-    let Some((_, device)) = load(&device_dir()?)? else {
+    let Some((_, device)) = load(&Place::here()?)? else {
         return Ok(None);
     };
     let name = device
@@ -138,11 +302,11 @@ pub fn entered_workspace() -> Result<Option<(String, String)>> {
 /// home's state directory need not be.
 ///
 /// # Errors
-/// `device_dir` is not readable, or the directory is not this account's own.
-pub fn holder_dir(device_dir: &Path) -> Result<PathBuf, String> {
+/// `login_dir` is not readable, or the directory is not this account's own.
+pub fn holder_dir(login_dir: &Path) -> Result<PathBuf, String> {
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
-    let owner = std::fs::metadata(device_dir)
-        .map_err(|error| format!("{} is not readable: {error}", device_dir.display()))?
+    let owner = std::fs::metadata(login_dir)
+        .map_err(|error| format!("{} is not readable: {error}", login_dir.display()))?
         .uid();
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -168,7 +332,7 @@ pub fn holder_dir(device_dir: &Path) -> Result<PathBuf, String> {
 }
 
 /// What the holder of the device whose public key is `key` names its files
-/// by: a new login is a new device, with a holder of its own.
+/// by.
 #[must_use]
 pub fn holder_name(key: &[u8; 32]) -> String {
     format!("session-{}", hex::encode(&key[..8]))
@@ -189,11 +353,11 @@ pub fn holder_api_socket(dir: &Path, name: &str) -> PathBuf {
 /// # Errors
 /// The login is damaged, or the holders' directory is not this account's.
 pub fn held_api() -> Result<Option<PathBuf>> {
-    let dir = device_dir()?;
-    let Some((key, _)) = load(&dir)? else {
+    let place = Place::here()?;
+    let Some((key, _)) = load(&place)? else {
         return Ok(None);
     };
-    let holders = holder_dir(&dir).map_err(|why| anyhow!(why))?;
+    let holders = holder_dir(place.dir()).map_err(|why| anyhow!(why))?;
     Ok(Some(holder_api_socket(
         &holders,
         &holder_name(&key.verifying_key().to_bytes()),

@@ -190,12 +190,12 @@ impl Held {
     /// This computer is not logged in, or its peer could not be reached.
     pub fn connect() -> Result<Self> {
         use crate::mcp::held;
-        let dir = crate::login::device_dir()?;
+        let login = crate::login::Place::here()?;
         let (key, _) =
-            crate::login::load(&dir)?.ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
+            crate::login::load(&login)?.ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
         crate::login::trust_test_certificates()?;
-        let place =
-            held::Place::of(&dir, &key.verifying_key().to_bytes()).map_err(|why| anyhow!(why))?;
+        let place = held::Place::of(login.dir(), &key.verifying_key().to_bytes())
+            .map_err(|why| anyhow!(why))?;
         let stream = if let Some(stream) = held::connect(&place) {
             stream
         } else {
@@ -508,7 +508,7 @@ impl Workspace for Held {
         // The device's own API, over the session this computer already holds: the person's
         // calls are answered as the person there, never as the agent a migration acts as.
         if self.own.is_none() {
-            let workspace = crate::login::load(&crate::login::device_dir()?)?
+            let workspace = crate::login::load(&crate::login::Place::here()?)?
                 .map(|(_, device)| device.workspace)
                 .ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
             self.own = Some(Hosted::connect(

@@ -101,16 +101,17 @@ pub fn run(cmd: FoldersCmd, json: bool) -> Result<ExitCode> {
     if !crate::login::logged_in() {
         bail!("{}", crate::login::NOT_LOGGED_IN);
     }
-    let dir = crate::login::device_dir()?;
+    let place = crate::login::Place::here()?;
+    let dir = place.dir();
     let home = tilo_paths::home().context("HOME is missing")?;
     match cmd {
-        FoldersCmd::List | FoldersCmd::Status => Ok(list(&dir, json)),
+        FoldersCmd::List | FoldersCmd::Status => Ok(list(dir, json)),
         FoldersCmd::Start => {
             let running = start()?;
             if !json {
                 println!("{}", running_said(&running));
             }
-            Ok(list(&dir, json))
+            Ok(list(dir, json))
         }
         FoldersCmd::Stop => {
             crate::service::stop()?;
@@ -121,8 +122,8 @@ pub fn run(cmd: FoldersCmd, json: bool) -> Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        FoldersCmd::Add { workspace, path } => add(&dir, &home, &workspace, path, json),
-        FoldersCmd::Remove { folder } => change(&dir, &folder, json, |folder| {
+        FoldersCmd::Add { workspace, path } => add(dir, &home, &workspace, path, json),
+        FoldersCmd::Remove { folder } => change(dir, &folder, json, |folder| {
             folder.removed = true;
             format!(
                 "Removed the folder at {} from this computer; its files stay in the workspace.",
@@ -131,24 +132,24 @@ pub fn run(cmd: FoldersCmd, json: bool) -> Result<ExitCode> {
         }),
         FoldersCmd::Move { folder, to } => {
             let to = std::path::absolute(&to)?;
-            change(&dir, &folder, json, |folder| {
+            change(dir, &folder, json, |folder| {
                 folder.path.clone_from(&to);
                 format!("{} is now at {}.", folder.name, to.display())
             })
         }
-        FoldersCmd::Pause { folder } => each(&dir, folder.as_deref(), json, true),
-        FoldersCmd::Resume { folder } => each(&dir, folder.as_deref(), json, false),
+        FoldersCmd::Pause { folder } => each(dir, folder.as_deref(), json, true),
+        FoldersCmd::Resume { folder } => each(dir, folder.as_deref(), json, false),
         FoldersCmd::Keep { paths } => residency(&paths, true, json),
         FoldersCmd::Free { paths } => residency(&paths, false, json),
         FoldersCmd::Auto { own, joined } => {
-            let mut folders = Folders::load(&dir)?;
+            let mut folders = Folders::load(dir)?;
             if let Some(own) = own {
                 folders.auto_own = matches!(own, Switch::On);
             }
             if let Some(joined) = joined {
                 folders.auto_joined = matches!(joined, Switch::On);
             }
-            folders.save(&dir)?;
+            folders.save(dir)?;
             let said = format!(
                 "Workspaces of your own get a folder here by themselves: {}. Workspaces you joined: {}.",
                 if folders.auto_own { "yes" } else { "no" },
@@ -550,11 +551,12 @@ fn files_in(path: &Path) -> Vec<PathBuf> {
 /// # Errors
 /// The folder could not be kept or the peer could not start.
 pub(crate) fn after_login(workspace: &str, name: Option<&str>) -> Result<PathBuf> {
-    let dir = crate::login::device_dir()?;
+    let place = crate::login::Place::here()?;
+    let dir = place.dir();
     let home = tilo_paths::home().context("HOME is missing")?;
-    let mut folders = Folders::load(&dir)?;
+    let mut folders = Folders::load(dir)?;
     folders.offer(workspace, name.unwrap_or("Workspace"), true, &home);
-    folders.save(&dir)?;
+    folders.save(dir)?;
     let path = folders
         .workspaces
         .get(workspace)

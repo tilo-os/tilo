@@ -191,7 +191,10 @@ async fn put_in_tree(
             writes
                 .write(workspace, &automerge::AutoCommit::new().save(), record)
                 .await
-                .map_or_else(|refusal| panic!("a tree record is founded: {refusal:?}"), drop);
+                .map_or_else(
+                    |refusal| panic!("a tree record is founded: {refusal:?}"),
+                    drop,
+                );
             record.founding = false;
             record.snapshot = false;
         }
@@ -326,7 +329,6 @@ impl Computer {
 fn login_to(
     server: &tilo_server::daemon::Server,
     workspace: &str,
-    root: &SigningKey,
     (laptop_cert, server_cert): (&DeviceCert, &DeviceCert),
 ) -> crate::login::Device {
     crate::login::Device {
@@ -334,11 +336,9 @@ fn login_to(
         host_origin: "https://eu1.tilo.test".into(),
         workspace: workspace.to_owned(),
         workspace_name: Some("Studio".into()),
-        user: hex::encode(root.verifying_key().to_bytes()),
         agent: "Claude Code".into(),
-        label: "Claude Code on laptop".into(),
-        cert: hex::encode(postcard::to_allocvec(laptop_cert).unwrap()),
-        server_cert: hex::encode(postcard::to_allocvec(server_cert).unwrap()),
+        cert: laptop_cert.clone(),
+        server_cert: server_cert.clone(),
         server_address: Some(tilo_server_protocol::web::ServerAddress {
             endpoint_addr: server.node_addr(),
             relay_url: None,
@@ -412,7 +412,7 @@ async fn a_synced_folder_follows_the_server_both_ways_across_a_restart() {
     )
     .await;
 
-    let login = login_to(&server, &workspace, &root, (&laptop_cert, &server_cert));
+    let login = login_to(&server, &workspace, (&laptop_cert, &server_cert));
     let (dir, home) = (state.path().join("laptop"), state.path().join("home"));
     let folder = folder_at(&dir, &home, &workspace);
     let keys = (&laptop_key, &laptop_cert);

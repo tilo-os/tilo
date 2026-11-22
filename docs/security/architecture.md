@@ -142,10 +142,30 @@ browser's 30 days count from the earlier start too, so nothing lasts longer than
 
 ### 3.3 What this replaces
 
-Every identity in the system should derive from the device certificate: one cryptographic
-identity per device, whose public half is the name other machines know it by. Today `tilo login`
-still mints a key of its own for the command line (`tilo-api` `client/device.rs`); that key is
-being replaced by the `IdentityPaths` one, after which no subsystem mints its own.
+Every identity in the system derives from the device certificate. There is exactly one
+cryptographic identity per device, and its public half is the name other machines know it by. No
+subsystem mints its own: `tilo login` and the agents it serves sign with the `IdentityPaths` key,
+and keep only where the login goes (`$XDG_STATE_HOME/tilo/device/login.json`: site, host,
+workspace, the host's certificate, the agent). The certificate the person's root signed for the
+key is kept beside it, in `device/certs/<user>.bin`.
+
+#### Adding a computer with a login code
+
+1. On the new computer, `tilo login K7Q-MX2P` with the code the person's tab shows ("Set up with
+   your agent"). The computer loads its device key, or creates it if it has none yet, and asks
+   the site's server to resolve the code.
+2. The person's tab approves. Their root signs a member `DeviceCert` over the computer's public
+   device key, and the server hands it to the waiting computer.
+3. The computer keeps the certificate with its device key and the destination in `login.json`,
+   then enters the workspace over its one session.
+
+A computer that already holds the person's root runs `tilo login` with no code: it signs the
+certificate for its own device key itself and adds the device to the person's list. A login an
+earlier tilo kept with a key of its own (`$XDG_STATE_HOME/tilo/device/key`) is taken over once.
+Its key becomes the device key when the computer has none, and otherwise the person logs in
+again, so that a computer keeps one key. On a computer whose Tilo desktop is running, the desktop
+is the device already, and `tilo login` refuses rather than open a second session under the same
+key.
 
 ### 3.4 Revocation
 

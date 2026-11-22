@@ -469,8 +469,8 @@ fn signed_in(options: &ReplOptions) -> Result<bool, String> {
     if tilo_api::client::desktop_socket().is_some() {
         return Ok(true);
     }
-    let dir = tilo_api::client::device::device_dir().map_err(|error| error.to_string())?;
-    Ok(tilo_api::client::device::load(&dir)
+    let place = tilo_api::client::device::Place::here().map_err(|error| error.to_string())?;
+    Ok(tilo_api::client::device::load(&place)
         .map_err(|error| error.to_string())?
         .is_some())
 }

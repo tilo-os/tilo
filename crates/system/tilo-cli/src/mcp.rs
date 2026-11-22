@@ -128,8 +128,7 @@ impl Own {
                 let server = crate::login::server_of(device)
                     .await
                     .map_err(|error| error.to_string())?;
-                let (cert, _) = device.certs().map_err(|error| error.to_string())?;
-                crate::own_device::OwnDevice::open(&self.dir, key, &cert, &server)
+                crate::own_device::OwnDevice::open(&self.dir, key, &device.cert, &server)
                     .await
                     .map(Arc::new)
             })
@@ -410,7 +409,7 @@ impl<E: Enter> Connection<E> {
         // Only a connection that starts enters again in place of a session the person stopped.
         let session = self.shared.session(held.is_none(), Ask::Agent).await?;
         let device = self.shared.device.as_ref().map_err(Clone::clone)?;
-        let served = Arc::new(open(&session, device, &self.run)?);
+        let served = Arc::new(open(&session, device, &self.run));
         *held = Some(Arc::clone(&served));
         drop(held);
         Ok((served, session))
@@ -419,12 +418,9 @@ impl<E: Enter> Connection<E> {
 
 /// The projection over the workspace `session` is in, its actions asked of
 /// the workspace's host.
-fn open(session: &Arc<Session>, device: &Device, run: &str) -> Result<Served, String> {
+fn open(session: &Arc<Session>, device: &Device, run: &str) -> Served {
     let workspace_id = session.device.workspace_id();
-    let user: [u8; 32] = hex::decode(&device.user)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or(crate::login::LOGIN_DAMAGED)?;
+    let user = device.cert.user_public_key;
     let actions = session.device.actions(workspace_id);
     let person = hex::encode(user);
     // Every session of this agent, on any computer of the person's, is the one agent the host
@@ -443,10 +439,10 @@ fn open(session: &Arc<Session>, device: &Device, run: &str) -> Result<Served, St
             Some(&person),
             Arc::new(catalogue),
         ))));
-    Ok(Served {
+    Served {
         session: Arc::downgrade(session),
         server,
-    })
+    }
 }
 
 /// `tilo mcp`: on a Tilo desktop, the desktop's own MCP server, which asks the person to let the
@@ -464,7 +460,7 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
     // No desktop answers here: one that ended leaves its socket behind, and one whose first login
     // is not complete has none yet. This computer's own login then holds its device, as on any
     // other computer; without one the agent hears what it waits for.
-    let device = match (crate::login::load(&crate::login::device_dir()?)?, desktop) {
+    let device = match (crate::login::load(&crate::login::Place::here()?)?, desktop) {
         (Some(device), _) => Ok(device),
         (None, Ok(Some(server))) => {
             tilo_mcp::session_api::bridge(&server, tilo_mcp::session_api::session_name())?;
@@ -481,7 +477,7 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
         return held::alone(&shared(device));
     };
     let place = held::Place::of(
-        &crate::login::device_dir()?,
+        crate::login::Place::here()?.dir(),
         &key.verifying_key().to_bytes(),
     );
     if hold {
@@ -533,12 +529,12 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
 /// # Errors
 /// The login is damaged, or the holder did not start.
 pub(crate) fn ensure_held() -> Result<()> {
-    let dir = crate::login::device_dir()?;
-    let Some((key, _)) = crate::login::load(&dir)? else {
+    let login = crate::login::Place::here()?;
+    let Some((key, _)) = crate::login::load(&login)? else {
         return Ok(());
     };
-    let place =
-        held::Place::of(&dir, &key.verifying_key().to_bytes()).map_err(anyhow::Error::msg)?;
+    let place = held::Place::of(login.dir(), &key.verifying_key().to_bytes())
+        .map_err(anyhow::Error::msg)?;
     held::ensure(&place).map_err(anyhow::Error::msg)
 }
 
@@ -744,8 +740,8 @@ pub(crate) async fn peer_status<E: Enter>(shared: &Shared<E>) -> Value {
         .clone();
     json!({
         "pid": std::process::id(),
-        "device": device.map(|device| &device.label),
-        "person": device.map(|device| &device.user),
+        "device": device.map(Device::label),
+        "person": device.map(Device::user),
         "host": device.map(|device| &device.host_origin),
         "session": phase,
         "not_in": not_in,
@@ -766,12 +762,9 @@ pub(crate) fn ask_peer() -> Option<Value> {
 /// no peer runs.
 fn ask_peer_with(method: &str) -> Option<Value> {
     use std::io::{BufRead as _, Write as _};
-    let (key, _) = crate::login::load(&crate::login::device_dir().ok()?).ok()??;
-    let place = held::Place::of(
-        &crate::login::device_dir().ok()?,
-        &key.verifying_key().to_bytes(),
-    )
-    .ok()?;
+    let login = crate::login::Place::here().ok()?;
+    let (key, _) = crate::login::load(&login).ok()??;
+    let place = held::Place::of(login.dir(), &key.verifying_key().to_bytes()).ok()?;
     let mut stream = held::connect(&place)?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     writeln!(

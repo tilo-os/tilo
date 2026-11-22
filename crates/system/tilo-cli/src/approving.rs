@@ -59,13 +59,10 @@ pub(crate) fn serve() -> anyhow::Result<ExitCode> {
     let Some(person) = crate::identity::held()? else {
         return Ok(ExitCode::SUCCESS);
     };
-    let Some((_, device)) = crate::login::load(&crate::login::device_dir()?)? else {
+    let Some((_, device)) = crate::login::load(&crate::login::Place::here()?)? else {
         return Ok(ExitCode::SUCCESS);
     };
-    let user: Option<[u8; 32]> = hex::decode(&device.user)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok());
-    if user != Some(person.public_key()) {
+    if device.cert.user_public_key != person.public_key() {
         return Ok(ExitCode::SUCCESS);
     }
     let agent = tilo_actions::remote::device_agent_id(&person.public_key(), &device.agent);
