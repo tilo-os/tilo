@@ -152,11 +152,32 @@ pub(crate) fn answer_form(asked: &Asked, proof: &SignInProof, cert: &DeviceCert)
 }
 
 /// A host's info as the host writes it (`web-host.json`): the fixture the image check hands the
-/// server, with `origin` where it names its web origin.
+/// server, with `origin` where it names its HTTPS origin.
 fn host_info(origin: &str) -> tilo_server_protocol::web::ServerInfo {
     let json = include_str!("../../../../os/containers/tilo-api/host-info.json")
         .replace("https://server.example.test", origin);
-    serde_json::from_str(&json).unwrap()
+    serde_json::from_str::<tilo_server_protocol::web::PageHost>(&json)
+        .unwrap()
+        .into()
+}
+
+/// A host is named by its HTTPS origin, as its grants' devices and its links are, even where its
+/// WebTransport listener answers at another name and port (tilo.sh's `link-eu1.tilo.sh:4443`
+/// beside `eu1.tilo.sh`): naming it by the listener would move every grant to another device.
+#[test]
+fn a_host_is_named_by_its_https_origin_not_its_link() {
+    let info = host_info("https://eu1.tilo.sh");
+    let link = info
+        .address
+        .as_ref()
+        .and_then(|address| address.web.as_ref());
+    assert_eq!(
+        link.map(|web| web.origin.as_str()),
+        Some("https://link.server.example.test:4443")
+    );
+    let server = crate::server::Server::new(info);
+    assert_eq!(server.name(), "eu1.tilo.sh");
+    assert_eq!(server.origin(), "https://eu1.tilo.sh");
 }
 
 fn server() -> Arc<Server> {

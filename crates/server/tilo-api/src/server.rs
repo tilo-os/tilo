@@ -180,16 +180,16 @@ pub struct Server {
 }
 
 impl Server {
-    /// The server `info` names: its certificate, where its endpoint is dialled, and the web
-    /// origin its links name (its endpoint's key where it serves no browsers: a key file's links
-    /// use its own site, and this is only what the API calls the host).
+    /// The server `info` names: its certificate, where its endpoint is dialled, and its HTTPS
+    /// origin, which names it and its links (its endpoint's key where it serves no web: a key
+    /// file's links use its own site, and this is only what the API calls the host). Never its
+    /// WebTransport listener's origin, which may be another name and port.
     #[must_use]
     pub fn new(info: ServerInfo) -> Self {
         let origin = info
-            .address
+            .origin
             .as_ref()
-            .and_then(|address| address.web.as_ref())
-            .map(|web| web.origin.trim_end_matches('/').to_owned())
+            .map(|origin| origin.trim_end_matches('/').to_owned())
             .or_else(|| {
                 info.address
                     .as_ref()

@@ -103,6 +103,11 @@ pub struct ServerInfo {
     /// everything a session and its live sessions carry. `None` in a host that serves
     /// no iroh endpoint.
     pub address: Option<ServerAddress>,
+    /// The host's HTTPS origin (`https://eu1.tilo.sh`): its name, where its
+    /// pages and the links it makes are. Its WebTransport listener may answer
+    /// at another (`address.web`). `None` from a host that serves no web.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// Where a host's iroh endpoint is dialled, kept with a device's login.
@@ -120,6 +125,9 @@ pub struct PageHost {
     pub server_cert: tilo_user_identity::DeviceCert,
     /// Where the host listens on iroh, when it names an endpoint.
     pub address: Option<PageHostAddress>,
+    /// The host's HTTPS origin ([`ServerInfo::origin`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// [`ServerAddress`] as a page reads it (JSON).
@@ -161,6 +169,17 @@ impl From<ServerInfo> for PageHost {
         Self {
             server_cert: info.server_cert,
             address: info.address.map(Into::into),
+            origin: info.origin,
+        }
+    }
+}
+
+impl From<PageHost> for ServerInfo {
+    fn from(host: PageHost) -> Self {
+        Self {
+            server_cert: host.server_cert,
+            address: host.address.map(Into::into),
+            origin: host.origin,
         }
     }
 }
@@ -192,6 +211,7 @@ impl ServerInfo {
         PageHost {
             server_cert: self.server_cert.clone(),
             address,
+            origin: self.origin.clone(),
         }
     }
 }

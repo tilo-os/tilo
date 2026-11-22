@@ -9,15 +9,15 @@
 //! - `TILO_API_WEB_ENTRY`: the person's Tilo on the web, which signs them in.
 //! - `TILO_API_STATE`: the file the server keeps clients and grants in.
 //! - `TILO_API_HOST`: the Tilo hosts the person's workspaces may live on,
-//!   each as the host writes it (`web-host.json`): its certificate and where it
-//!   is dialled, its web origin among them. One object, or a JSON array of
-//!   them. The server forwards each call to the host that serves it best and
+//!   each as the host writes it (`web-host.json`): its certificate, where it
+//!   is dialled, and its HTTPS origin, which names it. One object, or a JSON
+//!   array of them. The server forwards each call to the host that serves it best and
 //!   keeps no workspace of its own ([`tilo_api::hosts`]); it never asks a
 //!   host's web origin who it is.
 
 use std::path::PathBuf;
 use tilo_api::{Config, Server, store::Store};
-use tilo_server_protocol::web::ServerInfo;
+use tilo_server_protocol::web::{PageHost, ServerInfo};
 
 fn var(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("{name} is required"))
@@ -36,26 +36,22 @@ fn origin(name: &str) -> Result<String, String> {
 fn hosts(name: &str) -> Result<Vec<ServerInfo>, String> {
     let value: serde_json::Value =
         serde_json::from_str(&var(name)?).map_err(|error| format!("{name}: {error}"))?;
-    let infos: Vec<ServerInfo> = match value {
+    let hosts: Vec<PageHost> = match value {
         serde_json::Value::Array(_) => serde_json::from_value(value),
-        one => serde_json::from_value(one).map(|info| vec![info]),
+        one => serde_json::from_value(one).map(|host| vec![host]),
     }
-    .map_err(|error| format!("{name}: {error}"))?;
-    for info in &infos {
-        let web = info
-            .address
-            .as_ref()
-            .and_then(|address| address.web.as_ref());
-        let names_itself = web.is_some_and(|web| {
-            url::Url::parse(&web.origin).is_ok_and(|origin| tilo_net::secure_origin(&origin))
+    .map_err(|error| format!("{name}: {error} (what the host writes in `web-host.json`)"))?;
+    for host in &hosts {
+        let names_itself = host.origin.as_deref().is_some_and(|origin| {
+            url::Url::parse(origin).is_ok_and(|origin| tilo_net::secure_origin(&origin))
         });
         if !names_itself {
             return Err(format!(
-                "{name}: a host names no https web origin (what the host writes in `web-host.json`)"
+                "{name}: a host names no https origin (what the host writes in `web-host.json`)"
             ));
         }
     }
-    Ok(infos)
+    Ok(hosts.into_iter().map(ServerInfo::from).collect())
 }
 
 fn main() -> Result<(), String> {

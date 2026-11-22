@@ -96,6 +96,7 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         server_info: ServerInfo {
             server_cert: host.cert.clone(),
             address: None,
+            origin: None,
         },
         endpoint: None,
         allowed_origins: vec![],

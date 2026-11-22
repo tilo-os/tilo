@@ -1143,6 +1143,7 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
             Some(address) => Some(crate::server::ServerInfo {
                 server_cert: device.server_cert.clone(),
                 address: Some(address.clone()),
+                origin: Some(device.host_origin.clone()),
             }),
             None => None,
         },
