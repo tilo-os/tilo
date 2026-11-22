@@ -43,6 +43,10 @@ pub const VISITOR_WINDOW_FLAG: &str = "--visitor";
 /// Where a tilolang process keeps the storage of its workspace and author.
 pub const STORAGE_ENV: &str = "TILO_TILOLANG_PROCESS_STORAGE";
 
+/// Where a tilolang process reads what an earlier version of its app kept on this device: a store
+/// the session granted it read-only, holding only that app's documents in the process's workspace.
+pub const EARLIER_ENV: &str = "TILO_TILOLANG_PROCESS_EARLIER";
+
 /// Set on a launch whose window shows an instance a tilolang process runs.
 pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
 
@@ -279,7 +283,11 @@ impl InstanceFds {
             broker: self.broker.try_clone()?,
             identity: self.identity.try_clone()?,
             module: self.module.try_clone()?,
-            window: self.window.as_ref().map(Descriptor::try_clone).transpose()?,
+            window: self
+                .window
+                .as_ref()
+                .map(Descriptor::try_clone)
+                .transpose()?,
             origin: self
                 .origin
                 .as_ref()

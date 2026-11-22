@@ -36,13 +36,13 @@ use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TY
 use collaboration::{
     CollabEvent, CollabRequest, DocumentMutation, SurfaceDelta, SurfacePublication, WorkspaceCommit,
 };
+use runtime_portal::process_link::Shows;
 use tilo_actions::{
     ActionAddress, ActionContext, ActionDescriptor, ActionInvoker, ActionRegistry, EncodedAction,
     InvocationId, InvocationUpdate, ResourceSpec,
 };
 use tilo_render_protocol::WireError;
 use tilo_render_protocol::patch::{ActionCatalogue, ToUi, Transport};
-use runtime_portal::process_link::Shows;
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
@@ -166,8 +166,9 @@ impl Transport for NoView {
 }
 
 /// The documents a native app of the package's id `app` kept in `record`'s workspace on this
-/// device, when this device governs the workspace (none elsewhere), each by the key it is stored
-/// under: its records, which the package now under that id carries over once with a migration of
+/// device, when this device governs the workspace (none elsewhere), each by the id it holds (a
+/// store keys a document by a name made from its id), else by the key it is stored under: its
+/// records, which the package now under that id carries over once with a migration of
 /// its own. They are read under `app`, not under the id of `record`'s route: a package published
 /// under another id before keeps its own documents there, while the native app it took the id
 /// from wrote under the id the package has now.
@@ -203,7 +204,11 @@ fn earlier_documents(
                 .map_err(|error| error.to_string())
                 .and_then(|mut store| store.load().map_err(|error| error.to_string()));
         match loaded {
-            Ok(Some(doc)) => read.push((key, doc)),
+            Ok(Some(doc)) => {
+                let id = collab_types::document::identity::identity(&doc)
+                    .map_or(key, |held| held.id.as_str().to_owned());
+                read.push((id, doc));
+            }
             Ok(None) => {
                 tracing::warn!(
                     app,
@@ -459,9 +464,7 @@ fn with_app_actions(
     activate: Option<&tilo_actions::ActionSpec>,
 ) -> ResourceSpec {
     let mut resource = tilolang_tilo::history::with_verbs(resource);
-    for spec in std::iter::once(tilo_resource::read::spec(None))
-        .chain(activate.cloned())
-    {
+    for spec in std::iter::once(tilo_resource::read::spec(None)).chain(activate.cloned()) {
         if !resource
             .actions
             .iter()
@@ -1901,7 +1904,11 @@ impl Hosted {
     /// cursors, results of requests it never makes), but for what it names: what each app
     /// installed here is called rides with the context, and is what this window's history reads
     /// another app's change as.
-    fn delivered(&mut self, event: CollabEvent, cancelled: &std::collections::HashSet<u64>) -> bool {
+    fn delivered(
+        &mut self,
+        event: CollabEvent,
+        cancelled: &std::collections::HashSet<u64>,
+    ) -> bool {
         if let Some(moved) = self.personal.take(&event, self.record.manager_mut()) {
             return moved;
         }

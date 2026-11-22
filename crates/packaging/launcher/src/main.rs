@@ -295,6 +295,13 @@ enum Cmd {
         /// The storage of the process's workspace and author.
         #[arg(long)]
         storage: PathBuf,
+        /// What an earlier version of its app kept on this device, granted read-only: that app's
+        /// documents in the process's workspace.
+        #[arg(long, requires = "earlier_under")]
+        earlier: Option<PathBuf>,
+        /// Where the process sees `--earlier`, as a relative path beneath its mount.
+        #[arg(long, requires = "earlier")]
+        earlier_under: Option<PathBuf>,
     },
 }
 
@@ -599,12 +606,26 @@ fn dispatch_command(
             runtime,
             app_runtime,
             storage,
-        } => tilolang_process(runtime, app_runtime, storage),
+            earlier,
+            earlier_under,
+        } => tilolang_process(
+            runtime,
+            app_runtime,
+            storage,
+            earlier
+                .zip(earlier_under)
+                .map(|(dir, under)| launcher::run::tilolang_process::Earlier { dir, under }),
+        ),
     }
 }
 
 /// Run the tilolang host the session started, on the socket it handed over at descriptor 3.
-fn tilolang_process(runtime: String, app_runtime: String, storage: PathBuf) -> ExitCode {
+fn tilolang_process(
+    runtime: String,
+    app_runtime: String,
+    storage: PathBuf,
+    earlier: Option<launcher::run::tilolang_process::Earlier>,
+) -> ExitCode {
     use launcher::run::tilolang_process::{ProcessLaunch, launch_tilolang_process};
     // SAFETY: the session hands the socket at this descriptor and nothing else owns it in this process.
     let socket = unsafe {
@@ -616,6 +637,7 @@ fn tilolang_process(runtime: String, app_runtime: String, storage: PathBuf) -> E
         runtime,
         app_runtime,
         storage,
+        earlier,
     };
     match launch_tilolang_process(&launch, socket, &launcher::run::LaunchOptions::default()) {
         Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),

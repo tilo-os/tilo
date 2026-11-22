@@ -229,8 +229,10 @@ pub struct Instance {
     pub locale: runtime_portal::process_link::Locale,
 }
 
-/// How a process is started: the command for one on `runtime` and `app_runtime`, keeping `storage`.
-type Starts = dyn Fn(&str, &str, &Path) -> Command + Send + Sync;
+/// How a process is started: the command for one on `runtime` and `app_runtime`, keeping `storage`
+/// and reading what an earlier version of its app kept (the directory, and where the process sees
+/// it beneath its mount).
+type Starts = dyn Fn(&str, &str, &Path, Option<(&Path, &Path)>) -> Command + Send + Sync;
 /// How an installed app is verified for a process: the workspace it is installed in, and the app.
 type Verifies = dyn Fn(&str, &str) -> Result<VerifiedInstance, String> + Send + Sync;
 
@@ -255,7 +257,7 @@ impl Processes {
             tilo_paths::xdg::data_home().unwrap_or_else(|| PathBuf::from("/nonexistent"));
         Self::with(
             data_home,
-            Box::new(move |runtime, app_runtime, storage| {
+            Box::new(move |runtime, app_runtime, storage, earlier| {
                 let mut command = Command::new(&launcher);
                 command
                     .arg(launcher::run::tilolang_process::SUBCOMMAND)
@@ -265,6 +267,13 @@ impl Processes {
                     .arg(app_runtime)
                     .arg("--storage")
                     .arg(storage);
+                if let Some((dir, under)) = earlier {
+                    command
+                        .arg("--earlier")
+                        .arg(dir)
+                        .arg("--earlier-under")
+                        .arg(under);
+                }
                 command
             }),
             Box::new(verified_installed),
@@ -672,13 +681,36 @@ impl Processes {
         Ok(dir)
     }
 
+    /// What an earlier version of the app of `key` kept on this device, in the store its windows
+    /// and the native app it replaced wrote: the directory of that app's documents in the
+    /// workspace, and where it lies beneath that store's root. `None` where it kept nothing.
+    fn earlier(&self, key: &HostKey) -> Option<(PathBuf, PathBuf)> {
+        let root = launcher::appdir::host_app_dir(
+            &self.data_home,
+            &launcher::appdir::workspace_slug(Some(&key.workspace)),
+            &key.app,
+        )
+        .join(".local/share");
+        let dir = app_state::workspace_index_directory(&root, &key.app, &key.workspace).ok()?;
+        let under = dir.strip_prefix(&root).ok()?.to_path_buf();
+        dir.is_dir().then_some((dir, under))
+    }
+
     /// Start the process `key`, with its socket at the launch kind's descriptor, and follow it on a
     /// thread of its own until it ends.
     fn start(self: &Arc<Self>, key: &HostKey) -> std::io::Result<Host> {
         use std::os::unix::process::CommandExt as _;
         let storage = self.storage(key)?;
         let (ours, theirs) = runtime_portal::process_link::pair()?;
-        let mut command = (self.starts)(&key.runtime, &key.app_runtime, &storage);
+        let earlier = self.earlier(key);
+        let mut command = (self.starts)(
+            &key.runtime,
+            &key.app_runtime,
+            &storage,
+            earlier
+                .as_ref()
+                .map(|(dir, under)| (dir.as_path(), under.as_path())),
+        );
         command
             .stdin(std::process::Stdio::null())
             // Read here: what it said last is why it ended when it could not say so itself.
@@ -904,7 +936,7 @@ mod tests {
     fn running(running: Vec<(&str, OwnedFd)>) -> Arc<Processes> {
         let processes = Processes::with(
             std::env::temp_dir(),
-            Box::new(|_, _, _| Command::new("true")),
+            Box::new(|_, _, _, _| Command::new("true")),
             Box::new(|_, _| Err("no package store here".to_owned())),
         );
         for (workspace, socket) in running {
@@ -1019,7 +1051,7 @@ mod tests {
         let store = Arc::clone(&installed);
         let processes = Processes::with(
             std::env::temp_dir(),
-            Box::new(|_, _, _| Command::new("true")),
+            Box::new(|_, _, _, _| Command::new("true")),
             Box::new(move |_, _| {
                 Ok(VerifiedInstance {
                     runtime: "tilolang@1".to_owned(),
@@ -1102,5 +1134,58 @@ mod tests {
         );
     }
 
-
+    /// A process of an app is granted, read-only, what that app kept of its workspace in the store
+    /// its windows and the native app it replaced wrote: only that app's documents of that
+    /// workspace, and nothing where it kept none.
+    #[test]
+    fn a_process_reads_what_its_app_kept_of_its_workspace_and_nothing_else() {
+        let home = tempfile::tempdir().unwrap();
+        let processes = Processes::with(
+            home.path().to_path_buf(),
+            Box::new(|_, _, _, _| Command::new("true")),
+            Box::new(|_, _| Err("no package store here".to_owned())),
+        );
+        let workspace = uuid::Uuid::new_v4().to_string();
+        let key = |workspace: &str, app: &str| HostKey {
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+            runtime: "tilolang@1".to_owned(),
+            app_runtime: "tilo@1".to_owned(),
+        };
+        assert!(
+            processes.earlier(&key(&workspace, NOTES)).is_none(),
+            "nothing is granted where the app kept nothing"
+        );
+        let data = launcher::appdir::host_app_dir(
+            home.path(),
+            &launcher::appdir::workspace_slug(Some(&workspace)),
+            NOTES,
+        )
+        .join(".local/share");
+        let kept = app_state::workspace_index_directory(&data, NOTES, &workspace).unwrap();
+        std::fs::create_dir_all(kept.join(app_state::DOCUMENTS_DIR)).unwrap();
+        let (dir, under) = processes
+            .earlier(&key(&workspace, NOTES))
+            .expect("what Notes kept of the workspace");
+        assert_eq!(dir, kept);
+        assert_eq!(
+            under,
+            std::path::Path::new(NOTES)
+                .join("workspaces")
+                .join(&workspace),
+            "seen where the store that wrote it kept it"
+        );
+        assert!(
+            processes
+                .earlier(&key(&workspace, "so.tilo.mail"))
+                .is_none(),
+            "another app's process is granted none of it"
+        );
+        assert!(
+            processes
+                .earlier(&key(&uuid::Uuid::new_v4().to_string(), NOTES))
+                .is_none(),
+            "nor is Notes' process of another workspace"
+        );
+    }
 }

@@ -280,7 +280,56 @@ pub struct TilolangProcess {
     builds: std::collections::HashMap<String, Arc<LaterBuilds>>,
     /// The one copy this host holds of each app's documents, in memory: what two windows of the
     /// app in it read and write together, as they read and wrote one copy on disk before.
-    documents: std::cell::RefCell<std::collections::HashMap<String, Rc<durable_store::MemoryStore>>>,
+    documents:
+        std::cell::RefCell<std::collections::HashMap<String, Rc<durable_store::MemoryStore>>>,
+    /// What an earlier version of the host's app kept on this device ([`Self::reading_earlier`]):
+    /// the directory the session granted read-only, and the copy read from it once it was read
+    /// whole.
+    earlier: Option<Earlier>,
+}
+
+/// What an earlier version of an app kept on this device: a store the session granted read-only,
+/// read once into memory, where a conversion leases and reads it as it would any store and nothing
+/// it does reaches the disk.
+struct Earlier {
+    root: PathBuf,
+    read: std::cell::OnceCell<Rc<durable_store::MemoryStore>>,
+}
+
+impl Earlier {
+    /// Every document the granted store holds, of each app and workspace in it; `None` while one
+    /// does not read, so the conversion waits for a start that reads them all.
+    fn read(&self) -> Option<Rc<durable_store::MemoryStore>> {
+        use durable_store::DurableStore as _;
+        if let Some(read) = self.read.get() {
+            return Some(Rc::clone(read));
+        }
+        let store = app_state::FsStore::provisioned(&self.root);
+        let read = Rc::new(durable_store::MemoryStore::default());
+        let copied = (|| -> Result<(), durable_store::StoreError> {
+            for (app, workspace) in store.workspace_indexes()? {
+                for document in store.documents(&app, &workspace)? {
+                    let key =
+                        durable_store::StorageKey::document(app.as_str(), &workspace, &document);
+                    if let Some(stored) = store.read(&key)? {
+                        read.hydrate(key, stored)?;
+                    }
+                }
+            }
+            Ok(())
+        })();
+        match copied {
+            Ok(()) => Some(Rc::clone(self.read.get_or_init(|| read))),
+            Err(error) => {
+                tracing::warn!(
+                    root = %self.root.display(),
+                    %error,
+                    "what an earlier version kept does not read; carrying it waits"
+                );
+                None
+            }
+        }
+    }
 }
 
 impl TilolangProcess {
@@ -305,7 +354,20 @@ impl TilolangProcess {
             task: None,
             builds: std::collections::HashMap::new(),
             documents: std::cell::RefCell::default(),
+            earlier: None,
         }
+    }
+
+    /// The host, reading what an earlier version of its app kept on this device from the store
+    /// at `root`: the documents the session granted it read-only, of that app in its workspace.
+    /// Read once, never written.
+    #[must_use]
+    pub fn reading_earlier(mut self, root: PathBuf) -> Self {
+        self.earlier = Some(Earlier {
+            root,
+            read: std::cell::OnceCell::new(),
+        });
+        self
     }
 
     /// Run the programs of the task the session handed over, until the API closes it.
@@ -357,11 +419,19 @@ impl TilolangProcess {
                     .or_insert_with(|| Rc::new(durable_store::MemoryStore::default())),
             ) as Rc<dyn durable_store::DurableStore>
         };
+        // What an earlier version of the app — a native app the package replaced, or an earlier
+        // Mail — kept on this device, read once by the package's own conversion
+        // (`earlier_documents`, the mailbox's recovery): never written, as the session granted it.
+        let earlier = self
+            .earlier
+            .as_ref()
+            .and_then(Earlier::read)
+            .map(|read| read as Rc<dyn durable_store::DurableStore>);
         let Some(storage) = &self.storage else {
             return Ok(Kept {
                 documents,
                 indexes: None,
-                earlier: None,
+                earlier,
                 content: None,
                 chooser: None,
             });
@@ -373,14 +443,7 @@ impl TilolangProcess {
         Ok(Kept {
             documents,
             indexes: Some(package.join("indexes")),
-            // What an earlier version of the app — a native app the package replaced, or an
-            // earlier Mail — kept in this directory, read once by the package's own conversion
-            // (`earlier_documents`, the mailbox's recovery). Nothing writes it any more: a
-            // conversion reads what a version before this one left, and a host keeps no live copy.
-            // What an earlier version of the app left on this device, read once by the package's
-            // own conversion (a native app's resources, an earlier mailbox). Nothing writes it
-            // any more: the workspace is the one store, and a process keeps no live copy.
-            earlier: Some(Rc::new(app_state::FsStore::new(package.join("documents")))),
+            earlier,
             content: None,
             chooser: None,
         })
@@ -760,7 +823,8 @@ impl TilolangProcess {
             }
         }
         let workspace = uuid::Uuid::parse_str(&request.workspace)
-            .map_err(|_| AdmitError::Workspace(request.workspace.clone()))?;        let identity =
+            .map_err(|_| AdmitError::Workspace(request.workspace.clone()))?;
+        let identity =
             identity.ok_or_else(|| AdmitError::Join("no identity connection".to_owned()))?;
         if bundle.meta.uses_personal_profile()
             && collab_types::personal_cluster_of(&request.person).is_none()

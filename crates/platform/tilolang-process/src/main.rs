@@ -17,7 +17,9 @@
 use std::os::fd::AsFd as _;
 use std::sync::{Arc, OnceLock};
 
-use runtime_portal::process_link::{Descriptor, FromProcess, Packet as _, STORAGE_ENV, ToProcess};
+use runtime_portal::process_link::{
+    Descriptor, EARLIER_ENV, FromProcess, Packet as _, STORAGE_ENV, ToProcess,
+};
 use tilolang_process::TilolangProcess;
 use tilolang_process::stop::Stop;
 use tilolang_process::wait::{Wake, wait};
@@ -147,6 +149,10 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
     let storage = granted_storage();
     let stop = stop_watching();
     let mut host = TilolangProcess::new(storage, wake.waker());
+    // What an earlier version of its app kept on this device, as the session granted it.
+    if let Some(earlier) = std::env::var_os(EARLIER_ENV).filter(|dir| !dir.is_empty()) {
+        host = host.reading_earlier(earlier.into());
+    }
     let mut api = Some(api);
     // Why the API closed, when the session did not close it.
     let mut api_failed: Option<String> = None;

@@ -1,7 +1,8 @@
 //! A workspace that ran the native Notes app opens the tilolang Notes, hosted as a session starts
 //! it: under the id it took from the native app, its documents kept under the id it was published
-//! as before. Its one-time conversion reads the notebook the native app left in the device's store
-//! and carries every page over once, each with its title and its body.
+//! as before. The session grants the process, read-only, what the native app kept of the workspace
+//! in the store it wrote; its one-time conversion reads the notebook there and carries every page
+//! over once, each with its title and its body.
 
 use super::*;
 
@@ -34,25 +35,43 @@ fn native_documents() -> Vec<(String, automerge::AutoCommit)> {
         .collect()
 }
 
-/// The device's durable store at `root`, holding what the native Notes kept in `workspace`: its
-/// documents under its id, `so.tilo.notes`.
-fn device_after_native_notes(
-    root: &std::path::Path,
-    workspace: uuid::Uuid,
-) -> Rc<dyn durable_store::DurableStore> {
+/// What the native Notes kept of `workspace` on the device, in the store it wrote at `root` (its
+/// data home), as the native app stored a document: by a name made from its id, the id stamped in
+/// it. A workspace's notebook record names its own id; the native app's test harness wrote it as
+/// the package's primary document instead, so it is named here as a workspace names it.
+fn native_notes_kept(root: &std::path::Path, workspace: uuid::Uuid) {
     let store: Rc<dyn durable_store::DurableStore> = Rc::new(app_state::FsStore::new(root));
-    for (id, mut doc) in native_documents() {
+    let workspace = workspace.to_string();
+    let documents = native_documents();
+    let kind = documents
+        .iter()
+        .find_map(|(_, doc)| collab_types::document::identity::identity(doc))
+        .map(|held| held.kind)
+        .expect("the native pages name their resource type");
+    for (id, mut doc) in documents {
+        let id = collab_types::document::DocumentId::parse(&id).unwrap();
+        if collab_types::document::identity::identity(&doc).is_none() {
+            use automerge::transaction::Transactable as _;
+            let meta = collab_types::document::identity::meta_obj(&mut doc).unwrap();
+            doc.put(&meta, "id", id.as_str()).unwrap();
+            doc.put(&meta, "kind", kind.as_str()).unwrap();
+            doc.commit();
+        }
+        assert_eq!(
+            collab_types::document::identity::identity(&doc).map(|held| held.id),
+            Some(id.clone()),
+            "each document names its id"
+        );
         collaboration::document::save::resource_document(
             &store,
             NOTES,
-            &workspace.to_string(),
-            &id,
+            &workspace,
+            &id.storage_key(),
         )
         .unwrap()
         .save(&mut doc)
         .unwrap();
     }
-    store
 }
 
 fn text(
@@ -129,10 +148,14 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
     let record = InstanceDocument::new(automerge::AutoCommit::new(), manager, route, ADA)
         .keeping_content_in(content.clone());
     assert!(record.governs(), "this device is the workspace's origin");
+    // The native app's data home, of which the session grants the process the store it wrote;
+    // the process keeps its own storage beside it.
     let device = tempfile::tempdir().unwrap();
-    let mut host = TilolangProcess::new(None, wake());
+    let native = device.path().join("native");
+    native_notes_kept(&native, workspace);
+    let mut host =
+        TilolangProcess::new(Some(device.path().join("storage")), wake()).reading_earlier(native);
     let kept = tilolang_process::hosted::Kept {
-        earlier: Some(device_after_native_notes(device.path(), workspace)),
         content: Some(content),
         ..host.kept(PUBLISHED_BEFORE).unwrap()
     };

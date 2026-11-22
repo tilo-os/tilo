@@ -1,6 +1,5 @@
 //! Desktop `TiloLang` Mail uses one mailbox per workspace and applies workspace roles.
 
-
 use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -138,50 +137,40 @@ fn member_with_archive(
         InstanceDocument::new(automerge::AutoCommit::new(), manager, route.clone(), person);
     let home = archive.is_some().then(|| tempfile::tempdir().unwrap());
     let mut host = match &home {
-        Some(home) => TilolangProcess::new(Some(home.path().to_path_buf()), wake()),
+        Some(home) => {
+            let earlier = home.path().join("earlier");
+            let mut archive = archive.unwrap();
+            // The copy an earlier Mail left on this device, in the store it wrote, which the
+            // session grants the process read-only and only its recovery reads.
+            let document = collab_types::document::DocumentId::parse(
+                &tilolang_tilo::member_document_of(MAIL, person).unwrap(),
+            )
+            .unwrap();
+            let written: Rc<dyn durable_store::DurableStore> =
+                Rc::new(app_state::FsStore::new(&earlier));
+            let mut store = collaboration::document::save::resource_document(
+                &written,
+                MAIL,
+                &workspace.to_string(),
+                &document.storage_key(),
+            )
+            .unwrap();
+            store.save(&mut archive).unwrap();
+            drop((store, written));
+            TilolangProcess::new(Some(home.path().join("storage")), wake()).reading_earlier(earlier)
+        }
         None => TilolangProcess::new(None, wake()),
     };
     let kept = host.kept(MAIL).unwrap();
-    if let Some(mut archive) = archive {
-        let earlier = tilolang_tilo::member_document_of(MAIL, person).unwrap();
-        let document = collab_types::document::DocumentId::parse(&earlier).unwrap();
-        // The copy an earlier Mail left on this device, which only its recovery reads: the
-        // instance keeps no copy of its own.
-        let document_id_of = |app: &str, person: &str| {
-            tilolang_tilo::member_document_of(app, person).unwrap()
-        };
-        collaboration::document::save::resource_document(
-            kept.earlier.as_ref().expect("the store an earlier Mail wrote"),
-            MAIL,
-            &workspace.to_string(),
-            &document.storage_key(),
-        )
-        .unwrap()
-        .save(&mut archive)
-        .unwrap();
-        // What the instance's recovery will read is what the conversion left.
-        let earlier_store = kept.earlier.as_ref().unwrap();
-        let read = collaboration::document::save::resource_document(
+    if let Some(earlier_store) = kept.earlier.as_ref().filter(|_| home.is_some()) {
+        let archived = tilolang_tilo::instance::document::archived_member_document(
             earlier_store,
             MAIL,
-            &workspace.to_string(),
-            &collab_types::document::DocumentId::parse(&document_id_of(MAIL, person))
-                .unwrap()
-                .storage_key(),
+            MAIL,
+            workspace,
+            person,
         )
-        .unwrap()
-        .load()
         .unwrap();
-        assert!(read.is_some(), "the archive reads back");
-        let archived =
-            tilolang_tilo::instance::document::archived_member_document(
-                earlier_store,
-                MAIL,
-                MAIL,
-                workspace,
-                person,
-            )
-            .unwrap();
         assert!(archived.is_some(), "the recovery finds the archive");
     }
     let (ours, theirs) = Channel::pair().unwrap();
