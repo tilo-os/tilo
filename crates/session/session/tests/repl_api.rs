@@ -725,11 +725,7 @@ fn the_inbox_is_drawn_as_mails_inbox(session: &mut Session, root: &std::path::Pa
         &root.join("test-control.sock"),
         &json!({"op": "snapshot", "path": png.to_str().unwrap()}),
     );
-    assert_eq!(
-        answer,
-        json!({"ok": {"frame": 0, "locked": false}}),
-        "the snapshot is taken, of a session that is not locked"
-    );
+    assert_eq!(answer, json!({"ok": {"frame": 0}}), "the snapshot is taken");
     let shot = image::open(&png).expect("a PNG").into_rgba8();
     assert!(
         inked(&shot, subject) > 20,

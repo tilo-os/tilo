@@ -97,11 +97,7 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
         &socket,
         &json!({"op": "snapshot", "path": png.to_str().unwrap()}),
     );
-    assert_eq!(
-        answer,
-        json!({"ok": {"frame": 0, "locked": false}}),
-        "the snapshot is taken, of a session that is not locked"
-    );
+    assert_eq!(answer, json!({"ok": {"frame": 0}}), "the snapshot is taken");
 
     let shot = image::open(&png).expect("a PNG").into_rgba8();
     assert_eq!(
@@ -606,11 +602,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         &socket,
         &json!({"op": "snapshot", "path": png.to_str().unwrap()}),
     );
-    assert_eq!(
-        answer,
-        json!({"ok": {"frame": 0, "locked": false}}),
-        "the snapshot is taken, of a session that is not locked"
-    );
+    assert_eq!(answer, json!({"ok": {"frame": 0}}), "the snapshot is taken");
     let shot = image::open(&png).expect("a PNG").into_rgba8();
     assert!(
         written(&shot, title) > 20,

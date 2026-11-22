@@ -1125,15 +1125,20 @@ fn asked_of_shell(
     session: &Session<'_>,
 ) -> Option<Json> {
     Some(match op {
+        // No picture leaves a locked session, to anyone: a socket client that reads the screen
+        // could otherwise watch whatever the lock hides the moment it lifts or flickers, and a
+        // caller that cannot see the display learns it is locked from the refusal.
+        Op::Snapshot if session.locked => refusal(
+            "session_locked",
+            "the session is locked; unlock it at the device, then take the picture again",
+        ),
         Op::Snapshot => {
             let path = request
                 .get("path")
                 .and_then(Json::as_str)
                 .unwrap_or_default();
             match snapshot(compositor, path) {
-                // Whether the picture is of the lock screen, which is all a locked display shows: a
-                // tool reads it, never a blank frame.
-                Ok(()) => json!({"ok": {"frame": 0, "locked": session.locked}}),
+                Ok(()) => json!({"ok": {"frame": 0}}),
                 Err((code, message)) => refusal(code, &message),
             }
         }

@@ -725,12 +725,6 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             // The wire's `Ok { frame }` doesn't echo the path back, so print
             // it here to make `snapshot /tmp/x.png | xclip` work.
             println!("{path}");
-            if response.pointer("/ok/locked") == Some(&serde_json::Value::Bool(true)) {
-                eprintln!(
-                    "note: the session is locked, so the picture is of the lock screen, not \
-                     of the shell"
-                );
-            }
         }
         Command::Unlock => {
             let was_locked =
@@ -895,8 +889,8 @@ fn print_usage() {
          \x20 modifiers FLAGS               comma-separated subset of ctrl,shift,alt,logo\n\
          \x20                               (empty string clears all)\n\
          \x20 snapshot PATH                 write a PNG of the screen to PATH; answers once\n\
-         \x20                               the file is complete, and says on stderr when it\n\
-         \x20                               shows the lock screen\n\
+         \x20                               the file is complete, and is refused while the\n\
+         \x20                               session is locked\n\
          \x20 unlock                        unlock the session, as an accepted password does\n\
          \x20 questions [--json]            the questions waiting for the person, each with\n\
          \x20                               the `tilo do` call that answers or declines it: a check driving a sheet\n\
