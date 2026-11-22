@@ -1498,3 +1498,7 @@ mod views;
 #[cfg(test)]
 #[path = "hosted_initiative.rs"]
 mod hosted_initiative;
+
+/// A mention of the hosted agent asks it, and it answers under the message.
+#[path = "hosted_asked.rs"]
+mod asked;

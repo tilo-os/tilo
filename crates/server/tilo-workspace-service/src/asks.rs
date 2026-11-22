@@ -344,6 +344,19 @@ fn said(opened: &Opened, at: &ResourceRef, asked_about: bool) -> Said {
     }
 }
 
+/// Rich text that mentions `member` as `@name`, then says `then`: what a composer writes when
+/// someone mentions an agent, and so what asks it wherever it is written.
+#[must_use]
+pub fn mentioning(member: &MemberId, name: &str, then: &str) -> Value {
+    let mut rich = RichValue::default();
+    rich.push_reference(
+        &format!("@{name}"),
+        &tilolang_tilo::runtime::rich::Reference::Member(member.clone()),
+    );
+    rich.push_text(then);
+    Value::Rich(rich)
+}
+
 fn agent(id: &MemberId) -> Actor {
     Actor::Member(id.clone())
 }

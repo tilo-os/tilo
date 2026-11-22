@@ -37,6 +37,9 @@ use tilolang_tilo::chunk::{self, ChunkNo, Chunks, FIRST};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::runtime::{Actor, InvokeOutcome, ResourceRef, Value};
 
+/// The tilolang runtime's values, references and stores, as a record is read and changed with.
+pub use tilolang_tilo::runtime;
+
 /// The packages a record is read and changed through, compiled once: those the app uses first,
 /// the app itself last.
 #[derive(Clone)]
