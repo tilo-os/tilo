@@ -781,7 +781,7 @@ fn report_target(
             CHAT,
             &destination.workspace,
             tilo_app_id::chat::CONVERSATIONS,
-            tilo_app_id::chat::REPORT,
+            tilo_app_id::chat::REPORT_PROBLEM,
         )
         .with_argument("body", message_body(text, attached)?),
     )))
@@ -1071,7 +1071,7 @@ mod tests {
             assert_eq!(target.app, CHAT);
             assert_eq!(target.workspace, "w_tilo");
             assert_eq!(target.address.resource, tilo_app_id::chat::CONVERSATIONS);
-            assert_eq!(target.address.action, tilo_app_id::chat::REPORT);
+            assert_eq!(target.address.action, tilo_app_id::chat::REPORT_PROBLEM);
             let body = target.arguments["body"].to_string();
             assert!(
                 body.contains("the button does nothing") && body.contains("issue 42"),

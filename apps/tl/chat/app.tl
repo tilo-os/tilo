@@ -141,7 +141,7 @@ action add_channel(c: Category, name: Text = std.say("new-channel")) -> TextChan
 /// The replies in a message's thread are the messages of that message's thread, a reply quoting
 /// it answers it, and who wrote each message, when, and its reactions are kept with it. A problem
 /// report filed there is a message of the channel it was filed in, among the others by when it
-/// was filed, and that channel is the one [`report`] files in now. What this app has no place for
+/// was filed, and that channel is the one [`report_problem`] files in now. What this app has no place for
 /// is set aside in a category of its own instead of dropped: an archived channel, a voice channel,
 /// and each direct conversation, as a channel holding its messages. The native app's own
 /// documents are left as they are.
@@ -341,7 +341,7 @@ fn without_hex(key: Text) -> Text {
 ///
 /// The people who read the reports there answer, react and start a thread under one as under any
 /// message. The channel is made under one key on every device, so reports filed apart open one.
-action report(all: Conversations, body: RichText) -> Message (
+action report_problem(all: Conversations, body: RichText) -> Message (
     icon: .flag,
     label: "Report a problem",
     did: "reported a problem",

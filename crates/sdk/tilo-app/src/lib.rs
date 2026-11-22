@@ -300,11 +300,7 @@ pub use registry_types as registry;
 /// JSON values for action arguments, component props and native-input
 /// snapshots, re-exported so an app needs no dependency of its own.
 pub use serde_json;
-/// Reviewed feedback and durable submission, shared by every host.
-pub use tilo_feedback as feedback;
 mod copy_catalogue;
-pub mod feedback_composer;
-pub mod feedback_read_out;
 /// A view written in the app language, shown where an app places it.
 pub mod written_view;
 /// Files on every target: capability-scoped directories on Linux and macOS,

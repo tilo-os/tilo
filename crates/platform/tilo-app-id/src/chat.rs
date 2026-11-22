@@ -37,7 +37,7 @@ pub const SEND: &str = "send";
 
 /// Files `body` as a problem report in the workspace's `#feedback` channel, on
 /// [`CONVERSATIONS`], which the first report opens. It answers the message it filed.
-pub const REPORT: &str = "report";
+pub const REPORT_PROBLEM: &str = "report_problem";
 
 #[cfg(test)]
 mod tests {

@@ -12,6 +12,11 @@ use crate::fixtures::{Replica, target};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
+
+/// Ada's replica of `doc` with the agents and Chat loaded.
+fn chat_replica(doc: AutoCommit) -> (Replica, Vec<tilolang_tilo::host::Package>) {
+    Replica::new("ada", doc, &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)])
+}
 const APP: &str = "so.tilo.chat";
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
@@ -144,11 +149,7 @@ fn post(r: &mut Replica, view: &ViewInstance, text: &str) {
 
 #[test]
 fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
-    let (mut ada, loaded) = Replica::new(
-        "ada",
-        AutoCommit::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
-    );
+    let (mut ada, loaded) = chat_replica(AutoCommit::new());
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let team = call(&ada, "new_category", vec![all, Value::text("Team")]);
@@ -293,11 +294,7 @@ fn reactions(row: &UiNode) -> Vec<(String, Vec<Actor>)> {
 
 #[test]
 fn two_people_reacting_at_once_both_stay_and_a_second_press_takes_yours_back() {
-    let (mut ada, loaded) = Replica::new(
-        "ada",
-        AutoCommit::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
-    );
+    let (mut ada, loaded) = chat_replica(AutoCommit::new());
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -382,7 +379,7 @@ tilo_test_env::scenario! {
 
     phase enter_in_the_composer_sends_and_empties_it;
     {
-        let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (mut ada, _) = chat_replica(AutoCommit::new());
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -411,7 +408,7 @@ tilo_test_env::scenario! {
 
     phase its_author_edits_a_message_in_place_and_anyone_pins_it;
     {
-        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (mut ada, loaded) = chat_replica(AutoCommit::new());
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -523,7 +520,7 @@ tilo_test_env::scenario! {
     // the document keeps (so undo brings it back). The thread it started goes with it, and no
     // message of another channel is touched.
     {
-        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (mut ada, loaded) = chat_replica(AutoCommit::new());
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(
@@ -652,11 +649,7 @@ fn the_conversations_of_chat_before_channels_open_as_channels_saying_what_they_s
     ada.commit();
 
     // The same workspace, opened by the Chat of channels.
-    let (mut later, _) = Replica::new(
-        "ada",
-        ada.doc.fork(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
-    );
+    let (mut later, _) = chat_replica(ada.doc.fork());
     later.host.sync_from(&later.doc);
     let sidebar = later.view(APP);
     let mut shown = Vec::new();
@@ -696,7 +689,7 @@ tilo_test_env::scenario! {
     // channel takes the divider away. A message of your own is never unseen to you, and nothing
     // outside the channel is counted.
     {
-        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (mut ada, loaded) = chat_replica(AutoCommit::new());
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(
@@ -809,7 +802,7 @@ tilo_test_env::scenario! {
     // shows and is not counted beside them, and reading the channel clears the row and the header
     // alike — one number, read from one place.
     {
-        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (mut ada, loaded) = chat_replica(AutoCommit::new());
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -864,7 +857,7 @@ tilo_test_env::scenario! {
     // and shows that person's face on the one line their reading ends at. A reader's mark moves
     // their face down the conversation, and the person looking never sees their own.
     {
-        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (mut ada, loaded) = chat_replica(AutoCommit::new());
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -986,11 +979,7 @@ fn a_workspace_held_by_one_version_of_chat_is_read_and_changed_by_that_version_w
  {
     // The current Chat loaded first, then the Chat before channels: each a package with its
     // own ids lock, as an upgraded workspace has them.
-    let (mut current, _) = Replica::new(
-        "ada",
-        AutoCommit::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
-    );
+    let (mut current, _) = chat_replica(AutoCommit::new());
     let channels = Value::resource(&current.host.root_of(APP).unwrap());
     current.commit();
     let channel = call(
@@ -1068,11 +1057,7 @@ fn a_workspace_held_by_one_version_of_chat_is_read_and_changed_by_that_version_w
 /// end nothing is marked, and a message that arrives afterwards is marked alone.
 #[test]
 fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
-    let (mut ada, loaded) = Replica::new(
-        "ada",
-        AutoCommit::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
-    );
+    let (mut ada, loaded) = chat_replica(AutoCommit::new());
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -1233,7 +1218,7 @@ tilo_test_env::scenario! {
     // what it says. The line goes when they stop, and a lens that is only open (not composing)
     // says nothing.
     {
-        let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (mut ada, _) = chat_replica(AutoCommit::new());
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -1374,11 +1359,7 @@ tilo_test_env::scenario! {
 /// state is gone and the bar keeps its primary.
 #[test]
 fn an_empty_workspace_offers_one_new_channel_button() {
-    let (mut ada, _) = Replica::new(
-        "ada",
-        AutoCommit::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
-    );
+    let (mut ada, _) = chat_replica(AutoCommit::new());
     ada.commit();
 
     // What the view offers: the bar's primary the host reads off the action's declaration, and
@@ -1477,11 +1458,7 @@ impl tilolang_runtime::Words for EchoWords {
 /// or every other device in a real workspace refuses the message.
 #[test]
 fn a_message_sent_in_a_channel_names_a_verb_the_channels_surface_publishes() {
-    let (mut ada, _) = Replica::new(
-        "ada",
-        AutoCommit::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
-    );
+    let (mut ada, _) = chat_replica(AutoCommit::new());
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -1536,11 +1513,7 @@ const AGENT_APP: &str = "so.tilo.lang.agent";
 /// script invokes `send`, and a conversation with a person asks nobody.
 #[test]
 fn each_message_to_an_agent_asks_it_once() {
-    let (mut ada, _) = Replica::new(
-        "ada",
-        AutoCommit::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
-    );
+    let (mut ada, _) = chat_replica(AutoCommit::new());
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.host.root_of(AGENT_APP).unwrap();
     ada.commit();
@@ -1627,24 +1600,20 @@ fn each_message_to_an_agent_asks_it_once() {
 /// report that says nothing is refused.
 #[test]
 fn reports_filed_apart_stand_in_one_feedback_channel() {
-    let (mut ada, loaded) = Replica::new(
-        "ada",
-        AutoCommit::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
-    );
+    let (mut ada, loaded) = chat_replica(AutoCommit::new());
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let mut ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
     ben.host.sync_from(&ben.doc);
     call(
         &ada,
-        "report",
+        "report_problem",
         vec![all.clone(), rich("Search forgets my words")],
     );
     ada.commit();
     call(
         &ben,
-        "report",
+        "report_problem",
         vec![all.clone(), rich("The dock hides behind the keyboard")],
     );
     ben.commit();
@@ -1669,7 +1638,7 @@ fn reports_filed_apart_stand_in_one_feedback_channel() {
     let report = meta
         .actions
         .iter()
-        .find(|a| a.name == "report")
+        .find(|a| a.name == "report_problem")
         .unwrap()
         .id
         .clone();

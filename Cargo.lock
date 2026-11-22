@@ -17771,7 +17771,6 @@ dependencies = [
  "tilo-content",
  "tilo-content-device",
  "tilo-failure",
- "tilo-feedback",
  "tilo-files",
  "tilo-history",
  "tilo-lock",
@@ -19552,34 +19551,6 @@ version = "0.1.0"
 [[package]]
 name = "tilo-failure"
 version = "0.1.0"
-
-[[package]]
-name = "tilo-feedback"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "durable-store",
- "image",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tilo-automerge-fork",
- "tilo-feedback-review",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-feedback-review"
-version = "0.1.0"
-dependencies = [
- "regex-lite",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tilo-sort",
- "workspace-hack",
-]
 
 [[package]]
 name = "tilo-file-provider"
@@ -29414,8 +29385,6 @@ dependencies = [
  "tilo-extension",
  "tilo-face",
  "tilo-failure",
- "tilo-feedback",
- "tilo-feedback-review",
  "tilo-file-provider",
  "tilo-files",
  "tilo-firstboot-files",

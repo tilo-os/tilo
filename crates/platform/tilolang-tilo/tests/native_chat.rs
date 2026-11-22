@@ -394,7 +394,7 @@ fn a_native_report_is_carried_into_the_channel_reports_are_filed_in_now() {
     let report = meta
         .actions
         .iter()
-        .find(|action| action.name == "report")
+        .find(|action| action.name == "report_problem")
         .expect("Chat files reports")
         .id
         .clone();

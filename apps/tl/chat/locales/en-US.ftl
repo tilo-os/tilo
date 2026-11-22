@@ -222,7 +222,7 @@ d-6uysx57s-m = M
 
 d-6uysx57s-name = Name
 
-d-v6wnfixl = Report~present
+d-v6wnfixl = Report problem~present
 
 d-dgrvpxre = Send view~present
 
