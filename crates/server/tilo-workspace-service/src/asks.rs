@@ -18,11 +18,14 @@
 use tilo_actions::MemberId;
 use tilolang_tilo::runtime::rich::RichValue;
 use tilolang_tilo::runtime::store::Store as _;
-use tilolang_tilo::runtime::{Actor, ResourceRef, Value};
+use tilolang_tilo::runtime::Value;
 use tilolang_tilo::runtime::value::EnumValue;
 
 use crate::tl_records::{Opened, Packages};
 use crate::work::Claim;
+
+/// Who made a resource, and a resource of a record, as the agent package names them.
+pub use tilolang_tilo::runtime::{Actor, ResourceRef};
 
 /// The agent package.
 pub const AGENT_APP: &str = "so.tilo.lang.agent";
@@ -137,7 +140,9 @@ pub struct Replied {
 /// What sits around what an ask is about: the collection it is in, in order.
 #[derive(Clone, Debug, Default)]
 pub struct Around {
-    /// What that collection's holder is called (a conversation's name).
+    /// What holds that collection (a conversation), where something does.
+    pub holder: Option<ResourceRef>,
+    /// What it is called (a conversation's name).
     pub title: String,
     pub items: Vec<Said>,
 }
@@ -293,6 +298,7 @@ pub fn around(opened: &Opened, about: &ResourceRef, most: usize) -> Around {
     let store = opened.host().store();
     let Ok(Some((holder, field))) = store.container(about) else {
         return Around {
+            holder: None,
             title: String::new(),
             items: vec![said(opened, about, true)],
         };
@@ -307,6 +313,7 @@ pub fn around(opened: &Opened, about: &ResourceRef, most: usize) -> Around {
     }
     let skip = all.len().saturating_sub(most);
     Around {
+        holder: Some(holder),
         title,
         items: all
             .iter()

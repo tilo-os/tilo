@@ -41,7 +41,7 @@ type Place = (String, String, String);
 
 fn place(workspace: &str, turn: &Turn) -> Place {
     let at = match &turn.ask {
-        Ask::Message { .. } => turn.conversation.clone(),
+        Ask::Message { .. } | Ask::Asked { .. } => turn.conversation.clone(),
         Ask::Issue {
             record,
             issue,
