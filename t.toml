@@ -6707,6 +6707,19 @@ outputs = ["/target/publish/lounge-check/binaries/**"]
 timeout_secs = 7200
 default = false
 
+# The apps the Lounge's image carries (tools/ci/publish/lounge-apps.sh): its launcher reads only
+# the image's own trust list.
+[[check]]
+name = "lounge-apps"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/publish/lounge-apps.sh /target/publish/lounge/apps /target/tilolang-runtime /target/publish/lounge/fonts release"
+needs = ["tilolang-runtime", "lounge-fonts"]
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/lounge/apps/**"]
+timeout_secs = 3600
+default = false
+
 # The apps the Lounge's workspace runs, for the checks that run its programs directly: the
 # launcher, beside the server, with `dev-overrides` so it trusts the key this build signs the
 # runtimes and packages with (tools/ci/publish/lounge-apps.sh), the two runtime bundles and the
@@ -6735,8 +6748,8 @@ default = false
 
 [[check]]
 name = "image-lounge-context"
-run = "bash tools/ci/publish/lounge-context.sh /target/publish/lounge/context /target/publish/lounge/binaries /target/publish/lounge/fonts"
-needs = ["lounge-binaries", "lounge-fonts"]
+run = "bash tools/ci/publish/lounge-context.sh /target/publish/lounge/context /target/publish/lounge/binaries /target/publish/lounge/fonts /target/publish/lounge/apps"
+needs = ["lounge-binaries", "lounge-fonts", "lounge-apps"]
 outputs = ["/target/publish/lounge/context/**"]
 requires = ["arch=x86_64"]
 git = true

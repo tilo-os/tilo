@@ -23,7 +23,7 @@ LABEL org.opencontainers.image.title="Tilo Lounge" \
 # fetch proxy; the binaries themselves are static against the rest of Fedora.
 RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify-no-cisco-openh264.sh,ro \
   rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo \
-  && microdnf install -y --setopt=install_weak_deps=0 ca-certificates \
+  && microdnf install -y --setopt=install_weak_deps=0 ca-certificates bubblewrap \
   && microdnf clean all \
   && command -v bash rpm grep sort tr >/dev/null \
   && bash /run/tilo-verify-no-cisco-openh264.sh
@@ -39,6 +39,11 @@ COPY surfaces/ /usr/local/share/tilo/surfaces/
 # fonts: the product catalog sits where a Tilo binary looks for it.
 COPY bots/ /usr/local/share/tilo/bots/
 COPY fonts/ /usr/share/fonts/tilo/
+# The apps the workspace runs: the runtimes they execute, trusted by the one key
+# this build signed them and the packages with, and the packages it installs.
+COPY runtimes/ /usr/lib/tilo-runtime/
+COPY runtime-publishers.txt /etc/tilo/runtime-bundle-trusted-publishers.txt
+COPY packages/ /usr/local/share/tilo/packages/
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/tilo-lounge
 USER 10001
 # TILO_SOURCE_REVISION is what GET /mode reports, so the running build can be
@@ -50,6 +55,7 @@ USER 10001
 # grants those hold. They are the server's own variables, so the deployment may
 # still raise them without a new image.
 ENV TILO_SOURCE_REVISION=${SOURCE_REVISION} \
+    TILO_WORKSPACES_PACKAGES=/usr/local/share/tilo/packages \
     TILO_WORKSPACES_STATE=/run/tilo-workspaces \
     TILO_SECRETS_DIR=/run/tilo-workspaces/secrets \
     TILO_SERVER_MAX_WEB_SESSIONS=2164 \
