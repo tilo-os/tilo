@@ -62,6 +62,8 @@ fi
 
 if reason=$(tilo-rollback unlock --device "$device" "${unlock_args[@]}" \
               --output "$output" 2>&1); then
+  # What opened the volume (the generation unsealed) stays in the journal.
+  [[ -z $reason ]] || printf '%s\n' "$reason" >&2
   exit 0
 fi
 

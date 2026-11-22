@@ -54,7 +54,10 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = --output ]; then printf 'sealed-key' >"$2"; fi
   shift
 done
-[ "${TILO_TEST_FAIL:-0}" -eq 0 ] && exit 0
+if [ "${TILO_TEST_FAIL:-0}" -eq 0 ]; then
+  printf 'tilo-rollback: generation 7 unsealed to /run/cryptsetup-keys.d/root.key\n' >&2
+  exit 0
+fi
 printf 'the rollback floor refuses generation 0: this image is older than the oldest one this machine boots\n' >&2
 exit 1
 EOF
@@ -96,10 +99,11 @@ fi
 rm -f "$work/asked" "$work/args"
 if PATH="$work/bin:$PATH" TILO_TEST_PIN=false TILO_TEST_ARGS="$work/args" \
      TILO_TEST_ASKED="$work/asked" TILO_ROLLBACK_RUNTIME_ROOT="$work/auto-root" \
-     "$helper" "/dev/disk/by-uuid/$uuid" "luks-$uuid" \
+     "$helper" "/dev/disk/by-uuid/$uuid" "luks-$uuid" 2>"$work/unlocked" \
    && [ -e "$work/args" ] && [ ! -e "$work/asked" ] \
-   && ! grep -Fq -- '--pin-file' "$work/args"; then
-  ok "a PIN-less volume unlocks without a prompt"
+   && ! grep -Fq -- '--pin-file' "$work/args" \
+   && grep -Fq 'generation 7 unsealed to' "$work/unlocked"; then
+  ok "a PIN-less volume unlocks without a prompt, and says which generation opened it"
 else
   bad "a PIN-less volume prompted for a PIN or withheld the unlock"
 fi
