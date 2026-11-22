@@ -517,8 +517,8 @@ fn open_workspaces(
 }
 
 /// The server whose work this profile takes, when it is a member: what the
-/// environment names, else the server the profile's login joined. Read before
-/// anything of the profile is opened, so a broken configuration is no profile's.
+/// environment names, else the server the profile's login joined. A broken
+/// environment is no profile's: it is refused here, not served with.
 pub(super) fn taking_work(login: Option<&Device>) -> io::Result<Option<take_work::Server>> {
     match take_work::Server::from_env().map_err(io::Error::other)? {
         Some(server) => Ok(Some(server)),
