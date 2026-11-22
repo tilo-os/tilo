@@ -269,7 +269,7 @@ fn history_names_what_was_made_and_changed_by_title_never_by_id() {
         "the notebook the window made reads as native history's creation: {sentences:?}"
     );
     assert!(
-        sentences.contains(&"New note: Untitled"),
+        sentences.contains(&"Ran “New note” on Untitled"),
         "the person's action reads by its label, on the note it made by what its type calls an \
          untitled one: {sentences:?}"
     );
