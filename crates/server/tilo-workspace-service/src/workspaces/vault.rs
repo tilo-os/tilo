@@ -592,21 +592,20 @@ fn seal_entry(keys: &key_group::ContentKeys, entry: &SecretItem) -> Result<Strin
         .map_err(|error| error.to_string())
 }
 
-/// Whether the workspace's policy lets `by` read the workspace's vault document: the decision
-/// every reader of that document is held to, for `by`'s whole acting.
+/// Whether the workspace's policy lets `by` read the workspace's vault document, the node every
+/// reader of it is decided on, or with `app` that app's node: for `by`'s whole acting.
 pub(crate) fn may_read_vault(
     policy: &tilo_action_policy::WorkspacePolicy,
     workspace: &str,
     by: &tilo_actions::remote::Caller,
+    app: Option<&str>,
 ) -> bool {
     let acting = by.acting();
     let mut granted = acting.handed_preset(workspace);
     granted.extend(by.granted(&[]));
-    // The node every reader of the vault's document is decided on.
-    let node = collab_types::document_node(
-        workspace,
-        tilo_app_id::apps::PASSWORDS,
-        WORKSPACE_VAULT_DOCUMENT,
+    let node = app.map_or_else(
+        || collab_types::document_node(workspace, APP, WORKSPACE_VAULT_DOCUMENT),
+        |app| tilo_action_policy::TreePath::workspace(workspace).app(app),
     );
     let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
     tilo_action_policy::Authority::of_acting(acting, policy, &granted)

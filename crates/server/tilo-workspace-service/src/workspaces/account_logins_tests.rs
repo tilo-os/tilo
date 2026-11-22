@@ -261,10 +261,10 @@ impl Members {
             .unwrap();
         drop(governed);
         assert!(
-            !self
-                .owner
-                .may_use_vault(&self.workspace, &self.member_caller())
-                .await,
+            self.owner
+                .using_vault(&self.workspace, &self.member_caller(), None)
+                .await
+                .is_err(),
             "the owner's device refuses the member Passwords once the rule is the workspace's"
         );
     }

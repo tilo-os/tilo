@@ -274,3 +274,50 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
         other => panic!("a refusal, not {other:?}"),
     }
 }
+
+/// The person's agent, bound off Mail or Files, may use the vault but not read the app asking: it
+/// gets no password through a connector or the cloud service, as the app's own route gets it none.
+/// Bound off nothing, the ask goes on to the account.
+#[test]
+fn whoever_may_not_read_the_app_asking_gets_no_password() {
+    const MAIL: &str = "so.tilo.mail";
+    let served = served();
+    let entry = "vault.item:0123456789abcdef0123456789abcdef";
+    let refused = |denied: &[&str], scope: super::Scope| {
+        let read = tilo_action_policy::KindSet::of(tilo_action_policy::ActionKind::Read);
+        let rules = denied.iter().map(|app| {
+            let node = tilo_action_policy::TreePath::workspace(WORKSPACE).app(*app);
+            tilo_action_policy::Rule::new(node, read, tilo_action_policy::Answer::Deny)
+        });
+        let key = |seed| ed25519_dalek::SigningKey::from_bytes(&[seed; 32]).verifying_key();
+        let agent = Caller::authenticated(key(0x30).to_bytes(), key(0x31).to_bytes())
+            .delegated_to("scout".to_owned())
+            .on_turn(
+                tilo_action_policy::turn::Turn::new("chat", "1"),
+                rules.collect(),
+            );
+        let (workspaces, changes) = (served.device.workspaces(), served.device.changes());
+        let item = entry.to_owned();
+        let ask = Ask::SignIn {
+            workspace: WORKSPACE.into(),
+            item,
+        };
+        served.runtime.block_on(async {
+            let answering = super::Answering::here(workspaces, agent, changes);
+            match super::answer(&answering, &scope, ask).await {
+                Answer::Refused { error } => error,
+                other => panic!("a refusal, not {other:?}"),
+            }
+        })
+    };
+    let read_app = tilo_workspace_service::workspaces::account_logins::MAY_NOT_READ_APP;
+    let mail = || super::Scope::connector(MAIL, WORKSPACE);
+    assert_eq!(refused(&[MAIL], mail()), read_app);
+    let files = tilo_app_id::apps::FILE_EXPLORER;
+    assert_eq!(refused(&[files], super::Scope::cloud_service()), read_app);
+    let reading = refused(&[], mail());
+    assert_ne!(
+        reading, read_app,
+        "reading Mail, the account decides: {reading}"
+    );
+}

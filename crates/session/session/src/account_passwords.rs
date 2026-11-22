@@ -9,9 +9,9 @@
 //! (`collaboration::browser_service_sessions::AccountSecrets`): it is released for an enabled
 //! account that names the entry, only at the servers that account names now, and the use is
 //! written into the entry first, saying which app signed in. Both are decided for the person
-//! on the app's connection: their role must let them use Passwords in that workspace
-//! ([`Workspaces::may_use_vault`]). Any member's device signs in with the same entry; none
-//! keeps a copy of its own.
+//! on the app's connection: their role must let them use Passwords in that workspace and, for a
+//! sign-in, read the app asking ([`Workspaces::account_secret`]), as the account sign-ins of the
+//! cloud service and the origin connectors are. Any member's device signs in with the same entry.
 
 use accounts::email::password_item;
 use runtime_collab::{

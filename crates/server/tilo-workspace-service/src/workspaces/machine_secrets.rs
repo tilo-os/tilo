@@ -78,7 +78,7 @@ impl Workspaces {
             .policy_of(workspace)
             .await
             .ok_or("this server does not hold that workspace")?;
-        if !super::vault::may_read_vault(&policy, workspace, by) {
+        if !super::vault::may_read_vault(&policy, workspace, by, None) {
             return Err(
                 "Whoever started this may not read the workspace's vault, so its secrets stay in it"
                     .to_owned(),

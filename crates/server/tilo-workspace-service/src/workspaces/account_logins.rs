@@ -32,16 +32,17 @@ pub const MAY_NOT_USE_PASSWORDS: &str = "Your role in this workspace does not in
                                          vault. Ask an owner of the workspace to let you use \
                                          Passwords.";
 
+/// The words for somebody who may not read the app asking to sign in.
+pub const MAY_NOT_READ_APP: &str = "Your role in this workspace does not let you use this app, so \
+                                    it signs in to none of the workspace's accounts. Ask an owner \
+                                    of the workspace to let you use it.";
+
 /// The words for an account whose vault entry is gone.
 pub const ENTRY_GONE: &str = "This account's password is no longer in the workspace's vault. \
                               Sign the account in again in Settings.";
 
 /// The words for an entry of the vault that no enabled account of the workspace signs in with.
 pub const NOT_NAMED: &str = "No account of this workspace signs in with that entry of its vault";
-
-/// The words for an account that names no entry of the vault.
-pub const NO_ENTRY: &str =
-    "This account keeps no password in the workspace's vault yet. Sign it in in Settings.";
 
 /// A login an account signs in with, as the vault keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,20 +84,27 @@ fn said(error: String) -> String {
 }
 
 impl Workspaces {
-    /// Whether the workspace's policy lets `by` use the workspace's vault: read Passwords'
-    /// vault document, for their whole acting.
-    pub async fn may_use_vault(&self, workspace: &str, by: &Caller) -> bool {
-        self.policy_of(workspace)
-            .await
-            .is_some_and(|policy| super::vault::may_read_vault(&policy, workspace, by))
-    }
-
-    async fn using_vault(&self, workspace: &str, by: &Caller) -> Result<(), String> {
-        if self.may_use_vault(workspace, by).await {
-            Ok(())
-        } else {
-            Err(MAY_NOT_USE_PASSWORDS.to_owned())
+    /// That the workspace's policy lets `by`, for their whole acting, use its vault and, signing
+    /// `app` in, read `app` there: the one decision every route to an account's password takes.
+    pub(crate) async fn using_vault(
+        &self,
+        workspace: &str,
+        by: &Caller,
+        app: Option<&str>,
+    ) -> Result<(), String> {
+        let policy = self.policy_of(workspace).await;
+        let may = |app| {
+            policy
+                .as_ref()
+                .is_some_and(|policy| super::vault::may_read_vault(policy, workspace, by, app))
+        };
+        if !may(None) {
+            return Err(MAY_NOT_USE_PASSWORDS.to_owned());
         }
+        if app.is_some() && !may(app) {
+            return Err(MAY_NOT_READ_APP.to_owned());
+        }
+        Ok(())
     }
 
     /// Keep `password` as `login` in `workspace`'s vault, for `by`: in the entry `item` names
@@ -114,7 +122,7 @@ impl Workspaces {
         login: AccountLogin,
         password: Zeroizing<String>,
     ) -> Result<ItemRef, String> {
-        self.using_vault(workspace, by).await?;
+        self.using_vault(workspace, by, None).await?;
         let id = item.and_then(|item| ItemId::parse(item.id()));
         let AccountLogin {
             title,
@@ -155,7 +163,7 @@ impl Workspaces {
         app: &str,
         item: &ItemRef,
     ) -> Result<Released, String> {
-        self.using_vault(workspace, by).await?;
+        self.using_vault(workspace, by, Some(app)).await?;
         let held = self.workspace_accounts(workspace).await?;
         let store = held.store();
         let account = store
