@@ -59,10 +59,20 @@ pub fn review_categories(root: &RootInventory, index: usize) -> Vec<CategoryRevi
             bytes: entry.bytes,
             availability: entry.availability,
             copy_eligible: entry.copy_eligible,
-            destination: format!("source-{index}/{}", entry.relative.to_string_lossy()),
+            // The export layout is one spelling on every host, as review rows
+            // are: the relative entry joined with '/', never a native '\'.
+            destination: format!("source-{index}/{}", export_relative(&entry.relative)),
         });
     }
     groups.into_values().collect()
+}
+
+fn export_relative(relative: &std::path::Path) -> String {
+    relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 #[cfg(test)]
