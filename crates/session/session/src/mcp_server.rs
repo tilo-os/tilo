@@ -661,15 +661,7 @@ impl Loop {
                 }
             };
             let pressed = identify(&stream).and_then(|(pid, peer)| {
-                let from = match peer_decision(&peer) {
-                    Ok(()) => From::Login(pid),
-                    // The login's shell runtime holds the device key, so the kernel hides it from
-                    // this session: it is let in to prove that it holds the device identity, and to
-                    // ask for its environments' sockets and its workspaces' terminals, and for
-                    // nothing else (`serve_shell_runtime`).
-                    Err(PeerRefusal::Sandboxed) if peer.hidden => From::ShellRuntime(pid),
-                    Err(refusal) => return Err(refusal),
-                };
+                let from = entrance(pid, &peer)?;
                 // Only a program the server would serve is told that it is full.
                 let place = self.room.take().ok_or(PeerRefusal::Busy)?;
                 Ok((place, from))
@@ -1076,6 +1068,20 @@ impl PeerRefusal {
                 "this socket serves only programs inside the environment it belongs to"
             }
         }
+    }
+}
+
+/// Which entrance the peer `pid`, whose facts the kernel gave as `peer`, comes in by: the login's
+/// own program, or a process of this account the kernel hides from the session, which is admitted
+/// to prove it holds the device identity for its environments' sockets and its workspaces'
+/// terminals ([`holds_device_identity`], [`serve_shell_runtime`]). A hidden process is not one
+/// sharing the session's namespaces, so it is [`PeerRefusal::Sandboxed`] to [`peer_decision`]: the
+/// proof is what tells it from a program a sandbox put elsewhere.
+fn entrance(pid: u32, peer: &Peer) -> Result<From, PeerRefusal> {
+    match peer_decision(peer) {
+        Ok(()) => Ok(From::Login(pid)),
+        Err(PeerRefusal::Sandboxed) if peer.hidden => Ok(From::ShellRuntime(pid)),
+        Err(refusal) => Err(refusal),
     }
 }
 

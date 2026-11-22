@@ -212,6 +212,46 @@ fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
     assert!(records.session.asks.lock_recover().is_empty());
 }
 
+/// The login's shell runtime comes in by the entrance that asks only for its environments'
+/// sockets and its workspaces' terminals, and proves there that it holds the device identity: a
+/// hidden process of this account is let in, a process the session can look at in another mount
+/// namespace is a sandboxed program and is refused as one, and another account's process is
+/// refused before anything of it is considered.
+#[test]
+fn a_hidden_process_of_this_account_comes_in_to_prove_its_device_identity() {
+    let own = rustix::process::geteuid().as_raw();
+    let peer = |uid, shares_namespaces, hidden| Peer {
+        uid,
+        shares_namespaces,
+        hidden,
+    };
+    assert!(
+        matches!(
+            entrance(7, &peer(own, false, true)),
+            Ok(From::ShellRuntime(7))
+        ),
+        "hidden, and in the login's account: let in to prove it"
+    );
+    assert!(
+        matches!(
+            entrance(7, &peer(own, false, false)),
+            Err(PeerRefusal::Sandboxed)
+        ),
+        "a program in another mount namespace, which the session can look at, is sandboxed"
+    );
+    assert!(
+        matches!(
+            entrance(7, &peer(own.saturating_add(1), false, true)),
+            Err(PeerRefusal::OtherAccount)
+        ),
+        "another account's process, hidden or not, is not let in"
+    );
+    assert!(
+        matches!(entrance(7, &peer(own, true, false)), Ok(From::Login(7))),
+        "a program of this login sharing its namespaces is an ordinary one"
+    );
+}
+
 #[test]
 fn the_peer_must_be_this_accounts_own_process_in_its_namespaces() {
     let own = rustix::process::geteuid().as_raw();
