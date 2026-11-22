@@ -122,6 +122,15 @@ async fn agent_viewing_files(
         Options::offering(crate::common::catalogue),
     )
     .await;
+    // tilo.sh made her root here, so it founds her own workspace, where her region is kept.
+    tilo_server::servers::found(
+        hosted
+            .server
+            .workspaces()
+            .expect("the host holds workspaces"),
+    )
+    .await
+    .unwrap();
     let mut page = Browser::open(&hosted, &browser_device, &home).await;
     let _files = page.create(FILES);
     page.put_layout();
