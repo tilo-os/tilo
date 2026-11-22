@@ -10,6 +10,10 @@ use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 #[cfg(unix)]
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test asserts what it restored before it returns"
+)]
 fn recovery_words_restore_the_person_on_a_headless_device() -> anyhow::Result<()> {
     use tilo_device_identity::persist::read_device_cert;
     use tilo_identity::{provisioning, store};
