@@ -23,11 +23,12 @@ use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
 use tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE;
 use tilo_server_session::workspaces::{
-    ActionInvitation, CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE,
-    ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
-    HOST_WORKSPACES_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS,
-    LIST_WORKSPACES, PERSONAL_DEVICE_NAME, PersonalList, Refusal, UNHOST_WORKSPACE,
-    WorkspaceLabels, WorkspaceListing, check_labels, labelled,
+    ActionInvitation, CATCH_UP_WORKSPACE, CREATE_OWN_WORKSPACE, CREATE_WORKSPACE,
+    CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE, ENTER_WORKSPACE, EnteredWorkspace,
+    HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace,
+    KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS, LIST_WORKSPACES, PERSONAL_DEVICE_NAME,
+    PersonalList, Refusal, UNHOST_WORKSPACE, WorkspaceLabels, WorkspaceListing, check_labels,
+    labelled,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -61,7 +62,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 17] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 18] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -181,6 +182,16 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 17] = [
             params: workspace_params,
         },
         ServiceOperation::UnhostWorkspace,
+    ),
+    (
+        Verb {
+            id: CATCH_UP_WORKSPACE,
+            label: "Take in a workspace's changes from a device keeping it",
+            check: CATCH_UP_WORKSPACE,
+            kind: roles::GOVERNANCE_KIND,
+            params: catch_up_params,
+        },
+        ServiceOperation::CatchUpWorkspace,
     ),
     (
         Verb {
@@ -311,6 +322,21 @@ fn admit_machine_params() -> Vec<ActionParam> {
             "The choices the machine asks about, choice to reason, as JSON.",
         ),
     ]
+}
+
+fn catch_up_params() -> Vec<ActionParam> {
+    let mut params = workspace_params();
+    params.push(ActionParam::optional(
+        "names_content",
+        ParamType::Boolean,
+        "Whether the asking device's resources name content to keep.",
+    ));
+    params.push(ActionParam::optional(
+        "absent",
+        ParamType::Array,
+        "The addresses of the content the asking device keeps none of itself.",
+    ));
+    params
 }
 
 fn workspace_params() -> Vec<ActionParam> {
@@ -690,7 +716,7 @@ impl Workspaces {
                 self.enter_invoke(device, &args, request_id, now, local_address)
                     .await
             }
-            ServiceOperation::HostWorkspace | ServiceOperation::UnhostWorkspace => {
+            operation if operation.decided_by_its_workspace() => {
                 Box::pin(self.serving_invoke(device, operation, &args, now)).await
             }
             ServiceOperation::PlanMachine
@@ -1383,6 +1409,26 @@ impl Workspaces {
                     .await
                     .map_err(|error| refused(&error))?;
                 Ok(serde_json::json!({ "stopped": stopped }))
+            }
+            ServiceOperation::CatchUpWorkspace => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                #[cfg(any(test, feature = "test-support"))]
+                if self.speaks_no_catch_up_now() {
+                    return Err(ActionCallError::UnknownAction);
+                }
+                let (cursors, content_missing) = Box::pin(self.catch_up_from(
+                    device,
+                    args.required_text("workspace")?,
+                    args.flag("names_content")?,
+                    &args.texts("absent")?,
+                ))
+                .await
+                .map_err(|error| refused(&error))?;
+                answer(&CaughtUpWorkspace {
+                    cursors: hex_postcard(&cursors)?,
+                    content_missing,
+                })
             }
             _ => Err(ActionCallError::UnknownAction),
         }

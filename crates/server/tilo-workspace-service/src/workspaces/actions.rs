@@ -1043,6 +1043,21 @@ impl Args {
         }
     }
 
+    fn texts(&self, name: &str) -> Result<std::collections::BTreeSet<String>, ActionCallError> {
+        match self.0.get(name) {
+            None | Some(Value::Null) => Ok(std::collections::BTreeSet::new()),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| invalid(format!("`{name}` must list text")))
+                })
+                .collect(),
+            Some(_) => Err(invalid(format!("`{name}` must be a list of text"))),
+        }
+    }
+
     fn flag(&self, name: &str) -> Result<bool, ActionCallError> {
         match self.0.get(name) {
             None | Some(Value::Null) => Ok(false),

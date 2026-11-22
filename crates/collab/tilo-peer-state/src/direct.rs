@@ -105,6 +105,10 @@ enum LinkFrame {
     /// The dialled device listens now: whatever the dialling one publishes
     /// from this point reaches it, live.
     Ready,
+    /// The workspace whose store the dialling device takes, named instead of
+    /// [`Self::Workspace`]: the dialled device answers what its store keeps
+    /// and sends nothing live ([`DirectSync::take_store`]).
+    Take(WorkspaceId),
 }
 
 /// Ask the other device's store for the frames after `cursors`, round by round
@@ -132,6 +136,33 @@ async fn fetch_store(
         write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
     }
     Err("the device's store ended the history before the last frame".into())
+}
+
+/// The certificate `device` takes part in `peer`'s workspace under: its own
+/// in the member list, or, for a device the workspace names among those
+/// keeping it, the one its signed address carries. A device keeping the
+/// workspace for another person is no member, and takes the store of a
+/// device keeping it all the same ([`DirectSync::take_store`]).
+fn certified(peer: &StatePeer, device: [u8; 32]) -> Option<tilo_user_identity::DeviceCert> {
+    peer.certificates()
+        .into_iter()
+        .chain(
+            peer.governance()
+                .keeping_devices()
+                .into_iter()
+                .map(|address| address.host),
+        )
+        .find(|certificate| certificate.device_public_key == device)
+}
+
+/// Where `store` stands on `workspace`: a cursor per author's line, at the
+/// latest frame it keeps there.
+fn standing(store: &Store, workspace: WorkspaceId) -> Vec<Cursor> {
+    store
+        .stands(workspace)
+        .into_iter()
+        .map(|(cursor, _)| cursor)
+        .collect()
 }
 
 /// What this device's owner decided of `message`, `author`'s frame, as the
@@ -392,8 +423,8 @@ impl Pairing {
             live_theirs,
         } = self;
         let (own, theirs) = (member.device(), holder.device());
-        holder.admits(own)?;
-        member.admits(theirs)?;
+        holder.admits(own, false)?;
+        member.admits(theirs, false)?;
         // Each side's catch-up is history, however old what it carries: it is
         // judged as retained, never as a late live frame.
         member
@@ -1027,6 +1058,26 @@ impl DirectSync {
         addr: impl Into<EndpointAddr>,
         device: [u8; 32],
     ) -> Result<Dialed, Refusal> {
+        let dialed = self.reach(endpoint, addr, device, false).await?;
+        // Who the dialled device is, this one learns from what it sends: its
+        // certificate is in the frames it opens with, and a device that has
+        // not synced yet holds no roster to refuse by.
+        self.certificate().map_err(Refusal::Other)?;
+        Ok(dialed)
+    }
+
+    /// Dial `device` at `addr` from `endpoint` and answer its admission, as
+    /// [`Self::dial`] does, whether or not the workspace as this device has
+    /// it names it yet. A device that `takes` only the other's store says so
+    /// ([`LinkFrame::Take`]), and the other admits it by what the workspace
+    /// there names.
+    async fn reach(
+        &self,
+        endpoint: &Endpoint,
+        addr: impl Into<EndpointAddr>,
+        device: [u8; 32],
+        takes: bool,
+    ) -> Result<Dialed, Refusal> {
         let addr: EndpointAddr = addr.into();
         let connection = endpoint
             .connect(addr, DIRECT_ALPN)
@@ -1038,7 +1089,12 @@ impl DirectSync {
             .await
             .map_err(|error| Refusal::Other(error.to_string()))?;
         let workspace = self.workspace().map_err(Refusal::Other)?;
-        write_link(&mut send, &LinkFrame::Workspace(workspace))
+        let named = if takes {
+            LinkFrame::Take(workspace)
+        } else {
+            LinkFrame::Workspace(workspace)
+        };
+        write_link(&mut send, &named)
             .await
             .map_err(Refusal::Other)?;
         // The other device listens before this returns, so what the caller
@@ -1058,10 +1114,6 @@ impl DirectSync {
                 return Err(refusal(&connection).unwrap_or(Refusal::Other(error)));
             }
         }
-        // Who the dialled device is, this one learns from what it sends: its
-        // certificate is in the frames it opens with, and a device that has
-        // not synced yet holds no roster to refuse by.
-        self.certificate().map_err(Refusal::Other)?;
         // Subscribed before the dial returns: the caller may send at once.
         let live = self.0.outgoing.subscribe();
         Ok(Dialed {
@@ -1086,6 +1138,97 @@ impl DirectSync {
         let device = *addr.id.as_bytes();
         let dialed = self.dial(endpoint, addr, device).await?;
         dialed.run(self).await
+    }
+
+    /// Take in, from the store of `device` dialled at `addr`, every frame of
+    /// the workspace it keeps that this device's store does not, and answer
+    /// where this device's store stands once each of them is kept here: what
+    /// a device that is handed the workspace does before the device handing
+    /// it may let it go, and what a device that stays does before another
+    /// lets it go. The frames are asked for from this device's store's own
+    /// cursors, so whatever reached its copy by another way is taken all the
+    /// same, and admitted as the history a link's catch-up brings is. The
+    /// link ends once they are kept.
+    ///
+    /// # Errors
+    ///
+    /// This device keeps no store, the dial failed or was refused, the other
+    /// device's history did not arrive whole, or a frame of it was not kept.
+    pub async fn take_store(
+        &self,
+        endpoint: &Endpoint,
+        addr: impl Into<EndpointAddr>,
+        device: [u8; 32],
+    ) -> Result<Vec<Cursor>, Refusal> {
+        let store = self
+            .0
+            .store
+            .clone()
+            .ok_or_else(|| Refusal::Other("this device keeps no store".into()))?;
+        let workspace = self.workspace().map_err(Refusal::Other)?;
+        let Dialed {
+            connection,
+            mut control,
+            ..
+        } = self.reach(endpoint, addr, device, true).await?;
+        let fetched = fetch_store(&mut control, standing(&store, workspace))
+            .await
+            .map_err(|error| refusal(&connection).unwrap_or(Refusal::Other(error)))?;
+        let frames: Vec<Frame> = fetched
+            .iter()
+            .filter_map(|(_, message)| Frame::of(message).ok())
+            .collect();
+        self.admit_history(fetched).await;
+        // Each is in this device's store before it says where it stands: one
+        // the admission kept is there already, and one it did not keep is
+        // written now, or the store says why not.
+        for frame in &frames {
+            store
+                .retain(workspace, frame)
+                .map_err(|error| Refusal::Other(format!("a frame was not kept: {error}")))?;
+        }
+        connection.close(0_u32.into(), b"taken");
+        tracing::debug!(
+            workspace = ?workspace,
+            from = %short(&device),
+            frames = frames.len(),
+            "the other device's store is taken in"
+        );
+        Ok(standing(&store, workspace))
+    }
+
+    /// How many frames of the workspace this device's store keeps that
+    /// `device` may read and, its own store standing at `cursors`, does not
+    /// keep: none once it keeps every one this device does, whatever more it
+    /// keeps of its own.
+    ///
+    /// # Errors
+    ///
+    /// A frame this device keeps could not be read back.
+    pub fn lacked_by(&self, device: [u8; 32], cursors: &[Cursor]) -> Result<usize, String> {
+        let Some(store) = &self.0.store else {
+            return Ok(0);
+        };
+        let workspace = self.workspace()?;
+        let reaches = self.reach_of(device);
+        let mut after = cursors.to_vec();
+        let mut lacked = 0_usize;
+        loop {
+            let replay = store
+                .replay(workspace, &after, Budget::default())
+                .map_err(|error| error.to_string())?;
+            lacked = lacked.saturating_add(
+                replay
+                    .frames
+                    .iter()
+                    .filter(|message| reaches(message))
+                    .count(),
+            );
+            store::advance(&mut after, &replay.frames);
+            if !replay.more || replay.frames.is_empty() {
+                return Ok(lacked);
+            }
+        }
     }
 
     /// Sync `member` with `holder`, two devices of one workspace in one
@@ -1169,12 +1312,15 @@ impl DirectSync {
     ///
     /// The device named no workspace, or one this replica is not.
     pub async fn serve(&self, connection: Connection) -> Result<(), String> {
-        let (named, send, recv) = dialed_workspace(&connection).await?;
+        let (named, takes, send, recv) = dialed_workspace(&connection).await?;
         if named != self.workspace()? {
             return Err(refuse(
                 &connection,
                 &Refusal::Other("this device holds no such workspace".into()),
             ));
+        }
+        if takes {
+            return self.give_store(&connection, Control { send, recv }).await;
         }
         let live = self.0.outgoing.subscribe();
         self.link(&connection, None, Control { send, recv }, live)
@@ -1226,7 +1372,7 @@ impl DirectSync {
         // The device that accepted a dial refuses one of the workspace's
         // roster it does not know before a frame is read; the one that
         // dialled cannot judge, and takes only what its roster verifies.
-        if !dialing && let Err(reason) = self.admits(remote) {
+        if !dialing && let Err(reason) = self.admits(remote, false) {
             return Err(refuse(connection, &Refusal::NotAMember(reason)));
         }
         if !dialing {
@@ -1423,6 +1569,18 @@ impl DirectSync {
                 return Ok(());
             }
         }
+        self.answer_asks(control, remote, Some(answered)).await
+    }
+
+    /// Answer each ask of the device `remote` for the history after its
+    /// cursors on `control`, the state this device holds first, until it asks
+    /// no more. Each answer of a live link is told to `answered`.
+    async fn answer_asks(
+        &self,
+        control: &mut Control,
+        remote: [u8; 32],
+        answered: Option<&watch::Sender<bool>>,
+    ) -> Result<(), String> {
         let mut opens_an_ask = true;
         // The state an ask opens with that earlier answers had not allocated.
         let mut state = std::collections::VecDeque::new();
@@ -1488,10 +1646,12 @@ impl DirectSync {
                 "a link's ask for history is answered"
             );
             write_link(&mut control.send, &LinkFrame::Frames { frames, more }).await?;
-            answered.send_replace(true);
             opens_an_ask = !more;
-            if !more {
-                self.0.caught_up.send_replace(true);
+            if let Some(answered) = answered {
+                answered.send_replace(true);
+                if !more {
+                    self.0.caught_up.send_replace(true);
+                }
             }
         }
         Ok(())
@@ -1597,18 +1757,56 @@ impl DirectSync {
         }
     }
 
+    /// Answer a device that takes this device's store over `connection`
+    /// ([`Self::take_store`]) with what the store keeps that it may read,
+    /// and nothing live. A device the workspace names among those keeping
+    /// it is let take it ([`certified`]), dialling on the service key its
+    /// signed address binds to it.
+    async fn give_store(
+        &self,
+        connection: &Connection,
+        mut control: Control,
+    ) -> Result<(), String> {
+        let remote = self.device_at(*connection.remote_id().as_bytes());
+        if let Err(reason) = self.admits(remote, true) {
+            return Err(refuse(connection, &Refusal::NotAMember(reason)));
+        }
+        write_link(&mut control.send, &LinkFrame::Ready).await?;
+        self.answer_asks(&mut control, remote, None).await
+    }
+
+    /// The device whose link dials this one from the endpoint `endpoint`: a
+    /// device the workspace names among those keeping it may answer on a
+    /// service key of its own, which its signed address binds to it; any
+    /// other dials on its own key.
+    fn device_at(&self, endpoint: [u8; 32]) -> [u8; 32] {
+        self.0
+            .replica
+            .lock()
+            .governance()
+            .keeping_devices()
+            .into_iter()
+            .find(|address| address.service_public_key == endpoint)
+            .map_or(endpoint, |address| address.host.device_public_key)
+    }
+
     /// Whether `device` may sync with this replica: a certified device of
-    /// its roster, unrevoked and unexpired, of a person the workspace has
-    /// not removed.
-    fn admits(&self, device: [u8; 32]) -> Result<(), String> {
+    /// its roster, or, when it only takes this device's store (`keeping`), of
+    /// those the workspace names as keeping it ([`certified`]); unrevoked and
+    /// unexpired, of a person the workspace has not removed.
+    fn admits(&self, device: [u8; 32], keeping: bool) -> Result<(), String> {
         if self.removed(device) {
             return Err(REMOVED.into());
         }
         let replica = self.0.replica.lock();
-        let certificate = replica
-            .certificates()
-            .into_iter()
-            .find(|certificate| certificate.device_public_key == device);
+        let certificate = if keeping {
+            certified(&replica, device)
+        } else {
+            replica
+                .certificates()
+                .into_iter()
+                .find(|certificate| certificate.device_public_key == device)
+        };
         // A revocation reaches the keys its own root certified: another
         // person's entry naming this key refuses nothing of its device's.
         let revoked = certificate.as_ref().is_some_and(|certificate| {
@@ -1836,7 +2034,7 @@ impl DirectSync {
         if authored.from != remote
             || envelope.author.as_bytes() != &remote
             || !self.fans_out()
-            || self.admits(remote).is_err()
+            || self.admits(remote, false).is_err()
         {
             return false;
         }
@@ -2326,21 +2524,26 @@ struct Control {
     recv: RecvStream,
 }
 
-/// Read the workspace a dialling device names first, off its control stream.
+/// Read the workspace a dialling device names first, off its control stream,
+/// and whether it only takes this device's store ([`LinkFrame::Take`]).
 async fn dialed_workspace(
     connection: &Connection,
-) -> Result<(WorkspaceId, SendStream, RecvStream), String> {
+) -> Result<(WorkspaceId, bool, SendStream, RecvStream), String> {
     let (send, mut recv) = connection
         .accept_bi()
         .await
         .map_err(|error| error.to_string())?;
-    let Some(LinkFrame::Workspace(named)) = read_link(&mut recv, MAX_FRAME_BYTES).await? else {
-        return Err(refuse(
-            connection,
-            &Refusal::Invalid("the device did not name its workspace".into()),
-        ));
+    let (named, takes) = match read_link(&mut recv, MAX_FRAME_BYTES).await? {
+        Some(LinkFrame::Workspace(named)) => (named, false),
+        Some(LinkFrame::Take(named)) => (named, true),
+        _ => {
+            return Err(refuse(
+                connection,
+                &Refusal::Invalid("the device did not name its workspace".into()),
+            ));
+        }
     };
-    Ok((named, send, recv))
+    Ok((named, takes, send, recv))
 }
 
 /// Close `connection`, refused for `refusal`, which the device on the other
@@ -2442,7 +2645,7 @@ impl Serving {
 impl ProtocolHandler for Serving {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let serve = async {
-            let (named, send, recv) = dialed_workspace(&connection).await?;
+            let (named, takes, send, recv) = dialed_workspace(&connection).await?;
             if self.deleted(named) {
                 return Err(refuse(&connection, &Refusal::WorkspaceDeleted));
             }
@@ -2452,6 +2655,9 @@ impl ProtocolHandler for Serving {
                     &Refusal::Other("this host holds no such workspace".into()),
                 )
             })?;
+            if takes {
+                return link.give_store(&connection, Control { send, recv }).await;
+            }
             let live = link.0.outgoing.subscribe();
             link.link(&connection, None, Control { send, recv }, live)
                 .await
@@ -2754,12 +2960,15 @@ mod tests {
             .unwrap();
         let sync = link(&roster, theirs, Vec::new());
         assert_eq!(
-            sync.admits(member.device_public_key),
+            sync.admits(member.device_public_key, false),
             Ok(()),
             "a stranger's entry refuses nothing of the member's device"
         );
         assert_eq!(
-            sync.admits(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            sync.admits(
+                SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes(),
+                false
+            ),
             Err("the device is not in the workspace roster".to_owned())
         );
 
@@ -2777,7 +2986,7 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            sync.admits(member.device_public_key),
+            sync.admits(member.device_public_key, false),
             Err("the device is revoked".to_owned())
         );
     }

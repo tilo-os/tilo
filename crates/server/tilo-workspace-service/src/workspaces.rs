@@ -1023,6 +1023,11 @@ struct WorkspacesInner {
     /// `0` keeps the link's own.
     #[cfg(test)]
     link_heard_capacity: std::sync::atomic::AtomicUsize,
+    /// Whether this service answers the catch-up a device keeping one of its
+    /// workspaces asks for as a build before the ask does: not at all
+    /// ([`Workspaces::speak_no_catch_up`]).
+    #[cfg(any(test, feature = "test-support"))]
+    speaks_no_catch_up: std::sync::atomic::AtomicBool,
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
@@ -1348,6 +1353,8 @@ impl Workspaces {
             inner: Arc::new(WorkspacesInner {
                 #[cfg(test)]
                 link_heard_capacity: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(any(test, feature = "test-support"))]
+                speaks_no_catch_up: std::sync::atomic::AtomicBool::new(false),
                 draining: std::sync::atomic::AtomicBool::new(false),
                 store: Arc::new(store),
                 direct: tilo_peer_state::direct::Serving::new(),
@@ -1432,6 +1439,10 @@ impl Workspaces {
     /// Serve each workspace this host kept from its last run: bring it up,
     /// settle its governance, name this host's address in it, and recall what
     /// it left running.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "each workspace stays locked through its whole start, up to its revocations"
+    )]
     async fn serve_kept(
         &self,
         workspaces: &[Arc<AsyncMutex<GovernedWorkspace>>],
@@ -1455,7 +1466,7 @@ impl Workspaces {
             if let Err(error) = self.hand_kept_workspace_over(&mut workspace).await {
                 tracing::error!(workspace = %workspace.workspace(), %error, "a workspace this host keeps for a person was not handed to them");
             }
-            self.keep_link_history(&workspace).await;
+            Box::pin(self.keep_link_history(workspace.workspace(), workspace.workspace_id())).await;
             self.recall(&mut workspace)
                 .await
                 .map_err(|e| format!("recall: {e}"))?;

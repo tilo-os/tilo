@@ -53,6 +53,60 @@ pub trait ContentKeeper: Send + Sync {
         let _ = (workspace, frame);
         false
     }
+
+    /// How many blobs of the content the resources of `workspace` that open
+    /// here name and this keeps none of yet, and, when `waiting`, one for each
+    /// resource still waiting for the keys that open it: none for one that
+    /// keeps no resource's content. Content `beside` addresses is not
+    /// counted.
+    fn lacks<'a>(
+        &'a self,
+        workspace: &'a str,
+        waiting: bool,
+        beside: &'a BTreeSet<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + 'a>> {
+        let _ = (workspace, waiting, beside);
+        Box::pin(std::future::ready(0))
+    }
+
+    /// The addresses of the content the resources of `workspace` that open
+    /// here name and this keeps none of yet.
+    fn lacked<'a>(
+        &'a self,
+        workspace: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = BTreeSet<String>> + Send + 'a>> {
+        let _ = workspace;
+        Box::pin(std::future::ready(BTreeSet::new()))
+    }
+
+    /// How many blobs of content the resources of `workspace` that open here
+    /// name: none for one that keeps no resource's content.
+    fn names<'a>(
+        &'a self,
+        workspace: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + 'a>> {
+        let _ = workspace;
+        Box::pin(std::future::ready(0))
+    }
+}
+
+/// A member's answer to content this host asked a workspace for: a piece of
+/// it, or word that the member keeps none of it.
+#[derive(Clone, Debug)]
+pub(crate) struct ContentAnswer {
+    pub(crate) workspace: String,
+    pub(crate) from: [u8; 32],
+    pub(crate) lacks: bool,
+}
+
+/// Where each content answer this host takes in is told, to whoever waits
+/// for one ([`Workspaces::content_answers`]).
+pub(super) struct ContentAnswers(tokio::sync::broadcast::Sender<ContentAnswer>);
+
+impl Default for ContentAnswers {
+    fn default() -> Self {
+        Self(tokio::sync::broadcast::channel(64).0)
+    }
 }
 
 /// The content source a host's workspaces answer from, and the keeper of what
@@ -60,6 +114,8 @@ pub trait ContentKeeper: Send + Sync {
 #[derive(Default)]
 pub(super) struct ContentSlot {
     pub(super) sources: RwLock<Vec<Arc<dyn WorkspaceContent>>>,
+    /// The answers members give the content this host asks for.
+    pub(super) answers: ContentAnswers,
     /// Held weakly: a keeper keeps the workspaces that answer members' pieces
     /// (a host's files do), so a strong handle here would keep the keeper and
     /// the workspaces alive — and the host's endpoint with them — for as long
@@ -424,6 +480,25 @@ impl Workspaces {
     /// surface the host asked for, into the content store the host decides
     /// with. Dropped when the host expects neither.
     pub fn content_for_host(&self, workspace: &str, from: [u8; 32], frame: &[u8]) {
+        self.keep_content_for_host(workspace, from, frame);
+        // Told once what it brings is kept.
+        let answers = &self.inner.content.answers.0;
+        if answers.receiver_count() > 0 {
+            let lacks = matches!(
+                NeighbourMsg::decode(frame),
+                Ok(NeighbourMsg::DocumentContentLacks { .. })
+            );
+            drop(answers.send(ContentAnswer {
+                workspace: workspace.to_owned(),
+                from,
+                lacks,
+            }));
+        }
+    }
+
+    /// Hand `frame` to whoever asked for what it brings
+    /// ([`Self::content_for_host`]).
+    fn keep_content_for_host(&self, workspace: &str, from: [u8; 32], frame: &[u8]) {
         for keeper in self.inner.content.keepers() {
             if keeper.expects(workspace, frame) {
                 keeper.piece(workspace, from, frame);
@@ -442,6 +517,48 @@ impl Workspaces {
         if let Some(arrived) = arrived {
             crate::surfaces::keep(&arrived.hash, &arrived.bytes);
         }
+    }
+
+    /// Each answer a member gives the content this host asks for from now on.
+    pub(crate) fn content_answers(&self) -> tokio::sync::broadcast::Receiver<ContentAnswer> {
+        self.inner.content.answers.0.subscribe()
+    }
+
+    /// How many blobs of the content the resources of `workspace` that open
+    /// here name this host keeps none of yet, as what keeps them counts, and,
+    /// when `waiting`, one for each resource still waiting for its keys.
+    /// Content `beside` addresses is not counted.
+    pub(crate) async fn content_lacking(
+        &self,
+        workspace: &str,
+        waiting: bool,
+        beside: &BTreeSet<String>,
+    ) -> usize {
+        let mut lacking = 0_usize;
+        for keeping in self.inner.content.keepers() {
+            lacking = lacking.saturating_add(keeping.lacks(workspace, waiting, beside).await);
+        }
+        lacking
+    }
+
+    /// The addresses of the content the resources of `workspace` that open
+    /// here name this host keeps none of yet, as what keeps them says.
+    pub(crate) async fn content_lacked(&self, workspace: &str) -> BTreeSet<String> {
+        let mut lacked = BTreeSet::new();
+        for keeping in self.inner.content.keepers() {
+            lacked.extend(keeping.lacked(workspace).await);
+        }
+        lacked
+    }
+
+    /// How many blobs of content the resources of `workspace` that open here
+    /// name, as what keeps them counts.
+    pub(crate) async fn content_named(&self, workspace: &str) -> usize {
+        let mut named = 0_usize;
+        for keeping in self.inner.content.keepers() {
+            named = named.saturating_add(keeping.names(workspace).await);
+        }
+        named
     }
 
     /// Ask `workspace`'s members for the app surface `hash` of `app` this host

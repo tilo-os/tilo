@@ -246,6 +246,11 @@ pub const LIST_REVOCATIONS: &str = "identity.revocations";
 pub const HOST_WORKSPACE: &str = "workspace.host";
 /// Let `workspace` go, as its owners ask. Answers `{"stopped": bool}`.
 pub const UNHOST_WORKSPACE: &str = "workspace.unhost";
+/// Take in what the store of the asking device, one the workspace names among
+/// those keeping it, keeps of `workspace` and this host's store lacks, over the
+/// workspace's device link: what a device that hands a workspace over, or lets
+/// it go, waits for before it does. Answers a [`CaughtUpWorkspace`].
+pub const CATCH_UP_WORKSPACE: &str = "workspace.catch-up";
 /// The person's whole workspace list, as one of their own devices keeps it
 /// here: argument `list`, a [`PersonalList`] naming each workspace of theirs,
 /// wherever it is hosted (one of their desktops, a paired device, a server),
@@ -499,6 +504,18 @@ impl PersonalList {
 pub struct HostedWorkspace {
     /// The serving host's own signed address for the workspace, postcard in hex.
     pub host_hint: String,
+}
+
+/// What [`CATCH_UP_WORKSPACE`] answers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaughtUpWorkspace {
+    /// Where the answering host's store of the workspace stands once it kept
+    /// what it took in: a cursor per author's line, postcard in hex.
+    pub cursors: String,
+    /// How many blobs of the content the workspace's files name the answering
+    /// host still lacks, kept apart from the writes that name them.
+    #[serde(default)]
+    pub content_missing: u32,
 }
 
 /// One workspace a server governs, as its host actions answer it.

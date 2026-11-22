@@ -847,12 +847,12 @@ async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_remov
 
 #[tokio::test]
 async fn a_lost_invitation_acknowledgement_keeps_the_reservation() {
-    uncertain_invitation_mail(false).await;
+    Box::pin(uncertain_invitation_mail(false)).await;
 }
 
 #[tokio::test]
 async fn a_timed_out_invitation_acknowledgement_keeps_the_reservation() {
-    uncertain_invitation_mail(true).await;
+    Box::pin(uncertain_invitation_mail(true)).await;
 }
 
 async fn uncertain_invitation_mail(timeout: bool) {

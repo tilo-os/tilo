@@ -168,24 +168,92 @@ pub async fn lacking(
     store: &WorkspaceStores,
     workspace: &str,
 ) -> Option<usize> {
+    counted(
+        workspaces,
+        store,
+        workspace,
+        Count::Lacked,
+        &BTreeSet::new(),
+    )
+    .await
+    .map(|tally| tally.blobs)
+}
+
+/// What [`counted`] counts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Count {
+    /// The blobs this host lacks; a resource that does not open here makes
+    /// the count unknown.
+    Lacked,
+    /// The blobs this host lacks; a resource that does not open here counts
+    /// for none, or for one while it waits for the keys that open it when
+    /// `waiting` (its content then is not known yet). A member's own resource
+    /// and one this host keeps only the ciphertext of never open here.
+    LackedOpening { waiting: bool },
+    /// The blobs the resources that open here name, kept here or not.
+    Named,
+}
+
+/// What [`counted`] found.
+struct Tally {
+    /// The blobs counted.
+    blobs: usize,
+    /// The content counted as lacked here, by address.
+    lacked: BTreeSet<String>,
+}
+
+/// How many blobs of the content the resources of `workspace` name, as
+/// `count` says, leaving out what `beside` addresses.
+async fn counted(
+    workspaces: &Workspaces,
+    store: &WorkspaceStores,
+    workspace: &str,
+    count: Count,
+    beside: &BTreeSet<String>,
+) -> Option<Tally> {
     let store = store.get(workspace).ok()?;
-    let mut missing = 0_usize;
+    let mut blobs = 0_usize;
+    let mut lacked = BTreeSet::new();
     for (app, record) in workspaces.workspace_document_routes(workspace).await.ok()? {
         if another_keeper(&app) {
             continue;
         }
-        let Some(bytes) = workspaces
-            .resource_document(workspace, &app, &record)
-            .await
-            .ok()?
-        else {
-            continue;
+        let opened = workspaces.resource_document(workspace, &app, &record).await;
+        let addresses = match opened
+            .as_ref()
+            .map(|bytes| bytes.as_deref().map(|bytes| content_of(&app, bytes)))
+        {
+            Ok(Some(Ok(addresses))) => addresses,
+            Ok(Some(Err(_))) | Err(_) if count == Count::Lacked => return None,
+            Ok(None | Some(Err(_))) => continue,
+            Err(_) => {
+                // Its keys reach this host as it is let into the resource's
+                // channel: until they do, what it names is not known.
+                if count == (Count::LackedOpening { waiting: true })
+                    && !workspaces.own_record(workspace, &app, &record).await
+                    && workspaces.waits_for_keys(workspace, &app, &record).await
+                {
+                    blobs = blobs.saturating_add(1);
+                }
+                continue;
+            }
         };
-        for address in content_of(&app, &bytes).ok()? {
-            missing = missing.saturating_add(missing_pieces(&store, &address).len());
+        for address in addresses {
+            if beside.contains(&address) {
+                continue;
+            }
+            if count == Count::Named {
+                blobs = blobs.saturating_add(1);
+                continue;
+            }
+            let missing = missing_pieces(&store, &address).len();
+            if missing > 0 {
+                blobs = blobs.saturating_add(missing);
+                lacked.insert(address);
+            }
         }
     }
-    Some(missing)
+    Some(Tally { blobs, lacked })
 }
 
 impl KeptContent {
@@ -558,6 +626,60 @@ impl ContentKeeper for KeptContent {
     fn expects(&self, _workspace: &str, frame: &[u8]) -> bool {
         let state = self.state.lock_recover();
         state.wants.expects(&self.device, frame) || state.wants.awaits(&self.device, frame)
+    }
+
+    fn lacks<'a>(
+        &'a self,
+        workspace: &'a str,
+        waiting: bool,
+        beside: &'a BTreeSet<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + 'a>> {
+        Box::pin(async move {
+            counted(
+                &self.workspaces,
+                &self.store,
+                workspace,
+                Count::LackedOpening { waiting },
+                beside,
+            )
+            .await
+            .map_or(0, |tally| tally.blobs)
+        })
+    }
+
+    fn lacked<'a>(
+        &'a self,
+        workspace: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = BTreeSet<String>> + Send + 'a>> {
+        Box::pin(async move {
+            counted(
+                &self.workspaces,
+                &self.store,
+                workspace,
+                Count::LackedOpening { waiting: false },
+                &BTreeSet::new(),
+            )
+            .await
+            .map(|tally| tally.lacked)
+            .unwrap_or_default()
+        })
+    }
+
+    fn names<'a>(
+        &'a self,
+        workspace: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + 'a>> {
+        Box::pin(async move {
+            counted(
+                &self.workspaces,
+                &self.store,
+                workspace,
+                Count::Named,
+                &BTreeSet::new(),
+            )
+            .await
+            .map_or(0, |tally| tally.blobs)
+        })
     }
 }
 

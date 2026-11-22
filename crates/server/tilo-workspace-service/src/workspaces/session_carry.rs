@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use super::{WeakWorkspaces, Workspaces};
 use crate::workspace_documents::HostCommit;
@@ -33,10 +33,17 @@ struct Carried {
     commit: HostCommit,
 }
 
+/// What a workspace's queue of writes on their way to the server's sessions
+/// takes: a write, or word to send once every write queued before it landed.
+enum Carry {
+    Write(Carried),
+    Through(oneshot::Sender<()>),
+}
+
 /// Each workspace's carrier: the queue its writes wait in.
 #[derive(Default)]
 pub(super) struct SessionCarriers {
-    queues: Mutex<HashMap<WorkspaceId, mpsc::UnboundedSender<Carried>>>,
+    queues: Mutex<HashMap<WorkspaceId, mpsc::UnboundedSender<Carry>>>,
     /// Copies a test has fail before they are tried, as a server whose
     /// sessions' store refuses a write for a while.
     #[cfg(test)]
@@ -61,12 +68,29 @@ impl Workspaces {
         (self.inner.session_carriers.queued.lock())
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(commit.channel);
-        let carried = Carried {
-            workspace: workspace.to_owned(),
+        self.queue_for_sessions(
             number,
-            author,
-            commit,
-        };
+            Carry::Write(Carried {
+                workspace: workspace.to_owned(),
+                number,
+                author,
+                commit,
+            }),
+        );
+    }
+
+    /// Wait until every write of the workspace `number` queued for the
+    /// server's sessions so far ([`Self::carry_until_landed`]) has landed.
+    pub(super) async fn carried_through(&self, number: WorkspaceId) {
+        let (through, landed) = oneshot::channel();
+        self.queue_for_sessions(number, Carry::Through(through));
+        // A queue that ended with the server lands nothing more.
+        drop(landed.await);
+    }
+
+    /// Queue `carried` behind the workspace `number`'s writes on their way,
+    /// starting their queue when it has none.
+    fn queue_for_sessions(&self, number: WorkspaceId, carried: Carry) {
         let mut queues = self
             .inner
             .session_carriers
@@ -121,8 +145,16 @@ impl Workspaces {
 /// Carry each write `writes` brings until it lands, in order, waiting longer
 /// after each failed try of the same write. Ends with the server, or once the
 /// queue is closed and empty.
-async fn carry_each(workspaces: WeakWorkspaces, mut writes: mpsc::UnboundedReceiver<Carried>) {
-    while let Some(carried) = writes.recv().await {
+async fn carry_each(workspaces: WeakWorkspaces, mut writes: mpsc::UnboundedReceiver<Carry>) {
+    while let Some(carry) = writes.recv().await {
+        let carried = match carry {
+            Carry::Write(carried) => carried,
+            Carry::Through(through) => {
+                // Whoever waited for it may have stopped waiting.
+                let _ = through.send(());
+                continue;
+            }
+        };
         let mut wait = FIRST_RETRY;
         let mut tries = 0_u32;
         loop {

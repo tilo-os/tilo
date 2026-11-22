@@ -174,8 +174,9 @@ impl Workspaces {
     /// Carry to the server's sessions every record write `workspace`'s link
     /// keeps that the server's own history lacks, in its author's name, as the
     /// link's first copy of a write is carried ([`Self::carry_to_sessions`]):
-    /// writes the link kept before the server carried each one, or that did
-    /// not reach the server as they came.
+    /// writes the link kept before the server carried each one, that did not
+    /// reach the server as they came, or that the link took in from another
+    /// device's store as the workspace was handed here.
     ///
     /// A page that opens a record, a part behind its chain's head or an
     /// on-demand one, is sent what the server's history holds of it, and a
@@ -183,12 +184,15 @@ impl Workspaces {
     /// server's history answers for the workspace only once it holds what the
     /// link holds, as the link's holds what the server retains
     /// ([`Self::recall`]). Returns how many writes it carried.
-    pub(super) async fn keep_link_history(&self, workspace: &GovernedWorkspace) -> usize {
-        let workspace_id = workspace.workspace_id();
+    pub(super) async fn keep_link_history(
+        &self,
+        workspace: &str,
+        workspace_id: WorkspaceId,
+    ) -> usize {
         let retained = match self.inner.host.records.retained(workspace_id).await {
             Ok(retained) => retained,
             Err(error) => {
-                tracing::warn!(workspace = %workspace.workspace(), %error, "the server's history was not read; what only the link kept stays there");
+                tracing::warn!(%workspace, %error, "the server's history was not read; what only the link kept stays there");
                 return 0;
             }
         };
@@ -209,7 +213,7 @@ impl Workspaces {
             ) {
                 Ok(replay) => replay,
                 Err(error) => {
-                    tracing::warn!(workspace = %workspace.workspace(), %error, "the link's history was not read; the server's lacks what only the link kept");
+                    tracing::warn!(%workspace, %error, "the link's history was not read; the server's lacks what only the link kept");
                     return carried;
                 }
             };
@@ -223,7 +227,7 @@ impl Workspaces {
                 if answered.answers_for(&frame) {
                     continue;
                 }
-                self.carry_to_sessions(workspace.workspace(), author, message);
+                self.carry_to_sessions(workspace, author, message);
                 carried = carried.saturating_add(1);
             }
             tilo_peer_state::store::advance(&mut cursors, &replay.frames);
@@ -232,7 +236,7 @@ impl Workspaces {
             }
         }
         if carried > 0 {
-            tracing::info!(workspace = %workspace.workspace(), carried, "the server's history took what only the link kept");
+            tracing::info!(%workspace, carried, "the server's history took what only the link kept");
         }
         carried
     }
