@@ -521,15 +521,27 @@ def lint_runs(root: Path, selection: Selection, formatting: list[str],
     return runs
 
 
-def surface_checks(files: Iterable[str]) -> list[str]:
-    """t's checks over what an app's surface writes, when a push changes an app.
+def surface_checks(root: Path, push: Push) -> list[str]:
+    """t's checks over what a surface or an action or record type writes, when the push reaches them.
 
-    The app-fleet catalogue and the SDK's generated types are written from the
-    apps' manifests, surfaces and tilolang packages: a push that changes one
-    without regenerating them refuses here, not on main.
+    The app-fleet catalogue and the SDK's generated types are written from the apps' surfaces
+    and from the action and record types of every crate, so the list of what moves them is
+    t's own: `t scope` names the checks a commit's change touches. A push that reaches one
+    and does not regenerate refuses here, not on main.
     """
-    if any(path.startswith(("apps/", "crates/packaging/app-fleet/")) for path in files):
-        return ["sdk-policy", "sdk-types"]
+    wanted = ("sdk-policy", "sdk-types")
+    if push.tips:
+        try:
+            scoped = subprocess.run(["t", "scope", "--rev", push.tips[0], "--names"],
+                                    cwd=root, capture_output=True, text=True, check=False)
+        except OSError:
+            scoped = None
+        if scoped is not None and scoped.returncode == 0:
+            named = set(scoped.stdout.split())
+            return [name for name in wanted if name in named]
+    # t could not tell: an app's surface alone still moves the generated catalogue and types.
+    if any(path.startswith(("apps/", "crates/packaging/app-fleet/")) for path in push.files):
+        return list(wanted)
     return []
 
 
@@ -746,7 +758,7 @@ def main(argv: list[str]) -> int:
         try:
             members = set(package_maps(selection.metadata, root)[0])
             checks, uncovered = t_checks(root, selection.native, members)
-            checks += [name for name in surface_checks(push.files) if name not in checks]
+            checks += [name for name in surface_checks(root, push) if name not in checks]
         except (OSError, ValueError, KeyError) as error:
             say(f"pre-push: cannot read which of t's checks lint these packages from {T_TOML}: {error}")
             return 1
