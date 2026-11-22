@@ -208,7 +208,7 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
         .unwrap();
     let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
-    let page_host =
+    let server_address =
         || ServerAddress::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let workspace_id = WorkspaceId::parse(&lounge.workspace).unwrap();
     let written_document = notes(&lounge.workspace, "");
@@ -218,7 +218,13 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
     );
 
     // A member wrote one record whole before anyone else came: one snapshot, and nothing after.
-    let author = arrive(page_host(), &host_device.cert, &lounge.workspace, "Member").await;
+    let author = arrive(
+        server_address(),
+        &host_device.cert,
+        &lounge.workspace,
+        "Member",
+    )
+    .await;
     author.send(Cmd::Join(workspace_id)).unwrap();
     let mut doc = automerge::AutoCommit::new();
     let whole = say(&mut doc, "supplier", "A contract");
@@ -226,7 +232,13 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
 
     // A page comes in holding nothing and opens both records, one of which the workspace has
     // none of yet.
-    let page = arrive(page_host(), &host_device.cert, &lounge.workspace, "Guest").await;
+    let page = arrive(
+        server_address(),
+        &host_device.cert,
+        &lounge.workspace,
+        "Guest",
+    )
+    .await;
     let mut reader = Reader::of(&page, vec![written_document.clone(), fresh_record.clone()]);
     page.send(Cmd::Join(workspace_id)).unwrap();
     page.send(Cmd::OpenDocumentAt(workspace_id, written_document.clone()))

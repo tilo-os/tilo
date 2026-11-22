@@ -100,7 +100,7 @@ async fn letting_one_more_person_in_costs_the_same_however_many_are_in() {
             (
                 work.identities_decoded,
                 work.signatures_verified,
-                work.governance_reads,
+                work.admission_reads,
                 work.replays,
                 work.receipts_read,
                 *access,
@@ -124,7 +124,7 @@ async fn letting_one_more_person_in_costs_the_same_however_many_are_in() {
     // before it with the newcomer's receipt folded in: neither walks the
     // workspace's rows nor replays its membership history.
     assert_eq!(
-        (large.governance_reads, large.replays),
+        (large.admission_reads, large.replays),
         (0, 0),
         "an arrival reads the governance whole or replays the membership: {large:?}"
     );

@@ -241,7 +241,7 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
         .unwrap();
     let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
-    let page_host =
+    let server_address =
         || ServerAddress::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let chat = DocumentRoute {
         app_id: "so.tilo.chat".into(),
@@ -252,7 +252,7 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
     // The first member writes the chat; the rest of the crowd came through
     // the entry.
     let author = arrive(
-        page_host(),
+        server_address(),
         &host_device.cert,
         &lounge.workspace,
         "Member 0",
@@ -301,7 +301,7 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
     for guest in 0..guests {
         let started = Instant::now();
         let page = arrive(
-            page_host(),
+            server_address(),
             &host_device.cert,
             &lounge.workspace,
             &format!("Guest {guest}"),

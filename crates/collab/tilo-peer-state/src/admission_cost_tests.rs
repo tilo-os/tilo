@@ -307,8 +307,8 @@ fn newcomer_of_30_against_300() {
     let large = newcomer_work(300);
     let more = |large: u64, small: u64| large.saturating_sub(small);
     assert_eq!(
-        (large.governance_reads, large.replays, large.security_bases),
-        (small.governance_reads, small.replays, small.security_bases),
+        (large.admission_reads, large.replays, large.security_bases),
+        (small.admission_reads, small.replays, small.security_bases),
         "readings over every row, at 300 members against 30: {large:?} against {small:?}"
     );
     assert!(

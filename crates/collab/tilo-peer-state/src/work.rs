@@ -36,8 +36,9 @@ pub struct Work {
     /// membership operations not checked before
     /// ([`tilo_user_identity::verify_remembered`]).
     pub signatures_verified: u64,
-    /// Whole reads of a workspace's governance rows from its document.
-    pub governance_reads: u64,
+    /// Whole reads of a workspace's admission rows from its document: who is in
+    /// it and what each may do.
+    pub admission_reads: u64,
     /// Replays of the workspace's membership log.
     pub replays: u64,
     /// Invitation receipts read back and checked.
@@ -71,9 +72,7 @@ impl Work {
             signatures_verified: self
                 .signatures_verified
                 .saturating_sub(before.signatures_verified),
-            governance_reads: self
-                .governance_reads
-                .saturating_sub(before.governance_reads),
+            admission_reads: self.admission_reads.saturating_sub(before.admission_reads),
             replays: self.replays.saturating_sub(before.replays),
             receipts_read: self.receipts_read.saturating_sub(before.receipts_read),
             security_bases: self.security_bases.saturating_sub(before.security_bases),
@@ -91,7 +90,7 @@ static BYTES_READ: AtomicU64 = AtomicU64::new(0);
 static BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 static COMMITS: AtomicU64 = AtomicU64::new(0);
 static IDENTITIES_DECODED: AtomicU64 = AtomicU64::new(0);
-static GOVERNANCE_READS: AtomicU64 = AtomicU64::new(0);
+static ADMISSION_READS: AtomicU64 = AtomicU64::new(0);
 static REPLAYS: AtomicU64 = AtomicU64::new(0);
 static RECEIPTS_READ: AtomicU64 = AtomicU64::new(0);
 static SECURITY_BASES: AtomicU64 = AtomicU64::new(0);
@@ -109,7 +108,7 @@ pub fn now() -> Work {
         commits: load(&COMMITS),
         identities_decoded: load(&IDENTITIES_DECODED),
         signatures_verified: tilo_user_identity::signature_checks(),
-        governance_reads: load(&GOVERNANCE_READS),
+        admission_reads: load(&ADMISSION_READS),
         replays: load(&REPLAYS),
         receipts_read: load(&RECEIPTS_READ),
         security_bases: load(&SECURITY_BASES),
@@ -161,8 +160,8 @@ pub(crate) fn identity_decoded() {
     add(&IDENTITIES_DECODED, 1);
 }
 
-pub(crate) fn governance_read() {
-    add(&GOVERNANCE_READS, 1);
+pub(crate) fn admission_read() {
+    add(&ADMISSION_READS, 1);
 }
 
 pub(crate) fn receipt_read() {
@@ -204,7 +203,7 @@ fn retract(added: Work) {
     undo(&BYTES_WRITTEN, added.bytes_written);
     undo(&COMMITS, added.commits);
     undo(&IDENTITIES_DECODED, added.identities_decoded);
-    undo(&GOVERNANCE_READS, added.governance_reads);
+    undo(&ADMISSION_READS, added.admission_reads);
     undo(&REPLAYS, added.replays);
     undo(&RECEIPTS_READ, added.receipts_read);
     undo(&SECURITY_BASES, added.security_bases);

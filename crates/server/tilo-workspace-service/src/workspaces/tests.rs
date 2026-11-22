@@ -576,7 +576,7 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
 
 #[cfg(feature = "agents")]
 #[tokio::test]
-async fn an_app_record_authored_here_survives_its_publication_tail_rolling_over() {
+async fn an_app_record_authored_here_survives_its_changes_rolling_over() {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();

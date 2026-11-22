@@ -36,7 +36,7 @@ fn without_the_member(doc: &AutoCommit) -> AutoCommit {
 }
 
 tilo_test_env::scenario! {
-    fn a_call_policy_an_earlier_build_wrote_rests_on_the_governance_it_was_written_against;
+    fn a_call_policy_an_earlier_build_wrote_rests_on_the_member_list_it_was_written_against;
 
     phase the_earlier_builds_basis_is_not_this_ones;
     {
@@ -81,7 +81,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_governance_change_it_was_not_written_against_is_refused;
+    phase a_membership_change_it_was_not_written_against_is_refused;
     {
         let doc = earlier();
         let changed = without_the_member(&doc);

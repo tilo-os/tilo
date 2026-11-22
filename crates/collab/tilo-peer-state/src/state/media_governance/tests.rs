@@ -386,7 +386,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase its_governor_writes_it_again_once_under_this_builds_basis;
+    phase the_device_writes_it_again_once_under_this_builds_basis;
     {
         let (mut peer, _, key, now) = earlier_build_fixture();
         assert!(peer.media_mut().reconcile_media_governance(&key, now).unwrap());

@@ -34,12 +34,12 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         let workspace_id = governed.lock().await.workspace_id();
         let own = self.inner.records.device();
-        self.keep_channel_governance(workspace_id, own, &messages)
+        self.keep_channel_rules(workspace_id, own, &messages)
     }
 
-    /// Keep `author`'s channel governance `messages` and carry them on the
+    /// Keep `author`'s channel rules `messages` and carry them on the
     /// workspace's link.
-    fn keep_channel_governance(
+    fn keep_channel_rules(
         &self,
         workspace_id: WorkspaceId,
         author: [u8; 32],
@@ -128,7 +128,7 @@ impl Workspaces {
             self.channel_notice(workspace, message.clone())?;
         }
         if carried != Carried::Kept {
-            self.keep_channel_governance(workspace_id, author, &[message])?;
+            self.keep_channel_rules(workspace_id, author, &[message])?;
         }
         Ok(())
     }

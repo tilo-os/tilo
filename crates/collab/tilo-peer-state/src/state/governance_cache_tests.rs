@@ -436,8 +436,8 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
         );
     }
     assert_eq!(
-        (few.governance_reads, few.replays),
-        (many.governance_reads, many.replays),
+        (few.admission_reads, few.replays),
+        (many.admission_reads, many.replays),
         "the governance is read as often among 300 people as among 30"
     );
 }

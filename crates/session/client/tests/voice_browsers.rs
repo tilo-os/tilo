@@ -370,7 +370,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
     let workspace = governed.workspace_id;
     let call = governed.call.call;
     let native_device = hex::encode(native.device);
-    let page_host = hex::encode(native.page);
+    let page_device = hex::encode(native.page);
     let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../");
     let server = Responder::handle(move |request| {
         let path = request.target.split('?').next().unwrap();
@@ -389,7 +389,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
         // The page's own device, and the device of the native member
         // the page's picture comes from.
         if path == "/api/host" {
-            return text(page_host.clone());
+            return text(page_device.clone());
         }
         if path == "/api/native" {
             return text(native_device.clone());
