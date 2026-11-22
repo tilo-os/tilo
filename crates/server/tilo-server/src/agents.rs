@@ -987,26 +987,37 @@ impl ServerRecordsLink {
                 .split_whitespace()
                 .all(|word| title.contains(&word.to_lowercase()))
         };
-        let may_invite = self
-            .host_device
-            .runtime
-            .block_on(workspaces.page_may_invite(workspace, caller));
         let mut offered: Vec<(&str, ActionKind, &str, &str, &str)> = Vec::new();
-        if may_invite {
-            offered.push((
-                COPY_INVITE_LINK,
-                ActionKind::Outside,
-                "Copy an invite link",
-                "Invite",
-                "Anyone with it joins as an editor",
-            ));
-            offered.push((
-                WAITING_TO_JOIN,
-                ActionKind::Read,
-                "Waiting to join",
-                "Waiting",
-                "Invite people who left their address at the door",
-            ));
+        // Inviting is the workspace's to allow, which only the host can say:
+        // it is asked for a word that could name one of the two, and never
+        // for the words of a search that cannot.
+        let inviting = wants("Copy an invite link") || wants("Waiting to join");
+        if inviting
+            && self
+                .host_device
+                .runtime
+                .block_on(workspaces.page_may_invite(workspace, caller))
+        {
+            for (action, kind, label, resource, description) in [
+                (
+                    COPY_INVITE_LINK,
+                    ActionKind::Outside,
+                    "Copy an invite link",
+                    "Invite",
+                    "Anyone with it joins as an editor",
+                ),
+                (
+                    WAITING_TO_JOIN,
+                    ActionKind::Read,
+                    "Waiting to join",
+                    "Waiting",
+                    "Invite people who left their address at the door",
+                ),
+            ] {
+                if wants(label) {
+                    offered.push((action, kind, label, resource, description));
+                }
+            }
         }
         if self.web_entry.is_some() {
             offered.push((
