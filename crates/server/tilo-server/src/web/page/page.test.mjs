@@ -32,3 +32,14 @@ test('blake3 of one block matches the reference', () => {
   // The BLAKE3 reference's hash of no input.
   assert.equal(hex(blake3Block(new Uint8Array(0))), 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262');
 });
+
+test('the page never says what the entry page says', () => {
+  // `data-entry` is the entry page's word for how it took the browser in
+  // (`idle`, `refused`, `failed`), and the app's web view reads it to know it
+  // is still at the entry. The page the server renders is past the entry: it
+  // sets it never, so a view that is held on an app's page cannot read its
+  // own page as an entry it has not left.
+  const script = readFileSync(new URL('./page.mjs', import.meta.url), 'utf8');
+  assert.ok(!/dataset\.entry\b/.test(script), 'the page sets no data-entry');
+  assert.ok(!/data-entry/.test(script), 'the page names no data-entry');
+});
