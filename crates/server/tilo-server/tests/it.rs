@@ -16,6 +16,15 @@ tilo_automerge_isolate::test_worker!();
 #[path = "common/mod.rs"]
 mod common;
 
+#[cfg(feature = "agents")]
+#[path = "linux_browser.rs"]
+mod linux_browser;
+#[cfg(feature = "agents")]
+#[path = "linux_terminal.rs"]
+mod linux_terminal;
+#[cfg(feature = "agents")]
+#[path = "linux_turn.rs"]
+mod linux_turn;
 #[path = "machines.rs"]
 mod machines;
 
@@ -52,18 +61,6 @@ mod offloadable_action;
 #[cfg(feature = "agents")]
 #[path = "persistent_workspace.rs"]
 mod persistent_workspace;
-#[cfg(feature = "agents")]
-#[path = "placed_browser.rs"]
-mod placed_browser;
-#[cfg(feature = "agents")]
-#[path = "placed_machine.rs"]
-mod placed_machine;
-#[cfg(feature = "agents")]
-#[path = "placed_shell.rs"]
-mod placed_shell;
-#[cfg(feature = "agents")]
-#[path = "placed_terminal.rs"]
-mod placed_terminal;
 #[path = "presence_batching.rs"]
 mod presence_batching;
 #[path = "record_content_routing.rs"]

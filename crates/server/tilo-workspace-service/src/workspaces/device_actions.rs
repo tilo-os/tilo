@@ -10,7 +10,9 @@
 //! installed, and answers with what it produced. And a workspace's governance
 //! actions (inviting someone, listing and cancelling invitations) are decided
 //! as the workspace's governance decides them for the asking device's
-//! certificate. Every other app action reaches this device through the session
+//! certificate. A run on a workspace's Linux machine is taken the same way
+//! ([`Turn::Linux`]) and runs on the [`HostLinux`] its embedder installed, what
+//! it prints passed on to the device that asked as it prints it. Every other app action reaches this device through the session
 //! its members run, where the caller's certificate and the workspace's policy
 //! decide them ([`AppActionServer`](crate::app_serving::AppActionServer)).
 
@@ -29,7 +31,7 @@ use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ActionService, ReadFuture, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
-use crate::work::{HostJobs, Job, Turn, WORK_PROVIDER};
+use crate::work::{HostJobs, HostLinux, Job, LINUX_RESOURCE, Turn, WORK_PROVIDER};
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::GovernedWorkspace;
@@ -45,6 +47,14 @@ pub(crate) type WorkspacesMap = AsyncMutex<BTreeMap<String, Arc<AsyncMutex<Gover
 /// runner, so [`Self::serve`] fills it in; a device without one takes no turn.
 pub(crate) struct DeviceWork {
     jobs: std::sync::RwLock<Option<Arc<dyn HostJobs>>>,
+    /// The Linux machines this device runs, when an embedder installed them.
+    linux: std::sync::RwLock<Option<Arc<dyn HostLinux>>>,
+    /// The Linux runs taken here that have not ended: a cancel of one reaches
+    /// the machine.
+    linux_running: std::sync::Mutex<std::collections::HashSet<InvocationId>>,
+    /// Moves on every change of a turn taken here, so a device following one
+    /// looks again then.
+    moved: tokio::sync::watch::Sender<u64>,
     /// The workspaces this device holds, as the action service decides them:
     /// who may ask is what each workspace's members say.
     workspaces: Arc<WorkspacesMap>,
@@ -115,6 +125,26 @@ impl DeviceWork {
         *self.jobs.write_recover() = Some(jobs);
     }
 
+    /// Run the Linux turns this device takes on `linux`.
+    pub(super) fn serve_linux(&self, linux: Arc<dyn HostLinux>) {
+        *self.linux.write_recover() = Some(linux);
+    }
+
+    /// The Linux machines, when an embedder installed them.
+    pub(crate) fn linux(&self) -> Option<Arc<dyn HostLinux>> {
+        self.linux.read_recover().clone()
+    }
+
+    /// Note `state` of a turn `caller` asked for, and wake whoever follows it.
+    fn note(&self, caller: &Caller, state: InvocationState) {
+        let invocation = state.invocation();
+        if let Some(logged) = self.log.lock_recover().get_mut(caller, &invocation) {
+            *logged = state;
+        }
+        self.moved
+            .send_modify(|moves| *moves = moves.wrapping_add(1));
+    }
+
     /// Claim turns in `workspaces` from now on: the workspaces this work belongs to,
     /// held without keeping them alive.
     pub(super) fn claim_in(&self, workspaces: super::WeakWorkspaces) {
@@ -134,6 +164,9 @@ impl DeviceWork {
     fn new(workspaces: Arc<WorkspacesMap>) -> Arc<Self> {
         Arc::new(Self {
             jobs: std::sync::RwLock::default(),
+            linux: std::sync::RwLock::default(),
+            linux_running: std::sync::Mutex::default(),
+            moved: tokio::sync::watch::Sender::new(0),
             workspaces,
             turns: std::sync::OnceLock::new(),
             log: std::sync::Mutex::default(),
@@ -157,11 +190,11 @@ impl DeviceWork {
         ) else {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         };
-        let job = match job_of(request) {
-            Ok(job) => job,
+        let invocation = request.invocation;
+        let turn = match turn_of(request, requester) {
+            Ok(turn) => turn,
             Err(error) => return Pending::ready(Err(error)),
         };
-        let invocation = request.invocation;
         // A turn this device already took is answered with where it got to, and
         // is never run a second time.
         {
@@ -187,11 +220,6 @@ impl DeviceWork {
                 completer.complete(Err(not_served()));
                 return;
             };
-            let turn = Turn::Invocation {
-                id: invocation,
-                requester,
-                job,
-            };
             let claim = match crate::work::takes_turn(&workspaces, &workspace, &turn).await {
                 Ok(claim) => claim,
                 Err(not_taken) => {
@@ -202,12 +230,18 @@ impl DeviceWork {
                     return;
                 }
             };
+            let job = match turn {
+                Turn::Invocation { job, .. } => job,
+                Turn::Linux { run, .. } => {
+                    work.run_linux(claim, &caller, *run, completer).await;
+                    return;
+                }
+            };
             let accepted =
                 InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
             let receipt = accepted.receipt();
             work.log.lock_recover().complete(&invocation, accepted);
             completer.complete(Ok(receipt));
-            let Turn::Invocation { job, .. } = turn;
             let output = match work.jobs() {
                 Some(jobs) => {
                     run_claimed(
@@ -235,28 +269,152 @@ impl DeviceWork {
                     },
                 },
             };
-            if let Some(state) = work.log.lock_recover().get_mut(&caller, &invocation) {
-                *state = InvocationState::new(invocation, update);
-            }
+            work.note(&caller, InvocationState::new(invocation, update));
         });
         answer
     }
+
+    /// Run `run`, the Linux turn `claim` is for, on this device's machines: the
+    /// device that asked is answered with what admitting it there answered,
+    /// and follows it to its end, each update passed on as the machine makes
+    /// it; the claim is renewed while it runs, and a claim another device
+    /// turned out to win stops the run there.
+    async fn run_linux(
+        self: &Arc<Self>,
+        claim: crate::work::Claim,
+        caller: &Caller,
+        mut run: InvokeRequest,
+        completer: tilo_actions::remote::Completer<Result<InvocationReceipt, ActionCallError>>,
+    ) {
+        let invocation = run.invocation;
+        let Some(linux) = self.linux() else {
+            claim.release().await;
+            self.log.lock_recover().abandon(&invocation);
+            completer.complete(Err(not_served()));
+            return;
+        };
+        let runs = linux.runs();
+        run.invocation = invocation;
+        let admitted = runs
+            .invoke(caller, run)
+            .await
+            .unwrap_or(Err(ActionCallError::Unanswered));
+        let receipt = match admitted {
+            Ok(receipt) if !receipt.status.is_terminal() => receipt,
+            Ok(receipt) => {
+                claim.release().await;
+                let state =
+                    InvocationState::new(invocation, settled_update(invocation, receipt.status));
+                self.log.lock_recover().complete(&invocation, state.clone());
+                completer.complete(Ok(state.receipt()));
+                return;
+            }
+            Err(error) => {
+                claim.release().await;
+                self.log.lock_recover().abandon(&invocation);
+                completer.complete(Err(error));
+                return;
+            }
+        };
+        self.log.lock_recover().complete(
+            &invocation,
+            InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }),
+        );
+        self.linux_running.lock_recover().insert(invocation);
+        completer.complete(Ok(receipt));
+        let mut renewal = tokio::time::interval(RENEWAL);
+        renewal.tick().await;
+        let mut seen = None;
+        loop {
+            if let Some(state) = runs.observe(caller, &invocation)
+                && seen.as_ref() != Some(&state.update)
+            {
+                seen = Some(state.update.clone());
+                let ended = state.update.is_terminal();
+                self.note(caller, state);
+                if ended {
+                    break;
+                }
+            }
+            let change = runs.next_change(caller, &invocation);
+            tokio::select! {
+                () = async {
+                    match change {
+                        Some(change) => drop(change.await),
+                        None => tokio::time::sleep(LINUX_LOOK).await,
+                    }
+                } => {}
+                _ = renewal.tick() => {
+                    if !claim.renew().await {
+                        drop(runs.cancel(caller, &invocation));
+                        self.note(caller, InvocationState::new(invocation, InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "unavailable".into(),
+                                message: "another device took this turn".into(),
+                                details: None,
+                                retryable: true,
+                            },
+                        }));
+                        break;
+                    }
+                }
+            }
+        }
+        self.linux_running.lock_recover().remove(&invocation);
+        claim.release().await;
+    }
 }
 
-/// The job `request` asks this device to take.
-fn job_of(request: &InvokeRequest) -> Result<Job, ActionCallError> {
+/// The update a run that ended as it was admitted ended with.
+fn settled_update(
+    invocation: InvocationId,
+    status: tilo_actions::remote::ReceiptStatus,
+) -> InvocationUpdate {
+    use tilo_actions::remote::ReceiptStatus;
+    match status {
+        ReceiptStatus::Completed { output } => InvocationUpdate::Succeeded { invocation, output },
+        ReceiptStatus::Failed { error } => InvocationUpdate::Failed { invocation, error },
+        ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled {
+            invocation,
+            message,
+        },
+        ReceiptStatus::Accepted | ReceiptStatus::Rejected { .. } => {
+            InvocationUpdate::Accepted { invocation }
+        }
+    }
+}
+
+/// The turn `request`, asked by `requester`, asks this device to take.
+fn turn_of(request: &InvokeRequest, requester: [u8; 32]) -> Result<Turn, ActionCallError> {
     tilo_actions::appearance::refuse_here(request)?;
-    let tilo_actions::remote::InvokeArgument::Json(job) = &request.argument else {
+    let tilo_actions::remote::InvokeArgument::Json(asked) = &request.argument else {
         return Err(ActionCallError::InvalidRequest {
-            reason: "the work asked names no job".into(),
+            reason: "the work asked names nothing to run".into(),
         });
     };
-    serde_json::from_value(serde_json::Value::Object(job.clone())).map_err(|error| {
-        ActionCallError::InvalidRequest {
-            reason: format!("the work asked is not a job: {error}"),
-        }
+    let asked = serde_json::Value::Object(asked.clone());
+    let invalid = |error: serde_json::Error| ActionCallError::InvalidRequest {
+        reason: format!("the work asked does not read: {error}"),
+    };
+    let id = request.invocation;
+    if request.target.address.resource == LINUX_RESOURCE {
+        return Ok(Turn::Linux {
+            id,
+            requester,
+            run: Box::new(serde_json::from_value(asked).map_err(invalid)?),
+        });
+    }
+    Ok(Turn::Invocation {
+        id,
+        requester,
+        job: serde_json::from_value(asked).map_err(invalid)?,
     })
 }
+
+/// How long a Linux run is left before it is looked at again, when its
+/// machine cannot say it changed.
+const LINUX_LOOK: Duration = Duration::from_millis(100);
 
 /// How often a running turn renews its claim: well inside the minute after
 /// which a silent claim may be taken over.
@@ -387,7 +545,25 @@ impl ActionProvider for Answers {
             .observe(caller, id)
     }
 
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        self.0.log.lock_recover().get(caller, id)?;
+        let mut moved = self.0.moved.subscribe();
+        let (changed, change) = tilo_actions::remote::pending();
+        self.0.runtime.spawn(async move {
+            // Bounded, as the action service's contract asks: a change missed costs a look.
+            let _ = tokio::time::timeout(Duration::from_secs(1), moved.changed()).await;
+            changed.complete(());
+        });
+        Some(change)
+    }
+
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        if self.0.linux_running.lock_recover().contains(id) {
+            return match self.0.linux() {
+                Some(linux) => linux.runs().cancel(caller, id),
+                None => Pending::ready(Err(not_served())),
+            };
+        }
         let Some(jobs) = self.0.jobs() else {
             return Pending::ready(Err(not_served()));
         };
@@ -411,6 +587,11 @@ impl super::Workspaces {
     /// The job runner an embedder installed ([`Self::run_jobs`]).
     pub(crate) fn host_jobs(&self) -> Option<Arc<dyn HostJobs>> {
         self.inner.jobs.jobs()
+    }
+
+    /// The Linux machines an embedder installed ([`Self::run_linux`]).
+    pub(crate) fn host_linux(&self) -> Option<Arc<dyn HostLinux>> {
+        self.inner.jobs.linux()
     }
 
     /// Whether `device` may run `job`'s action in `workspace` now, as the
@@ -454,6 +635,18 @@ impl super::Workspaces {
         };
         let held = held.lock().await;
         read(&held.peer()).unwrap_or(false)
+    }
+
+    /// The device whose claims [`Self::write_lease`] writes in `workspace`: the
+    /// device its member copy acts as where another device serves it, else this
+    /// one.
+    pub(crate) async fn lease_device(&self, workspace: &str) -> [u8; 32] {
+        if self.is_member(workspace).await.unwrap_or(false)
+            && let Ok(member) = self.member_identity()
+        {
+            return member.cert.device_public_key;
+        }
+        self.serving_certificate().device_public_key
     }
 
     /// Claim the lease `id` of `workspace` as this device for `ttl_ms`, or let go

@@ -4,7 +4,7 @@
 //! that asked; that device dials the host's terminal streams and presents the stream's id.
 //! Another device presenting the same id is refused, and the stream stays the first one's. What
 //! is typed reaches the shell and what it draws comes back, whether the shell runs on the host
-//! itself or on the VM host that holds the workspace's VM, which the host splices to as its own
+//! itself or on the device that takes its Linux turn, which the host splices to as its own
 //! device. A device that leaves finds the session where it was when it comes back by the
 //! session's id, within the keep; the shell's exit ends the stream, and the session with it.
 //!
@@ -26,9 +26,9 @@ use tilo_actions::remote::environment_commands::Person;
 use tilo_agent_session::workspace_actions::{
     Opened, Opening, Recorder, ShellRan, WorkspaceShell as _,
 };
+use tilo_server::agents::TerminalShells;
 use tilo_server::agents::{HostShells, ShellsAt};
 use tilo_server::machine_agents::MachineAgentsServer;
-use tilo_server::placed_terminals::TerminalShells;
 use tilo_user_identity::DeviceCapabilities;
 use ush::environment_terminals::quic::{Receiving, Sending, dial};
 use ush::environment_terminals::{
@@ -36,7 +36,7 @@ use ush::environment_terminals::{
 };
 use ush::hosted_vm::test_host::TestHost;
 
-use super::placed_shell::{address_of, member_at, placed, stop};
+use super::linux_turn::{address_of, member_at, placed, stop};
 use crate::common::{TestUser, device_endpoint};
 
 /// How long one step of a device's use of its terminal may take.
@@ -295,9 +295,11 @@ fn is_id(id: &str) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_terminal_on_the_vm_host_is_spliced_to_the_device_that_opened_it() {
+async fn a_terminal_on_the_device_running_the_shell_is_spliced_to_the_device_that_opened_it() {
     let placed = placed().await;
-    let shells = Arc::new(HostShells::at(ShellsAt::Placed(Arc::clone(&placed.shells))));
+    let shells = Arc::new(HostShells::at(ShellsAt::Devices(Arc::clone(
+        &placed.shells,
+    ))));
     let streams = streams(&shells).await;
     let devices = devices().await;
     let workspace = placed.workspace.clone();

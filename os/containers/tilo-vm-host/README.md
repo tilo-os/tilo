@@ -30,8 +30,6 @@ workspace's Linux programs and its Browser in one jailed Firecracker VM
   what a VM is counted at until the kernel has measured it. A wake that does
   not fit waits; when the node's free memory falls under the reserve, the VMs'
   balloons are asked for memory back first, and a VM is never killed for room.
-- **A placer's view** (optional): `TILO_VM_STATUS_LISTEN`, a TCP address
-  that answers the service's Status alone, for `tilo-linux-vm hosted place`.
 - **Plans** (optional): `TILO_VM_PLANS`, the account plans file the service
   admits wakes against.
 - **The guest**: the digest this build pins (`os/hosted-guest-snapshot.env`),

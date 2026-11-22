@@ -29,8 +29,9 @@
 #      A host given no ticket fails, unless TILO_VM_FOUND=1: then it founds its
 #      own identity, as a machine with no owner before it does.
 #   4. the member: `tilo-runtime --daemon`, as the service, under the member
-#      identity, which takes the server's runs for the workspaces whose VMs are
-#      here (the login names the server), restarted if it stops;
+#      identity, an ordinary device of the workspaces it serves that takes their
+#      Linux turns when it has room or keeps their VM (the login names the
+#      server), restarted if it stops;
 #   5. tilo-hosted-serve, the start this image and the server OS share: the
 #      guest (the image the release key signed, fetched once per digest;
 #      TILO_VM_GUEST_REF overrides the one this build pins) and then
@@ -38,8 +39,7 @@
 #      eviction notice (TILO_VM_EVICT_NOTICE) appears and on SIGTERM, admits
 #      VMs by the memory they really take of the node's (TILO_VM_MEMORY_MIB,
 #      or auto: all of it) less the reserve it keeps
-#      (TILO_VM_MEMORY_RESERVE_MIB), and answers a placer's Status on
-#      TILO_VM_STATUS_LISTEN. With TILO_VM_SERVER_ENDPOINT (ADDR:PORT), each
+#      (TILO_VM_MEMORY_RESERVE_MIB). With TILO_VM_SERVER_ENDPOINT (ADDR:PORT), each
 #      workspace's Browser in its VM joins its workspace through the server at
 #      that address, the one address besides the internet a VM may reach.
 set -eu

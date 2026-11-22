@@ -451,10 +451,7 @@ if [[ $hosted == 1 ]]; then
     if [[ $hosted_status != 0 ]]; then
       echo '--- the VM host said:' >&2
       sudo -n podman logs --tail 80 tilo-sh-vm-host-0 >&2 2>/dev/null || true
-      # The server dials the host's member by the device key the members file
-      # names; a member answering with another key fails the handshake.
-      echo '--- the members file the server reads, and the key the host joined with:' >&2
-      cat "$state/secrets/vm-host-members.json" >&2 2>/dev/null || true
+      echo '--- the key the host joined with:' >&2
       sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 \
         --init-groups --inh-caps=-all tilo-device-admin key \
         --identity-root /var/lib/tilo-hosted/member/profile/identity >&2 2>/dev/null || true

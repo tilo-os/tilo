@@ -1,5 +1,5 @@
 //! The hosted-VM service's socket: ush asks it for a workspace's VM, and operators
-//! ask it what runs. A placer ([`super::placement`]) speaks the same protocol.
+//! ask it what runs.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -85,7 +85,8 @@ pub enum Request {
         from_ms: u64,
         to_ms: u64,
     },
-    /// Which host runs this VM (a placer's question): the one holding it, else the first with room.
+    /// Which host runs this VM: no host answers it, as the device that takes a workspace's
+    /// Linux turn is the one with room. Kept so the variants after it keep their encoding.
     /// New variants go last: the encoding names a variant by its place.
     Place {
         vm: VmRequest,
@@ -192,6 +193,7 @@ pub enum Reply {
     Error(String),
     /// The VM waits for room, in words for whoever ran it; ask again.
     Busy(String),
+    /// No host answers it any more; kept so the variants after it keep their encoding.
     Placed {
         host: String,
     },
@@ -471,7 +473,7 @@ mod tests {
         ]
     }
 
-    /// A placer, a server and ush built before a request was added still speak to this host: every
+    /// A server and ush built before a request was added still speak to this host: every
     /// request they send means here what it meant to them, byte for byte.
     #[test]
     fn every_request_keeps_its_encoding() {

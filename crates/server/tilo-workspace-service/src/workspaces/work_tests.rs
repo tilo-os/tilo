@@ -15,7 +15,7 @@ use super::fixtures::entry_join_as;
 use super::servers::{self, Servers};
 use super::tests::{governor, guest_device, test_host};
 use super::*;
-use crate::work::{HostJobs, Ineligible, Job, NotTaken, Turn, takes_turn};
+use crate::work::{HostJobs, HostLinux, Ineligible, Job, NotTaken, Turn, takes_turn};
 
 /// The jobs a device runs, as a test sets them: whether it runs the transform,
 /// keeps the inputs and has room, and what each run was given.
@@ -167,7 +167,9 @@ async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
         async move {
             let taken = takes_turn(workspaces, &workspace, &turn).await;
             assert_eq!(taken.err(), Some(NotTaken::Ineligible(why)), "{why}");
-            let Turn::Invocation { id, .. } = turn;
+            let Turn::Invocation { id, .. } = turn else {
+                unreachable!("an invocation's turn")
+            };
             assert_eq!(
                 workspaces
                     .lease_holder(&workspace, &format!("invocation/{}", id.0))
@@ -203,7 +205,9 @@ async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
     unclaimed(&turn(&viewer), Ineligible::NotPermitted).await;
 
     let turn = turn(&editor);
-    let Turn::Invocation { id, .. } = &turn;
+    let Turn::Invocation { id, .. } = &turn else {
+        unreachable!("an invocation's turn")
+    };
     let lease = format!("invocation/{}", id.0);
     let claim = takes_turn(workspaces, &workspace, &turn).await.unwrap();
     assert_eq!(
@@ -224,6 +228,86 @@ async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
         None,
         "a finished turn is let go"
     );
+    host.shutdown().await;
+}
+
+/// Linux machines as a test sets them: whether there is room for another.
+struct Linux {
+    room: bool,
+}
+
+impl HostLinux for Linux {
+    fn machine_lease(&self) -> String {
+        tilo_peer_state::vm_lease("default")
+    }
+
+    fn has_room(&self) -> bool {
+        self.room
+    }
+
+    fn runs(&self) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
+        Arc::new(tilo_actions::remote::TestProvider::new())
+    }
+}
+
+/// A Linux run is taken by a device that runs Linux machines and has room for
+/// one more, or that keeps the workspace's machine already, room or not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_takes_a_linux_run_when_it_runs_linux_and_has_room() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    let workspace = workspaces.create("Build").await.unwrap().workspace;
+    let turn = || Turn::Linux {
+        id: tilo_actions::InvocationId::new(),
+        requester: cert.device_public_key,
+        run: Box::new(tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::environment_commands::target(),
+            argument: tilo_actions::remote::InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }),
+    };
+    let refused = |why: Ineligible| {
+        let workspace = workspace.clone();
+        async move {
+            let taken = takes_turn(workspaces, &workspace, &turn()).await;
+            assert_eq!(taken.err(), Some(NotTaken::Ineligible(why)), "{why}");
+        }
+    };
+
+    refused(Ineligible::RunsNoLinux).await;
+    workspaces.run_linux(Arc::new(Linux { room: false }));
+    refused(Ineligible::NoRoomForLinux).await;
+    assert_eq!(
+        Ineligible::NoRoomForLinux.to_string(),
+        "this device has no room for another Linux machine"
+    );
+    workspaces.run_linux(Arc::new(Linux { room: true }));
+    takes_turn(workspaces, &workspace, &turn())
+        .await
+        .expect("a device with room takes it")
+        .release()
+        .await;
+
+    // The device keeping the workspace's machine takes its runs, full or not.
+    workspaces
+        .write_lease(&workspace, &tilo_peer_state::vm_lease("default"), 30_000)
+        .await
+        .unwrap();
+    workspaces.run_linux(Arc::new(Linux { room: false }));
+    takes_turn(workspaces, &workspace, &turn())
+        .await
+        .expect("the device keeping the machine takes it")
+        .release()
+        .await;
     host.shutdown().await;
 }
 

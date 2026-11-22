@@ -266,10 +266,10 @@ pub struct Window {
 
 /// The service that starts and stops a workspace's browser sessions.
 ///
-/// The hosted-VM service's client implements this: it asks the placer for the
-/// host of the workspace's VM, asks that host's member device to start the
-/// session in it with the [`Material`], and answers once the session reports
-/// its window live.
+/// The workspace's devices that run Linux implement this
+/// ([`crate::linux_devices::LinuxDevices`]): the one that takes the turn starts
+/// the session in the workspace's VM with the [`Material`], and it answers once
+/// the session reports its window live.
 pub trait BrowserSessions: Send + Sync {
     /// Start the workspace's browser session with `material`, and answer its
     /// window once it is live.
@@ -568,8 +568,8 @@ impl HostedBrowsers {
     }
 
     /// The Browser this host's environment names, when it serves Browser
-    /// at all: where they start and stop (a placer and its VM hosts,
-    /// [`crate::placed_browsers::PlacedBrowsers`]), the log their page
+    /// at all: where they start and stop (the workspaces' devices that run
+    /// Linux, [`crate::linux_devices::LinuxDevices`]), the log their page
     /// actions are counted in ([`crate::browser_actions::BrowserMeter`]), and
     /// the address the sessions reach this host at.
     ///
@@ -580,14 +580,14 @@ impl HostedBrowsers {
     /// would serve them free of charge, so the start fails rather than run
     /// half of it.
     pub fn from_env() -> Result<Option<Self>, String> {
-        let Some(sessions) = crate::placed_browsers::PlacedBrowsers::from_env()? else {
+        let Some(sessions) = crate::linux_devices::LinuxDevices::from_env() else {
             return Ok(None);
         };
         let meter = crate::browser_actions::BrowserMeter::from_env()?.ok_or_else(|| {
             format!(
-                "{} names where Browser sessions start, so {} must name the log their \
+                "{} names who pays for Browser sessions, so {} must name the log their \
                  page actions are counted in",
-                crate::placed_shells::PLACER_ENV,
+                tilo_server_account::ACCOUNT_ENV,
                 tilo_server_account::browser_actions::ACTIONS_LOG_ENV
             )
         })?;
@@ -2893,29 +2893,23 @@ mod tests {
     fn a_host_serves_browsers_only_when_it_names_where_they_start_where_it_is_reached_and_what_it_counts()
      {
         use crate::browser_actions::BrowserMeter;
-        use crate::placed_shells::{MEMBERS_ENV, PLACER_ENV};
-        use tilo_server_account::{ACCOUNT_ENV, ACTIONS_LOG_ENV, PLANS_ENV};
+        use tilo_server_account::{ACCOUNT_ENV, ACTIONS_LOG_ENV, PLANS_ENV, SOCKET_ENV};
 
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove(PLACER_ENV)
-            .remove(MEMBERS_ENV)
+        env.remove(SOCKET_ENV)
             .remove(ACCOUNT_ENV)
             .remove(ACTIONS_LOG_ENV)
             .remove(PLANS_ENV)
             .remove(SERVER_ENV);
         assert!(
             HostedBrowsers::from_env().unwrap().is_none(),
-            "a host with no placer places no Browser"
+            "a host that pays for no machines starts no Browser"
         );
 
-        // A placer alone is half a host: without a log it would serve
+        // An account alone is half a host: without a log it would serve
         // Browser free of charge.
         let dir = tempfile::tempdir().unwrap();
-        let members = dir.path().join("members.json");
-        std::fs::write(&members, "{}").unwrap();
-        env.set(PLACER_ENV, "vm-placer:7702")
-            .set(MEMBERS_ENV, &members)
-            .set(ACCOUNT_ENV, "acct-1");
+        env.set(ACCOUNT_ENV, "acct-1");
         let error = HostedBrowsers::from_env().err().unwrap();
         assert!(error.contains(ACTIONS_LOG_ENV), "{error}");
         assert!(BrowserMeter::from_env().unwrap().is_none());

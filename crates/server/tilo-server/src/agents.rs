@@ -268,21 +268,20 @@ pub struct AgentOptions {
 
 /// The shells of the workspaces this host serves.
 ///
-/// With VM hosts (a placer, [`crate::placed_shells::PLACER_ENV`]) a
-/// workspace's shell runs on the member device that holds its VM
-/// ([`PlacedShells`](crate::placed_shells::PlacedShells)). Without, it runs
-/// here, its files under `state`, its Linux programs in the hosted VMs the
+/// A host that pays for its workspaces' Linux machines without running them
+/// ([`LinuxDevices::from_env`](crate::linux_devices::LinuxDevices::from_env))
+/// runs a workspace's shell on the device of the workspace that takes its
+/// Linux turn. Otherwise it runs here, its files under `state`, its Linux programs in the hosted VMs the
 /// host's environment names (`TILO_HOSTED_VM_SOCKET`, `TILO_HOSTED_ACCOUNT`,
 /// `TILO_HOSTED_VM_SIZE`, `TILO_HOSTED_PLANS`), and without those, ush's own
 /// commands only.
 ///
 /// # Errors
 ///
-/// A placer is named, but its members or account are not usable.
+/// The host's shells cannot be set up.
 pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
-    let placed = crate::placed_shells::PlacedShells::shared_from_env()?;
-    if let Some(placed) = placed {
-        return Ok(Arc::new(HostShells::at(ShellsAt::Placed(placed))));
+    if let Some(linux) = crate::linux_devices::LinuxDevices::from_env() {
+        return Ok(Arc::new(HostShells::at(ShellsAt::Devices(Arc::new(linux)))));
     }
     let agents = Arc::new(crate::machine_agents::MachineAgentsServer::new(Some(
         state.clone(),
@@ -302,6 +301,43 @@ type Lent = (
     Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 );
 
+/// The shells whose terminal streams a host serves on
+/// [`ALPN`](ush::environment_terminals::ALPN), once they run.
+///
+/// The person's device asks the session's `open-terminal`; the host's shells start the
+/// session's shell on a terminal and hand its stream to that device, which dials this host
+/// as itself and presents the stream's one-use id: a stream handed to another device is
+/// refused. Shells that run here carry the stream themselves; a shell on another device of
+/// the workspace is spliced to it through this host's own device.
+#[derive(Clone, Default)]
+pub struct TerminalShells(Arc<std::sync::OnceLock<Arc<HostShells>>>);
+
+impl TerminalShells {
+    /// Serve the terminal streams `shells` hand out.
+    pub fn serve_for(&self, shells: Arc<HostShells>) {
+        let _ = self.0.set(shells);
+    }
+
+    /// What answers [`ALPN`](ush::environment_terminals::ALPN) on the host's endpoint.
+    #[must_use]
+    pub fn route(&self) -> ush::environment_terminals::quic::Route {
+        use ush::environment_terminals::wire;
+        let shells = Arc::clone(&self.0);
+        ush::environment_terminals::quic::Route::new(move |device, from, to| {
+            let served = match shells.get().map(|shells| shells.shells()) {
+                Some(ShellsAt::Here(terminals, _)) => {
+                    terminals.serve_handed(device, from, to).map(drop)
+                }
+                Some(ShellsAt::Devices(linux)) => linux.splice(device, from, to),
+                None => Err(wire::refuse(to, "this host runs no workspace shells")),
+            };
+            if let Err(error) = served {
+                tracing::debug!(%error, "a terminal stream ended in error");
+            }
+        })
+    }
+}
+
 /// Where the workspace actions run a session's commands and open its terminal, and the
 /// secrets the workspaces' machines hand the programs started there.
 pub struct HostShells {
@@ -319,8 +355,8 @@ pub enum ShellsAt {
         ush::environment_terminals::EnvironmentTerminals,
         Arc<crate::machine_agents::MachineAgentsServer>,
     ),
-    /// On the member device holding the workspace's VM.
-    Placed(Arc<crate::placed_shells::PlacedShells>),
+    /// On the device of the workspace that takes its Linux turn.
+    Devices(Arc<crate::linux_devices::LinuxDevices>),
 }
 
 /// How long reading a workspace's machine secrets may take before the start is refused.
@@ -348,13 +384,13 @@ impl HostShells {
     pub fn machine_agents(&self) -> Option<&Arc<crate::machine_agents::MachineAgentsServer>> {
         match &self.at {
             ShellsAt::Here(_, agents) => Some(agents),
-            ShellsAt::Placed(_) => None,
+            ShellsAt::Devices(_) => None,
         }
     }
 
-    /// Ask VM hosts' members, if any, as `server`'s own device, reading which
-    /// keeps each workspace's VM from the workspaces' VM leases, have the
-    /// workspaces' machines branched and deleted with them, and serve the
+    /// Ask the workspaces' devices that run Linux, if the shells run there, as
+    /// `server`'s own device, have the workspaces' machines branched and
+    /// deleted with them, and serve the
     /// terminal streams handed out on `server`'s endpoint. The programs started from now on
     /// get the machine secrets `server`'s workspaces name.
     fn serve_from(self: &Arc<Self>, server: &Server, actions: &WorkspaceActions) {
@@ -376,12 +412,12 @@ impl HostShells {
                 runtime,
             );
         }
-        if let (ShellsAt::Placed(placed), Some(workspaces), Ok(runtime)) = (
+        if let (ShellsAt::Devices(linux), Some(workspaces), Ok(runtime)) = (
             &self.at,
             server.workspaces(),
             tokio::runtime::Handle::try_current(),
         ) {
-            placed.ask_from(
+            linux.ask_from(
                 workspaces.action_service(),
                 server.endpoint(),
                 workspaces.clone(),
@@ -421,16 +457,16 @@ impl HostShells {
         read.map_err(|_| "the workspace's machine secrets could not be read in time".to_owned())?
     }
 
-    /// What branches and deletes the workspaces' Linux machines: the VM hosts'
-    /// members, or the hosted-VM service a host running its shells here names;
+    /// What branches and deletes the workspaces' Linux machines: the devices
+    /// keeping them, or the hosted-VM service a host running its shells here names;
     /// `None` when its shells run no Linux programs, so there are no machines.
     fn machines(&self) -> Option<Arc<dyn crate::workspaces::WorkspaceMachines>> {
         match &self.at {
-            ShellsAt::Placed(placed) => Some(Arc::new(
-                crate::placed_machines::PlacedMachines::new(Arc::clone(placed)),
-            )),
+            ShellsAt::Devices(linux) => {
+                Some(Arc::clone(linux) as Arc<dyn crate::workspaces::WorkspaceMachines>)
+            }
             ShellsAt::Here(terminals, _) => terminals.shells().hosted().map(|target| {
-                Arc::new(crate::placed_machines::LocalMachines::new(target.clone()))
+                Arc::new(crate::linux_devices::LocalMachines::new(target.clone()))
                     as Arc<dyn crate::workspaces::WorkspaceMachines>
             }),
         }
@@ -451,10 +487,18 @@ impl WorkspaceShell for HostShells {
         let secrets = self.secrets_for(workspace, by)?;
         let terminals = match &self.at {
             ShellsAt::Here(terminals, _) => terminals,
-            ShellsAt::Placed(placed) => {
-                return placed.run(
-                    workspace, session, command, agent, person, secrets, watching,
-                );
+            ShellsAt::Devices(linux) => {
+                let asked = tilo_actions::remote::environment_commands::CommandRequest {
+                    session: session.to_owned(),
+                    command: command.to_owned(),
+                    agent,
+                    // The account and size are the ones this host pays for.
+                    account: String::new(),
+                    size: String::new(),
+                    secrets,
+                    person: person.cloned(),
+                };
+                return linux.run_command(workspace, asked, watching);
             }
         };
         let ran = terminals
@@ -501,7 +545,7 @@ impl WorkspaceShell for HostShells {
         };
         let terminals = match &self.at {
             ShellsAt::Here(terminals, _) => terminals,
-            ShellsAt::Placed(placed) => return placed.open_terminal(opening, secrets, record),
+            ShellsAt::Devices(linux) => return linux.open_terminal(opening, secrets, record),
         };
         let opened = terminals.open_for(
             opening.device,
@@ -513,7 +557,7 @@ impl WorkspaceShell for HostShells {
                 cols: opening.cols,
                 rows: opening.rows,
                 ran: Some(Arc::new(move |ran| {
-                    record(crate::placed_terminals::shell_ran(ran));
+                    record(crate::linux_devices::terminal_ran(ran));
                 })),
                 attach: opening.attach.as_deref(),
                 secrets: &secrets,

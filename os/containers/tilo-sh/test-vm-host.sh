@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # The local tilo.sh stack's VM host, brought up the way stack.sh brings it up
 # (os/containers/tilo-sh/vm-host.sh) and held to what a hosted workspace needs
-# under it: the placer places the workspace on vm-host-0, and vm-host-0 wakes
-# that workspace's VM in its jail from the guest image this checkout built and
+# under it: vm-host-0 wakes a workspace's VM in its jail from the guest image this checkout built and
 # runs a program in it. That machine is then branched, running and suspended:
 # each branch holds what the tenant installed and wrote and none of the
 # source's sessions, and is deleted, its disk gone, while the source runs on.
@@ -89,14 +88,10 @@ printf '%s\n' "$ran" >&2
 grep -qx 'hello-from-the-guest' <<<"$ran" \
   || die 'the program in the workspace VM printed something else'
 
-# The host says which VMs it holds, and the placer which machine runs them.
+# The host says which VMs it holds.
 held=$(vm_host status)
 printf '%s\n' "$held" >&2
 grep -q '^ws-local/default  *small  *Running' <<<"$held" || die 'the host does not hold the workspace VM it woke'
-podman logs tilo-sh-vm-placer > "$state/placer.log" 2>&1 || true
-sed -n '1,10p' "$state/placer.log" >&2
-grep -q 'placing on vm-host-0, at most 1' "$state/placer.log" \
-  || die 'the placer does not place on vm-host-0'
 
 # The guest the host boots is the image this check handed it, unpacked under
 # its digest, and its member device is the one the server's root certified. The

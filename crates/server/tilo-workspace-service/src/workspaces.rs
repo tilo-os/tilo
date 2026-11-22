@@ -1724,6 +1724,13 @@ impl Workspaces {
         self.inner.jobs.serve(jobs);
     }
 
+    /// Take the Linux turns of this device's workspaces' devices on `linux`
+    /// ([`crate::work::Turn::Linux`]): a workspace's shell commands, terminals,
+    /// machine and Browser.
+    pub fn run_linux(&self, linux: Arc<dyn crate::work::HostLinux>) {
+        self.inner.jobs.serve_linux(linux);
+    }
+
     /// Answer the workspaces' governance actions their member devices ask on the device action
     /// service through `governance`.
     pub(crate) fn govern_device_actions_with(&self, governance: std::sync::Weak<actions::Shared>) {

@@ -311,6 +311,8 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-suppor
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+# A Linux turn's takeover is proven past its claim's minute with the process's wall clock pinned.
+tilo-clock = { path = "../../platform/tilo-clock", features = ["local", "test-support"] }
 # The offloadable action the offload journey runs: a batch of thumbnails.
 tilo-thumbnail = { path = "../../media/thumbnail" }
 # The app that publishes it, whose handler is its local run, and the content

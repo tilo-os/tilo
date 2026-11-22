@@ -17,12 +17,20 @@
 //! already, it has room for one more job, the workspace lets this device open
 //! the record the work is about, and it lets the device that asked run the
 //! action. No caller checks any of this itself.
+//!
+//! A run that needs Linux (a workspace's shell command, its terminal, its
+//! machine, its Browser) is asked the same way ([`Turn::Linux`], on
+//! [`LINUX_RESOURCE`]). A device takes it when it runs Linux machines
+//! ([`HostLinux`]) and has room for one more, unless the workspace's machine
+//! is kept on another device already: a machine stays where its disk is.
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
 use tilo_actions::remote::{
-    ActionCallError, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
+    ActionCallError, ActionProvider, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, Offload};
 
@@ -32,8 +40,35 @@ use crate::workspaces::Workspaces;
 pub const WORK_PROVIDER: &str = "tilo.work";
 /// The resource a turn of work is asked on.
 pub const WORK_RESOURCE: &str = "work";
+/// The resource a run that needs Linux is asked on.
+pub const LINUX_RESOURCE: &str = "linux";
 /// The action that asks a device to take a turn.
 pub const TAKE: &str = "take";
+
+/// The ask that a device take `run`, an action of the Linux machine a
+/// workspace's devices run its shells and Browser in, as the turn `run` names.
+#[must_use]
+pub fn linux_take_request(run: &InvokeRequest) -> InvokeRequest {
+    let argument = match serde_json::json!(run) {
+        serde_json::Value::Object(run) => InvokeArgument::Json(run),
+        _ => InvokeArgument::None,
+    };
+    InvokeRequest {
+        invocation: run.invocation,
+        target: RemoteActionTarget {
+            provider: WORK_PROVIDER.to_owned(),
+            address: ActionAddress::new(LINUX_RESOURCE, TAKE),
+        },
+        argument,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
 
 /// How long a turn's claim lasts past its last write, before the minute every
 /// claim is given for clocks that differ: none, so a claim is live for exactly
@@ -85,7 +120,7 @@ impl Job {
 }
 
 /// One turn of work a device may take.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Turn {
     /// An offloaded invocation of an app's action, asked by the device
     /// `requester`.
@@ -97,6 +132,16 @@ pub enum Turn {
         /// What runs.
         job: Job,
     },
+    /// A run on the workspace's Linux machine, asked by the device
+    /// `requester`: the action of the machine it invokes there.
+    Linux {
+        /// The invocation, which names the turn.
+        id: InvocationId,
+        /// The device that asked.
+        requester: [u8; 32],
+        /// What runs.
+        run: Box<InvokeRequest>,
+    },
 }
 
 impl Turn {
@@ -104,6 +149,7 @@ impl Turn {
     fn lease(&self) -> String {
         match self {
             Self::Invocation { id, .. } => format!("invocation/{}", id.0),
+            Self::Linux { id, .. } => format!("linux/{}", id.0),
         }
     }
 }
@@ -127,6 +173,12 @@ pub enum Ineligible {
     CannotOpen,
     /// The workspace does not let the device that asked run the action.
     NotPermitted,
+    /// This device runs no Linux machines.
+    RunsNoLinux,
+    /// It runs as many Linux machines as it has room for.
+    NoRoomForLinux,
+    /// The workspace's Linux machine is kept on another device.
+    MachineElsewhere,
 }
 
 impl fmt::Display for Ineligible {
@@ -139,6 +191,9 @@ impl fmt::Display for Ineligible {
             Self::AtCapacity => "this device is running as many jobs as it takes on",
             Self::CannotOpen => "this device cannot open the record the work is about",
             Self::NotPermitted => "the workspace does not let the device that asked run this",
+            Self::RunsNoLinux => "this device runs no Linux machines",
+            Self::NoRoomForLinux => "this device has no room for another Linux machine",
+            Self::MachineElsewhere => "the workspace's Linux machine is kept on another device",
         })
     }
 }
@@ -234,7 +289,7 @@ pub async fn takes_turn(
     eligibility(workspaces, workspace, turn)
         .await
         .map_err(NotTaken::Ineligible)?;
-    let device = workspaces.serving_certificate().device_public_key;
+    let device = workspaces.lease_device(workspace).await;
     let lease = turn.lease();
     let holder = workspaces
         .lease_holder(workspace, &lease)
@@ -305,7 +360,37 @@ async fn eligibility(
             }
             Ok(())
         }
+        Turn::Linux { .. } => {
+            let linux = workspaces.host_linux().ok_or(Ineligible::RunsNoLinux)?;
+            let device = workspaces.lease_device(workspace).await;
+            let keeper = workspaces
+                .lease_holder(workspace, &linux.machine_lease())
+                .await
+                .ok()
+                .flatten();
+            match keeper {
+                Some(keeper) if keeper == device => Ok(()),
+                Some(_) => Err(Ineligible::MachineElsewhere),
+                None if linux.has_room() => Ok(()),
+                None => Err(Ineligible::NoRoomForLinux),
+            }
+        }
     }
+}
+
+/// The Linux machines a device runs its workspaces' shells, terminals and
+/// Browser in.
+pub trait HostLinux: Send + Sync {
+    /// The lease of a workspace the device keeping its machine claims: a
+    /// machine stays where its disk is.
+    fn machine_lease(&self) -> String;
+
+    /// Whether this device has room to start one more machine.
+    fn has_room(&self) -> bool;
+
+    /// What answers the machine's actions here: a run, a terminal, a branch
+    /// or delete of the machine, a Browser.
+    fn runs(&self) -> Arc<dyn ActionProvider + Send + Sync>;
 }
 
 /// The jobs a device runs for the devices of its workspaces: an offloadable

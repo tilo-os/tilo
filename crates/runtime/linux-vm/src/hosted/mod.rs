@@ -18,7 +18,6 @@ pub mod memory;
 pub mod meter;
 pub mod move_vm;
 pub mod network;
-pub mod placement;
 pub mod plan;
 pub mod service;
 pub mod size;

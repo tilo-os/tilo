@@ -31,6 +31,9 @@ use crate::environment_browsers::{AppRefused, BrowserHost};
 use crate::environment_terminals::{Ended, EnvironmentTerminals, RanQueue, TerminalAsk};
 use crate::workspace_shell::{Payer, RunWith, ShellRun, WorkspaceShells};
 
+/// The environment a workspace's machine is, whose lease names the device keeping it.
+pub use linux_vm::hosted::control::ENVIRONMENT;
+
 const PROFILE_STORE: &str = ".tilo/browser";
 
 const REMEMBERED: usize = 1024;
@@ -40,6 +43,9 @@ const CHANGE_WAIT: Duration = Duration::from_secs(1);
 /// How long the hosted-VM service is given to branch or delete a machine: a source asleep is
 /// woken for its copy.
 const MACHINE_PATIENCE: Duration = Duration::from_secs(300);
+
+/// How long the hosted-VM service is given to say how much room it has.
+const ROOM_PATIENCE: Duration = Duration::from_secs(5);
 
 /// How often a branch waiting for room to wake its source asks again.
 const MACHINE_RETRY: Duration = Duration::from_secs(2);
@@ -94,6 +100,21 @@ impl EnvironmentCommands {
 }
 
 impl EnvironmentCommands {
+    /// Whether the hosted-VM service has room to wake one more machine. A
+    /// member with no service runs ush's own commands only, which need none.
+    #[must_use]
+    pub fn has_room(&self) -> bool {
+        use linux_vm::hosted::control::{Reply, Request};
+        let Some(socket) = self.0.shells.hosted_socket() else {
+            return true;
+        };
+        matches!(
+            linux_vm::hosted::control::ask(&socket, &Request::Status, ROOM_PATIENCE),
+            Ok(Some(Reply::Status { load, .. }))
+                if load.free_mib() >= linux_vm::hosted::memory::CLONE_MIB
+        )
+    }
+
     /// Carry the terminal stream this member handed `device` (the device the endpoint that
     /// dialled asks as) over `from` and `to`.
     ///

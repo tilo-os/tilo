@@ -7820,7 +7820,7 @@ requires = ["arch=any"]
 on = ["dispatch"]
 
 # The local tilo.sh stack's VM host (os/containers/tilo-sh/vm-host.sh): the same image,
-# privileged with a loop-backed state disk, the placer that places workspaces' VMs on it, and
+# privileged with a loop-backed state disk, its member device, and
 # the guest image this checkout built instead of a release's. It is what a hosted workspace
 # needs under it locally: its Linux programs and its Browser run in its VM there. The check
 # boots it and holds it to a workspace's VM waking from that guest and running a program,
