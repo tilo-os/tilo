@@ -20,7 +20,7 @@ const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const TASKS_APP: &str = "so.tilo.lang.tasks";
+const TASKS_APP: &str = "so.tilo.tasks";
 
 fn walk<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
     out.push(node);

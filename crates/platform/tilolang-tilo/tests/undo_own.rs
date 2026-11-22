@@ -21,7 +21,7 @@ const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const NOTES_APP: &str = "so.tilo.notes";
-const TASKS_APP: &str = "so.tilo.lang.tasks";
+const TASKS_APP: &str = "so.tilo.tasks";
 const AGENT: &str = "helper";
 
 fn helper() -> tilolang_tilo::runtime::Actor {
@@ -734,11 +734,7 @@ fn planned_notebook(ada: &mut Replica) -> (ResourceRef, ResourceRef, ResourceRef
         "retitle",
         vec![Value::resource(&plan), Value::text("Q3 plan")],
     );
-    let meeting = made(
-        ada,
-        "new_child",
-        vec![Value::resource(&plan)],
-    );
+    let meeting = made(ada, "new_child", vec![Value::resource(&plan)]);
     call(
         ada,
         "ada",
@@ -894,11 +890,7 @@ fn note_called(r: &mut Replica, notebook: &ResourceRef, title: &str) -> Resource
 }
 
 /// A note inside `under`, titled `title`.
-fn note_under(
-    r: &mut Replica,
-    under: &ResourceRef,
-    title: &str,
-) -> ResourceRef {
+fn note_under(r: &mut Replica, under: &ResourceRef, title: &str) -> ResourceRef {
     let note = target(&call(
         r,
         "ada",

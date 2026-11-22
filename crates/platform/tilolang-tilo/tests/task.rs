@@ -22,7 +22,7 @@ const TODO: (&str, &str) = (
     include_str!("../../../../apps/tl/tasks/app.ids"),
 );
 const NOTES_APP: &str = "so.tilo.notes";
-const TODO_APP: &str = "so.tilo.lang.tasks";
+const TODO_APP: &str = "so.tilo.tasks";
 
 struct Task {
     session: TaskSession,
@@ -336,7 +336,7 @@ fn a_resource_argument_is_the_catalogues_reference() {
     let remove = task.api.invoked.borrow().last().cloned().unwrap();
     assert_eq!(
         remove["arguments"]["t"]["kind"],
-        json!("tl.so.tilo.lang.tasks.Task"),
+        json!("tl.so.tilo.tasks.Task"),
         "{remove:#}"
     );
     assert_eq!(task.said("tasks.tasks.items.len()"), "1");
@@ -353,7 +353,10 @@ const CHAT: (&str, &str) = (
 /// text.
 #[test]
 fn each_argument_is_sent_as_its_published_parameter_takes_it() {
-    let api = Rc::new(Apps::new(&[&[crate::fixtures::AGENT, CHAT], &[DISCUSSION, TODO]]));
+    let api = Rc::new(Apps::new(&[
+        &[crate::fixtures::AGENT, CHAT],
+        &[DISCUSSION, TODO],
+    ]));
     let task = Task {
         session: api.task(),
         api,

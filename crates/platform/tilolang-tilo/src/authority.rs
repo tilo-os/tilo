@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn grants_on_the_earlier_id_decide_for_the_renamed_app() {
-        const TASKS: &str = "so.tilo.lang.tasks";
+        const TASKS: &str = "so.tilo.tasks";
         crate::schema::register_previously(TASKS, &[APP.to_owned()]);
         let tasks = ModuleHash("tasks-v2".to_owned());
         let action = |class| ActionInfo {

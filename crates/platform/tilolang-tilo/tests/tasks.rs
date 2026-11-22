@@ -14,7 +14,7 @@ pub(crate) const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 pub(crate) const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 /// What a task's page is drawn from: the tasks and the discussion under them.
 pub(crate) const PACKAGES: &[(&str, &str)] = &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)];
-pub(crate) const APP: &str = "so.tilo.lang.tasks";
+pub(crate) const APP: &str = "so.tilo.tasks";
 
 pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
@@ -2354,6 +2354,11 @@ fn spec_commands() -> Vec<&'static str> {
         "Medium",
         "High",
         "Urgent",
+        // A wait is put on and takes its label like any other command. `Stop waiting` is offered
+        // only while the task waits, so it stands with the commands a waiting task takes.
+        "Wait for…",
+        "Label…",
+        "Remove label…",
         "Project…",
         "Inbox",
         "Assign…",
@@ -2480,6 +2485,8 @@ fn placed_commands() -> Vec<&'static str> {
         "Complete",
         "Pick date…",
         "Assign…",
+        "Label…",
+        "Wait for…",
         "Delete",
     ]
 }
@@ -2917,7 +2924,7 @@ tilo_test_env::scenario! {
         let declared: Vec<&str> = meta
             .actions
             .iter()
-            .filter(|a| !a.scenario)
+            .filter(|a| !a.scenario && !a.platform_applies())
             .map(|a| a.name.as_str())
             .collect();
         assert_eq!(
@@ -2941,7 +2948,7 @@ tilo_test_env::scenario! {
             .into_iter()
             .map(|committed| committed.action.kind)
             .collect();
-        assert_eq!(kinds, ["tl.so.tilo.lang.tasks.Task"], "{kinds:?}");
+        assert_eq!(kinds, ["tl.so.tilo.tasks.Task"], "{kinds:?}");
     }
 }
 

@@ -122,7 +122,7 @@ fn seeded(n: usize) -> Replica {
     }
     let create = DynAction {
         app: APP.to_owned(),
-        kind: "so.tilo.lang.tasks.seed".to_owned(),
+        kind: "so.tilo.tasks.seed".to_owned(),
         action_id: "$create".to_owned(),
         args: serde_json::Value::Null,
         authorship: tilolang_tilo::Authorship::default(),

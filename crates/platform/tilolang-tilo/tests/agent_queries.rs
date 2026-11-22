@@ -53,7 +53,7 @@ action write(all: Journal, title: Text, body: Text) -> Entry {
 }
 "#;
 
-const TODO: &str = "so.tilo.lang.tasks";
+const TODO: &str = "so.tilo.tasks";
 
 /// The task's world: Tasks and the journal in one host, Notes, Chat and Board in another, each
 /// filled by its first scenario, and a task of them all whose programs run in a host of its own.
@@ -70,11 +70,7 @@ fn world() -> World {
         let todo = apps.replica(TODO);
         todo.host.set_clock(tilolang_tilo::host::system_time);
     }
-    for app in [
-        "so.tilo.notes",
-        "so.tilo.lang.chat",
-        "so.tilo.lang.board",
-    ] {
+    for app in ["so.tilo.notes", "so.tilo.lang.chat", "so.tilo.lang.board"] {
         let mut other = apps.replica(app);
         let package = other.host.package(app).unwrap();
         let scenario = package.meta.scenarios.first().unwrap().action.clone();
@@ -486,7 +482,7 @@ fn a_tasks_next_program_reads_what_its_earlier_ones_changed() {
     let apps = Rc::new(Apps::new(&[&[app!("discussion"), app!("tasks")]]));
     let (task, _api) = apps.document_task();
     task.set_clock(tilolang_tilo::host::system_time);
-    apps.lag("so.tilo.lang.tasks");
+    apps.lag("so.tilo.tasks");
     let out = printed(&task.run(
         "let t = tasks.new_task(tasks.tasks, title: \"Check the launch video\")",
         true,
