@@ -147,7 +147,7 @@ impl AppBrokerState {
         // An agent takes a step as any of its steps: on the workspace's grants, in an agent
         // session that still goes. A step of the session's own, or of an agent session's, is no
         // agent's outside one.
-        let session = self.agent_session_of(Some(caller), origin, workspace_id);
+        let session = self.agent_session_of(Some(caller), workspace_id);
         if let Some(Err(reason)) = &session {
             return Err(abandon(ActionCallError::Refused {
                 reason: reason.clone(),

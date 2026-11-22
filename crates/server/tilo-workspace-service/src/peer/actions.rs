@@ -744,13 +744,12 @@ pub(super) fn session_caller(
         // agent's, for them, never above what an agent of theirs may do, and
         // it governs nothing. It goes by the name of what holds the key (an API
         // key by the name its person gave it), not by the service it came through.
-        None if peer.cert.capabilities.agent.is_some() => {
-            Caller::authenticated(peer.user_public_key, peer.device_public_key)
-                .delegated_to(collab_types::workspace_grant::key_agent_id(
-                    &peer.device_public_key,
-                ))
-                .named(tilo_server_client::grant_holder(&peer.cert.device_label))
-        }
+        None if peer.cert.capabilities.agent.is_some() => Caller::delegated_agent(
+            collab_types::workspace_grant::key_agent_id(&peer.device_public_key),
+            peer.user_public_key,
+            peer.device_public_key,
+        )
+        .named(tilo_server_client::grant_holder(&peer.cert.device_label)),
         None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
     };
     // An agent's (or a key's) requests on this connection are one run, the

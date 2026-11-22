@@ -1,12 +1,8 @@
-//! One agent session's api to the broker: an MCP client the session's MCP server admitted, or an
-//! agent answering a turn ([`super::turns`]).
+//! One agent session's api to the broker: what its steps do in turn, as the session's caller.
 //!
-//! An MCP connection joins as the agent its certificate names, certified by a device of the person
-//! who admitted it; a turn's agent acts as its connection was handed the turn. Either is then
-//! served as any admitted connection is ([`ConnectionActionProvider`]): the workspace's grants decide
-//! each step, the agent capped at what its person may do and at what a device lets its agents do,
-//! and only while the session goes ([`AppBrokerState::agent_session_goes`],
-//! [`AppBrokerState::turn_session_goes`]).
+//! It is served as any admitted connection is ([`ConnectionActionProvider`]): the workspace's
+//! grants decide each step, the agent capped at what its person may do and at what a device lets
+//! its agents do, and only while the session goes ([`AppBrokerState::turn_session_goes`]).
 //!
 //! A step the grants ask first about is put to the person on the host's sheet
 //! ([`crate::apps::app_actions::AppActionConsentPrompter`]), the same sheet apps' questions use:
@@ -25,11 +21,10 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
-use tilo_peer_state::join::agent_cert::AgentCert;
 
+use super::AppBrokerState;
 use super::action_provider::ConnectionActionProvider;
 use super::published_invocation::InvocationCaller;
-use super::{AppBrokerState, CrdtRoute};
 use crate::apps::app_actions::{AGENT_SESSION_ASK, AppActionConsentPrompter};
 
 /// How often a waiting question looks whether its session still goes.
@@ -41,22 +36,11 @@ struct Inner {
     workspace: String,
     agent: String,
     session: String,
-    /// The certificate an MCP connection joined with; `None` for a turn's agent.
-    cert: Option<AgentCert>,
-}
-
-impl Drop for Inner {
-    fn drop(&mut self) {
-        // An MCP connection's execution ends with it; a turn's ends with the turn.
-        if self.cert.is_some() {
-            self.caller.retire_execution();
-        }
-    }
 }
 
 /// One admitted agent session's connection.
 #[derive(Clone)]
-pub struct AgentConnection(Arc<Inner>);
+pub(super) struct AgentConnection(Arc<Inner>);
 
 impl std::fmt::Debug for AgentConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -68,65 +52,6 @@ impl std::fmt::Debug for AgentConnection {
 }
 
 impl AppBrokerState {
-    /// Join `presentation`, an agent's (the device's certificate, the agent certificate it signed
-    /// and the agent key's proof), as the agent session its certificate names, by the name
-    /// `name` the person reads it by.
-    ///
-    /// # Errors
-    /// The presentation does not verify, the workspace does not list the agent, or its session
-    /// does not go.
-    pub fn agent_connection(
-        self: &Arc<Self>,
-        presentation: &[u8],
-        name: &str,
-    ) -> Result<AgentConnection, String> {
-        let decoded = runtime_collab::AgentJoinIdentity::decode(presentation)
-            .map_err(|error| format!("the agent's presentation is malformed: {error}"))?
-            .ok_or("an agent session joins only as a certified agent")?;
-        let workspace = decoded.workspace_id;
-        let route = CrdtRoute::record(
-            tilo_actions::remote::task_programs::APP,
-            workspace.clone(),
-            "",
-        );
-        let admitted = super::verify_join_identity(
-            &route,
-            presentation,
-            self.membership.as_ref(),
-            self.trusted_devices.as_deref().map(Vec::as_slice),
-            self.certificate_authority.get().map(Arc::as_ref),
-        )?;
-        let cert = admitted
-            .agent_cert
-            .as_deref()
-            .cloned()
-            .ok_or("agent certificate missing")?;
-        self.admit_agent_join(&workspace, &cert.agent_id, &admitted)?;
-        let caller = Caller::local_person(admitted.actor_key.clone())
-            .in_workspace(workspace.clone())
-            .delegated_to(cert.agent_id.clone())
-            .in_new_execution()
-            .named(name)
-            .in_agent_session(cert.session.clone());
-        let provider = ConnectionActionProvider {
-            state: Arc::clone(self),
-            own_peer: self.next_peer_id(),
-            origin: InvocationCaller::Local {
-                route,
-                time: self.registered_policy_time()?,
-                admitted: Box::new(admitted),
-            },
-        };
-        Ok(AgentConnection(Arc::new(Inner {
-            provider,
-            caller,
-            workspace,
-            agent: cert.agent_id.clone(),
-            session: cert.session.clone(),
-            cert: Some(cert),
-        })))
-    }
-
     /// The API `caller`, an agent in an agent session, takes its steps through, on a connection
     /// admitted as `origin`. `None` for a caller in no agent session.
     pub(super) fn agent_session_api(
@@ -147,7 +72,6 @@ impl AppBrokerState {
             workspace,
             agent: agent.to_owned(),
             session: session.as_str().to_owned(),
-            cert: None,
         })))
     }
 }
@@ -168,14 +92,9 @@ impl AgentConnection {
 
     /// Whether the session still goes: the connection's authority ends with it.
     fn goes(&self) -> Result<(), String> {
-        match &self.0.cert {
-            Some(cert) => self.state().agent_session_goes(&self.0.workspace, cert),
-            None => {
-                self.state()
-                    .turn_session_goes(&self.0.workspace, &self.0.agent, &self.0.session)
-            }
-        }
-        .map(drop)
+        self.state()
+            .turn_session_goes(&self.0.workspace, &self.0.agent, &self.0.session)
+            .map(drop)
     }
 
     /// The caller is one of this connection's, still live.
@@ -212,13 +131,6 @@ impl AgentConnection {
         let label = asked.action_label.clone();
         let handle = asked.handle.clone();
         let answer = prompter.ask(asked).ok_or_else(nobody)?;
-        // A turn whose step the person is asked about is not idle while they decide, however long
-        // they take away from it: only the turn's own answer ends it.
-        let _asked_person = self
-            .0
-            .cert
-            .is_none()
-            .then(|| state.asks_person(&self.0.session));
         let mut asking = Asking {
             prompter,
             handle,
