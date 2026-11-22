@@ -137,6 +137,16 @@ pub struct Replied {
     /// What its model thought on the way, as its provider showed it.
     pub thinking: String,
     pub superseded: bool,
+    /// What it called on the way, in order.
+    pub steps: Vec<Stepped>,
+}
+
+/// One step of a reply, as the record holds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stepped {
+    pub called: String,
+    pub answered: String,
+    pub failed: bool,
 }
 
 /// What sits around what an ask is about: the collection it is in, in order.
@@ -274,6 +284,14 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
                 body: text(read(opened, reply, "body")),
                 thinking: text(read(opened, reply, "thinking")),
                 superseded: matches!(read(opened, reply, "superseded"), Some(Value::Bool(true))),
+                steps: items(opened, reply, "steps")
+                    .iter()
+                    .map(|step| Stepped {
+                        called: text(read(opened, step, "called")),
+                        answered: text(read(opened, step, "answered")),
+                        failed: matches!(read(opened, step, "failed"), Some(Value::Bool(true))),
+                    })
+                    .collect(),
             })
             .collect();
         answers.sort_by_key(|reply| reply.attempt);

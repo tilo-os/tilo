@@ -21,17 +21,15 @@ async fn asks(hosted: &mut Hosted, action: &str, argument: serde_json::Value) ->
     hosted.on_device(asked, argument).await
 }
 
-/// What the assistant wrote to its person, oldest first.
+/// What the assistant replied to its person, oldest first.
 async fn answered(hosted: &Hosted) -> Vec<String> {
-    let part = conversation_part(&hosted.workspaces, &hosted.workspace).await;
-    let mut theirs: Vec<_> = part
-        .messages
+    hosted
+        .asked()
+        .await
         .iter()
-        .filter(|(_, held)| held.author == MemberId::agent(SCOUT))
-        .map(|(_, held)| held)
-        .collect();
-    theirs.sort_by_key(|held| held.ts);
-    theirs.into_iter().map(|held| held.text.clone()).collect()
+        .filter_map(|asked| asked.latest())
+        .map(|reply| reply.body.trim().to_owned())
+        .collect()
 }
 
 /// A person's first minute: nothing is linked. What this test's server linked for them before,

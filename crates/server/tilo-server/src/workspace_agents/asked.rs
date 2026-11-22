@@ -33,14 +33,14 @@ pub(super) fn keeps_asks(app: &str) -> bool {
 const AROUND: usize = 30;
 
 /// The packages Chat's record is read through, compiled once for the server.
-fn packages() -> Result<Packages, String> {
+pub(crate) fn packages() -> Result<Packages, String> {
     static COMPILED: OnceLock<Result<Packages, String>> = OnceLock::new();
     COMPILED.get_or_init(asks::chat_packages).clone()
 }
 
 /// The member a record is opened as on this server: none, so nothing a mention in it asks is
 /// made here for anyone.
-fn viewer() -> asks::Actor {
+pub(crate) fn viewer() -> asks::Actor {
     asks::Actor::App(tilo_app_id::AppId::new(asks::AGENT_APP))
 }
 
@@ -175,10 +175,7 @@ fn turn_of(
         .try_into()
         .unwrap_or(u32::MAX)
         .saturating_add(1);
-    let conversation = around
-        .and_then(|around| around.holder.as_ref())
-        .or(asked.from.as_ref())
-        .map_or_else(|| asked.at.id_string(), asks::ResourceRef::id_string);
+    let conversation = conversation_of(asked, around);
     Some(Turn {
         agent: agent.clone(),
         person,
@@ -197,6 +194,15 @@ fn turn_of(
             private,
         },
     })
+}
+
+/// The conversation `asked` is in, by its id: what holds what it is about (`around`), else what
+/// it is about, else the ask itself.
+pub(super) fn conversation_of(asked: &Asked, around: Option<&asks::Around>) -> String {
+    around
+        .and_then(|around| around.holder.as_ref())
+        .or(asked.from.as_ref())
+        .map_or_else(|| asked.at.id_string(), asks::ResourceRef::id_string)
 }
 
 /// Where a turn made from an ask writes its reply: the ask, and the reply once the turn took

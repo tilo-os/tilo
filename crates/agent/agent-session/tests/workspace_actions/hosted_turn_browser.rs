@@ -8,6 +8,7 @@
 use super::*;
 use tilo_server::hosted_browser::{BrowserSessions, HostedBrowsers, Unmetered, Window};
 use tilo_server_protocol::hosted::Material;
+use ui::tilo_resource::{Id, Resource as _};
 use ui::tilo_workspace_agent::Bound;
 
 /// The provider the stand-in window publishes under.

@@ -15,18 +15,16 @@
 //! to this server and into the workspace's vault; only the item's reference comes back here.
 //!
 //! The ask is claimed once they answered, so an answer is carried out at most once. Then the
-//! entry signs in to the calendar server, keeps the account in the workspace for reading only, and
-//! the agent is woken once, in its conversation with its person, with what came of
-//! it: the calendars by their names, or the calendar server's refusal. Neither the password nor
+//! entry signs in to the calendar server, keeps the account in the workspace for reading only,
+//! and the agent is asked once, in its person's name, with what came of it
+//! ([`super::answers`]): the calendars by their names, or the calendar server's refusal. Neither the password nor
 //! the item's reference passes a model on this way. A server that restarts while its person is
 //! asked asks them again.
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tilo_actions::policy::MemberId;
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeRequest,
@@ -37,6 +35,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::certify::{AgentAsk, PendingConfirmation};
 use tilo_workspace_agent::Agent;
 
+use super::asks::AskedIn;
 use super::mail::narrowing;
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
@@ -80,32 +79,9 @@ pub(super) const UNANSWERED: &str = "they were not asked, or did not answer in t
 /// The most of the calendars' names a question's outcome and an agent's news carry, in bytes.
 const MOST_NAMES_BYTES: usize = 600;
 
-/// Where a turn's question is put, and for which turn: kept with the ask, so the server finds
-/// its way back after a restart.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct AskedIn {
-    /// The conversation the turn is in, by its address in the workspace.
-    conversation: String,
-    /// The ask that caused the turn.
-    cause: String,
-    /// The agent session the turn's changes are grouped by.
-    session: String,
-}
-
 /// Where and for which turn `caller` asks, as an ask keeps it.
 pub(super) fn asked_in(caller: &Caller) -> Value {
-    let turn = caller.turn();
-    let kept = AskedIn {
-        conversation: turn
-            .map(|turn| turn.conversation.clone())
-            .unwrap_or_default(),
-        cause: turn.map(|turn| turn.message.clone()).unwrap_or_default(),
-        session: caller
-            .agent_session()
-            .map(|session| session.id)
-            .unwrap_or_default(),
-    };
-    serde_json::to_value(kept).unwrap_or(Value::Null)
+    AskedIn::kept(caller)
 }
 
 /// Whoever carries out a workspace's agents: what reads the answers to the questions this
@@ -187,26 +163,6 @@ impl Asking {
 impl Drop for Asking {
     fn drop(&mut self) {
         ASKING.lock_recover().remove(&self.0);
-    }
-}
-
-/// Where the agent that asked `open` is told what came of it: its conversation with its person,
-/// under the ask's own key.
-pub(super) struct Told {
-    pub(super) key: String,
-    pub(super) conversation_id: String,
-}
-
-impl Told {
-    pub(super) fn of(open: &dyn PutAsk) -> Self {
-        Self {
-            key: open.id().to_owned(),
-            conversation_id: chat::Chat::direct_id([
-                MemberId::person(open.of_person().to_owned()),
-                MemberId::agent(open.by_agent().to_owned()),
-            ])
-            .to_string(),
-        }
     }
 }
 
@@ -455,16 +411,7 @@ impl Carrier {
         let mut person = [0; 32];
         hex::decode_to_slice(ask.of_person(), &mut person).ok()?;
         let device = self.workspaces.person_device(workspace_id, person).await?;
-        let asked_in: AskedIn = serde_json::from_value(ask.put_in().clone()).ok()?;
-        let turn = Caller::authenticated(person, device)
-            .in_workspace(workspace)
-            .delegated_to(agent.id.0.clone())
-            .named(&agent.name)
-            .in_agent_session(asked_in.session)
-            .on_turn(
-                tilo_action_policy::turn::Turn::new(asked_in.conversation, asked_in.cause),
-                agent.bound_rules().unwrap_or_default(),
-            );
+        let turn = AskedIn::read(ask.put_in()).turn_of((person, device), workspace, &agent);
         Some(Asker {
             workspace_id,
             agent,
@@ -472,17 +419,18 @@ impl Carrier {
         })
     }
 
-    /// Wake the agent that asked `open` once with how its person answered and what came of it.
+    /// Tell the agent that asked `open` once how its person answered and what came of it: an
+    /// ask about what the turn that asked was asked about.
     pub(super) async fn tell_of_password(
         &self,
         open: &dyn PutAsk,
         asked: &str,
         (answered, came): (&str, &str),
     ) {
-        let told = Told::of(open);
+        let about = AskedIn::read(open.put_in()).cause;
         let news = super::answers::carried_out(
-            (&told.key, &told.conversation_id),
-            open.of_person(),
+            (open.id(), &about),
+            (open.of_person(), open.by_agent()),
             asked,
             (answered, came),
         );

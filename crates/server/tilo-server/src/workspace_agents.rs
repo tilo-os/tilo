@@ -73,7 +73,7 @@ use turn_provider::TurnProvider;
 
 mod across;
 mod answers;
-mod asked;
+pub(crate) mod asked;
 mod asking;
 mod asks;
 mod calendar_connect;
@@ -100,7 +100,7 @@ mod turn_browser;
 // What a turn does at the page in that window.
 mod turn_pages;
 
-pub use asks::{Answered, Carried, Carries, ServerAsk};
+pub use asks::{Answered, AskedIn, Carried, Carries, ServerAsk};
 pub use sub_agents::Line;
 
 /// What a turn's reply says when the turn goes on with what its person wrote next.
@@ -748,8 +748,6 @@ struct Asks {
     turns: Vec<Turn>,
     /// The turns a person stopped whose work is not ended yet.
     stopped: Vec<Turn>,
-    /// The turns their people's answers owe the agents that asked them.
-    answered: Vec<answers::Wake>,
     /// What this server owes the workspace's sub-agents beside their turns.
     sub: sub_agents::Owed,
 }
@@ -1044,8 +1042,6 @@ impl ServerAgents {
         LookRead { reading, asks }: LookRead,
         past: Option<&(String, Ask)>,
     ) -> bool {
-        // An answer wakes whoever asked: written once under the question's own key.
-        self.wake_answered(workspace, asks.answered);
         let is_past = |turn: &Turn| {
             past.is_some_and(|(agent, ask)| *agent == turn.agent.id.0 && *ask == turn.ask)
         };
@@ -1072,7 +1068,7 @@ impl ServerAgents {
                         {
                             tracing::warn!(%workspace, agent = %ended.0, %error, "a stopped turn of a host agent was not ended");
                         }
-                        agents.take_back_asked(&workspace, &turn, &turn.ask).await;
+                        agents.take_back_asked(&workspace, &turn, &turn.ask);
                         drop(held);
                         agents.look_after(workspace, ended).await;
                     });
@@ -1211,9 +1207,9 @@ impl ServerAgents {
         founded.is_ok()
     }
 
-    /// What `workspace`'s Rust Chat conversations still hold for `agents`: the questions they
-    /// asked that wait, the answers that owe a turn, and the team's sub-agents. Turns are asks of
-    /// the agent package ([`asked`]), never read from these conversations.
+    /// What `workspace`'s Rust Chat conversations still hold for `agents`: the team's
+    /// sub-agents. Turns are asks of the agent package ([`asked`]), and questions wait in their
+    /// replies ([`asks`]), never in these conversations.
     async fn chat_asks(
         &self,
         workspace: &str,
@@ -1221,12 +1217,8 @@ impl ServerAgents {
         routes: &[(String, String)],
     ) -> Result<Asks, String> {
         let mut asks = Asks::default();
-        // The questions its agents asked that wait for their person, read
-        // from the same parts.
-        let mut waiting = Vec::new();
-        // The answers that owe their askers a turn, and the wakes written already.
-        let mut answered = Vec::new();
-        let mut woken = std::collections::BTreeSet::new();
+        // No question of its agents waits in these parts: they ask in their replies.
+        let waiting = Vec::new();
         let Some(chat) = self.read::<chat::chat::Chat>(workspace, CHAT, "").await? else {
             self.workspaces.note_waiting(workspace, waiting);
             return Ok(asks);
@@ -1245,14 +1237,9 @@ impl ServerAgents {
             else {
                 continue;
             };
-            waiting.extend(self::asks::waiting_in(workspace, document, &part, agents));
-            answered.extend(answers::answered_in(&part, agents));
-            woken.extend(answers::woken_in(&part));
             team.read(document, &chat, &part);
         }
         self.workspaces.note_waiting(workspace, waiting);
-        answered.retain(|wake| !woken.contains(&wake.key));
-        asks.answered = answered;
         team.settle(&mut asks);
         Ok(asks)
     }
@@ -1729,7 +1716,7 @@ impl ServerAgents {
         .await;
         if matches!(outcome, Outcome::Cancelled) {
             // Its person stopped it: what it asked them and still waits is taken back.
-            self.take_back_asked(workspace, &turn, &began).await;
+            self.take_back_asked(workspace, &turn, &began);
         }
         self.sub_ended(&scope, &turn, &outcome, from_starter).await;
         (turn.ask, ended)

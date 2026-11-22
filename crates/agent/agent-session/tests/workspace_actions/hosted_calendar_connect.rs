@@ -16,14 +16,13 @@
 //! What a telling is refused for asks nobody and connects nothing; a calendar server that refuses
 //! the password is said so in its own words, and the item she typed is not kept.
 use super::*;
-use crate::workspace_actions::hosted_agent_turns::{SCOUT, conversation_part};
+use crate::workspace_actions::hosted_agent_turns::SCOUT;
 use crate::workspace_actions::hosted_secret_use::{
     Devices, Hosted, Lines, does, files_holding, logged,
 };
 use tilo_server::workspaces::person_model::scripted::Reply;
 use tilo_server_protocol::certify::{ConfirmationAnswer, TypedSecret};
 
-const CHAT: &str = "so.tilo.chat";
 /// What she types into the protected field. Made up for this test, and the sign-in of nothing
 /// but the calendar server the test starts.
 const TYPED: &str = "only-her-calendar-server-may-read-this";
@@ -135,7 +134,7 @@ async fn her_accounts(hosted: &mut Hosted) -> Vec<serde_json::Value> {
 }
 
 /// `typed` reached her calendar server's sign-in and nothing else: no request a model was sent,
-/// no message of the conversation, no log line and no file of the server in the clear.
+/// no ask or reply, no log line and no file of the server in the clear.
 async fn it_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, lines: &Lines, typed: &str) {
     for call in hosted.model.asked() {
         let sent = format!("{:?}", call.request);
@@ -145,15 +144,9 @@ async fn it_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, lines: &Lines,
             "on this way a model holds not even the item's reference: {sent}"
         );
     }
-    let part = conversation_part(&hosted.workspaces, &hosted.workspace).await;
-    let said = format!("{:?}", part.messages.iter().collect::<Vec<_>>());
+    let said = hosted.said().await;
     assert!(said.contains(ADA) && !said.contains(typed));
-    let saved = hosted
-        .workspaces
-        .resource_document(&hosted.workspace, CHAT, chat::parts::part(0).as_str())
-        .await
-        .unwrap()
-        .unwrap();
+    let saved = hosted.record_bytes().await;
     assert!(
         !saved
             .windows(typed.len())
@@ -192,9 +185,8 @@ async fn the_assistant_connects_the_calendar_its_person_tells_it_of_for_reading_
         "the question says what her typing does: {words}"
     );
     assert!(
-        hosted.questions(chat::question::ACTION).await.is_empty()
-            && hosted.questions(chat::question::CHOICE).await.is_empty(),
-        "nothing asks in her conversation"
+        hosted.questions().await.is_empty(),
+        "nothing asks in the assistant's reply"
     );
     assert!(
         calendars.requests().is_empty(),
