@@ -460,7 +460,49 @@ impl Parts {
             let notice = forms.notice(toolbar, leftover);
             parts.settle(form, labels, action_labels, notice, forms);
         }
+        if toolbar.notice.is_none() && forms.text.len() > 1 && !parts.views_in_location() {
+            parts.fit_shown_form(row, forms);
+        }
         parts
+    }
+
+    /// Where the location names itself in shorter forms, the form it shows stands whole: it takes
+    /// the space that parts it from its neighbours, down to the gap controls keep.
+    fn fit_shown_form(&mut self, row: Rect, forms: &LocationForms) {
+        if self.location.area() <= 0.0 {
+            return;
+        }
+        let short = forms.width(self.form) + forms.chrome - self.location.width();
+        if short <= 0.0 {
+            return;
+        }
+        // Whole pixels, as every edge in the row: a measure rounded to `f32` never leaves the
+        // last glyph outside the place the location keeps for it.
+        let short = short.ceil();
+        let shared = SECTION_GAP - CONTROL_GAP;
+        let before = self
+            .leading
+            .iter()
+            .map(|rect| rect.x1)
+            .chain([self.sidebar.x1, self.back.x1, self.forward.x1, row.x0])
+            .fold(f64::NEG_INFINITY, f64::max);
+        let after = self
+            .actions
+            .first()
+            .map(|rect| rect.x0)
+            .into_iter()
+            .chain((self.views_menu.area() > 0.0).then_some(self.views_menu.x0))
+            .chain(self.views.first().map(|rect| rect.x0))
+            .chain((self.overflow.area() > 0.0).then_some(self.overflow.x0))
+            .chain([row.x1])
+            .fold(f64::INFINITY, f64::min);
+        let left_room = (self.location.x0 - before - CONTROL_GAP).clamp(0.0, shared);
+        let right_room = (after - self.location.x1 - CONTROL_GAP).clamp(0.0, shared);
+        let left = (short / 2.0).min(left_room);
+        let right = (short - left).min(right_room);
+        let left = left + (short - left - right).clamp(0.0, left_room - left);
+        self.location.x0 -= left;
+        self.location.x1 += right;
     }
 
     fn settle(
