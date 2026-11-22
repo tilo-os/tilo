@@ -359,6 +359,9 @@ thread_local! {
 /// One package's schemas: what its types are, by id.
 pub struct PackageSchemas {
     schemas: Arc<Schemas>,
+    /// What the package declares: its actions' parameters, which an invocation's arguments are
+    /// named by in history.
+    meta: tilolang_runtime::meta::Meta,
 }
 
 impl PackageSchemas {
@@ -371,6 +374,23 @@ impl PackageSchemas {
     #[must_use]
     pub fn enter(&self) -> Current {
         self.schemas.enter()
+    }
+
+    /// The names of the parameters of the action `id`, in the order an invocation gives them.
+    #[must_use]
+    pub fn action_params(&self, id: &str) -> Option<Vec<String>> {
+        let action = self
+            .meta
+            .actions
+            .iter()
+            .find(|declared| declared.id == id)?;
+        Some(
+            action
+                .params
+                .iter()
+                .map(|param| param.name.clone())
+                .collect(),
+        )
     }
 }
 
@@ -518,6 +538,7 @@ pub fn register_package(
     // does. An action that writes one of those would otherwise refuse under its package's table.
     let schemas = Arc::new(PackageSchemas {
         schemas: Arc::new(Schemas::over(fallback())),
+        meta: meta.clone(),
     });
     {
         let _current = schemas.enter();

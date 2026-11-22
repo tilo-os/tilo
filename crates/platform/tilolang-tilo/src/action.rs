@@ -1434,11 +1434,9 @@ impl DynAction {
     pub fn described_with(&self, read: impl FnOnce(&DynEdit) -> Option<Target>) -> Described {
         let _package = self.package_schemas();
         let args = self
-            .args
-            .as_object()
+            .recorded_args()
             .into_iter()
-            .flatten()
-            .filter_map(|(name, value)| Some((name.clone(), Scalar::from_json(value)?)));
+            .filter_map(|(name, value)| Some((name, Scalar::from_json(&words_of(&value)?)?)));
         let key = ActionKey::new(
             self.app.as_str(),
             self.kind.as_str(),
@@ -1452,6 +1450,27 @@ impl DynAction {
             return described;
         };
         described.on(at, title.unwrap_or_else(|| schema.untitled()))
+    }
+
+    /// The arguments of this action as history records them, by parameter name: an invocation
+    /// that named them keeps its names, and the list one was carried out with is named by the
+    /// action's parameters, in order.
+    fn recorded_args(&self) -> Vec<(String, Json)> {
+        if let Some(named) = self.args.as_object() {
+            return named
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+        }
+        let Some(values) = self.args.as_array() else {
+            return Vec::new();
+        };
+        let Some(params) = crate::schema::for_module(&self.app, &self.authorship.module)
+            .and_then(|package| package.action_params(&self.action_id))
+        else {
+            return Vec::new();
+        };
+        params.into_iter().zip(values.iter().cloned()).collect()
     }
 
     /// The resource this action writes first: its published id (an item of a document by its
@@ -1583,14 +1602,46 @@ impl DynAction {
             match edit.op() {
                 tilo_resource::EditOp::Replace { text } => Some(text.clone()),
                 tilo_resource::EditOp::Set { value } => value.as_str().map(str::to_owned),
+                tilo_resource::EditOp::Rich { rich } => rich_written(rich),
                 _ => None,
             }
         })
     }
 }
 
-/// The first non-empty text among the `Text` fields of `schema`, by field id, each read by
-/// `read`.
+/// The words a rich edit writes into its field: the paragraphs it syncs, a line per paragraph.
+/// `None` for an edit of one paragraph's characters, and for one that syncs no text: what a
+/// resource is titled by is what its text says, not a mark typed into it.
+fn rich_written(rich: &Json) -> Option<String> {
+    let blocks = rich.get("SyncClips")?.get("blocks")?.as_array()?;
+    let text = blocks
+        .iter()
+        .filter_map(|block| block.get("text").and_then(Json::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// The words an argument says, when it is a rich text: its paragraphs, a line each. Any other
+/// argument is itself.
+fn words_of(value: &Json) -> Option<Json> {
+    let blocks = value
+        .get("rich")
+        .or_else(|| value.get("blocks"))
+        .and_then(Json::as_array);
+    let Some(blocks) = blocks else {
+        return Some(value.clone());
+    };
+    let text = blocks
+        .iter()
+        .filter_map(|block| block.get("text").and_then(Json::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.trim().is_empty()).then_some(Json::String(text))
+}
+
+/// The first non-empty text among the fields of `schema` that hold text, a rich text among
+/// them, by field id, each read by `read`.
 fn own_text(
     schema: &crate::schema::TypeSchema,
     read: impl Fn(&str) -> Option<String>,
@@ -1598,7 +1649,7 @@ fn own_text(
     let mut fields: Vec<_> = schema
         .fields
         .iter()
-        .filter(|field| field.kind == crate::schema::MergeKind::Text)
+        .filter(|field| field.kind.holds_text())
         .collect();
     fields.sort_by(|a, b| a.id.cmp(&b.id));
     fields
