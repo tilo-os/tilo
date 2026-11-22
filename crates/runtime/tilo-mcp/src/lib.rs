@@ -302,6 +302,24 @@ impl OpenFiles {
 mod failure;
 pub(crate) use failure::Failure;
 
+/// Why a typed call ([`McpServer::typed`]) has no result: the refusal as a program reads it
+/// (`{code, message, next_steps?}`), and the action it refused, with what that takes, when it
+/// names one.
+#[derive(Clone, Debug)]
+pub struct Refused {
+    pub error: Value,
+    pub action: Option<Value>,
+}
+
+impl Refused {
+    fn new(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            error: json!({"code": code, "message": message.into()}),
+            action: None,
+        }
+    }
+}
+
 /// Why a step of this bridge did not happen: the action host's refusal,
 /// kept typed so the bridge decides by its variant and never by its
 /// wording, or the bridge's own words. It becomes text only where an MCP
@@ -1438,6 +1456,60 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Err(e) => Err(e),
         }
     }
+    /// Call the tool `name` with `arguments` as a program does: its typed result, or its typed
+    /// refusal, never words. `invocation` is the invocation group the call is a step of
+    /// (`{"id", "title"}`). The same turn, undo step and resolution a `tools/call` takes, without
+    /// the JSON-RPC around it: what the REST API answers its routes with.
+    ///
+    /// # Errors
+    /// The call was refused or did not run.
+    pub async fn typed(
+        &self,
+        name: &str,
+        arguments: Value,
+        invocation: Option<Value>,
+    ) -> Result<Value, Refused> {
+        if self.caller.execution_id().is_some() && !self.caller.execution_is_live() {
+            return Err(Refused::new("unavailable", "execution session ended"));
+        }
+        let _turn = self
+            .turn("tools/call", &json!({"name": name}))
+            .await
+            .map_err(|why| Refused::new("unavailable", why))?;
+        let mut meta = serde_json::Map::new();
+        meta.insert("structured".into(), json!(true));
+        if let Some(invocation) = invocation {
+            meta.insert("invocation".into(), invocation);
+        }
+        let metadata = json!({ "so.tilo.mcp": meta });
+        let invalid = |why: String| Refused::new("invalid_request", why);
+        let asked = arguments
+            .get("invocation_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let step = self
+            .step_gesture(Some(&metadata), asked.as_deref())
+            .map_err(invalid)?;
+        let declared = Self::step_invocation(Some(&metadata)).map_err(invalid)?;
+        let failed = |why: String| Refused::new("failed", why);
+        let called = async {
+            if put::is_put_tool(name) {
+                self.put_value(name, arguments).await.map_err(failed)
+            } else if get::is_get_tool(name) {
+                Ok(self.get_value(name, arguments).await.map_err(failed)?.0)
+            } else if agent::tool_definitions()
+                .iter()
+                .any(|definition| definition["name"].as_str() == Some(name))
+            {
+                self.agent_typed(name, arguments).await
+            } else {
+                Err(invalid("Unknown tool".into()))
+            }
+        };
+        STEP.scope(step, STEP_INVOCATION.scope(declared, called))
+            .await
+    }
+
     /// The turn a request of this session works in: at most [`MAX_WORKING`]
     /// work at once, and at most [`MAX_ADMITTED`] work or wait, beyond which
     /// a request is refused rather than queued. A request that only reads

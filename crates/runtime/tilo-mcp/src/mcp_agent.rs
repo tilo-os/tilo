@@ -1669,21 +1669,72 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `structured` when the caller asked for typed answers
     /// (`_meta["so.tilo.mcp"].structured`): a read answers its
     /// [`ResourceRead`].
-    pub(super) async fn agent_call(&self, name: &str, mut args: Value, structured: bool) -> Value {
+    pub(super) async fn agent_call(&self, name: &str, args: Value, structured: bool) -> Value {
+        // A program may have run steps before the one refused: running it
+        // again would run them twice.
+        text_result(
+            self.agent_reply(name, args, structured).await,
+            structured,
+            name != "tilo",
+        )
+    }
+
+    /// One agent tool call's typed result, or its typed refusal: what a program reads, never
+    /// the words an agent reads. A program's run is its result however it ended.
+    pub(super) async fn agent_typed(
+        &self,
+        name: &str,
+        args: Value,
+    ) -> Result<Value, super::Refused> {
+        let program = name == "tilo";
+        match self.agent_reply(name, args, true).await {
+            Ok(Reply {
+                structured: Some(typed),
+                ..
+            }) if program || typed.get("status").and_then(Value::as_str) != Some("failed") => {
+                Ok(typed)
+            }
+            Ok(Reply {
+                structured: Some(typed),
+                ..
+            }) => Err(super::Refused {
+                error: typed.get("error").cloned().unwrap_or_default(),
+                action: typed.get("action").cloned(),
+            }),
+            // Said in words alone: what the path names holds nothing to type (an app installed
+            // and not running), or the call failed before anything ran.
+            Ok(reply) => Err(super::Refused::new(
+                if reply.failed { "failed" } else { "not_found" },
+                reply.text,
+            )),
+            Err(failure) if program => Ok(answer::refused(&failure, false)),
+            Err(failure) => Err(super::Refused {
+                error: answer::refused(&failure, true)
+                    .get("error")
+                    .cloned()
+                    .unwrap_or_default(),
+                action: None,
+            }),
+        }
+    }
+
+    /// What one agent tool call did: its words, and its typed result when `structured`.
+    pub(super) async fn agent_reply(
+        &self,
+        name: &str,
+        mut args: Value,
+        structured: bool,
+    ) -> Result<Reply, Failure> {
         // A path written as what a person types to name a resource (`#12`) is
         // read as the address the tools list it at before the call resolves
         // it, so an agent going on from a prompt's words reaches the resource.
         if let Some(path) = args.get("path").and_then(Value::as_str).map(str::to_owned) {
-            match self.expand_reference(&path).await {
-                Ok(expanded) => {
-                    if let Some(fields) = args.as_object_mut() {
-                        fields.insert("path".into(), Value::String(expanded));
-                    }
-                }
-                Err(error) => return text_result(Err(error), structured, true),
+            let expanded = self.expand_reference(&path).await?;
+            if let Some(fields) = args.as_object_mut() {
+                fields.insert("path".into(), Value::String(expanded));
             }
         }
-        let result = match name {
+        match name {
             "tilo_ls" => match parse(args) {
                 Ok(args) => self.agent_ls(args, structured).await,
                 Err(error) => Err(error.into()),
@@ -1725,10 +1776,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Err(error) => Err(error.into()),
             },
             _ => Err("Unknown tool".into()),
-        };
-        // A program may have run steps before the one refused: running it
-        // again would run them twice.
-        text_result(result, structured, name != "tilo")
+        }
     }
 
     /// Note the record a call resolved `in`: the one its provider names when
@@ -2398,14 +2446,28 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 for (index, step) in calls.into_iter().enumerate() {
                     let invocation = batch_invocation(invocation_id.as_deref(), index)?;
                     let step_id = invocation.clone();
-                    let reply = Box::pin(
+                    // A step that did not run says why in its typed answer as well as in words.
+                    let (reply, refusal) = match Box::pin(
                         self.do_one(&step.path, step.args, invocation, wait_ms, structured),
                     )
                     .await
-                    .unwrap_or_else(|error| Reply::failed(format!("failed: {error}")));
-                    let mut typed = reply.structured.clone().unwrap_or_else(
-                        || json!({"status": if reply.failed {"failed"} else {"ok"}}),
-                    );
+                    {
+                        Ok(reply) => (reply, None),
+                        Err(error) => {
+                            let refusal = answer::refused(&error, false);
+                            (Reply::failed(format!("failed: {error}")), Some(refusal))
+                        }
+                    };
+                    let mut typed = reply.structured.clone().or(refusal).unwrap_or_else(|| {
+                        if reply.failed {
+                            json!({"status": "failed", "error": {
+                                "code": answer::coded(&reply.text).0,
+                                "message": answer::words(&reply.text),
+                            }})
+                        } else {
+                            json!({"status": "ok"})
+                        }
+                    });
                     if let (Some(fields), Some(id)) = (typed.as_object_mut(), step_id.as_ref()) {
                         fields
                             .entry("invocation_id")

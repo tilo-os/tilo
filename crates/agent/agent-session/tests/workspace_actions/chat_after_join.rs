@@ -94,7 +94,7 @@ async fn an_agent_posts_to_chat_a_page_made_after_it_joined() {
             // The page made the chat's resource with the first channel every
             // chat opens with; a listing that shows it read that resource.
             assert!(
-                listed["result"]["structuredContent"]["text"]
+                listed["result"]["content"][0]["text"]
                     .as_str()
                     .unwrap_or_default()
                     .contains("c_chat"),
@@ -216,7 +216,7 @@ async fn an_agent_posts_to_chat_a_persons_own_workspace_began_with() {
             // The page made the chat's resource with the first channel every
             // chat opens with; a listing that shows it read that resource.
             assert!(
-                listed["result"]["structuredContent"]["text"]
+                listed["result"]["content"][0]["text"]
                     .as_str()
                     .unwrap_or_default()
                     .contains("c_chat"),

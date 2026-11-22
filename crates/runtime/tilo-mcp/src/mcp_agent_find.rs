@@ -160,7 +160,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let limit = args.limit.unwrap_or(FIND_HITS).clamp(1, 100);
         let found = self.searched(&words, &within).await?;
         if found.is_empty() {
-            return Ok(Reply::ok(nothing_matches(&args.query)));
+            let mut reply = Reply::ok(nothing_matches(&args.query));
+            reply.structured = structured.then(|| json!({"query": args.query.trim(), "hits": []}));
+            return Ok(reply);
         }
         let wanted = match args
             .app

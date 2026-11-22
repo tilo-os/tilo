@@ -1359,9 +1359,7 @@ mod tests {
             fn enter(
                 &self,
                 workspace: &str,
-                _session: &str,
-                _label: &str,
-            ) -> std::result::Result<Box<dyn crate::session::Answering>, String> {
+            ) -> std::result::Result<crate::session::Reached, String> {
                 Err(format!("no workspace {workspace} here"))
             }
         }

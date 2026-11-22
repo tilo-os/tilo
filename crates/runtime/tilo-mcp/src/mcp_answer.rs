@@ -7,9 +7,9 @@ use std::fmt::Write as _;
 
 /// The MCP result of an agent tool: its text alone, or the structured copy
 /// the caller asked for (its typed answer) as JSON, which is the text then: a
-/// second rendering would be read twice. The words go in the typed answer too
-/// (`text`), so a caller with no surface of its own — the API's routes — reads
-/// what an agent reads. A call the host refused for a reason
+/// second rendering would be read twice. A typed value answered to a caller
+/// that asked for none carries the words in its text as `text`.
+/// A call the host refused for a reason
 /// it can act on is answered with the host's code: `not_ready` until the
 /// workspace serves it, `unanswered` to ask again under the same invocation
 /// id. A call that ran more than is safe to run again (`retry_safe` false) is
@@ -27,18 +27,22 @@ pub(super) fn text_result(
     }
     match result {
         Ok(Reply {
-            structured: Some(mut answer),
+            structured: Some(answer),
             failed,
             images,
             text,
         }) => {
-            if !text.is_empty()
-                && let Some(fields) = answer.as_object_mut()
+            // A caller that asked for no typed answer reads the words beside the typed fields; the
+            // typed answer itself holds none, and a typed caller's text is that answer exactly.
+            let mut said = answer.clone();
+            if !structured
+                && !text.is_empty()
+                && let Some(fields) = said.as_object_mut()
             {
                 fields.entry("text").or_insert_with(|| json!(text));
             }
             json!({
-                "content":content(&answer.to_string(), images),
+                "content":content(&said.to_string(), images),
                 "structuredContent":answer,
                 "isError":failed
             })
@@ -86,7 +90,7 @@ pub(super) fn text_result(
 
 /// The typed answer of a call that did not run: what it was, and what would
 /// work instead.
-fn refused(failure: &Failure, retry_safe: bool) -> Value {
+pub(super) fn refused(failure: &Failure, retry_safe: bool) -> Value {
     use tilo_actions::remote::ActionCallError;
     let message = failure.message.as_str();
     // A failure with no host error of its own may name the code itself

@@ -90,18 +90,6 @@ impl ApiError {
     }
 }
 
-impl From<crate::session::CallError> for ApiError {
-    fn from(error: crate::session::CallError) -> Self {
-        let revoked = error.code == "key_revoked";
-        let refused = Self::new(error.code, error.message);
-        if revoked {
-            refused.next(crate::APPROVE_AGAIN)
-        } else {
-            refused
-        }
-    }
-}
-
 impl From<crate::server::ServerError> for ApiError {
     fn from(error: crate::server::ServerError) -> Self {
         use crate::server::ServerError;

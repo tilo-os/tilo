@@ -120,9 +120,7 @@ its own to read. `kinds` describes them once for each kind of row on the page
 (`{"notes.Page": [...]}`), so a page of a thousand notes does not repeat the same action rows a
 thousand times. An action row is `{"id", "label", "params": [{"name", "ty", "required",
 "description", "choices", "schema"}], "kind": "read"|"undoable"|"outside"}`. `next_cursor` is
-present while more rows follow; passed back as `cursor` it answers the next page. `text` is the
-same listing or read as a person reads it, one line per row: what `tilo ls` and `tilo read` print,
-and what an MCP client's `tilo_ls` and `tilo_read` answer.
+present while more rows follow; passed back as `cursor` it answers the next page.
 
 A read of a resource answers its lists a page at a time: 25 entries of each list by default,
 `pageSize` up to 200. A page that leaves entries out says how many each list holds (`totals`) and

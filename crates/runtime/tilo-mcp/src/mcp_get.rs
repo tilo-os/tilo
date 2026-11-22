@@ -62,14 +62,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// its text and, once the caller asked for typed answers (or reads the
     /// classic surface, which always carries them), as its value.
     pub(super) async fn get_call(&self, name: &str, args: Value, structured: bool) -> Value {
-        let result = match name {
-            GET => match parse(args) {
-                Ok(args) => self.download(args).await,
-                Err(error) => Err(error),
-            },
-            _ => Err("Unknown tool".to_owned()),
-        };
-        match result {
+        match self.get_value(name, args).await {
             Ok((answer, text)) => {
                 if structured {
                     json!({
@@ -82,6 +75,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 }
             }
             Err(message) => json!({"content":[{"type":"text","text":message}],"isError":true}),
+        }
+    }
+
+    /// The get tool's typed piece and the words saying how it reads on, or why there is none.
+    pub(super) async fn get_value(
+        &self,
+        name: &str,
+        args: Value,
+    ) -> Result<(Value, String), String> {
+        match name {
+            GET => self.download(parse(args)?).await,
+            _ => Err("Unknown tool".to_owned()),
         }
     }
 

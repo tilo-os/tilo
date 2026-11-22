@@ -552,57 +552,45 @@ mod tests {
         );
     }
 
-    /// A desktop holding one workspace, which answers every program with what it was asked
-    /// and the name of the session it was entered for.
-    struct Desktop;
+    /// A desktop holding one workspace, whose actions are the app it publishes, and the
+    /// workspaces it was entered for.
+    #[derive(Default)]
+    struct Desktop {
+        actions: tilo_mcp::test_hosts::StubHost,
+        entered: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
 
     const WORKSPACE: &str = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
-
-    struct Echo(String);
-
-    impl crate::session::Answering for Echo {
-        fn handle(
-            &self,
-            request: serde_json::Value,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send + '_>,
-        > {
-            let program = request
-                .pointer("/params/arguments/program")
-                .cloned()
-                .unwrap_or_default();
-            let text = format!("{} in {}", program.as_str().unwrap_or_default(), self.0);
-            Box::pin(async move {
-                Some(
-                    serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": {
-                        "structuredContent": {"status": "ok", "output": [text.clone()], "text": text},
-                    }}),
-                )
-            })
-        }
-    }
 
     impl crate::session::Here for Desktop {
         fn workspaces(&self) -> Vec<crate::session::Workspace> {
             vec![crate::session::held(WORKSPACE.into(), "Release".into())]
         }
 
-        fn enter(
-            &self,
-            workspace: &str,
-            _session: &str,
-            label: &str,
-        ) -> Result<Box<dyn crate::session::Answering>, String> {
+        fn enter(&self, workspace: &str) -> Result<crate::session::Reached, String> {
             if workspace != WORKSPACE {
                 return Err(format!("no workspace {workspace} here"));
             }
-            Ok(Box::new(Echo(label.to_owned())))
+            self.entered.lock().unwrap().push(workspace.to_owned());
+            let provider: crate::session::Provider = std::sync::Arc::new(self.actions.clone());
+            let catalogue = tilo_mcp::task_hosts::WorkspaceCatalogue::new(
+                std::sync::Arc::clone(&provider),
+                tilo_actions::remote::Caller::local_person("ada"),
+            );
+            Ok(crate::session::Reached {
+                provider,
+                person: "ada".into(),
+                tasks: std::sync::Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
+                    Some("ada"),
+                    std::sync::Arc::new(catalogue),
+                )),
+            })
         }
     }
 
     /// A program on this computer reaches the desktop's API at its socket, as the desktop's own
-    /// device, with no key of its own: it lists the workspaces the desktop holds and has a
-    /// program done in one, which the desktop answers. The account's own actions are not answered.
+    /// device, with no key of its own: it lists the workspaces the desktop holds and lists
+    /// what one holds, which the desktop's own actions answer. The account's own actions are not answered.
     #[tokio::test]
     async fn a_desktop_serves_its_persons_programs_at_its_socket() {
         let (person, _) = UserIdentity::generate("Ada", 1);
@@ -619,7 +607,9 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
-        let direct = Direct::here(std::sync::Arc::new(Desktop), key, cert, "Ada's laptop").unwrap();
+        let desktop = Desktop::default();
+        let entered = std::sync::Arc::clone(&desktop.entered);
+        let direct = Direct::here(std::sync::Arc::new(desktop), key, cert, "Ada's laptop").unwrap();
         let dir = std::env::temp_dir().join(format!("tilo-api-here-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("api.sock");
@@ -631,21 +621,15 @@ mod tests {
         let listed = client.get("/v1/workspaces").await.unwrap();
         assert_eq!(listed["workspaces"][0]["id"], WORKSPACE, "{listed}");
         assert_eq!(listed["workspaces"][0]["name"], "Release", "{listed}");
-        let ran = client
-            .post(
-                &format!("/v1/workspaces/{WORKSPACE}/programs"),
-                &serde_json::json!({"program": "notes.notebook.notes.len()"}),
-            )
+        let apps = client
+            .get(&format!("/v1/workspaces/{WORKSPACE}/resources"))
             .await
             .unwrap();
-        assert_eq!(ran["status"], "ok", "{ran}");
+        assert!(apps["rows"].is_array(), "{apps}");
         assert_eq!(
-            ran["text"], "notes.notebook.notes.len() in Ada's laptop #1",
-            "the program acts as the desktop's own device: {ran}"
-        );
-        assert!(
-            !ran["session"].as_str().unwrap_or_default().is_empty(),
-            "{ran}"
+            *entered.lock().unwrap(),
+            [WORKSPACE],
+            "the desktop's own actions answer the listing: {apps}"
         );
         let refused = client
             .post("/v1/workspaces", &serde_json::json!({"name": "Another"}))
@@ -680,7 +664,13 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
-        let direct = Direct::here(std::sync::Arc::new(Desktop), key, cert, "Ada's laptop").unwrap();
+        let direct = Direct::here(
+            std::sync::Arc::new(Desktop::default()),
+            key,
+            cert,
+            "Ada's laptop",
+        )
+        .unwrap();
         let dir = std::env::temp_dir().join(format!("tilo-api-here-bare-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("api.sock");
@@ -748,7 +738,13 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
-        let direct = Direct::here(std::sync::Arc::new(Desktop), key, cert, "Ada's laptop").unwrap();
+        let direct = Direct::here(
+            std::sync::Arc::new(Desktop::default()),
+            key,
+            cert,
+            "Ada's laptop",
+        )
+        .unwrap();
         let hooks = format!("/v1/workspaces/{WORKSPACE}/webhooks");
 
         let new = serde_json::json!({"url": "http://127.0.0.1:9/hook"}).to_string();

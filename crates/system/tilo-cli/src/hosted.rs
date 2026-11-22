@@ -23,6 +23,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use crate::api::{self, Client, Reach};
+use tilo_api::v1::lines;
 
 mod key_api;
 
@@ -465,7 +466,7 @@ pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>, cursor: Option<
             let _ = write!(route, "?{}", query.join("&"));
         }
         let listed = client.get(&route).await?;
-        Ok(show(reach.json, &listed, text(&listed, "text")))
+        Ok(show(reach.json, &listed, &lines::listing(&listed)))
     })
 }
 
@@ -482,17 +483,7 @@ pub fn read(reach: Reach<'_>, workspace: &str, path: &str, cursor: Option<&str>)
             let _ = write!(route, "?cursor={}", api::encode_query(cursor));
         }
         let read = client.get(&route).await?;
-        // A read the tool has no lines for (an app's surface) prints the
-        // typed answer as it came, rather than nothing.
-        let said = match read
-            .get("text")
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
-        {
-            Some(text) => text.to_owned(),
-            None => serde_json::to_string_pretty(&read).unwrap_or_default(),
-        };
-        Ok(show(reach.json, &read, &said))
+        Ok(show(reach.json, &read, &lines::resource(&read)))
     })
 }
 
@@ -769,11 +760,7 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
                         &serde_json::json!({"name": name, "labels": labels}),
                     )
                     .await?;
-                Ok(show(
-                    reach.json,
-                    &made,
-                    &tilo_api::v1::lines::workspace(&made),
-                ))
+                Ok(show(reach.json, &made, &lines::workspace(&made)))
             }
             WorkspaceCmd::Rename {
                 workspace: named,
@@ -786,11 +773,7 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
                         &serde_json::json!({ "name": name }),
                     )
                     .await?;
-                Ok(show(
-                    reach.json,
-                    &renamed,
-                    &tilo_api::v1::lines::workspace(&renamed),
-                ))
+                Ok(show(reach.json, &renamed, &lines::workspace(&renamed)))
             }
             WorkspaceCmd::Branch {
                 source,
@@ -808,11 +791,7 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
                         &serde_json::json!({"name": name, "labels": labels}),
                     )
                     .await?;
-                Ok(show(
-                    reach.json,
-                    &made,
-                    &tilo_api::v1::lines::workspace(&made),
-                ))
+                Ok(show(reach.json, &made, &lines::workspace(&made)))
             }
             WorkspaceCmd::Unattended {
                 workspace: named,
@@ -864,7 +843,7 @@ async fn list_workspaces(
         format!("/v1/workspaces?{}", query.join("&"))
     };
     let listed = client.get(&path).await?;
-    Ok(show(json, &listed, text(&listed, "text")))
+    Ok(show(json, &listed, &lines::workspaces(&listed)))
 }
 
 /// `tilo workspace unattended <workspace> [--off]`: held while the
@@ -1557,7 +1536,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                 let listed = client
                     .get(&format!("/v1/workspaces/{workspace}/members"))
                     .await?;
-                Ok(show(reach.json, &listed, text(&listed, "text")))
+                Ok(show(reach.json, &listed, &lines::members(&listed)))
             }
             PeopleCmd::Invite {
                 role,
@@ -1595,7 +1574,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         &serde_json::json!({ "role": role }),
                     )
                     .await?;
-                Ok(show(reach.json, &moved, text(&moved, "text")))
+                Ok(show(reach.json, &moved, &lines::members(&moved)))
             }
             PeopleCmd::Revoke { invite } => {
                 let left = client
@@ -1604,7 +1583,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         api::encode_path(&invite)
                     ))
                     .await?;
-                Ok(show(reach.json, &left, text(&left, "text")))
+                Ok(show(reach.json, &left, &lines::members(&left)))
             }
             PeopleCmd::Rm { key } => {
                 let left = client
@@ -1613,7 +1592,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         api::encode_path(&key)
                     ))
                     .await?;
-                Ok(show(reach.json, &left, text(&left, "text")))
+                Ok(show(reach.json, &left, &lines::members(&left)))
             }
             PeopleCmd::Add { key, role, name } => {
                 let mut body = serde_json::json!({"person": key, "role": role});
@@ -1623,13 +1602,13 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                 let added = client
                     .post(&format!("/v1/workspaces/{workspace}/members"), &body)
                     .await?;
-                Ok(show(reach.json, &added, text(&added, "text")))
+                Ok(show(reach.json, &added, &lines::members(&added)))
             }
             PeopleCmd::WaitList => {
                 let listed = client
                     .get(&format!("/v1/workspaces/{workspace}/members/wait-list"))
                     .await?;
-                Ok(show(reach.json, &listed, text(&listed, "text")))
+                Ok(show(reach.json, &listed, &lines::wait_list(&listed)))
             }
             PeopleCmd::Unlist { entry } => {
                 let listed = client
@@ -1637,7 +1616,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         "/v1/workspaces/{workspace}/members/wait-list/{entry}"
                     ))
                     .await?;
-                Ok(show(reach.json, &listed, text(&listed, "text")))
+                Ok(show(reach.json, &listed, &lines::wait_list(&listed)))
             }
             PeopleCmd::Name { name } => {
                 let named = client
@@ -1646,7 +1625,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         &serde_json::json!({"name": name}),
                     )
                     .await?;
-                Ok(show(reach.json, &named, text(&named, "text")))
+                Ok(show(reach.json, &named, &lines::members(&named)))
             }
         }
     })
@@ -1763,7 +1742,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
             }
             KeysCmd::Ls => {
                 let listed = Client::open(reach)?.get("/v1/keys").await?;
-                Ok(show(reach.json, &listed, text(&listed, "text")))
+                Ok(show(reach.json, &listed, &lines::keys(&listed)))
             }
             KeysCmd::Mint { name, expires_in } => {
                 let Some(named) = workspace else {
@@ -1779,7 +1758,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                     fields.insert("expires_in".into(), serde_json::json!(expires_in));
                 }
                 let minted = client.post("/v1/keys", &body).await?;
-                let said = tilo_api::v1::lines::minted_key(&minted);
+                let said = lines::minted_key(&minted);
                 Ok(show(reach.json, &minted, &said))
             }
             KeysCmd::Revoke { grant } => revoke_key(reach, &grant).await,
@@ -2292,11 +2271,11 @@ mod tests {
             }
             ("GET", route) if route.contains("/resources?path=") => json_reply(
                 200,
-                json!({"path": "notes", "rows": [], "text": "notes  (notes.notebook)"}),
+                json!({"path": "notes", "kind": "notes.notebook", "rows": []}),
             ),
             ("GET", route) if route.contains("/resources/") => json_reply(
                 200,
-                json!({"path": "notes/Notebook/Todo", "text": "# Todo"}),
+                json!({"path": "notes/Notebook/Todo", "fields": {"markdown": "# Todo"}}),
             ),
             _ => json_reply(
                 404,
@@ -2790,21 +2769,19 @@ mod tests {
             assert!(!api::is_uuid("jane-doe"));
         }
 
-        phase a_listing_and_a_read_print_what_the_host_said;
+        phase a_listing_and_a_read_print_their_typed_rows;
         {
-            // The host's own text, unrendered: `tilo ls` and `tilo read` print
-            // exactly the lines `tilo_ls` and `tilo_read` answer an agent, so
-            // a person and an agent read one listing. `--json` keeps the typed
-            // answer beside it.
+            // `tilo ls` and `tilo read` print the typed answer as lines: the path and its type,
+            // a row each, and a note's markdown under its title. `--json` keeps the typed answer.
             let listed = serde_json::json!({"path": "notes", "kind": "notes.notebook",
-                "rows": [{"path": "notes/Notebook", "label": "Notebook", "kind": "notes.notebook"}],
-                "text": "notes  (notes.notebook)\nNotebook  notes.notebook"});
+                "rows": [{"name": "Notebook", "kind": "notes.notebook", "has_children": true}]});
             assert_eq!(
-                text(&listed, "text"),
-                "notes  (notes.notebook)\nNotebook  notes.notebook"
+                lines::listing(&listed),
+                "notes  (notes.notebook)\nNotebook/  notes.notebook"
             );
-            let read = serde_json::json!({"path": "notes/Notebook/Todo", "text": "# Todo\n"});
-            assert_eq!(text(&read, "text"), "# Todo\n");
+            let read = serde_json::json!({"path": "notes/Notebook/Todo",
+                "fields": {"title": "Todo", "markdown": "- milk"}});
+            assert_eq!(lines::resource(&read), "# Todo\n- milk");
         }
     }
 }

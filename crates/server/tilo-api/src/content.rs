@@ -20,7 +20,7 @@
 //! the workspace's disk, not its latency.
 
 use crate::lock;
-use crate::session::{CallError, Session};
+use crate::session::Session;
 use crate::v1::errors::ApiError;
 use base64::Engine as _;
 use futures_util::StreamExt as _;
@@ -83,24 +83,22 @@ pub fn valid_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
-/// The answer `field` of one of the upload tools' results.
+/// `field` of one of the upload tools' results.
 fn answer(result: &Value, field: &str) -> Result<Value, String> {
-    let text = result
-        .pointer("/content/0/text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if result.get("isError").and_then(Value::as_bool) == Some(true) {
-        return Err(text.to_owned());
-    }
-    serde_json::from_str::<Value>(text)
-        .ok()
-        .and_then(|value| value.get(field).cloned())
-        .or_else(|| {
-            result
-                .pointer(&format!("/structuredContent/{field}"))
-                .cloned()
-        })
-        .ok_or_else(|| format!("the workspace answered no {field}: {text}"))
+    result
+        .get(field)
+        .cloned()
+        .ok_or_else(|| format!("the workspace answered no {field}: {result}"))
+}
+
+/// `tool` with `arguments` in `workspace`, through `session`.
+async fn put_tool(
+    session: &Session,
+    workspace: &str,
+    tool: &str,
+    arguments: Value,
+) -> Result<Value, ApiError> {
+    session.typed(Some(workspace), tool, arguments, None).await
 }
 
 /// One file's bytes through `session` into `workspace` at once: its content
@@ -113,24 +111,32 @@ pub(crate) async fn put(
     session: &Session,
     workspace: &str,
     body: &[u8],
-) -> Result<Value, CallError> {
-    let begun = session
-        .call_in(workspace, "tilo_put_begin", json!({"size": body.len()}))
-        .await?;
-    let upload = answer(&begun, "upload").map_err(CallError::unavailable)?;
+) -> Result<Value, ApiError> {
+    let begun = put_tool(
+        session,
+        workspace,
+        "tilo_put_begin",
+        json!({"size": body.len()}),
+    )
+    .await?;
+    let upload = answer(&begun, "upload").map_err(|why| ApiError::new("unavailable", why))?;
     let written = send(session, workspace, &upload, 0, body)
         .await
-        .map_err(CallError::unavailable)?;
+        .map_err(|why| ApiError::new("unavailable", why))?;
     if written != body.len() as u64 {
-        return Err(CallError::unavailable(format!(
-            "the workspace took {written} of the {} bytes",
-            body.len()
-        )));
+        return Err(ApiError::new(
+            "unavailable",
+            format!("the workspace took {written} of the {} bytes", body.len()),
+        ));
     }
-    let finished = session
-        .call_in(workspace, "tilo_put_finish", json!({"upload": upload}))
-        .await?;
-    answer(&finished, "content").map_err(CallError::unavailable)
+    let finished = put_tool(
+        session,
+        workspace,
+        "tilo_put_finish",
+        json!({"upload": upload}),
+    )
+    .await?;
+    answer(&finished, "content").map_err(|why| ApiError::new("unavailable", why))
 }
 
 /// Send `chunk` at `offset` to `upload` in `workspace`, in the pieces one
@@ -186,18 +192,18 @@ async fn send_group(
             let piece = chunk
                 .get(from..from.saturating_add(len))
                 .unwrap_or_default();
-            let appended = session
-                .call_in(
-                    workspace,
-                    "tilo_put_append",
-                    json!({
-                        "upload": upload,
-                        "offset": at,
-                        "chunk": base64::engine::general_purpose::STANDARD.encode(piece),
-                    }),
-                )
-                .await
-                .map_err(|refused| refused.message)?;
+            let appended = put_tool(
+                session,
+                workspace,
+                "tilo_put_append",
+                json!({
+                    "upload": upload,
+                    "offset": at,
+                    "chunk": base64::engine::general_purpose::STANDARD.encode(piece),
+                }),
+            )
+            .await
+            .map_err(|refused| refused.body.message)?;
             let written = answer(&appended, "written")?;
             Ok::<_, String>(
                 written
@@ -272,12 +278,14 @@ impl Uploads {
             return Ok((held.placement(id), false));
         }
         let busy = |why: String| ApiError::new("unavailable", why).next("open the upload again");
-        let begun = session
-            .call_in(workspace, "tilo_put_begin", json!({"size": size}))
+        let begun = put_tool(session, workspace, "tilo_put_begin", json!({"size": size}))
             .await
-            .map_err(|refused| match refused.code {
-                "key_revoked" => ApiError::from(refused),
-                _ => busy(refused.message),
+            .map_err(|refused| {
+                if refused.body.code == "key_revoked" {
+                    refused
+                } else {
+                    busy(refused.body.message)
+                }
             })?;
         let upload = answer(&begun, "upload").map_err(busy)?;
         let open = Open {
@@ -398,15 +406,19 @@ impl Uploads {
         if written < size {
             return Ok(Sent::More(placement));
         }
-        let finished = session
-            .call_in(workspace, "tilo_put_finish", json!({"upload": upload}))
-            .await
-            .map_err(|refused| refused.message)
-            .and_then(|finished| answer(&finished, "content"))
-            .map_err(|why| {
-                lock(&self.open).remove(id);
-                piece_refused(&why)
-            });
+        let finished = put_tool(
+            session,
+            workspace,
+            "tilo_put_finish",
+            json!({"upload": upload}),
+        )
+        .await
+        .map_err(|refused| refused.body.message)
+        .and_then(|finished| answer(&finished, "content"))
+        .map_err(|why| {
+            lock(&self.open).remove(id);
+            piece_refused(&why)
+        });
         lock(&self.open).remove(id);
         Ok(Sent::Done(json!(
             {"content": finished?, "size": size}

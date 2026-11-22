@@ -73,6 +73,7 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+tilo-mcp = { path = "../../runtime/tilo-mcp", features = ["test-support"] }
 tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }

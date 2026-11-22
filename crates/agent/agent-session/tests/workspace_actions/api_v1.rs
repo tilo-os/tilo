@@ -472,14 +472,8 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
     };
     let (status, listing) = agent.get(&format!("{base}/resources")).await;
     assert_eq!(status, 200, "{listing}");
-    // A listing is its rows once: the words a tool says as its typed answer
-    // are that answer again, and are no text of it.
-    assert!(
-        listing["text"]
-            .as_str()
-            .is_none_or(|text| serde_json::from_str::<serde_json::Value>(text).is_err()),
-        "the listing carries itself as its text: {listing}"
-    );
+    // A listing is its rows: no words beside them.
+    assert!(listing.get("text").is_none(), "{listing}");
     let (status, others) = agent
         .get(&format!("/v1/workspaces/{}/resources", on_server.lobby))
         .await;
@@ -866,11 +860,13 @@ async fn a_workspaces_listing_reads_the_same_through_mcp_and_the_api() {
         };
         let (status, listed) = backend.get(&route).await;
         assert_eq!(status, 200, "{listed}");
-        assert_eq!(
-            listed["text"].as_str(),
-            Some(agent_read),
-            "the API answers the tool's own lines for {path:?}: {listed}"
-        );
+        for row in listed["rows"].as_array().into_iter().flatten() {
+            let name = row["name"].as_str().unwrap_or_default();
+            assert!(
+                agent_read.contains(name),
+                "the API and the tool list the same rows for {path:?}: {name} in {listed}"
+            );
+        }
     }
 }
 
@@ -1015,8 +1011,7 @@ async fn a_logged_in_computers_commands_go_over_its_one_held_session() {
         assert!(
             listed["rows"]
                 .as_array()
-                .is_some_and(|rows| !rows.is_empty())
-                || listed["text"].as_str().is_some_and(|text| !text.is_empty()),
+                .is_some_and(|rows| !rows.is_empty()),
             "{listed}"
         );
     }
