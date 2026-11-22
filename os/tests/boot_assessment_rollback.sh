@@ -571,6 +571,16 @@ while :; do
     # puts the deployment it would fall back to on trial too.
     result="$(await_boot_entries)" || fail "boot $attempt's tilo-boot-entries.timer never ran"
     [ "$result" = success ] || fail "tilo-boot-entries.service failed on the staged deployment ($result); see $OUT/04-boot$attempt.txt"
+    # Its fallback pass takes a default pinned in the boot menu off the entry on
+    # trial; the next boot comes after it, as it does after a person's restart.
+    if has_fallback_unit; then
+      for _ in $(seq 1 40); do
+        state="$(guest 'systemctl show -p ActiveState --value tilo-boot-fallback.service' 2>/dev/null | tr -d '\r\n')"
+        case "$state" in active|failed) break ;; esac
+        sleep 3
+      done
+      [ "$state" = active ] || fail "boot $attempt's tilo-boot-fallback.service did not finish ($state); see $OUT/04-boot$attempt.txt"
+    fi
     TABLE="$(entry_table)"
     a_counted=no
     [[ "$(entry_for "$TABLE" entries "$A_DIGEST")" == *+* ]] && a_counted=yes
