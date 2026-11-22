@@ -91,7 +91,10 @@ pub(crate) fn serve(engine: &Arc<Engine>) -> TestService {
     let keys = Arc::new(TestGroupKeys::default());
     crate::sync::serve_alone(
         engine,
-        (service.clone(), crate::platform::records::Changes::default()),
+        (
+            service.clone(),
+            crate::platform::records::Changes::default(),
+        ),
         Some(DeviceKeyGroups {
             keys: Arc::clone(&keys) as Arc<dyn tilo_workspace_service::workspaces::GroupKeys>,
             sink: None,
@@ -101,9 +104,8 @@ pub(crate) fn serve(engine: &Arc<Engine>) -> TestService {
     let reads = Arc::new(
         tilo_workspace_service::apps::service_reads::ServiceDocuments::on(service.clone()),
     );
-    let writes = Arc::new(
-        tilo_workspace_service::apps::service_writes::ServiceWrites::on(service.clone()),
-    );
+    let writes =
+        Arc::new(tilo_workspace_service::apps::service_writes::ServiceWrites::on(service.clone()));
     TestService {
         workspaces: Box::new(move || {
             service

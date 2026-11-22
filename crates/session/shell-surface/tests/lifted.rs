@@ -1,7 +1,6 @@
 //! A part of a tree that only fades, grows or moves is posed by the compositor: drawn once into a
 //! layer of its own below the rest, and only its pose changes while it animates.
 
-
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;

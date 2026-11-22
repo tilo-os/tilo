@@ -85,9 +85,6 @@ mod api_v1;
 #[path = "workspace_actions/branch_files.rs"]
 mod branch_files;
 #[cfg(test)]
-#[path = "workspace_actions/key.rs"]
-mod key;
-#[cfg(test)]
 #[path = "workspace_actions/computer_agent.rs"]
 mod computer_agent;
 #[cfg(test)]
@@ -96,6 +93,9 @@ mod computer_restart;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_machine_agents.rs"]
 mod hosted_machine_agents;
+#[cfg(test)]
+#[path = "workspace_actions/key.rs"]
+mod key;
 #[cfg(test)]
 #[path = "workspace_actions/owner_signs_governance.rs"]
 mod owner_signs_governance;
@@ -218,6 +218,9 @@ mod own_agent;
 #[path = "workspace_actions/packaged_model.rs"]
 mod packaged_model;
 #[cfg(test)]
+#[path = "workspace_actions/person_before_agent.rs"]
+mod person_before_agent;
+#[cfg(test)]
 #[path = "workspace_actions/put_files.rs"]
 mod put_files;
 #[cfg(test)]
@@ -228,6 +231,9 @@ mod resource_support;
 #[cfg(test)]
 #[path = "workspace_actions/share_link.rs"]
 mod share_link;
+#[cfg(test)]
+#[path = "workspace_actions/slow_read.rs"]
+mod slow_read;
 #[cfg(test)]
 #[path = "workspace_actions/throughput.rs"]
 mod throughput;
@@ -240,12 +246,6 @@ mod tracker_listing;
 #[cfg(test)]
 #[path = "workspace_actions/update_reads_older_writes.rs"]
 mod update_reads_older_writes;
-#[cfg(test)]
-#[path = "workspace_actions/person_before_agent.rs"]
-mod person_before_agent;
-#[cfg(test)]
-#[path = "workspace_actions/slow_read.rs"]
-mod slow_read;
 #[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]
 mod workspace_per_customer;

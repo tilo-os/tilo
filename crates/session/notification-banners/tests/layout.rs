@@ -10,7 +10,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use tilo_desktop::notifications::BannerAsk;
 use tilo_notification_banners::{
     Ask, BannerEffect, BannerService, BannerSurface, Command, Link, NotificationBanners, fixture,

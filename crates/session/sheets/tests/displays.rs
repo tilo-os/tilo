@@ -3,7 +3,6 @@
 //! waits, the wireless receivers, and every
 //! choice going to the shell.
 
-
 use tilo_sheets::displays::{
     Band, Discovery, DisplaysApp, DisplaysEffect, DisplaysState, Layout, LayoutRow, Link, Receiver,
     Sheet,

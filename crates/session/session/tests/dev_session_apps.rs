@@ -168,10 +168,7 @@ fn the_installed_apps_connectors_are_planned_from_their_manifests(session: &DevS
     };
     let apps = Apps::with_launcher(environment, None, Some(launcher.path().to_owned()));
     let workspace = apps.workspace_named("workspace-1");
-    for (app, origin) in [
-        ("so.tilo.tube", "youtube"),
-        ("so.tilo.mail", "imap"),
-    ] {
+    for (app, origin) in [("so.tilo.tube", "youtube"), ("so.tilo.mail", "imap")] {
         let planned = apps
             .plan_connector(app, origin, &workspace)
             .unwrap_or_else(|why| {

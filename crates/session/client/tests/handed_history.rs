@@ -5,7 +5,6 @@
 //! its writes, to the full record and to every other, reach the host, and a wait for them ends
 //! once the compaction that carries the writes it folded is kept.
 
-
 use automerge::transaction::Transactable as _;
 use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;

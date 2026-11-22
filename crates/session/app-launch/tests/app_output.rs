@@ -16,7 +16,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

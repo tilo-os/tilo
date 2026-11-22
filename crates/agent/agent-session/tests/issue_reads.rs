@@ -6,7 +6,6 @@
 //! the chain's head part, and the API lists it under the chain at once, with
 //! the actions a member runs on it.
 
-
 use collab_types::DocumentMutation;
 use tilo_actions::MemberId;
 use tilo_actions::api::ActionAddress;

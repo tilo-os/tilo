@@ -1368,7 +1368,8 @@ fn live_beside(
     wake: &Arc<dyn Fn() + Send + Sync>,
     beside: &mut tilo_network_actor::own_service::Protocols,
 ) -> (Option<crate::live::Live>, Vec<Vec<u8>>) {
-    let mut live = engine.map(|engine| crate::live::Live::new(Arc::clone(engine), Arc::clone(wake)));
+    let mut live =
+        engine.map(|engine| crate::live::Live::new(Arc::clone(engine), Arc::clone(wake)));
     if let Some(live) = &mut live {
         beside.extend(live.protocols());
     }
@@ -1404,7 +1405,9 @@ impl Client {
         // What this device hears on its local network wakes the session, which shows which of the
         // person's devices are nearby.
         let lan = entry.lan.unwrap_or_else(|| Nearby::new(Arc::clone(&wake)));
-        let host_outbox = HostOutbox { commands: commands.clone() };
+        let host_outbox = HostOutbox {
+            commands: commands.clone(),
+        };
         let outgoing: Arc<dyn Outbox> = Arc::new(host_outbox.clone());
         let link_outbox = host_outbox.clone();
         let fabric = fabric_of(

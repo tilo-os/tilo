@@ -2,7 +2,6 @@
 //! what each tab shows, what its controls ask of the shell, and what the
 //! keys do.
 
-
 use tilo_sheets::SheetState as _;
 use tilo_sheets::workspace_settings::{
     Settings, WorkspaceSettingsApp, WorkspaceSettingsEffect, WorkspaceSettingsState, scenario,

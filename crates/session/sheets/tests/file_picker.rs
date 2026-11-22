@@ -2,7 +2,6 @@
 //! every step a published action, what it lists and answers reaching the
 //! service through the state, and giving files left to the person.
 
-
 use std::path::{Path, PathBuf};
 
 use tilo_sheets::SheetState as _;

@@ -2,7 +2,6 @@
 //! shell does when someone renames the workspace: the answer and every list of
 //! the workspace read the one name, which the workspace's governance keeps.
 
-
 use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 use tilo_session_client::{Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};

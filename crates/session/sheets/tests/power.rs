@@ -1,7 +1,6 @@
 //! The power menu as a person, a screen reader and an agent meet it: where
 //! it hangs, what it offers, what a choice asks the shell for.
 
-
 use tilo_sheets::SheetState as _;
 use tilo_sheets::power::{Offers, PowerApp, PowerEffect, PowerState};
 use ui::a11y::Action as A11yAction;

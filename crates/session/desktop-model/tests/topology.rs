@@ -1,4 +1,3 @@
-
 use tilo_desktop_model::{
     CanvasPlace, DropTarget, FloatCorner, FloatPlace, GroupShape, IdMinter, Layout, Strip, StripId,
     Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,

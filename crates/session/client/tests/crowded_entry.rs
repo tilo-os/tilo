@@ -631,14 +631,19 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     };
     let small_author = small_first.arrive("Member 0").await;
     small_author
-        .write(small_desktop.clone(), &DocumentMutation::Snapshot(small_base.save()))
+        .write(
+            small_desktop.clone(),
+            &DocumentMutation::Snapshot(small_base.save()),
+        )
         .unwrap();
     let small_note = DocumentRoute {
         app_id: "so.tilo.notes".into(),
         cluster_id: small.workspace.clone(),
         document: "note-0".into(),
     };
-    small_author.send(Cmd::OpenRoute(small_note.clone())).unwrap();
+    small_author
+        .send(Cmd::OpenRoute(small_note.clone()))
+        .unwrap();
     small_author
         .write(
             small_note.clone(),
@@ -646,7 +651,9 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         )
         .unwrap();
     let small_chat = chat_part(&small.workspace);
-    small_author.send(Cmd::OpenRoute(small_chat.clone())).unwrap();
+    small_author
+        .send(Cmd::OpenRoute(small_chat.clone()))
+        .unwrap();
     small_author
         .write(
             small_chat.clone(),
@@ -654,7 +661,11 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         )
         .unwrap();
     small_first
-        .leave_part("Member 0", &small_author, desktop_part(&mut small_base, 0, 600))
+        .leave_part(
+            "Member 0",
+            &small_author,
+            desktop_part(&mut small_base, 0, 600),
+        )
         .await;
     let small_place = Place {
         https: &*https,

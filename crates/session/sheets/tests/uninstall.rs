@@ -2,7 +2,6 @@
 //! what goes with the app, the folder each copy is in, the data switch, and
 //! the answer going back to the shell.
 
-
 use std::path::PathBuf;
 
 use tilo_sheets::SheetState as _;

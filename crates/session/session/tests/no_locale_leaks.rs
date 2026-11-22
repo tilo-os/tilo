@@ -76,7 +76,10 @@ const WINDOWS: &[Window] = &[
     Window {
         name: "Tasks",
         source: catalogue!("/../../../apps/tasks/locales/en-US.ftl"),
-        german: Some(("de-DE", catalogue!("/../../../apps/tasks/locales/de-DE.ftl"))),
+        german: Some((
+            "de-DE",
+            catalogue!("/../../../apps/tasks/locales/de-DE.ftl"),
+        )),
     },
     Window {
         name: "Settings",

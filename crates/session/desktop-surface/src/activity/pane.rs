@@ -2462,9 +2462,10 @@ fn describe_workspace_changes(
                 context.facets.retain(|facet| {
                     facet.key != ui::FOLD_ACTION_FACET && facet.key != ui::FOLD_ITEM_FACET
                 });
-                context
-                    .facets
-                    .push(ui::tilo_actions::ActionFacet::new(ui::FOLD_ACTION_FACET, action));
+                context.facets.push(ui::tilo_actions::ActionFacet::new(
+                    ui::FOLD_ACTION_FACET,
+                    action,
+                ));
                 context.facets.extend(
                     items
                         .into_iter()
@@ -2875,10 +2876,7 @@ impl PatchCounts {
 
     /// What the change did and to whom, when changes like it one after another read as one row
     /// ([`ui::FOLD_ACTION_FACET`]): someone added, a device, or the windows a person opened.
-    fn fold(
-        &self,
-        authors: &ui::history_source::AuthorDirectory,
-    ) -> Option<(String, Vec<String>)> {
+    fn fold(&self, authors: &ui::history_source::AuthorDirectory) -> Option<(String, Vec<String>)> {
         if let [step] = self.members.as_slice()
             && self.membership == 0
             && let Some(person) = step.added()

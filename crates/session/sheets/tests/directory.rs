@@ -1,7 +1,6 @@
 //! "Join a workspace…" as a person, a screen reader and an agent meet it:
 //! what it lists, how search narrows it, what Join, Enter and Escape ask.
 
-
 use std::cell::RefCell;
 use std::rc::Rc;
 

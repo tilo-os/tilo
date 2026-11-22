@@ -2,7 +2,6 @@
 //! the program shown as it will be listed, the move offered only for an
 //! `AppImage`, and the answer going back to the shell.
 
-
 use std::path::PathBuf;
 
 use tilo_sheets::SheetState as _;

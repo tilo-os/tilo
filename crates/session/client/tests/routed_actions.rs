@@ -3,7 +3,6 @@
 //! session holds is read and acted on that way, and nobody stands in front of it to
 //! answer instead.
 
-
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{CataloguePage, CatalogueQuery, RemoteActionFrame, RemoteActionMessage};

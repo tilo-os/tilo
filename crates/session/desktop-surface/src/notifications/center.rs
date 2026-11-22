@@ -2579,7 +2579,10 @@ mod tests {
     }
 
     fn layout() -> CenterLayout {
-        CenterLayout::new(Rect::new(0.0, 0.0, 360.0, 560.0), line_metrics((12.0, 14.0)))
+        CenterLayout::new(
+            Rect::new(0.0, 0.0, 360.0, 560.0),
+            line_metrics((12.0, 14.0)),
+        )
     }
 
     tilo_test_env::scenario! {

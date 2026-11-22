@@ -92,7 +92,11 @@ struct Direct<'a> {
 }
 
 impl Direct<'_> {
-    async fn run(&self, request: tilo_actions::remote::InvokeRequest, signed: bool) -> ReceiptStatus {
+    async fn run(
+        &self,
+        request: tilo_actions::remote::InvokeRequest,
+        signed: bool,
+    ) -> ReceiptStatus {
         let mut message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
         if signed {
             self.sessions

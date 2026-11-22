@@ -1,7 +1,6 @@
 //! A page keeps the content its records reference: another member asking the workspace for it
 //! is answered by the page's session, to that member alone, in pieces that make up the bytes.
 
-
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Outbox};
 

@@ -2280,10 +2280,8 @@ fn seeded(
                     "record route does not match the app's workspace scope".into(),
                 ));
             }
-            let checkout = DocumentCheckout::new(
-                record.clone(),
-                record_kind(definition, &record, None),
-            );
+            let checkout =
+                DocumentCheckout::new(record.clone(), record_kind(definition, &record, None));
             let bytes = genesis(
                 definition,
                 workspace,

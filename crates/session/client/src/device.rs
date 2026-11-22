@@ -546,7 +546,10 @@ impl Device {
     ///
     /// # Errors
     /// The host did not answer, does not hold the person's workspace, or refused.
-    pub async fn take_into_person_workspace(&self, endpoint: &iroh_base::EndpointAddr) -> Result<(), DeviceRefusal> {
+    pub async fn take_into_person_workspace(
+        &self,
+        endpoint: &iroh_base::EndpointAddr,
+    ) -> Result<(), DeviceRefusal> {
         let mut arguments = Map::new();
         arguments.insert(
             "endpoint".to_owned(),

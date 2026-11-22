@@ -8,7 +8,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use test_http::{Reply, Responder};
 use tilo_server_protocol::directory::{DirectoryEntry, DirectoryPage};
 use tilo_server_protocol::workspaces::Role;

@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::cell::Cell;
 use std::time::Duration;
 
@@ -756,7 +755,10 @@ fn a_window_whose_held_tab_left_is_still_its_launchs_window() {
         .expect("the shell holds the tab the window takes");
     policy.reads_launch_tabs(std::rc::Rc::new(move |pid| (pid == 501).then_some(held)));
     let mut tree = policy.handle().read(Clone::clone);
-    assert!(tree.close_tab(held).is_some(), "the held tab was on the shell");
+    assert!(
+        tree.close_tab(held).is_some(),
+        "the held tab was on the shell"
+    );
     policy.handle().replace_tree(tree);
     settle(&mut driver);
 
@@ -768,7 +770,10 @@ fn a_window_whose_held_tab_left_is_still_its_launchs_window() {
         .unwrap();
     settle(&mut driver);
     let tab = policy.tab_of(10).expect("the window has a tab");
-    assert_ne!(tab, held, "the held tab is gone, so the window took another");
+    assert_ne!(
+        tab, held,
+        "the held tab is gone, so the window took another"
+    );
     assert_eq!(
         policy.tab_of_instance("so.tilo.settings", held),
         Some(tab),
@@ -776,10 +781,7 @@ fn a_window_whose_held_tab_left_is_still_its_launchs_window() {
     );
     assert_eq!(
         policy.take_missed_holds(),
-        vec![tilo_desktop_policy::MissedHold {
-            window: 10,
-            held,
-        }],
+        vec![tilo_desktop_policy::MissedHold { window: 10, held }],
         "the host hears that the window missed its held tab"
     );
 

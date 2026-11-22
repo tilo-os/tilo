@@ -3,7 +3,6 @@
 //! still work and taking one back, and what it says when this person may not
 //! invite here.
 
-
 use tilo_sheets::SheetState as _;
 use tilo_sheets::invite::{Invite, InviteApp, InviteEffect, InviteState, sample};
 use ui::a11y::Action as A11yAction;

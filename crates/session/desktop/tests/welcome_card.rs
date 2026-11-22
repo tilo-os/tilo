@@ -3,7 +3,6 @@
 //! own pass and left the host idle would open the window whenever an unrelated frame came — and a
 //! person who pressed again meanwhile would have two windows open.
 
-
 use std::cell::RefCell;
 use std::rc::Rc;
 

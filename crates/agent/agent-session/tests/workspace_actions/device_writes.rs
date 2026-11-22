@@ -392,10 +392,7 @@ async fn a_members_key_takes_what_its_role_lets_it() {
     );
     let deadline = Instant::now() + Duration::from_secs(30);
     let issue = loop {
-        if let Some(issue) = issues_kept(&on_server, &workspace)
-            .await
-            .pop()
-        {
+        if let Some(issue) = issues_kept(&on_server, &workspace).await.pop() {
             break issue;
         }
         assert!(Instant::now() < deadline, "the server never kept the issue");
