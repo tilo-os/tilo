@@ -35,38 +35,7 @@ export const type = async (tab, text) => {
   // its own answer to it.
   await sleep(600);
 };
-// The names the command palette shows, in order, as the desktop publishes
-// them: its query field, its result rows and its actions.
-export const paletteRows = async tab => {
-  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()');
-  // As `snapshot`: the tree arrives in a status of its own after the frame.
-  await sleep(500);
-  return JSON.parse(await tab.evaluate(`(() => {
-    let rows = null;
-    const collect = node => {
-      rows = [];
-      const walk = semantics => { rows.push(semantics.name ?? ''); (semantics.children || []).forEach(walk); };
-      if (node.semantics) walk(node.semantics);
-    };
-    const find = node => { if (node.widget === 'ActionPalette') collect(node); (node.children || []).forEach(find); };
-    const root = globalThis.tiloMount?.state()?.semantics?.root;
-    if (root) find(root);
-    return JSON.stringify(rows);
-  })()`));
-};
-// Seconds from `from` to now, and the frames the shell has presented: what the
-// timing lines below print.
 export const took = from => ((Date.now() - from) / 1000).toFixed(1);
-export const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
-// A canvas-drawn desktop takes the pointer; the search chord is Ctrl+K away
-// from the keyboard (Meta on a Mac, as the desktop reads it).
-export const canvasTopLeft = tab => tab.evaluate(`(() => {
-  const rect = globalThis.tiloMount?.canvas?.getBoundingClientRect();
-  // A page the server renders has no canvas: what its elements' boxes are is
-  // already the viewport's, so the origin is the window's own.
-  return JSON.stringify(rect ? {x: rect.left, y: rect.top, width: rect.width, height: rect.height}
-    : {x: 0, y: 0, width: window.innerWidth, height: window.innerHeight});
-})()`);
 export const click = async (tab, x, y) => {
   // One gesture's three events, sent together: a press acknowledged one frame
   // at a time is three of this page's frames for a click a person makes in
@@ -119,98 +88,6 @@ export const found = (name, nth = 0) => `(() => {
   return match ? JSON.stringify(match) : '';
 })()`;
 export const find = async (tab, name, nth = 0) => (await tab.evaluate(found(name, nth))) || 'null';
-// [`found`] for the first node whose name matches `pattern` (a RegExp
-// source): the bar names some controls after the workspace, the strip or the
-// person they are about, so the words are read as they show rather than
-// spelled out beforehand.
-export const foundMatching = pattern => `(() => {
-  const found = [];
-  const node = n => { found.push({name: n.name ?? '', bounds: n.bounds ?? n.rect ?? null}); (n.children || []).forEach(node); };
-  const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
-  const root = globalThis.tiloMount?.state()?.semantics?.root;
-  if (root) walk(root);
-  const pattern = new RegExp(${JSON.stringify(pattern)});
-  const match = found.find(n => pattern.test(n.name) && n.bounds);
-  return match ? JSON.stringify(match) : '';
-})()`;
-// A published control's `bounds` as its four edges, whichever shape they came in.
-export const boxOf = bounds => Array.isArray(bounds) ? bounds
-  : [bounds.x0 ?? bounds.x, bounds.y0 ?? bounds.y,
-     bounds.x1 ?? bounds.x + bounds.width, bounds.y1 ?? bounds.y + bounds.height];
-export const pressNamed = async (tab, name, nth = 0, presses = null) => {
-  const node = JSON.parse(await find(tab, name, nth));
-  if (!node) return false;
-  return pressBox(tab, node.bounds, presses && {name, node, presses});
-};
-/** A press at the centre of `bounds` (a published node's, or four edges): a
- * person's press on the control drawn there. */
-export const pressBox = async (tab, bounds, record = null) => {
-  const [x0, y0, x1, y1] = boxOf(bounds);
-  const corner = JSON.parse(await canvasTopLeft(tab));
-  const x = corner.x + (x0 + x1) / 2;
-  const y = corner.y + (y0 + y1) / 2;
-  // Only a control on screen can be pressed: one laid out where a card has
-  // scrolled it away is no place a person can reach, and a press beside the
-  // page lands nowhere. The caller scrolls it in first, as a person does.
-  const inside = x >= corner.x && x <= corner.x + corner.width
-    && y >= corner.y && y <= corner.y + corner.height;
-  // What stands at the point the press is for: a control drawn by the shell
-  // is under page chrome only when something of the page covers it, and then
-  // the press is that element's.
-  const under = await tab.evaluate(`(() => {
-    const element = document.elementFromPoint(${x}, ${y});
-    if (!element) return null;
-    return JSON.stringify({tag: element.tagName, className: String(element.className),
-      semantic: element.dataset?.tiloSemantic ?? null});
-  })()`);
-  record?.presses.push({name: record.name, bounds: record.node.bounds, at: {x, y}, inside, under});
-  if (!inside) return false;
-  await click(tab, x, y);
-  return true;
-};
-/** A press on the `nth` control the desktop publishes with test id `id` (a
- * negative index counts from the last), where a person can reach it. */
-export const pressWidget = async (tab, id, nth = 0) => {
-  const matching = (await nodesOf(tab)).filter(node => node.id === id && node.bounds);
-  const node = matching[nth < 0 ? matching.length + nth : nth];
-  if (!node) return false;
-  return pressBox(tab, node.bounds);
-};
-/** Every node the desktop publishes, with what a driver reads it by: the role
- * a screen reader gets it, its name and value, its test id, and where it is as
- * four edges — a node of the shell writes its own bounds as edges, a window's
- * own node writes a rect as its corner, width and height. */
-export const nodesOf = tab => tab.evaluate(`(() => {
-  const edges = b => Array.isArray(b)
-    ? {x0: b[0], y0: b[1], x1: b[2], y1: b[3]}
-    : {x0: b.x0 ?? b.x, y0: b.y0 ?? b.y, x1: b.x1 ?? b.x + b.width, y1: b.y1 ?? b.y + b.height};
-  const sized = r => Array.isArray(r)
-    ? {x0: r[0], y0: r[1], x1: r[0] + r[2], y1: r[1] + r[3]}
-    : {x0: r.x, y0: r.y, x1: r.x + r.width, y1: r.y + r.height};
-  const out = [];
-  const walk = n => {
-    if (!n) return;
-    const s = n.semantics;
-    if (s) out.push({role: s.role ?? null, name: s.name ?? '', value: s.value ?? null,
-      id: n.test_id ?? null, widget: n.widget ?? null, focused: s.state?.focused ?? null,
-      bounds: s.bounds ? edges(s.bounds) : (s.rect ?? n.rect) ? sized(s.rect ?? n.rect) : null});
-    (n.children || []).forEach(walk);
-  };
-  walk(globalThis.tiloMount?.state()?.semantics?.root);
-  return JSON.stringify(out);
-})()`).then(JSON.parse).catch(() => []);
-/** [`pressNamed`] for a node a caller already has: one [`find`] answered. */
-export const pressNode = (tab, node, presses = null) =>
-  pressBox(tab, node.bounds, presses && {name: node.name, node, presses});
-// The press a person makes on a control the page names by its own words, as
-// [`foundMatching`] reads them.
-export const pressMatching = async (tab, pattern, presses = null) => {
-  const node = JSON.parse(await tab.evaluate(foundMatching(pattern)));
-  if (!node) return false;
-  return pressNode(tab, node, presses);
-};
-// A wait for what a person would wait for, and what a wait that runs out
-// says when it did not come: what it waited for, and where the page was.
 export const until = async (tab, expression, what, timeout = stepLimit(3)) => {
   const value = await tab.waitFor(expression, {timeout}).catch(() => false);
   if (value) return value;
@@ -223,138 +100,6 @@ export const until = async (tab, expression, what, timeout = stepLimit(3)) => {
   })`).catch(() => 'unreadable');
   throw new Error(`${what} did not happen within ${(timeout / 1000).toFixed(1)} s (the page: ${shown})`);
 };
-/** Every field the page lays a mirror of, as JSON `[{label, rect, style,
- * tiloRect, display, visibility}]`: what a press at a field is taken from, and
- * what says why none was found. */
-export const mirroredFields = () => `(() => {
-  const fields = [...document.querySelectorAll('input, textarea')].map(field => {
-    const box = field.getBoundingClientRect();
-    const style = getComputedStyle(field);
-    return {
-      label: field.getAttribute('aria-label') ?? '',
-      rect: [box.left, box.top, box.width, box.height],
-      style: [parseFloat(field.style.left), parseFloat(field.style.top),
-        parseFloat(field.style.width), parseFloat(field.style.height)],
-      tiloRect: field.tiloRect ?? null,
-      display: style.display, visibility: style.visibility, opacity: style.opacity,
-    };
-  });
-  return JSON.stringify(fields);
-})()`;
-
-/** Press the field the page publishes as `name`, at the place the page lays
- * its own field for it: a field's pointer belongs to the canvas, which hands
- * it to the field drawn under it, so a person's press is a press there.
- * Answers whether the field was there to press. */
-export const pressFieldNamed = async (tab, name) => {
-  const place = await tab.evaluate(`(() => {
-    const wanted = ${JSON.stringify(name)};
-    const fields = JSON.parse(${mirroredFields()}).filter(field => field.label.includes(wanted));
-    const point = field => {
-      const [left, top, width, height] = field.rect[2] > 0 && field.rect[3] > 0
-        ? field.rect : field.style;
-      return [left + width / 2, top + height / 2];
-    };
-    const field = fields.find(candidate => candidate.rect[2] > 0 && candidate.rect[3] > 0)
-      ?? fields.find(candidate => candidate.style[2] > 0 && candidate.style[3] > 0);
-    return field ? JSON.stringify(point(field)) : '';
-  })()`).catch(() => '');
-  if (!place) return false;
-  const [x, y] = JSON.parse(place);
-  await click(tab, x, y);
-  // The page keeps one editor for the keyboard and moves it to the field a
-  // press focuses, so the browser's active element is never the field's own
-  // mirror: what became focused is read from the page's tree by the caller
-  // that types, and a press that did not take is given again.
-  await sleep(400);
-  return true;
-};
-// A page-side clock around the person's Enter. What a person waits for is the
-// shell showing the app's window, and this shell paints into one canvas: the
-// window is on screen when the frame that carries it is presented. So both
-// moments are frames the page presented — the press, stamped where the key
-// arrives, and the first presented frame after it that lists the window —
-// kept on the page's own clock, where a round trip from here never lands in
-// the number.
-//
-// The press is stamped by a `keydown` listener, not by reading the shell's
-// state: a MutationObserver runs only after the frame the key caused has
-// already published, so a watch that took its press from the first status
-// showing search closed dated the press at or after the frame it was meant to
-// precede, and every open read as 0 ms.
-//
-// The frame that counts is the first presented one after the press whose
-// navigation lists the app's window: this shell draws a window in the pass that
-// publishes it, so that frame carries the window's pixels, where the entry
-// alone can be published a frame before its pixels are shown.
-export const armOpen = (tab, app) => tab.evaluate(`(() => {
-  const mount = globalThis.tiloMount;
-  const host = mount.canvas.parentElement;
-  const watch = globalThis.__tiloOpen = {app: ${JSON.stringify(app)}, pressedAt: null,
-    framesAtPress: null, shownAt: null, framesShown: null, framesAtKey: null};
-  if (!globalThis.__tiloOpenKeys) {
-    globalThis.__tiloOpenKeys = true;
-    addEventListener('keydown', event => {
-      const w = globalThis.__tiloOpen;
-      if (!w || w.pressedAt !== null) return;
-      if (event.key !== 'Enter' && event.key !== '\\r') return;
-      w.pressedAt = performance.now();
-      w.framesAtPress = Number(mount.canvas.parentElement.dataset.frames ?? 0);
-    }, true);
-  }
-  const read = () => {
-    const w = globalThis.__tiloOpen;
-    if (!w || w.pressedAt === null || w.shownAt !== null) return;
-    if (host.dataset.phase !== 'presented') return;
-    if (Number(host.dataset.frames ?? 0) <= w.framesAtPress) return;
-    if ((mount.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === w.app)) {
-      w.shownAt = performance.now();
-      w.framesShown = Number(host.dataset.frames ?? 0);
-      // The frames the shell had presented when it took the key, as it says
-      // itself: the frame after that one is the first that can show the
-      // window, whatever the page's counter read when the browser fired it.
-      w.framesAtKey = mount.state()?.framesAtKey ?? null;
-    }
-  };
-  new MutationObserver(read).observe(host, {attributes: true, attributeFilter: ['data-frames', 'data-phase']});
-  // The window's entry can be published after the shell's last frame, with no
-  // frame after it: read again as the navigation changes too, and once more
-  // as the marks are taken. Shown is then never earlier than both a frame
-  // after the key and the entry, so an open is never measured faster than it was.
-  mount.navigation?.subscribe?.(read);
-  watch.read = read;
-  return true;
-})()`);
-// What the open cost, in the shell's own unit: the window is drawn on the frame
-// right after the one that took the key, so the open is worth no more frames
-// than that. The milliseconds ride along as what this machine's rasteriser
-// took to put that frame on screen — a megapixel through software costs about
-// half a second here and near nothing on a display, and neither says anything
-// about whether the shell heard the person.
-//
-// What was not measured is `ok: false`, never a number: an open the watch
-// never saw begun or never saw end is no reading at all, and the caller fails
-// on it rather than counting `0` as fast.
-export const openMarks = tab => tab.evaluate(`(() => {
-  const watch = globalThis.__tiloOpen;
-  watch?.read?.();
-  globalThis.__tiloOpen = undefined;
-  if (!watch || watch.pressedAt === null || watch.shownAt === null || watch.framesAtKey === null) {
-    // What the watch saw, so an unmeasured open says which condition held it back.
-    const host = globalThis.tiloMount?.canvas?.parentElement;
-    return JSON.stringify({ok: false, pressed: watch?.pressedAt != null, shown: watch?.shownAt != null,
-      phase: host?.dataset.phase ?? null, frames: Number(host?.dataset.frames ?? NaN), framesAtPress: watch?.framesAtPress ?? null,
-      framesAtKey: watch?.framesAtKey ?? null,
-      entry: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === watch?.app),
-      subscribes: typeof globalThis.tiloMount?.navigation?.subscribe === 'function'});
-  }
-  return JSON.stringify({ok: true,
-    presentMs: Math.round(watch.shownAt - watch.pressedAt),
-    frames: watch.framesShown - watch.framesAtKey});
-})()`).then(JSON.parse);
-// People who come back to the site: a browser new to it opens on the first
-// screen (set up with an agent, or skip to one's own desktop), which these
-// people have been past already, so their page opens the Lounge itself.
 export const returning = tab => tab.send('Page.addScriptToEvaluateOnNewDocument',
   {source: "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}"});
 // What a page's loading said beside its console's errors: requests that
@@ -379,33 +124,7 @@ export const recordLoading = async (launched, tab) => {
   await tab.send('Network.enable', {}).catch(() => {});
   await tab.send('Log.enable', {}).catch(() => {});
 };
-/** The keyboard belongs to the desktop's canvas: a card the page showed takes it,
- * and the shell hears no chord until it is given back. */
-export const focusShell = tab => tab.evaluate(`(() => {
-  const canvas = globalThis.tiloMount?.canvas;
-  canvas?.focus?.();
-  return !!canvas && document.activeElement === canvas;
-})()`).catch(() => false);
-// The invitations a site hands over: `<scheme>://<site>/i/<handle>#<key>`, the
-// handle and the key alone, the key never in the part a site's logs see.
-export const sealedLink = /^https?:\/\/[^/]+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}$/;
-// The page's words over the page, as a person at a link reads them.
 export const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\\s+/g, ' ').trim()`).catch(() => '');
-// Every value the desktop's semantic tree carries, as the sheet's link is one.
-export const NODE_VALUES = `(() => {
-  const out = [];
-  const node = n => { if (n.value) out.push(n.value); (n.children || []).forEach(node); };
-  const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
-  const root = globalThis.tiloMount?.state()?.semantics?.root;
-  if (root) walk(root);
-  return JSON.stringify(out);
-})()`;
-export const nodeValues = tab => tab.evaluate(NODE_VALUES).then(JSON.parse);
-
-/** A person's search, waiting the way the calling driver waits: `until` is its
- * wait that fails the run with what the page showed, `failed` its failure and
- * `dump` what it keeps of a page, so a search that goes wrong is said in the
- * driver's own words. */
 export const searcher = ({until, failed, dump}) => {
   /// What the open search offers with nothing typed, as the groups it lists: the
   /// page's own sources list apps and windows, the session's list settings, people
@@ -567,135 +286,9 @@ export const searcher = ({until, failed, dump}) => {
   return {search, emptyCard};
 };
 
-/** Ctrl+K, the shell's search chord: Meta on a Mac, as the desktop reads it. */
-export const searchChord = async tab => (await tab.evaluate('/Mac/.test(navigator.platform)')) ? 4 : 2;
-
-/** Wait until the page's `expression` holds, or fail saying `what` never
- * happened, with what the page showed then: what the drivers' waits share. */
-export const waitUntil = async (tab, expression, what, timeout = stepLimit(3)) => {
-  const value = await tab.waitFor(expression, {timeout}).catch(() => false);
-  if (value) return value;
-  const shown = await tab.evaluate(`JSON.stringify({
-    arrival: document.documentElement.dataset.arrival ?? null,
-    first: document.documentElement.dataset.firstScreen ?? null,
-    entry: document.documentElement.dataset.entry ?? null,
-    status: document.getElementById('status')?.textContent?.trim().slice(0, 200) ?? null,
-    windows: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(entry => entry.label),
-  })`).catch(() => 'unreadable');
-  throw new Error(`${what} did not happen within ${(timeout / 1000).toFixed(1)} s (the page: ${shown})`);
-};
-
-/** Wait until the desktop publishes `text` among its names and values, or
- * fail with what the page said instead: what a person reads on the desktop,
- * whichever app drew it. */
-export const showsText = async (tab, text, what, timeout = stepLimit(3)) => {
-  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-  const found = await tab.waitFor(`(${TREE_TEXT}).includes(${JSON.stringify(text)})`, {timeout}).catch(() => false);
-  if (found) return found;
-  const tree = await tab.evaluate(TREE_TEXT).catch(() => '(the page did not answer)');
-  throw new Error(`${what} did not happen within ${(timeout / 1000).toFixed(1)} s; the page’s words were: ${JSON.stringify(String(tree).slice(0, 2000))}`);
-};
-
-/** The person's name, typed in the card the shell asks it with: the caller
- * has opened search and chosen "Set your name". */
-export const giveName = async (tab, name) => {
-  await waitUntil(tab, `!!document.querySelector('input[name=display-name]')`, 'the name form');
-  await tab.evaluate(`(() => {
-    const input = document.querySelector('input[name=display-name]');
-    input.value = ${JSON.stringify(name)};
-    input.dispatchEvent(new Event('input', {bubbles: true}));
-    input.closest('form').querySelector('button[type=submit]').click();
-  })()`);
-  await waitUntil(tab, `!document.querySelector('input[name=display-name]')`, 'the name kept', stepLimit(4));
-};
-
-/** A new workspace named `name`, made from the shell's card: the caller has
- * opened search and chosen "New workspace". */
-export const makeWorkspace = async (tab, name) => {
-  await waitUntil(tab, `document.querySelector('.tilo-entry-card input') !== null`, 'the card asking what to name it');
-  const pressed = await tab.evaluate(`(() => {
-    const input = document.querySelector('.tilo-entry-card input');
-    input.value = ${JSON.stringify(name)};
-    input.dispatchEvent(new Event('input', {bubbles: true}));
-    const button = [...document.querySelectorAll('.tilo-entry-card button')]
-      .find(candidate => candidate.textContent.trim() === 'Create' && !candidate.disabled);
-    button?.click();
-    return !!button;
-  })()`);
-  if (!pressed) throw new Error('the card offers no Create');
-};
-
-/** [`openWorkspace`] as the page-side expression a wait reads: the open
- * workspace's id once it is open under `name`, else ''. */
-export const openWorkspace = name => `(() => {
-  const chosen = JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null');
-  const entered = JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]');
-  const kept = (Array.isArray(entered) ? entered : []).find(entry => entry.workspace === chosen?.workspace);
-  const open = document.documentElement.dataset.entry === 'open'
-    && ['done', 'stopped'].includes(document.documentElement.dataset.arrival);
-  return open && kept?.name === ${JSON.stringify(name)} ? chosen.workspace : '';
-})()`;
-
-/** Wait until the desktop publishes a node named `name`, then press it, as a
- * person reaches a control the window draws. */
-export const pressWhen = async (tab, name, what, timeout = stepLimit(3)) => {
-  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-  await waitUntil(tab, found(name), what, timeout);
-  if (!await pressNamed(tab, name)) throw new Error(`${what} is not where a person can press it`);
-};
-
-/** The text the desktop shows, as a person would read it. */
 export const shows = (tab, text, what, timeout) => tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {})
   .then(() => waitUntil(tab, `(${TREE_TEXT}).includes(${JSON.stringify(text)})`, what, timeout));
 
-/** Type `text` into the field the window publishes as `field`, as a person
- * would: press the field, then type into it. */
-// The same keys, one at a time and each answered before the next, for a
-// field that takes them as words: an app's note or a message, where the
-// search's whole query goes out as one gesture (`type`).
-export const typeText = async (tab, text, gap = 120) => {
-  for (const ch of text) {
-    await Promise.all([
-      event(tab, {type: 'keyDown', key: ch, text: ch}),
-      event(tab, {type: 'keyUp', key: ch}),
-    ]);
-    await sleep(gap);
-  }
-  await sleep(400);
-};
-export const typeInto = async (tab, field, text) => {
-  if (!await pressNamed(tab, field)) throw new Error(`no ${field} field to type into`);
-  await type(tab, text);
-};
-
-/** Wait until the page has arrived, its shell presents, and it has not begun a
- * new document for `quiet` ms: the page a person is working on. Opening a
- * workspace may load the page again, and a click or a drop given while it
- * does lands on a page that is going away. Resolves `false` when the page did
- * not settle within `timeout` ms. */
-export const settled = async (tab, {quiet = 2500, timeout = stepLimit(8)} = {}) => {
-  const deadline = Date.now() + timeout;
-  let seen = -1;
-  let since = Date.now();
-  for (;;) {
-    const at = JSON.parse(await tab.evaluate(`JSON.stringify({
-      arrival: document.documentElement.dataset.arrival ?? null,
-      phase: globalThis.tiloMount?.state?.()?.phase ?? null,
-    })`).catch(() => '{}'));
-    const documents = await tab.documents?.() ?? 0;
-    const up = at.arrival === 'done' && at.phase === 'presented';
-    if (documents !== seen || !up) {
-      seen = documents;
-      since = Date.now();
-    }
-    if (up && Date.now() - since >= quiet) return true;
-    if (Date.now() > deadline) return false;
-    await sleep(250);
-  }
-};
-
-/** Every name and value in the page's semantic tree, as one text: what a
- * person reads on the desktop, whichever app drew it. */
 export const TREE_TEXT = `(() => {
   const out = [];
   const node = n => { for (const part of [n.name, n.value]) if (part) out.push(part); (n.children || []).forEach(node); };
@@ -715,14 +308,6 @@ export const TREE_TEXT = `(() => {
   return out.join('\\n');
 })()`;
 
-// -- the mails a stack's entry sends ------------------------------------------
-/** The mails the entry sent, oldest first: what the stack's mail sink kept of
- * each (`stack.sh mail` lists the same, with their links). */
-export const mailsOf = dir => readdirSync(dir).filter(name => name.endsWith('.json')).sort()
-  .map(name => JSON.parse(readFileSync(join(dir, name), 'utf8')));
-/** The `count`th mail the entry sent (`what` names it in the failure), once it
- * has reached the sink: the sink takes each in a task of its own, so the first
- * attempt may be a moment before the file is there. */
 export const waitForMail = async (dir, what, count, timeout = stepLimit(6)) => {
   const deadline = Date.now() + timeout;
   for (;;) {
