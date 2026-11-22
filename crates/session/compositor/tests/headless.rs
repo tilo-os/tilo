@@ -23,6 +23,8 @@ mod framing;
 mod idle_inhibit;
 #[path = "headless/ime.rs"]
 mod ime;
+#[path = "headless/input_latency.rs"]
+mod input_latency;
 #[path = "headless/liveness.rs"]
 mod liveness;
 #[path = "headless/lock_keyboard.rs"]

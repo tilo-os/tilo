@@ -616,6 +616,15 @@ impl FrameRecorder {
         }
     }
 
+    /// Record every tick in memory from the first, writing no file: what a test reads back
+    /// through [`Self::samples`].
+    pub fn in_memory() -> Self {
+        let mut me = Self::disabled();
+        me.enabled = true;
+        me.env_enabled = true;
+        me
+    }
+
     /// Build from the process environment. Returns [`Self::disabled`] unless `TILO_FRAME_TRACE` or `TILO_FRAME_SUMMARY` is set.
     pub fn from_env() -> Self {
         let trace_path = std::env::var_os(TRACE_ENV);
