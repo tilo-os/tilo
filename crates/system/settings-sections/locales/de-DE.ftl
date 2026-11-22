@@ -1,9 +1,6 @@
 ## What the records are called, and the actions on them
 settings-accessibility = Bedienungshilfen
 settings-accessibility-device = Bedienungshilfen auf diesem Gerät
-settings-mcp-server = Agenten von deinen anderen Geräten
-settings-mcp-server-set-accept-own-devices = Agenten von meinen anderen Geräten annehmen
-settings-mcp-server-set-act-without-asking = Ohne Rückfrage handeln lassen
 settings-continuity = Continuity
 settings-continuity-allow-continuity = Continuity erlauben
 settings-continuity-allow-capability = Eine Art von Continuity erlauben

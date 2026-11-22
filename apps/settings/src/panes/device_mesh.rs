@@ -58,8 +58,6 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DeviceMeshArea> {
 
 const DEFAULT_CONFIG: &str = "/etc/tilo/server.toml";
 const CONTINUITY_ENABLED_KEY: &str = "device_mesh.continuity.enabled";
-const AGENTS_ACCEPT_KEY: &str = "device_mesh.agents.accept_own_devices";
-const AGENTS_ACT_KEY: &str = "device_mesh.agents.act_without_asking";
 const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
 
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -1292,7 +1290,6 @@ impl Page<'_> {
             // Sharing history comes from other devices.
             groups.extend(self.continuity_group(|_, continuity| activity_section(continuity)));
         }
-        groups.extend(self.agents_group());
         page_of(groups)
     }
 
@@ -1307,48 +1304,6 @@ impl Page<'_> {
             cx.switch(
                 &cx.value(ContinuityPrivacy::clone),
                 move |cx, continuity| build(cx, continuity).into_element(),
-            )
-        })
-    }
-
-    fn agents_group(&self) -> Option<Element> {
-        use crate::prefs::McpServerDevice;
-        let api = self.cx.settings::<McpServerDevice>();
-        self.cx.record(&api, |cx| {
-            // Letting their steps go unasked is for agents let in at all: the row under the first
-            // waits for it to be on.
-            cx.switch(
-                &cx.value(|api: &McpServerDevice| api.accept_own_devices),
-                |cx, accepting| {
-                    let act = cx
-                        .setting(t("mesh-agents-act"))
-                        .described(t(if *accepting {
-                            "mesh-agents-act-desc"
-                        } else {
-                            "mesh-agents-act-needs-accept"
-                        }))
-                        .id(AGENTS_ACT_KEY)
-                        .nested()
-                        .enabled(*accepting)
-                        .toggle_verb(
-                            |api: &McpServerDevice| api.act_without_asking,
-                            McpServerDevice::SET_ACT_WITHOUT_ASKING,
-                        );
-                    section(
-                        &t("mesh-agents-title"),
-                        rows(vec![
-                            cx.setting(t("mesh-agents-accept"))
-                                .described(t("mesh-agents-accept-desc"))
-                                .id(AGENTS_ACCEPT_KEY)
-                                .toggle_verb(
-                                    |api: &McpServerDevice| api.accept_own_devices,
-                                    McpServerDevice::SET_ACCEPT_OWN_DEVICES,
-                                ),
-                            act,
-                        ]),
-                    )
-                    .into_element()
-                },
             )
         })
     }
