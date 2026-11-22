@@ -722,9 +722,6 @@ impl Session {
         if let Some(index) = &resource_index {
             index.sweep();
         }
-        // The MCP server toward the person's other devices: answered on this device's
-        // endpoint, and served by the MCP server once it opens.
-        let device_agents = crate::device_mcp::DeviceAgents::new(options.wake.handle());
         let peer_documents = crate::sync::PeerDocuments::new(
             std::sync::Arc::clone(&channels_broker),
             std::sync::Arc::clone(&channels_fanout),
@@ -735,7 +732,7 @@ impl Session {
             &options,
             continuity.clone(),
             engine.clone(),
-            (beside, &device_agents),
+            beside,
             Some(peer_documents.clone()),
             (workspace_service.clone(), &changes),
         );
@@ -1294,7 +1291,6 @@ impl Session {
         ) {
             broker.set_app_action_consent(std::sync::Arc::new(crate::step_questions::Sheet::new(
                 questions,
-                std::sync::Arc::clone(&agent_sessions),
                 app_wire.as_ref().map(|app_wire| {
                     std::sync::Arc::clone(&app_wire.layout)
                         as std::sync::Arc<dyn tilo_broker_core::services::WorkspaceAuthority>
@@ -1377,7 +1373,6 @@ impl Session {
                     .as_ref()
                     .map(|app_wire| std::sync::Arc::clone(&app_wire.layout)),
             );
-            server.hear_device_agents(std::sync::Arc::clone(&device_agents));
             server.open_terminals_on(
                 app_wire
                     .as_ref()
@@ -1730,7 +1725,6 @@ impl Session {
             asker,
             mcp_server: RefCell::new(mcp_server),
             session_services,
-            device_agents: std::sync::Arc::clone(&device_agents),
             folder_import: RefCell::new(None),
             sync,
             engine,
@@ -2335,16 +2329,6 @@ impl Session {
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
         self.shared.published.resources()
-    }
-
-    /// The server this device answers the person's other devices' agents at,
-    /// admitting those `devices` says are theirs.
-    #[must_use]
-    pub fn device_mcp(
-        &self,
-        devices: std::sync::Arc<dyn tilo_device_mcp::PersonsDevices>,
-    ) -> tilo_device_mcp::DeviceServer {
-        self.shared.device_agents.server(devices)
     }
 
     /// The windows the overview pictures as the compositor draws them now: each window's id and

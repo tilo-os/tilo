@@ -508,7 +508,6 @@ uninstall-entry-body = Sie gehört zum System, bleibt also auf diesem Computer u
 ## arbeiten.
 mcp-server-client = { $client } ({ $program })
 mcp-server-client-in-app = { $who } in { $app }
-mcp-server-client-from-device = { $client }, von deinem Gerät { $device }
 mcp-server-admission = In „{ $workspace }“ als Agent { $agent } arbeiten
 mcp-server-admission-detail = Er tritt diesem Arbeitsbereich als Beobachter bei: er liest, was der Arbeitsbereich enthält, und führt die Aktionen aus, die ihm gewährt sind; in den Einstellungen des Arbeitsbereichs kannst du ihn jederzeit entfernen.
 mcp-server-no-workspace = Hier gibt es keinen Arbeitsbereich zum Arbeiten.

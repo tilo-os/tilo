@@ -87,6 +87,9 @@ impl Reply {
 /// there, and the agent present in it.
 struct Served {
     server: Box<dyn Answering>,
+    /// One of the person's devices keeps the workspace, and answers its actions
+    /// itself: the server holds nothing of it.
+    on_device: bool,
 }
 
 /// What answers a workspace's MCP JSON-RPC for one session.
@@ -146,11 +149,6 @@ pub(crate) enum Reach {
 type Refusal = ServerError;
 type Labels = tilo_server_session::workspaces::WorkspaceLabels;
 
-/// A session in a workspace one of the person's devices hosts, entered at
-/// that device's MCP server: the device serves the whole session, its people
-/// and its windows included, and shows the agent there itself.
-struct OnDevice(tilo_device_mcp::enter::Entered);
-
 /// One workspace's session, once whoever entered it holds it: a lock per
 /// workspace, so entering one does not hold another's requests.
 type Entered<Run> = Arc<tokio::sync::Mutex<Option<Arc<Run>>>>;
@@ -170,11 +168,9 @@ pub struct Session {
     reach: Reach,
     /// The server, which answers the account's own actions.
     server: std::sync::Weak<crate::Server>,
-    /// The sessions in workspaces the server hosts, by [`queue`], each entered
+    /// The sessions in the workspaces it reaches, by [`queue`], each entered
     /// under its own lock.
     served: tokio::sync::Mutex<HashMap<String, Entered<Served>>>,
-    /// The sessions in workspaces the person's devices host, by [`queue`].
-    on_devices: tokio::sync::Mutex<HashMap<String, Entered<OnDevice>>>,
     /// The program sessions, `(workspace, id)`, the most recently used last.
     programs: tokio::sync::Mutex<Vec<(String, String)>>,
     /// The workspace tools, once a workspace served them.
@@ -309,7 +305,6 @@ impl Session {
             reach,
             server,
             served: tokio::sync::Mutex::default(),
-            on_devices: tokio::sync::Mutex::default(),
             programs: tokio::sync::Mutex::default(),
             tools: Mutex::default(),
             last_used: Mutex::new(Instant::now()),
@@ -396,29 +391,80 @@ impl Session {
                 let server = here
                     .enter(workspace, &session, &self.label)
                     .map_err(Refusal::Unavailable)?;
-                let held = Arc::new(Served { server });
+                let held = Arc::new(Served {
+                    server,
+                    on_device: false,
+                });
                 *entered = Some(Arc::clone(&held));
                 drop(entered);
                 return Ok(held);
             }
         };
-        let id = connection.server().enter(connection, workspace).await?;
-        let device = &connection.device;
-        let actions = device.actions(id);
+        // One of the person's devices keeps it: its actions are asked of that device over its
+        // action service, signed by this key, and the device's members and policy decide them.
+        let held = if let Some(address) = self.device_address(workspace).await {
+            let device = address.address().map_err(Refusal::Unavailable)?;
+            if device.workspace_id.to_string() != workspace {
+                return Err(Refusal::Unavailable(
+                    "that address is another workspace's".to_owned(),
+                ));
+            }
+            let endpoint = connection.endpoint().await?;
+            let actions = tilo_peer_state::actions::ActionService::new(
+                connection.key.key().clone(),
+                Arc::new(tilo_peer_state::actions::NoActions),
+            )
+            .remote(&endpoint, &device.endpoint_addr, workspace);
+            Served {
+                server: Box::new(self.agent_surface(actions, workspace)),
+                on_device: true,
+            }
+        } else {
+            let id = connection.server().enter(connection, workspace).await?;
+            Served {
+                server: Box::new(self.agent_surface(connection.device.actions(id), workspace)),
+                on_device: false,
+            }
+        };
+        let held = Arc::new(held);
+        *entered = Some(Arc::clone(&held));
+        drop(entered);
+        Ok(held)
+    }
+
+    /// The agent surface over `actions`, the actions of `workspace`, in this session.
+    fn agent_surface<A>(&self, actions: A, workspace: &str) -> McpServer<A>
+    where
+        A: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static,
+    {
         let catalogue =
             tilo_mcp::task_hosts::WorkspaceCatalogue::new(actions.clone(), self.caller());
-        let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())
+        McpServer::new(actions, workspace.to_owned(), self.person.clone())
             .with_agent_session(&self.id)
             .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
                 Some(&self.person),
                 Arc::new(catalogue),
-            ))));
-        let held = Arc::new(Served {
-            server: Box::new(server),
-        });
-        *entered = Some(Arc::clone(&held));
-        drop(entered);
-        Ok(held)
+            ))))
+    }
+
+    /// Whether one of the person's devices keeps `workspace`, as the session entered it, or as
+    /// their list says before it does.
+    async fn on_device(&self, workspace: &str, program: Option<&str>) -> bool {
+        if !matches!(self.reach, Reach::Forwarded(_)) {
+            return false;
+        }
+        let slot = self
+            .served
+            .lock()
+            .await
+            .get(&queue(workspace, program))
+            .cloned();
+        if let Some(entered) = slot.as_ref().and_then(|slot| slot.try_lock().ok())
+            && let Some(held) = entered.as_ref()
+        {
+            return held.on_device;
+        }
+        self.device_address(workspace).await.is_some()
     }
 
     /// Answer `request` in `workspace`'s session, showing the person what a
@@ -433,22 +479,12 @@ impl Session {
     async fn serve_in(&self, workspace: &str, program: Option<&str>, request: Value) -> Reply {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let looking = timing_start();
-        match self.on_device(workspace, program).await {
-            Ok(Some(held)) => {
-                let handling = timing_start();
-                let answer = held
-                    .0
-                    .handle(request)
-                    .await
-                    .map_or_else(Reply::accepted, Reply::one);
-                timing_done("api.handle_on_device", handling);
-                return answer;
-            }
-            Ok(None) => {}
-            Err(refused) => return Reply::one(error(&id, -32000, &refused)),
-        }
+        let on_device = self.on_device(workspace, program).await;
         timing_done("api.device", looking);
-        if matches!(self.reach, Reach::Forwarded(_))
+        // The server answers the people and the unattended runs of a workspace it keeps; a device
+        // that keeps one answers them itself.
+        if !on_device
+            && matches!(self.reach, Reach::Forwarded(_))
             && request.get("method").and_then(Value::as_str) == Some("tools/call")
         {
             let tool = request
@@ -493,54 +529,6 @@ impl Session {
             .map_or_else(Reply::accepted, Reply::one);
         timing_done("api.handle", handling);
         answer
-    }
-
-    /// The session in `workspace` when one of the person's devices hosts it, as
-    /// their list says, entering it at that device's MCP server the first
-    /// time (and again once the device closed it); `None` for a workspace the
-    /// server keeps. As [`Self::served`], each workspace's entry has a lock of
-    /// its own.
-    async fn on_device(
-        &self,
-        workspace: &str,
-        program: Option<&str>,
-    ) -> Result<Option<Arc<OnDevice>>, String> {
-        let Reach::Forwarded(connection) = &self.reach else {
-            return Ok(None);
-        };
-        let queue = queue(workspace, program);
-        // A workspace the session already works in on the server is the server's.
-        if self.served.lock().await.contains_key(&queue) {
-            return Ok(None);
-        }
-        let slot = {
-            let mut runs = self.on_devices.lock().await;
-            let slot = Arc::clone(runs.entry(queue).or_default());
-            drop(runs);
-            slot
-        };
-        let mut entered = slot.lock().await;
-        if let Some(known) = entered.as_ref().filter(|known| known.0.is_live()) {
-            return Ok(Some(Arc::clone(known)));
-        }
-        let Some(address) = self.device_address(workspace).await else {
-            return Ok(None);
-        };
-        let endpoint = connection
-            .endpoint()
-            .await
-            .map_err(|error| error.to_string())?;
-        let on_device = tilo_device_mcp::enter::enter(
-            &endpoint,
-            &connection.entering_key(),
-            workspace,
-            &address,
-        )
-        .await?;
-        let session = Arc::new(OnDevice(on_device));
-        *entered = Some(Arc::clone(&session));
-        drop(entered);
-        Ok(Some(session))
     }
 
     /// Where `workspace` is hosted when one of the person's devices hosts it,
@@ -892,7 +880,6 @@ impl Session {
         drop(sessions);
         for queue in &ended {
             self.served.lock().await.remove(queue);
-            self.on_devices.lock().await.remove(queue);
         }
         Ok(id)
     }
@@ -925,7 +912,6 @@ impl Session {
     /// them, or when the grant is revoked.
     pub(crate) async fn close(&self) {
         self.served.lock().await.clear();
-        self.on_devices.lock().await.clear();
     }
 }
 

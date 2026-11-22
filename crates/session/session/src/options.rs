@@ -243,9 +243,6 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// endpoint serves.
 /// `documents` is where what admission takes in from another device goes, so the apps this session
 /// runs show what everyone wrote.
-/// `device_agents` is the MCP server toward the person's other devices: answered on the endpoint
-/// over the devices the person's own store holds, and dialing theirs from it
-/// ([`crate::device_mcp`]).
 /// `service` is where this device's own workspace service is installed, from the session's start:
 /// the workspace it holds answers its reads, and a workspace it makes is founded there.
 /// `changes` is the session's one stream of record changes, which what the service serves follows.
@@ -253,10 +250,7 @@ pub(crate) fn start_collaboration(
     options: &Options,
     continuity: crate::platform::fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
-    beside: (
-        tilo_network_actor::own_service::Protocols,
-        &std::sync::Arc<crate::device_mcp::DeviceAgents>,
-    ),
+    beside: tilo_network_actor::own_service::Protocols,
     documents: Option<sync::PeerDocuments>,
     (service, changes): (
         tilo_workspace_service::service::ServiceSlot,
@@ -294,10 +288,7 @@ fn collaborating(
     options: &Options,
     continuity: crate::platform::fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
-    (beside, device_agents): (
-        tilo_network_actor::own_service::Protocols,
-        &std::sync::Arc<crate::device_mcp::DeviceAgents>,
-    ),
+    beside: tilo_network_actor::own_service::Protocols,
     documents: Option<sync::PeerDocuments>,
     (service, changes): (
         tilo_workspace_service::service::ServiceSlot,
@@ -335,13 +326,6 @@ fn collaborating(
         consents.grants().keep_in(personal.sync().clone());
     }
     let mut beside = beside;
-    // Which devices are the person's is their own store's to say, for the agents that connect from
-    // one of them and for those this one dials.
-    let devices = personal.as_ref().map(|personal| {
-        std::sync::Arc::new(tilo_runtime::personal_devices::PersonalDevices::new(
-            personal.sync().clone(),
-        )) as std::sync::Arc<dyn tilo_device_mcp::PersonsDevices>
-    });
     if let Some(personal) = &mut personal {
         beside.push(personal.protocol());
         // Machines that ask to join are answered for as long as this session
@@ -355,9 +339,6 @@ fn collaborating(
                 options.wake.handle(),
             );
         }
-    }
-    if let Some(devices) = &devices {
-        beside.push(device_agents.protocol(std::sync::Arc::clone(devices)));
     }
     let own = sync::OwnPresence {
         // Publish a name only when the session has one; viewers supply the unnamed label.
@@ -395,13 +376,6 @@ fn collaborating(
         Ok(sync) => {
             if let Some(personal) = personal {
                 sync.attach_personal(personal);
-            }
-            if let (Some(devices), Some(endpoint)) = (devices, sync.endpoint()) {
-                device_agents.attach(tilo_device_mcp::OtherDevices::new(
-                    endpoint,
-                    devices,
-                    tilo_rt::app().handle().clone(),
-                ));
             }
             Some(Rc::new(sync))
         }

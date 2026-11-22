@@ -508,7 +508,6 @@ uninstall-entry-body = It's part of the system, so it stays on this computer and
 ## work in a workspace as an agent member.
 mcp-server-client = { $client } ({ $program })
 mcp-server-client-in-app = { $who }, in { $app }
-mcp-server-client-from-device = { $client }, from your device { $device }
 mcp-server-admission = Work in “{ $workspace }” as the agent { $agent }
 mcp-server-admission-detail = It joins this workspace as an observer: it reads what the workspace holds and does the actions it is granted, and you can remove it in the workspace’s settings at any time.
 mcp-server-no-workspace = There is no workspace here to work in.

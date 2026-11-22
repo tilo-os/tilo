@@ -444,9 +444,6 @@ pub(crate) struct Shared {
     /// on the loop's pass, the only place that may touch them.
     #[cfg(target_os = "linux")]
     pub(crate) session_services: std::sync::Arc<crate::mcp_server::SessionServices>,
-    /// The MCP server toward the person's other devices.
-    #[cfg(target_os = "linux")]
-    pub(crate) device_agents: std::sync::Arc<crate::device_mcp::DeviceAgents>,
     /// The installed folder importer's side of this login, once the session
     /// serves it: what it asks on whether first use is over, and the review
     /// it saved to be opened when it is.

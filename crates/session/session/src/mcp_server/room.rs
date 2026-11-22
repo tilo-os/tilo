@@ -2,11 +2,7 @@
 //! way a connection came in, and what the connection past them is told.
 //!
 //! A connection takes a [`Place`] before the API serves it and gives it back when it ends. A
-//! program of this login, and one inside an environment, takes it as the API accepts it. A
-//! connection from another of the person's devices takes it as it arrives, on its endpoint's
-//! thread, before the session's pass serves it ([`crate::device_mcp`]): it waits for that pass
-//! in the place it will be served in, so no more of them wait than the API serves, and one
-//! there is no place for is refused in the answer that would have said the API opened.
+//! program of this login, and one inside an environment, takes it as the API accepts it.
 //!
 //! Who connects is decided first. A program of another account, one inside a sandbox, one
 //! outside the environment whose API it reached and a device that is not the person's are
