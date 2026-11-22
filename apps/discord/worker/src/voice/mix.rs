@@ -70,6 +70,15 @@ impl Mixer {
         std::mem::take(&mut self.shed)
     }
 
+    /// Whether a speaker is still part of the stream: one has frames queued,
+    /// or one played within the ticks after which a silent speaker is
+    /// forgotten. A tick with nothing to send while this holds is a late
+    /// frame, not the end of what is said.
+    #[must_use]
+    pub fn active(&self) -> bool {
+        !self.speakers.is_empty()
+    }
+
     /// The frame for the next 20 ms, `None` when nobody is speaking.
     pub fn tick(&mut self) -> Option<Vec<u8>> {
         let mut frames: Vec<(String, Vec<u8>)> = Vec::new();
@@ -220,6 +229,27 @@ mod tests {
             "a burst past the depth sheds its oldest two"
         );
         assert_eq!(mixer.tick().as_ref(), Some(&burst[1]), "the rest play");
+    }
+
+    #[test]
+    fn a_speaker_stays_active_until_forgotten() {
+        let mut mixer = Mixer::default();
+        assert!(!mixer.active(), "nobody has said anything");
+        mixer.push("ada", tone(440.0, 0));
+        mixer.push("ada", tone(440.0, 1));
+        assert!(mixer.active(), "a frame is queued");
+        assert!(mixer.tick().is_some(), "the first plays");
+        assert!(mixer.active());
+        assert!(mixer.tick().is_some(), "the second plays");
+        assert!(mixer.tick().is_none(), "ran dry");
+        assert!(mixer.active(), "a dry tick is a late frame, not the end");
+        for _ in 1..FORGET_AFTER {
+            assert!(mixer.tick().is_none());
+        }
+        assert!(
+            !mixer.active(),
+            "forgotten after {FORGET_AFTER} silent ticks"
+        );
     }
 
     #[test]
