@@ -960,8 +960,9 @@ pub(crate) enum Unopened {
 type AskAgain = Rc<dyn Fn(&WorkspaceState) -> bool>;
 
 /// A document on its way ([`WorkspaceState::unopened`]): what had arrived in its stores when it
-/// was asked for, how to ask for it again, and its type's name.
-type OnItsWay = (u64, AskAgain, fn() -> String);
+/// was asked for, or none when whatever held the store then lets go without anything arriving,
+/// so it is asked again at the next chance; how to ask for it again, and its type's name.
+type OnItsWay = (Option<u64>, AskAgain, fn() -> String);
 
 struct PublishedWorkspaceResource {
     api: Rc<dyn ResourceApi>,
@@ -1414,7 +1415,7 @@ impl WorkspaceState {
             .unopened
             .borrow()
             .get(&key)
-            .is_some_and(|(seen, _, _)| *seen == arrived)
+            .is_some_and(|(seen, _, _)| *seen == Some(arrived))
         {
             self.asked_while_building(&key);
             return None;
@@ -1439,18 +1440,20 @@ impl WorkspaceState {
                 self.waiting_since(&key, Unopened::Arriving);
                 self.unopened
                     .borrow_mut()
-                    .insert(key, (arrived, again, P::label));
+                    .insert(key, (Some(arrived), again, P::label));
                 None
             }
             Err(Unopened::InUse) => {
-                // Asked again in the window's next refresh, which is asked for: the store lets go
-                // when what reads it now is done, and nothing arrives to say so.
+                // Asked again in the window's next refresh, which is asked for, and whenever a
+                // view asks for it before then: the store lets go when what reads it now is done,
+                // and nothing arrives to say so. Marking it with what arrives next instead would
+                // pass over the very arrival that answers it (the workspace holding none).
                 let again = Self::asking_again::<P>(owner, id);
                 self.asked_while_building(&key);
                 self.waiting_since(&key, Unopened::InUse);
                 self.unopened
                     .borrow_mut()
-                    .insert(key, (arrived.wrapping_add(1), again, P::label));
+                    .insert(key, (None, again, P::label));
                 if let Some(window) = &self.wake {
                     window.wake();
                 }
@@ -1492,7 +1495,7 @@ impl WorkspaceState {
             }
             unopened
                 .iter()
-                .filter(|((owner, _, _), (seen, _, _))| self.arrivals(owner) != *seen)
+                .filter(|((owner, _, _), (seen, _, _))| Some(self.arrivals(owner)) != *seen)
                 .map(|(_, (_, again, _))| Rc::clone(again))
                 .collect()
         };

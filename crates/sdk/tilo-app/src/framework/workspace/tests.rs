@@ -57,3 +57,31 @@ fn a_known_reader_can_read_their_record_at_any_role() {
         );
     }
 }
+
+#[test]
+fn a_record_whose_store_was_busy_opens_once_the_next_arrival_answers_it() {
+    const APP: &str = "so.tilo.tube";
+    const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000ad";
+    let ada = "ad".repeat(32);
+    let store = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()))
+        .open_beside(APP, WORKSPACE)
+        .expect("the app's store");
+    let kept = store.clone();
+    let records = WorkspaceResources::new(MemberId::person(&ada), move |_| Ok(kept.clone()));
+    let state = WorkspaceState::new(records, APP, "Tube", None, None);
+    let id = collab_types::OwnResource::of_person(&ada, History::KIND)
+        .expect("Ada's record has a verifiable owner")
+        .document_id();
+    assert!(
+        state
+            .open_with::<History>(APP, &id, |_| Err(Unopened::InUse))
+            .is_none(),
+        "the store is busy when the view first asks"
+    );
+    // One arrival: the workspace answers that it holds none of the record.
+    store.note_kept();
+    assert!(
+        state.open_at::<History>(APP, &id).is_some(),
+        "the view that asks again after the answer gets the record"
+    );
+}
