@@ -690,7 +690,7 @@ wrapper around it.
 What survives: **one daemon per device**, the workspace service opened
 through `own_device`. On a desktop the session is that daemon. Elsewhere it
 is one binary that the CLI, a server and tilo.sh all run, with one MCP socket
-locally and `device-mcp` as its remote face. A server differs only in its
+locally and `tilo-actions/1` frames as its remote face. A server differs only in its
 what it keeps and which work it takes, set per workspace.
 The relay is a mode of that daemon. `tilo-api` reads grants from the
 workspace, not from its own file. The agent runner is in the workspace
@@ -727,7 +727,6 @@ The entry points on top of it:
 |---|---|---|
 | MCP server | `tilo-mcp` `McpServer` (30,360): about twelve generic tools over the catalogue (`tilo_ls`, `tilo_do`, `tilo_view` and others) | stdio |
 | Session MCP socket | `session` `mcp_server.rs` and `mcp_server/` (4,700) around `tilo-mcp` | `agent.sock` |
-| Device MCP | `device-mcp` (1,336) | iroh, `tilo-mcp-server/1` |
 | `tilo mcp` | `tilo-cli` `mcp.rs`, `mcp/` (3,258), with its held device | stdio, then iroh |
 | tilo-control | server in `session` `test_control.rs` (about 700 lines for actions, re-encoded as "legacy rows"); client `control-cli` (input, screenshots and `raw`); `console-control` serves the greeter's and installer's actions as frames | unix socket, virtio-serial |
 | `tilo do` without `-w` | `tilo-cli` `desktop.rs` | tilo-control, falling back to MCP |

@@ -126,7 +126,6 @@ thiserror.workspace = true
 # `tilo mcp`'s agent says its word on the person's session as a client of the workspace's board.
 tilo-session-client = { path = "../../session/client" }
 tilo-mcp = { path = "../tilo-mcp" }
-tilo-device-mcp = { path = "../device-mcp" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

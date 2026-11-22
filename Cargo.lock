@@ -19060,14 +19060,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-device-mcp"
-version = "0.1.0"
-dependencies = [
- "tilo-user-identity",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-device-vpn"
 version = "0.1.0"
 dependencies = [
@@ -21483,7 +21475,6 @@ dependencies = [
  "tilo-content-device",
  "tilo-desktop-model",
  "tilo-device-identity",
- "tilo-device-mcp",
  "tilo-dialogs",
  "tilo-endpoint-reachability",
  "tilo-enrollment",
@@ -29205,7 +29196,6 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-device-admin",
  "tilo-device-identity",
- "tilo-device-mcp",
  "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-dictation",

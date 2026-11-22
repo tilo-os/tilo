@@ -12,7 +12,7 @@
 //! Each key works in a run of its own, which the device's broker admits as it
 //! admits an agent at the device's MCP server ([`Sessions::open`]). Before every
 //! message the key is checked against the person's own store of their devices
-//! ([`PersonsDevices::admit`]: theirs, current, not revoked) and its grant's
+//! ([`PersonalDevices::admit`]: theirs, current, not revoked) and its grant's
 //! scope against the workspace; a key that no longer holds loses its run.
 
 use std::collections::HashMap;
@@ -23,8 +23,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::app_serving::AppActionServer;
 
+use crate::personal_devices::{PersonalDevices, Refusal};
 use collab_types::WorkspaceId;
-use tilo_device_mcp::PersonsDevices;
 
 /// The most sessions one device keeps for its person's keys at once.
 const MAX_SESSIONS: usize = 256;
@@ -59,7 +59,7 @@ pub struct KeySessions {
 }
 
 struct Serving {
-    devices: Arc<dyn PersonsDevices>,
+    devices: Arc<PersonalDevices>,
     sessions: Arc<dyn Sessions>,
 }
 
@@ -82,7 +82,7 @@ impl KeySessions {
 
     /// Answer the keys `devices` says are the person's through `sessions` from
     /// now on. A second call is ignored.
-    pub fn serve(&self, devices: Arc<dyn PersonsDevices>, sessions: Arc<dyn Sessions>) {
+    pub fn serve(&self, devices: Arc<PersonalDevices>, sessions: Arc<dyn Sessions>) {
         let _ = self.serving.set(Serving { devices, sessions });
     }
 
@@ -114,7 +114,7 @@ impl KeySessions {
             .is_some_and(|scope| !scope.reaches(&workspace))
         {
             return Err(ActionCallError::Refused {
-                reason: tilo_device_mcp::Refusal::OutOfScope.reason(),
+                reason: Refusal::OutOfScope.reason(),
             });
         }
         let mut open = self.open.lock_recover();
