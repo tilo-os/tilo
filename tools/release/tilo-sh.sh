@@ -18,11 +18,12 @@
 # Each step says how long it took. Nothing here is a tag or a backup: a release is a commit of
 # tilo/infra's, and going back is reverting it.
 #
-# usage: tools/release/tilo-sh.sh [--infra DIR] [--state DIR] [--images LOUNGE WEB API] [--no-push]
+# usage: tools/release/tilo-sh.sh [--infra DIR] [--state DIR] [--run RUN | --images LOUNGE WEB API] [--no-push]
 #   --infra DIR   the tilo/infra checkout to pin in (default: $TILO_INFRA, else ~/work/infra). It
 #                 must be at origin/main's head, with only this release's own changes on top.
 #   --state DIR   start the preflight's release on a copy of DIR, the live relay's state volume
 #                 (read-only), instead of on what the committed pins wrote.
+#   --run RUN     follow a release-tilo-sh run already dispatched instead of dispatching one.
 #   --images L W A  pin these three images (by digest) instead of publishing: what an earlier
 #                 run of this published, for a release whose step 3 or 4 is run again.
 #   --no-push     stop before the commit: the pins and the change stay in the checkout.
@@ -30,11 +31,12 @@ set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd -- "$here/../.." && pwd)
 infra=${TILO_INFRA:-$HOME/work/infra}
-state= push=1 images=()
+state= push=1 images=() run=
 while (($#)); do
   case $1 in
     --infra) infra=${2:?}; shift 2 ;;
     --state) state=${2:?}; shift 2 ;;
+    --run) run=${2:?}; shift 2 ;;
     --images) images=("${2:?}" "${3:?}" "${4:?}"); shift 4 ;;
     --no-push) push=; shift ;;
     -h | --help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
@@ -64,12 +66,18 @@ live_lounge=$(pinned lounge)
 live=$(revision "$live_lounge")
 say "tilo.sh runs $(git -C "$repo" log -1 --format='%h %cs %s' "$live" 2>/dev/null || echo "$live")"
 
+work=${TILO_RELEASE_WORK:-$repo/.claude/scratch/tilo-sh-release}
+mkdir -p "$(dirname -- "$work")"
+
 # -- 1. the images -----------------------------------------------------------------------------
 if ((${#images[@]} == 0)); then
-  say "t publishes main's head (release-tilo-sh): the images, every browser flow, onboarding"
-  run=$(t dispatch release-tilo-sh --ref main --repo tilo/tilo --publish 2>&1 | grep -oE '\br[0-9a-f]{10}\b' | head -n1) \
-    || die 't did not start release-tilo-sh'
-  [[ -n $run ]] || die 't did not start release-tilo-sh'
+  if [[ -z $run ]]; then
+    say "t publishes main's head (release-tilo-sh): the images, every browser flow, onboarding"
+    # The dispatch follows its run to the end; its first line names the run.
+    t dispatch release-tilo-sh --ref main --repo tilo --publish > "$work.dispatch" 2>&1 || true
+    run=$(grep -oE '\br[0-9a-f]{10}\b' "$work.dispatch" | head -n1)
+    [[ -n $run ]] || die "t did not start release-tilo-sh: $(head -c 2000 "$work.dispatch")"
+  fi
   say "run $run (t follow $run)"
   t follow "$run" >&2 || die "release-tilo-sh failed: t follow $run, t log --run $run CHECK"
   images=()
@@ -99,7 +107,6 @@ done
 git -C "$infra" --no-pager diff --stat >&2
 
 # -- 3. the preflight --------------------------------------------------------------------------
-work=${TILO_RELEASE_WORK:-$repo/.claude/scratch/tilo-sh-release}
 preflight=(uv run -q --no-project --with pyyaml python3 "$here/tilo_sh_preflight.py" --infra "$infra" --work "$work")
 [[ -z $state ]] || preflight+=(--state "$state")
 "${preflight[@]}" || die "the preflight failed: its pods' logs are in $work/logs; nothing was pushed"
