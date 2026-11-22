@@ -122,7 +122,7 @@ action of the account answers `not_permitted`.
 |---|---|
 | `GET /v1/workspaces/{workspace}/resources?path=&cursor=&limit=&kind=` | what is under `path` (the apps without one): `{"path", "kind", "rows": [...], "actions": [...], "kinds": {...}, "next_cursor", "text"}` |
 | `GET /v1/workspaces/{workspace}/resources/{path}?cursor=` | one resource: `{"path", "kind", "fields": {...}, "children": [...], "cursor", "text"}` |
-| `GET /v1/workspaces/{workspace}/search?q=&limit=` | `{"hits": [{"path", "kind", "label", "action"}], "query"}`, best first |
+| `POST /v1/workspaces/{workspace}/resources/search/actions/find` | the workspace's search, `{"query", "app", "limit"}`: its `result` is `{"hits": [{"path", "kind", "label", "action"}], "query"}`, best first |
 | `GET /v1/workspaces/{workspace}/views?path=&picture=&scale=` | what the app's window shows for `path`: `{"path", "app", "shown", "text", "tree", "nodes", "viewport", "window_origin", "revision"}`, and `picture` (a `tilo.content:` of a PNG) with `picture=true` |
 
 A row of `rows` is `{"path", "name", "label", "kind", "has_children", "reads", "actions"}`, its

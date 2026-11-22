@@ -1349,11 +1349,18 @@ async fn a_hosted_workspace_streams_changes_finds_and_undoes_runs() {
     assert_eq!(status, 200, "{written}");
     let run = written["invocation"].as_str().unwrap().to_owned();
 
-    // Search finds what the workspace holds.
+    // Search finds what the workspace holds: the workspace's search is an action of its own.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     let found = loop {
-        let (status, found) = backend.get(&format!("{base}/search?q=Gooseberry")).await;
+        let (status, found) = backend
+            .post(
+                &format!("{base}/resources/search/actions/find"),
+                &json!({"query": "Gooseberry"}),
+                &[],
+            )
+            .await;
         assert_eq!(status, 200, "a hosted workspace answers search: {found}");
+        let found = found["result"].clone();
         if found["hits"]
             .as_array()
             .is_some_and(|hits| !hits.is_empty())

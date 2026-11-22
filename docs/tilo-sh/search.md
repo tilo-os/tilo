@@ -69,7 +69,7 @@ curl -sS --fail-with-body "$resources?path=snippets" -H "$auth" \
 
 ## Search by words
 
-`find` (`GET /v1/workspaces/{workspace}/search?q=`) is the host's search over what the workspace's
+`find` (the `search#find` action, `POST /v1/workspaces/{workspace}/resources/search/actions/find`) is the host's search over what the workspace's
 records hold: their titles and text. It answers hits, best first, one per record, each as your own
 listing shows it: a `path` the other calls take, its `kind`, its `label`, and the `action` the row offers
 (`open` when the row opens the resource itself). A record sealed end to end that the host cannot open is
@@ -108,8 +108,9 @@ curl -sS --fail-with-body "$api/workspaces/$workspace/resources/snippets/actions
   -H "Content-Type: application/json" \
   -d '{"title": "Visa passport checklist"}' > /dev/null
 
-curl -sS --fail-with-body "$api/workspaces/$workspace/search?q=passport" -H "$auth" \
-  | jq -r '.hits[] | "\(.path) | \(.label) | \(.kind)"'
+curl -sS --fail-with-body "$api/workspaces/$workspace/resources/search/actions/find" -H "$auth" \
+  -H "Content-Type: application/json" -d '{"query": "passport"}' \
+  | jq -r '.result.hits[] | "\(.path) | \(.label) | \(.kind)"'
 ```
 `ws.find(query, app=None, limit=None)` narrows it to one app and a count.
 

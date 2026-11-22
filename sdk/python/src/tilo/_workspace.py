@@ -263,21 +263,19 @@ class Workspace:
         return await endpoint.json("GET", endpoint.path("resources", segments(path)))
 
     def find(self, query: str, app: str | None = None, limit: int | None = None) -> Any:
-        """Search the workspace by words, best first."""
+        """Search the workspace by words, best first: its `search#find` action."""
         return self.client.handoff(self._find(query, app, limit))
 
     async def _find(self, query: str, app: str | None, limit: int | None) -> builtins.list[Hit]:
         endpoint = await self._endpoint()
-        answer = await endpoint.json(
-            "GET",
-            endpoint.path("search"),
-            query={"q": query, "app": app, "limit": limit},
-        )
-        return [
-            Hit.of(hit)
-            for hit in answer.get("hits") or []
-            if isinstance(hit, Mapping)
-        ]
+        args: dict[str, Any] = {"query": query}
+        if app is not None:
+            args["app"] = app
+        if limit is not None:
+            args["limit"] = limit
+        answer = await endpoint.act("search#find", args)
+        hits = answer.get("hits") if isinstance(answer, Mapping) else None
+        return [Hit.of(hit) for hit in hits or [] if isinstance(hit, Mapping)]
 
     # -- acting ----------------------------------------------------------
 

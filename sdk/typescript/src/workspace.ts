@@ -244,16 +244,19 @@ export class Workspace {
     return resourceProxy(this, path, surface);
   }
 
-  /** Search the workspace by words, best first. */
+  /** Search the workspace by words, best first: its `search#find` action. */
   async find(words: string, app: string | null = null, limit: number | null = null): Promise<Hit[]> {
-    const endpoint = await this.endpoint();
-    const answer = await endpoint.answer(
-      "GET",
-      `${routes.search(endpoint.id)}${queryOf({ q: words, app, limit })}`,
-      { idempotent: false },
-    );
-    return Array.isArray(answer.hits)
-      ? answer.hits
+    const args: Record<string, unknown> = { query: words };
+    if (app !== null) {
+      args.app = app;
+    }
+    if (limit !== null) {
+      args.limit = limit;
+    }
+    const hits = ((await (await this.endpoint()).action("search#find", args)) as Record<string, unknown> | null)
+      ?.hits;
+    return Array.isArray(hits)
+      ? hits
           .filter((hit): hit is Record<string, unknown> => hit !== null && typeof hit === "object")
           .map(hitOf)
       : [];

@@ -71,7 +71,7 @@ pub mod person_vault;
 mod providers;
 mod readings;
 mod resource_read;
-mod search;
+pub mod search;
 pub mod server_account;
 pub mod session_actions;
 mod session_state;
@@ -154,7 +154,7 @@ use crate::params::ARGUMENTS_JSON_PREFIX;
 ///
 /// Additive changes keep the version; a change an older peer would misread
 /// bumps it, and [`RemoteActionFrame::decode`] refuses a version it does not know.
-pub const REMOTE_ACTIONS_VERSION: u16 = 2;
+pub const REMOTE_ACTIONS_VERSION: u16 = 3;
 
 /// Upper bound on one encoded frame: a provider pages its catalogue rather than raise this.
 pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
@@ -1498,21 +1498,6 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<String, ActionCallError>,
     },
-    /// Search what the caller's workspace holds by words, as the provider
-    /// searches it ([`ActionProvider::resource_search`]).
-    SearchRequest {
-        correlation: u64,
-        needle: String,
-        /// What the search is narrowed to; left out, everything the caller may read.
-        #[serde(default, skip_serializing_if = "Within::is_everything")]
-        within: Within,
-    },
-    /// Answer to [`Self::SearchRequest`], same correlation: what it found,
-    /// best first.
-    SearchResponse {
-        correlation: u64,
-        result: Result<Vec<Found>, ActionCallError>,
-    },
     /// Ask for the changes to the caller's workspace's records after
     /// `after`, a cursor an earlier answer gave ([`ActionProvider::change_feed`]).
     ChangesRequest {
@@ -1621,7 +1606,6 @@ impl RemoteActionMessage {
                 | Self::ContentGetRequest { .. }
                 | Self::ContentLinkRequest { .. }
                 | Self::Confirm { .. }
-                | Self::SearchRequest { .. }
                 | Self::ChangesRequest { .. }
                 | Self::ChangedRequest { .. }
                 | Self::SurfaceRequest { .. }
@@ -1788,6 +1772,11 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
                 correlation,
                 result,
             }),
+        // The workspace's search, asked as an action of its own, is answered by the provider's
+        // search at once: it runs nothing and is remembered as no invocation.
+        RemoteActionMessage::Invoke(request) if search::is_find(&request.target) => {
+            search::searched(provider, caller, &request).map(RemoteActionMessage::Receipt)
+        }
         RemoteActionMessage::Invoke(mut request) => {
             // How the answer travels is not part of what runs.
             let until = request.wait_ms.take().map(wait::deadline);
@@ -1839,11 +1828,6 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
             correlation,
             request,
         } => confirmed(provider, caller, correlation, &request),
-        RemoteActionMessage::SearchRequest {
-            correlation,
-            needle,
-            within,
-        } => search::searched(provider, caller, correlation, (&needle, &within)),
         RemoteActionMessage::ChangesRequest { correlation, after } => {
             changed(provider, caller, correlation, after.as_deref())
         }
@@ -1864,7 +1848,6 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         | RemoteActionMessage::ContentGetResponse { .. }
         | RemoteActionMessage::ContentLinkResponse { .. }
         | RemoteActionMessage::ConfirmResponse { .. }
-        | RemoteActionMessage::SearchResponse { .. }
         | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::ChangedResponse { .. }
         | RemoteActionMessage::SurfaceResponse { .. }
@@ -1941,12 +1924,6 @@ pub fn refuse(
             correlation: *correlation,
             result: Err(error),
         },
-        RemoteActionMessage::SearchRequest { correlation, .. } => {
-            RemoteActionMessage::SearchResponse {
-                correlation: *correlation,
-                result: Err(error),
-            }
-        }
         RemoteActionMessage::ChangesRequest { correlation, .. } => {
             RemoteActionMessage::ChangesResponse {
                 correlation: *correlation,

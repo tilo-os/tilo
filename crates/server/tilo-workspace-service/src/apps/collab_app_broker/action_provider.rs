@@ -652,6 +652,12 @@ impl AppBrokerState {
             {
                 Some(person.clone())
             }
+            // Nor does it search another device's workspace: that is an agent's.
+            RemoteActionMessage::Invoke(request)
+                if tilo_actions::remote::search::is_find(&request.target) =>
+            {
+                None
+            }
             RemoteActionMessage::Invoke(request) => {
                 if self.app_owns(person, app_id, request)
                     || own_history_request(app_id, request)
@@ -696,8 +702,7 @@ impl AppBrokerState {
             | RemoteActionMessage::ContentPutRequest { .. }
             | RemoteActionMessage::ContentGetRequest { .. }
             | RemoteActionMessage::ContentLinkRequest { .. }
-            // Nor does it search or follow another device's workspace: those are an agent's.
-            | RemoteActionMessage::SearchRequest { .. }
+            // Nor does it follow another device's workspace: that is an agent's.
             | RemoteActionMessage::ChangesRequest { .. }
             // Nor does it wait for another device's workspace to change.
             | RemoteActionMessage::ChangedRequest { .. }
@@ -713,7 +718,6 @@ impl AppBrokerState {
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::ContentLinkResponse { .. }
-            | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::ChangedResponse { .. }
             | RemoteActionMessage::SurfaceResponse { .. }

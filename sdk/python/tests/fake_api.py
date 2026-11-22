@@ -291,8 +291,6 @@ class FakeApi:
             return self.listing(call)
         if after.startswith("resources/"):
             return self.resource_route(request, call, after.removeprefix("resources/"))
-        if after == "search":
-            return self.search(call)
         if after == "views":
             return self.view(call)
         if after == "programs":
@@ -577,6 +575,12 @@ class FakeApi:
         args = json.loads(call["body"] or b"{}")
         if at == "invocations#list":
             return self.list_invocations(args)
+        if at == "search#find":
+            hits = [
+                {"path": TODO, "kind": "notes.Page", "label": "Todo"},
+                {"path": f"{TODO}#append-paragraph", "kind": "notes.Page", "label": "Add paragraph", "action": "append-paragraph"},
+            ]
+            return self.done(at, {"query": args.get("query", ""), "hits": hits})
         if action == "share-link":
             if path not in self.fields:
                 return self.refuse(404, "not_found", f"{path} names nothing")
@@ -794,21 +798,6 @@ class FakeApi:
             ("invocation", {"phase": "started", "invocation": invocation, "path": f"{TODO}#append-paragraph", "title": "Fill Jane's application", "time_ms": 1}),
             ("invocation", {"phase": "succeeded", "invocation": invocation, "path": f"{TODO}#append-paragraph", "title": "Fill Jane's application", "time_ms": 2}),
         ]
-
-    def search(self, call: dict[str, Any]) -> httpx.Response:
-        query = call["query"]
-        if not query.get("q"):
-            return self.refuse(400, "invalid_arguments", "`q` is required")
-        return self.answer(
-            200,
-            {
-                "query": query["q"],
-                "hits": [
-                    {"path": TODO, "kind": "notes.Page", "label": "Todo"},
-                    {"path": f"{TODO}#append-paragraph", "kind": "notes.Page", "label": "Add paragraph", "action": "append-paragraph"},
-                ],
-            },
-        )
 
     def view(self, call: dict[str, Any]) -> httpx.Response:
         path = call["query"].get("path")

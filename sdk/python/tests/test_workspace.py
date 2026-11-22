@@ -124,7 +124,9 @@ async def test_search_answers_hits(workspace, api):
 
     assert [hit.path for hit in hits] == [TODO, f"{TODO}#append-paragraph"]
     assert hits[1].action == "append-paragraph"
-    assert api.asked("GET", "/v1/workspaces/")[-1]["query"] == {"q": "todo", "app": "notes"}
+    call = api.asked("POST", "/v1/workspaces/")[-1]
+    assert call["path"] == f"/v1/workspaces/{WORKSPACE_ID}/resources/search/actions/find"
+    assert json.loads(call["body"]) == {"query": "todo", "app": "notes"}
 
 
 async def test_an_action_answers_its_result(workspace, api):

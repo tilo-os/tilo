@@ -81,43 +81,44 @@ fn search_and_changes_cross_the_api_as_the_host_answers_them() {
         }
     }
     let holding = Holding(std::sync::Arc::new(TestProvider::new()));
-    let search = RemoteActionMessage::SearchRequest {
-        correlation: 7,
-        needle: "note:1".into(),
-        within: Within::default(),
-    };
+    let invocation = InvocationId::new();
+    let search = RemoteActionMessage::Invoke(search::Query::request(
+        invocation,
+        "note:1",
+        &Within::default(),
+    ));
     let encoded = RemoteActionFrame::new(search).encode().unwrap();
     let search = RemoteActionFrame::decode(&encoded).unwrap().message;
     assert!(search.is_request());
-    let Some(RemoteActionMessage::SearchResponse {
-        correlation: 7,
-        result: Ok(found),
-    }) = serve(&holding, &alice(), search.clone()).map(now)
+    let Some(RemoteActionMessage::Receipt(receipt)) =
+        serve(&holding, &alice(), search.clone()).map(now)
     else {
         panic!("a search is answered with what the provider found");
     };
+    assert_eq!(receipt.invocation, invocation);
+    let found = search::found(receipt).unwrap();
     assert_eq!(found[0].resource, "note:1");
     // A search narrowed to a place and a time crosses whole, and a search that cannot
     // narrow says so: it never answers with everything instead.
-    let narrowed = RemoteActionMessage::SearchRequest {
-        correlation: 9,
-        needle: "note:1".into(),
-        within: Within {
+    let narrowed = RemoteActionMessage::Invoke(search::Query::request(
+        InvocationId::new(),
+        "note:1",
+        &Within {
             place: Some("pad/threads/general".into()),
             after: Some(1),
             before: None,
         },
-    };
+    ));
     let encoded = RemoteActionFrame::new(narrowed.clone()).encode().unwrap();
     assert_eq!(
         RemoteActionFrame::decode(&encoded).unwrap().message,
         narrowed
     );
-    let Some(RemoteActionMessage::SearchResponse {
-        correlation: 9,
-        result: Err(ActionCallError::Unavailable { reason }),
-    }) = serve(&holding, &alice(), narrowed).map(now)
+    let Some(RemoteActionMessage::Receipt(receipt)) = serve(&holding, &alice(), narrowed).map(now)
     else {
+        panic!("a search is answered with a receipt");
+    };
+    let Err(ActionCallError::Unavailable { reason }) = search::found(receipt) else {
         panic!("a search that cannot be narrowed refuses to be");
     };
     assert_eq!(reason, NOT_NARROWED);
@@ -137,12 +138,13 @@ fn search_and_changes_cross_the_api_as_the_host_answers_them() {
     // A provider keeping neither refuses each, the feed in the words a
     // watch tells from a failure.
     let bare = std::sync::Arc::new(TestProvider::new());
+    let Some(RemoteActionMessage::Receipt(receipt)) = serve(&bare, &alice(), search).map(now)
+    else {
+        panic!("a search is answered with a receipt");
+    };
     assert!(matches!(
-        serve(&bare, &alice(), search).map(now),
-        Some(RemoteActionMessage::SearchResponse {
-            result: Err(ActionCallError::Unavailable { .. }),
-            ..
-        })
+        search::found(receipt),
+        Err(ActionCallError::Unavailable { .. })
     ));
     let Some(RemoteActionMessage::ChangesResponse {
         result: Err(ActionCallError::Unavailable { reason }),

@@ -951,81 +951,6 @@
         }
       }
     },
-    "/v1/workspaces/{workspace}/search": {
-      "get": {
-        "operationId": "search",
-        "summary": "Search the workspace by words, best first",
-        "tags": [
-          "Resources"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "name": "q",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The words"
-          },
-          {
-            "name": "app",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            },
-            "description": "One app's resources only"
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            },
-            "description": "How many hits at most"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Search the workspace by words, best first",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SearchHits"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/workspaces/{workspace}/programs": {
       "post": {
         "operationId": "runProgram",
@@ -2214,52 +2139,6 @@
           }
         },
         "description": "What the person is asked before an action runs."
-      },
-      "SearchHits": {
-        "type": "object",
-        "properties": {
-          "hits": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Hit"
-            }
-          },
-          "query": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "hits",
-          "query"
-        ]
-      },
-      "Hit": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "kind": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "label": {
-            "type": "string"
-          },
-          "action": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The action the hit offers; `open` when it opens the resource itself."
-          }
-        },
-        "required": [
-          "path",
-          "label"
-        ]
       },
       "View": {
         "type": "object",

@@ -243,14 +243,6 @@ fn rest_mention(text: &str) -> Option<Mention> {
                 len: text.len().saturating_sub(used.len()),
             });
         }
-        if let Some(arg) = rest.strip_prefix("/search?q=") {
-            let (arg, used) = token(arg);
-            return Some(Mention {
-                call: Call::Find,
-                arg: (!arg.is_empty()).then(|| arg.to_owned()),
-                len: text.len().saturating_sub(used.len()),
-            });
-        }
         if let Some(arg) = rest.strip_prefix("/views?path=") {
             let (arg, used) = token(arg);
             return Some(Mention {
@@ -380,10 +372,9 @@ fn render(call: Call, arg: Option<&str>, surface: Surface) -> String {
                     ),
                 },
             ),
-            Call::Find => arg.map_or_else(
-                || format!("GET /v1/workspaces/{WORKSPACE}/search"),
-                |arg| format!("GET /v1/workspaces/{WORKSPACE}/search?q={arg}"),
-            ),
+            Call::Find => {
+                format!("POST /v1/workspaces/{WORKSPACE}/resources/search/actions/find")
+            }
             Call::Link => format!(
                 "POST /v1/workspaces/{WORKSPACE}/resources/{}/actions/share-link",
                 arg.unwrap_or("{path}")

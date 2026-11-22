@@ -304,14 +304,6 @@ export class FakeApi {
       }
       case "invocations":
         return this.invocation(tail, method, call);
-      case "search":
-        return this.json({
-          query: call.query.q ?? "",
-          hits: [
-            { path: TODO, kind: "notes.Page", label: "Todo" },
-            { path: `${TODO}#append-paragraph`, kind: "notes.Page", label: "Add paragraph", action: "append-paragraph" },
-          ],
-        });
       case "views": {
         const path = call.query.path ?? "";
         if (!(path in this.fields)) {
@@ -457,6 +449,13 @@ export class FakeApi {
     }
     const invocation = `inv-${this.calls.length}`;
     const whole = `${path}#${action}`;
+    if (whole === "search#find") {
+      const hits = [
+        { path: TODO, kind: "notes.Page", label: "Todo" },
+        { path: `${TODO}#append-paragraph`, kind: "notes.Page", label: "Add paragraph", action: "append-paragraph" },
+      ];
+      return this.json({ status: "ok", invocation, path: whole, result: { query: args.query ?? "", hits } });
+    }
     if (action === "share-link") {
       if (!(path in this.fields)) {
         return this.refuse("not_found", 404, `${path} names nothing`);

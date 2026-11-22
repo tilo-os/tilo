@@ -210,18 +210,6 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Json("ModelAsk"))
         .answers(Answer::Events),
         op(
-            "search",
-            Method::GET,
-            "/v1/workspaces/{workspace}/search",
-            "Search the workspace by words, best first",
-        )
-        .query(&[
-            ("q", "The words"),
-            ("app", "One app's resources only"),
-            ("limit", "How many hits at most"),
-        ])
-        .json(200, "SearchHits"),
-        op(
             "runProgram",
             Method::POST,
             "/v1/workspaces/{workspace}/programs",

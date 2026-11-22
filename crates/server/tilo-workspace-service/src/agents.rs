@@ -582,7 +582,7 @@ type Searched = Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError
 /// What a turn on this server finds in what its workspace holds.
 ///
 /// The workspace's action service searches what the workspace holds for every device that asks
-/// it ([`RemoteActionMessage::SearchRequest`]): each resource by what its app tells search
+/// it ([`tilo_actions::remote::search::FIND`]): each resource by what its app tells search
 /// about it, and the files of the workspace's folder. A turn this server carries out asks the
 /// same service the same question, as the caller its tools act as: the person's session,
 /// handed to the agent on that turn with the rules the turn is decided by. So a turn finds what
@@ -601,18 +601,13 @@ impl tilo_actions::remote::ResourceSearch for WorkspaceActionProvider {
         needle: &str,
         within: &tilo_actions::remote::Within,
     ) -> Searched {
-        self.serve(
-            caller,
-            RemoteActionMessage::SearchRequest {
-                correlation: 0,
-                needle: needle.to_owned(),
-                within: within.clone(),
-            },
-        )
-        .map(|answer| match answer {
-            RemoteActionMessage::SearchResponse { result, .. } => result,
-            _ => Err(unavailable()),
-        })
+        use tilo_actions::remote::search;
+        let request = search::Query::request(InvocationId::new(), needle, within);
+        self.serve(caller, RemoteActionMessage::Invoke(request))
+            .map(|answer| match answer {
+                RemoteActionMessage::Receipt(receipt) => search::found(receipt),
+                _ => Err(unavailable()),
+            })
     }
 }
 

@@ -13,23 +13,154 @@
 //! naming the resource a caller addresses. A search may be narrowed to where
 //! a thing was said and when ([`Within`]).
 
-use super::{ActionCallError, ActionProvider, Caller, Pending, RemoteActionMessage};
+use super::{
+    ActionCallError, ActionProvider, Caller, InvocationReceipt, InvokeArgument, InvokeRequest,
+    Pending, ReceiptStatus, RemoteActionTarget,
+};
+use crate::api::ActionAddress;
 
-/// What `needle` finds in `caller`'s workspace, narrowed to `within`, by `provider`'s own search,
-/// answered for `correlation` ([`ActionProvider::resource_search`]).
-pub(super) fn searched<H: ActionProvider>(
+/// The provider a workspace's search is asked under: what a provider answers from its own
+/// search ([`ActionProvider::resource_search`]), as any other action it serves.
+pub const PROVIDER: &str = "tilo.search";
+/// The resource the search is an action of: the workspace's search.
+pub const RESOURCE: &str = "search";
+/// Find what the workspace holds by words, best first.
+pub const FIND: &str = "find";
+
+/// What [`FIND`] is invoked on.
+#[must_use]
+pub fn target() -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: ActionAddress::new(RESOURCE, FIND),
+    }
+}
+
+/// Whether `target` asks the workspace's search.
+#[must_use]
+pub fn is_find(target: &RemoteActionTarget) -> bool {
+    target.provider == PROVIDER
+        && target.address.resource == RESOURCE
+        && target.address.action == FIND
+}
+
+/// What [`FIND`] is asked with: the words, and what the search is narrowed to.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Query {
+    pub needle: String,
+    /// What the search is narrowed to; left out, everything the caller may read.
+    #[serde(default, skip_serializing_if = "Within::is_everything")]
+    pub within: Within,
+}
+
+impl Query {
+    /// The invocation `invocation` that asks the search for `needle` within `within`.
+    #[must_use]
+    pub fn request(
+        invocation: super::InvocationId,
+        needle: &str,
+        within: &Within,
+    ) -> InvokeRequest {
+        let query = Self {
+            needle: needle.to_owned(),
+            within: within.clone(),
+        };
+        let argument = match serde_json::to_value(query) {
+            Ok(serde_json::Value::Object(fields)) => InvokeArgument::Json(fields),
+            _ => InvokeArgument::None,
+        };
+        InvokeRequest {
+            invocation,
+            target: target(),
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+
+    /// What `request` asks the search.
+    ///
+    /// # Errors
+    /// Its argument is no query.
+    pub fn of(request: &InvokeRequest) -> Result<Self, ActionCallError> {
+        let InvokeArgument::Json(fields) = &request.argument else {
+            return Err(ActionCallError::InvalidRequest {
+                reason: "a search is asked with its words: `needle`".into(),
+            });
+        };
+        serde_json::from_value(serde_json::Value::Object(fields.clone())).map_err(|error| {
+            ActionCallError::InvalidRequest {
+                reason: format!("a search is asked with `needle` and `within`: {error}"),
+            }
+        })
+    }
+}
+
+/// The receipt that answers invocation `invocation` of [`FIND`] with what the search found.
+#[must_use]
+pub fn receipt(
+    invocation: super::InvocationId,
+    found: Result<Vec<Found>, ActionCallError>,
+) -> InvocationReceipt {
+    let status = match found.and_then(|found| {
+        serde_json::to_value(found).map_err(|error| ActionCallError::Unavailable {
+            reason: format!("the search's answer could not be written: {error}"),
+        })
+    }) {
+        Ok(value) => ReceiptStatus::Completed {
+            output: crate::ActionOutput {
+                value: Some(value),
+                resources: Vec::new(),
+            },
+        },
+        Err(error) => ReceiptStatus::Rejected { error },
+    };
+    InvocationReceipt { invocation, status }
+}
+
+/// What the search found, as `receipt` ([`receipt`]) answers it.
+///
+/// # Errors
+/// The search refused, or answered with no results.
+pub fn found(receipt: InvocationReceipt) -> Result<Vec<Found>, ActionCallError> {
+    match receipt.status {
+        ReceiptStatus::Completed { output } => output
+            .value
+            .and_then(|value| serde_json::from_value(value).ok())
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "the search answered no results".into(),
+            }),
+        ReceiptStatus::Rejected { error } => Err(error),
+        _ => Err(ActionCallError::Unavailable {
+            reason: "the search did not answer".into(),
+        }),
+    }
+}
+
+/// What `request` of [`FIND`] finds in `caller`'s workspace by `provider`'s own search
+/// ([`ActionProvider::resource_search`]).
+pub fn searched<H: ActionProvider + ?Sized>(
     provider: &H,
     caller: &Caller,
-    correlation: u64,
-    (needle, within): (&str, &Within),
-) -> Pending<RemoteActionMessage> {
-    let respond = move |result| RemoteActionMessage::SearchResponse {
-        correlation,
-        result,
+    request: &InvokeRequest,
+) -> Pending<InvocationReceipt> {
+    let invocation = request.invocation;
+    let answer = move |found| receipt(invocation, found);
+    let query = match Query::of(request) {
+        Ok(query) => query,
+        Err(error) => return Pending::ready(answer(Err(error))),
     };
     match provider.resource_search() {
-        Some(search) => search.find_within(caller, needle, within).map(respond),
-        None => Pending::ready(respond(Err(ActionCallError::Unavailable {
+        Some(search) => search
+            .find_within(caller, &query.needle, &query.within)
+            .map(answer),
+        None => Pending::ready(answer(Err(ActionCallError::Unavailable {
             reason: "this provider holds no records to search".into(),
         }))),
     }
@@ -38,7 +169,7 @@ pub(super) fn searched<H: ActionProvider>(
 /// One resource a search found, as every caller of the one search reads a
 /// result: the resource it is about, what it is, and what it reads as. It
 /// crosses the wire as a provider's answer to a search asked over its API
-/// ([`super::RemoteActionMessage::SearchRequest`]).
+/// ([`FIND`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Found {
     /// The resource's published id: what a caller addresses it by.
@@ -161,7 +292,7 @@ impl Within {
 /// server's workspace) ranks the records it holds by what they say. Either
 /// way the search lives where the records are, so an answer comes back
 /// later, as an action's does, and a caller across the wire asks the same
-/// search ([`super::RemoteActionMessage::SearchRequest`]).
+/// search ([`FIND`]).
 pub trait ResourceSearch: Send + Sync {
     /// What `needle` finds, best first, over the workspace `caller` acts in
     /// and what it may read there.

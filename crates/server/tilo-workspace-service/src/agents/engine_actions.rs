@@ -147,6 +147,12 @@ fn serve_device(
                 correlation,
                 result,
             }),
+        RemoteActionMessage::Invoke(request)
+            if tilo_actions::remote::search::is_find(&request.target) =>
+        {
+            tilo_actions::remote::search::searched(provider, caller, &request)
+                .map(RemoteActionMessage::Receipt)
+        }
         RemoteActionMessage::Invoke(request) => {
             let invocation = request.invocation;
             provider
@@ -162,20 +168,6 @@ fn serve_device(
         RemoteActionMessage::Cancel { invocation } => provider
             .cancel(caller, &invocation)
             .map(move |result| RemoteActionMessage::CancelResponse { invocation, result }),
-        RemoteActionMessage::SearchRequest {
-            correlation,
-            needle,
-            within,
-        } => {
-            let respond = move |result| RemoteActionMessage::SearchResponse {
-                correlation,
-                result,
-            };
-            match provider.resource_search() {
-                Some(search) => search.find_within(caller, &needle, &within).map(respond),
-                None => Pending::ready(respond(Err(unserved()))),
-            }
-        }
         RemoteActionMessage::ChangesRequest { correlation, after } => {
             let respond = move |result| RemoteActionMessage::ChangesResponse {
                 correlation,

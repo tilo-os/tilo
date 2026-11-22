@@ -69,7 +69,6 @@ export const routes = {
   invocationOutput: (workspace: string, invocation: string) =>
     `${PREFIX}/workspaces/${segment(workspace)}/invocations/${segment(invocation)}/output`,
 
-  search: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/search`,
   views: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/views`,
   programs: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/programs`,
   uploads: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/uploads`,

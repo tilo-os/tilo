@@ -93,7 +93,8 @@ describe("reading a workspace", () => {
 
     expect(hits.map((hit) => hit.path)).toEqual([TODO, `${TODO}#append-paragraph`]);
     expect(hits[1]?.action).toBe("append-paragraph");
-    expect(api.last()?.query).toEqual({ q: "todo", app: "notes", limit: "5" });
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/resources/search/actions/find`);
+    expect(JSON.parse(api.last()?.body ?? "{}")).toEqual({ query: "todo", app: "notes", limit: 5 });
   });
 
   it("answers what the window shows for a resource, and its picture", async () => {

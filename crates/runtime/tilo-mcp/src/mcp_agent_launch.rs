@@ -80,6 +80,29 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         invocation: Option<String>,
         wait_ms: Option<u64>,
     ) -> Result<Done, super::Failure> {
+        // The workspace's search, which no app offers: answered by the host's search, each hit
+        // named by the path the next call takes.
+        if path.trim().split_once('#')
+            == Some((
+                tilo_actions::remote::search::RESOURCE,
+                tilo_actions::remote::search::FIND,
+            ))
+        {
+            let args: super::FindArgs =
+                serde_json::from_value(Value::Object(arguments)).map_err(|error| {
+                    format!(
+                        "invalid_arguments: search#find takes `query`, `app` and `limit`: {error}"
+                    )
+                })?;
+            let mut reply = Box::pin(self.agent_find(args, true)).await?;
+            let found = reply.structured.take();
+            let value = json!({"update": {"state": "succeeded", "output": {"value": found}}});
+            return Ok(Done::Launched {
+                value,
+                reply,
+                not_shown: None,
+            });
+        }
         // Only a path that begins with Files' name is read here before it is read where it acts.
         let app = path.split(['#', '/']).next().unwrap_or_default().trim();
         if tilo_actions::tree::names_files(app)

@@ -17,7 +17,7 @@ use tilo_server_protocol::refusal::Refusal;
 use collab_types::WorkspaceId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ChangePage, Completer,
-    ConfirmedInvocation, ContentGetAnswer, ContentLink, ContentLinkAsk, ContentPutAnswer, Found,
+    ConfirmedInvocation, ContentGetAnswer, ContentLink, ContentLinkAsk, ContentPutAnswer,
     InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, UpdateMark, WatchScope, pending, serve,
 };
@@ -217,7 +217,6 @@ struct Waiting {
     gets: HashMap<u64, Asked<Answered<ContentGetAnswer>>>,
     links: HashMap<u64, Asked<Answered<ContentLink>>>,
     confirms: HashMap<u64, Asked<Answered<ConfirmedInvocation>>>,
-    searches: HashMap<u64, Asked<Answered<Vec<Found>>>>,
     changes: HashMap<u64, Asked<Answered<ChangePage>>>,
     /// The waits for what a watch follows to change, by correlation.
     watched: HashMap<u64, Asked<Answered<()>>>,
@@ -303,9 +302,6 @@ impl Waiting {
         for (_, asked) in self.confirms.drain() {
             give.push(giving(asked, Err(error.clone())));
         }
-        for (_, asked) in self.searches.drain() {
-            give.push(giving(asked, Err(error.clone())));
-        }
         for (_, asked) in self.changes.drain() {
             give.push(giving(asked, Err(error.clone())));
         }
@@ -342,9 +338,6 @@ impl Waiting {
             give.push(giving(asked, Err(late())));
         }
         for asked in expired(&mut self.confirms, now) {
-            give.push(giving(asked, Err(late())));
-        }
-        for asked in expired(&mut self.searches, now) {
             give.push(giving(asked, Err(late())));
         }
         for asked in expired(&mut self.changes, now) {
@@ -399,7 +392,6 @@ impl Waiting {
             && self.gets.is_empty()
             && self.links.is_empty()
             && self.confirms.is_empty()
-            && self.searches.is_empty()
             && self.changes.is_empty()
             && self.watched.is_empty()
             && self.surfaces.is_empty()
@@ -414,7 +406,6 @@ impl Waiting {
         again.extend(self.gets.values().map(|asked| asked.again.clone()));
         again.extend(self.links.values().map(|asked| asked.again.clone()));
         again.extend(self.confirms.values().map(|asked| asked.again.clone()));
-        again.extend(self.searches.values().map(|asked| asked.again.clone()));
         again.extend(self.changes.values().map(|asked| asked.again.clone()));
         again.extend(self.watched.values().map(|asked| asked.again.clone()));
         again.extend(self.surfaces.values().map(|asked| asked.again.clone()));
@@ -500,14 +491,6 @@ impl Waiting {
             } => {
                 if let Some(asked) = self.confirms.remove(&correlation) {
                     give.push(giving(asked, result.map(|confirmed| *confirmed)));
-                }
-            }
-            RemoteActionMessage::SearchResponse {
-                correlation,
-                result,
-            } => {
-                if let Some(asked) = self.searches.remove(&correlation) {
-                    give.push(giving(asked, result));
                 }
             }
             RemoteActionMessage::ChangesResponse {

@@ -401,7 +401,6 @@ impl<'a> Caller<'a> {
         match operation.id {
             "listResources"
             | "readResource"
-            | "search"
             | "viewResource"
             | "listAccountResources"
             | "readAccountResource" => self.resource_operation(operation.id).await,
@@ -414,7 +413,7 @@ impl<'a> Caller<'a> {
         }
     }
 
-    /// Reading the workspace: listings, resources, search and links.
+    /// Reading the workspace: listings, resources and views.
     async fn resource_operation(&self, id: &str) -> Result<Answer, ApiError> {
         match id {
             "listResources" | "listAccountResources" => {
@@ -448,7 +447,7 @@ impl<'a> Caller<'a> {
                     .map(|(app, surface)| surface_version(app, surface));
                 shaped::<answers::Resource>(with(read, "surface_version", version)).map(Answer::ok)
             }
-            "viewResource" => {
+            _ => {
                 let path = self
                     .query("path")
                     .ok_or_else(|| ApiError::new("invalid_arguments", "`path` is required"))?;
@@ -464,17 +463,6 @@ impl<'a> Caller<'a> {
                     scale,
                 );
                 shaped::<answers::View>(self.call("tilo_view", args).await?).map(Answer::ok)
-            }
-            _ => {
-                let query = self
-                    .query("q")
-                    .ok_or_else(|| ApiError::new("invalid_arguments", "`q` is required"))?;
-                let limit = self
-                    .query("limit")
-                    .and_then(|limit| limit.parse::<u64>().ok());
-                let args = with(json!({"query": query}), "app", self.query("app"));
-                let found = self.call("tilo_find", with(args, "limit", limit)).await?;
-                shaped::<answers::SearchHits>(found).map(Answer::ok)
             }
         }
     }

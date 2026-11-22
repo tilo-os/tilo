@@ -275,23 +275,6 @@ pub struct Made {
     pub address: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Hit {
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    pub label: String,
-    /// The action the hit offers; `open` when it opens the resource itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct SearchHits {
-    pub hits: Vec<Hit>,
-    pub query: String,
-}
-
 /// What an app's window shows for a resource: its view's semantic lines, the
 /// same ones an MCP client's `tilo_view` prints, and a picture with `picture`.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -478,7 +461,6 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         Listing,
         Resource,
         ActionAnswer,
-        SearchHits,
         View,
         Program,
         ProgramAnswer,

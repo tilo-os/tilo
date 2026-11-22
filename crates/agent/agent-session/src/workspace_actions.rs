@@ -602,27 +602,6 @@ impl WorkspaceActions {
             RemoteActionMessage::ContentLinkRequest { correlation, link } => {
                 self.content_link(workspace_id, caller, correlation, link)
             }
-            RemoteActionMessage::SearchRequest {
-                correlation,
-                needle,
-                within,
-            } => {
-                let (done, answer) = pending();
-                let job = Job::Search {
-                    workspace_id,
-                    caller: caller.clone(),
-                    needle,
-                    within,
-                    done,
-                };
-                if let Err(Job::Search { done, .. }) = self.submit(job) {
-                    done.complete(Err(unavailable()));
-                }
-                answer.map(move |result| RemoteActionMessage::SearchResponse {
-                    correlation,
-                    result,
-                })
-            }
             RemoteActionMessage::ChangesRequest { correlation, after } => {
                 let (done, answer) = pending();
                 let job = Job::Changes {
@@ -677,12 +656,46 @@ impl WorkspaceActions {
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::ContentLinkResponse { .. }
-            | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::ChangedResponse { .. }
             | RemoteActionMessage::SurfaceResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         })
+    }
+
+    /// What the workspace's search finds for `request` ([`tilo_actions::remote::search::FIND`]),
+    /// as `caller` may read it, answered as the invocation's receipt.
+    fn search_request(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<RemoteActionMessage> {
+        use tilo_actions::remote::search;
+        let invocation = request.invocation;
+        let query = match search::Query::of(request) {
+            Ok(query) => query,
+            Err(error) => {
+                return Pending::ready(RemoteActionMessage::Receipt(search::receipt(
+                    invocation,
+                    Err(error),
+                )));
+            }
+        };
+        let (done, answer) = pending();
+        let job = Job::Search {
+            workspace_id,
+            caller: caller.clone(),
+            needle: query.needle,
+            within: query.within,
+            done,
+        };
+        if let Err(Job::Search { done, .. }) = self.submit(job) {
+            done.complete(Err(ActionCallError::Unavailable {
+                reason: "the host's workspace actions are not running".into(),
+            }));
+        }
+        answer.map(move |found| RemoteActionMessage::Receipt(search::receipt(invocation, found)))
     }
 
     /// Admit `request` from `caller` and run it on the service's thread,
@@ -701,6 +714,10 @@ impl WorkspaceActions {
         // remembered as no run of its own.
         if tilo_actions::remote::workspace_invocations::is_listing(&request.target) {
             return self.invocations_request(workspace_id, caller, &request);
+        }
+        // So is the workspace's search, run on the service's thread as every reader is.
+        if tilo_actions::remote::search::is_find(&request.target) {
+            return self.search_request(workspace_id, caller, &request);
         }
         let receipt = |status| {
             Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
