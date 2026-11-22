@@ -35,11 +35,30 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
 use crate::contract::{ContractFinding, ContractReport, Level};
+
+/// How long an app may take to print its surface report. It is what its code
+/// publishes, printed before the app serves a window: an app that has not
+/// printed in this long has hung.
+const REPORT_WAIT: Duration = Duration::from_secs(120);
+
+/// How long what a command started may keep its output open after the command
+/// itself ended, before it is stopped with the rest of its tree: ending is
+/// not finishing if a worker it started still holds the pipe.
+const OUTPUT_GRACE: Duration = Duration::from_secs(5);
+
+/// How long a build or a whole application set may take, cold: building one
+/// app first for its report, or every app in one graph, takes minutes, not
+/// tens of minutes.
+pub const BUILD_WAIT: Duration = Duration::from_secs(20 * 60);
+
+/// The most a build or a report may print.
+const OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
 
 pub const FILE: &str = "surface.toml";
 
@@ -141,11 +160,129 @@ pub fn parse_report(output: &str) -> Result<SurfaceReport> {
     })
 }
 
+/// A command that ended within its bound, and what it printed on standard
+/// output.
+pub struct Finished {
+    pub status: std::process::ExitStatus,
+    pub stdout: Vec<u8>,
+}
+
+/// Run `command` under the bound `wait`, letting its standard error through as
+/// it comes and keeping its standard output. `doing` names what is being
+/// waited for, so a command that hangs fails saying what it was and how long
+/// it was given.
+///
+/// The bound covers the command and its output: its output ends with it,
+/// unless something it started still holds the pipe, which is waited a little
+/// longer ([`OUTPUT_GRACE`]) and then stopped. At either bound the command and
+/// everything it started are stopped, so nothing this step runs can wait
+/// without one.
+pub fn run_bounded(mut command: ProcessCommand, wait: Duration, doing: &str) -> Result<Finished> {
+    use std::io::{Read as _, Write as _};
+    use std::process::Stdio;
+    use std::sync::mpsc::{self, RecvTimeoutError};
+
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    bounded_command::own_process_tree(&mut command);
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("starting {doing}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .with_context(|| format!("{doing} has no standard output"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .with_context(|| format!("{doing} has no standard error"))?;
+    // Each stream is read on its own thread: neither can fill its pipe and
+    // stop the command while this waits, nor be missed once it ends.
+    let (written, kept) = mpsc::channel();
+    let (spoken, said) = mpsc::channel();
+    let reading = std::thread::spawn(move || {
+        let _ = written.send(read_capped(stdout));
+    });
+    let echoing = std::thread::spawn(move || {
+        let mut chunk = [0; 4096];
+        while let Ok(count) = stderr.read(&mut chunk) {
+            let Some(bytes) = chunk.get(..count) else {
+                break;
+            };
+            if count == 0 || spoken.send(bytes.to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+
+    let deadline = std::time::Instant::now().checked_add(wait);
+    let status = loop {
+        // What it says belongs in the log as it says it, as an inherited
+        // standard error would put it there.
+        while let Ok(chunk) = said.try_recv() {
+            let _ = std::io::stderr().write_all(&chunk);
+        }
+        if let Some(status) = child
+            .try_wait()
+            .with_context(|| format!("waiting for {doing}"))?
+        {
+            break status;
+        }
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            bounded_command::terminate_tree(&mut child, Duration::from_secs(1));
+            bail!(
+                "{doing} did not come within {}s; it and what it started were stopped",
+                wait.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let (stdout, over) = match kept.recv_timeout(OUTPUT_GRACE) {
+        Ok(output) => output,
+        Err(RecvTimeoutError::Timeout) => {
+            bounded_command::terminate_tree(&mut child, Duration::from_secs(1));
+            let _ = reading.join();
+            let _ = echoing.join();
+            bail!(
+                "{doing} ended but something it started still held its output; it and what it started were stopped"
+            );
+        }
+        Err(RecvTimeoutError::Disconnected) => bail!("{doing}: its output could not be read"),
+    };
+    let _ = reading.join();
+    let _ = echoing.join();
+    // Its whole standard error has been said by now.
+    while let Ok(chunk) = said.try_recv() {
+        let _ = std::io::stderr().write_all(&chunk);
+    }
+    if over {
+        bail!(
+            "{doing} printed more than {} MiB; stopped reading it",
+            OUTPUT_LIMIT / (1024 * 1024)
+        );
+    }
+    Ok(Finished { status, stdout })
+}
+
+/// Up to [`OUTPUT_LIMIT`] bytes of `pipe`, and whether it held more.
+fn read_capped(pipe: impl std::io::Read) -> (Vec<u8>, bool) {
+    use std::io::Read as _;
+
+    let cap = u64::try_from(OUTPUT_LIMIT).unwrap_or(u64::MAX);
+    let mut bytes = Vec::new();
+    let _ = pipe.take(cap.saturating_add(1)).read_to_end(&mut bytes);
+    let over = u64::try_from(bytes.len()).unwrap_or(u64::MAX) > cap;
+    bytes.truncate(OUTPUT_LIMIT);
+    (bytes, over)
+}
+
 /// Run the app's binary for its surface report: `executable` when it is
-/// already built, else `cargo run`.
+/// already built, else `cargo run` (whose wait covers the build too).
 pub fn report_of(app_dir: &Path, executable: Option<&Path>) -> Result<SurfaceReport> {
-    let mut command = if let Some(executable) = executable {
-        ProcessCommand::new(executable)
+    let (mut command, wait) = if let Some(executable) = executable {
+        (ProcessCommand::new(executable), REPORT_WAIT)
     } else {
         let program = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
         let mut cargo = ProcessCommand::new(program);
@@ -153,18 +290,15 @@ pub fn report_of(app_dir: &Path, executable: Option<&Path>) -> Result<SurfaceRep
             .args(["run", "--quiet", "--manifest-path"])
             .arg(app_dir.join("Cargo.toml"))
             .arg("--");
-        cargo
+        (cargo, BUILD_WAIT)
     };
-    let output = command
-        .current_dir(app_dir)
-        .arg(FLAG)
-        .stderr(std::process::Stdio::inherit())
-        .output()
-        .with_context(|| format!("running {command:?}"))?;
-    if !output.status.success() {
-        bail!("{command:?} failed with {}", output.status);
+    command.current_dir(app_dir).arg(FLAG);
+    let doing = format!("{}'s surface report", app_dir.display());
+    let answer = run_bounded(command, wait, &doing)?;
+    if !answer.status.success() {
+        bail!("{doing} failed with {}", answer.status);
     }
-    parse_report(&String::from_utf8_lossy(&output.stdout))
+    parse_report(&String::from_utf8_lossy(&answer.stdout))
 }
 
 /// Keep the surface report `app`'s `executable` prints in `dir` as `<app>.json`, so a
@@ -172,21 +306,16 @@ pub fn report_of(app_dir: &Path, executable: Option<&Path>) -> Result<SurfaceRep
 /// `tilo-app surface apps/<app> --report <dir>/<app>.json` (certify's outputs on t).
 pub fn keep_report(app: &Path, executable: &Path, dir: &Path) -> Result<PathBuf> {
     let name = app.file_name().unwrap_or_default().to_string_lossy();
-    let output = ProcessCommand::new(executable)
-        .arg(FLAG)
-        .current_dir(app)
-        .output()
-        .with_context(|| format!("running {} {FLAG}", executable.display()))?;
-    if !output.status.success() {
-        bail!(
-            "{} {FLAG} failed with {}",
-            executable.display(),
-            output.status
-        );
+    let doing = format!("{}'s surface report", app.display());
+    let mut command = ProcessCommand::new(executable);
+    command.arg(FLAG).current_dir(app);
+    let answer = run_bounded(command, REPORT_WAIT, &doing)?;
+    if !answer.status.success() {
+        bail!("{doing} failed with {}", answer.status);
     }
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let file = dir.join(format!("{name}.json"));
-    std::fs::write(&file, output.stdout).with_context(|| format!("writing {}", file.display()))?;
+    std::fs::write(&file, answer.stdout).with_context(|| format!("writing {}", file.display()))?;
     Ok(file)
 }
 

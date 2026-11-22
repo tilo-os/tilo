@@ -1,9 +1,8 @@
 //! `tilo-app surfaces`: every committed surface against its code.
 
 use std::ffi::OsString;
-use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
+use std::process::Command as ProcessCommand;
 
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
@@ -109,19 +108,19 @@ pub(crate) fn build_apps(
     for (_, package, _) in packages {
         build.arg("--package").arg(package);
     }
-    let mut child = build
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("starting the workspace application build")?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("the workspace application build has no artifact stream")?;
+    let answer = tilo_app_cli::surface::run_bounded(
+        build,
+        tilo_app_cli::surface::BUILD_WAIT,
+        "the workspace application build",
+    )?;
+    anyhow::ensure!(
+        answer.status.success(),
+        "the workspace application build failed with {}",
+        answer.status
+    );
     let mut executables = std::collections::HashMap::new();
-    for line in BufReader::new(stdout).lines() {
-        let line = line.context("reading the workspace application build")?;
-        let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
+    for line in String::from_utf8_lossy(&answer.stdout).lines() {
+        let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
         if message.get("reason").and_then(serde_json::Value::as_str) != Some("compiler-artifact") {
@@ -142,10 +141,6 @@ pub(crate) fn build_apps(
         };
         executables.insert(name.to_owned(), PathBuf::from(executable));
     }
-    let status = child
-        .wait()
-        .context("waiting for the workspace application build")?;
-    anyhow::ensure!(status.success(), "workspace application build failed");
     Ok(executables)
 }
 
