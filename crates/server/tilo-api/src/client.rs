@@ -141,6 +141,15 @@ impl Answer {
         (200..300).contains(&self.status)
     }
 
+    /// The answer's JSON, `pending` (202) included: an action held for its person is an
+    /// answer too. Anything else is the refusal it carries.
+    fn settled(self) -> Result<Value> {
+        if !self.ok() && self.status != 202 {
+            return Err(self.refused());
+        }
+        Ok(self.json())
+    }
+
     /// The refusal this answer carries, with what a caller can do instead.
     fn refused(&self) -> anyhow::Error {
         let json = self.json();
@@ -374,10 +383,7 @@ impl Client {
         let answer = self
             .call(Method::Put, path, said.as_bytes(), &[], Waiting::ForPerson)
             .await?;
-        if !answer.ok() && answer.status != 202 {
-            return Err(answer.refused());
-        }
-        Ok(answer.json())
+        answer.settled()
     }
 
     /// `DELETE path`, under a new idempotency key: the answer.
@@ -400,9 +406,7 @@ impl Client {
         if is_uuid(named) {
             return Ok(named.to_owned());
         }
-        let listed = self
-            .account("account/workspaces", "list", &serde_json::json!({}))
-            .await?;
+        let listed = self.workspaces().await?;
         let workspaces = listed
             .get("workspaces")
             .and_then(Value::as_array)
@@ -462,10 +466,7 @@ impl Client {
                 Waiting::ForPerson,
             )
             .await?;
-        if !answer.ok() && answer.status != 202 {
-            return Err(answer.refused());
-        }
-        Ok(answer.json())
+        answer.settled()
     }
 
     /// Run `action` on `resource` in `workspace` as a step of the invocation
@@ -504,10 +505,7 @@ impl Client {
                 Waiting::Transient,
             )
             .await?;
-        if !answer.ok() && answer.status != 202 {
-            return Err(answer.refused());
-        }
-        Ok(answer.json())
+        answer.settled()
     }
 
     /// The invocation `run` in `workspace`, held while it is pending for up
@@ -520,10 +518,7 @@ impl Client {
         let answer = self
             .call(Method::Get, &path, &[], &[], Waiting::Transient)
             .await?;
-        if !answer.ok() && answer.status != 202 {
-            return Err(answer.refused());
-        }
-        Ok(answer.json())
+        answer.settled()
     }
 
     /// Run `program` as one step of `workspace`, titled `title` in History:
