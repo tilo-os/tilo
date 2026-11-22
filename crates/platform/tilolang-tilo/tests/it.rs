@@ -24,6 +24,7 @@ mod chunks;
 mod collab;
 mod columns;
 mod composer;
+mod direct_readers;
 mod discussion;
 #[cfg(feature = "document")]
 mod document;

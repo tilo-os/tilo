@@ -847,6 +847,7 @@ impl HostInner {
                 count: 1,
                 invocation: None,
                 gesture: None,
+                readers: None,
             },
             edits: Vec::new(),
         };
@@ -854,6 +855,9 @@ impl HostInner {
             // Follow-up changes of the host itself (an action block's invocation document) belong
             // to another app's resources than the action's.
             let other = entry.action.app != planned.app;
+            planned
+                .authorship
+                .read_also(entry.action.authorship.readers.as_deref());
             for edit in entry.action.edits {
                 planned.edits.push(if other {
                     edit.in_app(&entry.action.app)

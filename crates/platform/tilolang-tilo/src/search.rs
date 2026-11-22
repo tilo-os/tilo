@@ -22,6 +22,7 @@ use tilolang_runtime::meta::Meta;
 use crate::host::Host;
 use crate::publish::resource_id;
 use crate::resource::{DynResource, DynValue};
+use crate::runtime::Actor;
 use tilo_resource::search_index::{
     IndexAction, IndexDelta, IndexEntry, IndexKind, IndexPerson, IndexState, IndexWeight, Publisher,
 };
@@ -249,10 +250,11 @@ fn collect(
 /// Every hit of the workspace, by package and path, read from the indexes now: what a window
 /// publishes to the session's search index, which is what search finds things through. One pass
 /// over each package's index. Each text is as the window's person reads it: the index matches a
-/// query against what they read, never against the title of a resource they do not hold.
+/// query against what they read, never against the title of a resource they do not hold. A
+/// resource the records holding it keep from them (`type Direct (readers: people)`) is no hit.
 #[must_use]
 pub fn every_hit(host: &Host) -> Vec<Hit> {
-    hits_of(&host.store().snapshot(), &catalogue(host))
+    hits_of(&host.store().snapshot(), &catalogue(host), host.viewer())
 }
 
 /// The apps the host runs a package of, each with the name people call it in their language: what
@@ -272,9 +274,13 @@ pub fn catalogue(host: &Host) -> Vec<(String, String)> {
         .collect()
 }
 
-/// [`every_hit`], read from `snapshot` and the apps `catalogue` names: what a thread of its own
-/// reads in one pass, a workspace of ten thousand included.
-fn hits_of(snapshot: &crate::store::Snapshot, catalogue: &[(String, String)]) -> Vec<Hit> {
+/// [`every_hit`], read from `snapshot` and the apps `catalogue` names, for `viewer`: what a
+/// thread of its own reads in one pass, a workspace of ten thousand included.
+fn hits_of(
+    snapshot: &crate::store::Snapshot,
+    catalogue: &[(String, String)],
+    viewer: &Actor,
+) -> Vec<Hit> {
     let _schemas = snapshot.scoped();
     let reader: &crate::store::Snapshot = snapshot;
     let mut out = Vec::new();
@@ -286,6 +292,9 @@ fn hits_of(snapshot: &crate::store::Snapshot, catalogue: &[(String, String)]) ->
             continue;
         };
         out.extend(texted.into_iter().filter_map(|held| {
+            if !view.reads(&held.path, viewer).unwrap_or(false) {
+                return None;
+            }
             let texts: Vec<String> = held
                 .texts
                 .into_iter()
@@ -317,8 +326,9 @@ const OPEN_ACTION: &str = "open";
 fn entries_of(
     snapshot: &crate::store::Snapshot,
     catalogue: &[(String, String)],
+    viewer: &Actor,
 ) -> Vec<IndexEntry> {
-    hits_of(snapshot, catalogue)
+    hits_of(snapshot, catalogue, viewer)
         .into_iter()
         .filter_map(|hit| {
             entry(
@@ -335,14 +345,18 @@ fn entries_of(
 }
 
 /// The entry the session's persistent search index keeps of the resource at `path` of the
-/// package `meta`, read now: none when it holds no text, or when it is gone. What an instance
-/// publishes for the resources a change reached, instead of reading the workspace again.
+/// package `meta`, read now: none when it holds no text, when it is gone, or when the records
+/// holding it keep it from the host's viewer. What an instance publishes for the resources a
+/// change reached, instead of reading the workspace again.
 #[must_use]
 pub fn index_entry_at(host: &Host, meta: &Meta, path: &str) -> Option<IndexEntry> {
     let snapshot = host.store().snapshot();
     let _schemas = snapshot.scoped();
     let reader: &crate::store::Snapshot = &snapshot;
     let view = snapshot.view(&meta.app)?;
+    if !view.reads(path, host.viewer()).unwrap_or(false) {
+        return None;
+    }
     let held = view.texts_at(path).ok()??;
     let facts = Facts::of(&view, &held.path, held.schema);
     let texts: Vec<String> = held
@@ -454,9 +468,10 @@ impl WholeIndex {
     ) -> Self {
         let snapshot = host.store().snapshot();
         let catalogue = catalogue(host);
+        let viewer = host.viewer().clone();
         Self {
             building: crate::background::Pending::start(
-                move || read(&snapshot, &catalogue, publisher.clone(), state),
+                move || read(&snapshot, &catalogue, &viewer, publisher.clone(), state),
                 wake,
             ),
         }
@@ -469,15 +484,16 @@ impl WholeIndex {
 }
 
 /// [`entries_of`] and the deltas that publish them, read from the snapshot `snapshot` and the
-/// apps `catalogue` names.
+/// apps `catalogue` names, for `viewer`.
 #[must_use]
 pub fn read(
     snapshot: &crate::store::Snapshot,
     catalogue: &[(String, String)],
+    viewer: &Actor,
     mut publisher: Publisher,
     state: IndexState,
 ) -> Published {
-    let entries = entries_of(snapshot, catalogue);
+    let entries = entries_of(snapshot, catalogue, viewer);
     let kept = entries
         .iter()
         .map(|entry| (entry.resource.clone(), entry.clone()))

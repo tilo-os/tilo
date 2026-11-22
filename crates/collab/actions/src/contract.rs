@@ -346,6 +346,47 @@ pub const INCOMING_MESSAGE_FACET: &str = "incoming-message";
 /// catalogue show it.
 pub const INCOMING_MESSAGE_TAG: &str = "trigger:incoming-message";
 
+/// Facet the executor writes on a change of what only some members read
+/// ([`Action::readers`](crate::Action::readers)): the members who alone read
+/// it, as a JSON list of what each member's changes are named by
+/// ([`MemberId::actor_bytes`](crate::MemberId::actor_bytes)). History lists
+/// the change to them alone ([`reads_change`]).
+pub const READERS_FACET: &str = "readers";
+
+/// The value of a [`READERS_FACET`] naming `readers`.
+#[must_use]
+pub fn readers_facet(readers: &[crate::MemberId]) -> String {
+    let named: Vec<String> = readers.iter().map(reader_name).collect();
+    serde_json::Value::from(named).to_string()
+}
+
+/// How a [`READERS_FACET`] names `member`.
+#[must_use]
+pub fn reader_name(member: &crate::MemberId) -> String {
+    String::from_utf8_lossy(&member.actor_bytes()).into_owned()
+}
+
+/// The names of the members who alone read a change whose context has
+/// `facets` ([`READERS_FACET`]); `None` when every member reads it. A facet
+/// that does not read as a list of names names nobody: never everyone.
+#[must_use]
+pub fn readers_named(facets: &[crate::ActionFacet]) -> Option<Vec<String>> {
+    let facet = facets.iter().find(|facet| facet.key == READERS_FACET)?;
+    Some(tilo_failure::ignored!(
+        "a readers list that does not read names nobody, which keeps the change from everyone",
+        serde_json::from_str(&facet.value).unwrap_or_default()
+    ))
+}
+
+/// Whether `reader` reads a change whose context has `facets`: every member
+/// reads a change no [`READERS_FACET`] marks; one it marks, only the members
+/// it names ([`readers_named`]).
+#[must_use]
+pub fn reads_change(facets: &[crate::ActionFacet], reader: Option<&crate::MemberId>) -> bool {
+    readers_named(facets)
+        .is_none_or(|named| reader.is_some_and(|reader| named.contains(&reader_name(reader))))
+}
+
 /// [`ActionContract::tags`] entry of an action that reaches outside its
 /// document through a queue (a file rename the device carries out) and whose
 /// undo queues the compensating change. It is still an

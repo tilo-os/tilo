@@ -35,6 +35,9 @@ pub fn declarations(meta: &PackageMeta) -> String {
         if let Some(untitled) = &t.untitled {
             options.push(format!("untitled: {}", quoted(untitled)));
         }
+        if let Some(readers) = &t.readers {
+            options.push(format!("readers: {readers}"));
+        }
         let options = if options.is_empty() {
             String::new()
         } else {

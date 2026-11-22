@@ -1208,6 +1208,7 @@ impl ViewInstance {
             approved_by: None,
             at: Some(self.core.clock_now()),
             touched: vec![target.id_string()],
+            readers: self.core.change_readers(&[target.id_string()]),
             count: 1,
             group: None,
             from: None,

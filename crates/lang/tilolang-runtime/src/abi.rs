@@ -143,6 +143,7 @@ imports! {
     (MadeFrom, "made_from", "", "i"),
     (ActorEq, "actor_eq", "ii", "i"),
     (ActorName, "actor_name", "i", "i"),
+    (ActorId, "actor_id", "i", "i"),
     (Now, "now", "", "i"),
     (WebGet, "web_get", "iii", "i"),
     (WebPost, "web_post", "iii", "i"),

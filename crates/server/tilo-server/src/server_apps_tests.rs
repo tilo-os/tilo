@@ -140,7 +140,11 @@ tilo_test_env::scenario! {
 }
 
 /// The broker's socket in a fresh directory, listened on, and the server's launcher for it.
-fn serving() -> (tempfile::TempDir, std::os::unix::net::UnixListener, ServerLauncher) {
+fn serving() -> (
+    tempfile::TempDir,
+    std::os::unix::net::UnixListener,
+    ServerLauncher,
+) {
     let root = tempfile::tempdir().unwrap();
     let socket = root.path().join("collab.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();

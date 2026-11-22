@@ -424,6 +424,7 @@ impl InstanceDocument {
         // secret of the members who read the document, once its route holds their keys.
         let link = Arc::new(ContentLink::default());
         ContentLink::show_on_route(&route, &link);
+        let words = HostWords::new("en-US").read_by(&person);
         Self {
             content: DocumentContent::store(ContentStore::memory(), Arc::clone(&link)),
             link,
@@ -438,7 +439,7 @@ impl InstanceDocument {
             unshared: None,
             refused: None,
             unreadable: None,
-            words: HostWords::new("en-US"),
+            words,
             writers,
             governs: true,
             local: false,

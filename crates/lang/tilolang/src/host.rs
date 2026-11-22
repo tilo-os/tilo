@@ -297,6 +297,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Map<Map<Text>>",
                 "Each field that maps keys to words, by its name: what each key holds, as words (a native app's watch times, by video). Its keys are in `lists` too.",
             ),
+            (
+                "members",
+                "Map<List<Actor>>",
+                "Each field whose words name members of the workspace, by its name: the members they name (a native app's author, or the people of a direct conversation its id names).",
+            ),
         ],
     },
     ValueType {
@@ -705,6 +710,7 @@ pub fn host_meta() -> PackageMeta {
             origin: None,
             title: None,
             untitled: None,
+            readers: None,
         })
         .chain(std::iter::once(TypeMeta {
             id: format!("host-{}", RESOURCE_TYPE_NAME.to_lowercase()),
@@ -715,6 +721,7 @@ pub fn host_meta() -> PackageMeta {
             origin: None,
             title: None,
             untitled: None,
+            readers: None,
         }))
         .chain(std::iter::once(TypeMeta {
             id: NOTICE_TYPE.to_string(),
@@ -731,6 +738,7 @@ pub fn host_meta() -> PackageMeta {
             origin: None,
             title: None,
             untitled: None,
+            readers: None,
         }))
         .chain(VALUE_TYPES.iter().map(|value| {
             TypeMeta {
@@ -753,6 +761,7 @@ pub fn host_meta() -> PackageMeta {
                 origin: None,
                 title: None,
                 untitled: None,
+                readers: None,
             }
         }))
         .collect(),

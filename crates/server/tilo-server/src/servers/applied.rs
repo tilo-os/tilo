@@ -30,9 +30,8 @@ use std::sync::{Arc, Mutex};
 
 use tilo_workspace_service::workspaces::{Offer, ResourceWrite, Workspaces};
 
-use super::{SERVERS, person_workspace_id, device, device_id, policy, read};
+use super::{SERVERS, device, device_id, person_workspace_id, policy, read};
 use tilo_lock::MutexRecover as _;
-
 
 /// Where a server writes what its entry asks of the machine, for the root
 /// helpers to apply.

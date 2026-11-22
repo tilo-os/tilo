@@ -1,9 +1,10 @@
 //! A chat the native Chat app wrote, opened by the tilolang Chat: its migration carries every
 //! category, channel and message over once, as one change of the conversations, each keeping
 //! the id it had there; a message's thread replies are its thread's messages, and who wrote a
-//! message, when, and its reactions stay with it. What the tilolang Chat has no place for (an
-//! archived or voice channel, a direct conversation) is set aside in a category of its own. The
-//! native app's documents are read, never written.
+//! message, when, and its reactions stay with it. A direct conversation is a direct conversation
+//! of the people its id names, read by them alone. What the tilolang Chat has no place for (an
+//! archived or voice channel) is set aside in a category of its own. The native app's documents
+//! are read, never written.
 //!
 //! `legacy/rust_chat.hex` is what the native app's own actions wrote: its chat record and the
 //! part of the chain its messages are kept in, saved as that app stores them, one document a
@@ -145,7 +146,8 @@ fn assert_carried(ada: &Replica, all: &ResourceRef) {
             "#general",
             "Team: design, release",
             "Social: weekend",
-            "Set aside: voice, old-plans, u_ada, u_leo",
+            "#u_ada, u_leo",
+            "Set aside: voice, old-plans",
         ],
         "the sidebar in the native app's order, what has no place here set aside"
     );
@@ -224,9 +226,31 @@ fn assert_carried(ada: &Replica, all: &ResourceRef) {
         said(ada, &plans),
         [said_row("m-plans", "Ship it by spring.", "u_ada", "")]
     );
-    let direct = conversation(ada, all, "Set aside/u_ada, u_leo");
+    assert_direct_carried(ada, &conversation(ada, all, "u_ada, u_leo"));
+}
+
+/// The native direct conversation `direct` is one of the two people its id names, read by them
+/// alone, with what they said.
+fn assert_direct_carried(ada: &Replica, direct: &ResourceRef) {
+    let person =
+        |id: &str| tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person(id));
     assert_eq!(
-        said(ada, &direct),
+        read(ada, direct, "people"),
+        Value::List(vec![
+            Value::Actor(person("u_ada")),
+            Value::Actor(person("u_leo"))
+        ]),
+        "a direct conversation of the two people its id names"
+    );
+    for (who, reads) in [("u_ada", true), ("u_leo", true), ("ada", false)] {
+        assert_eq!(
+            ada.host.runtime().readers_admit(&person(who), direct),
+            reads,
+            "read by its people alone"
+        );
+    }
+    assert_eq!(
+        said(ada, direct),
         [
             said_row(
                 "m-walk",

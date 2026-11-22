@@ -691,6 +691,11 @@ fn entry(
         entry.insert("by".into(), by(version).into());
     }
     entry.insert("time_ms".into(), version.time_ms.into());
+    if let Some(named) =
+        context.and_then(|context| tilo_actions::contract::readers_named(&context.facets))
+    {
+        entry.insert("readers".into(), json!(named));
+    }
     if undone.contains(&version.hash.to_string()) {
         entry.insert("undone".into(), true.into());
     }
@@ -823,10 +828,12 @@ pub fn history(doc: &AutoCommit, last: usize, words: &dyn HistoryWords) -> Value
     let undone = steps::undone(doc);
     let checkpoints = steps::checkpoints(doc);
     let total = versions.len();
+    let reader = words.reader();
     let mut listed: Vec<Value> = versions
         .iter()
         .skip(total.saturating_sub(last))
         .filter(|version| !steps::is_schema_genesis(version))
+        .filter(|version| reads_version(version, reader.as_ref()))
         .map(|version| entry(doc, version, &undone, &checkpoints, words))
         .collect();
     carry_over(&mut listed);
@@ -842,10 +849,36 @@ pub fn history(doc: &AutoCommit, last: usize, words: &dyn HistoryWords) -> Value
     })
 }
 
+/// Whether `reader` reads `version`: one its change marks as read by some
+/// members alone ([`tilo_actions::READERS_FACET`]) is theirs alone.
+fn reads_version(version: &Version, reader: Option<&tilo_actions::MemberId>) -> bool {
+    version
+        .context
+        .as_ref()
+        .is_none_or(|context| tilo_actions::contract::reads_change(&context.facets, reader))
+}
+
+/// Whether `reader` reads `entry`, a change as [`entries_after`] lists it:
+/// one listed with the members who alone read it (`readers`) is theirs alone.
+#[must_use]
+pub fn reads_entry(entry: &Value, reader: Option<&tilo_actions::MemberId>) -> bool {
+    let Some(readers) = entry.get("readers") else {
+        return true;
+    };
+    reader.is_some_and(|reader| {
+        readers.as_array().is_some_and(|named| {
+            named
+                .iter()
+                .any(|name| name.as_str() == Some(&tilo_actions::contract::reader_name(reader)))
+        })
+    })
+}
+
 /// The changes of `doc` made after the version `after` (every change, for
 /// none), oldest first, each as `history` lists it, whole: what a feed of a
 /// workspace's changes reports of one record, as the record's own history
-/// would.
+/// would. A change only some members read lists them as `readers`, and whoever
+/// passes it on lists it to them alone ([`reads_entry`]).
 pub fn entries_after(
     doc: &AutoCommit,
     after: &[ChangeHash],

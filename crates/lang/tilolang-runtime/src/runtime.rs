@@ -929,6 +929,13 @@ impl Runtime {
         resource: &ResourceRef,
         view: Option<&str>,
     ) -> Result<ViewInstance, RuntimeError> {
+        // A record that says who reads it opens for them alone.
+        if !self.core.readers_admit(actor, resource) {
+            return Err(RuntimeError::Denied(format!(
+                "{} is not yours to read",
+                resource.id_string()
+            )));
+        }
         let view = match view {
             Some(v) => v.to_owned(),
             None => self.default_view(&resource.ty).ok_or_else(|| {
@@ -1455,6 +1462,14 @@ impl Runtime {
     #[must_use]
     pub fn knows_members(&self) -> bool {
         !self.core.members.borrow().list().is_empty()
+    }
+
+    /// Whether the records holding `at` let `who` read it: every one from it up to its document
+    /// whose type names its readers (`type Direct (readers: people)`) names them. Part of what
+    /// [`Self::may_read`] answers, and all of it where no members are given.
+    #[must_use]
+    pub fn readers_admit(&self, who: &Actor, at: &ResourceRef) -> bool {
+        self.core.readers_admit(who, at)
     }
 
     /// Where settled outside effects go.

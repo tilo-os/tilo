@@ -126,8 +126,34 @@ impl EarlierItem {
                     })
                     .collect(),
             ),
+            Value::Map(
+                self.texts
+                    .iter()
+                    .filter_map(|(name, said)| {
+                        let named = members_named(said)?;
+                        let named = named
+                            .into_iter()
+                            .map(|member| Value::Actor(crate::ids::Actor::Member(member)))
+                            .collect();
+                        Some((text(name), Value::List(named)))
+                    })
+                    .collect(),
+            ),
         ])
     }
+}
+
+/// The members the words `said` name, as a native app kept them: one member (`{"person":"<id>"}`),
+/// or several, as the id of a direct conversation names its people
+/// (`direct:[{"person":"<id>"},...]`). None for words that name no member.
+fn members_named(said: &str) -> Option<Vec<crate::ids::MemberId>> {
+    let said = said.strip_prefix("direct:").unwrap_or(said);
+    if let Ok(one) = serde_json::from_str::<crate::ids::MemberId>(said) {
+        return Some(vec![one]);
+    }
+    serde_json::from_str::<Vec<crate::ids::MemberId>>(said)
+        .ok()
+        .filter(|several| !several.is_empty())
 }
 
 /// What the earlier document `doc`, kept under the id `id`, holds: its own fields as one item,

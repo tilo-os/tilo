@@ -95,6 +95,24 @@ type Draft (title: subject, untitled: "New message") {
 Those lines give collaborative, synced, searchable, undoable notes with a native default UI,
 which people, agents and automations can find, read and pin.
 
+`(readers: people)` makes privacy between members a rule on the record: only the actors its
+`List<Actor>` field `people` holds read a record of the type and everything under it, whatever the
+workspace's grants say, the owner's included. `std.may_read`, `members(r)`, opening it and search
+answer by that rule:
+
+```
+type Direct (readers: people) {
+    people: List<Actor>
+    messages: Collection<Message>
+}
+```
+
+A change written under such a record names the members who alone read it, and History, the
+workspace's feed of changes and mention notices list it to them alone. The rule is enforced
+where these are read. The record is still an item of its document, synced and sealed with it,
+so every device holding the document holds the record: it is not yet sealed under its readers'
+own keys.
+
 A resource's document body is its `RichText` field, whether it is kept as `RichText` (its
 paragraphs, lists, quotes, tables and code kept as such) or as `Text` (the body kept as
 Markdown); the document's own view places the editor for it, `ui.BlockEditor(bind: note.body)`.

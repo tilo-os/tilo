@@ -110,10 +110,11 @@ impl ChangeLog {
         }
     }
 
-    /// The changes after `after`, a cursor this log gave; from now for none, or for a cursor
-    /// it cannot read on from.
+    /// The changes after `after`, a cursor this log gave, that `reader` reads
+    /// ([`super::verbs::reads_entry`]); from now for none, or for a cursor it cannot read on
+    /// from.
     #[must_use]
-    pub fn page(&self, after: Option<&str>) -> ChangePage {
+    pub fn page(&self, after: Option<&str>, reader: Option<&tilo_actions::MemberId>) -> ChangePage {
         let from = after.and_then(|cursor| {
             let (epoch, seq) = cursor.split_once('.')?;
             let seq = seq.parse::<u64>().ok()?;
@@ -136,7 +137,11 @@ impl ChangeLog {
             .collect();
         let last = changes.last().map_or(from, |(seq, _)| *seq);
         ChangePage {
-            changes: changes.into_iter().map(|(_, change)| change).collect(),
+            changes: changes
+                .into_iter()
+                .map(|(_, change)| change)
+                .filter(|change| super::verbs::reads_entry(&change.entry, reader))
+                .collect(),
             cursor: self.cursor(last),
         }
     }
@@ -190,9 +195,9 @@ mod tests {
         saved.save(&route("notes"), &mut notes);
         saved.take_into(&mut log);
         // What the records held when the follower started is no news.
-        let start = log.page(None);
+        let start = log.page(None, None);
         assert!(start.changes.is_empty());
-        assert!(log.page(Some(&start.cursor)).changes.is_empty());
+        assert!(log.page(Some(&start.cursor), None).changes.is_empty());
 
         write(&mut notes, "title", "Gooseberry jam");
         saved.save(&route("notes"), &mut notes);
@@ -202,7 +207,7 @@ mod tests {
         saved.save(&route("todo"), &mut todo);
         saved.take_into(&mut log);
 
-        let page = log.page(Some(&start.cursor));
+        let page = log.page(Some(&start.cursor), None);
         let records: Vec<&str> = page
             .changes
             .iter()
@@ -217,7 +222,7 @@ mod tests {
         );
         // Read once: from the cursor it answered, nothing more.
         saved.take_into(&mut log);
-        assert!(log.page(Some(&page.cursor)).changes.is_empty());
+        assert!(log.page(Some(&page.cursor), None).changes.is_empty());
     }
 
     #[test]
@@ -230,7 +235,7 @@ mod tests {
         saved.save(&route("notes"), &mut notes);
         saved.take_into(&mut log);
         let restarted = ChangeLog::new();
-        let page = restarted.page(Some(&log.page(None).cursor));
+        let page = restarted.page(Some(&log.page(None, None).cursor), None);
         assert!(page.changes.is_empty());
         assert!(page.cursor.starts_with(&restarted.epoch));
     }

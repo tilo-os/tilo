@@ -46,6 +46,7 @@ impl TiloStore {
                 count: note.count.max(1),
                 invocation: note.invocation.clone(),
                 gesture: None,
+                readers: note.readers.clone(),
             },
             edits: vec![edit],
         });

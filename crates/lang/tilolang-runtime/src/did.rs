@@ -313,6 +313,7 @@ mod tests {
                 name: "Task".to_owned(),
                 fields: vec![text("title"), text("notes")],
                 title: None,
+                readers: None,
             };
             assert_eq!(renamed(&task, "title").map(|said| said.key), Some("tilolang-did-renamed"));
             assert_eq!(renamed(&task, "notes"), None, "another text field is not the name");

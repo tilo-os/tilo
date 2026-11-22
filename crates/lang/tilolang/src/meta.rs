@@ -334,6 +334,10 @@ pub struct TypeMeta {
     /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub untitled: Option<String>,
+    /// `(readers: people)`: the field, by name, holding who reads a record of the type and
+    /// everything under it. Nobody else does, whatever the workspace's grants say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readers: Option<String>,
 }
 
 /// What search, a list's filters and agents offer of a type: its filters in order (the first are the

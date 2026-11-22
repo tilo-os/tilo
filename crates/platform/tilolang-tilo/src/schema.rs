@@ -210,6 +210,9 @@ pub struct TypeSchema {
     pub search_kind: Option<tilolang::meta::SearchKind>,
     /// The fields naming who a resource of it is with (`search { people person }`), by id.
     pub people: Vec<String>,
+    /// The field holding who reads one of its records and everything under it
+    /// (`(readers: people)`), by id.
+    pub readers: Option<String>,
 }
 
 /// A type's name as a sentence says it: `TodoList` as "Todo list".
@@ -254,6 +257,7 @@ impl TypeSchema {
             untitled: None,
             search_kind: None,
             people: Vec::new(),
+            readers: None,
         }
     }
 

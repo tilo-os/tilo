@@ -118,7 +118,7 @@ impl Feeds {
             |_| held.borrow_mut().take(),
             &ui::history_source::ThreadWords,
         );
-        let page = log.page(after);
+        let page = log.page(after, caller.acting().member_id());
         drop(logs);
         Ok(page)
     }

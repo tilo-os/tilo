@@ -2613,6 +2613,7 @@ mod tests {
             untitled: None,
             search_kind: None,
             people: Vec::new(),
+            readers: None,
         }));
         DynResource::empty(schema).unwrap_or_else(|e| panic!("{e}"))
     }

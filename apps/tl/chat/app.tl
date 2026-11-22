@@ -109,14 +109,17 @@ type Thread {
     reports: Collection<Report>
 }
 
-/// A private conversation: one other person, or a named group of them, in the same message
-/// model as a channel. Who is in it is its `people`, drawn from the workspace's members; its
-/// place in the sidebar is a person (`ui.NavItem(person: ...)`), so a direct message reads as
-/// the person's row and a group as its own. A one-to-one talks like any conversation.
-type Direct {
+/// A private conversation between people of the workspace, in the same message model as a
+/// channel: the person who opened it and the one they opened it with, or one person alone for
+/// their notes to self. Only its `people` read it and what it holds; no other member does, the
+/// workspace's owner included. Its place in the sidebar is the other person's row
+/// (`ui.NavItem(person: ...)`).
+type Direct (readers: people) {
     name: Text
-    /// The one person it is with, for a direct message. TODO(language): a group holds several
-    /// (`people: Set<Actor>`); the language has no set literal to make one yet.
+    /// Who is in it, each once.
+    people: List<Actor>
+    /// The one person an earlier version kept it with, before it said who is in it: what its
+    /// migration reads (`carry_direct_people`).
     person: Actor
     messages: Collection<Message>
     threads: Collection<Thread>
@@ -196,6 +199,29 @@ action add_voice_channel(c: Category, name: Text = std.say("Voice")) -> VoiceCha
     c.channels.insert(VoiceChannel(name: name))
 }
 
+/// The direct conversations an earlier version kept with one person alone (`person`), which
+/// every member could read: in each are that person and whoever opened it, as its history says.
+/// One no person opened (its maker is not known, or was software) is read by that person alone,
+/// never by everyone.
+migration action carry_direct_people(all: Conversations) {
+    for item in all.channels {
+        match item {
+            c: Category => {}
+            ch: TextChannel => {}
+            d: Direct => {
+                if d.people.is_empty() {
+                    d.people = [d.person]
+                    if let opener = created(d)?.who {
+                        if opener.kind() == .person {
+                            d.people = people_of(opener, d.person)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The conversations the native Chat kept before this app took its id over, carried into these
 /// once: its categories and channels in the sidebar's order, each with its name and topic, and
 /// every message of a channel with what it said, whether it was pinned and the id it had there.
@@ -204,8 +230,9 @@ action add_voice_channel(c: Category, name: Text = std.say("Voice")) -> VoiceCha
 /// message, when, and its reactions are kept with it. A problem report filed there is a message of
 /// the channel it was filed in, among the others by when it was filed, and that channel is the one
 /// [`report_problem`] files in now. What this app has no place for is set aside in a category of its
-/// own instead of dropped: an archived channel, and each direct conversation, as a channel holding
-/// its messages. The native app's own documents are left as they are.
+/// own instead of dropped: an archived channel, as a channel holding its messages. Each direct
+/// conversation is a direct conversation here too, of the people its id names, and read by them
+/// alone. The native app's own documents are left as they are.
 migration action carry_native_chat(all: Conversations) {
     let earlier = earlier(all)
     // Oldest first: when each was written, the same time by id.
@@ -244,14 +271,19 @@ migration action carry_native_chat(all: Conversations) {
         }
     }
     let aside = channels.filter(e -> set_aside(e))
-    // A direct conversation is named by the members it is with, and kept nowhere but in the ids
-    // of its messages' conversation.
-    let directs: Map<Text> = Map<Text>()
+    // A direct conversation is kept nowhere but in the ids of its messages' conversation, which
+    // name its people: it comes in as a direct conversation of theirs, read by them alone.
+    let directs: Map<Direct> = Map<Direct>()
     for m in messages {
         let to = channel_of(m)
-        if to.starts_with("direct:") { directs.put(to, members_of(to)) }
+        if to.starts_with("direct:") and directs.get(to) == .none {
+            let people = m.members.get("channel") ?? []
+            let d = all.channels.insert(Direct(name: members_of(to), people: people), id: to)
+            d.people = people
+            directs.put(to, d)
+        }
     }
-    if not aside.is_empty() or not directs.keys().is_empty() {
+    if not aside.is_empty() {
         let c = all.channels.insert(Category(name: "Set aside"), id: "set-aside")
         for ch in aside {
             let kind = if was_voice(ch) {
@@ -268,17 +300,6 @@ migration action carry_native_chat(all: Conversations) {
                 id: ch.id,
             )
             carried.put(ch.id, made)
-        }
-        for to in directs.keys() {
-            let members = directs.get(to) ?? ""
-            let made = c.channels.insert(
-                TextChannel(
-                    name: members,
-                    topic: "A direct conversation of the native Chat, between {members}",
-                ),
-                id: to,
-            )
-            carried.put(to, made)
         }
     }
     for to in carried.keys() {
@@ -312,6 +333,47 @@ migration action carry_native_chat(all: Conversations) {
             }
         }
     }
+    for to in directs.keys() {
+        if let d = directs.get(to) {
+            let here = messages.filter(e -> (e.texts.get("channel") ?? "") == to)
+            let tops = here.filter(e -> (e.texts.get("parent") ?? "") == "")
+            let ids = tops.map(e -> e.id)
+            let stays = here.filter(e -> not ids.contains(e.texts.get("parent") ?? ""))
+            let posted: Map<Message> = Map<Message>()
+            for e in stays {
+                posted.put(e.id, d.messages.insert(native_message(e), id: e.id))
+            }
+            for e in tops {
+                let replies = here.filter(r -> (r.texts.get("parent") ?? "") == e.id)
+                if let m = posted.get(e.id), first = replies.first() {
+                    let t = d.threads.insert(Thread(name: m.body.excerpt))
+                    m.thread = t
+                    for r in replies {
+                        let reply = t.messages.insert(native_message(r), id: r.id)
+                        if (r.lists.get("quoted") ?? []).len() > 0 {
+                            reply.reply_to = m
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Who is in a direct conversation `opener` opens with `who`: the two of them, or `opener` alone
+/// for their notes to self.
+fn people_of(opener: Actor, who: Actor) -> List<Actor> {
+    if opener == who { [opener] } else { [opener, who] }
+}
+
+/// Whether `people` are the people of `d`, each once, in any order.
+fn same_people(d: Direct, people: List<Actor>) -> Bool {
+    d.people.len() == people.len() and people.all(p -> d.people.contains(p))
+}
+
+/// Who of `d`'s people is not `me`: the person the conversation is with, none for notes to self.
+fn other_in(d: Direct, me: Actor) -> Option<Actor> {
+    d.people.filter(p -> p != me).first()
 }
 
 /// Whether the native channel `e` has no place among this app's channels: an archived one.
@@ -423,31 +485,33 @@ action report_problem(all: Conversations, body: RichText) -> Message (
     send(all.channels.insert(TextChannel(name: "feedback"), key: "feedback"), body)
 }
 
-/// Opens the direct message with `who`, in the sidebar, or the one already open with them: a
-/// person has one conversation, not a new empty one each time.
+/// Opens the direct message between the invoker and `who`, in the sidebar, or the one already
+/// open between the two of them: two people have one conversation, not a new empty one each
+/// time. With yourself it is your notes to self.
 action message_person(all: Conversations, who: Actor) -> Direct (
     icon: .message_circle,
     label: "Message",
 ) {
-    // The one already open with them, else a new one in the sidebar: a person has one
-    // conversation, not a new empty one each time.
+    let people = people_of(invoker, who)
     for item in all.channels {
         match item {
             c: Category => {}
             ch: TextChannel => {}
             v: VoiceChannel => {}
             d: Direct => {
-                if d.person == who {
+                if same_people(d, people) {
                     return d
                 }
             }
         }
     }
-    let d = all.channels.insert(Direct(name: who.name(), person: who))
+    // Named by its people, so two devices opening it apart, offline, open the same one.
+    let key = people.map(p -> p.id()).sort_by(x -> x).join(",")
+    let d = all.channels.insert(Direct(name: who.name(), people: people), key: "direct:{key}")
     // Its fields written, so the resource holds the conversation from its first press: an item
     // stored by its id alone is found only once it says something.
     d.name = who.name()
-    d.person = who
+    d.people = people
     d
 }
 
@@ -467,12 +531,12 @@ action send(
             let sent = d.messages.insert(m)
             // Writing to an agent asks it, made from the message, whose replies stand under it.
             // Nothing said goes to an agent that may not read it.
-            if d.person.kind() == .agent {
+            for p in d.people.filter(p -> p != invoker and p.kind() == .agent) {
                 agent
                     .ask(
                         agent.agents,
-                        d.person,
-                        if std.may_read(d.person, sent) { body } else { RichText("") },
+                        p,
+                        if std.may_read(p, sent) { body } else { RichText("") },
                     )
                     .made_from(sent)
             }
@@ -669,7 +733,9 @@ view unread(all: Conversations) {
             c: Category => unread_in(c),
             ch: TextChannel => if first_unseen(ch) != .none { [ch] } else { [] },
             v: VoiceChannel => [],
-            d: Direct => if first_unseen(d) != .none { [d] } else { [] },
+            d: Direct => if d.people.contains(workspace.me) and first_unseen(d) != .none {
+                [d]
+            } else { [] },
         },
     )
     std.place(all, "Unread", needing) { x ->
@@ -787,28 +853,30 @@ view sidebar(all: Conversations) {
                                 }
                             }
                             d: Direct => {
-                                // A direct conversation reads as the person's row: their avatar and
-                                // presence. The conversation with yourself is your notes, and says
-                                // so.
-                                if d.person == workspace.me {
-                                    ui.NavItem(
-                                        "/dm/{d.name}",
-                                        "Notes to self",
-                                        icon: .bookmark,
-                                        item: d,
-                                        mentions: mentions(d),
-                                    ) {
-                                        on select: set(shown, "/dm/{d.name}").then(open(d))
-                                    }
-                                } else {
-                                    ui.NavItem(
-                                        "/dm/{d.name}",
-                                        d.name,
-                                        person: d.person,
-                                        item: d,
-                                        mentions: mentions(d),
-                                    ) {
-                                        on select: set(shown, "/dm/{d.name}").then(open(d))
+                                // A direct conversation reads as the other person's row: their
+                                // avatar and presence. The conversation with yourself is your
+                                // notes, and says so. One you are not in is not yours to see.
+                                if d.people.contains(workspace.me) {
+                                    if let other = other_in(d, workspace.me) {
+                                        ui.NavItem(
+                                            "/dm/{other.id()}",
+                                            other.name(),
+                                            person: other,
+                                            item: d,
+                                            mentions: mentions(d),
+                                        ) {
+                                            on select: set(shown, "/dm/{other.id()}").then(open(d))
+                                        }
+                                    } else {
+                                        ui.NavItem(
+                                            "/dm/self",
+                                            "Notes to self",
+                                            icon: .bookmark,
+                                            item: d,
+                                            mentions: mentions(d),
+                                        ) {
+                                            on select: set(shown, "/dm/self").then(open(d))
+                                        }
                                     }
                                 }
                             }
@@ -889,7 +957,15 @@ view direct(d: Direct) {
                 }
             }
             direct_typing_here(d)
-            composer(d, d.messages, draft, replying, "Message {d.name}")
+            composer(
+                d,
+                d.messages,
+                draft,
+                replying,
+                if let other = other_in(d, workspace.me) {
+                    "Message {other.name()}"
+                } else { "Message {d.name}" },
+            )
         }
     }
 }
@@ -946,7 +1022,7 @@ view voice_summary(v: VoiceChannel) {
 view direct_summary(d: Direct) {
     let last = d.messages.last()
     row(
-        if d.person == workspace.me { "Notes to self" } else { d.name },
+        if let other = other_in(d, workspace.me) { other.name() } else { "Notes to self" },
         secondary: if let m = last { m.body.excerpt } else { "" },
         icon: .message_circle,
     )

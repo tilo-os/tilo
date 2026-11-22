@@ -66,6 +66,15 @@ d-ofad24rc = Reaktionen
 d-dh6346no = Gesendete Ansicht
     .doc = Eine Ansicht, die die Nachricht sendet, so wie ihr Absender sie unter seinen Ansichten hatte: ihre tilolang-Definition, die wer sie liest den eigenen Ansichten hinzufügt (das `add` von Views), ihr Autor wer die Nachricht gesendet hat.
 
+d-tz5yw5dt = Von
+    .doc = Wer sie im nativen Chat geschrieben hat, wie jene App sie nannte, für eine von dort übernommene Nachricht: ihr eigener Verlauf nennt, wer sie übernommen hat und wann.
+
+d-mmlcexsa = Geschrieben
+    .doc = Wann sie im nativen Chat geschrieben wurde, in Millisekunden seit 1970; 0 für eine hier geschriebene Nachricht.
+
+d-jcgolgdf = Reagiert
+    .doc = Die Reaktionen, die sie im nativen Chat hatte, jedes Emoji mit der Zahl derer, die damit reagiert haben: wer dort reagiert hat, wird nicht übernommen, da diese App Personen nur als ihre eigenen Mitglieder nennt.
+
 d-hk2t6bvk-filter-pinned = Angeheftet
 
 d-6qpql3pg = Thread
@@ -84,7 +93,7 @@ d-2ki7h2z5 = Archiviert
 d-6qpql3pg-filter-archived = Archiviert
 
 d-5nkbpj6q = Direkt
-    .doc = Eine private Unterhaltung: eine andere Person, oder eine benannte Gruppe von ihnen, im selben Nachrichtenmodell wie ein Kanal.
+    .doc = Eine private Unterhaltung zwischen Personen des Arbeitsbereichs, im selben Nachrichtenmodell wie ein Kanal: wer sie geöffnet hat und mit wem, oder eine Person allein für Notizen an sich selbst.
     .noun = { $count ->
         [one] Direktnachricht
        *[other] Direktnachrichten
@@ -92,8 +101,11 @@ d-5nkbpj6q = Direkt
 
 d-5stv6ro7 = Name
 
+d-wph25aa5 = Personen
+    .doc = Wer darin ist, jede Person einmal.
+
 d-ycadyqh5 = Person
-    .doc = Die eine Person, mit der sie ist, für eine Direktnachricht.
+    .doc = Die eine Person, mit der eine frühere Version sie führte, bevor sie sagte, wer darin ist: was ihre Migration liest (`carry_direct_people`).
 
 d-y65whtrn = Nachrichten
 
@@ -138,8 +150,11 @@ d-v6wnfixl = Problem melden~present
 
 d-abono4ra-topic = Thema
 
+d-tkh5jonr = Personen der Direktnachrichten übernehmen
+    .doc = Die Direktnachrichten, die eine frühere Version mit nur einer Person führte (`person`) und die jedes Mitglied lesen konnte: in jeder sind diese Person und wer sie geöffnet hat, wie ihr Verlauf sagt.
+
 d-3cetzzm3 = Nachricht
-    .doc = Öffnet die Direktnachricht mit `who` in der Seitenleiste, oder die schon offene mit ihm: eine Person hat eine Unterhaltung, nicht jedes Mal eine neue leere.
+    .doc = Öffnet die Direktnachricht zwischen dem Aufrufer und `who` in der Seitenleiste, oder die schon offene zwischen den beiden: zwei Personen haben eine Unterhaltung, nicht jedes Mal eine neue leere.
 
 d-peb7lz2j = Senden
     .doc = Veröffentlicht eine Nachricht in einem Kanal, einem Thread oder einer Direktunterhaltung als der, der es aufträgt, und antwortet auf eine andere, wenn `reply_to` eine nennt.
@@ -292,15 +307,6 @@ d-qnkkcusk = Sprachkanal
 
 d-lkjppscz = Sprachkanalübersicht
 
-d-tz5yw5dt = Von
-    .doc = Wer ihn im früheren Chat geschrieben hat, so wie jene App die Person nannte, für eine von dort übernommene Nachricht: die eigene Historie nennt, wer sie übernommen hat, und wann.
-
-d-mmlcexsa = Geschrieben
-    .doc = Wann er im früheren Chat geschrieben wurde, in Millisekunden seit 1970; 0 für eine hier geschriebene Nachricht.
-
-d-jcgolgdf = Reagiert
-    .doc = Die Reaktionen, die er im früheren Chat hatte, jedes Emoji mit der Zahl derer, die damit reagiert haben: wer dort reagiert hat, wird nicht übernommen, da diese App Personen nur als ihre eigenen Mitglieder nennt.
-
 d-aod7dups = Früheren Chat übernehmen
     .doc = Die Unterhaltungen, die der frühere Chat vor der Übernahme dieser Kennung hielt, einmalig in diese übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jeweils mit Name und Thema, und jede Nachricht eines Kanals mit ihrem Wortlaut, ob sie angeheftet war und welche Kennung sie dort hatte.
 
@@ -369,18 +375,6 @@ d-qfzfo5jh = Entscheiden
     .w-say-what-was-decided = Sag, was entschieden wurde
 
 d-qfzfo5jh-decision = Entscheidung
-
-d-tz5yw5dt = Von
-    .doc = Wer sie dort geschrieben hat, wo sie geschrieben wurde, so wie dieser Ort die Person nannte, bei einer aus dem nativen Chat übernommenen oder von einem anderen Dienst weitergeleiteten Nachricht: ihr eigener Verlauf nennt, wer sie übernommen oder weitergeleitet hat.
-
-d-mmlcexsa = Geschrieben
-    .doc = Wann sie dort geschrieben wurde, in Millisekunden seit 1970; 0 bei einer hier geschriebenen Nachricht.
-
-d-jcgolgdf = Reaktionen dort
-    .doc = Die Reaktionen, die sie im nativen Chat hatte, jedes Emoji mit der Zahl derer, die damit reagiert haben: wer dort reagiert hat, wird nicht übernommen, da diese App Personen nur als ihre eigenen Mitglieder nennt.
-
-d-aod7dups = Nativen Chat übernehmen
-    .doc = Die Unterhaltungen, die der native Chat führte, bevor diese App seine Kennung übernahm, einmal hierher übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jeder mit Name und Thema, und jede Nachricht eines Kanals mit dem, was sie sagte, ob sie angeheftet war, und der Kennung, die sie dort hatte.
 
 d-6372fg6z-to = In
 
