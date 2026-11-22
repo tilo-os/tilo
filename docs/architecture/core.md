@@ -56,7 +56,8 @@ one resource to everyone.
   are only appended. The current state, and every past state, come from them.
 - Every device runs the same engine. Devices differ only in how much they
   keep and which work they take. A server is a device that keeps
-  more. A store holds sealed changes and forwards them, but cannot read them.
+  more. A device without a resource's keys keeps and forwards its sealed changes
+  without reading them.
   A workspace held only by one person's computer is complete.
 - Changes move over one link, device to device. Reaching a device through a
   server means reaching it through a device that is online.
@@ -136,9 +137,8 @@ call (`tilo_action_policy::Acting`, `admit_invocation`).
 An agent or an automation acts with a subset of its person's permissions,
 by default the largest one. Granting it less works the
 way granting a person less does. It acts on undoable things without asking,
-which is most of what happens in a workspace. It runs on the person's
-devices, like everything else, and does whatever it or its person starts it
-on.
+which is most of what happens in a workspace. It runs on the workspace's
+devices, like everything else (see where work runs).
 
 An agent is started by triggers, the same triggers a shortcut or any other
 automation uses: anything that can be watched, such as a mention anywhere, a
@@ -148,16 +148,8 @@ expect (mentions, direct messages, assigned tasks), and its person changes them
 like any automation's. A trigger starts a turn, and the agent answers where it
 was triggered: in the chat, on the task, in the note. There is no separate
 record of asking. The agent engine runs inside each device's one daemon and runs the
-agent's triggers; it never reads an app's own fields. Which eligible device takes a turn is decided in
-one function, `tilo_workspace_service::work::takes_turn`: an eligible device
-claims the turn with an ordinary change, the earliest claim wins, and a claim
-that writes nothing for a minute may be taken over. A lease is workspace state
-every device reads. The host declares `workspace` as one read-only resource with a tilolang
-schema, and its `leases` are keyed by the agent and the place it was triggered about; a
-lease's `device` is the device whose claim stands now. A
-require reads it like any record (`workspace.leases.get(...)`), and `workspace.members` and
-`workspace.me` move onto the same resource, so the host fields under `workspace.` go. A require sees the device that signed an
-invocation as `invoker.device`; the refusal notice's require is that the two match. Everything a turn writes
+agent's triggers; it never reads an app's own fields. Which eligible device runs a turn is the one placement rule of where work
+runs, decided in one function, `tilo_workspace_service::work::takes_turn`. Everything a turn writes
 is a member write for the agent, signed by the device that runs it.
 
 An agent is a reader in its own right. Its member key is in the reader set
@@ -166,25 +158,19 @@ is sealed for Ada and the agent, never for Ada alone. A device that runs the
 agent, the tilo.sh server included, holds the agent's keys and so opens
 exactly the records the agent reads, and no others. A device that cannot
 open the record a trigger is about is not eligible to take its turn.
-A sub-agent or coding agent that an agent starts acts as its starter's
-approved key, narrowed to its own conversation: a grant only narrows what
-its giver holds. Any device of the person an agent acts for may approve
-that agent. Any member who may write where an agent is may talk to it,
+A sub-agent or coding agent that an agent starts is one more actor in the
+chain, so it does no more than everyone before it may. Any device of the
+person an agent belongs to may approve that agent. Any member who may write where an agent is may talk to it,
 whoever the agent belongs to. A turn answering a person runs with no more
 than both of them may do: the agent's own grants and the grants of the person
 whose message it answers, the smaller of the two on every resource. Ada's
-agent answering Bo reads and changes only what Ada's agent and Bo both may. A turn that has no approved caller writes its refusal into the
-conversation, with the reason, and ends. It is written as the device that took
-the turn, whose grant is that one notice in that one place. A handed node
-for a sub-agent is decided together with its signer and only narrows it.
+agent answering Bo reads and changes only what Ada's agent and Bo both may. An agent nobody has approved is not
+triggered; the agent shows that it waits for approval.
 
 A member change (add, role, remove) is an ordinary action on
-`workspace/members`, run and signed by the device that writes it. That
-device admits the call itself with `admit_invocation` over its synced
-grants and asks its person through the Confirm frame. A workspace always keeps
-one owner, and a server's person has no special place in it. A member may
-remove themselves or someone ranked below them, and an agent may do what its person may once
-its person says yes.
+`workspace/members`, admitted by grants like every other action (an Ask grant
+when someone wants to confirm it). A workspace always keeps one owner, and a
+server's person has no special place in it.
 
 A server runs an app's code for the person at the page, under that
 person's grants, never as a person of its own. Carrying an app's old data
@@ -229,9 +215,8 @@ holds a certificate. The issuer is any device of the person: a browser tab,
 a desktop or a server. A tab has no endpoint, so the page's host serves its
 ticket and the tab signs the approval. A tab that holds no root signs in the
 other way round: its ticket names the tab's pending request, and the person runs
-`tilo device add <ticket>` on a device that is logged in, which signs the tab's
-certificate with its device key (member, 30 days; a certificate a device signed
-signs nothing). `tilo login` is always this computer logging in. There is no site lookup. `/v1` REST is only an edge
+`tilo device add <ticket>` on a device that is logged in, and the person's root certifies the tab
+like any other device. `tilo login` is always this computer logging in. There is no site lookup. `/v1` REST is only an edge
 for callers outside Tilo.
 
 ### Where work runs
@@ -246,7 +231,8 @@ An action that needs what not every device has (a secret it may not read, a
 local model or GPU, Linux, a particular piece of hardware, a connection that
 stays up such as fetching mail) runs on a device of the workspace that has it:
 the starting device if it qualifies, otherwise an always-on server, otherwise
-any other. It runs under the caller's grants, streams its progress and output
+any other, decided in one function (`work::takes_turn`); a device that stops
+writing for a minute loses the work to the next. It runs under the caller's grants, streams its progress and output
 back to the caller as it goes, and ends in a result or a legible error the
 caller sees, and the caller can cancel it. What it writes goes into resources,
 so every view shows it, and work that outlives its device is carried on by
@@ -885,7 +871,7 @@ waits on, if anything.
 |---|---|---|---|
 | Devices, identity | `tilo-enrollment`, `tilo-device-admin`, `threshold-identity`, nearby pairing and Settings' old add-a-device flow, the browser root, and the page's own copy of `device-key.mjs`'s reader | the build server signed in from the laptop's root; Settings adds a device with a ticket and nearby pairing goes (−2.4k); the tilo.sh page checks approve with `tilo device add` and the page's login-code path goes in the same push; `page.mjs` imports `device-key.mjs`. `tilo device add` and `tilo login` are daemon ticket actions, and first boot, onboarding and the imager carry no identity of their own since eb928484901 (−6.6k); the boot key is an ordinary device certificate since 3ec9b6ef0b1 | One identity |
 | Sync | host retained store (`store/`, `persistence.rs`, `compaction.rs`, `tilo-server-store`), delta and co-edit envelopes, the file path's tail (the Files daemon's keys from the identity service; `kept_documents`, which goes because a mount write is durable once it is in the device's one store; `runtime-fs` blobs and `content-device`, after apps read content through the broker; `DISCOVERY_ALPN` at the next peer-version bump), broker overlap, `settings-store` document layer, `app-state` `FsStore` | one store −40k (waits on the company move's OK), the file path's tail; one file path landed in c4f20cecac1 (−15.1k) | One engine |
-| tilolang store | the redb pager outside resource-store; open, switch and scroll above their bars after the move (465, 108 and 43 ms against 289, 60 and 25); the host fields under `workspace.` (`workspace_field`, `Imp::WorkspaceMembers`) beside the `workspace` resource | the costs first, then the pager into resource-store; `workspace.members` and `me` onto the `workspace` resource with the host fields deleted, right after the lease read lands; the store move landed in e39e9557706 (−49.7k) | tilolang onto the resource store |
+| tilolang store | the redb pager outside resource-store; open, switch and scroll above their bars after the move (465, 108 and 43 ms against 289, 60 and 25); the host fields under `workspace.` (`workspace_field`, `Imp::WorkspaceMembers`), the host-declared `workspace` resource with `leases`, and `invoker.device` (6f60017184b) | the costs first, then the pager into resource-store; tilolang reads `workspace/members` as the ordinary published resource, and the host fields, the `workspace` resource, its `leases` and `invoker.device` are deleted; the store move landed in e39e9557706 (−49.7k) | tilolang onto the resource store |
 | App framework | Rust Chat (71k), Rust Tasks (13.5k), `apps/tilolang` (21k), 65 `*-model` crates, `tilo-view`, `tilo-app` `framework/` (64k) after the ports, the Rust shell, the toolkit's second action path, `PreparedIdentity` in the imager (an identity prepared on the install media) and the in-Tilo imager app; the standalone writer and the installer stay programs that run before Tilo exists and write no identity; a capture before the wipe goes to a folder on the new encrypted disk, which `tilo migrate` reads after login | Chat deletion −145k on one branch, Tasks with Notes on the web −14k, shell context menu | Delete Rust Chat; Rust apps to tilolang; cleanup |
 | Agents | `coding_agents` (4k) and every Claude-specific path, the other agent engines | C −6k | Agent engines |
 | Workspace | `PersonalStore` and `state/personal`, `device_sessions.rs`, `AccountStore` and the `accounts` crate (Settings, the imager, the installer's `store.json`), fake-oauth, `PersonAccounts`, governor role, `Membership`/`WorkspaceRuntime`, `Agent.keeper` (back from main's agent engine) | one push on top of main for all of these, `keeper` becoming the person the agent acts for; the own-document path, the wire `own` field, the settings-store person document, the home-peer registry and per-device accounts are gone since 65a7b8b31c3 (−5.7k), and the person's settings, formats, region, devices and servers are resources of their own workspace | one workspace |
