@@ -167,11 +167,12 @@ of the resource shows the change and who made it, and an agent can attach
 that view to its answer.
 
 Our own code calls only over the device link (`tilo-actions/1` on iroh).
-That includes signing in: `tilo login` is an action to the server, with the
-login code as its input, which the server admits before the device holds a
-certificate. A device finds a site's server by the iroh endpoint id the site
-publishes in DNS (`_tilo.<site>` TXT; tilo.sh unless `TILO_SITE` says
-otherwise). `/v1` REST is only an edge for callers outside Tilo.
+That includes signing in: `tilo login <ticket>` connects straight to the
+device that issued the ticket (its iroh endpoint id, a relay hint and a
+one-time secret) and calls the certify action there, before the new device
+holds a certificate. The issuer is any device of the person: a browser tab,
+a desktop or a server. There is no site lookup. `/v1` REST is only an edge
+for callers outside Tilo.
 
 ### Views
 
