@@ -1712,6 +1712,7 @@ fn scrollback_viewport_and_scrollbar_track_output() {
         assert!(w.scroll_offset() > 0);
 
         out_tx.send(b"LINE060\r\n".to_vec()).unwrap();
+        w.update(&doc, &automerge::ROOT);
         w.sync(&doc, &automerge::ROOT);
         assert_eq!(w.scroll_offset(), 0, "new output snaps to the live bottom");
         let after = w.visible_lines();
@@ -3175,6 +3176,7 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         command.arg("printf new-session-output");
         let mut fresh = TerminalWidget::spawn_command(command).expect("new local terminal");
         tilo_test_env::wait_until("the new session's output on the grid", || {
+            fresh.update(&doc, &automerge::ROOT);
             fresh.sync(&doc, &automerge::ROOT);
             fresh.grid_text().contains("new-session-output")
         });

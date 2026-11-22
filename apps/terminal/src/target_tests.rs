@@ -74,6 +74,7 @@ tilo_test_env::scenario! {
 
         *allowed.borrow_mut() = true;
         reply.upgrade().unwrap().borrow_mut().answer = Some(true);
+        widget.update(&doc, &ROOT);
         widget.sync(&doc, &ROOT);
         assert_eq!(widget.session_state(), &OpenState::Open);
         let log = opened.borrow();
@@ -426,6 +427,7 @@ tilo_test_env::scenario! {
         let settle =
             |widget: &mut TerminalWidget, what: &str, done: &dyn Fn(&TerminalWidget) -> bool| {
                 tilo_test_env::wait_until(what, || {
+                    widget.update(&doc, &ROOT);
                     widget.sync(&doc, &ROOT);
                     done(widget)
                 });

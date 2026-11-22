@@ -20,6 +20,7 @@ tilo_test_env::scenario! {
             .expect("spawn short-lived pty command");
         let doc = AutoCommit::new();
         tilo_test_env::wait_until("the short-lived command to end", || {
+            widget.update(&doc, &ROOT);
             widget.sync(&doc, &ROOT);
             widget.is_disconnected()
         });
@@ -62,6 +63,7 @@ tilo_test_env::scenario! {
                       what: &str,
                       done: &dyn Fn(&TerminalWidget) -> bool| {
             tilo_test_env::wait_until(what, || {
+                widget.update(doc, &ROOT);
                 widget.sync(doc, &ROOT);
                 done(widget)
             });
