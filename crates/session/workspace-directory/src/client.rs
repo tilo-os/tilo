@@ -172,9 +172,11 @@ struct HomeJson {
 #[derive(Deserialize)]
 struct HostJson {
     origin: String,
-    /// Who the host is and where it is dialled (the web entry's `TILO_WEB_HOME_HOST_INFO`).
+    /// Who the host is and where it is dialled: the web entry's
+    /// `TILO_WEB_HOME_HOST_INFO`, the host's `web-host.json` line served as a
+    /// string, which the page keeps as the text it was served.
     #[serde(default)]
-    info: Option<tilo_server_protocol::web::PageHost>,
+    info: Option<String>,
 }
 
 /// A site's home workspace, as its `entry.json` names it.
@@ -238,11 +240,24 @@ fn home_workspace(entry: &url::Url, home: &HomeJson) -> Result<SiteWorkspace, Si
     } else {
         home.name.trim().to_owned()
     };
+    let host = home
+        .host
+        .info
+        .as_deref()
+        .map(serde_json::from_str::<tilo_server_protocol::web::PageHost>)
+        .transpose()
+        .map_err(|error| {
+            said(
+                "a site names its host in a form this computer cannot read",
+                error,
+                "directory-error-no-workspace",
+            )
+        })?;
     Ok(SiteWorkspace {
         entry: entry.clone(),
         name,
         admission,
-        host: home.host.info.clone(),
+        host,
     })
 }
 
