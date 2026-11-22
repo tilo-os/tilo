@@ -134,6 +134,8 @@ pub struct Replied {
     pub state: AskState,
     /// Its body, as written text.
     pub body: String,
+    /// What its model thought on the way, as its provider showed it.
+    pub thinking: String,
     pub superseded: bool,
 }
 
@@ -270,6 +272,7 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
                 attempt: int(read(opened, reply, "attempt").as_ref()),
                 state: state_of(&meta, read(opened, reply, "state")),
                 body: text(read(opened, reply, "body")),
+                thinking: text(read(opened, reply, "thinking")),
                 superseded: matches!(read(opened, reply, "superseded"), Some(Value::Bool(true))),
             })
             .collect();
@@ -469,6 +472,27 @@ pub fn say(
                 Value::resource(reply),
                 Value::Rich(RichValue::from_text(more)),
             ],
+            None,
+        )
+        .map(drop)
+}
+
+/// Append `more` to the thinking of `reply`, as `agent`: what its model thought, as its provider
+/// shows it, each new piece and never the whole again.
+///
+/// # Errors
+/// The reply is no longer working, or the package refused it.
+pub fn think(
+    opened: &mut Opened,
+    agent: &MemberId,
+    reply: &ResourceRef,
+    more: &str,
+) -> Result<(), String> {
+    opened
+        .invoke(
+            &self::agent(agent),
+            (AGENT_APP, "think"),
+            vec![Value::resource(reply), Value::Text(more.into())],
             None,
         )
         .map(drop)

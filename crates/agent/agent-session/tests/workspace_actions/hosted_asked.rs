@@ -255,12 +255,14 @@ async fn a_hosted_agent_answers_the_message_that_mentions_it() {
 enum Next {
     /// It writes these words.
     Writes(&'static str),
+    /// It thinks these words, and shows them.
+    Thinks(&'static str),
     /// It waits until the test lets it go on.
     Waits,
     /// It lists the workspace through its tool, which ends the call.
     Looks,
 }
-use Next::{Looks, Waits, Writes};
+use Next::{Looks, Thinks, Waits, Writes};
 
 /// A provider the workspace linked that writes each answer piece by piece, as a provider
 /// streams it.
@@ -287,6 +289,9 @@ impl ModelProvider for Writing {
                         });
                         said.push_str(words);
                     }
+                    Thinks(words) => events(StreamEvent::ReasoningDelta {
+                        text: words.to_owned(),
+                    }),
                     Waits => {
                         self.waited.fetch_add(1, Ordering::SeqCst);
                         self.paused.acquire().await.unwrap().forget();
@@ -359,8 +364,8 @@ async fn begin(
     tokio::spawn(async move { agents.answer(&workspace, &turn).await })
 }
 
-/// Her agent's model writes its first sentences and is still writing: they stand in the reply
-/// already, and the reply is working. When the model has written the rest, the reply reads the
+/// Her agent's model thinks, then writes its first sentences and is still writing: they stand
+/// in the reply already, its thinking beside them, and the reply is working. When the model has written the rest, the reply reads the
 /// whole answer and is done.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_grows_while_its_model_writes_it() {
@@ -369,6 +374,7 @@ async fn a_reply_grows_while_its_model_writes_it() {
         &workspaces,
         &workspace,
         [vec![
+            Thinks("May has the fewest clashes."),
             Writes("The launch is planned "),
             Writes("for May. "),
             Waits,
@@ -400,6 +406,10 @@ async fn a_reply_grows_while_its_model_writes_it() {
         grown.state,
         AskState::Working,
         "a reply that grows works on"
+    );
+    assert_eq!(
+        grown.thinking, "May has the fewest clashes.",
+        "what its model thought shows beside the answer, never in it"
     );
 
     theirs.paused.add_permits(1);

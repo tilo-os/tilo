@@ -78,7 +78,6 @@ mod asking;
 mod asks;
 mod calendar_connect;
 mod calendars;
-mod carried;
 mod coding;
 mod going;
 mod instructions;
@@ -1243,8 +1242,9 @@ impl ServerAgents {
         founded.is_ok()
     }
 
-    /// What `workspace`'s conversations ask of `agents`: the turns they owe, and the turns a
-    /// person stopped whose work is not ended yet.
+    /// What `workspace`'s Rust Chat conversations still hold for `agents`: the questions they
+    /// asked that wait, the answers that owe a turn, and the team's sub-agents. Turns are asks of
+    /// the agent package ([`asked`]), never read from these conversations.
     async fn chat_asks(
         &self,
         workspace: &str,
@@ -1279,63 +1279,6 @@ impl ServerAgents {
             waiting.extend(self::asks::waiting_in(workspace, document, &part, agents));
             answered.extend(answers::answered_in(&part, agents));
             woken.extend(answers::woken_in(&part));
-            for summons in chat::summons::summonses(&chat, &part) {
-                let Some(agent) = agents.get(&summons.agent) else {
-                    continue;
-                };
-                let Some(message) = part.messages.get(&summons.message) else {
-                    continue;
-                };
-                let request = carried::request(message);
-                // What came before it in the conversation, as every turn is told it: the
-                // same on a host as on the device that would answer it.
-                let told = chat::recall::told(
-                    &chat,
-                    &part,
-                    None,
-                    &summons.conversation,
-                    &summons.message,
-                    &collaboration::permissions::MemberId::agent(&summons.agent),
-                    request,
-                );
-                asks.turns.push(Turn {
-                    agent: agent.clone(),
-                    person: summons.person.clone(),
-                    conversation: summons.address(),
-                    cause: summons.message.to_string(),
-                    request: told.request,
-                    history: told.history,
-                    asked: chat::summons::asked_words(message),
-                    typed: summons.typed,
-                    line: None,
-                    ask: Ask::Message {
-                        part: document.clone(),
-                        message: summons.message.to_string(),
-                        attempt: summons.attempt,
-                    },
-                });
-            }
-            for summons in chat::summons::stopped(&chat, &part) {
-                let Some(agent) = agents.get(&summons.agent) else {
-                    continue;
-                };
-                asks.stopped.push(Turn {
-                    agent: agent.clone(),
-                    person: summons.person.clone(),
-                    conversation: summons.address(),
-                    cause: summons.message.to_string(),
-                    request: String::new(),
-                    history: Vec::new(),
-                    asked: String::new(),
-                    typed: summons.typed,
-                    line: None,
-                    ask: Ask::Message {
-                        part: document.clone(),
-                        message: summons.message.to_string(),
-                        attempt: summons.attempt,
-                    },
-                });
-            }
             team.read(document, &chat, &part);
         }
         self.workspaces.note_waiting(workspace, waiting);
@@ -2822,14 +2765,14 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         })
     }
 
-    /// What the model writes goes into the reply as it comes ([`written`]); what it thinks
-    /// stays with the turn.
+    /// What the model writes and thinks goes into the reply as it comes ([`written`]).
     async fn hear(&self, mut hearing: tilo_agent_turn::Hearing) {
         let writes = written::Writes::default();
         let pumped = async {
             while let Some(pieces) = hearing.next().await {
                 for piece in pieces {
                     match piece {
+                        StreamEvent::ReasoningDelta { text } => writes.thought(&text),
                         StreamEvent::TextDelta { text } => writes.push(&text),
                         // The call broke off and may be asked again: what comes then stands
                         // below.

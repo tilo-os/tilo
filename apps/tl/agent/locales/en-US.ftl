@@ -73,6 +73,9 @@ d-gjd462ep = Ask
 d-oka345cb = Body
     .doc = The answer, growing while the agent writes.
 
+d-czzg7mhh = Thinking
+    .doc = What the agent's model thought on the way, where its provider shows it: growing while it thinks, and never part of the answer.
+
 d-hzlmnzzw = State
 
 d-tnkzsmes = Attempt
@@ -173,6 +176,13 @@ d-s6gerkjs = Say
 
 d-s6gerkjs-more = More
 
+d-jjuslny3 = Think
+    .doc = The agent's model thought `more` on the way, as its provider shows it: at the end of the reply's thinking, beside its answer.
+    .w-only-the-agent-asked-may-answer = Only the agent asked may answer
+    .w-the-answer-is-finished = The answer is finished
+
+d-jjuslny3-more = More
+
 d-6s74tahg = Step
     .doc = The agent called `called` on the way, and it answered `answered`.
     .w-only-the-agent-asked-may-answer = Only the agent asked may answer
@@ -207,6 +217,8 @@ d-o6oeh6vp = Answer~present
 
 d-hdzxkm76 = Say~present
 
+d-645ej5zc = Think~present
+
 d-k36fktxl = Step~present
 
 d-3ebfgkt2 = Finish~present
@@ -219,6 +231,8 @@ d-zfzqq5xy = Asked
 d-bigklctq = Ask row
 
 d-7fu4ujho = Reply
+    .w-thinking = Thinking
+    .w-thought = Thought
 
 d-sglhetw2 = Replies
 
