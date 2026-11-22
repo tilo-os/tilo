@@ -3051,7 +3051,9 @@ impl Workspaces {
         Ok(())
     }
 
-    fn revocations(&self) -> RevocationList {
+    /// The revocations this host holds from its people's roots, as they stand now.
+    #[must_use]
+    pub fn revocations(&self) -> RevocationList {
         self.inner.host.revocations.read_recover().clone()
     }
 }

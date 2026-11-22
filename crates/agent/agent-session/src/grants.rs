@@ -121,6 +121,9 @@ pub struct AgentSessions {
 struct AgentSession {
     link: tilo_session_client::Link,
     roster: Option<(RosterCreatedAt, Delegation)>,
+    /// The agent's own key and the certificate its person issued for it: what each
+    /// invocation a turn of this agent makes is signed with ([`AgentSessions::sign_as`]).
+    signer: (DeviceCert, SigningKey),
 }
 
 impl AgentSessions {
@@ -204,16 +207,50 @@ impl AgentSessions {
         .then_some((link, delegation))
     }
 
-    /// `link` now serves agent `device`'s changes.
+    /// `link` now serves the changes of the agent `identity` certifies.
     pub(crate) fn joined(
         &self,
-        device: [u8; 32],
+        identity: &AgentIdentity,
         link: tilo_session_client::Link,
         roster: Option<(RosterCreatedAt, Delegation)>,
     ) {
-        self.links
+        self.links.lock_recover().insert(
+            identity.cert.device_public_key,
+            AgentSession {
+                link,
+                roster,
+                signer: (identity.cert.clone(), identity.key.clone()),
+            },
+        );
+    }
+
+    /// Sign the invocation `message` carries in `workspace` as the agent `device` names, with
+    /// its own key, while its session is open here: an agent's turn asks the workspace for
+    /// nothing under any key but its own.
+    ///
+    /// # Errors
+    ///
+    /// No session of `device` is open here, or its key does not sign.
+    pub fn sign_as(
+        &self,
+        device: &[u8; 32],
+        workspace: WorkspaceId,
+        message: &mut tilo_actions::remote::RemoteActionMessage,
+    ) -> Result<(), String> {
+        let (cert, key) = self
+            .links
             .lock_recover()
-            .insert(device, AgentSession { link, roster });
+            .get(device)
+            .map(|session| session.signer.clone())
+            .ok_or("the agent's signing session is not open here")?;
+        tilo_server_protocol::invocation::sign_message_now(
+            &workspace.to_string(),
+            message,
+            &cert,
+            &key,
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(|error| error.to_string())
     }
 
     /// Agent `device`'s session ended.

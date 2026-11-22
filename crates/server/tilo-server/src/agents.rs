@@ -1070,6 +1070,13 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
             ))
     }
 
+    fn revocations(&self) -> tilo_user_identity::RevocationList {
+        self.workspaces
+            .as_ref()
+            .map(crate::workspaces::Workspaces::revocations)
+            .unwrap_or_default()
+    }
+
     fn key_revoked(&self, workspace: WorkspaceId, caller: &tilo_actions::remote::Caller) -> bool {
         let Some(workspaces) = self.workspaces.as_ref() else {
             return false;

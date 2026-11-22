@@ -81,6 +81,50 @@ fn grant_state(hosted: &super::Hosted, agent: &str, workspace: WorkspaceId) -> O
         .map(|grant| grant.state)
 }
 
+/// An approved agent's invocations sent straight to the host's workspace actions, as its turn's
+/// tools send them, signed with its own key or not.
+struct Direct<'a> {
+    actions: &'a tilo_agent_session::WorkspaceActions,
+    sessions: &'a tilo_agent_session::AgentSessions,
+    workspace: WorkspaceId,
+    caller: &'a tilo_actions::remote::Caller,
+    device: [u8; 32],
+}
+
+impl Direct<'_> {
+    async fn run(&self, request: tilo_actions::remote::InvokeRequest, signed: bool) -> ReceiptStatus {
+        let mut message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+        if signed {
+            self.sessions
+                .sign_as(&self.device, self.workspace, &mut message)
+                .unwrap();
+        }
+        self.send(message).await
+    }
+
+    async fn send(&self, message: tilo_actions::remote::RemoteActionMessage) -> ReceiptStatus {
+        let answer = self
+            .actions
+            .serve(self.workspace, self.caller, message)
+            .unwrap()
+            .await
+            .unwrap();
+        match answer {
+            tilo_actions::remote::RemoteActionMessage::Receipt(receipt) => receipt.status,
+            other => panic!("an invocation is answered with its receipt: {other:?}"),
+        }
+    }
+}
+
+/// A new sheet `name` in `workbook`.
+fn sheet_request(workbook: &DocumentRoute, name: &str) -> tilo_actions::remote::InvokeRequest {
+    request(
+        &tilo_agent_session::resource_provider(workbook),
+        ActionAddress::new("", "new-sheet"),
+        json(&serde_json::json!({"name": name})),
+    )
+}
+
 fn json(value: &serde_json::Value) -> InvokeArgument {
     InvokeArgument::Json(value.as_object().unwrap().clone())
 }
@@ -487,6 +531,60 @@ async fn a_hosted_roster_turn() {
     );
     let signed = roster_write(&hosted, workspace.workspace_id, &workbook, device).await;
     assert_eq!(signed.len(), 1, "{signed:?}");
+    // The agent's turn asks the workspace only under its own key, which the host checks
+    // before anything runs: unsigned, nothing runs (its signed sheet above ran), and signed by
+    // it, what its grant does not reach is refused.
+    let created_at = workspaces
+        .hosted_roster_agent(workspace.workspace_id, agent, &keeper, None)
+        .await
+        .unwrap()
+        .created_at;
+    let as_agent = tilo_actions::remote::Caller::delegated_agent(agent, keeper, device)
+        .in_workspace(&workspace.workspace)
+        .on_roster_turn(
+            tilo_action_policy::turn::Turn::new(String::new(), String::new()),
+            created_at,
+        );
+    let direct = Direct {
+        actions: &roster.actions,
+        sessions: &sessions,
+        workspace: workspace.workspace_id,
+        caller: &as_agent,
+        device,
+    };
+    let unsigned = direct
+        .run(sheet_request(&workbook, "Unsigned"), false)
+        .await;
+    assert!(
+        matches!(&unsigned, ReceiptStatus::Rejected {
+            error: tilo_actions::remote::ActionCallError::Refused { reason },
+        } if reason.starts_with("invocation_unsigned")),
+        "{unsigned:?}"
+    );
+    let outside = direct
+        .run(
+            request(
+                &tilo_agent_session::resource_provider(&letter),
+                ActionAddress::new("", "append-paragraph"),
+                json(&serde_json::json!({"text": "Outside the grant"})),
+            ),
+            true,
+        )
+        .await;
+    assert_eq!(
+        outside,
+        ReceiptStatus::Rejected {
+            error: tilo_actions::remote::ActionCallError::NotPermitted
+        }
+    );
+    // Signed now, sent once its grant is withdrawn ([`REVOKE_ACTION`] below).
+    let mut late = tilo_actions::remote::RemoteActionMessage::Invoke(sheet_request(
+        &workbook,
+        "After the grant is withdrawn",
+    ));
+    sessions
+        .sign_as(&device, workspace.workspace_id, &mut late)
+        .unwrap();
     let (count, _) = retained_sealed(&hosted, workspace.workspace_id, &tracker, device).await;
     assert_eq!(count, 0);
     let mut store_events = 0;
@@ -627,6 +725,11 @@ async fn a_hosted_roster_turn() {
         InvokeArgument::None,
     )
     .await;
+    let after = direct.send(late).await;
+    assert!(
+        matches!(after, ReceiptStatus::Rejected { .. }),
+        "a withdrawn grant runs nothing its key signed: {after:?}"
+    );
     assert_eq!(
         server
             .roster_session_device(&sessions, workspace.workspace_id, agent, &keeper)

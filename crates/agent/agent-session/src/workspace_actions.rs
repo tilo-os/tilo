@@ -379,6 +379,42 @@ impl WorkspaceActions {
         acts_for(caller, &hex::encode(link.user_public_key()))
     }
 
+    /// That an agent's turn asks for `request` under its own key: an agent working on its turn
+    /// acts only on an invocation its certified key signed, checked as the host checks one
+    /// that comes over the network ([`tilo_server_protocol::invocation::verify_invocation`]):
+    /// the signature, that it covers this very request, its freshness, the certificate's
+    /// chain to its person's root and its revocation, and that the key is the device the
+    /// caller names. Everyone else is admitted as they are.
+    fn signed_by_agent(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<(), String> {
+        if caller.roster_created_at().is_none() {
+            return Ok(());
+        }
+        let revocations = self
+            .shared
+            .link
+            .get()
+            .map(|link| link.revocations())
+            .ok_or("the host's workspace actions are not running")?;
+        let cert = tilo_server_protocol::invocation::verify_invocation(
+            &workspace_id.to_string(),
+            request,
+            &revocations,
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(|error| format!("{}: {error}", error.code()))?;
+        if caller.device_public_key() != Some(&cert.device_public_key)
+            || caller.user_public_key() != Some(&cert.user_public_key)
+        {
+            return Err("the invocation is signed by another key than the agent's".into());
+        }
+        Ok(())
+    }
+
     /// Whether `caller` may ask the host to run `request` at all. Anyone the
     /// workspace admits may ask for a resource's link: it reads where the resource
     /// is shown and grants nothing, and the governed view lookup behind it
@@ -667,6 +703,11 @@ impl WorkspaceActions {
         if !self.admits(caller, &request) {
             return receipt(ReceiptStatus::Rejected {
                 error: ActionCallError::UnknownAction,
+            });
+        }
+        if let Err(reason) = self.signed_by_agent(workspace_id, caller, &request) {
+            return receipt(ReceiptStatus::Rejected {
+                error: ActionCallError::Refused { reason },
             });
         }
         {

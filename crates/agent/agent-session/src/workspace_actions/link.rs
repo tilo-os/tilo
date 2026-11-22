@@ -129,6 +129,11 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Option<ViewReadPolicy> {
         None
     }
+    /// The revocations this device holds from its people's roots: what the key that signed an
+    /// agent's invocation is checked against before the invocation runs.
+    fn revocations(&self) -> tilo_user_identity::RevocationList {
+        tilo_user_identity::RevocationList::new()
+    }
     /// Whether `workspace` keeps `caller`'s key as one its person revoked: nothing it asks is
     /// answered until they approve another, and every refusal says so.
     fn key_revoked(&self, _workspace: WorkspaceId, _caller: &Caller) -> bool {

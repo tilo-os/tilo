@@ -399,9 +399,8 @@ fn join_roster_session(
         *workspace,
         Arc::new(move || thread.unpark()),
     )?;
-    let device = identity.cert.device_public_key;
     shared.agent_sessions.joined(
-        device,
+        identity,
         peer.clone(),
         Some((created_at, identity.delegation.clone())),
     );
@@ -419,7 +418,7 @@ fn join_roster_session(
         std::thread::park();
     };
     peer.close();
-    shared.agent_sessions.left(&device);
+    shared.agent_sessions.left(&identity.cert.device_public_key);
     result
 }
 

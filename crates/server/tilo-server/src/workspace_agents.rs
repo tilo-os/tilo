@@ -144,6 +144,9 @@ const KEEP_WORK: &str = "record-work";
 pub struct WorkspaceActionProvider {
     actions: WorkspaceActions,
     roster_caller: Option<Caller>,
+    /// The agents' signing sessions, whose keys sign what the agent's turn asks of the
+    /// workspace ([`tilo_agent_session::AgentSessions::sign_as`]).
+    signing: Option<tilo_agent_session::AgentSessions>,
     workspace: WorkspaceId,
     /// The events this device runs for its workspaces, where it runs any: what an agent sets up,
     /// pauses, changes and removes for the person its turn is for.
@@ -221,6 +224,7 @@ impl WorkspaceActionProvider {
         Self {
             actions,
             roster_caller: None,
+            signing: None,
             workspace,
             events: None,
             own: Vec::new(),
@@ -361,6 +365,14 @@ impl WorkspaceActionProvider {
         self
     }
 
+    /// The same service, whose turn's invocations as the agent `sessions` sign with the
+    /// agent's own key.
+    #[must_use]
+    fn signing_with(mut self, sessions: Option<tilo_agent_session::AgentSessions>) -> Self {
+        self.signing = sessions;
+        self
+    }
+
     /// The same service, kept to `own` for a turn of the sub-agent that writes there: of Chat it
     /// takes that turn's answer, its question and its words there, and nothing else.
     #[must_use]
@@ -382,7 +394,11 @@ impl WorkspaceActionProvider {
         })
     }
 
-    fn serve(&self, caller: &Caller, message: RemoteActionMessage) -> Pending<RemoteActionMessage> {
+    fn serve(
+        &self,
+        caller: &Caller,
+        mut message: RemoteActionMessage,
+    ) -> Pending<RemoteActionMessage> {
         // What a tool call asks of the workspace's action service is counted for its step.
         let asking = steps::asking(&message);
         let caller = match &message {
@@ -398,6 +414,26 @@ impl WorkspaceActionProvider {
             }
             _ => std::borrow::Cow::Borrowed(caller),
         };
+        // What the agent asks of the workspace on its turn it asks under its own key.
+        if let RemoteActionMessage::Invoke(request) = &message
+            && caller.roster_created_at().is_some()
+        {
+            let invocation = request.invocation;
+            let signed = match (&self.signing, caller.device_public_key()) {
+                (Some(sessions), Some(device)) => {
+                    sessions.sign_as(device, self.workspace, &mut message)
+                }
+                _ => Err("the agent's signing session is not open here".to_owned()),
+            };
+            if let Err(reason) = signed {
+                return Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
+                    invocation,
+                    status: ReceiptStatus::Rejected {
+                        error: ActionCallError::Refused { reason },
+                    },
+                }));
+            }
+        }
         let answer = self
             .actions
             .serve(self.workspace, &caller, message)
@@ -1466,6 +1502,7 @@ impl ServerAgents {
             .map(|device| (keeper, device, turn.agent.created_at));
         let mut scope = TurnScope {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
+                .signing_with(self.roster.as_ref().map(|(_, sessions)| sessions.clone()))
                 .offering(self.events.clone())
                 .offering_initiative(self.initiative.clone())
                 .keeping_to(self.own_of(workspace, turn).await)
