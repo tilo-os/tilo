@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use peniko::{
     BlendMode, Blob, Brush, BrushRef, Color, ColorStop, ColorStops, ColorStopsSource, Compose,
-    Extend, Fill, FontData, Gradient, ImageBrush, ImageBrushRef, ImageData, StyleRef,
+    Extend, Fill, FontData, Gradient, ImageBrush, ImageBrushRef, ImageData, Mix, StyleRef,
     color::{AlphaColor, DynamicColor, Srgb, palette},
     kurbo::{Affine, BezPath, Point, Rect, Shape, Stroke, StrokeOpts, Vec2},
 };
@@ -1200,22 +1200,41 @@ impl ColorPainter for DrawColorGlyphs<'_> {
     }
 
     fn push_layer(&mut self, composite: skrifa::color::CompositeMode) {
-        let blend = match composite {
-            skrifa::color::CompositeMode::Clear => Compose::Clear,
-            skrifa::color::CompositeMode::Src => Compose::Copy,
-            skrifa::color::CompositeMode::Dest => Compose::Dest,
-            skrifa::color::CompositeMode::SrcOver => Compose::SrcOver,
-            skrifa::color::CompositeMode::DestOver => Compose::DestOver,
-            skrifa::color::CompositeMode::SrcIn => Compose::SrcIn,
-            skrifa::color::CompositeMode::DestIn => Compose::DestIn,
-            skrifa::color::CompositeMode::SrcOut => Compose::SrcOut,
-            skrifa::color::CompositeMode::DestOut => Compose::DestOut,
-            skrifa::color::CompositeMode::SrcAtop => Compose::SrcAtop,
-            skrifa::color::CompositeMode::DestAtop => Compose::DestAtop,
-            skrifa::color::CompositeMode::Xor => Compose::Xor,
-            skrifa::color::CompositeMode::Plus => Compose::Plus,
-            // TODO:
-            _ => Compose::SrcOver,
+        use skrifa::color::CompositeMode;
+        // COLRv1's blend modes (every Noto flag shades itself with
+        // `SoftLight`) mix the layer with what is under it, so they map to a
+        // `Mix` over `SrcOver`, not to a Porter-Duff operator.
+        let blend: BlendMode = match composite {
+            CompositeMode::Clear => Compose::Clear.into(),
+            CompositeMode::Src => Compose::Copy.into(),
+            CompositeMode::Dest => Compose::Dest.into(),
+            CompositeMode::SrcOver => Compose::SrcOver.into(),
+            CompositeMode::DestOver => Compose::DestOver.into(),
+            CompositeMode::SrcIn => Compose::SrcIn.into(),
+            CompositeMode::DestIn => Compose::DestIn.into(),
+            CompositeMode::SrcOut => Compose::SrcOut.into(),
+            CompositeMode::DestOut => Compose::DestOut.into(),
+            CompositeMode::SrcAtop => Compose::SrcAtop.into(),
+            CompositeMode::DestAtop => Compose::DestAtop.into(),
+            CompositeMode::Xor => Compose::Xor.into(),
+            CompositeMode::Plus => Compose::Plus.into(),
+            CompositeMode::Screen => Mix::Screen.into(),
+            CompositeMode::Overlay => Mix::Overlay.into(),
+            CompositeMode::Darken => Mix::Darken.into(),
+            CompositeMode::Lighten => Mix::Lighten.into(),
+            CompositeMode::ColorDodge => Mix::ColorDodge.into(),
+            CompositeMode::ColorBurn => Mix::ColorBurn.into(),
+            CompositeMode::HardLight => Mix::HardLight.into(),
+            CompositeMode::SoftLight => Mix::SoftLight.into(),
+            CompositeMode::Difference => Mix::Difference.into(),
+            CompositeMode::Exclusion => Mix::Exclusion.into(),
+            CompositeMode::Multiply => Mix::Multiply.into(),
+            CompositeMode::HslHue => Mix::Hue.into(),
+            CompositeMode::HslSaturation => Mix::Saturation.into(),
+            CompositeMode::HslColor => Mix::Color.into(),
+            CompositeMode::HslLuminosity => Mix::Luminosity.into(),
+            // The spec leaves an unknown mode to the renderer.
+            _ => Compose::SrcOver.into(),
         };
         self.scene.push_layer(
             Fill::NonZero,
