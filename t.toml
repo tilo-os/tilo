@@ -6888,11 +6888,6 @@ on = ["dispatch"]
 name = "page-notes"
 # No egress: as e2e, the walk meets its Lounge on loopback (direct-lounge.sh) and its
 # programs and fonts are its needs'.
-# The browser's own runtime makes iroh's n0 discovery as it admits the page: a
-# DNS lookup and an SSDP multicast. Neither can complete under the sandbox and
-# the walk needs neither, but the packets are sent, so the two are declared
-# instead of failing the job at t's wall.
-egress = { to = ["169.254.1.1:53", "239.255.255.250:1900"] }
 run = "TILO_PAGE_NOTES_IN_LOG=1 bash os/containers/tilo-lounge/test-page-notes.sh /target/publish/web-entry/bundle /target/page-notes"
 needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
 env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
@@ -6905,7 +6900,6 @@ default = false
 name = "page-reopen"
 # No egress: as page-notes, the walk meets its Lounge on loopback (direct-lounge.sh) and its
 # programs and fonts are its needs'.
-egress = { to = ["169.254.1.1:53", "239.255.255.250:1900"] }
 run = "TILO_PAGE_REOPEN_IN_LOG=1 bash os/containers/tilo-lounge/test-page-reopen.sh /target/publish/web-entry/bundle /target/page-reopen"
 needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
 env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }

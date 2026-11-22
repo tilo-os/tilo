@@ -317,6 +317,14 @@ const BASELINE = [
   '--disable-background-timer-throttling',
   '--disable-renderer-backgrounding',
   '--disable-backgrounding-occluded-windows',
+  // A browser driven by a check has nothing to discover and nothing to phone:
+  // its media router probes the network with SSDP and its background services
+  // look up names, and a check reaches only what it declares. Every address a
+  // check uses is one it was given.
+  '--disable-background-networking',
+  '--disable-component-update',
+  '--disable-domain-reliability',
+  '--disable-features=MediaRouter,CastMediaRouteProvider,CastStreamingMediaRouteProvider,OptimizationHints,OptimizationGuideModelDownloading,Translate',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ];
 
