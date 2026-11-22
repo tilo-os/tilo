@@ -1057,7 +1057,7 @@ impl ServerRecordsLink {
             WAITING_TO_JOIN => self
                 .host_device
                 .runtime
-                .block_on(workspaces.page_wait_list(workspace, caller)),
+                .block_on(workspaces.page_waiting_to_join(workspace, caller)),
             // Setting another device up is the site's setup screen: it needs
             // the person's identity, which the site's page holds and this one
             // does not.

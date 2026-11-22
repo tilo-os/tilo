@@ -1396,12 +1396,12 @@ impl Workspaces {
 
     /// The addresses waiting at the entry of the workspace `workspace_id`, and
     /// whether the entry mails an invitation to one, for whoever may invite:
-    /// what a page shows as its wait list, and invites from.
+    /// what a page shows as the addresses waiting to join, and invites from.
     ///
     /// # Errors
     ///
     /// `caller` may not invite into the workspace.
-    pub async fn page_wait_list(
+    pub async fn page_waiting_to_join(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
