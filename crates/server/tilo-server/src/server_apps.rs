@@ -240,7 +240,7 @@ impl ServerLauncher {
             workspace: workspace.to_owned(),
             tab,
         };
-        let mut stream = std::os::unix::net::UnixStream::connect(&self.collab_socket)?;
+        let mut stream = tilo_socket::connect(&self.collab_socket)?;
         self.windows().insert(window.clone());
         if let Err(error) =
             launcher::services::write_collab_window_handoff(&mut stream, app, workspace, tab)

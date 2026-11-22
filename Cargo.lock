@@ -22077,6 +22077,7 @@ dependencies = [
  "tilo-server-protocol",
  "tilo-server-session",
  "tilo-session-client",
+ "tilo-socket",
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-ui",
