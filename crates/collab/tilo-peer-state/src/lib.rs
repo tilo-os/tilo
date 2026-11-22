@@ -47,6 +47,10 @@ pub mod direct;
 pub mod document;
 pub mod document_frame;
 pub mod installation;
+/// The one call a computer with no certificate makes: asking the device that issued its ticket
+/// to have it certified.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod new_device;
 /// Running an offloadable invocation on another device, through the offer
 /// round.
 pub mod offload;

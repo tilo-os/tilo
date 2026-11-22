@@ -101,7 +101,7 @@ pub fn run(cmd: FoldersCmd, json: bool) -> Result<ExitCode> {
     if !crate::login::logged_in() {
         bail!("{}", crate::login::NOT_LOGGED_IN);
     }
-    let place = crate::login::Place::here()?;
+    let place = crate::login::Place::here(crate::identity::paths())?;
     let dir = place.dir();
     let home = tilo_paths::home().context("HOME is missing")?;
     match cmd {
@@ -551,7 +551,7 @@ fn files_in(path: &Path) -> Vec<PathBuf> {
 /// # Errors
 /// The folder could not be kept or the peer could not start.
 pub(crate) fn after_login(workspace: &str, name: Option<&str>) -> Result<PathBuf> {
-    let place = crate::login::Place::here()?;
+    let place = crate::login::Place::here(crate::identity::paths())?;
     let dir = place.dir();
     let home = tilo_paths::home().context("HOME is missing")?;
     let mut folders = Folders::load(dir)?;

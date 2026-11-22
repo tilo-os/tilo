@@ -105,20 +105,8 @@ pub struct ServerInfo {
     pub address: Option<ServerAddress>,
 }
 
-/// Where a host's iroh endpoint is dialled.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ServerAddress {
-    /// The endpoint's key and the addresses it answers at.
-    pub endpoint_addr: iroh_base::EndpointAddr,
-    /// The packet relay it is reached through, when it names one; a page dials
-    /// the endpoint through it rather than over the network's own relays.
-    pub relay_url: Option<String>,
-    /// Where the host takes WebTransport sessions: how a page reaches it,
-    /// with the browser's own transport. `None` from a host that serves no
-    /// browsers.
-    #[serde(default)]
-    pub web: Option<WebLink>,
-}
+/// Where a host's iroh endpoint is dialled, kept with a device's login.
+pub use tilo_device_identity::login::{ServerAddress, WebLink};
 
 /// [`ServerInfo`] as a page reads it (JSON): what `hostInfo()` in the page's
 /// runtime resolves to, and what a site hands its page about the host it
@@ -206,20 +194,6 @@ impl ServerInfo {
             address,
         }
     }
-}
-/// A host's WebTransport listener: HTTP/3 on the UDP port of its HTTPS
-/// origin, presenting the same certificate. A device opens one session per
-/// thing it asks, at that thing's path ([`LINK_SESSION_PATH`],
-/// [`LINK_CERTIFY_PATH`], [`LINK_LIVE_SESSION_PATH`]): the same conversations a
-/// native device holds over the host's iroh endpoint on their ALPNs.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WebLink {
-    /// `https://host:port`, the origin the sessions open at.
-    pub origin: String,
-    /// SHA-256 of the certificate a development host generated for itself,
-    /// which a device pins (a browser's `serverCertificateHashes`); `None`
-    /// for a certificate the system trust bundle verifies.
-    pub certificate_sha256: Option<[u8; 32]>,
 }
 
 /// The session with the host (the server ALPN's): its first stream carries

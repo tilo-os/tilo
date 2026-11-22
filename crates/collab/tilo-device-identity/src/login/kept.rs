@@ -1,26 +1,22 @@
-//! This computer's own login, as `tilo login` keeps it: what the login
-//! reaches, with this computer's one device key and the certificate the
-//! person's root signed for it kept where every Tilo program of this
-//! computer keeps them ([`IdentityPaths`]). Every program of the login that
-//! acts as the person reads it here: `tilo`, and `tilolang repl`.
+//! A login as this computer keeps it: [`Place`], [`load`] and [`store`].
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tilo_device_identity::IdentityPaths;
-use tilo_device_identity::persist::{
-    adopt_device_key, load_device_key, read_device_cert, write_device_cert,
-};
 use tilo_user_identity::DeviceCert;
 
+use super::ServerAddress;
+use crate::IdentityPaths;
+use crate::persist::{adopt_device_key, load_device_key, read_device_cert, write_device_cert};
+
 /// What a login this computer cannot read says.
-pub const LOGIN_DAMAGED: &str = "This computer's Tilo login is damaged: ask the person for a new code from their Tilo tab \
-     (Set up with your agent).";
+pub const LOGIN_DAMAGED: &str = "This computer's Tilo login is damaged: log in again with a ticket \
+     `tilo device add` prints on one of your devices.";
 
 /// What a login says whose certificate is for a device key this computer no longer has.
 const LOGIN_STALE: &str = "This computer's Tilo login is for a device key it no longer has: \
-     `tilo login` again (with a new code from your Tilo tab, unless this computer holds your identity).";
+     log in again with a ticket `tilo device add` prints on one of your devices.";
 
 /// The file in [`Place::dir`] a login is kept in.
 const LOGIN_FILE: &str = "login.json";
@@ -40,16 +36,18 @@ pub struct Place {
 }
 
 impl Place {
-    /// This account's place: its state directory's, with the device key its session keeps.
+    /// This account's place: its state directory's, with `keys`, the device key and
+    /// certificates its session keeps
+    /// (`tilo_identity::provisioning::collaboration_identity_paths`).
     ///
     /// # Errors
     /// This account has no state directory.
-    pub fn here() -> Result<Self> {
+    pub fn here(keys: IdentityPaths) -> Result<Self> {
         Ok(Self {
             dir: tilo_paths::state_dir()
                 .context("this account has no state directory (no HOME)")?
                 .join("tilo/device"),
-            keys: tilo_identity::provisioning::collaboration_identity_paths(),
+            keys,
         })
     }
 
@@ -93,7 +91,7 @@ pub struct Device {
     pub server_cert: DeviceCert,
     /// Where the server is dialed over iroh, as its signed invitation named it: a server reached
     /// that way only (behind a NAT, through a packet relay) has no web origin to ask.
-    pub server_address: Option<crate::server::ServerAddress>,
+    pub server_address: Option<ServerAddress>,
 }
 
 impl Device {
@@ -125,7 +123,7 @@ struct Kept {
     /// The host's certificate, its canonical bytes in hex.
     server_cert: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    server_address: Option<crate::server::ServerAddress>,
+    server_address: Option<ServerAddress>,
 }
 
 /// Keep `device` in `place`: its certificate beside this computer's device key, which it must
@@ -237,7 +235,7 @@ fn take_earlier(place: &Place) -> Result<(SigningKey, Device)> {
         cert: String,
         server_cert: String,
         #[serde(default)]
-        server_address: Option<crate::server::ServerAddress>,
+        server_address: Option<ServerAddress>,
     }
     let seed: [u8; 32] = std::fs::read(place.dir.join(EARLIER_KEY))
         .ok()
@@ -279,12 +277,13 @@ fn take_earlier(place: &Place) -> Result<(SigningKey, Device)> {
 
 /// The workspace this computer's login entered: its id, and the name the
 /// device keeps for it, which is how a command that acts in it says which
-/// workspace it used. `None` when this computer is not logged in.
+/// workspace it used, with this computer's device key and certificates at `keys`. `None` when
+/// this computer is not logged in.
 ///
 /// # Errors
 /// The login is damaged.
-pub fn entered_workspace() -> Result<Option<(String, String)>> {
-    let Some((_, device)) = load(&Place::here()?)? else {
+pub fn entered_workspace(keys: IdentityPaths) -> Result<Option<(String, String)>> {
+    let Some((_, device)) = load(&Place::here(keys)?)? else {
         return Ok(None);
     };
     let name = device
@@ -303,6 +302,7 @@ pub fn entered_workspace() -> Result<Option<(String, String)>> {
 ///
 /// # Errors
 /// `login_dir` is not readable, or the directory is not this account's own.
+#[cfg(unix)]
 pub fn holder_dir(login_dir: &Path) -> Result<PathBuf, String> {
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
     let owner = std::fs::metadata(login_dir)
@@ -348,12 +348,14 @@ pub fn holder_api_socket(dir: &Path, name: &str) -> PathBuf {
 /// Where this computer's device holder serves Tilo's API, when this computer
 /// logged in: every program of the login acts as the device there, over the
 /// device's one session, and never opens a second one under the same key,
-/// which would cut the first off at the server.
+/// which would cut the first off at the server. `keys` are this computer's device key and
+/// certificates.
 ///
 /// # Errors
 /// The login is damaged, or the holders' directory is not this account's.
-pub fn held_api() -> Result<Option<PathBuf>> {
-    let place = Place::here()?;
+#[cfg(unix)]
+pub fn held_api(keys: IdentityPaths) -> Result<Option<PathBuf>> {
+    let place = Place::here(keys)?;
     let Some((key, _)) = load(&place)? else {
         return Ok(None);
     };

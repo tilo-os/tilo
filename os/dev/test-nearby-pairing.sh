@@ -9,8 +9,7 @@
 # TILO_VM_LAN_*, joined by os/dev/nearby-lan-hub.py), so the pairing broadcast
 # on UDP 23831 crosses between them exactly as it does on a home network. B's
 # UI is driven over AT-SPI like the release check drives first use; A approves
-# as its signed-in user with tilo-enroll, the program Settings runs. A third
-# overlay, C, later joins the segment.
+# as its signed-in user with tilo-enroll, the program Settings runs.
 #
 # The run proves, in order:
 #   1. B's enrollment state directories are part of the image layout and
@@ -25,30 +24,25 @@
 #      account's active identity.
 #   4. Signing out and in again resumes after the identity: no identity choice,
 #      no recovery screen, and the identity verifies at login unchanged.
-#   5. B, which holds none of the identity's key, pairs C (`tilo-identity pair`
-#      there, `tilo-identity approve` on B). Nothing joins until A, which holds
-#      the key, lists C among the devices asking (`tilo-identity asking`, the
-#      headless face of "A device asks to be you") and approves it; then C
-#      holds a certificate the identity's key signed.
 #
 # With --wake (x86_64, a dev disk carrying tilo-control), the paired devices
 # then reach and wake each other:
-#   6. A's remote action reaches B, where it holds idle-suspend off with a
+#   5. A's remote action reaches B, where it holds idle-suspend off with a
 #      "Remote use from" lease.
-#   7. B suspends to RAM. A invokes `device.wake` for B; a magic packet for
+#   6. B suspends to RAM. A invokes `device.wake` for B; a magic packet for
 #      B's MAC appears on the segment (captured on A's side of it). The harness
 #      resumes B with `system_wakeup`, in place of the NIC, and A reports
 #      that B rejoined. A's next remote action reaches B unchanged.
-#   8. B's links are cut and restored, and A's remote action reaches B again.
+#   7. B's links are cut and restored, and A's remote action reaches B again.
 #
 # With --unlock (a dev disk carrying tilo-control), B's root then moves onto
 # LUKS2 with a sibling-unlock slot, and B reboots several times
 # (os/dev/nearby-unlock-phase.sh):
-#   9. The harness allows B's ask to set up its unlock on A's sheet — B holds
+#   8. The harness allows B's ask to set up its unlock on A's sheet — B holds
 #      none of the person's root, so it asks A over the peer network — and A
 #      approves B's unlock at the next boot, which then opens without a
 #      passphrase.
-#  10. A denied sheet, a replay of the approved exchange, a boot key that was
+#   9. A denied sheet, a replay of the approved exchange, a boot key that was
 #      never certified, and B's revocation on A each leave B at the
 #      passphrase prompt, with the boot's own account of why.
 #
@@ -95,21 +89,18 @@ arch="${TILO_VM_ARCH:-$(uname -m)}"
 # Short: QEMU's monitor and console sockets live here (108-byte AF_UNIX limit).
 run_a="${TILO_NEARBY_RUN_A:-/var/tmp/tilo-nearby-a-$arch}"
 run_b="${TILO_NEARBY_RUN_B:-/var/tmp/tilo-nearby-b-$arch}"
-run_c="${TILO_NEARBY_RUN_C:-/var/tmp/tilo-nearby-c-$arch}"
 lan_a=192.168.231.10
 lan_b=192.168.231.11
-lan_c=192.168.231.12
 mac_a=52:54:00:23:83:0a
 mac_b=52:54:00:23:83:0b
-mac_c=52:54:00:23:83:0c
 # Loopback UDP ports: the segment's hub, then each VM's NIC.
 lan_hub=23900
 identity_dir='$HOME/.config/tilo/identity'
 status_file="$identity_dir/.nearby-enrollment-status.json"
 
 mkdir -p "$out"
-rm -rf -- "$run_a" "$run_b" "$run_c"
-install -d -m 0700 "$run_a" "$run_b" "$run_c"
+rm -rf -- "$run_a" "$run_b"
+install -d -m 0700 "$run_a" "$run_b"
 
 die() { printf 'nearby pairing: %s\n' "$*" >&2; exit 1; }
 note() { printf 'nearby pairing: %s\n' "$*" >&2; }
@@ -139,13 +130,7 @@ vm_b() {
 # failure). The account is in wheel; sudo takes the password's line from
 # stdin and the shell it starts reads the script that follows.
 sudo_a() { printf '%s\n%s\n' "$TILO_PASS" "$1" | vm_a ssh "sudo -S -p '' sh -s"; }
-vm_c() {
-  TILO_RUN="$run_c" TILO_SSH_PORT="${TILO_NEARBY_SSH_C:-2233}" \
-    TILO_VM_LAN_PORT=23903 TILO_VM_LAN_PEER="$lan_hub" TILO_VM_LAN_MAC="$mac_c" \
-    "$vm" "$@"
-}
 sudo_b() { printf '%s\n%s\n' "$TILO_PASS" "$1" | vm_b ssh "sudo -S -p '' sh -s"; }
-sudo_c() { printf '%s\n%s\n' "$TILO_PASS" "$1" | vm_c ssh "sudo -S -p '' sh -s"; }
 # Everything this boot's session on $1 recorded, each line once: the journal's
 # copy and the compositor's own flight record, whichever carries it. Each
 # record line starts with its own timestamp, so no two events collapse.
@@ -212,11 +197,6 @@ cleanup() {
   collect b "$run_b" vm_b
   stop_owned_vm a vm_a || cleanup_rc=1
   stop_owned_vm b vm_b || cleanup_rc=1
-  # C boots for its phase only, which stops it when it passes.
-  if [ -e "$out/c-boot-exit-status.txt" ] && [ ! -e "$out/c-cleanup-status.txt" ]; then
-    collect c "$run_c" vm_c
-    stop_owned_vm c vm_c || cleanup_rc=1
-  fi
   printf '%s\n' "$cleanup_rc" > "$out/cleanup-exit-status.txt"
   if [ "$cleanup_rc" != 0 ]; then
     printf 'FAIL\n' > "$out/verdict.txt"
@@ -611,56 +591,6 @@ vm_b ssh 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus /usr/bin/til
   || die "signing in again changed B's identity"
 no_privileged_pairing
 note "B joined A's identity from first-boot onboarding"
-
-# --- a device without the key pairs a third, approved on the key holder ------
-qemu-img create -f qcow2 -F qcow2 -b "$base" "$run_c/disk.qcow2" >/dev/null
-boot_owned_vm c "$run_c" vm_c
-vm_c wait
-for attempt in $(seq 1 60); do
-  vm_c ssh true >/dev/null 2>&1 && break
-  [ "$attempt" -lt 60 ] || die "vm_c: no SSH after boot"
-  sleep 2
-done
-configure_lan sudo_c "$mac_c" "$lan_c" || die "VM C: shared segment could not be configured"
-wait_onboarding vm_c
-c_device="$(vm_c ssh 'tilo-enroll device-key' | jq -r .device_public_key)"
-[[ $c_device =~ ^[0-9a-f]{64}$ ]] || die "VM C did not report its device key"
-vm_c ssh "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u)/bus \
-  tilo-identity pair --label 'Third device' --json" > "$out/c-pair.json" 2> "$out/c-pair.txt" &
-c_pair=$!
-code="$(await_code vm_c)"
-vm_b ssh "tilo-identity approve --code $code --json" > "$out/b-approve-c.json" 2> "$out/b-approve-c.txt" &
-b_approve=$!
-# B's session asks A, the device holding the key; nobody else may let C in.
-for attempt in $(seq 1 120); do
-  vm_a ssh 'tilo-identity asking --json' > "$out/a-asking.json" 2>&1 || true
-  jq -e --arg device "$c_device" 'any(.asking[]?; .device == $device)' "$out/a-asking.json" >/dev/null && break
-  [ "$attempt" -lt 120 ] || die "A was never asked about C: $(cat "$out/a-asking.json")"
-  sleep 1
-done
-jq -e --arg device "$c_device" --arg code "$code" \
-  '[.asking[] | select(.device == $device)] | length == 1 and .[0].code == $code and .[0].label == "Third device"' \
-  "$out/a-asking.json" >/dev/null || die "A's ask about C does not name it and its code: $(cat "$out/a-asking.json")"
-[ "$(jq -r '.state // empty' < <(vm_c ssh "cat $status_file"))" = waiting_for_approval ] \
-  || die "C joined before A approved it"
-vm_c ssh '! test -e /var/lib/tilo/device/cert.bin' || die "C holds a certificate before A approved it"
-vm_a ssh "tilo-identity approve --code $code --json" > "$out/a-approve-c.json" 2>&1 \
-  || die "A could not approve C: $(cat "$out/a-approve-c.json")"
-jq -e '.approved == true' "$out/a-approve-c.json" >/dev/null \
-  || die "A answered C's ask with something else: $(cat "$out/a-approve-c.json")"
-wait "$b_approve" || die "B's approval of C failed: $(cat "$out/b-approve-c.json" "$out/b-approve-c.txt")"
-wait "$c_pair" || die "C's pairing failed: $(cat "$out/c-pair.json" "$out/c-pair.txt")"
-complete="$(await_state complete 60 vm_c)"
-printf '%s\n' "$complete" > "$out/c-status-complete.json"
-[ "$(jq -r .identity <<<"$complete")" = "$identity" ] || die "C completed into another identity: $complete"
-[ "$(vm_c ssh 'od -An -v -tx1 /var/lib/tilo/user-identity/pubkey.bin' | tr -d ' \n')" = "$identity" ] \
-  || die "C's device is bound to another identity"
-vm_b ssh "cat $identity_dir/fleets/$identity.json" > "$out/b-fleet-c.json" \
-  || die "B has no fleet record for $identity"
-device="$c_device" fleet_lists_b < "$out/b-fleet-c.json" || die "B's fleet record does not list C"
-note "B paired C with A's approval"
-collect c "$run_c" vm_c
-stop_owned_vm c vm_c || die "C could not be stopped"
 
 if [ "$relay_only" = 1 ]; then
   cut_segment

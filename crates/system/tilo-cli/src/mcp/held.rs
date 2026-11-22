@@ -21,7 +21,7 @@ use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _, BufReader};
 
-use tilo_api::client::device;
+use tilo_device_identity::login as device;
 
 use super::{Connection, Enter, Shared, answer};
 
@@ -2060,12 +2060,14 @@ mod tests {
             .remove(tilo_api::client::KEY_ENV)
             .remove(tilo_api::client::DESKTOP_ENV);
         let place = Place::of(
-            crate::login::Place::here().unwrap().dir(),
+            crate::login::Place::here(crate::identity::paths())
+                .unwrap()
+                .dir(),
             &key.verifying_key().to_bytes(),
         )
         .unwrap();
         assert_eq!(
-            device::held_api().unwrap(),
+            device::held_api(crate::identity::paths()).unwrap(),
             Some(place.api.clone()),
             "the login's commands reach where its holder serves"
         );

@@ -148,18 +148,30 @@ and keep only where the login goes (`$XDG_STATE_HOME/tilo/device/login.json`: si
 workspace, the host's certificate, the agent). The certificate the person's root signed for the
 key is kept beside it, in `device/certs/<user>.bin`.
 
-#### Adding a computer with a login code
+#### Adding a computer with a ticket
 
-1. On the new computer, `tilo login K7Q-MX2P` with the code the person's tab shows ("Set up with
-   your agent"). The computer loads its device key, or creates it if it has none yet, and asks
-   the site's server to resolve the code.
-2. The person's tab approves. Their root signs a member `DeviceCert` over the computer's public
-   device key, and the server hands it to the waiting computer.
-3. The computer keeps the certificate with its device key and the destination in `login.json`,
+1. On a device of the person's, `tilo device add` prints a ticket: that device's iroh endpoint id,
+   where it is reached (its relay and direct addresses) and a one-time secret, as one string. It
+   lasts ten minutes and is spent by its first good use; ten wrong secrets spend it too.
+2. On the new computer, `tilo login <ticket>`. The computer loads its device key, or creates it
+   if it has none yet, dials the issuing device directly and calls its `tilo.device`
+   `devices#certify` action (`tilo_device_identity::login::CertifyInput`: the secret, the
+   computer's public key and the agent that runs on it). No site, DNS name or server is asked.
+3. The issuing device admits a connection with no certificate for that one action alone, in its
+   own scope (`tilo.new-device`); every other call on it is refused. It checks that the key asked
+   for is the key the connection comes from and spends the secret.
+4. An approver answers. It may be another device than the one serving the ticket: it gets the
+   computer's key, label and agent and the hash of the ticket's secret, signs the
+   `DeviceCert` with the person's root, and signs a digest of those fields
+   (`tilo-device-approval-v1`) with its own device key. The serving device checks that signature
+   against the approver's own root-signed, unrevoked certificate, and that the certificate it
+   was given is the one it asked for, before it answers. On a computer that holds the root,
+   `tilo device add` is that approver itself.
+5. The computer gets the certificate and where to enter (the workspace and its server's
+   certificate and address, `CertifyAnswer`). It keeps them with its device key in `login.json`,
    then enters the workspace over its one session.
 
-A computer that already holds the person's root runs `tilo login` with no code: it signs the
-certificate for its own device key itself and adds the device to the person's list. A login an
+A login an
 earlier tilo kept with a key of its own (`$XDG_STATE_HOME/tilo/device/key`) is taken over once.
 Its key becomes the device key when the computer has none, and otherwise the person logs in
 again, so that a computer keeps one key. On a computer whose Tilo desktop is running, the desktop

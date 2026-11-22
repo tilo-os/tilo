@@ -20,7 +20,7 @@ after it: `~/Acme` for a workspace called Acme. It is cloud storage with history
 up at once and download when opened; copy a tree in and it syncs:
 
 ```sh
-tilo login K7Q-MX2P            # …"Its files are in /home/ada/Acme, kept in sync both ways"
+tilo login tilo1…              # …"Its files are in /home/ada/Acme, kept in sync both ways"
 cp -r ~/Documents/contracts ~/Acme/
 echo "- call the notary" >> ~/Acme/todo.md
 ```

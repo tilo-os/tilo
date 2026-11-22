@@ -12,7 +12,7 @@ Documentation=file:///usr/libexec/tilo-store-volume
 # no timer and no polling:
 #
 #   * the proof the account writes — the account that holds the device's
-#     identity signs one at sign-in, and `tilo-identity local-person` reads it
+#     identity signs one at sign-in, and `tilo device local-person` reads it
 #     (it is the answer that survives a later sign-out);
 #   * an active session on the seat — the other answer the helper accepts, for
 #     a device where no account has proved itself yet.

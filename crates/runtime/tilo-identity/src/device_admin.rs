@@ -1,6 +1,5 @@
 //! Pairing and administering the person's devices, whichever action API asks: the
-//! shell's `identity.device.pair.*` and `identity.*` actions, or the
-//! `tilo-identity` command on a headless device. Each action API decides who may
+//! shell's `identity.device.pair.*` and `identity.*` actions. Each action API decides who may
 //! take a step; what the step runs, and with which arguments, is decided
 //! here once.
 //!

@@ -13,7 +13,7 @@ impl Client {
     /// damaged.
     #[must_use]
     pub fn this_computer() -> Option<Self> {
-        let held = super::device::held_api()
+        let held = tilo_device_identity::login::held_api(super::device_keys())
             .ok()
             .flatten()
             .filter(|socket| is_socket(socket));
@@ -28,7 +28,11 @@ impl Client {
     /// # Errors
     /// The workspaces could not be listed.
     pub async fn model_workspace(&self) -> Result<String> {
-        if let Some((entered, _)) = super::device::entered_workspace().ok().flatten() {
+        if let Some((entered, _)) =
+            tilo_device_identity::login::entered_workspace(super::device_keys())
+                .ok()
+                .flatten()
+        {
             return Ok(entered);
         }
         let listed = self.get("/v1/workspaces").await?;

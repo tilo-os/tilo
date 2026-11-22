@@ -301,7 +301,7 @@ is_store_mounted() {
 #      it; it is also what a person sets by hand);
 #   2. the account that proves it holds the key of the identity this device
 #      is bound to: its proof, signed by that key, names its uid
-#      (`tilo-identity local-person`). A claim without such a proof is
+#      (`tilo device local-person`). A claim without such a proof is
 #      ignored;
 #   3. the person signed in at the login screen (seat0's active session).
 #
@@ -309,7 +309,7 @@ is_store_mounted() {
 # device names an owner it cannot use, 2 when nothing has proved itself yet
 # (the person's sign-in ends that).
 IDENTITY_ROOT="${TILO_STORE_IDENTITY:-/var/lib/tilo}"
-IDENTITY_TOOL="${TILO_STORE_IDENTITY_TOOL:-/usr/libexec/tilo/tilo-identity}"
+IDENTITY_TOOL="${TILO_STORE_IDENTITY_TOOL:-/usr/bin/tilo}"
 LOGINCTL="${TILO_STORE_LOGINCTL:-loginctl}"
 
 # passwd entries, from TILO_STORE_PASSWD in tests.
@@ -332,7 +332,7 @@ person_entry() {
 proven_person() {
   local out status
   [ -x "$IDENTITY_TOOL" ] || return 1
-  out="$("$IDENTITY_TOOL" local-person --identity-root "$IDENTITY_ROOT" \
+  out="$("$IDENTITY_TOOL" device local-person --identity-root "$IDENTITY_ROOT" \
     ${TILO_STORE_PASSWD:+--passwd "$TILO_STORE_PASSWD"} 2>&1)" && status=0 || status=$?
   case "$status" in
     0)
@@ -490,7 +490,7 @@ cmd_ensure() {
     if [ "$status" -eq 2 ]; then
       # Nobody has signed in since this device was bound: the account proves
       # it holds the device's identity by signing in (the proof
-      # `tilo-identity local-person` reads), and the store is prepared before
+      # `tilo device local-person` reads), and the store is prepared before
       # anyone can on a first boot. That is a state, not a failure — the files
       # keep being served by FUSE, and the sign-in re-runs this preparation
       # (tilo-store-volume-after-signin.path) to set the store up then.

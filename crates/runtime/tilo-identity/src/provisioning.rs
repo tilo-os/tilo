@@ -1186,7 +1186,7 @@ pub fn verify_collaboration_identity(
 }
 
 /// Where this device's key and certificates live, for every program of this
-/// account (the session, its setup, `tilo`, `tilo-identity`): `$TILO_IDENTITY_ROOT`
+/// account (the session, its setup, `tilo`): `$TILO_IDENTITY_ROOT`
 /// when set, else Tilo's system tree (`/var/lib/tilo`) on a machine that has
 /// one, else the account's own data directory (`$XDG_DATA_HOME/tilo`), as on
 /// a computer running Tilo beside another operating system.

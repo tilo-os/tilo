@@ -19,7 +19,9 @@ pub(super) async fn key_api(named: Option<&str>) -> Result<String> {
     if let Some(api) = named {
         return Ok(api.trim_end_matches('/').to_owned());
     }
-    let Some((_, device)) = crate::login::load(&crate::login::Place::here()?)? else {
+    let Some((_, device)) =
+        crate::login::load(&crate::login::Place::here(crate::identity::paths())?)?
+    else {
         return Ok(api::DEFAULT_API_URL.to_owned());
     };
     if device.server_address.is_some() {

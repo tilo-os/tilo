@@ -105,6 +105,16 @@ impl Caller {
         )
     }
 
+    /// A remote device that holds no certificate yet, known by the key its connection proved
+    /// alone: what a computer being added to a person's devices is while it asks to be
+    /// certified. It acts for nobody, so it holds nothing.
+    #[must_use]
+    pub fn uncertified_device(device_public_key: [u8; 32]) -> Self {
+        let mut caller = Self::admitted(Acting::person(""), None);
+        caller.device_public_key = Some(device_public_key);
+        caller
+    }
+
     /// A person on a connection the provider admitted itself, by the id that
     /// admission established.
     #[must_use]

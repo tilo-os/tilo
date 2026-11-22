@@ -19,8 +19,6 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{RemoteActionTarget, person_accounts, person_vault};
-use tilo_server_client::https::{self, Origin};
-use tilo_server_client::login::{PairingLink, SignIn};
 use tilo_session_client::device::Device;
 
 use crate::login;
@@ -65,36 +63,26 @@ pub fn act(workspace: &str, path: &str, args: Map<String, Value>) -> Result<Valu
     };
     let person = crate::identity::held()?
         .ok_or_else(|| anyhow!("this computer holds no identity: tilo login --new-identity"))?;
-    login::trust_test_certificates()?;
-    let site = login::site_origin(None)?;
+    // The person is reached where this computer's login reaches them: the server it entered
+    // through, signed in as the device their root certified here.
+    let Some((_, here)) = login::load(&login::Place::here(crate::identity::paths())?)? else {
+        bail!("{}", login::NOT_LOGGED_IN);
+    };
+    if here.cert.user_public_key != person.public_key() {
+        bail!("this computer is logged in as someone else than the person whose identity it holds");
+    }
+    let address = here
+        .server_address
+        .as_ref()
+        .ok_or_else(|| anyhow!(login::LOGIN_ENDED))?;
+    let mut signed = login::signed_over_iroh(&here, address)?;
+    signed.agent = String::new();
+    signed.label.clone_from(&person.cert.device_label);
+    signed.cert = person.cert.clone();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let origin = login::home_server(&Origin::new(&login::http(), &site)).await?;
-        let info = https::server_info(&Origin::new(&login::http(), &origin))
-            .await
-            .map_err(|error| anyhow!("asking {origin} who it is: {error}"))?;
-        let server = info
-            .address
-            .as_ref()
-            .map(tilo_server_client::ServerAddress::published)
-            .ok_or_else(|| anyhow!("{origin} takes no device connections"))?;
-        let link = PairingLink::parse(&format!(
-            "{site}/#/@{}/w/{}?pair={}",
-            login::host_of(&origin),
-            uuid::Uuid::nil(),
-            person.user()
-        ))
-        .map_err(|error| anyhow!(error))?;
-        let signed = SignIn {
-            link,
-            agent: String::new(),
-            label: person.cert.device_label.clone(),
-            server,
-            cert: person.cert.clone(),
-            server_cert: info.server_cert.clone(),
-        };
         let device = Device::connect(&signed, Arc::new(person.device.clone()));
         let answered = async {
             device

@@ -1,13 +1,14 @@
-//! `tilo login <code>` and `tilo mcp`: this computer as one of the person's devices, for the agent
+//! `tilo login <ticket>` and `tilo mcp`: this computer as one of the person's devices, for the agent
 //! that runs here.
 //!
-//! The code is the short one the person's browser tab shows (`K7Q-MX2P`), in the prompt it copies
-//! for their agent. `tilo login` resolves it at the site's home server
-//! (`tilo_server_protocol::login_code`) and tells that tab each step as it does it: it makes a
-//! device key here, asks the workspace's server to have the person's root (which only the tab holds)
-//! certify it, keeps the key and certificate in this account's state directory, adds Tilo's tools
-//! to the agent and enters the workspace the link names as the person. A tab with no identity yet
-//! asks a computer that is already one of the person's devices to vouch for it.
+//! The ticket comes from another device of the person's (`tilo device add` on one of their
+//! computers, or the prompt "Set up with your agent" copies), and names that device's iroh endpoint
+//! and a one-time secret ([`tilo_device_identity::login`]). `tilo login` loads or makes this
+//! computer's one device key, dials the issuing device over the device action service
+//! (`tilo-actions/1`), and calls the certify action there with the secret and its key. Once the
+//! person approves, the answer is the certificate their root signed over this computer's key, with
+//! the workspace and the device to enter it through: the login keeps them, adds Tilo's tools to the
+//! agent and enters the workspace as the person. Nothing is asked of a web site.
 //!
 //! `tilo mcp` ([`crate::mcp`]) is the agent's MCP server over stdio, under the name `tilo`, acting
 //! as that device.
@@ -18,33 +19,30 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tilo_api::server::ServerAddress;
-use tilo_enrollment::certification::{VouchError, vouch_with_code};
-use tilo_enrollment::requester::{entry_at, sign_in};
+use tilo_device_identity::login::{
+    CERTIFY, CertifyAnswer, CertifyInput, PROVIDER, RESOURCE, Reached, SCOPE, TICKET_LIFETIME_NS,
+    Ticket,
+};
+use tilo_enrollment::requester::entry_at;
 use tilo_server_client::CertifyError;
-use tilo_server_client::HttpClient;
 use tilo_server_client::LinkError;
-use tilo_server_client::https::{self, Origin};
+use tilo_server_client::https::Origin;
 use tilo_server_client::login::{PairingLink, SignIn};
-use tilo_server_client::login_code;
-use tilo_server_protocol::login_code::{self as protocol, Report, Resolved, Step};
-use tilo_server_protocol::web::API_PREFIX;
+use tilo_session_client::Outbox as _;
 use tilo_session_client::device::Device as Entered;
 
 use crate::agent::{self, Agent, Tool};
-pub use tilo_api::client::device::{Device, LOGIN_DAMAGED, Place, load, store};
+pub use tilo_device_identity::login::{Device, LOGIN_DAMAGED, Place, load, store};
 
-/// The site `tilo login` resolves codes at, unless `--site` or
-/// [`SITE_ENV`] names another.
+/// The site a login names when the device that added this computer names none.
 pub const DEFAULT_SITE: &str = "https://tilo.sh";
-/// Names the site to resolve codes at, like `--site`.
-pub const SITE_ENV: &str = "TILO_SITE";
+
 /// For tests only: PEM files (separated as `PATH` is) whose certificates
 /// HTTPS also trusts, each as a CA and as that exact server certificate.
 /// Verification stays on; production trust is the system's alone.
 pub const TEST_CA_ENV: &str = "TILO_TEST_CA_FILE";
+
 /// What Tilo's tools let the agent do, as it tells the person.
 const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where they see you by \
      name with what you do: tilo_ls lists its apps and documents, tilo_read reads one, \
@@ -52,8 +50,8 @@ const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where the
      there, all of which History keeps as your run";
 
 /// What a login no server accepts any more says.
-pub(crate) const LOGIN_ENDED: &str = "This computer's Tilo login has ended: ask the person for a new code from their Tilo tab \
-     (Set up with your agent).";
+pub(crate) const LOGIN_ENDED: &str = "This computer's Tilo login has ended: ask the person to run `tilo device add` \
+     on one of their devices and log in with the ticket it prints.";
 
 /// What a tilo that speaks another version than the server says.
 pub(crate) const TOO_OLD: &str = "This tilo is too old for your workspace: install it again with \
@@ -115,76 +113,8 @@ pub(crate) fn trust_test_certificates() -> Result<()> {
     Ok(())
 }
 
-/// What a login leaves behind for a later `tilo agent check`: the tab that
-/// followed it, so the agent's own confirmation reaches that tab.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Pending {
-    pub report: String,
-    pub host_origin: String,
-    #[serde(default)]
-    pub tools_added: bool,
-    /// Whether this computer entered the workspace, and the tab was not told
-    /// yet: then the agent's confirmation is what tells it, and the screen
-    /// leaves only once the tools are in.
-    #[serde(default)]
-    pub entered: bool,
-}
-
-/// The file beside this computer's login that names the tab following it.
-const PENDING_FILE: &str = "tab.json";
-
-/// Keep `pending` beside this computer's login.
-fn store_pending(dir: &Path, pending: &Pending) -> Result<()> {
-    let _ = std::fs::remove_file(dir.join(PENDING_FILE));
-    std::fs::write(dir.join(PENDING_FILE), serde_json::to_vec_pretty(pending)?)?;
-    Ok(())
-}
-
-/// The login this computer last made, when it left a tab following it.
-fn load_pending(dir: &Path) -> Option<Pending> {
-    serde_json::from_slice(&std::fs::read(dir.join(PENDING_FILE)).ok()?).ok()
-}
-
-/// Tell the tab that followed this computer's login that its agent has
-/// Tilo's tools, and that this computer is in the workspace: the steps that
-/// tab shows only because the server was found in the agent's own
-/// configuration and answered.
-///
-/// `tilo agent check` calls this after confirming; `tilo login` calls it
-/// itself when its own check passed. A tab that has moved on is not told
-/// anything twice, and nothing is said about it.
-pub(crate) fn report_tools_added() {
-    let Ok(place) = Place::here() else { return };
-    let dir = place.dir();
-    let Some(mut pending) = load_pending(dir) else {
-        return;
-    };
-    if pending.tools_added {
-        return;
-    }
-    let Ok(runtime) = runtime() else { return };
-    let entered = pending.entered;
-    runtime.block_on(async {
-        let host = Origin::new(&http(), &pending.host_origin);
-        let reporter = Reporter {
-            host: &host,
-            report: pending.report.clone(),
-            agent: agent::detect_here().name,
-        };
-        reporter.quiet_step(Step::ToolsAdded).await;
-        // What the screen leaves for: said here for an agent that added the
-        // server itself, so the tools are confirmed before it goes.
-        if entered {
-            reporter.quiet_step(Step::Entered).await;
-        }
-    });
-    pending.tools_added = true;
-    pending.entered = false;
-    let _ = store_pending(dir, &pending);
-}
-
 pub fn logged_in() -> bool {
-    Place::here().is_ok_and(|place| place.logged_in())
+    Place::here(crate::identity::paths()).is_ok_and(|place| place.logged_in())
 }
 
 /// This computer's one device key, the one its session keeps, made now when it has none: every
@@ -231,23 +161,6 @@ pub fn label(agent: &str, host: &str) -> String {
     fitted
 }
 
-/// Have the person's tab certify this computer as one of their devices, under
-/// the name [`label`] names for the agent here: the server answers the name it
-/// gave it.
-async fn certify(
-    host: &Origin,
-    link: &PairingLink,
-    agent: &str,
-    key: &SigningKey,
-) -> Result<SignIn> {
-    sign_in(host, link, agent, &label(agent, &hostname()), key, |_| {})
-        .await
-        .map_err(|error| {
-            debug_why("the person's tab certifying this computer", &error);
-            anyhow!(certify_said(&error))
-        })
-}
-
 /// What a login that worked says: the device this computer now is, and which of the person's
 /// agents runs on it ([`which_agent`]).
 fn logged_in_said(label: &str, days: u64, agent: &str) -> String {
@@ -269,38 +182,6 @@ fn which_agent(name: &str) -> String {
     )
 }
 
-/// What a login that failed says: what happened, in the person's words, and
-/// the one action that fixes it.
-fn certify_said(error: &CertifyError) -> String {
-    match error {
-        CertifyError::Expired => {
-            "The person's Tilo tab didn't approve this computer in time: it approves only while \
-             the tab is open. Keep the tab open, then run the same command again."
-                .to_owned()
-        }
-        CertifyError::Denied(reason) if reason.contains("declined") => {
-            "The person's Tilo tab declined this computer. Run the same command again and allow \
-             it in the tab."
-                .to_owned()
-        }
-        CertifyError::Denied(_) => {
-            "Tilo didn't let this computer in. Run the same command again with a new code from \
-             the person's Tilo tab."
-                .to_owned()
-        }
-        CertifyError::Request(_) | CertifyError::Sign(_) => {
-            "Tilo couldn't ask the person's Tilo tab to approve this computer. Try again in a \
-             minute."
-                .to_owned()
-        }
-        CertifyError::Transport(link) => link_said(link),
-        CertifyError::Iroh(_) | CertifyError::Io(_) => UNREACHED.to_owned(),
-        CertifyError::Codec(_) => TOO_OLD.to_owned(),
-        CertifyError::Auth(error) => auth_said(error),
-    }
-}
-
-/// What a server that answered nothing usable says.
 /// What an invitation the workspace's server did not take says to the person.
 fn invitation_said(error: &CertifyError) -> String {
     match error {
@@ -407,7 +288,7 @@ async fn connect_retrying(key: &SigningKey, device: &Device) -> Result<Entered> 
     Err(last.unwrap_or_else(|| anyhow!(UNREACHED)))
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime> {
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?)
@@ -444,21 +325,17 @@ pub(crate) async fn connect(
     Ok(Entered::enter_lent(entry.as_ref(), &signed, Arc::new(key.clone()), lent).await?)
 }
 
-/// Where the server `device` reaches is dialed: at the address its invitation signed, or at
-/// the one its web origin publishes.
+/// Where the server `device` reaches is dialed: at the address its login names.
+#[expect(
+    clippy::unused_async,
+    reason = "the session's callers await it; it asks nothing of the network since a login names its server's address"
+)]
 pub(crate) async fn server_of(device: &Device) -> Result<tilo_server_client::ServerAddress> {
-    if let Some(address) = &device.server_address {
-        return Ok(tilo_server_client::ServerAddress::published(address));
-    }
-    let server_web = Origin::new(&http(), &device.host_origin);
-    let info = https::server_info(&server_web).await.map_err(|error| {
-        debug_why("asking the workspace's server", &error);
-        anyhow!(UNREACHED)
-    })?;
-    info.address
+    device
+        .server_address
         .as_ref()
         .map(tilo_server_client::ServerAddress::published)
-        .ok_or_else(|| anyhow!(UNREACHED))
+        .ok_or_else(|| anyhow!(LOGIN_ENDED))
 }
 
 /// [`connect`] to a server its invitation named over iroh: dialed at its signed address, with
@@ -474,7 +351,7 @@ async fn connect_over_iroh(
 }
 
 /// `device` signed in at the server dialed over iroh at `address`.
-fn signed_over_iroh(device: &Device, address: &ServerAddress) -> Result<SignIn> {
+pub(crate) fn signed_over_iroh(device: &Device, address: &ServerAddress) -> Result<SignIn> {
     Ok(SignIn {
         link: PairingLink {
             site: device.site.clone(),
@@ -576,6 +453,20 @@ async fn redeem_over_iroh(
     Ok(Some(admitted?.name))
 }
 
+/// Announce `entry`, a revocation the person's root signed, to every workspace `session` is in.
+///
+/// # Errors
+/// The session ended first.
+pub(crate) fn announce_revocation(
+    session: &Entered,
+    entry: tilo_user_identity::RevocationEntry,
+) -> Result<()> {
+    session
+        .session()
+        .send(tilo_session_client::Cmd::Revoke(entry))
+        .map_err(|_| anyhow!("the session ended before the revocation was sent"))
+}
+
 /// How long naming the person in a workspace they just joined may take.
 const NAMING_WITHIN: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -583,7 +474,6 @@ const NAMING_WITHIN: std::time::Duration = std::time::Duration::from_secs(15);
 /// as it joins: what its member list and everyone's lists of people show for them, rather than
 /// this device's label. A workspace that does not answer keeps the name it admitted them with.
 async fn name_person(session: &Entered, workspace: &str, name: &str) {
-    use tilo_session_client::Outbox as _;
     let asked = tilo_server_protocol::workspaces::WorkspacesRequest::Name {
         workspace: workspace.to_owned(),
         name: name.to_owned(),
@@ -687,7 +577,7 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
         workspace_name,
         ..device
     };
-    store(&Place::here()?, &device)?;
+    store(&Place::here(crate::identity::paths())?, &device)?;
     println!(
         "Joined: this computer is one of {} devices, \"{}\", in the workspace.\n{}",
         person.whose(),
@@ -695,198 +585,6 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
         which_agent(&agent.name)
     );
     entered_after_login(&runtime, &key, &device, &agent)
-}
-
-/// The site `--site` or [`SITE_ENV`] names, else [`DEFAULT_SITE`], as an
-/// HTTPS origin.
-pub(crate) fn site_origin(flag: Option<&str>) -> Result<String> {
-    let named = flag
-        .map(str::to_owned)
-        .or_else(|| std::env::var(SITE_ENV).ok())
-        .filter(|site| !site.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_SITE.to_owned());
-    let url = tilo_net::Url::parse(named.trim())
-        .with_context(|| format!("{named} is not a site's address"))?;
-    if !tilo_net::secure_origin(&url) {
-        bail!("{named} is not an https:// site (or an http:// one on this computer)");
-    }
-    Ok(url.origin().ascii_serialization())
-}
-
-/// The site's home server, as its `entry.json` names it (`home.server.origin`).
-///
-/// A site that answers nothing, or nothing this tilo reads, is said as it
-/// is: Tilo cannot be reached from here right now.
-pub(crate) async fn home_server(site: &Origin) -> Result<String> {
-    let (status, body) = site.get("/entry.json").await.map_err(|error| {
-        debug_why(&format!("reading {}'s entry.json", site.name()), &error);
-        anyhow!(UNREACHED)
-    })?;
-    let entry: Value = serde_json::from_slice(&body).map_err(|error| {
-        debug_why(&format!("reading {}'s entry.json", site.name()), &error);
-        anyhow!(UNREACHED)
-    })?;
-    if status != 200 {
-        debug_why(&format!("reading {}'s entry.json", site.name()), &status);
-        bail!(UNREACHED);
-    }
-    let origin = entry
-        .pointer("/home/host/origin")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!(UNREACHED))?;
-    let url = tilo_net::Url::parse(origin).map_err(|error| {
-        debug_why("reading the site's server address", &error);
-        anyhow!(UNREACHED)
-    })?;
-    if !tilo_net::secure_origin(&url) {
-        debug_why("the site's server address", &origin);
-        bail!(UNREACHED);
-    }
-    Ok(url.origin().ascii_serialization())
-}
-
-/// What the code names, spending it.
-///
-/// A code the server does not know is asked about again for a moment: the server
-/// keeps a code from the moment the tab showing it follows it, which the tab
-/// does as soon as the prompt is on its screen (`web/first-screen.mjs`,
-/// `watchShown`), so a person who hands the prompt to their agent at once can
-/// beat that request when their machine draws the page slowly. The server
-/// counts resolves that miss, so the asking is a few tries, not a wait.
-async fn resolve(host: &dyn HttpClient, code: &str) -> Result<Resolved> {
-    let began = std::time::Instant::now();
-    loop {
-        match login_code::resolve(host, code).await {
-            Ok(resolved) => return Ok(resolved),
-            Err(refusal) if refusal.code() == "unknown" && began.elapsed() < CODE_KEPT_WAIT => {
-                tokio::time::sleep(CODE_KEPT_RETRY).await;
-            }
-            Err(refusal) => return Err(said_refusal(&refusal, code)),
-        }
-    }
-}
-
-/// How long a code the server does not know yet is asked about again, and how
-/// often: a few tries inside the server's budget of misses (ten a minute from
-/// one address), long enough for the tab of a machine that is drawing slowly
-/// to keep the code it shows.
-const CODE_KEPT_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
-const CODE_KEPT_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// What a refused code says to the person.
-fn said_refusal(refusal: &login_code::CodeRefusal, code: &str) -> anyhow::Error {
-    match refusal.code() {
-        "unknown" => anyhow!(
-            "Tilo couldn't use the code {code}: a code works once, for 10 minutes. \
-             Ask the person for a new code from their Tilo tab (Set up with your agent)."
-        ),
-        "too-many" => {
-            anyhow!("There were too many wrong codes from here: wait a minute, then try again.")
-        }
-        other => {
-            debug_why(&format!("the code was refused ({other})"), refusal);
-            anyhow!(
-                "Tilo couldn't use this code: ask the person for a new code from their Tilo tab \
-                 (Set up with your agent)."
-            )
-        }
-    }
-}
-
-/// Tells the tab what this computer did with its code.
-struct Reporter<'a> {
-    host: &'a dyn HttpClient,
-    report: String,
-    agent: String,
-}
-
-impl Reporter<'_> {
-    async fn step(&self, step: Step) {
-        self.send(step, None).await;
-    }
-
-    /// The same, saying nothing when it does not reach the tab: a step a tab
-    /// that has moved on is never told.
-    async fn quiet_step(&self, step: Step) {
-        let _ = login_code::report(self.host, &self.report(step, None)).await;
-    }
-
-    /// The tab shows `detail`, one sentence, as what failed.
-    async fn failed(&self, detail: &str) {
-        let sentence = detail.lines().next().unwrap_or(detail);
-        self.send(Step::Failed, Some(sentence.chars().take(300).collect()))
-            .await;
-    }
-
-    fn report(&self, step: Step, detail: Option<String>) -> Report {
-        Report {
-            report: self.report.clone(),
-            step,
-            agent: Some(self.agent.chars().take(protocol::MAX_AGENT_CHARS).collect()),
-            detail,
-        }
-    }
-
-    async fn send(&self, step: Step, detail: Option<String>) {
-        if let Err(refusal) = login_code::report(self.host, &self.report(step, detail)).await {
-            eprintln!("The person's tab was not told this step: {refusal}");
-        }
-    }
-}
-
-/// What a refused claim says to the person: the server's reason, and the one thing to do.
-fn claim_said(refusal: &login_code::CodeRefusal) -> anyhow::Error {
-    use protocol::ClaimRefused;
-    let again = "then ask the tab for a new code (Try again)";
-    match refusal.claim_refused() {
-        Some(ClaimRefused::NotLive) => anyhow!(
-            "This computer's Tilo login has expired. Log it in again with `tilo login`, {again}."
-        ),
-        Some(ClaimRefused::Revoked) => anyhow!(
-            "This computer was removed from your devices. Log it in again with `tilo login`, \
-             {again}."
-        ),
-        Some(ClaimRefused::Clock) => {
-            anyhow!("This computer's clock is more than a minute off. Set it right, {again}.")
-        }
-        Some(ClaimRefused::Signature) => anyhow!(
-            "This computer's Tilo login is damaged: its key doesn't match its certificate. Log \
-             it in again with `tilo login`, {again}."
-        ),
-        Some(ClaimRefused::NotADevice) => anyhow!(
-            "This computer isn't one of your Tilo devices, so it can't sign the tab in. Set it \
-             up from your Tilo tab first (Set up with your agent)."
-        ),
-        None => match refusal.code() {
-            "unknown" => anyhow!(
-                "This code was used already or ran out. Ask the tab for a new one (Try again)."
-            ),
-            "unreachable" => anyhow!("{refusal}"),
-            _ => {
-                debug_why("the claim was refused", refusal);
-                anyhow!("The server refused the sign-in: {}", refusal.message)
-            }
-        },
-    }
-}
-
-/// The name the server lists `workspace` under, when it lists it.
-async fn workspace_name(host: &dyn HttpClient, workspace: &str) -> Option<String> {
-    let path = format!(
-        "{API_PREFIX}{}",
-        tilo_server_protocol::directory::DIRECTORY_PATH
-    );
-    let (status, body) = host.post(&path, Vec::new()).await.ok()?;
-    if status != 200 {
-        return None;
-    }
-    let page: tilo_server_protocol::directory::DirectoryPage =
-        serde_json::from_slice(&body).ok()?;
-    page.workspaces
-        .into_iter()
-        .find(|listed| listed.workspace.eq_ignore_ascii_case(workspace))
-        .map(|listed| listed.name)
-        .filter(|name| !name.trim().is_empty())
 }
 
 /// What became of Tilo's tools for the agent.
@@ -1082,385 +780,192 @@ fn add_tools(agent: &Agent, tilo: &Path, runner: &dyn agent::Runner) -> Tools {
     }
 }
 
-/// `tilo login <code> [--agent NAME] [--site ORIGIN]`.
-pub fn login(code: &str, agent: Option<&str>, site: Option<&str>) -> Result<ExitCode> {
-    let Some(code) = protocol::normalize_code(code) else {
-        bail!(
-            "{} is not a login code; one looks like K7Q-MX2P. Ask the person for the code their \
-             Tilo tab shows (in Tilo, choose \"Set up with your agent\").",
-            code.trim()
-        );
-    };
-    trust_test_certificates()?;
+/// The agent `--agent` names, run by the tool found here, else the agent found here.
+pub(crate) fn agent_named(agent: Option<&str>) -> Agent {
     // A name of its own (`--agent "Reviewer"`) is another agent of the person's than the one
     // the tool goes by, run by the same tool: its tools are still added to it.
-    let agent =
-        agent
-            .filter(|name| !name.trim().is_empty())
-            .map_or_else(agent::detect_here, |name| {
-                let named = agent::named(name);
-                agent::Agent {
-                    tool: named.tool.or_else(|| agent::detect_here().tool),
-                    ..named
-                }
-            });
-    let site = site_origin(site)?;
-    let runtime = runtime()?;
-    runtime.block_on(async {
-        let host_origin = home_server(&Origin::new(&http(), &site)).await?;
-        let host = Origin::new(&http(), &host_origin);
-        let resolved = resolve(&host, &code).await?;
-        let reporter = Reporter {
-            host: &host,
-            report: resolved.report.clone(),
-            agent: agent.name.clone(),
-        };
-        reporter.step(Step::Resolved).await;
-        let done = match (&resolved.link, resolved.sign_in) {
-            (Some(link), _) => set_up(&reporter, link, &agent).await,
-            (None, true) => sign_in_tab(&reporter).await,
-            (None, false) => Err(anyhow!(
-                "Tilo couldn't use this code: ask the person for a new one from their Tilo tab \
-                 (Set up with your agent)."
-            )),
-        };
-        if let Err(error) = &done {
-            debug_why("the login did not finish", error);
-            // The tab reads one sentence: what happened, in plain words.
-            reporter.failed(&upper_first(&error.to_string())).await;
-        }
-        done
-    })
-}
-
-/// The device a sign-in made of this computer, as the login keeps it.
-fn device_of(signed: &SignIn) -> Device {
-    Device {
-        site: signed.link.site.clone(),
-        host_origin: signed.link.host_origin.clone(),
-        workspace: signed.link.workspace_id(),
-        workspace_name: None,
-        agent: signed.agent.clone(),
-        cert: signed.cert.clone(),
-        server_cert: signed.server_cert.clone(),
-        server_address: None,
-    }
-}
-
-fn upper_first(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
-}
-
-/// Setting up: become a device of the person the link names, add Tilo's
-/// tools to the agent, and enter the workspace.
-async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<ExitCode> {
-    let link = PairingLink::parse(link).map_err(|error| anyhow!(error))?;
-    let place = Place::here()?;
-    let dir = place.dir();
-    let key = this_device_key()?;
-    let server_web = Origin::new(&http(), &link.host_origin);
-    eprintln!("Waiting for the person's tab to approve this computer…");
-    let signed = certify(&server_web, &link, &agent.name, &key).await?;
-    // The server names this computer: the name asked for, or the next numbered
-    // one another device of the person reads by.
-    let label = signed.label.clone();
-    let mut device = device_of(&signed);
-    device.workspace_name = workspace_name(&server_web, &device.workspace).await;
-    store(&place, &device)?;
-    // The tab follows this login; what the agent confirms afterwards is told
-    // to it through what is kept here.
-    let mut pending = Pending {
-        report: reporter.report.clone(),
-        host_origin: device.host_origin.clone(),
-        tools_added: false,
-        entered: false,
-    };
-    store_pending(dir, &pending)?;
-    reporter.step(Step::LoggedIn).await;
-    let days = signed.cert.expires_at_ns.map_or(0, |end| {
-        end.saturating_sub(signed.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
-    });
-    println!("{}", logged_in_said(&label, days, &agent.name));
-    let tilo = std::env::current_exe().context("finding this program")?;
-    let tools = add_tools(agent, &tilo, &agent::System);
-    if let Tools::Added(tool) = &tools {
-        pending.tools_added = true;
-        store_pending(dir, &pending)?;
-        reporter.step(Step::ToolsAdded).await;
-        if tool.restart().is_some() {
-            reporter.step(Step::Restart).await;
-        }
-    }
-    let place = device.workspace_name.as_ref().map_or_else(
-        || format!("the person's workspace on {}", host_of(&device.host_origin)),
-        |name| {
-            format!(
-                "the person's workspace {name} on {}",
-                host_of(&device.host_origin)
-            )
-        },
-    );
-    match connect_retrying(&key, &device).await {
-        Ok(entered) => {
-            println!("Entered {place}: their tab shows you there.");
-            entered.close();
-            // The workspace's one folder, on this computer too, asked for a
-            // few times: it is the same server that just took this computer in.
-            let mut folder =
-                crate::folders::after_login(&device.workspace, device.workspace_name.as_deref());
-            for pause in [1, 2] {
-                if folder.is_ok() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_secs(pause));
-                folder = crate::folders::after_login(
-                    &device.workspace,
-                    device.workspace_name.as_deref(),
-                );
+    agent
+        .filter(|name| !name.trim().is_empty())
+        .map_or_else(agent::detect_here, |name| {
+            let named = agent::named(name);
+            agent::Agent {
+                tool: named.tool.or_else(|| agent::detect_here().tool),
+                ..named
             }
-            match folder {
-                Ok(folder) => println!(
-                    "Its files are in {}, kept in sync both ways: anything written there is in the \
-                     workspace, named for who wrote it (`tilo folders` lists the folders).",
-                    folder.display()
-                ),
-                Err(error) => {
-                    debug_why("putting the workspace's files in a folder", &error);
-                    println!(
-                        "Logged in. Its files aren't in a folder on this computer yet: \
-                         `tilo folders` asks for it again."
-                    );
-                }
-            }
-            // An agent that adds Tilo's tools itself confirms them first: the
-            // tab leaves only once they are in, and the agent's own check
-            // tells it that they are.
-            if matches!(tools, Tools::Added(_)) {
-                reporter.step(Step::Entered).await;
-            } else {
-                pending.entered = true;
-                store_pending(dir, &pending)?;
-            }
-        }
-        Err(error) => {
-            // Said to the person's tab and to the agent alike: what did not
-            // happen and the one action that fixes it.
-            let said = enter_said(&error);
-            reporter
-                .failed(&format!(
-                    "Logged in, but this computer can't open your workspace yet: {said}"
-                ))
-                .await;
-            println!("Logged in, but this computer can't open {place} yet: {said}");
-        }
-    }
-    println!();
-    println!(
-        "{}",
-        next_steps(agent, &tools, &tilo, http_mcp(&device).as_deref())
-    );
-    Ok(ExitCode::SUCCESS)
+        })
 }
 
-/// Supply this computer's held credentials and present the enrollment result.
-async fn sign_in_tab(reporter: &Reporter<'_>) -> Result<ExitCode> {
-    let (root, key, cert) = if let Some(person) = crate::identity::held()? {
-        (Some(person.root), person.device, person.cert)
-    } else {
-        let Some((key, device)) = load(&Place::here()?)? else {
-            bail!(
-                "This is a sign-in code, which needs a computer already logged in to Tilo, and \
-                 this one isn't. In Tilo, choose \"Set up with your agent\" instead."
-            );
-        };
-        (None, key, device.cert)
-    };
-    vouch_with_code(
-        reporter.host,
-        &reporter.report,
-        &key,
-        &cert,
-        root.as_ref()
-            .map(|root| root as &dyn tilo_server_client::DeviceSigner),
-        // The server tells the tab it approved when it takes the certificate.
-        || eprintln!("Waiting for the person's tab to ask…"),
+/// What a string that is no ticket says.
+fn not_a_ticket(text: &str) -> anyhow::Error {
+    let shown: String = text.trim().chars().take(24).collect();
+    anyhow!(
+        "{shown} is not a Tilo ticket; one starts with tilo1. On one of your computers, \
+         `tilo device add` prints one."
     )
-    .await
-    .map_err(vouch_said)?;
-    println!("Approved: your tab is signed in as you.");
-    Ok(ExitCode::SUCCESS)
 }
 
-fn vouch_said(error: VouchError) -> anyhow::Error {
-    match error {
-        VouchError::Encode(error) => error.into(),
-        VouchError::Claim(refusal) => claim_said(&refusal),
-        VouchError::Waiting(refusal) => {
-            debug_why("asking for the tab's request", &refusal);
-            anyhow!("The server stopped the sign-in: {}", refusal.message)
-        }
-        VouchError::Expired => anyhow!(
-            "The tab didn't ask to be signed in within 10 minutes. Ask it for a new code \
-             (Try again)."
-        ),
-        VouchError::GarbledRequest => {
-            anyhow!("The server sent the tab's request garbled. Try again.")
-        }
-        VouchError::DifferentPerson => {
-            anyhow!(
-                "The tab asked to be signed in as someone else. Ask it for a new code (Try again)."
-            )
-        }
-        VouchError::Issue(error) => anyhow!("This computer couldn't certify the tab: {error}."),
-        VouchError::Answer(refusal) => {
-            debug_why("certifying the tab", &refusal);
-            anyhow!(
-                "The server refused the tab's certificate: {}",
-                refusal.message
-            )
-        }
-    }
-}
-
-/// `tilo login` on a computer that holds the person's root itself: no tab and no code. The root
-/// certifies a fresh device key for the agent here, the person's list of devices on the site's
-/// server takes the key in, and the computer enters `workspace` (by name or id), else the first
-/// of their own there ([`choose_workspace`]), as [`set_up`] would after a tab approved it; the
-/// peer it starts takes in every other workspace the person has there.
+/// `tilo login <ticket> [--agent NAME]`: this computer becomes one of the person's devices, as
+/// the device that issued the ticket has their root certify it, and enters their workspace.
 ///
 /// # Errors
-/// The site or its server is not reached, the person has no workspace there by that name, or the
-/// workspace refuses this device.
-pub fn login_held(
-    person: &crate::identity::Person,
-    agent: Option<&str>,
-    site: Option<&str>,
-    workspace: Option<&str>,
-) -> Result<ExitCode> {
-    trust_test_certificates()?;
-    let agent =
-        agent
-            .filter(|name| !name.trim().is_empty())
-            .map_or_else(agent::detect_here, |name| {
-                let named = agent::named(name);
-                agent::Agent {
-                    tool: named.tool.or_else(|| agent::detect_here().tool),
-                    ..named
-                }
-            });
-    let site = site_origin(site)?;
+/// The text is no ticket, the issuing device is not reached, the ticket is spent or wrong, the
+/// person declined, or the answer cannot be kept.
+pub fn login(ticket: &str, agent: Option<&str>) -> Result<ExitCode> {
+    let parsed = Ticket::parse(ticket).map_err(|_| not_a_ticket(ticket))?;
+    let agent = agent_named(agent);
+    let key = this_device_key()?;
     let runtime = runtime()?;
-    let (key, device, others) =
-        runtime.block_on(enter_with_a_held_key(person, &agent, &site, workspace))?;
-    store(&Place::here()?, &device)?;
-    println!(
-        "Logged in: this computer holds {} identity, which made it \"{}\", one of its \
-         devices.\n{}",
-        person.whose(),
-        device.label(),
-        which_agent(&agent.name)
-    );
-    if others > 0 {
-        println!(
-            "Your {others} other workspace{} come{} to this computer as well, each to a folder of \
-             its own, as Tilo's background sync takes {} in.",
-            if others == 1 { "" } else { "s" },
-            if others == 1 { "s" } else { "" },
-            if others == 1 { "it" } else { "them" },
-        );
-    }
+    eprintln!("Asking your device to add this computer; it may ask you to approve it…");
+    let answer = runtime.block_on(certified_with(
+        &parsed,
+        &key,
+        &agent.name,
+        &label(&agent.name, &hostname()),
+    ))?;
+    let device = device_of(answer, &agent.name);
+    store(&Place::here(crate::identity::paths())?, &device)?;
+    let days = device.cert.expires_at_ns.map_or(0, |end| {
+        end.saturating_sub(device.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
+    });
+    println!("{}", logged_in_said(device.label(), days, &agent.name));
     entered_after_login(&runtime, &key, &device, &agent)
 }
 
-/// After a login without a tab: Tilo's tools added to the agent, the workspace entered once to say
-/// it opens, its folder put on this computer, and what to do next.
-/// Enter a workspace as a device of `person` with this computer's one device key: the server takes
-/// the key in, and the computer enters `workspace` (by name or id), else the first of their own
-/// there ([`choose_workspace`]); the peer it starts takes in every other workspace the person has
-/// there. Answers the key, the device, and how many other workspaces there are.
-async fn enter_with_a_held_key(
-    person: &crate::identity::Person,
-    agent: &agent::Agent,
-    site: &str,
-    workspace: Option<&str>,
-) -> anyhow::Result<(SigningKey, Device, usize)> {
-    let origin = home_server(&Origin::new(&http(), site)).await?;
-    let server = Origin::new(&http(), &origin);
-    let info = https::server_info(&server).await.map_err(|error| {
-        debug_why("asking the site's server", &error);
+/// The iroh address `reached` names.
+///
+/// # Errors
+/// The endpoint id is no key.
+pub(crate) fn address_of(reached: &Reached) -> Result<iroh::EndpointAddr> {
+    let id = iroh::EndpointId::from_bytes(&reached.endpoint)
+        .map_err(|_| anyhow!("this ticket names no device: ask for a new one"))?;
+    let mut addr = iroh::EndpointAddr::new(id);
+    if let Some(relay) = reached
+        .relay
+        .as_deref()
+        .and_then(|url| url.parse::<iroh::RelayUrl>().ok())
+    {
+        addr = addr.with_relay_url(relay);
+    }
+    for direct in &reached.direct {
+        addr = addr.with_ip_addr(*direct);
+    }
+    Ok(addr)
+}
+
+/// Where `addr` is reached, as a ticket and its answer carry it.
+pub(crate) fn reached_of(addr: &iroh::EndpointAddr) -> Reached {
+    Reached {
+        endpoint: *addr.id.as_bytes(),
+        relay: addr.relay_urls().next().map(ToString::to_string),
+        direct: addr.ip_addrs().copied().collect(),
+    }
+}
+
+/// Ask the device that issued `ticket` to have the person's root certify `key`, for `agent`,
+/// listed as `label`: its answer, once the person approved.
+///
+/// # Errors
+/// The device is not reached, it refused the ticket, or the person declined.
+pub(crate) async fn certified_with(
+    ticket: &Ticket,
+    key: &SigningKey,
+    agent: &str,
+    label: &str,
+) -> Result<CertifyAnswer> {
+    use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+    let issuer = address_of(&ticket.issuer)?;
+    let dialed = tilo_server_client::ServerAddress::at(issuer);
+    let endpoint = dialed.bind(Some(key.to_bytes())).await.map_err(|error| {
+        debug_why("binding this computer's endpoint", &error);
         anyhow!(UNREACHED)
     })?;
-    let dialed = info
-        .address
-        .as_ref()
-        .map(tilo_server_client::ServerAddress::published)
-        .ok_or_else(|| anyhow!("{origin} takes no device connections"))?;
-    let key = this_device_key()?;
-    let label = label(&agent.name, &hostname());
-    let cert = held_device_cert(person, &key, &label)?;
-    let user = person.user();
-    let unentered = PairingLink::parse(&format!(
-        "{site}/#/@{}/w/{}?pair={user}",
-        host_of(&origin),
-        uuid::Uuid::nil()
-    ))
-    .map_err(|error| anyhow!(error))?;
-    let signed = SignIn {
-        link: unentered,
-        agent: agent.name.clone(),
-        label: label.clone(),
-        server: dialed,
-        cert: cert.clone(),
-        server_cert: info.server_cert.clone(),
+    let input = CertifyInput {
+        secret: ticket.secret_hex(),
+        device_public_key: hex::encode(key.verifying_key().to_bytes()),
+        agent: agent.to_owned(),
+        label: Some(label.to_owned()),
     };
-    let session = Entered::connect(&signed, Arc::new(key.clone()));
-    let chosen = async {
-        session
-            .connected()
-            .await
-            .map_err(|refusal| anyhow!("{refusal}"))?;
-        let mut list = session
-            .personal_list(
-                &tilo_server_session::workspaces::WorkspaceLabels::new(),
-                None,
-            )
-            .await
-            .map_err(|refusal| anyhow!("{refusal}"))?;
-        // The person's list of devices takes this key in, as when a tab approves one.
-        list.devices
-            .push(tilo_server_session::workspaces::PersonalDevice {
-                cert: cert.clone(),
-                name: None,
-                revoked: false,
-                browser: None,
-                agent: Some(agent.name.clone()),
-                last_active_ms: None,
-                online: false,
-            });
-        session
-            .keep_personal(&list)
-            .await
-            .map_err(|refusal| anyhow!("{refusal}"))?;
-        let others = list.workspaces.len().saturating_sub(1);
-        choose_workspace(&list.workspaces, workspace).map(|(id, name)| (id, name, others))
+    let serde_json::Value::Object(argument) = serde_json::to_value(&input)? else {
+        bail!("the certify input is an object");
+    };
+    let service = tilo_peer_state::actions::ActionService::new(
+        key.clone(),
+        Arc::new(tilo_peer_state::actions::NoActions),
+    );
+    let device = Arc::new(service.remote(&endpoint, &dialed.addr(), SCOPE));
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(RESOURCE, CERTIFY),
+        },
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let settled = device
+        .invoke_until_settled(request, std::time::Duration::from_nanos(TICKET_LIFETIME_NS))
+        .await;
+    endpoint.close().await;
+    match settled {
+        Some(Ok(tilo_actions::InvocationUpdate::Succeeded { output, .. })) => output
+            .value
+            .and_then(|value| serde_json::from_value(value).ok())
+            .ok_or_else(|| anyhow!(TOO_OLD)),
+        Some(Ok(tilo_actions::InvocationUpdate::Failed { error, .. })) => Err(anyhow!(
+            "Your device didn't add this computer: {}.",
+            error.message.trim_end_matches('.')
+        )),
+        Some(Ok(_)) | None => Err(anyhow!(UNREACHED)),
+        Some(Err(error)) => {
+            debug_why("asking the device to certify this computer", &error);
+            Err(anyhow!(certify_refused(&error)))
+        }
     }
-    .await;
-    session.close();
-    let (id, name, others) = chosen?;
-    let device = Device {
-        site: format!("{site}/"),
-        host_origin: origin,
-        workspace: id,
-        workspace_name: Some(name),
-        agent: agent.name.clone(),
-        cert,
-        server_cert: info.server_cert.clone(),
-        server_address: None,
-    };
-    anyhow::Ok((key, device, others))
+}
+
+/// What a certify call the issuing device did not take says.
+fn certify_refused(error: &tilo_actions::remote::ActionCallError) -> String {
+    use tilo_actions::remote::ActionCallError;
+    match error {
+        ActionCallError::Refused { reason } => {
+            format!(
+                "Your device didn't take this ticket: {}.",
+                reason.trim_end_matches('.')
+            )
+        }
+        ActionCallError::UnknownAction => TOO_OLD.to_owned(),
+        _ => "The device that made this ticket can't be reached from here: it may be asleep, or \
+              its `tilo device add` ended. Ask for a new ticket."
+            .to_owned(),
+    }
+}
+
+/// The login `answer` makes of this computer, for `agent`.
+pub(crate) fn device_of(answer: CertifyAnswer, agent: &str) -> Device {
+    let enter = answer.enter;
+    let address = address_of(&enter.server)
+        .ok()
+        .map(|endpoint_addr| ServerAddress {
+            relay_url: enter.server.relay.clone(),
+            endpoint_addr,
+            web: None,
+        });
+    Device {
+        site: enter.site,
+        host_origin: enter.host_origin,
+        workspace: enter.workspace,
+        workspace_name: enter.workspace_name,
+        agent: agent.to_owned(),
+        cert: answer.cert,
+        server_cert: enter.server_cert,
+        server_address: address,
+    }
 }
 
 fn entered_after_login(
@@ -1593,7 +1098,7 @@ pub(crate) fn host_of(origin: &str) -> &str {
         .trim_end_matches('/')
 }
 
-pub(crate) const NOT_LOGGED_IN: &str = "This computer is not logged in to Tilo. Ask the person to open tilo.sh, choose \"Set up with your agent\" and paste you the prompt it copies; it has you run tilo login with their code, like: tilo login K7Q-MX2P";
+pub(crate) const NOT_LOGGED_IN: &str = "This computer is not logged in to Tilo. Ask the person to run `tilo device add` on one of their devices and give you the ticket it prints; then run tilo login with it, like: tilo login tilo1…";
 
 /// A login kept below `dir` for a test, as `tilo login` keeps one: `env` names `dir`'s `state`
 /// and `identity` as this account's state directory and this computer's identity root, `key`
@@ -1607,7 +1112,7 @@ pub(crate) fn keep_for_test(
 ) {
     env.set("XDG_STATE_HOME", dir.join("state"))
         .set("TILO_IDENTITY_ROOT", dir.join("identity"));
-    let place = Place::here().unwrap();
+    let place = Place::here(crate::identity::paths()).unwrap();
     tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
     store(&place, device).unwrap();
 }
@@ -1637,8 +1142,6 @@ pub(crate) fn certified_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-    use std::sync::Mutex;
 
     /// The person's root, this computer's device key, and the login they made of it.
     fn device() -> (SigningKey, SigningKey, Device) {
@@ -1786,7 +1289,7 @@ mod tests {
             )
             .unwrap();
             let said = load(&place).unwrap_err().to_string();
-            assert!(said.contains("`tilo login` again"), "{said}");
+            assert!(said.contains("log in again with a ticket"), "{said}");
             // A login that is not one says what to do, not what it holds.
             std::fs::write(place.dir().join("login.json"), b"{}").unwrap();
             assert_eq!(load(&place).unwrap_err().to_string(), LOGIN_DAMAGED);
@@ -1830,7 +1333,7 @@ mod tests {
             tilo_device_identity::persist::adopt_device_key(&keys, &session.to_bytes()).unwrap();
             earlier_login(place.dir(), &key, &device);
             let said = load(&place).unwrap_err().to_string();
-            assert!(said.contains("`tilo login` again"), "{said}");
+            assert!(said.contains("log in again with a ticket"), "{said}");
             assert_eq!(
                 tilo_device_identity::persist::load_device_key(&keys)
                     .unwrap()
@@ -1844,28 +1347,6 @@ mod tests {
             );
         }
 
-        phase a_login_leaves_the_tab_for_the_agent_to_confirm;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let pending = Pending {
-                report: "aa".into(),
-                host_origin: "https://eu1.tilo.sh".into(),
-                tools_added: true,
-                entered: false,
-            };
-            store_pending(dir.path(), &pending).unwrap();
-            assert!(
-                !Place::at(
-                    dir.path().to_owned(),
-                    tilo_device_identity::IdentityPaths::under(dir.path())
-                )
-                .logged_in(),
-                "a tab following a login is no login"
-            );
-            assert_eq!(load_pending(dir.path()), Some(pending));
-            assert_eq!(load_pending(&dir.path().join("none")), None);
-        }
-
         phase a_label_names_the_agent_and_the_computer_within_bounds;
         {
             assert_eq!(
@@ -1875,125 +1356,8 @@ mod tests {
         }
     }
 
-    /// How a test's server answers a route and its body.
-    type Answer = Box<dyn Fn(&str, &Value) -> (u16, Value) + Send + Sync>;
-
-    /// A server that answers each route as a test says, and keeps what it
-    /// was sent.
-    struct FakeHost {
-        answer: Answer,
-        sent: Mutex<Vec<(String, Value)>>,
-    }
-
-    impl FakeHost {
-        fn new(answer: impl Fn(&str, &Value) -> (u16, Value) + Send + Sync + 'static) -> Self {
-            Self {
-                answer: Box::new(answer),
-                sent: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn sent(&self) -> Vec<(String, Value)> {
-            self.sent.lock().unwrap().clone()
-        }
-    }
-
-    impl HttpClient for FakeHost {
-        fn post(&self, path: &str, body: Vec<u8>) -> tilo_server_client::https::HttpFuture<'_> {
-            let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-            let route = path.strip_prefix(API_PREFIX).unwrap_or(path).to_owned();
-            let (status, answer) = (self.answer)(&route, &body);
-            self.sent.lock().unwrap().push((route, body));
-            Box::pin(async move { Ok((status, serde_json::to_vec(&answer).unwrap())) })
-        }
-    }
-
-    #[tokio::test]
-    async fn a_code_resolves_at_its_server_and_every_step_reaches_the_tab() {
-        let host = FakeHost::new(|route, _| match route {
-            protocol::RESOLVE_ROUTE => (
-                200,
-                json!({"link": "https://tilo.sh/#/@eu1.tilo.sh/w/x?pair=ab", "report": "aa"}),
-            ),
-            _ => (204, Value::Null),
-        });
-        let resolved = resolve(&host, "K7Q-MX2P").await.unwrap();
-        assert!(!resolved.sign_in);
-        assert_eq!(resolved.report, "aa");
-        let reporter = Reporter {
-            host: &host,
-            report: resolved.report,
-            agent: "Claude Code".into(),
-        };
-        reporter.step(Step::Resolved).await;
-        reporter.step(Step::LoggedIn).await;
-        reporter
-            .failed("Entering the workspace failed: offline.\nmore detail")
-            .await;
-        let sent = host.sent();
-        assert_eq!(
-            sent[0],
-            (
-                protocol::RESOLVE_ROUTE.to_owned(),
-                json!({"code": "K7Q-MX2P"})
-            )
-        );
-        assert_eq!(
-            sent[1..],
-            [
-                (
-                    protocol::STEP_ROUTE.to_owned(),
-                    json!({"report": "aa", "step": "resolved", "agent": "Claude Code"})
-                ),
-                (
-                    protocol::STEP_ROUTE.to_owned(),
-                    json!({"report": "aa", "step": "logged-in", "agent": "Claude Code"})
-                ),
-                (
-                    protocol::STEP_ROUTE.to_owned(),
-                    json!({"report": "aa", "step": "failed", "agent": "Claude Code",
-                           "detail": "Entering the workspace failed: offline."})
-                ),
-            ]
-        );
-    }
-
     #[test]
-    fn a_failed_login_says_what_to_do_without_the_machinery() {
-        use tilo_server_protocol::auth::AuthError;
-        use tilo_user_identity::DeviceCertError;
-        let said = certify_said(&CertifyError::Expired);
-        assert!(said.contains("Keep the tab open"), "{said}");
-        for error in [
-            CertifyError::Denied("declined".into()),
-            CertifyError::Denied("not admissible".into()),
-            CertifyError::Transport(LinkError::Unavailable("connect error".into())),
-            CertifyError::Transport(LinkError::Refused("403".into())),
-            CertifyError::Transport(LinkError::PeerVersion { theirs: 99 }),
-            CertifyError::Transport(LinkError::ServerChanged),
-            CertifyError::Transport(LinkError::Sign("connect error".into())),
-            CertifyError::Transport(LinkError::DeviceRevoked),
-            CertifyError::Codec("bad frame".into()),
-            CertifyError::Iroh("connect error".into()),
-            CertifyError::Auth(AuthError::Revoked),
-            CertifyError::Auth(AuthError::Cert(DeviceCertError::Expired)),
-        ] {
-            let said = certify_said(&error);
-            for machinery in [
-                "iroh:",
-                "codec:",
-                "auth:",
-                "peer ",
-                "protocol",
-                "connect error",
-                "bad frame",
-                "not admissible",
-                "403",
-            ] {
-                assert!(!said.contains(machinery), "{said} names {machinery}");
-            }
-            assert!(said.ends_with('.'), "{said}");
-        }
+    fn a_failed_entry_says_what_to_do_without_the_machinery() {
         assert_eq!(
             enter_said(&anyhow::anyhow!("device cert has expired")),
             LOGIN_ENDED
@@ -2018,75 +1382,26 @@ mod tests {
             )),
             "The workspace did not let this device in: the name is empty."
         );
-    }
-
-    #[tokio::test]
-    async fn a_spent_or_guessed_code_says_what_to_do() {
-        let spent = FakeHost::new(|_, _| (404, Value::Null));
-        let said = resolve(&spent, "K7Q-MX2P").await.unwrap_err().to_string();
-        assert!(said.contains("works once, for 10 minutes"), "{said}");
-        let guessed = FakeHost::new(|_, _| (429, Value::Null));
-        let said = resolve(&guessed, "K7Q-MX2P").await.unwrap_err().to_string();
-        assert!(said.contains("too many wrong codes"), "{said}");
-    }
-
-    /// Each reason the server gives for refusing a claim is said in its own words, with the one
-    /// thing to do, and none of them guesses at another account.
-    #[test]
-    fn each_claim_refusal_says_its_own_reason() {
-        use protocol::ClaimRefused;
-        let said = |reason: ClaimRefused| {
-            let named = serde_json::to_value(reason).unwrap();
-            claim_said(&login_code::CodeRefusal {
-                status: 403,
-                message: format!("The server answered 403: {}", reason.sentence()),
-                reason: named.as_str().map(str::to_owned),
-            })
-            .to_string()
-        };
-        let reasons = [
-            (ClaimRefused::NotLive, "expired"),
-            (ClaimRefused::Revoked, "removed from your devices"),
-            (ClaimRefused::Clock, "clock"),
-            (ClaimRefused::Signature, "key doesn't match"),
-            (ClaimRefused::NotADevice, "isn't one of your Tilo devices"),
-        ];
-        let mut seen = std::collections::HashSet::new();
-        for (reason, says) in reasons {
-            let sentence = said(reason);
-            assert!(sentence.contains(says), "{reason:?}: {sentence}");
-            assert!(!sentence.contains("another"), "{reason:?}: {sentence}");
-            assert!(
-                seen.insert(sentence),
-                "{reason:?} has a sentence of its own"
-            );
-        }
-        // A 403 without a reason says the server's own sentence.
-        let bare = claim_said(&login_code::CodeRefusal {
-            status: 403,
-            message: "The server answered 403: no".into(),
-            reason: None,
-        })
-        .to_string();
-        assert!(bare.contains("The server answered 403: no"), "{bare}");
-    }
-
-    #[tokio::test]
-    async fn a_listed_workspace_is_named() {
-        let host = FakeHost::new(|_, _| {
-            (
-                200,
-                json!({"workspaces": [{"workspace": "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0", "name": "Lounge",
-                    "defaultRole": "editor", "entry": "lounge/"}]}),
-            )
+        let said = certify_refused(&tilo_actions::remote::ActionCallError::Refused {
+            reason: "this ticket was used already: ask for a new one".into(),
         });
         assert_eq!(
-            workspace_name(&host, "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0")
-                .await
-                .as_deref(),
-            Some("Lounge")
+            said,
+            "Your device didn't take this ticket: this ticket was used already: ask for a new one."
         );
-        assert_eq!(workspace_name(&host, "other").await, None);
+    }
+
+    #[test]
+    fn a_login_takes_a_ticket_and_names_what_else_it_was_given() {
+        let said = login("K7Q-MX2P", None).unwrap_err().to_string();
+        assert!(said.contains("is not a Tilo ticket"), "{said}");
+        assert!(said.contains("tilo device add"), "{said}");
+        let reached = Reached {
+            endpoint: *SigningKey::from_bytes(&[5; 32]).verifying_key().as_bytes(),
+            relay: Some("https://relay.example./".into()),
+            direct: vec!["192.0.2.1:4433".parse().unwrap()],
+        };
+        assert_eq!(reached_of(&address_of(&reached).unwrap()), reached);
     }
 
     tilo_test_env::scenario! {
@@ -2184,29 +1499,6 @@ mod tests {
             assert!(said.starts_with("Start with the tilo_ls tool"), "{said}");
             assert!(said.contains("notes#new-note"), "{said}");
             assert!(said.contains("Hello from Codex"), "{said}");
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn a_login_code_is_read_and_resolved_at_its_site;
-
-        phase codes_resolve_at_tilo_sh_unless_another_https_site_is_named;
-        {
-            assert_eq!(
-                site_origin(Some("https://lounge.example/x")).unwrap(),
-                "https://lounge.example"
-            );
-            assert!(site_origin(Some("http://lounge.example")).is_err());
-            assert_eq!(DEFAULT_SITE, "https://tilo.sh");
-        }
-
-        phase a_login_code_reads_however_it_is_typed;
-        {
-            assert_eq!(
-                protocol::normalize_code("k7q mx2p").as_deref(),
-                Some("K7Q-MX2P")
-            );
-            assert!(login("https://tilo.sh/#/@eu1.tilo.sh/w/x?pair=ab", None, None).is_err());
         }
     }
 }

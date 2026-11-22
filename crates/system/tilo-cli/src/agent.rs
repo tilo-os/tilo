@@ -657,7 +657,6 @@ fn check(agent: &Agent, config: Option<&Path>) -> Result<ExitCode> {
                     tilo.display()
                 );
             }
-            crate::login::report_tools_added();
             println!();
             println!("{}", crate::login::first_act(agent));
             Ok(ExitCode::SUCCESS)
@@ -726,7 +725,6 @@ fn check_config(agent: &Agent, config: &Path, tilo: &Path) -> ExitCode {
             tilo.display()
         );
     }
-    crate::login::report_tools_added();
     println!();
     println!("{}", crate::login::first_act(agent));
     ExitCode::SUCCESS

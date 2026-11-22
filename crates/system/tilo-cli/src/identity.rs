@@ -8,8 +8,7 @@
 //! computer's device key and the certificate the root signed for it under the
 //! device's identity root
 //! ([`collaboration_identity_root`](tilo_identity::provisioning::collaboration_identity_root)).
-//! A Tilo session started on this account is that same person, and
-//! `tilo-identity backup` writes the backup another device's setup restores.
+//! A Tilo session started on this account is that same person.
 //! A host lets the person in once its operator declares their user public key
 //! an owner (the local stack's `stack.sh owner KEY`), or it joins with an
 //! invitation.

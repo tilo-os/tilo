@@ -120,7 +120,7 @@ pub(crate) fn stop() -> Result<()> {
 }
 
 fn place() -> Result<crate::mcp::held::Place> {
-    let place = crate::login::Place::here()?;
+    let place = crate::login::Place::here(crate::identity::paths())?;
     let (key, _) = crate::login::load(&place)?.context(crate::login::NOT_LOGGED_IN)?;
     crate::mcp::held::Place::of(place.dir(), &key.verifying_key().to_bytes())
         .map_err(anyhow::Error::msg)

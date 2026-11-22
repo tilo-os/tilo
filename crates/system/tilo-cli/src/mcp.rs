@@ -460,7 +460,10 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
     // No desktop answers here: one that ended leaves its socket behind, and one whose first login
     // is not complete has none yet. This computer's own login then holds its device, as on any
     // other computer; without one the agent hears what it waits for.
-    let device = match (crate::login::load(&crate::login::Place::here()?)?, desktop) {
+    let device = match (
+        crate::login::load(&crate::login::Place::here(crate::identity::paths())?)?,
+        desktop,
+    ) {
         (Some(device), _) => Ok(device),
         (None, Ok(Some(server))) => {
             tilo_mcp::session_api::bridge(&server, tilo_mcp::session_api::session_name())?;
@@ -477,7 +480,7 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
         return held::alone(&shared(device));
     };
     let place = held::Place::of(
-        crate::login::Place::here()?.dir(),
+        crate::login::Place::here(crate::identity::paths())?.dir(),
         &key.verifying_key().to_bytes(),
     );
     if hold {
@@ -529,7 +532,7 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
 /// # Errors
 /// The login is damaged, or the holder did not start.
 pub(crate) fn ensure_held() -> Result<()> {
-    let login = crate::login::Place::here()?;
+    let login = crate::login::Place::here(crate::identity::paths())?;
     let Some((key, _)) = crate::login::load(&login)? else {
         return Ok(());
     };
@@ -762,7 +765,7 @@ pub(crate) fn ask_peer() -> Option<Value> {
 /// no peer runs.
 fn ask_peer_with(method: &str) -> Option<Value> {
     use std::io::{BufRead as _, Write as _};
-    let login = crate::login::Place::here().ok()?;
+    let login = crate::login::Place::here(crate::identity::paths()).ok()?;
     let (key, _) = crate::login::load(&login).ok()??;
     let place = held::Place::of(login.dir(), &key.verifying_key().to_bytes()).ok()?;
     let mut stream = held::connect(&place)?;

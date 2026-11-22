@@ -21,6 +21,7 @@ pub mod branch;
 pub mod clock;
 #[cfg(target_os = "macos")]
 mod keychain;
+pub mod login;
 #[cfg(target_os = "linux")]
 pub mod nofollow;
 #[cfg(not(target_arch = "wasm32"))]

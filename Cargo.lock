@@ -19241,9 +19241,11 @@ dependencies = [
 name = "tilo-device-identity"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
+ "iroh-base",
  "libc",
  "postcard",
  "rustix 1.1.6",
@@ -19253,9 +19255,11 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-advisory-lock",
  "tilo-files",
+ "tilo-paths",
  "tilo-secrets",
  "tilo-test-env",
  "tilo-user-identity",
+ "tracing",
  "workspace-hack",
  "zeroize",
 ]
@@ -19977,9 +19981,7 @@ dependencies = [
 name = "tilo-identity"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "blake3",
- "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
@@ -20001,7 +20003,6 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-automerge-fork",
  "tilo-clock",
- "tilo-control",
  "tilo-desktop-model",
  "tilo-device-identity",
  "tilo-files",
@@ -21219,6 +21220,7 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-desktop-surface",
+ "tilo-device-identity",
  "tilo-failure",
  "tilo-files",
  "tilo-identity",
@@ -23994,6 +23996,7 @@ dependencies = [
  "tilo-app-module",
  "tilo-app-package",
  "tilo-app-window",
+ "tilo-device-identity",
  "tilo-files",
  "tilo-paths",
  "tilo-process",

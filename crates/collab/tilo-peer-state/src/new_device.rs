@@ -1,0 +1,303 @@
+//! Serving a ticket: the certify action a computer with no certificate yet calls on the device
+//! that issued its ticket ([`tilo_device_identity::login`]).
+//!
+//! [`ServedTicket`] answers [`CERTIFY`] alone, under [`PROVIDER`], on the scope an
+//! [`ActionService`](crate::actions::ActionService) admits a device with no certificate to
+//! ([`ActionService::admit_uncertified`](crate::actions::ActionService::admit_uncertified) with
+//! [`SCOPE`](tilo_device_identity::login::SCOPE)). The call is checked here, in this order: it
+//! names the certify action; its input is a [`CertifyInput`] whose key is the key the connection
+//! came from; it spends the ticket's secret, once, while the ticket is live. The computer is then
+//! told its call was accepted and follows it, while the [`Approver`] is asked. Its answer is
+//! checked against the approver's own certificate ([`check_approval`]), and only then does the
+//! invocation succeed with the [`CertifyAnswer`]. A decline, or an answer that does not check,
+//! fails it with that sentence.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvocationState, InvokeArgument, InvokeRequest, Pending,
+};
+use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
+use tilo_device_identity::login::{
+    Approver, CERTIFY, CertifyAnswer, CertifyInput, Entry, PROVIDER, RESOURCE, Secret, Ticket,
+    asked, check_approval,
+};
+use tilo_lock::MutexRecover as _;
+use tilo_user_identity::{DeviceCert, RevocationList};
+use tokio::sync::watch;
+
+/// How long a follower waiting for the approval is held before it looks again.
+const LOOK_AGAIN: Duration = Duration::from_secs(1);
+
+/// The ticket a device issued, served on its action service until a computer is certified with
+/// it.
+#[derive(Clone)]
+pub struct ServedTicket(Arc<Inner>);
+
+struct Inner {
+    ticket: Ticket,
+    secret: Secret,
+    /// The person whose root certifies the computer.
+    user_public_key: [u8; 32],
+    /// Where the certified computer enters.
+    enter: Entry,
+    approver: Arc<dyn Approver>,
+    revocations: RevocationList,
+    /// Each call taken, by invocation: the device that made it, and where it is.
+    calls: Mutex<HashMap<InvocationId, ([u8; 32], InvocationState)>>,
+    /// The certificate given, once one is: what the device that issued the ticket waits on.
+    certified: watch::Sender<Option<DeviceCert>>,
+    /// Whether the computer read how its call ended: until then the issuer keeps serving.
+    told: watch::Sender<bool>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl std::fmt::Debug for ServedTicket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServedTicket")
+            .field("issuer", &hex::encode(self.0.ticket.issuer.endpoint))
+            .finish_non_exhaustive()
+    }
+}
+
+/// A call refused before anything ran, said as the computer is told it.
+fn refused(reason: impl Into<String>) -> ActionCallError {
+    ActionCallError::Refused {
+        reason: reason.into(),
+    }
+}
+
+impl ServedTicket {
+    /// Serve `ticket`, issued now, for a computer to become a member device of
+    /// `user_public_key`, entering at `enter`, once `approver` approves it. A certificate whose
+    /// approver `revocations` refuses is never handed on.
+    ///
+    /// # Panics
+    ///
+    /// Outside a runtime context, where the approval could not be waited for.
+    #[must_use]
+    pub fn new(
+        ticket: Ticket,
+        user_public_key: [u8; 32],
+        enter: Entry,
+        approver: Arc<dyn Approver>,
+        revocations: RevocationList,
+    ) -> Self {
+        let secret = Secret::of(&ticket, tilo_clock::unix_now_ns());
+        Self(Arc::new(Inner {
+            ticket,
+            secret,
+            user_public_key,
+            enter,
+            approver,
+            revocations,
+            calls: Mutex::default(),
+            certified: watch::Sender::new(None),
+            told: watch::Sender::new(false),
+            runtime: tokio::runtime::Handle::current(),
+        }))
+    }
+
+    /// The certificate this ticket gave, once it gave one.
+    #[must_use]
+    pub fn certified(&self) -> watch::Receiver<Option<DeviceCert>> {
+        self.0.certified.subscribe()
+    }
+
+    /// Whether the computer has read how its call ended, once it has: the issuer serves until
+    /// then, or the computer would never learn its certificate.
+    #[must_use]
+    pub fn told(&self) -> watch::Receiver<bool> {
+        self.0.told.subscribe()
+    }
+
+    /// Whether the ticket still waits for its computer.
+    #[must_use]
+    pub fn waiting(&self) -> bool {
+        self.0.secret.waiting(tilo_clock::unix_now_ns())
+    }
+
+    fn settle(&self, invocation: InvocationId, update: InvocationUpdate) {
+        let state = InvocationState::new(invocation, update);
+        if let Some(call) = self.0.calls.lock_recover().get_mut(&invocation) {
+            call.1 = state;
+        }
+        // The followers wake on the next look; the issuer is told at once.
+        self.0.certified.send_modify(|_| {});
+    }
+
+    /// Take `request` from `device`: what [`ActionProvider::invoke`] answers.
+    fn take(
+        &self,
+        device: [u8; 32],
+        request: &InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        let address = &request.target.address;
+        if request.target.provider != PROVIDER
+            || address.resource != RESOURCE
+            || address.action != CERTIFY
+        {
+            return Err(ActionCallError::UnknownAction);
+        }
+        if let Some((from, state)) = self.0.calls.lock_recover().get(&request.invocation) {
+            // A retry of a call already taken is answered where it is; another device's is not
+            // its to see.
+            return if *from == device {
+                Ok(state.receipt())
+            } else {
+                Err(ActionCallError::NotPermitted)
+            };
+        }
+        let InvokeArgument::Json(argument) = &request.argument else {
+            return Err(refused(
+                "a computer asks with its key, its agent and the ticket's secret",
+            ));
+        };
+        let input: CertifyInput =
+            serde_json::from_value(serde_json::Value::Object(argument.clone())).map_err(|_| {
+                refused("a computer asks with its key, its agent and the ticket's secret")
+            })?;
+        let mut key = [0; 32];
+        if hex::decode_to_slice(&input.device_public_key, &mut key).is_err() || key != device {
+            return Err(refused(
+                "a computer asks to be certified for the key it connects with",
+            ));
+        }
+        let agent = input.agent.trim();
+        if agent.is_empty() {
+            return Err(refused("a computer names the agent that runs on it"));
+        }
+        let label = fitted(input.label.as_deref().map_or(agent, str::trim));
+        let now = tilo_clock::unix_now_ns();
+        self.0
+            .secret
+            .spend(&input.secret, now)
+            .map_err(|why| refused(why.to_string()))?;
+        let asked = asked(
+            self.0.user_public_key,
+            device,
+            &label,
+            agent,
+            &self.0.ticket.secret,
+            now,
+        )
+        .map_err(|error| refused(error.to_string()))?;
+        let invocation = request.invocation;
+        let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
+        let receipt = accepted.receipt();
+        self.0
+            .calls
+            .lock_recover()
+            .insert(invocation, (device, accepted));
+        let served = self.clone();
+        self.0.runtime.spawn(async move {
+            let answer = served.0.approver.approve(asked.clone()).await;
+            let update = match answer {
+                Ok(approved) => match check_approval(
+                    &asked,
+                    &approved,
+                    &served.0.revocations,
+                    tilo_clock::unix_now_ns(),
+                ) {
+                    Ok(cert) => {
+                        let answer = CertifyAnswer {
+                            cert: cert.clone(),
+                            enter: served.0.enter.clone(),
+                        };
+                        served.0.certified.send_replace(Some(cert));
+                        InvocationUpdate::Succeeded {
+                            invocation,
+                            output: ActionOutput {
+                                value: serde_json::to_value(&answer).ok(),
+                                resources: Vec::new(),
+                            },
+                        }
+                    }
+                    Err(why) => failed(invocation, "not-approved", &why.to_string()),
+                },
+                Err(declined) => failed(invocation, "declined", &declined.0),
+            };
+            served.settle(invocation, update);
+        });
+        Ok(receipt)
+    }
+}
+
+/// `label` within what a certificate's label carries.
+fn fitted(label: &str) -> String {
+    let room = tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
+    let end = (0..=room.min(label.len()))
+        .rev()
+        .find(|end| label.is_char_boundary(*end))
+        .unwrap_or(0);
+    label.get(..end).unwrap_or_default().to_owned()
+}
+
+fn failed(invocation: InvocationId, code: &str, message: &str) -> InvocationUpdate {
+    InvocationUpdate::Failed {
+        invocation,
+        error: ActionFailure {
+            code: code.to_owned(),
+            message: message.to_owned(),
+            details: None,
+            retryable: false,
+        },
+    }
+}
+
+impl ActionProvider for ServedTicket {
+    fn query(
+        &self,
+        _caller: &Caller,
+        _query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::Unavailable {
+            reason: "a computer with no certificate calls only the certify action".into(),
+        }))
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let Some(device) = caller.device_public_key().copied() else {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        };
+        Pending::ready(self.take(device, &request))
+    }
+
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        let device = caller.device_public_key()?;
+        let state = self
+            .0
+            .calls
+            .lock_recover()
+            .get(id)
+            .filter(|(from, _)| from == device)
+            .map(|(_, state)| state.clone())?;
+        if !matches!(state.update, InvocationUpdate::Accepted { .. }) {
+            self.0.told.send_replace(true);
+        }
+        Some(state)
+    }
+
+    fn next_change(&self, _caller: &Caller, _id: &InvocationId) -> Option<Pending<()>> {
+        let mut moved = self.0.certified.subscribe();
+        let (done, change) = tilo_actions::remote::pending();
+        self.0.runtime.spawn(async move {
+            let _ = tokio::time::timeout(LOOK_AGAIN, moved.changed()).await;
+            done.complete(());
+        });
+        Some(change)
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::NotCancellable {
+            reason: "the person is asked already; their answer ends it".into(),
+        }))
+    }
+}

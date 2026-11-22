@@ -1,8 +1,7 @@
 //! A person made from the command line (`tilo login --new-identity`, through
 //! [`tilo_identity::provisioning::create_person`]) is the person a session on
-//! that account starts as, and the backup that computer writes
-//! (`tilo-identity backup`) restores in another device's setup as that same
-//! person, with a device of its own.
+//! that account starts as, and a backup of it written on that computer restores in another
+//! device's setup as that same person, with a device of its own.
 
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::{load_device_key, read_device_cert};
@@ -57,7 +56,7 @@ fn a_person_made_from_the_command_line_is_the_sessions_and_restores_from_its_bac
         "the session keeps the device the command line certified"
     );
 
-    // The holder writes the backup, as `tilo-identity backup` does.
+    // The holder writes the backup.
     let active = tilo_identity_client::resolve_active_identity(&holder_dir).unwrap();
     let backup = holder.path().join("ada.tilo-backup");
     tilo_identity::store::export_portable_backup(&active, &backup, PASSPHRASE).unwrap();

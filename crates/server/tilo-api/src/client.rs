@@ -16,8 +16,9 @@
 //! A mutating call carries an `Idempotency-Key` of its own, and every retry of
 //! it sends that same key: Tilo never runs one invocation twice.
 
-pub mod device;
 mod model_asks;
+
+use tilo_device_identity::login as device;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use http_body_util::BodyExt as _;
@@ -114,7 +115,14 @@ pub fn entered_workspace(reach: Reach<'_>) -> Result<Option<(String, String)>> {
     if !reach.as_device() {
         return Ok(None);
     }
-    device::entered_workspace()
+    device::entered_workspace(device_keys())
+}
+
+/// This computer's device key and certificates, where its session keeps them: what its login
+/// is read with ([`tilo_device_identity::login::Place::here`]).
+#[must_use]
+pub fn device_keys() -> tilo_device_identity::IdentityPaths {
+    tilo_identity::provisioning::collaboration_identity_paths()
 }
 
 /// One answer of the API: its status and its body.
@@ -1118,7 +1126,7 @@ pub fn api_url(api: Option<&str>) -> String {
 ///
 /// `None` when this computer did not log in.
 pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
-    let Some((key, device)) = device::load(&device::Place::here()?)? else {
+    let Some((key, device)) = device::load(&device::Place::here(device_keys())?)? else {
         return Ok(None);
     };
     let canonical = tilo_user_identity::canonical::canonical_bytes(&device.cert)
@@ -1167,7 +1175,8 @@ pub fn held_api_for(reach: Reach<'_>) -> Result<Option<std::path::PathBuf>> {
         (None, None) => None,
     };
     if let Some(secret) = named {
-        let Ok(Some((key, _))) = device::Place::here().and_then(|place| device::load(&place))
+        let Ok(Some((key, _))) =
+            device::Place::here(device_keys()).and_then(|place| device::load(&place))
         else {
             return Ok(None);
         };
@@ -1178,7 +1187,7 @@ pub fn held_api_for(reach: Reach<'_>) -> Result<Option<std::path::PathBuf>> {
             return Ok(None);
         }
     }
-    device::held_api()
+    device::held_api(device_keys())
 }
 
 /// The key a script was approved (`token`, as `tilo keys create` answers it),
@@ -1320,7 +1329,7 @@ mod tests {
                 .set("TILO_IDENTITY_ROOT", root.join("identity"))
                 .remove(KEY_ENV);
             assert!(
-                device::load(&device::Place::here().expect("a place")).is_err(),
+                device::load(&device::Place::here(device_keys()).expect("a place")).is_err(),
                 "the login this computer holds cannot be read"
             );
             let reached = held_api_for(Reach {

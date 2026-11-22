@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The app identity service: the identity broker apps sign through, the identity registry, device fleet and collaboration identity provisioning, and the tilo-identity command."
+description = "The app identity service: the identity broker apps sign through, the identity registry, device fleet and collaboration identity provisioning."
 
 # No compositor: the desktop session and the standalone runtime both host it,
 # each supplying its workspaces and channel service through the broker's traits.
@@ -13,10 +13,6 @@ description = "The app identity service: the identity broker apps sign through, 
 name = "tilo_identity"
 path = "src/lib.rs"
 
-[[bin]]
-name = "tilo-identity"
-path = "src/bin/tilo-identity.rs"
-
 [features]
 # Compiles the throwaway test identity into a release build (dev images only).
 throwaway-test-identity = []
@@ -24,9 +20,6 @@ throwaway-test-identity = []
 native-current-device-qualification = []
 
 [dependencies]
-# `tilo-identity`, this account's identity from a shell.
-anyhow.workspace = true
-clap.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
@@ -91,9 +84,4 @@ serial_test.workspace = true
 workspace = true
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["process", "termios"] }
-# `tilo-identity approve` on a device without the identity's key asks the
-# session, which reaches the devices that hold it. The session, its control
-# sockets and the `tilo-identity` command are Unix-only, so the client is
-# neither built nor needed elsewhere.
-tilo-control = { path = "../../session/control-cli" }
+rustix = { workspace = true, features = ["process"] }

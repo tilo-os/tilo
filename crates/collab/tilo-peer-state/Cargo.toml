@@ -82,6 +82,8 @@ getrandom.workspace = true
 rand_core.workspace = true
 # The device identity an enrollment presents to the issuing host.
 tilo-identity = { path = "../../runtime/tilo-identity" }
+# The ticket a computer brings to be added to a person's devices, and the approval it waits for.
+tilo-device-identity = { path = "../tilo-device-identity" }
 
 [dev-dependencies]
 # The closure-built action host a test dispatcher is.

@@ -156,7 +156,7 @@ fi
 
 # --- who the local person is ----------------------------------------------------
 # A device with several accounts: the person is the account that proves it
-# holds the key of the identity the device is bound to (`tilo-identity
+# holds the key of the identity the device is bound to (`tilo device
 # local-person`, whose verification has its own tests), never the greeter's
 # configuration, an account count, or an account merely naming the identity.
 ensure_env() {
@@ -164,7 +164,7 @@ ensure_env() {
   TILO_STORE_ETC="$root/etc" TILO_STORE_RUNTIME="$root/run" \
     TILO_STORE_MOUNT="$root/store" TILO_STORE_IMAGE="$root/image-dir/store.img" \
     TILO_STORE_IDENTITY="$root/identity" TILO_STORE_PASSWD="$root/passwd" \
-    TILO_STORE_IDENTITY_TOOL="$root/tilo-identity" \
+    TILO_STORE_IDENTITY_TOOL="$root/tilo" \
     TILO_STORE_LOGINCTL="${LOGINCTL_STUB:-/bin/false}" \
     TILO_STORE_SYSTEMCTL="${SYSTEMCTL_STUB:-/bin/false}" "$helper" ensure > "$root/log" 2>&1
 }
@@ -186,9 +186,9 @@ new_root() {
   done
   printf 'svc:x:990:990::%s:/sbin/nologin\n' "$root/home/svc" >> "$root/passwd"
   if [ "${3:-1}" != none ]; then
-    printf '#!/bin/bash\n[ "$1" = local-person ] && [ "$3" = "%s" ] && [ "$5" = "%s" ] || exit 9\nprintf "%%s\\n" "%s" >&%s\nexit %s\n' \
-      "$root/identity" "$root/passwd" "$2" "$([ "${3:-1}" = 0 ] && echo 1 || echo 2)" "${3:-1}" > "$root/tilo-identity"
-    chmod 0755 "$root/tilo-identity"
+    printf '#!/bin/bash\n[ "$1" = device ] && [ "$2" = local-person ] && [ "$4" = "%s" ] && [ "$6" = "%s" ] || exit 9\nprintf "%%s\\n" "%s" >&%s\nexit %s\n' \
+      "$root/identity" "$root/passwd" "$2" "$([ "${3:-1}" = 0 ] && echo 1 || echo 2)" "${3:-1}" > "$root/tilo"
+    chmod 0755 "$root/tilo"
   fi
   printf '%s\n' "$root"
 }

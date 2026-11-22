@@ -242,7 +242,7 @@ another:
 | Store | Code | Location | Size |
 |---|---|---|---|
 | Native device key and certificate | `tilo-device-identity` `IdentityPaths` (`persist.rs`, `keychain.rs`) | `$TILO_IDENTITY_ROOT`, else `/var/lib/tilo`, else `$XDG_DATA_HOME/tilo`: `device-private/keypair.bin`, `device/cert.bin`, `device/certs/<user>.bin` | 6,922 |
-| CLI and agent login key | `tilo-api` `client/device.rs` `Device` | `$TILO_DEVICE_DIR`, else `$XDG_STATE_HOME/tilo/device/{key,device.json}`. `tilo login` mints a fresh key here even when the computer already has a device key. | 201 |
+| CLI and agent login | `tilo-device-identity` `login` `Place`, `Device` | `$XDG_STATE_HOME/tilo/device/login.json`, with the device key and certificate above. A key an earlier tilo kept there (`{key,device.json}`) is taken over once. | 365 |
 | Browser device keys | `tilo-browser-runtime` `web/device-key.mjs` | IndexedDB, a pool of non-extractable keys per tab | 423 |
 | Boot unlock key | `tilo-auth` `userkey.rs`, `record.rs`; `tilo-unlock-protocol` `BootKeyCert` | `/var/lib/tilo/auth/`, the root keyring | 445 + 1,818 |
 
@@ -268,8 +268,10 @@ There are seven ways to add a device:
 2. `tilo-identity` `certification_ceremony` with `pairing_code`,
    `enrollment/` and `enrolled_transport` (about 5,300).
 3. The `tilo-enroll` and `tilo-approve` binaries in `tilo-server` (1,741).
-4. `tilo login` against the server's login codes (`tilo-cli` `login.rs`
-   2,046, `tilo-server` `web/login_codes.rs` and `web/sign_in.rs` 1,500).
+4. `tilo login` with a ticket, the certify action on the device that issued
+   it (`tilo_device_identity::login`, `tilo_peer_state::new_device`, `tilo-cli`
+   `login.rs` and `device.rs`), and the browser page's login codes
+   (`tilo-server` `web/login_codes.rs` and `web/sign_in.rs` 1,500).
 5. The browser's `web/pairing.mjs` (348).
 6. The boot-key enrolment in `tilo-auth` `sibling/enrol.rs` (1,121).
 7. `tilo-device-admin` `device.unlock.enrol` (2,211).

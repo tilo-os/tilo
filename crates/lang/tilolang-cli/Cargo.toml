@@ -53,6 +53,8 @@ tilo-app-module = { version = "0.1.0", path = "../../platform/tilo-app-module" }
 toml.workspace = true
 # `tilolang repl`: Tilo's API as the person, through the client `tilo` uses.
 tilo-api = { path = "../../server/tilo-api" }
+# This computer's login, which the REPL acts as.
+tilo-device-identity = { path = "../../collab/tilo-device-identity" }
 tilo-paths.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }

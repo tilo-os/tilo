@@ -25,6 +25,14 @@
 //!    unrevoked, unexpired, its person a member, its delegation live
 //!    ([`StatePeer::permissions`]).
 //!
+//! One request is admitted before the device holds any certificate: a computer
+//! being added to a person's devices asks the device that issued its ticket to
+//! certify it ([`ActionService::admit_uncertified`]). Such a request names that
+//! one scope instead of a workspace, checks 1 to 4 hold for it as for any
+//! other, and it is answered by the provider that serves the scope alone, as
+//! a [`Caller::uncertified_device`]. Every request naming a workspace from such
+//! a device fails check 6, so nothing else is answered on its connection.
+//!
 //! What is left is the [`Caller`] the local callers of the same dispatcher
 //! get, and the dispatcher's own policy
 //! ([`tilo_action_policy`](tilo_actions::remote)) is the only policy check.
@@ -272,6 +280,9 @@ struct Inner {
     workspaces: Option<Arc<dyn Workspaces>>,
     /// The one place a request is handed to, wherever it came from.
     dispatcher: Arc<dyn ActionProvider + Send + Sync>,
+    /// The scope a device with no certificate yet may call, and what answers it there
+    /// ([`ActionService::admit_uncertified`]).
+    uncertified: Mutex<Option<(String, Arc<dyn ActionProvider + Send + Sync>)>>,
     /// What this device says of itself when another device offers it work.
     offering: Mutex<Option<Arc<dyn Offering>>>,
     replay: Mutex<ActionReplayWindow>,
@@ -323,6 +334,7 @@ impl ActionService {
             replicas: Mutex::default(),
             workspaces: None,
             dispatcher,
+            uncertified: Mutex::default(),
             offering: Mutex::default(),
             replay: Mutex::default(),
             bounds,
@@ -349,6 +361,7 @@ impl ActionService {
             replicas: Mutex::default(),
             workspaces: Some(workspaces),
             dispatcher,
+            uncertified: Mutex::default(),
             offering: Mutex::default(),
             replay: Mutex::default(),
             bounds: Bounds::default(),
@@ -398,6 +411,18 @@ impl ActionService {
     /// Answer requests for the workspace `sync` syncs.
     pub fn share(&self, sync: &crate::direct::DirectSync) {
         self.hold(sync.replica());
+    }
+
+    /// Answer requests naming `scope` (no workspace) from a device that holds no certificate
+    /// yet, through `provider` alone: what a device issuing a ticket serves while a computer
+    /// asks it to certify that computer. The provider sees each such caller as a
+    /// [`Caller::uncertified_device`] and answers only the call it serves.
+    pub fn admit_uncertified(
+        &self,
+        scope: impl Into<String>,
+        provider: Arc<dyn ActionProvider + Send + Sync>,
+    ) {
+        *self.0.uncertified.lock_recover() = Some((scope.into(), provider));
     }
 
     /// Say what this device knows of itself when another device of one of
@@ -632,17 +657,20 @@ impl ActionService {
         let action = signed.action();
         let request = &action.message;
         match self.authorize(remote, &signed).await {
-            Ok((caller, _workspace)) => self.dispatch(&caller, request).await,
+            Ok((caller, dispatcher)) => self.dispatch(&dispatcher, &caller, request).await,
             Err(error) => tilo_actions::remote::refuse(request, error),
         }
     }
 
-    /// The caller a verified request acts as, or why it is refused.
+    /// The caller a verified request acts as and what answers it, or why it is refused.
     async fn authorize(
         &self,
         remote: [u8; 32],
         signed: &SignedDeviceAction,
-    ) -> Result<(Caller, String), tilo_actions::remote::ActionCallError> {
+    ) -> Result<
+        (Caller, Arc<dyn ActionProvider + Send + Sync>),
+        tilo_actions::remote::ActionCallError,
+    > {
         use tilo_actions::remote::ActionCallError;
         let action = signed.action();
         let source = action.source;
@@ -666,6 +694,12 @@ impl ActionService {
             .map_err(|error| ActionCallError::Refused {
                 reason: error.to_string(),
             })?;
+        let uncertified = self.0.uncertified.lock_recover().clone();
+        if let Some((scope, provider)) = uncertified
+            && action.workspace == scope
+        {
+            return Ok((Caller::uncertified_device(source), provider));
+        }
         let now = tilo_clock::wall();
         // A placement that does not decode is no placement: the request is decided as any other.
         let placement = action.placement.as_deref().and_then(|bytes| {
@@ -708,18 +742,18 @@ impl ActionService {
             caller
                 .in_workspace(action.workspace.clone())
                 .from_foreign_device(authority.acting.foreign_device),
-            action.workspace.clone(),
+            Arc::clone(&self.0.dispatcher),
         ))
     }
 
-    /// Hand one verified request to the dispatcher and answer it.
+    /// Hand one verified request to `dispatcher` and answer it.
     async fn dispatch(
         &self,
+        dispatcher: &Arc<dyn ActionProvider + Send + Sync>,
         caller: &Caller,
         request: &RemoteActionMessage,
     ) -> Option<RemoteActionMessage> {
         use tilo_actions::remote::ActionCallError;
-        let dispatcher = &self.0.dispatcher;
         match request {
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
                 let result = await_answer(dispatcher.query(caller, query.clone())).await;
@@ -749,7 +783,9 @@ impl ActionService {
                 wait_ms,
                 seen,
             } => {
-                let state = self.observe(caller, invocation, *wait_ms, *seen).await;
+                let state = self
+                    .observe(dispatcher, caller, invocation, *wait_ms, *seen)
+                    .await;
                 Some(RemoteActionMessage::Update {
                     invocation: *invocation,
                     state,
@@ -779,12 +815,12 @@ impl ActionService {
     /// until it moves past `seen` or settles.
     async fn observe(
         &self,
+        dispatcher: &Arc<dyn ActionProvider + Send + Sync>,
         caller: &Caller,
         invocation: &tilo_actions::InvocationId,
         wait_ms: Option<u32>,
         seen: Option<UpdateMark>,
     ) -> Option<InvocationState> {
-        let dispatcher = &self.0.dispatcher;
         let mut state = dispatcher.observe(caller, invocation);
         let Some(wait_ms) = wait_ms else {
             return state;

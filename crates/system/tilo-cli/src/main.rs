@@ -33,6 +33,7 @@ mod approving;
 use tilo_api::client as api;
 mod cleanup;
 mod desktop;
+mod device;
 mod docs;
 mod folders;
 mod health;
@@ -349,29 +350,26 @@ enum Cmd {
     /// beside a command acting as it.
     #[command(hide = true)]
     ApproveHere,
-    /// Log this computer in as one of your devices, with the code your Tilo
-    /// tab shows.
-    #[command(after_help = "Example:\n  tilo login K7Q-MX2P\n\n\
-                      In Tilo in your browser, choose \"Set up with your agent\": it copies a prompt with the code \
-                      for your agent. A code works once, for 10 minutes, while that tab is open. Your identity stays in \
-                      your browser: this computer gets a device key of its own, which that tab certifies. On a \
-                      computer already set up, a sign-in code (\"Sign in with your agent\") signs that tab in as you.")]
+    /// Log this computer in as one of your devices, with the ticket one of
+    /// your devices gave you.
+    #[command(after_help = "Example:\n  tilo login tilo1…\n\n\
+                      On a device of yours, run `tilo device add`: it prints a ticket. This computer reaches that \
+                      device directly with it, and that device certifies this computer's own key once you approve. \
+                      A ticket works once, for 10 minutes, while that device waits for it.")]
     Login {
-        /// The code your Tilo tab shows, like K7Q-MX2P, or an invitation link a member sent you,
-        /// which joins their workspace over iroh. Not needed on a computer that holds your
-        /// identity (`--new-identity`): it logs itself in, into -w or the first of your own,
-        /// and the others follow it to this computer.
-        code: Option<String>,
+        /// The ticket `tilo device add` printed on one of your devices, or an invitation link
+        /// a member sent you, which joins their workspace over iroh.
+        ticket: Option<String>,
         /// Instead: make a Tilo identity whose root this computer holds (or
         /// say it has one), and print its user public key. A host's operator
         /// declares that key an owner; `tilo keys create` then approves its
         /// keys here, with no browser.
-        #[arg(long, conflicts_with_all = ["code", "agent"])]
+        #[arg(long, conflicts_with_all = ["ticket", "agent"])]
         new_identity: bool,
         /// Instead: become again the person whose 24-word recovery key is typed in (read from
         /// standard input, never from the command line), on a computer that holds no identity
-        /// or holds theirs, then log in as `tilo login` does on a computer holding it.
-        #[arg(long, conflicts_with_all = ["code", "new_identity", "name"])]
+        /// or holds theirs. It logs in with a ticket from one of their devices afterwards.
+        #[arg(long, conflicts_with_all = ["ticket", "new_identity", "name"])]
         recovery_key: bool,
         /// The new identity's name, as workspaces show it (with `--new-identity`, or with an
         /// invitation link on a computer that holds no identity yet).
@@ -388,10 +386,6 @@ enum Cmd {
         /// when not given (Claude Code, Codex, Gemini CLI, ...).
         #[arg(long)]
         agent: Option<String>,
-        /// The site whose tab made the code, when not tilo.sh (also
-        /// `TILO_SITE`).
-        #[arg(long)]
-        site: Option<String>,
     },
     /// Tilo's MCP server over stdio, for the agent on this computer
     /// (`tilo agent connect` adds it).
@@ -498,6 +492,46 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum DeviceCmd {
+    /// Add a computer as one of your devices: print a ticket for `tilo login` there, and wait
+    /// for it.
+    #[command(
+        after_help = "Example:\n  tilo device add\n\nThe ticket works once, for 10 minutes. The computer that \
+                      logs in with it reaches this one directly, and this one certifies it as your device."
+    )]
+    Add {
+        /// Print the ticket and the device's certificate as JSON lines.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Your devices, as your workspaces know them.
+    Ls {
+        /// As JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// End the login of one of your devices, everywhere it reaches.
+    Revoke {
+        /// The device, by its key (a prefix of it) or its name.
+        device: String,
+        /// Why, kept with the revocation.
+        #[arg(long, value_enum, default_value_t = device::Why::Retired)]
+        reason: device::Why,
+        /// Don't ask first.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Which account on this device is the person its identity belongs to: the one whose
+    /// proof, signed by the identity's key, names its uid. Prints `NAME UID:GID`; exits 2 when
+    /// several prove it. The system asks this as root when it prepares the store.
+    #[command(hide = true)]
+    LocalPerson {
+        /// The device's identity tree.
+        #[arg(long, value_name = "DIR", default_value = "/var/lib/tilo")]
+        identity_root: std::path::PathBuf,
+        /// The accounts, in passwd format; default `getent passwd`.
+        #[arg(long, value_name = "FILE")]
+        passwd: Option<std::path::PathBuf>,
+    },
     /// What runs now, what starts next, and what this device can go back to.
     Status {
         /// The system's own record, as JSON.
@@ -658,6 +692,8 @@ fn device_here(device: clap::Command, here: Here) -> clap::Command {
     let device = device.mut_subcommands(|sub| {
         let absent = match sub.get_name() {
             "status" | "rollback" | "update" | "boot" | "repair" => !here.system,
+            // The person's devices are reached through this computer's login.
+            "add" | "ls" | "revoke" => !login::logged_in(),
             _ => return sub,
         };
         if absent { sub.hide(true) } else { sub }
@@ -959,7 +995,15 @@ enum CleanPart {
 /// One `device` command: the system's own need Tilo OS; health and cleaning
 /// work wherever a person runs them.
 fn run_system_command(cmd: DeviceCmd) -> Result<ExitCode> {
-    if !matches!(cmd, DeviceCmd::Health { .. } | DeviceCmd::Clean { .. }) {
+    if !matches!(
+        cmd,
+        DeviceCmd::Health { .. }
+            | DeviceCmd::Clean { .. }
+            | DeviceCmd::Add { .. }
+            | DeviceCmd::Ls { .. }
+            | DeviceCmd::Revoke { .. }
+            | DeviceCmd::LocalPerson { .. }
+    ) {
         require_system_provider()?;
     }
     run_system(cmd)
@@ -1239,43 +1283,37 @@ fn recovery_words() -> Result<zeroize::Zeroizing<String>> {
     Ok(words)
 }
 
-/// `tilo login` where no tab approves this computer: one that holds the person's identity, or one
-/// following an invitation link. `None` for every other command.
+/// `tilo login` with no ticket, or with an invitation link. `None` for every other command.
 fn login_without_a_tab(cli: &Cli) -> Option<Result<ExitCode>> {
     if let Cmd::Login {
-        code: None,
+        ticket: None,
         new_identity: false,
         recovery_key,
-        agent,
-        site,
         ..
     } = &cli.cmd
     {
-        let held = if *recovery_key {
-            recovery_words()
-                .and_then(|words| identity::restore(&words))
-                .map(Some)
-        } else {
-            identity::held()
-        };
-        let Some(person) = (match held {
-            Ok(person) => person,
-            Err(error) => return Some(Err(error)),
-        }) else {
-            return Some(Err(anyhow!(
-                "Give the code your Tilo tab shows, like `tilo login K7Q-MX2P` (in Tilo, choose \"Set \
-                 up with your agent\"). Only a computer that holds your identity logs in without one."
-            )));
-        };
-        return Some(login::login_held(
-            &person,
-            agent.as_deref(),
-            site.as_deref(),
-            cli.workspace.as_deref(),
-        ));
+        if *recovery_key {
+            return Some(
+                recovery_words()
+                    .and_then(|words| identity::restore(&words))
+                    .map(|person| {
+                        eprintln!(
+                            "This computer holds {} Tilo identity again. Run `tilo device add` on \
+                             a device of yours that is logged in, and `tilo login` here with the \
+                             ticket it prints.",
+                            person.whose()
+                        );
+                        ExitCode::SUCCESS
+                    }),
+            );
+        }
+        return Some(Err(anyhow!(
+            "Give the ticket one of your devices printed, like `tilo login tilo1…`: run \
+             `tilo device add` on a device of yours to get one."
+        )));
     }
     if let Cmd::Login {
-        code: Some(link),
+        ticket: Some(link),
         new_identity: false,
         name,
         agent,
@@ -1333,7 +1371,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         | Cmd::Files { .. }
         | Cmd::Run { .. }
         | Cmd::Invocations { .. }
-        | Cmd::Sdk { .. } => bail!("run_hosted answers the hosted commands"),
+        | Cmd::Sdk { .. } => bail!("run_hosted takes the hosted commands"),
         Cmd::Open { app, items } => Ok(desktop::run_open(&app, &items, &spelling)),
         Cmd::Action { cmd } => Ok(desktop::run_action(cmd, cli.json, &spelling)),
         Cmd::Server { cmd } => server::serve(cmd),
@@ -1354,13 +1392,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
             json,
             ..
         } => identity::new_identity(name.as_deref(), json),
-        Cmd::Login {
-            code, agent, site, ..
-        } => login::login(
-            code.as_deref().unwrap_or_default(),
-            agent.as_deref(),
-            site.as_deref(),
-        ),
+        Cmd::Login { ticket, agent, .. } => {
+            login::login(ticket.as_deref().unwrap_or_default(), agent.as_deref())
+        }
         Cmd::Mcp { hold } => mcp::serve(hold),
         Cmd::Folders { json, cmd } => folders::run(cmd.unwrap_or(folders::FoldersCmd::List), json),
         Cmd::Settings { cmd } => settings::run(cmd).map(|()| ExitCode::SUCCESS),
@@ -1501,6 +1535,17 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         DeviceCmd::Health { gpu: _, json } => health::run_gpu(json),
+        DeviceCmd::Add { json } => device::add(json),
+        DeviceCmd::Ls { json } => device::list(json),
+        DeviceCmd::Revoke {
+            device: which,
+            reason,
+            yes,
+        } => device::revoke(&which, reason, yes),
+        DeviceCmd::LocalPerson {
+            identity_root,
+            passwd,
+        } => Ok(device::local_person(&identity_root, passwd.as_deref())),
         DeviceCmd::Clean {
             only,
             check_low_space,
