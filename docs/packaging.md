@@ -348,21 +348,13 @@ validated on t; t does not publish them to a package registry.
 
 The workflow uses the existing `runner` Forgejo label. amd64 containers run
 directly, and every target userspace is pinned to a verified OCI digest rather
-than a mutable distribution tag. The `dist/ci` runner can execute other
-architectures through a job-private PRoot and checksum-pinned QEMU without
-registering a host binfmt handler, but that mechanism is not the release check:
-the Nix closure must be validated on a native ARM64 runner first. Each selected
-architecture runs all five distribution targets as one sequential job; native
-Cargo builds use at most six compiler jobs in tagged and full-native runs and
-two otherwise. Ordinary (weekly and default manual) runs allocate only the
-x86-64 job; tags and manual runs with `full_native` add the native ARM64 job
-and verify its Nix closure without QEMU-user. The Debian-family, Fedora, and Arch jobs reuse the runners'
-optional remote compiler cache in an architecture namespace and fail open to an
-ordinary build if that service is unavailable. Cache credentials are only
-forwarded on trusted branch, tag, and manual runs; pull requests build cold. The
-compiler, flags, system headers, and environment are hashed into each sccache
-key, so incompatible distro objects miss while the common Rust graph can hit.
-Nix builds remain pure.
+than a mutable distribution tag. `desktop-package-{arch}` runs all five
+distribution targets for that architecture as one sequential job on a native
+node; `desktop-package-arm64` runs on an aarch64 node, and its Nix closure is
+validated there rather than under QEMU-user. A payload that can be published
+never compiles through a shared compiler cache, so the job builds cold with the
+compiler, flags, system headers and environment its own userspace fixes. Nix
+builds remain pure.
 
 The build is not a generic cross-compile: Cargo and the target package manager
 both execute inside the selected Ubuntu, Debian, Fedora, Arch, or Nix userspace,

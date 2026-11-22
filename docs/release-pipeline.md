@@ -48,10 +48,9 @@ Pull requests use the cheapest job that proves the affected boundary:
 - Rust tests use the affected-package graph in **Check affected workspace packages**.
 - The app release checks (`apps-build-{arch}` and its dependents) are dispatches,
   not part of an ordinary change's run.
-- Desktop PRs with matching packaging inputs run preflight contracts. Full
-  distribution builds run weekly, on tags, or by explicit dispatch. Their
-  sccache namespace is shared by architecture; compiler identity and native
-  headers remain part of each cache key.
+- Desktop changes run the preflight contracts. Full distribution builds happen
+  when `desktop-package-{arch}` is dispatched; the job builds cold, because a
+  payload that can be published never compiles through a shared cache.
 - Full OS builds (`tools/ci/publish/os-image.sh`) do not run on ordinary
   `main` pushes. Every OS image carries the Browser's Chromium engine
   runtime, built from the pinned CEF distribution in the image build.
