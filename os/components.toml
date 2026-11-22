@@ -622,10 +622,9 @@ files = [
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.path", to = "/usr/lib/systemd/system/tilo-node-session@.path", mode = "0644", layer = "desktop-files" },
 ]
 
-# The server image's own server: the daemon, its admin and enroll programs, built
+# The server image's own server: the daemon and its admin program, built
 # without the browser listener a node serves (`web`) and linked from /usr/bin
-# straight to their programs, since the server image carries no `tilo` to answer
-# for them. tools/ci/publish/server-binaries.sh builds it and host-build.sh lays it
+# straight to their programs. tools/ci/publish/server-binaries.sh builds it and host-build.sh lays it
 # out from this entry, as a swap into a server does.
 [[component]]
 name = "host-server"
@@ -641,6 +640,20 @@ files = [
   { link = "../libexec/tilo/tilo-server", to = "/usr/bin/tilo-server" },
   { from = "tilo-server-admin", to = "/usr/libexec/tilo/tilo-server-admin", mode = "0755" },
   { link = "../libexec/tilo/tilo-server-admin", to = "/usr/bin/tilo-server-admin" },
+]
+
+# The command line a server logs in with at first boot, spending the ticket left on its
+# volume (tilo-server-firstboot): its own `tilo`, as the server image carries no OS image's.
+[[component]]
+name = "host-tilo-cli"
+kind = "userspace"
+scope = "vm"
+images = ["host"]
+packages = ["tilo-cli"]
+bins = ["tilo"]
+layer = "host-binaries"
+files = [
+  { from = "tilo", to = "/usr/bin/tilo", mode = "0755" },
 ]
 
 [[component]]

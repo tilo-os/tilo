@@ -61,8 +61,9 @@ OS_BASE = ("os/", "keys/")
 LAYER_INPUTS = ("os/components.toml", "os/scripts/install-components.py")
 # Components whose programs the live installer runs: the medium is sealed and takes no layer.
 MEDIUM_COMPONENTS = {"installer", "install-helpers", "prepared-setup"}
-# Programs of other components the live installer runs too (enrolment, the sibling factor).
-MEDIUM_BINS = {"tilo-enroll", "tilo-crypto", "tilo-auth"}
+# Programs of other components the live installer runs too (the login a ticket makes, and
+# the unlock from another of the person's devices).
+MEDIUM_BINS = {"tilo", "tilo-crypto", "tilo-auth"}
 # Programs of the encrypted root's early boot: in the initramfs, which no layer reaches.
 EARLY_BOOT_BINS = {"tilo-auth", "tilo-boot-signin", "tilo-rollback"}
 

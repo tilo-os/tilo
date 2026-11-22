@@ -3029,7 +3029,7 @@ mod secret_service_error_bridge_tests {
 
 #[cfg(test)]
 mod identity_record_vector_tests {
-    use super::load_from_bytes;
+    use super::{IdentityRecord, load_from_bytes};
 
     /// The shared vector a browser writes (`crates/browser/tilo-browser-runtime/
     /// web/device-key.test.mjs`'s `personRecord`): the identity store reads it
@@ -3051,7 +3051,7 @@ mod identity_record_vector_tests {
             "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
         );
 
-        let record = tilo_identity_ceremony::IdentityRecord::from_json_bytes(fixture.as_bytes())
+        let record = IdentityRecord::from_json_bytes(fixture.as_bytes())
             .expect("the identity store's record");
         let written =
             String::from_utf8(record.to_json_bytes().expect("the record encodes")).expect("utf-8");
