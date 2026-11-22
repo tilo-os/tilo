@@ -767,9 +767,8 @@ impl Worker {
             .collect();
         apps.sort_by(|(a, _), (b, _)| a.cmp(b));
         for (title, name) in apps {
-            let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
             rows.push(SearchRow {
-                id,
+                id: next_row(&rows),
                 label: title,
                 secondary: String::new(),
                 href: Some(format!("/w/{workspace_id}/{name}")),
@@ -806,10 +805,8 @@ impl Worker {
                     {
                         continue;
                     }
-                    let id = SEARCH_FIRST_ROW
-                        .saturating_add(u32::try_from(rows.len()).unwrap_or_default());
                     rows.push(SearchRow {
-                        id,
+                        id: next_row(&rows),
                         label: found.label,
                         secondary: app.title().to_owned(),
                         href: Some(href),
@@ -851,10 +848,8 @@ impl Worker {
                 for row in page.rows {
                     let Some(action) = row.action else { continue };
                     let fields = RowField::of(&action.params).unwrap_or_default();
-                    let id = SEARCH_FIRST_ROW
-                        .saturating_add(u32::try_from(rows.len()).unwrap_or_default());
                     rows.push(SearchRow {
-                        id,
+                        id: next_row(&rows),
                         label: action.action_label,
                         secondary: row.resource.label,
                         href: None,
@@ -882,9 +877,8 @@ impl Worker {
             let Some(fields) = RowField::of(&action.params) else {
                 continue;
             };
-            let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
             rows.push(SearchRow {
-                id,
+                id: next_row(&rows),
                 label: action.action_label,
                 secondary: row.resource.label,
                 href: None,
@@ -1477,6 +1471,11 @@ fn asking_html(label: &str, fields: &[RowField], values: &[String]) -> String {
         escape(label)
     );
     out
+}
+
+/// The id of the search row after `rows`.
+fn next_row(rows: &[SearchRow]) -> u32 {
+    SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default())
 }
 
 /// An app's page name: the last part of its id (`notes` for `so.tilo.notes`).
