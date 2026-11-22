@@ -5,69 +5,48 @@
 //! event is set up at all, it makes a brief of nothing but that person's own event and tells
 //! nobody else, and what may break do-not-disturb stays the person's own to say. All through the
 //! server's own interfaces, with nothing of the person's on while the events fire.
-use std::future::Future;
-use std::pin::Pin;
 
 use super::*;
 use tilo_actions::remote::ActionCallError;
 use tilo_actions::remote::person_telling::{self, Kind, Told, ToldList, WhyCode};
 use tilo_workspace_service::agents::events::Authority;
-use tilo_workspace_service::agents::telling::{Outside, Teller};
 
 /// What the assistant answers every turn an event starts here.
 const SAID: &str = "At ten the lease is signed.";
 
-/// What the server told outside Tilo, in order: whom, and what.
-#[derive(Default)]
-struct Heard {
-    told: Mutex<Vec<([u8; 32], Told)>>,
-}
-
-impl Heard {
-    /// Whom it told what, in order: the person, the thing's title and its kind.
-    fn all(&self) -> Vec<([u8; 32], String, Kind)> {
-        self.told
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(person, told)| (*person, told.title.clone(), told.kind))
-            .collect()
-    }
-}
-
-impl Outside for Heard {
-    fn name(&self) -> &'static str {
-        "heard"
-    }
-
-    fn tell(&self, person: [u8; 32], told: Told) -> Pin<Box<dyn Future<Output = u32> + Send>> {
-        self.told.lock().unwrap().push((person, told));
-        Box::pin(async { 1 })
-    }
-}
-
-/// What `teller` told outside once it told `count` things, as a server tells while no device of
-/// a person's is looking. It is asked once more after that, so whatever else it would tell is
-/// heard too.
-async fn told_outside(
-    teller: &Teller,
-    heard: &Heard,
-    count: usize,
-) -> Vec<([u8; 32], String, Kind)> {
-    // Long after everything was told: nothing is held back for a device that may still look.
-    let later = || tilo_clock::unix_now_ms().saturating_add(3_600_000);
+/// What the server told outside Tilo once it told `count` things there, as its own teller tells
+/// while no device of a person's is looking: whom, the thing's title and its kind, once for each
+/// time it was told, in the order the things were told. Read from what the teller wrote on each
+/// thing, so it is the host's one teller that is heard.
+async fn told_outside(up: &Up, count: usize) -> Vec<([u8; 32], String, Kind)> {
     let deadline = tilo_test_env::hang_deadline();
-    while heard.all().len() < count {
+    loop {
+        let told: Vec<([u8; 32], String, Kind)> = up
+            .workspaces
+            .people_told()
+            .into_iter()
+            .flat_map(|person| {
+                up.workspaces
+                    .told_after(&person, 0)
+                    .told
+                    .into_iter()
+                    .flat_map(move |told| {
+                        told.pushed
+                            .iter()
+                            .map(|_| (person, told.title.clone(), told.kind))
+                            .collect::<Vec<_>>()
+                    })
+            })
+            .collect();
+        if told.len() >= count {
+            return told;
+        }
         assert!(
             Instant::now() < deadline,
-            "the server told fewer than {count} things outside: {:?}",
-            heard.all()
+            "the server told fewer than {count} things outside: {told:?}"
         );
-        teller.step(later()).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    teller.step(later()).await;
-    heard.all()
 }
 
 /// One action on a person's events as `caller` takes it, refused or not.
@@ -258,8 +237,6 @@ async fn an_event_told_as_a_brief_raises_a_briefs_notice_and_one_that_says_nothi
     let theirs = me.clone().delegated_to(SCOUT).named("Scout");
     // Nothing of the person's is on from here until they come back.
     page.peer.close();
-    let heard = Arc::new(Heard::default());
-    let teller = Teller::new(up.workspaces.clone(), heard.clone());
 
     // Their assistant sets the same event up three times: told as a brief, told as news, and
     // saying nothing. Each fires, and the assistant answers each with the same words.
@@ -294,7 +271,7 @@ async fn an_event_told_as_a_brief_raises_a_briefs_notice_and_one_that_says_nothi
     // With every device of theirs off, the server tells outside what is to reach them: the
     // brief, by what it is, and the event that says nothing, which is a moment and so a
     // reminder as before. The news it tells nobody outside.
-    let outside = told_outside(&teller, &heard, 2).await;
+    let outside = told_outside(&up, 2).await;
     assert_eq!(
         outside,
         [
@@ -348,7 +325,7 @@ async fn an_event_told_as_a_brief_raises_a_briefs_notice_and_one_that_says_nothi
         .collect();
     assert_eq!(
         pushed,
-        [vec!["heard"], vec![], vec!["heard"]],
+        [vec!["web-push"], vec![], vec!["web-push"]],
         "that it was told outside is written on the thing"
     );
     up.down().await;
@@ -504,8 +481,6 @@ async fn an_events_brief_reaches_its_own_person_and_nobody_else() {
     let ada = root.verifying_key().to_bytes();
     let me = themselves(&root, &browser, &workspace);
     let theirs = me.clone().delegated_to(SCOUT).named("Scout");
-    let heard = Arc::new(Heard::default());
-    let teller = Teller::new(up.workspaces.clone(), heard.clone());
     let (bo, _) = tilo_user_identity::UserIdentity::generate("Bo", 2);
     let bo = bo.verifying_key().to_bytes();
 
@@ -561,7 +536,7 @@ async fn an_events_brief_reaches_its_own_person_and_nobody_else() {
 
     // The server tells one person outside, the one whose event it is, and keeps a list of
     // what was told for nobody else.
-    let outside = told_outside(&teller, &heard, 1).await;
+    let outside = told_outside(&up, 1).await;
     assert_eq!(
         outside,
         [(ada, "The day, as a brief".to_owned(), Kind::Brief)]
