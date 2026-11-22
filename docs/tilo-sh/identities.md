@@ -126,12 +126,12 @@ try {
 ```curl example=key-scopes
 api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"
-workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
-  -d '{"name": "One customer"}' | jq -r .id)
+workspace=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "One customer"}' | jq -r .result.workspace.id)
 
 # A key that reaches this workspace and nothing else.
-minted=$(curl -sS --fail-with-body "$api/keys" -H "$auth" -H "Content-Type: application/json" \
-  -d "{\"workspace\": \"$workspace\", \"name\": \"Their agent\"}")
+minted=$(curl -sS --fail-with-body "$api/resources/account/keys/actions/mint" -H "$auth" -H "Content-Type: application/json" \
+  -d "{\"workspace\": \"$workspace\", \"name\": \"Their agent\"}" | jq -r .result)
 echo "agent's MCP URL: $(jq -r .mcp_url <<<"$minted")"
 agent="Authorization: Bearer $(jq -r .token <<<"$minted")"
 
@@ -140,7 +140,8 @@ apps=$(curl -sS --fail-with-body "$api/workspaces/$workspace/resources" -H "$age
 echo "the agent sees $apps apps"
 
 # Revoking it ends the agent's access at once.
-curl -sS --fail-with-body -X DELETE "$api/keys/$(jq -r .grant <<<"$minted")" -H "$auth" > /dev/null
+curl -sS --fail-with-body "$api/resources/account/keys/actions/revoke" -H "$auth" -H "Content-Type: application/json" \
+  -d "{\"grant\": \"$(jq -r .grant <<<"$minted")\"}" > /dev/null
 curl -sS "$api/workspaces/$workspace/resources" -H "$agent" \
   | jq -r '"after revoking: \(.error.code) at \(.error.revoked_at_ms)"'
 ```

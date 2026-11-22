@@ -52,8 +52,8 @@ for (const row of snippets.rows) {
 ```curl example=find-by-listing
 api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"
-workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
-  -d '{"name": "Looking for things"}' | jq -r .id)
+workspace=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Looking for things"}' | jq -r .result.workspace.id)
 resources=$api/workspaces/$workspace/resources
 
 for snippet in '{"title": "Visa checklist"}' \
@@ -102,8 +102,8 @@ for (const hit of await workspace.find("passport")) {
 ```curl example=find-by-words
 api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"
-workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
-  -d '{"name": "Searching"}' | jq -r .id)
+workspace=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Searching"}' | jq -r .result.workspace.id)
 curl -sS --fail-with-body "$api/workspaces/$workspace/resources/snippets/actions/new-snippet" -H "$auth" \
   -H "Content-Type: application/json" \
   -d '{"title": "Visa passport checklist"}' > /dev/null

@@ -101,8 +101,8 @@ console.log("favorite:", after.fields.favorite, "tags:", after.fields.tags);
 ```curl example=read-and-edit
 api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"
-workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
-  -d '{"name": "Snippets and actions"}' | jq -r .id)
+workspace=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Snippets and actions"}' | jq -r .result.workspace.id)
 resources=$api/workspaces/$workspace/resources
 
 # An action: make a snippet.

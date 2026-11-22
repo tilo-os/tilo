@@ -97,8 +97,8 @@ console.log("undone:", after.versions.filter((version) => version.undone === tru
 api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"
 json="Content-Type: application/json"
-workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "$json" \
-  -d '{"name": "Invocations and history"}' | jq -r .id)
+workspace=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "$json" \
+  -d '{"name": "Invocations and history"}' | jq -r .result.workspace.id)
 word=$api/workspaces/$workspace/resources/word-processor/actions
 
 # One invocation: every call naming it in Tilo-Invocation is one step of this app's history.
@@ -226,8 +226,8 @@ console.log("found:", letter.id, letter.records[0]?.app);
 api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"
 json="Content-Type: application/json"
-workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "$json" \
-  -d '{"name": "Every invocation"}' | jq -r .id)
+workspace=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "$json" \
+  -d '{"name": "Every invocation"}' | jq -r .result.workspace.id)
 curl -sS --fail-with-body "$api/workspaces/$workspace/resources/word-processor/actions/append-paragraph" \
   -H "$auth" -H "$json" -H "Tilo-Invocation: cover-letter" -H "Tilo-Invocation-Title: Write the cover letter" \
   -d '{"text": "Dear Visa Officer,"}' > /dev/null

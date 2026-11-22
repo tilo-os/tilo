@@ -103,8 +103,8 @@ process.exit(0);
 ```curl example=watch-stream
 api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"
-workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
-  -d '{"name": "Watching"}' | jq -r .id)
+workspace=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Watching"}' | jq -r .result.workspace.id)
 
 # The stream, read in the background until its first change.
 curl -sSN "$api/workspaces/$workspace/events" -H "$auth" > events.txt &

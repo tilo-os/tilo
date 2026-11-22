@@ -171,8 +171,8 @@ for (const member of await workspace.members.list()) {
 ```curl example=workspace-members
 api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"
-workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
-  -d '{"name": "Hiring: Ada Lovelace"}' | jq -r .id)
+workspace=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Hiring: Ada Lovelace"}' | jq -r .result.workspace.id)
 tree=$api/workspaces/$workspace/resources/workspace
 
 invitation=$(curl -sS --fail-with-body "$tree/invitations/actions/invite" -H "$auth" \

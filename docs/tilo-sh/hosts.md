@@ -48,11 +48,13 @@ console.log("created:", created.name, "on", created.host);
 api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"
 
-curl -sS --fail-with-body "$api/workspaces" -H "$auth" \
-  | jq -r '.workspaces[] | "\(.name)  on \(.host)  as \(.role // "owner")"'
+curl -sS --fail-with-body "$api/resources/account/workspaces/actions/list" -H "$auth" \
+  -H "Content-Type: application/json" -d '{}' \
+  | jq -r '.result.workspaces[] | "\(.name)  on \(.host)  as \(.role // "owner")"'
 
-created=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Idempotency-Key: my-own" \
-  -H "Content-Type: application/json" -d '{"name": "A workspace of my own"}')
+created=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "Idempotency-Key: my-own" \
+  -H "Content-Type: application/json" -d '{"name": "A workspace of my own"}' \
+  | jq -r .result.workspace)
 echo "created: $(jq -r .name <<<"$created") on $(jq -r .host <<<"$created")"
 ```
 

@@ -176,8 +176,8 @@ console.log("the letter is", bytes.length, "bytes, a Word file:", bytes[0] === 0
 ```curl example=upload-and-export
 api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"
-workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
-  -d '{"name": "Files and letters"}' | jq -r .id)
+workspace=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Files and letters"}' | jq -r .result.workspace.id)
 base=$api/workspaces/$workspace
 
 # Bytes go up once, and the reference is what the apps take.
