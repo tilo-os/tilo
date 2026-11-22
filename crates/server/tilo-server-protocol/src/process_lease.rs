@@ -92,7 +92,7 @@ fn process_start_time(pid: u32) -> io::Result<u64> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such process"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::process::Command;
     use tilo_test_env::SpawnUnderEnvLock as _;
