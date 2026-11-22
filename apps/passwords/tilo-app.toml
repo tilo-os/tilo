@@ -398,3 +398,8 @@ action = "revoke-access"
 label = "Revoke access"
 kind = "outside"
 confirm = true
+[[offers]]
+resource = "passwords.workspace-vault"
+action = "remove-sealed"
+label = "Delete encrypted vault entry"
+asks = "id"
