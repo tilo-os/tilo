@@ -167,13 +167,75 @@ pub fn validate_transition(
                 return Err(MediaPolicyError::RevocationLowered);
             }
         }
-        if !after.get_missing_deps(&[]).is_empty()
-            || policy.authorization_basis != security_basis(after, &[])?
-        {
+        if !after.get_missing_deps(&[]).is_empty() {
             return Err(MediaPolicyError::Unreconciled);
         }
+        reconciled(before, after, policy, mode)?;
     }
     Ok(current)
+}
+
+/// Whether `policy`, the call policy `after` holds, rests on the governance
+/// `after` holds.
+///
+/// A policy written or taken in here carries the basis this build derives from
+/// that governance. The basis is a digest of the membership as a build replays
+/// it, so a build that replays the same membership into other grants derives
+/// another digest, and a policy this device holds from an earlier build carries
+/// that build's. A held policy still rests on the governance when the
+/// governance as it stood at the change that wrote the policy derives the same
+/// basis here as the governance now does. Both are derived by this build, so a
+/// membership, device row or revocation changed after the policy was written is
+/// still refused.
+fn reconciled(
+    before: Option<&AutoCommit>,
+    after: &AutoCommit,
+    policy: &WorkspaceMediaV1,
+    mode: TransitionMode,
+) -> Result<(), MediaPolicyError> {
+    let basis = security_basis(after, &[])?;
+    if policy.authorization_basis == basis {
+        return Ok(());
+    }
+    let written = policy_write(after)?;
+    let at_write = match before {
+        // A held state with this same policy write was reconciled when it was
+        // taken in: the governance after has only to derive what it does.
+        Some(before) if policy_write(before).ok().as_ref() == Some(&written) => {
+            security_basis(before, &[])?
+        }
+        // This device's own state, as it kept it.
+        _ if mode == TransitionMode::Restore => {
+            let change = after
+                .hash_for_opid(&written)
+                .ok_or(MediaPolicyError::Unreconciled)?;
+            let at = after
+                .clone()
+                .fork_at(&[change])
+                .map_err(|_| MediaPolicyError::Malformed)?;
+            security_basis(&at, &[])?
+        }
+        // A policy written now, or one this device did not hold before.
+        _ => return Err(MediaPolicyError::Unreconciled),
+    };
+    if at_write == basis {
+        Ok(())
+    } else {
+        Err(MediaPolicyError::Unreconciled)
+    }
+}
+
+/// The operation that wrote the call policy `doc` holds.
+fn policy_write(doc: &AutoCommit) -> Result<automerge::ObjId, MediaPolicyError> {
+    match doc
+        .get_all(ROOT, FIELD)
+        .map_err(|_| MediaPolicyError::Malformed)?
+        .as_slice()
+    {
+        [(_, written)] => Ok(written.clone()),
+        [] => Err(MediaPolicyError::Missing),
+        _ => Err(MediaPolicyError::Conflict),
+    }
 }
 
 // An observed root revocation is irreversible, even when a pinned checkpoint
@@ -762,6 +824,8 @@ impl fmt::Display for MediaPolicyError {
 }
 impl std::error::Error for MediaPolicyError {}
 
+#[cfg(test)]
+mod earlier_build_tests;
 #[cfg(test)]
 mod workspace_media_tests {
     use super::*;

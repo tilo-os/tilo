@@ -1161,15 +1161,28 @@ impl StatePeer {
             backend::media::ready(
                 policy,
                 |app, record| backend::media::bound(self, policy, app, record),
-                || {
-                    self.security_basis()
-                        .ok_or("missing workspace")?
-                        .map_err(err)
-                },
+                || self.holds_unpromoted_revocations(),
             )
             .map_err(backend::media::ReadinessError::message)?;
         }
         Ok(policy)
+    }
+    /// Whether this replica knows of a revocation its workspace's governance
+    /// does not hold yet. The call policy rests on the governance
+    /// ([`Self::validate_present_media_policy`]), so calls wait until such a
+    /// revocation is written into it.
+    pub(super) fn holds_unpromoted_revocations(&self) -> Result<bool, String> {
+        let doc = self
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or("missing workspace")?;
+        let revocations = self.revocations();
+        if revocations.is_empty() {
+            return Ok(false);
+        }
+        Ok(doc.security_basis(&revocations).map_err(err)?
+            != workspace::media::security_basis(doc, &[]).map_err(err)?)
     }
     pub(super) fn validate_present_media_policy(
         &self,

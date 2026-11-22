@@ -27,10 +27,7 @@ fn readiness(
     ready(
         policy,
         |app, document| bound(peer, policy, app, document),
-        || {
-            media::security_basis(peer.admitted_workspace().unwrap(), &peer.revocations())
-                .map_err(err)
-        },
+        || peer.holds_unpromoted_revocations(),
     )
 }
 fn refusal(peer: &StatePeer, policy: &media::WorkspaceMediaV1) -> String {

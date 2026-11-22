@@ -9,16 +9,7 @@ impl PeerMediaGovernance<'_> {
     pub fn validate_media_governance_for_publication(self) -> Result<(), String> {
         if let Some(policy) = self.peer.validate_present_media_policy()? {
             self.peer.validate_media_bindings(&policy, false)?;
-            let basis = media::security_basis(
-                self.peer
-                    .core
-                    .workspace_doc
-                    .as_deref()
-                    .ok_or("missing workspace")?,
-                &self.peer.revocations(),
-            )
-            .map_err(err)?;
-            if basis != policy.authorization_basis {
+            if self.peer.holds_unpromoted_revocations()? {
                 return Err(
                     "media security basis requires governed revocation reconciliation".into(),
                 );
@@ -43,16 +34,7 @@ impl PeerMediaGovernance<'_> {
                     Ok(super::backend::media::bound(peer, policy, app, record)?
                         || peer.publication().is_sealed_document(app, record))
                 },
-                || {
-                    media::security_basis(
-                        peer.core
-                            .workspace_doc
-                            .as_deref()
-                            .ok_or("missing workspace")?,
-                        &peer.revocations(),
-                    )
-                    .map_err(err)
-                },
+                || peer.holds_unpromoted_revocations(),
             )
             .map_err(super::backend::media::ReadinessError::message)?;
         }
@@ -112,10 +94,43 @@ impl PeerMediaGovernanceMut<'_> {
             Err(error) => return Err(err(error)),
         };
         if basis == governed_basis {
-            if let Some(policy) = &policy {
-                self.peer.validate_media_bindings(policy, false)?;
+            let Some(policy) = policy else {
+                return Ok(false);
+            };
+            self.peer.validate_media_bindings(&policy, false)?;
+            if policy.authorization_basis == governed_basis {
+                return Ok(false);
             }
-            return Ok(false);
+            // The policy rests on the governance under the basis the build
+            // that wrote it derived ([`media::validate_transition`]). Written
+            // again under this build's basis, no reader has to work that out
+            // from the workspace's history.
+            self.peer.require_governance_action(
+                key,
+                tilo_action_policy::roles::governance::SETTINGS,
+                now,
+            )?;
+            let mut doc = self
+                .peer
+                .core
+                .workspace_doc
+                .clone()
+                .ok_or("missing workspace")?;
+            let before = doc.get_heads();
+            let rebased = WorkspaceMediaV1 {
+                authorization_revision: media::next_counter(policy.authorization_revision)
+                    .map_err(err)?,
+                authorization_basis: governed_basis,
+                ..policy
+            };
+            doc.set_actor(self.peer.workspace_actor_of(key));
+            doc.put(
+                ROOT,
+                media::FIELD,
+                automerge::ScalarValue::Bytes(media::encode(&rebased).map_err(err)?),
+            )
+            .map_err(err)?;
+            return self.peer.write_governance(doc, &before, key, now);
         }
         self.peer.require_governance_action(
             key,
