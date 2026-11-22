@@ -160,10 +160,14 @@ def reply(session: Session, out: Path) -> dict:
                                  if t["name"] == "Reply"
                                  and (t.get("identity") or "").endswith("\x1freply")), None), 60)
     session.click_doing(target["identity"])
-    names = until(f"{session.tag}'s reply composer to open",
-                  lambda: (now if all(what in now for what in ("Send", "Subject", "To"))
-                           else None) if (now := names_of(session)) else None,
-                  60, 0.25)
+    try:
+        names = until(f"{session.tag}'s reply composer to open",
+                      lambda: (now if all(what in now for what in ("Send", "Subject", "To"))
+                               else None) if (now := names_of(session)) else None,
+                      60, 0.25)
+    except Failed as error:
+        raise Failed(f"{error}; {session.tag}'s Mail window is {title_of(session)!r} and shows "
+                     f"{names_of(session)}") from None
     wanted = f"Re: {SUBJECT}"
     title = title_of(session)
     if title != wanted:
