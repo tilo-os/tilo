@@ -91,7 +91,10 @@ pub fn chunk_of_document(document: &str) -> Option<ChunkNo> {
         return Some(FIRST);
     }
     let number = document.strip_prefix("derived:chunk.")?.strip_suffix('@')?;
-    number.parse().ok()
+    tilo_failure::ignored!(
+        "a document named like a chunk without a number is no chunk of the record",
+        number.parse().ok()
+    )
 }
 
 /// The document chunk `chunk` of a record is kept in.
@@ -124,11 +127,18 @@ pub struct Opened {
 
 impl Opened {
     /// Open `record` through `packages` for `viewer`: the member whose device this is, as whom
-    /// what its written text asks is asked.
+    /// what its written text asks is asked. `policy` is the workspace's, as this device reads it:
+    /// the host's members and who of them reads what (`workspace.members`, `std.may_read`,
+    /// [`Self::readers`]). Without one, the host knows no members, and nobody reads anything.
     ///
     /// # Errors
     /// A document does not load, or a package does not.
-    pub fn open(record: &RecordBytes, packages: &Packages, viewer: Actor) -> Result<Self, String> {
+    pub fn open(
+        record: &RecordBytes,
+        packages: &Packages,
+        viewer: Actor,
+        policy: Option<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>,
+    ) -> Result<Self, String> {
         let mut chunks = Chunks::default();
         let mut read_at = BTreeMap::new();
         for (document, bytes) in &record.documents {
@@ -147,6 +157,20 @@ impl Opened {
                 .map_err(|error| error.to_string())?;
         }
         host.sync(&chunks);
+        if let Some(policy) = policy
+            && let Some(owner) = policy.owner.clone()
+        {
+            let me = tilo_action_policy::PersonId::parse(&owner).map_err(|error| {
+                format!("the workspace's owner {owner:?} is no person: {error}")
+            })?;
+            // The owner stands at no window here: whoever the policy names, the host names
+            // the same.
+            let access = tilo_action_policy::MemberAccess::person(policy, me.clone());
+            host.runtime().set_members(
+                tilolang_tilo::members::members_of(&access, &me),
+                Some(tilolang_tilo::members::reads_of(&access, &me, &host)),
+            );
+        }
         let mut opened = Self {
             host,
             app: packages.app().to_owned(),
@@ -170,6 +194,19 @@ impl Opened {
     #[must_use]
     pub fn app(&self) -> &str {
         &self.app
+    }
+
+    /// The members of the workspace who may read `at`, as its policy decides
+    /// (`std.may_read`): none where the record was opened without the policy.
+    #[must_use]
+    pub fn readers(&self, at: &ResourceRef) -> Vec<Actor> {
+        let runtime = self.host.runtime();
+        runtime
+            .members()
+            .iter()
+            .map(tilolang_tilo::runtime::members::Member::who)
+            .filter(|who| runtime.may_read(who, at))
+            .collect()
     }
 
     /// Run `app`'s action `action` with `args` as `who`, made from `from` when given (what it
@@ -390,8 +427,9 @@ impl crate::workspaces::Workspaces {
         let app = packages.app().to_owned();
         let record = self.tl_record(workspace, &app).await?;
         let packages = packages.clone();
+        let policy = self.policy_of(workspace).await.map(std::sync::Arc::new);
         let (answer, written) = tokio::task::spawn_blocking(move || {
-            let mut opened = Opened::open(&record, &packages, viewer)?;
+            let mut opened = Opened::open(&record, &packages, viewer, policy)?;
             let answer = work(&mut opened)?;
             Ok::<_, String>((answer, opened.written()))
         })

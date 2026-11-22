@@ -344,6 +344,23 @@ fn said(opened: &Opened, at: &ResourceRef, asked_about: bool) -> Said {
     }
 }
 
+/// Whether what `asked` is about is `keeper`'s and `agent`'s alone: every member of the
+/// workspace who may read the resource it is made from is one of the two, as the workspace's
+/// policy decides (`std.may_read`, [`Opened::readers`]). What an agent learned about its keeper
+/// is told and kept only in such a turn. False for an ask made from nothing, and where nobody
+/// reads it: a record opened without the policy knows no readers.
+#[must_use]
+pub fn private_to(opened: &Opened, asked: &Asked, keeper: &MemberId, agent: &MemberId) -> bool {
+    let Some(from) = &asked.from else {
+        return false;
+    };
+    let readers = opened.readers(from);
+    !readers.is_empty()
+        && readers.iter().all(|reader| {
+            matches!(reader, Actor::Member(member) if member == keeper || member == agent)
+        })
+}
+
 /// Rich text that mentions `member` as `@name`, then says `then`: what a composer writes when
 /// someone mentions an agent, and so what asks it wherever it is written.
 #[must_use]
@@ -384,8 +401,9 @@ fn state_value(
 
 /// Ask `agent` outright as `asker`, about `from`: what a reminder, an event that fired or a
 /// sub-agent's lead asks. `key` names the ask with `from`: a cause that fires again asks
-/// nothing new while its ask stands. `said` is what is asked, in words; empty when the agent may
-/// not read `from`. Answers the ask, the one that stood already where there is one.
+/// nothing new while its ask stands, because the package derives the ask's id from both. `said`
+/// is what is asked, in words; empty when the agent may not read `from`. Answers the ask, the
+/// one that stood already where there is one.
 ///
 /// # Errors
 /// The record holds no agent package, or the ask was refused.
@@ -397,11 +415,6 @@ pub fn ask(
     key: &str,
     from: &ResourceRef,
 ) -> Result<ResourceRef, String> {
-    if let Some(standing) = asks(opened)?.into_iter().find(|asked| {
-        asked.mention == key && asked.from.as_ref().is_some_and(|made| made.same(from))
-    }) {
-        return Ok(standing.at);
-    }
     let meta = meta(opened)?;
     let all = root(&meta)?;
     let made = opened.invoke(
