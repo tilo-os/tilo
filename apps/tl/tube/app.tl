@@ -557,7 +557,7 @@ fn item_clock(v: Video) -> Text {
 view search_results(yt: YouTube) {
     state typed: Text = yt.search_text
     stack(gap: .section) {
-        ui.TextInput(bind: typed, placeholder: "Search YouTube", fill) {
+        ui.TextInput(bind: typed, placeholder: "Search YouTube", autofocus: true, fill) {
             on submit: search(yt, typed)
         }
         search_found(yt)

@@ -2620,3 +2620,29 @@ fn an_ask_is_the_systems_prompt_and_its_choice_answers_the_app() {
         .collect();
     assert_eq!(answers, vec![Answer::Always]);
 }
+
+/// A field the app marks as where the person types next (a search a press showed) takes the
+/// keyboard when it appears, and a field without the mark leaves the keyboard where it is.
+#[test]
+fn a_field_marked_autofocus_takes_the_keyboard_when_it_appears() {
+    let plain = bound_page("ui.TextInput", &[], Value::text(""));
+    let (mut app, mut harness) = drawn(&plain);
+    assert_eq!(drawn_window(&mut harness).focused_field(), None);
+    let search = bound_page(
+        "ui.TextInput",
+        &[
+            ("autofocus", Value::Bool(true)),
+            ("placeholder", Value::text("Search YouTube")),
+        ],
+        Value::text(""),
+    );
+    send(&mut app, &search);
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_field().as_deref(),
+        Some("field"),
+        "the keyboard is in the search field, where the person types next"
+    );
+}
