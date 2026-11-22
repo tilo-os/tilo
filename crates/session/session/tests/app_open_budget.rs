@@ -121,6 +121,9 @@ struct Open {
     spawn_ms: f64,
     /// The window asked for to the app's toplevel being mapped.
     map_ms: f64,
+    /// The steps of the app's own start, from the launcher starting to its first frame, as its
+    /// startup timeline has them ([`steps`]).
+    steps: String,
 }
 
 impl Open {
@@ -143,6 +146,7 @@ impl Open {
             spawn_ms: spawned.map_or(0.0, |line| number(line, "request_to_spawn_us") / 1000.0),
             map_ms: line("application toplevel mapped")
                 .map_or(0.0, |line| number(line, "request_to_map_us") / 1000.0),
+            steps: String::new(),
         })
     }
 
@@ -150,8 +154,8 @@ impl Open {
     /// the first frame.
     fn phases(&self) -> String {
         format!(
-            "{},spawned:{:.0}ms,mapped:{:.0}ms,first-frame:{:.0}ms",
-            self.dispatch, self.spawn_ms, self.map_ms, self.total_ms
+            "{},spawned:{:.0}ms,mapped:{:.0}ms,first-frame:{:.0}ms\n           {}",
+            self.dispatch, self.spawn_ms, self.map_ms, self.total_ms, self.steps
         )
     }
 }
@@ -172,6 +176,68 @@ fn number(line: &str, name: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// The startup timeline `app` wrote on `device` up to its first frame: its state directory sits in
+/// the directory each workspace gives the app, beside the device's store.
+fn timeline(device: &Device, app: &str) -> Option<serde_json::Value> {
+    let workspaces = device.store().parent()?.join("tilo-workspaces");
+    std::fs::read_dir(workspaces).ok()?.find_map(|workspace| {
+        let path = workspace
+            .ok()?
+            .path()
+            .join(app)
+            .join(".local/state/startup-timeline.json");
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        written["events"]
+            .as_array()?
+            .iter()
+            .any(|event| event["name"] == "first-frame-presented")
+            .then_some(written)
+    })
+}
+
+/// A timeline's steps, each the milliseconds since the one before it: the launcher's marks (Unix
+/// epoch), the app's process starting (`exec-to-main`: from the sandbox executing it to the app's
+/// own first mark), then the app's own marks up to its first frame. Steps under a millisecond are
+/// left out.
+fn steps(timeline: &serde_json::Value) -> String {
+    let mut marks: Vec<(String, f64)> = timeline["launcher"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|mark| {
+            Some((
+                mark["name"].as_str()?.to_owned(),
+                mark["epoch_us"].as_f64()?,
+            ))
+        })
+        .collect();
+    let origin = timeline["origin_epoch_us"].as_f64().unwrap_or(0.0);
+    marks.push(("exec-to-main".to_owned(), origin));
+    marks.extend(
+        timeline["events"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|event| {
+                Some((
+                    event["name"].as_str()?.to_owned(),
+                    origin + event["ns"].as_f64()? / 1000.0,
+                ))
+            }),
+    );
+    let mut previous = marks.first().map_or(0.0, |(_, at)| *at);
+    let mut out = Vec::new();
+    for (name, at) in marks {
+        let elapsed = (at - previous) / 1000.0;
+        previous = previous.max(at);
+        if elapsed >= 1.0 {
+            out.push(format!("{name}:{elapsed:.0}"));
+        }
+    }
+    out.join(",")
+}
+
 /// Open `app` on `device` and return the open the session logged for it: the window asked for to
 /// the app's first presented frame.
 fn open_and_time(device: &Device, app: &str) -> Open {
@@ -186,8 +252,17 @@ fn open_and_time(device: &Device, app: &str) -> Open {
             Open::logged(&segment, app).map(|_| segment)
         },
     );
-    Open::logged(&segment, app)
-        .unwrap_or_else(|| panic!("{app}'s open is in the log it was waited for: {segment}"))
+    let mut open = Open::logged(&segment, app)
+        .unwrap_or_else(|| panic!("{app}'s open is in the log it was waited for: {segment}"));
+    let written = tilo_test_env::wait_for(
+        format!(
+            "{app}'s startup timeline up to its first frame on {}",
+            device.label
+        ),
+        || timeline(device, app),
+    );
+    open.steps = steps(&written);
+    open
 }
 
 /// One busy thread per core of the job, spinning until it is dropped: the CPU contention the
