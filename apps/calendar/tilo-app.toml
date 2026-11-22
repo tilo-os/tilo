@@ -167,23 +167,3 @@ kind = "read"
 operation = "view"
 keywords = ["create", "add", "todo", "start"]
 icon = "plus"
-[[offers]]
-resource = "calendar.collection:local"
-resource-kind = "calendar.collection"
-action = "set-color"
-label = "Set calendar colour"
-kind = "outside"
-asks = "color"
-[[offers]]
-resource = "calendar.collection:local"
-resource-kind = "calendar.collection"
-action = "read-calendar"
-label = "Read calendar"
-kind = "read"
-operation = "view"
-[[offers]]
-resource = "calendar.collection:local"
-resource-kind = "calendar.collection"
-action = "hide-calendar"
-label = "Hide calendar"
-kind = "outside"

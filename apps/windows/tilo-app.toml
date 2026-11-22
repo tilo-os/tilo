@@ -74,3 +74,57 @@ action = "import-iso"
 label = "Import Windows ISO"
 kind = "outside"
 confirm = true
+[[offers]]
+resource = "windows.appliance"
+action = "recovery"
+label = "Open recovery desktop"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "windows.appliance"
+action = "start"
+label = "Start Windows"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "windows.appliance"
+action = "restart"
+label = "Restart Windows"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "windows.appliance"
+action = "suspend"
+label = "Suspend Windows"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "windows.appliance"
+action = "resume"
+label = "Resume Windows"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "windows.appliance"
+action = "shutdown"
+label = "Shut down Windows"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "windows.appliance"
+action = "temporary-network"
+label = "Connect for activation"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "windows.appliance"
+action = "update-network"
+label = "Connect for Windows Update"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "windows.appliance"
+action = "revoke-network"
+label = "End temporary network access"
+kind = "outside"
+confirm = true

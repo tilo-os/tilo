@@ -179,7 +179,9 @@ fn report_surface(
 /// Left out: what the framework publishes on every app (its undo, its
 /// `open`), save the link a scheme the app takes is opened with; what the
 /// shell publishes into the view (its search, its controls); the person's own
-/// documents and those the workspace keeps for all its apps; the items of a list, which a closed app has none of; what acts
+/// documents and those the workspace keeps for all its apps; the items of a
+/// list, which a closed app has none of — an item is a resource the app's own
+/// resources hold, and what it holds is the window's; what acts
 /// on one document (`…@…`), whose address names the document a window opens, so
 /// an offer of it would hold that window's id; and Settings' pages and
 /// settings, save its link, which the shell's own search finds on every
@@ -197,6 +199,11 @@ fn offers_of(resources: &[tilo_actions::ResourceSpec]) -> Vec<serde_json::Value>
         if !contract.offered_to_people()
             || !contract.availability.is_available()
             || (reserved.iter().any(|framework| framework == id) && !opens_links)
+            // An address that names an item rather than its kind: the app's
+            // own resources' ids are the kinds they publish, so one that is
+            // not names a record a window opened, which a closed app has none
+            // of.
+            || action.resource_kind != resource
             || resource.starts_with("tilo.")
             || resource.starts_with("person:")
             || collab_types::workspace_document_of_kind(resource).is_some()

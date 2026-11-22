@@ -226,12 +226,6 @@ label = "Turn tracker protection off for this site"
 operation = "document"
 keywords = ["ad blocker", "tracking protection", "block trackers", "privacy"]
 [[offers]]
-resource = "browser.session"
-resource-kind = "browser.history-pause"
-action = "toggle-pause"
-label = "Pause history"
-kind = "outside"
-[[offers]]
 resource = "browser.bookmarks"
 action = "show-bookmarks"
 label = "Show bookmarks"
