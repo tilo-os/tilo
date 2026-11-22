@@ -10,8 +10,8 @@ use tilo_server_protocol::ProcessLease;
 use tilo_user_identity::{DeviceCert, verify_device_cert_at};
 
 use crate::{
-    ResponsePayload, fleet_store, now_ns, personal_devices_of, read_bounded_json,
-    remember_personal_devices, restore_owner_from_parent, share_directory_like_parent,
+    ResponsePayload, fleet_store, now_ns, personal_devices_of, remember_personal_devices,
+    restore_owner_from_parent, share_directory_like_parent,
 };
 
 #[cfg(unix)]
@@ -242,13 +242,12 @@ impl<'a> PersonalInstall<'a> {
         )?;
         before_publish(PersonalCommitCheckpoint::Registry)?;
         if self.image_source.is_none() {
-            let registry_json = std::fs::read(stage_dir.join("registry.json"))?;
             as_person(self.person_uid, self.identity_dir, || {
-                tilo_files::native::atomic::write_with_mode(
-                    &self.identity_dir.join("registry.json"),
-                    &registry_json,
-                    0o600,
-                )
+                let store = tilo_identity::registry::IdentityRegistryStore::at(self.identity_dir);
+                let mut registry = store.load()?;
+                let id = registry.register_record(&record)?.id.clone();
+                registry.default_identity = Some(id);
+                store.save(&registry)
             })?;
         }
         before_publish(PersonalCommitCheckpoint::UserPublicKey)?;
@@ -532,71 +531,12 @@ fn checked_personal_projection(
     Ok((fleet, existing))
 }
 
-fn projected_registry(identity_dir: &Path, user: [u8; 32]) -> anyhow::Result<Vec<u8>> {
-    let identity_id = hex::encode(user);
-    let registry_path = identity_dir.join("registry.json");
-    let mut registry: serde_json::Value =
-        read_bounded_json(&registry_path, "existing identity registry")?.unwrap_or_else(|| {
-            serde_json::json!({
-                "schema_version": 1,
-                "default_identity": identity_id,
-                "identities": {},
-                "workspace_identities": {}
-            })
-        });
-    let valid_registry = registry.as_object().is_some_and(|root| {
-        root.get("identities")
-            .is_some_and(serde_json::Value::is_object)
-            && root
-                .get("workspace_identities")
-                .is_some_and(serde_json::Value::is_object)
-    });
-    if !valid_registry {
-        bail!("existing identity registry has an invalid schema");
-    }
-
-    let resource_path = identity_record_path(identity_dir, user);
-    let registry_root = registry
-        .as_object_mut()
-        .context("existing identity registry has an invalid schema")?;
-    registry_root.insert(
-        "default_identity".into(),
-        serde_json::Value::String(identity_id.clone()),
-    );
-    registry_root
-        .get_mut("identities")
-        .and_then(serde_json::Value::as_object_mut)
-        .context("existing identity registry has an invalid identities map")?
-        .insert(
-            identity_id.clone(),
-            serde_json::json!({
-                "id": identity_id,
-                "display_name": "My Tilo identity",
-                // The registry the runtime reads names an identity's file
-                // `record_path`, and refuses a field it does not know: one
-                // written another way holds identities it cannot start from.
-                "record_path": resource_path,
-                "user_public_key": user
-            }),
-        );
-
-    Ok(serde_json::to_vec_pretty(&registry)?)
-}
-
 fn stage_personal_enrollment(
     install: &PersonalInstall<'_>,
     projection: &PersonalProjection<'_>,
     requester_lease: Option<ProcessLease>,
 ) -> anyhow::Result<(PathBuf, PersonalEnrollmentMarker)> {
     let (fleet, peers) = checked_personal_projection(install, projection)?;
-    let registry = if install.image_source.is_none() {
-        Some(projected_registry(
-            install.identity_dir,
-            projection.cert.user_public_key,
-        )?)
-    } else {
-        None
-    };
     let identity_root = install.identity_root;
     let (stage_name, stage_dir) = create_stage_dir(identity_root, random_stage_name)?;
     let cert = tilo_user_identity::canonical::canonical_bytes(projection.cert)?;
@@ -605,13 +545,6 @@ fn stage_personal_enrollment(
         projection.identity,
         0o600,
     )?;
-    if let Some(registry) = registry {
-        tilo_files::native::atomic::write_with_mode(
-            &stage_dir.join("registry.json"),
-            &registry,
-            0o600,
-        )?;
-    }
     tilo_files::native::atomic::write(
         &stage_dir.join("fleet.json"),
         &serde_json::to_vec_pretty(&fleet)?,
