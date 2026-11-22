@@ -278,9 +278,10 @@ fn a_direct_message_is_one_notice_that_names_who_wrote() {
 /// Choose `action` of `notice` on this device, as pressing its button does: the notifications'
 /// own `act`, by the id the state dump lists the notice under.
 fn choose(device: &Device, notice: &Value, action: &str) {
-    let act = device
-        .offered("session:notifications", "act")
-        .unwrap_or_else(|| panic!("{} offers no act on its notifications", device.label));
+    let act = tilo_test_env::wait_for(
+        format!("{} offering an act on its notifications", device.label),
+        || device.offered("session:notifications", "act"),
+    );
     let answer = device.act_wait(
         &act,
         &json!({"notification": notice["id"], "action": action}),

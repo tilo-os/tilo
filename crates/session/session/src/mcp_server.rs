@@ -1683,7 +1683,7 @@ pub(crate) struct Host {
     /// The agent session an admitted agent's connection is: each step it takes says there what
     /// it is doing. `None` for the person's own connection.
     agent_session: Option<Arc<SessionAt>>,
-    /// Whether every invocation is the person at this device's own ([`Self::as_local_person`]).
+    /// Whether every invocation is the person at this device's own ([`Self::for_local_person`]).
     local_person: bool,
 }
 
@@ -1876,7 +1876,7 @@ impl Host {
     /// The same API, invoking every action as the person at this device
     /// ([`Self::invoke_as_local_person`]): what this device's own control sockets answer frames
     /// with.
-    pub(crate) const fn as_local_person(mut self) -> Self {
+    pub(crate) const fn for_local_person(mut self) -> Self {
         self.local_person = true;
         self
     }

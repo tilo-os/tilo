@@ -36,9 +36,10 @@ fn clipboard(device: &Device) -> Option<String> {
 /// Copy `text` on `device`, as an app there does when the person copies: through the clipboard's
 /// own copy action, as the device publishes it.
 fn copy(device: &Device, text: &str) {
-    let copy = device
-        .offered("session:clipboard", "copy")
-        .unwrap_or_else(|| panic!("{} publishes no clipboard copy", device.label));
+    let copy = tilo_test_env::wait_for(
+        format!("{} publishing its clipboard copy", device.label),
+        || device.offered("session:clipboard", "copy"),
+    );
     let receipt = device.act_wait(&copy, &json!({ "text": text }));
     assert!(receipt.get("err").is_none(), "{}: {receipt}", device.label);
 }
