@@ -36,6 +36,9 @@ fn preview(config_text: &str) -> (tempfile::TempDir, InstallerPreview) {
         live: true,
         ..Default::default()
     };
+    // The Linux route these phases model; a Windows host runs the Windows
+    // preparation route instead.
+    preview.windows.enabled = false;
     preview.journey.page = Page::Belongings;
     preview.journey.migrate = Some(true);
     preview.journey.categories[2] = true;
