@@ -639,6 +639,93 @@ async fn served_answers_a_write_whose_answer_was_lost_once_it_is_asked_again() {
     member.shutdown().await;
 }
 
+/// A device's write to a workspace another device serves is kept here while that device cannot be
+/// reached, never refused: the person is told nothing, and the write reaches the serving device
+/// once the link is back.
+#[tokio::test]
+async fn a_write_made_while_the_serving_device_is_away_is_kept_and_reaches_it_later() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Away", 47).await;
+    let workspace = created.workspace.clone();
+    serving_writes(
+        &serving,
+        &workspace,
+        ("test.app", "record"),
+        ("value", "by-the-serving-device"),
+    )
+    .await;
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    let change = change_of(
+        &copies,
+        &workspace,
+        ("test.app", "record"),
+        ("value", "written-while-away"),
+    )
+    .await;
+    copies.set_member_link(workspace_id, false);
+
+    let written = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        copies.own_write(
+            &workspace,
+            ("test.app", "record"),
+            None,
+            &change,
+            false,
+            false,
+            None,
+        ),
+    )
+    .await
+    .expect("a write does not wait for the serving device");
+    assert!(
+        written.is_ok(),
+        "a write made while the serving device is away is kept, not refused: {:?}",
+        written.err()
+    );
+    assert_eq!(
+        served_value(&copies, &workspace, ("test.app", "record"), "value")
+            .await
+            .as_deref(),
+        Some("written-while-away"),
+        "the write reads back here at once"
+    );
+
+    copies.set_member_link(workspace_id, true);
+    tilo_test_env::within(
+        "the write reaches the serving device once the link is back",
+        async {
+            copies
+                .served(&workspace, &[("test.app", "record")])
+                .expect("the copy waits on its serving device")
+                .await
+                .expect("the serving device keeps the write");
+        },
+    )
+    .await;
+    assert_eq!(
+        served_value(
+            serving.workspaces(),
+            &workspace,
+            ("test.app", "record"),
+            "value"
+        )
+        .await
+        .as_deref(),
+        Some("written-while-away")
+    );
+    drop(copies);
+    member.shutdown().await;
+    serving.shutdown().await;
+}
+
 /// A member copy says when the history of the device serving it is in hand, and a workspace this
 /// device governs has no such link to wait on.
 #[tokio::test]

@@ -81,6 +81,9 @@ pub(super) struct Members {
     /// waits for before it is published, since a write published before the
     /// serving device listens is in no store of its own.
     up: std::sync::Mutex<std::collections::HashMap<WorkspaceId, tokio::sync::watch::Sender<bool>>>,
+    /// This device's writes made while the serving device was away, by workspace, in the order
+    /// they were made: sent the moment a link is up, before anything written after them.
+    away: std::sync::Mutex<std::collections::HashMap<WorkspaceId, Vec<NeighbourMsg>>>,
     /// What runs admitted to each member copy are pinned to, by workspace: the
     /// serving device's address and how often the copy was enrolled, read
     /// without waiting by the check every admitted call passes.
@@ -108,6 +111,7 @@ impl Default for Members {
             holding: tokio::sync::Mutex::default(),
             device: std::sync::OnceLock::default(),
             up: std::sync::Mutex::default(),
+            away: std::sync::Mutex::default(),
             materials: std::sync::Mutex::default(),
             held: Arc::default(),
             writes: tokio::sync::broadcast::channel(WRITES_HELD).0,
@@ -939,15 +943,19 @@ impl Workspaces {
         Ok(state.lock().await.member.is_some())
     }
 
-    /// Keep `commit`, a write this device makes to `workspace`, a member
-    /// copy: admitted into the copy's documents in this device's name, and
-    /// sent to the device serving it, which fans it out to the workspace's
-    /// other members. Answers the order the write was kept at.
+    /// Keep `commit`, a write this device makes to `workspace`, which another
+    /// device serves: admitted into this device's documents of it in this
+    /// device's name, and sent to the serving device, which fans it out to the
+    /// workspace's other members. A write made while that device is away is
+    /// kept all the same, never refused for it: it waits among the writes the
+    /// serving device has not answered, which go to it once a link is back and
+    /// caught up ([`Self::answer_member_writes`]). Answers the order the write
+    /// was kept at.
     ///
     /// # Errors
     ///
-    /// The workspace is not a member copy held here, or the write could not be
-    /// kept.
+    /// The workspace is not held here as one another device serves, or the
+    /// write could not be kept.
     pub async fn commit_member_document(
         &self,
         workspace: &str,
@@ -958,7 +966,6 @@ impl Workspaces {
             return Err("this workspace is not held here as a member copy".into());
         }
         let device = self.member_identity()?;
-        self.wait_member_link(workspace_id).await?;
         let body = commit.body.clone();
         let admission = crate::timing::said_if_long(
             "the member copy's order",
@@ -1147,6 +1154,40 @@ impl Workspaces {
         }
     }
 
+    /// Say `workspace`'s link to the device serving it is up, and send that device first what this
+    /// device wrote while it was away, in the order it was written.
+    fn member_link_reached(&self, workspace: WorkspaceId) {
+        let Some(link) = self.member_link(workspace) else {
+            return;
+        };
+        let Ok(mut away) = self.inner.member.away.lock() else {
+            return;
+        };
+        if let Ok(ups) = self.inner.member.up.lock()
+            && let Some(up) = ups.get(&workspace)
+        {
+            up.send_replace(true);
+        }
+        for message in away.remove(&workspace).unwrap_or_default() {
+            if let Err(error) = link.send(message) {
+                tracing::debug!(%workspace, %error, "a write made while the serving device was away did not go");
+            }
+        }
+    }
+
+    /// Say `workspace`'s link to the device serving it is down, as when that device cannot be
+    /// reached, and up again when `up`: what a test makes a write wait out.
+    #[cfg(test)]
+    pub(super) fn set_member_link(&self, workspace: WorkspaceId, up: bool) {
+        if up {
+            self.member_link_reached(workspace);
+        } else if let Ok(ups) = self.inner.member.up.lock()
+            && let Some(link) = ups.get(&workspace)
+        {
+            link.send_replace(false);
+        }
+    }
+
     pub(super) async fn wait_member_link(&self, workspace_id: WorkspaceId) -> Result<(), String> {
         let mut up = self.member_up(workspace_id)?;
         tokio::time::timeout(REACHED_WITHIN, up.wait_for(|up| *up))
@@ -1167,10 +1208,22 @@ impl Workspaces {
         }
     }
 
+    /// Send `message`, this device's write, to the device serving `workspace_id`: now while the
+    /// link is up, else the moment it is, after the writes made before it.
     pub(super) fn forward_member_document(&self, workspace_id: WorkspaceId, message: NeighbourMsg) {
-        if let Some(link) = self.member_link(workspace_id)
-            && let Err(error) = link.send(message)
-        {
+        let Some(link) = self.member_link(workspace_id) else {
+            return;
+        };
+        // Under the queue's lock, as the link drains it when it comes up: no write slips between.
+        let Ok(mut away) = self.inner.member.away.lock() else {
+            return;
+        };
+        if !self.member_up_now(workspace_id) {
+            away.entry(workspace_id).or_default().push(message);
+            return;
+        }
+        drop(away);
+        if let Err(error) = link.send(message) {
             tracing::debug!(%workspace_id, %error, "a member write did not reach the serving device");
         }
     }
@@ -1743,11 +1796,16 @@ impl Workspaces {
         }
         let endpoint = self.inner.host.endpoint.clone();
         let answering = self.answer_member_writes(workspace_id, &link);
+        let workspaces = self.downgrade();
         let dialing = tokio::spawn(async move {
             loop {
                 match link.dial(&endpoint, member.addr.clone(), serving).await {
                     Ok(dialed) => {
-                        up.send_replace(true);
+                        let Some(workspaces) = workspaces.upgrade() else {
+                            return;
+                        };
+                        workspaces.member_link_reached(workspace_id);
+                        drop(workspaces);
                         if let Err(refusal) = dialed.run(&link).await {
                             tracing::debug!(%name, ?refusal, "a member copy's link ended");
                         }
