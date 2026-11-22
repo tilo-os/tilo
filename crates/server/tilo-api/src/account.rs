@@ -1297,9 +1297,11 @@ impl Server {
         // A key of the person's own reaching all their workspaces revokes any key of theirs,
         // wherever it was made: each workspace that lists it keeps the revocation.
         if grant.scope == Scope::Account && persons_own(grant) && id != grant.id && !minted {
-            let recorded: Vec<String> = self
-                .recorded_keys(key)
-                .await
+            let recorded = match self.recorded_keys(key).await {
+                Ok(recorded) => recorded,
+                Err(outcome) => return outcome,
+            };
+            let recorded: Vec<String> = recorded
                 .into_iter()
                 .filter(|(_, recorded)| recorded.id == id)
                 .map(|(workspace, _)| workspace)
@@ -1416,7 +1418,11 @@ impl Server {
                     keys.push(grant_row(&held));
                 }
             }
-            for (_, recorded) in self.recorded_keys(key).await {
+            let recorded = match self.recorded_keys(key).await {
+                Ok(recorded) => recorded,
+                Err(outcome) => return outcome,
+            };
+            for (_, recorded) in recorded {
                 if recorded.revoked_ms.is_none() && seen.insert(recorded.id.clone()) {
                     keys.push(workspace_grant_row(&recorded));
                 }
@@ -1513,10 +1519,16 @@ impl Server {
     }
 
     /// Every key of its person's that the workspaces `key` reaches keep, each with the workspace
-    /// that keeps it. A workspace that does not answer leaves its keys out.
-    async fn recorded_keys(&self, key: &Connection) -> Vec<(String, WorkspaceGrant)> {
-        let Ok(workspaces) = key.server().labelled(key, &WorkspaceLabels::new()).await else {
-            return Vec::new();
+    /// that keeps it. A workspace that does not answer leaves its keys out; one that refuses the
+    /// key as revoked refuses the whole call, wherever this server learns it.
+    async fn recorded_keys(
+        &self,
+        key: &Connection,
+    ) -> Result<Vec<(String, WorkspaceGrant)>, Outcome> {
+        let workspaces = match key.server().labelled(key, &WorkspaceLabels::new()).await {
+            Ok(workspaces) => workspaces,
+            Err(error @ ServerError::KeyRevoked) => return Err(refused(&error)),
+            Err(_) => return Ok(Vec::new()),
         };
         let mut recorded = Vec::new();
         for workspace in workspaces {
@@ -1526,13 +1538,21 @@ impl Server {
                         .into_iter()
                         .map(|grant| (workspace.id.clone(), grant)),
                 ),
+                Err(revoked) if is_revoked(&revoked) => {
+                    return Err(revoked);
+                }
                 Err(_) => {
                     tracing::info!(workspace = workspace.id, "a workspace's keys were not read");
                 }
             }
         }
-        recorded
+        Ok(recorded)
     }
+}
+
+/// Whether `outcome` refuses the key as revoked.
+fn is_revoked(outcome: &Outcome) -> bool {
+    matches!(outcome, Outcome::Failed { code, .. } if *code == "key_revoked")
 }
 
 /// Whether `grant` is one of the person's own keys rather than an agent's grant: an API key they
