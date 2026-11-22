@@ -24,7 +24,9 @@ use tilo_resource::{Id, Replica, Resource as _};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use zeroize::Zeroizing;
 
-use super::account_logins::{AccountLogin, MAY_NOT_USE_PASSWORDS, NOT_NAMED};
+use super::account_logins::{
+    AccountLogin, MAY_NOT_USE_PASSWORDS, NOT_NAMED, NOT_ON_A_FOREIGN_DEVICE,
+};
 use super::fixtures::{
     TestGroupKeys, TestHost, device_cert, governor, signed_pre_admission, test_host_holding,
 };
@@ -117,6 +119,11 @@ struct Members {
 
 impl Members {
     async fn new() -> Self {
+        Self::with_member(DeviceCapabilities::member()).await
+    }
+
+    /// The owner's workspace, which a device with `capabilities` joined as its member's.
+    async fn with_member(capabilities: DeviceCapabilities) -> Self {
         let keys = Arc::new(TestGroupKeys::default());
         let owner_dir = tempfile::tempdir().unwrap();
         let member_dir = tempfile::tempdir().unwrap();
@@ -125,11 +132,7 @@ impl Members {
             test_host_holding(owner_dir.path(), &owner_key, &owner_cert, Arc::clone(&keys)).await;
         let created = serving.workspaces().create("Team").await.unwrap();
         let workspace = created.workspace;
-        let (key, cert) = device_cert(
-            &SigningKey::from_bytes(&[31; 32]),
-            "laptop",
-            DeviceCapabilities::member(),
-        );
+        let (key, cert) = device_cert(&SigningKey::from_bytes(&[31; 32]), "laptop", capabilities);
         let issued = serving
             .workspaces()
             .pre_admit(
@@ -227,6 +230,28 @@ impl Members {
             .unwrap();
     }
 
+    /// The workspace's mail account at `server`, whose password the owner types once on their
+    /// device: it goes to the workspace's vault, and the account names the entry.
+    async fn owner_keeps_the_password(&self, server: &MailServer) -> ItemRef {
+        self.keep_account(&server.account()).await;
+        let item = self
+            .owner
+            .keep_account_password(
+                &self.workspace,
+                &self.owner_caller(),
+                None,
+                server.login(),
+                Zeroizing::new(PASSWORD.into()),
+            )
+            .await
+            .unwrap();
+        self.owner
+            .name_account_password(&self.workspace, ADDRESS, &item)
+            .await
+            .unwrap();
+        item
+    }
+
     /// Leave Passwords out of the member's role: a rule of the workspace that refuses them
     /// every read of it.
     async fn refuse_passwords_to_the_member(&self) {
@@ -321,26 +346,7 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
     );
     let members = Members::new().await;
     let workspace = members.workspace.clone();
-    members.keep_account(&server.account()).await;
-
-    // The owner types the password once, on their device: it goes to the workspace's vault,
-    // and the account names the entry.
-    let item = members
-        .owner
-        .keep_account_password(
-            &workspace,
-            &members.owner_caller(),
-            None,
-            server.login(),
-            Zeroizing::new(PASSWORD.into()),
-        )
-        .await
-        .expect("the owner keeps the password in the workspace's vault");
-    members
-        .owner
-        .name_account_password(&workspace, ADDRESS, &item)
-        .await
-        .expect("the account names its entry");
+    let item = members.owner_keeps_the_password(&server).await;
 
     // Each device reads the account and its entry from its own copy and signs in with it.
     for (device, by) in [
@@ -414,23 +420,7 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
         .unwrap();
     let members = Members::new().await;
     let workspace = members.workspace.clone();
-    members.keep_account(&server.account()).await;
-    let item = members
-        .owner
-        .keep_account_password(
-            &workspace,
-            &members.owner_caller(),
-            None,
-            server.login(),
-            Zeroizing::new(PASSWORD.into()),
-        )
-        .await
-        .unwrap();
-    members
-        .owner
-        .name_account_password(&workspace, ADDRESS, &item)
-        .await
-        .unwrap();
+    members.owner_keeps_the_password(&server).await;
     let named = named_entry(&members.member, &workspace).await;
     members.refuse_passwords_to_the_member().await;
 
@@ -472,6 +462,29 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
             .secret
             .as_str(),
         PASSWORD
+    );
+}
+
+/// A device of somebody else's, which may read the workspace's content, is handed no account's
+/// password: the decision that releases one says so in its person's words.
+#[tokio::test]
+async fn a_device_not_its_persons_own_is_not_released_the_password() {
+    let server = tokio::task::spawn_blocking(MailServer::start)
+        .await
+        .unwrap();
+    let mut capabilities = DeviceCapabilities::member();
+    capabilities.foreign = true;
+    let members = Members::with_member(capabilities).await;
+    let workspace = members.workspace.clone();
+    members.owner_keeps_the_password(&server).await;
+    let named = named_entry(&members.owner, &workspace).await;
+    assert_eq!(
+        members
+            .owner
+            .account_secret(&workspace, &members.member_caller(), MAIL, &named)
+            .await
+            .map(|released| released.secret),
+        Err(NOT_ON_A_FOREIGN_DEVICE.to_owned())
     );
 }
 

@@ -5,9 +5,8 @@
 //! member's device that may use Passwords signs in with that one entry, read from its own copy
 //! of the vault document ([`super::vault`]). Nothing here asks another device.
 //!
-//! Each call is decided for whoever it is made for before anything is read: the workspace's
-//! policy must let them read Passwords' vault, the decision every reader of that document is
-//! held to ([`super::vault::may_read_vault`]). A password leaves the vault only to sign in at
+//! Each call is decided once, before anything is read, for the device it comes from
+//! ([`Workspaces::using_vault`]). A password leaves the vault only to sign in at
 //! the places its entry names, and each release is written down in the entry's uses first.
 
 use accounts::person::PersonAccounts;
@@ -36,6 +35,15 @@ pub const MAY_NOT_USE_PASSWORDS: &str = "Your role in this workspace does not in
 pub const MAY_NOT_READ_APP: &str = "Your role in this workspace does not let you use this app, so \
                                     it signs in to none of the workspace's accounts. Ask an owner \
                                     of the workspace to let you use it.";
+
+/// The words for a device the workspace does not count as one of its members' now.
+pub const NOT_A_MEMBER_DEVICE: &str = "This device is not one of this workspace's now, so it signs \
+                                       in to none of the workspace's accounts.";
+
+/// The words for a device that is not the person's own.
+pub const NOT_ON_A_FOREIGN_DEVICE: &str = "This device is not one of your own, so no account's \
+                                           password is handed to it. Sign in from your own \
+                                           device.";
 
 /// The words for an account whose vault entry is gone.
 pub const ENTRY_GONE: &str = "This account's password is no longer in the workspace's vault. \
@@ -84,24 +92,44 @@ fn said(error: String) -> String {
 }
 
 impl Workspaces {
-    /// That the workspace's policy lets `by`, for their whole acting, use its vault and, signing
-    /// `app` in, read `app` there: the one decision every route to an account's password takes.
+    /// That `by` may use the workspace's vault and, signing `app` in, read `app` there: the one
+    /// decision every route to an account's password takes. The device `by` asks from must be
+    /// a member's now, with its role and approved keys, bounded by `by`'s acting (an agent's
+    /// approval and its turn's rules); a password is released only to the person's own device.
     pub(crate) async fn using_vault(
         &self,
         workspace: &str,
         by: &Caller,
         app: Option<&str>,
     ) -> Result<(), String> {
-        let policy = self.policy_of(workspace).await;
-        let may = |app| {
-            policy
-                .as_ref()
-                .is_some_and(|policy| super::vault::may_read_vault(policy, workspace, by, app))
-        };
-        if !may(None) {
+        let now = tilo_clock::wall();
+        let device = by.device_public_key().ok_or(NOT_A_MEMBER_DEVICE)?;
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|_| NOT_A_MEMBER_DEVICE.to_owned())?;
+        let access = state
+            .lock()
+            .await
+            .peer()
+            .permissions(*device, now)
+            .map_err(|_| NOT_A_MEMBER_DEVICE.to_owned())?;
+        if app.is_some() && access.acting.foreign_device {
+            return Err(NOT_ON_A_FOREIGN_DEVICE.to_owned());
+        }
+        let access = access.invoked_by(by.acting()).granted(by.granted(&[]));
+        let read = |node| access.allows(&node, tilo_action_policy::ActionKind::Read, now);
+        let vault = collab_types::document_node(
+            workspace,
+            super::vault::APP,
+            tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+        );
+        if !read(vault) {
             return Err(MAY_NOT_USE_PASSWORDS.to_owned());
         }
-        if app.is_some() && !may(app) {
+        if let Some(app) = app
+            && !read(tilo_action_policy::TreePath::workspace(workspace).app(app))
+        {
             return Err(MAY_NOT_READ_APP.to_owned());
         }
         Ok(())

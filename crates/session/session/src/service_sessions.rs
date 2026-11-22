@@ -67,12 +67,12 @@ impl ServiceSessions {
         }
     }
 
-    /// The certified person's own route of `app` , readable on that app's record in the workspace
-    /// (and, for `admin` , administered by this workspace), now and rechecked after.
-    fn authorize_selection(&self, context: &Context, admin: bool, app: &str) -> Result<(), String> {
+    /// The certified person's own Browser route, readable on Browser's record in the workspace
+    /// (and, for `admin`, administered by this workspace), now and rechecked after.
+    fn authorize_selection(&self, context: &Context, admin: bool) -> Result<(), String> {
         context.revalidate()?;
         let person = hex::encode(context.identity_public_key());
-        if context.app_id() != app || context.person() != person {
+        if context.app_id() != BROWSER || context.person() != person {
             return Err("Account credentials requires the certified person's own app".into());
         }
         let workspace = WorkspaceId::parse(context.workspace_id())
@@ -119,25 +119,16 @@ impl ServiceSessions {
 
 impl BrowserServiceSessionServices for ServiceSessions {
     fn authorize(&self, context: &Context) -> Result<(), String> {
-        self.authorize_selection(context, false, BROWSER)
+        self.authorize_selection(context, false)
     }
 
     fn authorize_command(&self, context: &Context, command: &Command) -> Result<(), String> {
-        match command {
-            Command::StoreAccountSecret { .. } => {
-                self.authorize_selection(context, false, accounts::person::ACCOUNTS_OWNER)
-            }
-            // Which app keeps the account is read from the person's accounts when it is resolved;
-            // here, only that the route is the person's own, with Read on its app.
-            Command::ReleaseAccountSecret { .. } => {
-                self.authorize_selection(context, false, context.app_id())
-            }
-            _ => self.authorize_selection(
-                context,
-                matches!(command, Command::Forget { .. }),
-                BROWSER,
-            ),
+        if !command.browser_only() {
+            // An account's password is decided once, by the workspace's vault, for the device
+            // that asks ([`tilo_workspace_service::workspaces::Workspaces::account_secret`]).
+            return context.revalidate();
         }
+        self.authorize_selection(context, matches!(command, Command::Forget { .. }))
     }
 
     fn command(&self, context: &Context, command: Command) -> Result<Reply, String> {
@@ -205,7 +196,7 @@ impl BrowserServiceSessionServices for ServiceSessions {
         // with its reason. Any other app is told that only Browser asks.
         if context.app_id() == BROWSER
             && let Some(invocation) = command.item_use()
-            && let Err(reason) = self.authorize_selection(context, false, BROWSER)
+            && let Err(reason) = self.authorize_selection(context, false)
         {
             return Box::pin(std::future::ready(Ok(Reply::item_refused(
                 invocation, &reason,
