@@ -521,7 +521,9 @@ mod tests {
         else {
             panic!("expected actual signed document publication")
         };
-        let named = envelope.with_surface(Some([0x42; 32]));
+        // The surface is signed with the rest of the op, as the broker names it before signing.
+        let mut named = envelope.with_surface(Some([0x42; 32]));
+        collab_types::sign_op(&mut named, &key).unwrap();
         let before = peer.document("test.app", "tab:1").unwrap();
         assert_eq!(
             peer.admit_new_local_document("test.app", "tab:1", named, now)
