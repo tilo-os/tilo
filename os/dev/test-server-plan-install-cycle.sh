@@ -37,7 +37,8 @@
 # a secret are never copied. As the run ends, a failure included, each guest's
 # serial and QEMU logs are copied to OUT/<guest>-serial.log and
 # OUT/<guest>-qemu.log, the owner's profile logs to OUT/owner-logs.tar, and
-# OUT/evidence/verdict.json names the phase it ended in.
+# OUT/evidence/verdict.json names the phase it ended in. Nothing a guest
+# wrote is deleted, so a failure can be read again afterwards.
 set -euo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
