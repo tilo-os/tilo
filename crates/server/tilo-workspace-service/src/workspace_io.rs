@@ -1,10 +1,12 @@
-//! Filesystem authority work is independent of state persistence. Admission is
-//! bounded before spawning work; one authorization queue serializes each workspace's
-//! reads and writes. No routing or registry guard crosses filesystem work.
+//! Filesystem authority work is independent of state persistence. Each
+//! workspace orders its own access-file work ([`AccessTurns`]): writes take
+//! turns, and a read never waits for one. No routing or registry guard crosses
+//! filesystem work, and no workspace's file work waits for another's.
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tokio::sync::{MutexGuard, OwnedSemaphorePermit, Semaphore, watch};
+use tokio::sync::{MutexGuard, OwnedMutexGuard, Semaphore, watch};
 
 use crate::membership_watch::DiskGeneration;
 use crate::peer::WorkspaceRegistry;
@@ -14,67 +16,73 @@ use crate::workspace_access::AdmissionMode;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
-const AUTHORIZATION_CAPACITY: usize = 64;
-const AUTHORIZATION_WORKERS: usize = 8;
 const OPEN_WORKERS: usize = 4;
 
 fn io_error(message: impl Into<String>) -> StoreError {
     StoreError::Io(std::io::Error::other(message.into()))
 }
 
-fn authorization_slots() -> &'static Arc<Semaphore> {
-    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    SLOTS.get_or_init(|| Arc::new(Semaphore::new(AUTHORIZATION_CAPACITY)))
+/// The order of one workspace's access-file work. Writes take turns. A read
+/// that needs the file runs only while no write does; while one does, the read
+/// answers from memory, where the write narrowed its removals before touching
+/// the file and adds its additions only once the file holds them. So an
+/// admission never waits for an access write's disk work, here or in another
+/// workspace.
+#[derive(Clone, Default)]
+pub(crate) struct AccessTurns {
+    writes: Arc<tokio::sync::Mutex<()>>,
+    file: Arc<tokio::sync::Mutex<()>>,
+    writing: Arc<AtomicBool>,
 }
 
-/// How long authorization work waits for a slot before its caller fails.
-/// Every guest who joins a public workspace changes its membership, so a burst
-/// of arrivals sends every session's next check to disk at once; they queue
-/// here rather than each ending its session.
-const AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+impl AccessTurns {
+    /// Wait for the writes before this one, then for a read of the file in
+    /// flight, and mark the file written. The returned file guard keeps reads
+    /// off the file until the caller has narrowed what they answer from
+    /// memory.
+    async fn write(&self) -> (WriteTurn, OwnedMutexGuard<()>) {
+        let writes = self.writes.clone().lock_owned().await;
+        let file = self.file.clone().lock_owned().await;
+        self.writing.store(true, Ordering::Release);
+        (
+            WriteTurn {
+                writing: self.writing.clone(),
+                _writes: writes,
+            },
+            file,
+        )
+    }
 
-async fn admit_work() -> Result<OwnedSemaphorePermit, StoreError> {
-    let slots = authorization_slots().clone();
-    if let Ok(permit) = slots.clone().try_acquire_owned() {
-        return Ok(permit);
+    /// A read of the file's turn, or `None` while a write runs: the read
+    /// answers from memory then.
+    async fn read(&self) -> Option<OwnedMutexGuard<()>> {
+        let file = self.file.clone().lock_owned().await;
+        (!self.writing.load(Ordering::Acquire)).then_some(file)
     }
-    if crate::persistence::correlated_diagnostics() {
-        tracing::info!(
-            phase = "authorization_backpressure",
-            capacity = AUTHORIZATION_CAPACITY
-        );
+}
+
+/// A write's turn: reads answer from memory until it drops.
+struct WriteTurn {
+    writing: Arc<AtomicBool>,
+    _writes: OwnedMutexGuard<()>,
+}
+
+impl Drop for WriteTurn {
+    fn drop(&mut self) {
+        self.writing.store(false, Ordering::Release);
     }
-    tokio::time::timeout(AUTHORIZATION_WAIT, slots.acquire_owned())
-        .await
-        .map_err(|_| io_error("workspace authorization backpressure"))?
-        .map_err(|error| io_error(error.to_string()))
 }
 
 async fn authorization_io<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, StoreError> + Send + 'static,
 ) -> Result<T, StoreError> {
-    static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    let permit = WORKERS
-        .get_or_init(|| Arc::new(Semaphore::new(AUTHORIZATION_WORKERS)))
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|error| io_error(error.to_string()))?;
-    // The permit stays in blocking work even when the waiting caller cancels.
-    let result = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        operation()
-    })
-    .await;
-    match result {
+    match tokio::task::spawn_blocking(operation).await {
         Ok(result) => result,
         Err(error) => Err(io_error(error.to_string())),
     }
 }
 
-async fn authority_handles(
-    workspace: &SharedWorkspace,
-) -> (WorkspaceStore, Arc<tokio::sync::Mutex<()>>) {
+async fn authority_handles(workspace: &SharedWorkspace) -> (WorkspaceStore, AccessTurns) {
     let runtime = workspace.lock().await;
     (runtime.store.clone(), runtime.authorization.clone())
 }
@@ -84,11 +92,7 @@ async fn authority_handles(
 /// before the watch started, or outlived a stopped one).
 async fn reload_handles(
     workspace: &SharedWorkspace,
-) -> (
-    WorkspaceStore,
-    Arc<tokio::sync::Mutex<()>>,
-    Option<DiskGeneration>,
-) {
+) -> (WorkspaceStore, AccessTurns, Option<DiskGeneration>) {
     let mut runtime = workspace.lock().await;
     let generation = watched_generation(&mut runtime);
     (
@@ -112,12 +116,13 @@ fn watched_generation(runtime: &mut WorkspaceRuntime) -> Option<DiskGeneration> 
 /// Current membership: in memory, reloaded from the external file only after
 /// the daemon's membership watch saw it change (or on every call while no live
 /// watch covers the workspace). Callers must recheck certificate, policy, workspace and
-/// exact sessions using the returned routing guard. A reload holds the
-/// authorization queue, and releases it while that guard remains held, so a
-/// newer update cannot be overwritten by this read or slip between this read
+/// exact sessions using the returned routing guard. A reload holds the file's
+/// turn ([`AccessTurns`]) until it published what it read under that guard, so
+/// no write's commit can be overwritten by this read or slip between this read
 /// and the caller's check. In-process writers narrow the in-memory set under
-/// the routing lock before any filesystem work, so a read that needs no reload
-/// already sees their removals.
+/// the routing lock before any filesystem work and widen it only after the file
+/// holds their change, so a read answers from memory while one writes: it never
+/// waits for a write's disk work.
 ///
 /// Only device membership is reloaded. `governed_user_roots` and
 /// the governed admission mode change through `replace_governed_access` and the
@@ -131,7 +136,7 @@ pub async fn fresh_membership(
         let runtime = workspace.lock().await;
         crate::timing::window("workspace.lock", locking);
         if runtime.membership_is_current() {
-            // No disk IO, no worker, no queue.
+            // No disk IO, no worker, no turn.
             return Ok(runtime);
         }
     }
@@ -144,20 +149,25 @@ pub async fn fresh_membership(
 async fn reload_membership(
     workspace: &SharedWorkspace,
 ) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
-    let _slot = admit_work().await?;
-    let (store, queue, generation) = reload_handles(workspace).await;
-    let _queue = queue.lock_owned().await;
+    let (store, turns, generation) = reload_handles(workspace).await;
+    let Some(file) = turns.read().await else {
+        // A write is under way: memory holds its removals and none of its
+        // additions, and the next read after it loads the file again.
+        return Ok(workspace.lock().await);
+    };
     // Observed before the read: a change during it moves the generation on,
     // and the next call reads again.
     let observed = generation.as_ref().and_then(DiskGeneration::current);
     if observed.is_some() {
         let runtime = workspace.lock().await;
         if runtime.loaded_generation == observed {
-            // Another reload finished while this one waited for the queue.
+            // Another reload finished while this one waited for the file.
             return Ok(runtime);
         }
     }
-    let members = authorization_io(move || store.load_membership()).await?;
+    // The file's turn goes with the read, so a cancelled caller cannot let a
+    // write in beside it.
+    let (members, _file) = authorization_io(move || Ok((store.load_membership()?, file))).await?;
     let mut runtime = workspace.lock().await;
     apply_loaded_membership(&mut runtime, members, observed);
     Ok(runtime)
@@ -211,19 +221,21 @@ pub(crate) async fn enrol(
     }
 }
 
-/// Persist an explicitly authorized admission before granting it. The detached,
-/// bounded owner finishes a started update even if its caller disconnects.
+/// Persist an explicitly authorized admission before granting it, after the
+/// workspace's writes before it. The detached owner finishes a started update
+/// even if its caller disconnects. The decision it persists was taken from
+/// memory; the file is read here only to keep what another process wrote.
 pub(crate) async fn admit_member(
     workspace: &SharedWorkspace,
     device: [u8; 32],
     expected_revision: u64,
 ) -> Result<(), StoreError> {
-    let slot = admit_work().await?;
     let workspace = workspace.clone();
     tokio::spawn(async move {
-        let _slot = slot;
-        let (store, queue) = authority_handles(&workspace).await;
-        let _queue = queue.lock_owned().await;
+        let (store, turns) = authority_handles(&workspace).await;
+        let (_turn, file) = turns.write().await;
+        // It narrows nothing: reads answer from memory at once.
+        drop(file);
         let reader = store.clone();
         let mut members = authorization_io(move || reader.load_membership()).await?;
         {
@@ -256,8 +268,8 @@ pub(crate) async fn admit_member(
     .map_err(|error| io_error(error.to_string()))?
 }
 
-/// Serialize admin replacement with fresh reads/admissions. Removals deny as
-/// soon as this operation obtains the queue; additions grant only after commit.
+/// Replace the workspace's devices after the writes before it. Removals deny
+/// as soon as this operation has its turn; additions grant only after commit.
 /// A failed write keeps removals denied in this process until a successful
 /// explicit replacement, so a later read of the old file cannot resurrect them.
 #[cfg(test)]
@@ -265,12 +277,10 @@ pub(crate) async fn replace_membership(
     workspace: &SharedWorkspace,
     members: Vec<[u8; 32]>,
 ) -> Result<(), StoreError> {
-    let slot = admit_work().await?;
     let workspace = workspace.clone();
     tokio::spawn(async move {
-        let _slot = slot;
-        let (store, queue) = authority_handles(&workspace).await;
-        let _queue = queue.lock_owned().await;
+        let (store, turns) = authority_handles(&workspace).await;
+        let (_turn, file) = turns.write().await;
         {
             let mut runtime = workspace.lock().await;
             runtime.membership_revision = runtime
@@ -288,6 +298,7 @@ pub(crate) async fn replace_membership(
                 .devices
                 .retain(|device| members.contains(device));
         }
+        drop(file);
         // Sessions of removed devices re-check now, before the write.
         crate::authority_epoch::bump();
         let saved = members.clone();
@@ -316,12 +327,10 @@ pub(crate) async fn replace_governed_access(
     access: GovernedAccessRecord,
     revoked: Vec<[u8; 32]>,
 ) -> Result<Vec<[u8; 32]>, StoreError> {
-    let slot = admit_work().await?;
     let workspace = workspace.clone();
     tokio::spawn(async move {
-        let _slot = slot;
-        let (store, queue) = authority_handles(&workspace).await;
-        let _queue = queue.lock_owned().await;
+        let (store, turns) = authority_handles(&workspace).await;
+        let (_turn, file) = turns.write().await;
         // The governor's projection: from here on governance owns who joins.
         let access = GovernedAccessRecord {
             governed: true,
@@ -368,7 +377,7 @@ pub(crate) async fn replace_governed_access(
             let governed_before =
                 std::mem::replace(&mut runtime.admission, AdmissionMode::Governed)
                     == AdmissionMode::Governed;
-            // Refuse while the authority queue is held so the writer can deliver
+            // Refuse while the write's turn is held so the writer can deliver
             // NotAuthorised before a waiting access audit closes the session.
             runtime.refuse_removed_live_members(&removed);
             (
@@ -376,6 +385,7 @@ pub(crate) async fn replace_governed_access(
                 removed,
             )
         };
+        drop(file);
         // Sessions of removed devices and roots re-check now, before the
         // write. A replacement that only admits narrows nobody's access: a
         // public workspace's every admission woke every session it held.
@@ -577,21 +587,107 @@ mod tests {
     use crate::store::test_barrier;
 
     fn runtime(root: &std::path::Path) -> SharedWorkspace {
+        runtime_of(root, 7)
+    }
+
+    fn runtime_of(root: &std::path::Path, id: u128) -> SharedWorkspace {
         // A workspace whose membership is kept: its access record, the one
         // projection of who is a member.
-        WorkspaceStore::open(root, WorkspaceId::from_u128(7), false)
+        WorkspaceStore::open(root, WorkspaceId::from_u128(id), false)
             .unwrap()
             .save_governed_access(&crate::store::GovernedAccessRecord::default())
             .unwrap();
         Arc::new(tokio::sync::Mutex::new(
             WorkspaceRuntime::open(
                 root,
-                WorkspaceId::from_u128(7),
+                WorkspaceId::from_u128(id),
                 false,
                 Membership::default(),
             )
             .unwrap(),
         ))
+    }
+
+    /// Wait until the writes `workspace` has started have ended.
+    async fn writes_ended(workspace: &SharedWorkspace) {
+        let turns = workspace.lock().await.authorization.clone();
+        drop(turns.write().await);
+    }
+
+    #[tokio::test]
+    async fn admission_never_waits_for_an_access_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = runtime(tmp.path());
+        replace_membership(&workspace, vec![[1; 32], [2; 32]])
+            .await
+            .unwrap();
+        // Eight workspaces write their access at once, each held at its disk
+        // step; the first drops [1] and adds [3].
+        let mut releases = Vec::new();
+        let mut pending = Vec::new();
+        for id in 7..15 {
+            let writer = if id == 7 {
+                workspace.clone()
+            } else {
+                runtime_of(tmp.path(), id)
+            };
+            let root = writer.lock().await.store.root().to_path_buf();
+            let (release, reached) = test_barrier::install(&root, "access-write");
+            let member_devices = if id == 7 {
+                vec![[2; 32], [3; 32]]
+            } else {
+                vec![[1; 32]]
+            };
+            pending.push(tokio::spawn(async move {
+                replace_governed_access(
+                    &writer,
+                    GovernedAccessRecord {
+                        member_devices,
+                        member_user_roots: Vec::new(),
+                        governed: true,
+                    },
+                    Vec::new(),
+                )
+                .await
+            }));
+            tilo_test_env::within("an access write to reach its disk step", reached)
+                .await
+                .unwrap();
+            releases.push(release);
+        }
+        let other = runtime_of(tmp.path(), 15);
+        tilo_test_env::within("joins while every access write is held", async {
+            // Its own workspace answers from memory: the device the write
+            // removes is refused and the one it adds not yet admitted.
+            assert_eq!(
+                fresh_membership(&workspace)
+                    .await
+                    .unwrap()
+                    .membership
+                    .devices,
+                vec![[2; 32]]
+            );
+            // Another workspace reads its file and enrols a device.
+            let revision = fresh_membership(&other).await.unwrap().membership_revision;
+            admit_member(&other, [4; 32], revision).await.unwrap();
+            assert_eq!(
+                fresh_membership(&other).await.unwrap().membership.devices,
+                vec![[4; 32]]
+            );
+        })
+        .await;
+        drop(releases);
+        for write in pending {
+            write.await.unwrap().unwrap();
+        }
+        assert_eq!(
+            fresh_membership(&workspace)
+                .await
+                .unwrap()
+                .membership
+                .devices,
+            vec![[2; 32], [3; 32]]
+        );
     }
 
     #[tokio::test]
@@ -629,7 +725,8 @@ mod tests {
         assert!(!workspace.lock().await.membership.contains(&[1; 32]));
         caller.abort();
         drop(release);
-        // Fresh read waits for the detached admitted write, then sees its commit.
+        // The detached write ends, and a fresh read then sees its commit.
+        writes_ended(&workspace).await;
         assert_eq!(
             fresh_membership(&workspace)
                 .await
@@ -670,12 +767,17 @@ mod tests {
         assert_eq!(reader.await.unwrap(), vec![[1; 32], [2; 32]]);
         write_reached.await.unwrap();
         assert_eq!(
-            workspace.lock().await.membership.devices,
+            fresh_membership(&workspace)
+                .await
+                .unwrap()
+                .membership
+                .devices,
             vec![[2; 32]],
             "pending removals must deny; pending additions must not grant"
         );
         writer.abort();
         drop(release_write);
+        writes_ended(&workspace).await;
         assert_eq!(
             fresh_membership(&workspace)
                 .await

@@ -148,7 +148,6 @@ pub struct ServiceSessions {
     pub metrics: Arc<Metrics>,
     pub identity: LiveIdentity,
     pub(crate) handshake_trust: HandshakeTrust,
-    governed_access_update: Arc<AsyncMutex<()>>,
     pub state_root: PathBuf,
     pub(crate) shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
     /// The server ALPN's handler, and every session's context.
@@ -276,7 +275,6 @@ impl ServiceSessions {
             metrics: metrics.clone(),
             identity: live,
             handshake_trust,
-            governed_access_update: Arc::new(AsyncMutex::new(())),
             state_root: cfg.state_root.clone(),
             shell_payloads: cfg.shell_payloads.clone(),
             handler,
@@ -361,7 +359,6 @@ impl ServiceSessions {
         GovernedAccessWriter {
             workspaces: self.workspaces.clone(),
             handshake_trust: self.handshake_trust.clone(),
-            update: Arc::clone(&self.governed_access_update),
             state_root: self.state_root.clone(),
             shell_payloads: self.shell_payloads.clone(),
             environments: self.handler.environments.clone(),
@@ -926,12 +923,13 @@ impl ProtocolHandler for Deferred {
 }
 
 /// Replaces a governed workspace's admitted members and the handshake
-/// allowlist derived from them, one replacement at a time.
+/// allowlist derived from them. Each workspace's governance hands it one
+/// replacement at a time; replacements of different workspaces run side by
+/// side, so no workspace's access write waits for another's.
 #[derive(Clone)]
 pub(crate) struct GovernedAccessWriter {
     workspaces: WorkspaceRegistry,
     handshake_trust: HandshakeTrust,
-    update: Arc<AsyncMutex<()>>,
     state_root: PathBuf,
     shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
     /// The browser environments this server placed: their devices are listed
@@ -1010,7 +1008,6 @@ impl GovernedAccessWriter {
                 "allow_any cannot serve governed workspace admission".into(),
             ));
         }
-        let _update = self.update.lock().await;
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
             self.state_root.clone(),
@@ -1048,13 +1045,13 @@ impl GovernedAccessWriter {
         .await;
         // Also after an I/O error the handshake union must reflect the
         // fail-closed ceiling. A successful write leaves the workspace
-        // holding exactly the roots it was asked for, so only its own
-        // contribution changes; an error leaves an intersection that only a
-        // full read of the workspace tells.
-        match &result {
-            Ok(_) => self.handshake_trust.settled(workspace_id, roots),
-            Err(_) => self.handshake_trust.refresh(&self.workspaces).await,
-        }
+        // holding exactly the roots it was asked for; an error leaves the
+        // intersection the workspace now holds.
+        let roots = match &result {
+            Ok(_) => roots,
+            Err(_) => workspace.lock().await.governed_user_roots.clone(),
+        };
+        self.handshake_trust.settled(workspace_id, roots);
         Ok(result?)
     }
 }
@@ -1089,7 +1086,7 @@ impl HandshakeTrust {
     }
 
     /// Rebuild every workspace's contribution by reading them, for a service
-    /// starting (or a write whose effect in memory only a read tells).
+    /// starting.
     pub(crate) async fn refresh(&self, workspaces: &WorkspaceRegistry) {
         if self.allow_any {
             return;
