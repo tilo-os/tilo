@@ -227,6 +227,9 @@ grep -Fq TILO_WORKSPACES_MAX_SPECTATORS "$work/err" || fail "the refusal does no
 # channels, and every other app is a package the image ships.
 fails_with lounge TILO_WORKSPACES_SEED_APPS=so.tilo.board
 grep -Fq TILO_WORKSPACES_SEED_APPS "$work/err" || fail "the refusal does not name the setting"
+grep -Fq TILO_WORKSPACES_PACKAGES "$work/err" || fail "the refusal does not say what to set instead"
+fails_with lounge TILO_WORKSPACES_SEED_APPS=
+grep -Fq TILO_WORKSPACES_PACKAGES "$work/err" || fail "an empty TILO_WORKSPACES_SEED_APPS is not refused"
 fails_with lounge TILO_WORKSPACES_PACKAGES="$work/no-packages"
 grep -Fq TILO_WORKSPACES_PACKAGES "$work/err" || fail "the refusal does not name the setting"
 

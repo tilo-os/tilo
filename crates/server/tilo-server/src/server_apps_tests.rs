@@ -14,6 +14,11 @@ fn tilolang_package(id: &str, identity: &SigningIdentity) -> Vec<u8> {
     std::fs::create_dir_all(&payload).unwrap();
     std::fs::write(payload.join("app.wasm"), MODULE).unwrap();
     std::fs::write(payload.join("app.ids"), b"# fixture ids\n").unwrap();
+    std::fs::write(
+        payload.join("surface.toml"),
+        b"format = 2\n\n[[resources]]\nkind = \"fixture.page\"\nlabel = \"Fixture\"\nversion = 1\n",
+    )
+    .unwrap();
     let manifest = Manifest::from_toml_str(&format!(
         r#"
 [package]
@@ -452,4 +457,103 @@ async fn a_page_is_handed_keys_only_while_a_reader_who_may_read_it_reads() {
         .await
         .unwrap();
     assert!(!keys(reading.call()).await);
+}
+
+/// A page of an app is shown only to someone the workspace lets read it: an outsider is refused
+/// as one, and a member the workspace keeps from the app is told no such app is served, with
+/// nothing of it shown. A member who may read it gets as far as the app's process.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the host serves its workspaces until the test ends"
+)]
+async fn a_page_shows_nothing_to_someone_who_may_not_read_its_app() {
+    use crate::app_serving::HostedPages as _;
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    use tilo_server_protocol::page::PageRefusal;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = crate::workspaces::fixtures::governor();
+    let host = crate::workspaces::fixtures::test_host_taking_part(
+        &dir.path().join("server"),
+        &key,
+        &owner,
+    )
+    .await;
+    let workspaces = host.workspaces().clone();
+    let summary = workspaces.create("Team").await.unwrap();
+    let (workspace, id) = (summary.workspace.clone(), summary.workspace_id);
+    let identity = SigningIdentity::generate();
+    workspaces
+        .install_package(&workspace, &owner, &tilolang_package(APP, &identity))
+        .await
+        .unwrap();
+    let reader = admitted_reader(&workspaces, &owner, &workspace).await;
+    let (_, outsider) = crate::workspaces::fixtures::device_cert(
+        &ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
+        "outsider",
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
+    let apps = ServerApps::new(
+        ServerWorkspaces::new(workspaces.clone(), tokio::runtime::Handle::current()),
+        dir.path().join("sockets"),
+        dir.path().join("journals"),
+        owner.device_public_key,
+        Err("no tilo-launcher is installed on this server".to_owned()),
+    );
+    apps.reconcile().await;
+    let (_root, packages, _) = packages();
+    let pages = ServerPages::new(apps, packages, std::sync::Arc::new(Readers::default()));
+    assert!(
+        pages.apps(id).iter().any(|(app, _)| app == APP),
+        "the installed app is offered"
+    );
+    let open = |cert: &tilo_user_identity::DeviceCert| {
+        let caller = tilo_actions::remote::Caller::authenticated(
+            cert.user_public_key,
+            cert.device_public_key,
+        );
+        let opened = pages.open(id, APP, &caller, None);
+        async move {
+            tokio::task::spawn_blocking(move || {
+                opened
+                    .wait_timeout(std::time::Duration::from_secs(30))
+                    .unwrap()
+                    .unwrap()
+                    .map(|opened| opened.body)
+            })
+            .await
+            .unwrap()
+        }
+    };
+
+    assert_eq!(open(&outsider).await, Err(PageRefusal::NotMember));
+    // The member may read it: the page gets as far as the process that would show it, which
+    // this server cannot start.
+    assert!(
+        matches!(open(&reader).await, Err(PageRefusal::Unavailable(why)) if why.contains("tilo-launcher")),
+        "a reader reaches the app's process"
+    );
+    let who = hex::encode(reader.user_public_key);
+    workspaces
+        .put_workspace_grants(
+            &workspace,
+            &owner,
+            [5; 32],
+            vec![Grant::new(
+                format!("keep-out:{who}"),
+                Grantee::person(who.clone()),
+                TreePath::workspace(&workspace).app(APP),
+                KindSet::READ,
+                Answer::Deny,
+                Grantee::person(hex::encode(owner.user_public_key)),
+            )],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        open(&reader).await,
+        Err(PageRefusal::NoSuchApp),
+        "a member kept from the app is shown none of it"
+    );
 }
