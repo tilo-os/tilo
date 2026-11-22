@@ -293,10 +293,28 @@ class AsyncTilo:
         return Workspace(self, id_or_name)
 
     async def _workspace_list(self) -> WorkspaceList:
-        endpoint = self._endpoint()
-        answer = await endpoint.json("GET", endpoint.path("workspaces"))
-        self.catalog = WorkspaceList.of(answer)
+        self.catalog = WorkspaceList.of(await self._account("workspaces", "list"))
         return self.catalog
+
+    async def _account(
+        self,
+        resource: str,
+        action: str,
+        body: Mapping[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """An action of the account (`account/workspaces#create`), as every action
+        is run: what it answered."""
+        endpoint = self._endpoint()
+        headers = {} if idempotency_key is None else {"idempotency-key": idempotency_key}
+        answer = await endpoint.json(
+            "POST",
+            endpoint.path("resources", "account", resource, "actions", action),
+            json=dict(body or {}),
+            headers=headers,
+        )
+        result = answer.get("result") if isinstance(answer, Mapping) else None
+        return dict(result) if isinstance(result, Mapping) else {}
 
     async def _workspace_info(self, ref: str) -> WorkspaceInfo:
         try:
@@ -324,16 +342,12 @@ class AsyncTilo:
         labels: Mapping[str, str] | None = None,
         idempotency_key: str | None = None,
     ) -> WorkspaceInfo:
-        endpoint = self._endpoint()
         body: dict[str, Any] = {"name": name}
         if labels:
             body["labels"] = dict(labels)
-        headers = {} if idempotency_key is None else {"idempotency-key": idempotency_key}
-        answer = await endpoint.json(
-            "POST", endpoint.path("workspaces"), json=body, headers=headers
-        )
+        answer = await self._account("workspaces", "create", body, idempotency_key)
         self.catalog = None
-        return WorkspaceInfo.of(answer)
+        return WorkspaceInfo.of(answer.get("workspace") or {})
 
     async def _branch_workspace(
         self,
@@ -347,25 +361,16 @@ class AsyncTilo:
             if isinstance(source, WorkspaceInfo)
             else await self._workspace_id(source)
         )
-        endpoint = self._endpoint()
-        body: dict[str, Any] = {"name": name}
+        body: dict[str, Any] = {"workspace": source_id, "name": name}
         if labels:
             body["labels"] = dict(labels)
-        headers = {} if idempotency_key is None else {"idempotency-key": idempotency_key}
-        answer = await endpoint.json(
-            "POST",
-            endpoint.path("workspaces", source_id, "branches"),
-            json=body,
-            headers=headers,
-        )
+        answer = await self._account("workspaces", "branch", body, idempotency_key)
         self.catalog = None
-        return WorkspaceInfo.of(answer)
+        return WorkspaceInfo.of(answer.get("workspace") or {})
 
     async def _labelled_workspaces(self, labels: Mapping[str, str]) -> WorkspaceList:
-        endpoint = self._endpoint()
-        query = {f"label[{name}]": value for name, value in labels.items()}
         return WorkspaceList.of(
-            await endpoint.json("GET", endpoint.path("workspaces"), query=query)
+            await self._account("workspaces", "list", {"labels": dict(labels)})
         )
 
     async def _find_workspace(self, labels: Mapping[str, str]) -> WorkspaceInfo | None:
@@ -392,10 +397,8 @@ class AsyncTilo:
         )
 
     async def _delete_workspace(self, workspace: Any) -> Any:
-        endpoint = self._endpoint()
-        answer = await endpoint.json(
-            "DELETE",
-            endpoint.path("workspaces", await self._workspace_id(workspace)),
+        answer = await self._account(
+            "workspaces", "delete", {"workspace": await self._workspace_id(workspace)}
         )
         self.catalog = None
         return answer
@@ -407,13 +410,14 @@ class AsyncTilo:
 
     async def _usage(self) -> Usage:
         endpoint = self._endpoint()
-        return Usage.of(await endpoint.json("GET", endpoint.path("account")))
+        read = await endpoint.json("GET", endpoint.path("resources", "account", "usage"))
+        fields = read.get("fields") if isinstance(read, Mapping) else None
+        return Usage.of(fields if isinstance(fields, Mapping) else {})
 
     # -- keys ------------------------------------------------------------
 
     async def _keys_list(self) -> list[Key]:
-        endpoint = self._endpoint()
-        answer = await endpoint.json("GET", endpoint.path("keys"))
+        answer = await self._account("keys", "list")
         keys = answer.get("keys")
         return [Key.of(key) for key in keys or [] if isinstance(key, Mapping)]
 
@@ -425,12 +429,10 @@ class AsyncTilo:
             body["name"] = name
         if expires_in is not None:
             body["expires_in"] = expires_in
-        endpoint = self._endpoint()
-        return MintedKey.of(await endpoint.json("POST", endpoint.path("keys"), json=body))
+        return MintedKey.of(await self._account("keys", "mint", body))
 
     async def _revoke(self, grant: str) -> Any:
-        endpoint = self._endpoint()
-        return await endpoint.json("DELETE", endpoint.path("keys", grant))
+        return await self._account("keys", "revoke", {"grant": grant})
 
     async def _key_create(
         self,

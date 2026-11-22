@@ -35,7 +35,7 @@ impl Client {
         {
             return Ok(entered);
         }
-        let listed = self.get("/v1/workspaces").await?;
+        let listed = self.workspaces().await?;
         let workspaces: Vec<&Value> = listed
             .get("workspaces")
             .and_then(Value::as_array)

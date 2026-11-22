@@ -1637,7 +1637,7 @@ mod tests {
         };
         for _ in 0..3 {
             let refused = runtime
-                .block_on(as_login().get("/v1/workspaces"))
+                .block_on(as_login().workspaces())
                 .expect_err("this device is not in the workspace");
             let refusal = tilo_api::client::Refusal::of(&refused).expect("the holder's answer");
             assert_eq!(refusal.code(), "not_in_workspace", "{refused}");
@@ -1658,7 +1658,7 @@ mod tests {
                     json: false,
                 })
                 .unwrap()
-                .get("/v1/workspaces"),
+                .workspaces(),
             )
             .expect_err("this device is not in the workspace");
         assert_eq!(
@@ -1730,7 +1730,7 @@ mod tests {
             tilo_test_env::within("the key's call dials its server or ends", async {
                 tokio::select! {
                     dialled = server.accept() => dialled.is_some(),
-                    _ = as_key.get("/v1/workspaces") => false,
+                    _ = as_key.workspaces() => false,
                 }
             })
             .await

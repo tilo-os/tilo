@@ -385,7 +385,7 @@ impl Server {
                 StatusCode::FORBIDDEN,
                 &json!({"error": {"code": "beyond_scope",
                                   "message": "this key does not reach that workspace",
-                                  "next_steps": ["GET /v1/workspaces names the workspaces it reaches"]}}),
+                                  "next_steps": ["account/workspaces#list names the workspaces it reaches"]}}),
             );
         }
         let session = match self.api_session(&grant).await {
@@ -1554,7 +1554,7 @@ impl Server {
             session::Reach::Forwarded(connection)
         };
         Ok(Session::new(
-            grant.id.clone(),
+            grant,
             scope,
             label,
             key.cert(),

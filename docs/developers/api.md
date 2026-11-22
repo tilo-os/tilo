@@ -91,17 +91,28 @@ an invocation of its own, named for the key ("Visa backend #3").
 | | |
 |---|---|
 | `GET /v1` | `{"api_version": "1", "server": "…", "key": {…}}`: the API and, with a key, what it reaches |
-| `GET /v1/account` | the person's plan and per workspace what it keeps and the VM time it ran |
-| `GET /v1/workspaces?label[name]=value` | `{"workspaces": [{"id", "name", "host", "role", "labels"}]}`: every workspace the key reaches, wherever it is hosted; with `label[…]`, those labelled with every one given |
-| `POST /v1/workspaces` `{name, labels?}` | `201` the workspace made: `{"id", "name", "host", "role": "owner", "labels"}`; the same `Idempotency-Key` answers the one it made |
-| `POST /v1/workspaces/{workspace}/branches` `{name, labels?}` | `201` a branch of a workspace of the person's own, as a workspace made: a new one of theirs holding every resource of it with its history and the files they name, without its conversations, people's drafts and places, or anyone but the person (MCP: `account/workspaces#branch {workspace, name, labels?, id?}`). Answered once it holds everything; one that could not take a part is deleted again and the call answers `422 branch_incomplete` naming the part. The same `Idempotency-Key` answers the branch it made. A key for one workspace makes none |
-| `PUT /v1/workspaces/{workspace}/unattended` `{on}` | lets the keys made for this workspace alone run commands in its Linux machine (`terminal#run`) without asking the person each time, here and in branches made from it (MCP: `workspace/unattended#set {on}`; `tilo_read workspace/unattended` reads it). `on: true` asks the person on their approving device: `202` pending with an `ask`, the run answering `{"workspace", "unattended": true}` once they allow it and failing if they do not. `on: false` answers `200` at once and asks again from the next command. Only the workspace's owner has it; a key reaching all their workspaces is still asked. Listings say `"unattended": true` while it is on |
+| `GET /v1/resources?path=` | the account's resources and actions, as a workspace's are listed |
+| `GET /v1/resources/account/usage` | its `fields`: the person's plan and per workspace what it keeps and the VM time it ran |
+| `POST /v1/resources/{path}/actions/{action}` | runs an action of the account, as a workspace's action is run: `{"status", "path", "result"}` |
 | `GET /v1/workspaces/{workspace}/export` | `{"workspace", "exported_at_ms", "resources": [...], "unread": [...]}`: every resource of every app, read whole and streamed as it reads |
-| `PUT /v1/workspaces/{workspace}/name` `{name}` | the workspace, called that by every list and device of it; its owners and moderators name it |
-| `DELETE /v1/workspaces/{workspace}` | `{"deleted": "…", "revoked_keys": [...]}`: final, with everything in it and every key minted for it |
-| `GET /v1/keys` | `{"keys": [{"grant", "name", "scope", "expires_at_ms", "last_used_at_ms", "created_by"}]}`: this key and the keys it minted, read from the workspace's own document when the key reaches one |
-| `POST /v1/keys` `{workspace, name?, expires_in?}` | `201` a key for one workspace, minted from this one: `{"grant", "token", "mcp_url", "expires_at_ms"}`; the person is not asked |
-| `DELETE /v1/keys/{grant}` | revokes this key or one it minted, and every key it minted; the workspace a revoked key reaches records the revocation, so every API server and holder refuses it |
+
+The account's actions, each run with `POST /v1/resources/account/{resource}/actions/{action}`
+(MCP: `tilo_do account/{resource}#{action}`), answer their `result`:
+
+| | |
+|---|---|
+| `workspaces#list` `{labels?}` | `{"workspaces": [{"id", "name", "host", "role", "labels", "unattended"}]}`: every workspace the key reaches, wherever it is hosted; with `labels`, those labelled with every one given. A key for one workspace lists that one |
+| `workspaces#create` `{name, labels?}` | `{"workspace"}`, the one made, its `role` `owner`; the same `Idempotency-Key` answers the one it made |
+| `workspaces#branch` `{workspace, name, labels?}` | `{"workspace"}`, a branch of a workspace of the person's own: a new one of theirs holding every resource of it with its history and the files they name, without its conversations, people's drafts and places, or anyone but the person. Answered once it holds everything; one that could not take a part is deleted again and the call answers `422 branch_incomplete` naming the part. The same `Idempotency-Key` answers the branch it made |
+| `workspaces#rename` `{workspace, name}` | `{"workspace"}`, called that by every list and device of it; its owners and moderators name it |
+| `workspaces#unattended` `{workspace, on}` | lets the keys made for this workspace alone run commands in its Linux machine (`terminal#run`) without asking the person each time, here and in branches made from it. `on: true` asks the person on their approving device: `202` pending with an `ask`, the run answering `{"workspace", "unattended": true}` once they allow it and failing if they do not; `on: false` answers at once and asks again from the next command. Run it in the workspace (`POST /v1/workspaces/{workspace}/resources/account/workspaces/actions/unattended`) to follow the pending run there. Only the workspace's owner has it; a key reaching all their workspaces is still asked. Listings say `"unattended": true` while it is on |
+| `workspaces#delete` `{workspace}` | `{"deleted", "revoked_keys": [...]}`: final, with everything in it and every key minted for it |
+| `keys#list` | `{"keys": [{"grant", "name", "scope", "expires_at_ms", "last_used_at_ms", "created_by"}]}`: this key and the keys it minted, read from the workspace's own document when the key reaches one |
+| `keys#mint` `{workspace, name?, expires_in?}` | a key for one workspace, minted from this one: `{"grant", "token", "mcp_url", "expires_at_ms"}`; the person is not asked |
+| `keys#revoke` `{grant}` | revokes this key or one it minted, and every key it minted; the workspace a revoked key reaches records the revocation, so every API server and holder refuses it |
+
+A key for one workspace lists the workspaces and keys it reaches and revokes its keys; every other
+action of the account answers `not_permitted`.
 
 ## Resources
 

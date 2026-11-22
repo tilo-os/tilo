@@ -1039,9 +1039,9 @@ mod tests {
         let _key = keyed();
         let server = test_http::Responder::handle(|request: &test_http::Request| {
             match (request.method.as_str(), request.target.as_str()) {
-                ("GET", "/v1/workspaces") => reply(
+                ("POST", "/v1/resources/account/workspaces/actions/list") => reply(
                     200,
-                    &json!({"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}),
+                    &json!({"result": {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
                 ),
                 ("POST", route) if route.ends_with("/uploads") => {
                     reply(201, &json!({"content": "tilo.content:abc"}))
@@ -1113,9 +1113,9 @@ mod tests {
         let _key = keyed();
         let server = test_http::Responder::handle(|request: &test_http::Request| {
             match (request.method.as_str(), request.target.as_str()) {
-                ("GET", "/v1/workspaces") => reply(
+                ("POST", "/v1/resources/account/workspaces/actions/list") => reply(
                     200,
-                    &json!({"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}),
+                    &json!({"result": {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
                 ),
                 ("POST", route) if route.contains("/actions/") => reply(
                     202,
@@ -1158,9 +1158,9 @@ mod tests {
         let _key = keyed();
         let server = test_http::Responder::handle(|request: &test_http::Request| {
             match (request.method.as_str(), request.target.as_str()) {
-                ("GET", "/v1/workspaces") => reply(
+                ("POST", "/v1/resources/account/workspaces/actions/list") => reply(
                     200,
-                    &json!({"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}),
+                    &json!({"result": {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
                 ),
                 ("POST", route) if route.ends_with("/actions/history") => reply(
                     200,

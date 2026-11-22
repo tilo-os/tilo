@@ -906,6 +906,12 @@ impl Store {
         self.read(|state| state.grants.get(id).filter(|grant| grant.live()).cloned())
     }
 
+    /// Whether the grant `id` was revoked here.
+    #[must_use]
+    pub fn revoked(&self, id: &str) -> bool {
+        self.read(|state| state.grants.get(id).is_some_and(|grant| !grant.live()))
+    }
+
     /// The live grants `parent` minted, newest first.
     #[must_use]
     pub fn minted_by(&self, parent: &str) -> Vec<Grant> {

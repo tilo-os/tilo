@@ -113,8 +113,8 @@ def test_a_sync_branch_answers_the_new_workspace(api):
 
         assert branch.name == "Acme"
         assert again.name == "jane-doe, second try"
-        assert api.asked("POST", "/branches")[0]["path"] == (
-            f"/v1/workspaces/{created.id}/branches"
+        assert api.asked("POST", "/workspaces/actions/branch")[0]["body"] == (
+            b'{"workspace": "' + created.id.encode() + b'", "name": "Acme"}'
         )
 
 

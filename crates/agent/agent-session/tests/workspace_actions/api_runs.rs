@@ -418,11 +418,12 @@ async fn every_run_listed() {
     // pages it as any other resource and runs the same action.
     let (status, minted) = person
         .post(
-            "/v1/keys",
+            "/v1/resources/account/keys/actions/mint",
             &json!({"workspace": ws, "name": "Listing agent"}),
         )
         .await;
-    assert_eq!(status, 201, "{minted}");
+    assert_eq!(status, 200, "{minted}");
+    let minted = &minted["result"];
     let mut mcp = Mcp {
         api: &api,
         path: minted["mcp_url"]

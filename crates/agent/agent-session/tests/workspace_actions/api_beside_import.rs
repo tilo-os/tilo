@@ -165,10 +165,17 @@ async fn beside_an_import() {
     let token = approved_key(&on_server, &ada, &computer, "Ada's backend").await;
     let key = Key { api: &api, token };
     let (status, made) = key
-        .post("/v1/workspaces", &json!({"name": "Company"}), &[])
+        .post(
+            "/v1/resources/account/workspaces/actions/create",
+            &json!({"name": "Company"}),
+            &[],
+        )
         .await;
-    assert_eq!(status, 201, "{made}");
-    let workspace = made["id"].as_str().unwrap().to_owned();
+    assert_eq!(status, 200, "{made}");
+    let workspace = made["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let base = format!("/v1/workspaces/{workspace}");
 
     // Her computer holds the workspace, with her tasks, her contacts and her folder.

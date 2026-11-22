@@ -35,16 +35,18 @@ json() { printf '%s' "$1" > "$work/request.json"; printf '%s' "$work/request.jso
 status() { cat "$work/status"; }
 
 say "1. The backend makes $applicants applicant workspaces with its one key"
+# The account's actions: making, listing and minting are run as every action is.
+account=/v1/resources/account
 first=
 for index in $(seq 1 "$applicants"); do
-  made=$(call "$key" POST /v1/workspaces "$(json "{\"name\": \"Applicant $index\"}")" "idempotency-key: visa-$index-$$")
-  [[ $(status) == 201 ]] || { echo "$made" >&2; exit 1; }
-  again=$(call "$key" POST /v1/workspaces "$(json "{\"name\": \"Applicant $index\"}")" "idempotency-key: visa-$index-$$")
-  check '[[ $(jq -r .id <<<"$again") == $(jq -r .id <<<"$made") ]]' "a retried create answers workspace $index again"
-  [[ -n $first ]] || first=$(jq -r .id <<<"$made")
+  made=$(call "$key" POST "$account/workspaces/actions/create" "$(json "{\"name\": \"Applicant $index\"}")" "idempotency-key: visa-$index-$$")
+  [[ $(status) == 200 ]] || { echo "$made" >&2; exit 1; }
+  again=$(call "$key" POST "$account/workspaces/actions/create" "$(json "{\"name\": \"Applicant $index\"}")" "idempotency-key: visa-$index-$$")
+  check '[[ $(jq -r .result.workspace.id <<<"$again") == $(jq -r .result.workspace.id <<<"$made") ]]' "a retried create answers workspace $index again"
+  [[ -n $first ]] || first=$(jq -r .result.workspace.id <<<"$made")
 done
-listed=$(call "$key" GET /v1/workspaces)
-check '[[ $(jq "[.workspaces[] | select(.name | startswith(\"Applicant \"))] | length" <<<"$listed") -ge $applicants ]]' "every one is listed"
+listed=$(call "$key" POST "$account/workspaces/actions/list" "$(json '{}')")
+check '[[ $(jq "[.result.workspaces[] | select(.name | startswith(\"Applicant \"))] | length" <<<"$listed") -ge $applicants ]]' "every one is listed"
 base=/v1/workspaces/$first
 
 say "2. The backend puts the form in and mints the agent's key"
@@ -61,10 +63,10 @@ uploaded=$(curl -sS -X POST -H "authorization: Bearer $key" -H 'content-type: ap
   --data-binary "@$work/form.pdf" "$api$base/uploads")
 form=$(jq -r .content <<<"$uploaded")
 check '[[ $form == tilo.content:* ]]' "the form is content ($form)"
-minted=$(call "$key" POST /v1/keys "$(json "{\"workspace\": \"$first\", \"name\": \"Applicant 1's agent\"}")" "idempotency-key: mint-$$")
-check '[[ $(status) == 201 ]]' "a key for that workspace alone"
-agent=$(jq -r .token <<<"$minted")
-grant=$(jq -r .grant <<<"$minted")
+minted=$(call "$key" POST "$account/keys/actions/mint" "$(json "{\"workspace\": \"$first\", \"name\": \"Applicant 1's agent\"}")" "idempotency-key: mint-$$")
+check '[[ $(status) == 200 ]]' "a key for that workspace alone"
+agent=$(jq -r .result.token <<<"$minted")
+grant=$(jq -r .result.grant <<<"$minted")
 
 say "3. The agent fills the form and writes the letter, as one run"
 act() { # act PATH ACTION ARGS-JSON: the action's answer
@@ -93,10 +95,10 @@ link=$(call "$agent" GET "$base/links?path=pdf-viewer/application.pdf")
 check '[[ $(jq -r .link <<<"$link") == http* ]]' "the form has a link to hand over"
 
 say "4. The minted key reaches that workspace and nothing else, until it is revoked"
-other=$(jq -r "[.workspaces[] | select(.id != \"$first\")][0].id" <<<"$listed")
+other=$(jq -r "[.result.workspaces[] | select(.id != \"$first\")][0].id" <<<"$listed")
 call "$agent" GET "/v1/workspaces/$other/resources" > /dev/null
 check '[[ $(status) == 403 ]]' "another workspace refuses it"
-call "$key" DELETE "/v1/keys/$grant" '' "idempotency-key: revoke-$$" > /dev/null
+call "$key" POST "$account/keys/actions/revoke" "$(json "{\"grant\": \"$grant\"}")" "idempotency-key: revoke-$$" > /dev/null
 check '[[ $(status) == 200 ]]' "the backend revokes it"
 gone=$(call "$agent" GET "$base/resources")
 check '[[ $(status) == 401 && $(jq -r .error.code <<<"$gone") == key_revoked ]]' "the revoked key is refused"

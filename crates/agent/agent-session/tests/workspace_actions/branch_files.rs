@@ -146,10 +146,17 @@ async fn a_branch_holds_the_files_and_each_tree_goes_its_own_way() {
     let (_, token) = person(&on_server, "Ada").await;
     let backend = Key { api: &api, token };
     let (status, made) = backend
-        .post("/v1/workspaces", &json!({"name": "Contracts"}), &[])
+        .post(
+            "/v1/resources/account/workspaces/actions/create",
+            &json!({"name": "Contracts"}),
+            &[],
+        )
         .await;
-    assert_eq!(status, 201, "{made}");
-    let source = made["id"].as_str().unwrap().to_owned();
+    assert_eq!(status, 200, "{made}");
+    let source = made["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
     // A file at the root, and a folder with two: one of one chunk, one larger
     // than a chunk, which the workspace keeps as many.
@@ -176,15 +183,12 @@ async fn a_branch_holds_the_files_and_each_tree_goes_its_own_way() {
         );
     }
 
-    let (status, branched) = backend
-        .post(
-            &format!("/v1/workspaces/{source}/branches"),
-            &json!({"name": "Contracts: Acme"}),
-            &[],
-        )
-        .await;
-    assert_eq!(status, 201, "{branched}");
-    let branch = branched["id"].as_str().unwrap().to_owned();
+    let (status, branched) = branch_of(&backend, &source, "Contracts: Acme").await;
+    assert_eq!(status, 200, "{branched}");
+    let branch = branched["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
     // Every file is in the branch's tree under the same path, and the
     // branch's own content holds every byte of it: its manifest and every
@@ -250,14 +254,13 @@ async fn a_branch_holds_the_files_and_each_tree_goes_its_own_way() {
     );
 }
 
+/// Where a branch is asked for: the account's `workspaces#branch`.
+const BRANCH: &str = "/v1/resources/account/workspaces/actions/branch";
+
 /// What a branch of `source` answers, asked by `key` under `name`.
 async fn branch_of(key: &Key<'_>, source: &str, name: &str) -> (u16, serde_json::Value) {
-    key.post(
-        &format!("/v1/workspaces/{source}/branches"),
-        &json!({"name": name}),
-        &[],
-    )
-    .await
+    key.post(BRANCH, &json!({"workspace": source, "name": name}), &[])
+        .await
 }
 
 /// What a branch of `source` answers, asked by `key` under `name` with the
@@ -272,8 +275,10 @@ async fn branch_retried(
     let reply = key
         .send(
             hyper::Method::POST,
-            &format!("/v1/workspaces/{source}/branches"),
-            json!({"name": name}).to_string().as_bytes(),
+            BRANCH,
+            json!({"workspace": source, "name": name})
+                .to_string()
+                .as_bytes(),
             &[("idempotency-key", retry)],
         )
         .await;
@@ -284,9 +289,15 @@ async fn branch_retried(
 
 /// The ids of the workspaces named `name` `key` lists.
 async fn listed_as(key: &Key<'_>, name: &str) -> Vec<String> {
-    let (status, listed) = key.get("/v1/workspaces").await;
+    let (status, listed) = key
+        .post(
+            "/v1/resources/account/workspaces/actions/list",
+            &json!({}),
+            &[],
+        )
+        .await;
     assert_eq!(status, 200, "{listed}");
-    listed["workspaces"]
+    listed["result"]["workspaces"]
         .as_array()
         .into_iter()
         .flatten()
@@ -307,10 +318,17 @@ async fn a_file_still_gathered_makes_no_branch_until_it_is_here() {
     let (_, token) = person(&on_server, "Ada").await;
     let backend = Key { api: &api, token };
     let (status, made) = backend
-        .post("/v1/workspaces", &json!({"name": "Scans"}), &[])
+        .post(
+            "/v1/resources/account/workspaces/actions/create",
+            &json!({"name": "Scans"}),
+            &[],
+        )
         .await;
-    assert_eq!(status, 201, "{made}");
-    let source = made["id"].as_str().unwrap().to_owned();
+    assert_eq!(status, 200, "{made}");
+    let source = made["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let scan = varied(700_000, 4);
     put_file(&backend, &source, "scans", "passport.pdf", &scan).await;
     let scan_hash = keeps(&on_server, &source, ("scans", "passport.pdf"), &scan).await;
@@ -349,15 +367,21 @@ async fn a_file_still_gathered_makes_no_branch_until_it_is_here() {
     store.put(&held).unwrap();
     let (status, replayed, branched) =
         branch_retried(&backend, &source, "Scans: Acme", retry).await;
-    assert_eq!(status, 201, "{branched}");
+    assert_eq!(status, 200, "{branched}");
     assert!(!replayed, "the refusal was not kept: the call ran again");
-    let branch = branched["id"].as_str().unwrap().to_owned();
+    let branch = branched["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     keeps(&on_server, &branch, ("scans", "passport.pdf"), &scan).await;
     // Asked once more under that key, it answers the same branch and makes
     // no second one.
     let (status, replayed, again) = branch_retried(&backend, &source, "Scans: Acme", retry).await;
-    assert_eq!((status, replayed), (201, true), "{again}");
-    assert_eq!(again["id"], branched["id"]);
+    assert_eq!((status, replayed), (200, true), "{again}");
+    assert_eq!(
+        again["result"]["workspace"],
+        branched["result"]["workspace"]
+    );
     assert_eq!(listed_as(&backend, "Scans: Acme").await, [branch]);
 }
 
@@ -372,10 +396,17 @@ async fn content_only_earlier_named_does_not_stop_a_branch() {
     let (_, token) = person(&on_server, "Ada").await;
     let backend = Key { api: &api, token };
     let (status, made) = backend
-        .post("/v1/workspaces", &json!({"name": "Drafts"}), &[])
+        .post(
+            "/v1/resources/account/workspaces/actions/create",
+            &json!({"name": "Drafts"}),
+            &[],
+        )
         .await;
-    assert_eq!(status, 201, "{made}");
-    let source = made["id"].as_str().unwrap().to_owned();
+    assert_eq!(status, 200, "{made}");
+    let source = made["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
     // A file written, then written over: the tree's history names the first
     // version, its current state the second. The host let the first go.
@@ -403,8 +434,11 @@ async fn content_only_earlier_named_does_not_stop_a_branch() {
     assert!(!store.has(&first_hash));
 
     let (status, branched) = branch_of(&backend, &source, "Drafts: Acme").await;
-    assert_eq!(status, 201, "{branched}");
-    let branch = branched["id"].as_str().unwrap().to_owned();
+    assert_eq!(status, 200, "{branched}");
+    let branch = branched["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let branch_hash = keeps(&on_server, &branch, ("", "draft.txt"), &second).await;
     assert_ne!(branch_hash, second_hash);
 }

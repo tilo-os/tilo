@@ -293,8 +293,8 @@ The agent sees that one workspace's apps through the same tools a person's agent
 then `#export-content` as docx). It cannot list, read or act in any other workspace: another workspace's
 MCP URL answers its token `403`, every `/v1/workspaces/<other>/...` route answers `403 beyond_scope`, a
 tool call naming another workspace reaches nothing, and the account's paths (`account/...` apart from the
-keys its workspace admitted, `GET /v1/account`, making, deleting, minting) are refused. `GET /v1/keys`
-lists the key and the keys it minted there, from the workspace's own governance. Listing workspaces
+keys its workspace admitted and its list of workspaces: usage, making, deleting, minting) are refused.
+`account/keys#list` lists the key and the keys it minted there, from the workspace's own governance. Listing workspaces
 with it names its own alone. Revoking the key ends its open MCP sessions at once: their next call is
 refused, and the token opens no new one (`401 key_revoked`). Every call that
 changed a resource answers that resource's `link`, and `tilo_link {path}` answers the link to anything a path
@@ -365,8 +365,8 @@ tilo workspace rm applicant-jane-doe   # when the customer leaves
 ## What is underneath
 
 Making, branching and deleting workspaces and minting keys are the account's
-(`POST /v1/workspaces`, `POST /v1/workspaces/<workspace>/branches`, `DELETE /v1/workspaces/<workspace>`,
-`POST /v1/keys`), inviting is the
+(`account/workspaces#create`, `#branch` and `#delete`, `account/keys#mint`, each run with
+`POST /v1/resources/account/<resource>/actions/<action>`), inviting is the
 workspace's own (`workspace/invitations#invite`), and everything in a
 workspace is a resource under `/v1/workspaces/<workspace>/resources/...`. A minted key is a
 certificate your key signed, narrower than it: the

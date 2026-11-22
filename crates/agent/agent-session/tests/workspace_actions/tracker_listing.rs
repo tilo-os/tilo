@@ -208,14 +208,17 @@ async fn listing_a_tracker_costs_each_page_its_rows_at_any_size() {
         let (status, workspace) = agent
             .send(
                 hyper::Method::POST,
-                "/v1/workspaces",
+                "/v1/resources/account/workspaces/actions/create",
                 json!({"name": format!("Company of {size}")})
                     .to_string()
                     .as_bytes(),
             )
             .await;
-        assert_eq!(status, 201, "{workspace}");
-        let base = format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap());
+        assert_eq!(status, 200, "{workspace}");
+        let base = format!(
+            "/v1/workspaces/{}",
+            workspace["result"]["workspace"]["id"].as_str().unwrap()
+        );
         agent.act(&base, "tasks", "open", &json!({})).await;
         fill(&agent, &base, size).await;
         // The first page builds what the listing reads; every page after it
@@ -318,12 +321,15 @@ async fn a_tracker_is_listed_whole_after_its_server_restarts() {
         let (status, workspace) = agent
             .send(
                 hyper::Method::POST,
-                "/v1/workspaces",
+                "/v1/resources/account/workspaces/actions/create",
                 json!({"name": "Company"}).to_string().as_bytes(),
             )
             .await;
-        assert_eq!(status, 201, "{workspace}");
-        let base = format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap());
+        assert_eq!(status, 200, "{workspace}");
+        let base = format!(
+            "/v1/workspaces/{}",
+            workspace["result"]["workspace"]["id"].as_str().unwrap()
+        );
         agent.act(&base, "tasks", "open", &json!({})).await;
         fill(&agent, &base, SIZE).await;
         let (before, _) = every_page(&agent, &base, 40).await;
@@ -376,12 +382,15 @@ async fn a_listing_right_after_a_person_is_admitted_costs_what_any_listing_does(
     let (status, workspace) = agent
         .send(
             hyper::Method::POST,
-            "/v1/workspaces",
+            "/v1/resources/account/workspaces/actions/create",
             json!({"name": "Company"}).to_string().as_bytes(),
         )
         .await;
-    assert_eq!(status, 201, "{workspace}");
-    let id = workspace["id"].as_str().unwrap().to_owned();
+    assert_eq!(status, 200, "{workspace}");
+    let id = workspace["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let base = format!("/v1/workspaces/{id}");
     agent.act(&base, "tasks", "open", &json!({})).await;
     fill(&agent, &base, SIZE).await;
@@ -450,12 +459,15 @@ async fn another_apps_listing_waits_for_no_tracker_taking_in_its_parts_after_a_r
         let (status, workspace) = agent
             .send(
                 hyper::Method::POST,
-                "/v1/workspaces",
+                "/v1/resources/account/workspaces/actions/create",
                 json!({"name": "Company"}).to_string().as_bytes(),
             )
             .await;
-        assert_eq!(status, 201, "{workspace}");
-        let base = format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap());
+        assert_eq!(status, 200, "{workspace}");
+        let base = format!(
+            "/v1/workspaces/{}",
+            workspace["result"]["workspace"]["id"].as_str().unwrap()
+        );
         agent.act(&base, "tasks", "open", &json!({})).await;
         agent.act(&base, "contacts", "open", &json!({})).await;
         fill(&agent, &base, SIZES[1]).await;
@@ -506,10 +518,17 @@ async fn another_apps_listing_waits_for_no_tracker_taking_in_its_parts_after_a_r
 async fn workspace_named(agent: &V1<'_>, name: &str) -> String {
     let body = json!({ "name": name }).to_string();
     let (status, workspace) = agent
-        .send(hyper::Method::POST, "/v1/workspaces", body.as_bytes())
+        .send(
+            hyper::Method::POST,
+            "/v1/resources/account/workspaces/actions/create",
+            body.as_bytes(),
+        )
         .await;
-    assert_eq!(status, 201, "{workspace}");
-    format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap())
+    assert_eq!(status, 200, "{workspace}");
+    format!(
+        "/v1/workspaces/{}",
+        workspace["result"]["workspace"]["id"].as_str().unwrap()
+    )
 }
 
 /// The service thread that serves the workspace at `path`.

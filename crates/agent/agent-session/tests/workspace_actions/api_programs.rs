@@ -161,10 +161,16 @@ async fn the_repl_works_in_a_workspace_as_its_person() {
     })
     .unwrap();
     let made = client
-        .post("/v1/workspaces", &json!({"name": "Ada's notes"}))
+        .post(
+            "/v1/resources/account/workspaces/actions/create",
+            &json!({"name": "Ada's notes"}),
+        )
         .await
         .unwrap();
-    let workspace = made["id"].as_str().unwrap().to_owned();
+    let workspace = made["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     tilolang_cli::repl::style::set(false);
 
     let mut repl = tilolang_cli::repl::Repl::open(&client, &workspace)

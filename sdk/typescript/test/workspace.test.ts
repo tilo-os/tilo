@@ -279,9 +279,11 @@ describe("running commands unattended", () => {
     await expect(failure).rejects.toBeInstanceOf(AskPending);
     const ask = (await failure.catch((error) => error)) as AskPending;
     expect(ask.invocationId).toBe(`unattended-${WORKSPACE_ID}`);
-    expect(api.last()?.method).toBe("PUT");
-    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/unattended`);
-    expect(JSON.parse(api.last()?.body ?? "{}")).toEqual({ on: true });
+    expect(api.last()?.method).toBe("POST");
+    expect(api.last()?.path).toBe(
+      `/v1/workspaces/${WORKSPACE_ID}/resources/account/workspaces/actions/unattended`,
+    );
+    expect(JSON.parse(api.last()?.body ?? "{}")).toEqual({ workspace: WORKSPACE_ID, on: true });
     expect((await tilo.workspaces.list()).named(WORKSPACE_ID)?.unattended).toBe(false);
 
     api.unattendedAllowed = true;
@@ -303,7 +305,7 @@ describe("running commands unattended", () => {
     const answer = await open(api).workspace("jane-doe").unattended(false);
 
     expect(answer).toEqual({ workspace: WORKSPACE_ID, unattended: false });
-    expect(JSON.parse(api.last()?.body ?? "{}")).toEqual({ on: false });
+    expect(JSON.parse(api.last()?.body ?? "{}")).toEqual({ workspace: WORKSPACE_ID, on: false });
   });
 });
 

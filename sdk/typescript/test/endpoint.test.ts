@@ -12,6 +12,10 @@ import {
 } from "../src/index.ts";
 import { FakeApi } from "./fakeApi.ts";
 
+/** A read and an action of the account, as every resource and action is reached. */
+const USAGE = "/v1/resources/account/usage";
+const CREATE = "/v1/resources/account/workspaces/actions/create";
+
 function open(api: FakeApi, retryDeadlineMs = 500): Endpoint {
   return new Endpoint(
     new HttpTransport("https://api.test", api.key, api.fetch),
@@ -23,11 +27,11 @@ function open(api: FakeApi, retryDeadlineMs = 500): Endpoint {
 describe("a request", () => {
   it("sends the key, the accept header and the user agent", async () => {
     const api = new FakeApi();
-    await open(api).answer("GET", "/v1/workspaces", { idempotent: false });
+    await open(api).answer("GET", USAGE, { idempotent: false });
 
     const call = api.last();
     expect(call?.method).toBe("GET");
-    expect(call?.path).toBe("/v1/workspaces");
+    expect(call?.path).toBe(USAGE);
     expect(call?.headers.authorization).toBe(`Bearer ${api.key}`);
     expect(call?.headers.accept).toBe("application/json");
     expect(call?.headers["user-agent"]).toMatch(/^tilo-typescript\//);
@@ -36,9 +40,9 @@ describe("a request", () => {
   it("sends an Idempotency-Key with every mutating call, the same one on a retry", async () => {
     const api = new FakeApi();
     api.busy = 1;
-    await open(api).answer("POST", "/v1/workspaces", { json: { name: "w" } });
+    await open(api).answer("POST", CREATE, { json: { name: "w" } });
 
-    const sent = api.asked("POST", "/v1/workspaces");
+    const sent = api.asked("POST", CREATE);
     expect(sent).toHaveLength(2);
     const first = sent[0]?.headers["idempotency-key"] ?? "";
     expect(first).not.toBe("");
@@ -49,16 +53,16 @@ describe("a request", () => {
   it("sends a new key for each logical call", async () => {
     const api = new FakeApi();
     const endpoint = open(api);
-    await endpoint.answer("POST", "/v1/workspaces", { json: { name: "a" } });
-    await endpoint.answer("POST", "/v1/workspaces", { json: { name: "b" } });
+    await endpoint.answer("POST", CREATE, { json: { name: "a" } });
+    await endpoint.answer("POST", CREATE, { json: { name: "b" } });
 
-    const sent = api.asked("POST", "/v1/workspaces");
+    const sent = api.asked("POST", CREATE);
     expect(sent[0]?.headers["idempotency-key"]).not.toBe(sent[1]?.headers["idempotency-key"]);
   });
 
   it("leaves the key off a read", async () => {
     const api = new FakeApi();
-    await open(api).answer("GET", "/v1/workspaces", { idempotent: false });
+    await open(api).answer("GET", USAGE, { idempotent: false });
     expect(api.last()?.headers["idempotency-key"]).toBeUndefined();
   });
 
@@ -66,9 +70,9 @@ describe("a request", () => {
     const api = new FakeApi();
     api.busy = 50;
 
-    const failure = open(api, 100).answer("POST", "/v1/workspaces", { json: { name: "w" } });
+    const failure = open(api, 100).answer("POST", CREATE, { json: { name: "w" } });
     await expect(failure).rejects.toMatchObject({ code: "unavailable" });
-    expect(api.asked("POST", "/v1/workspaces").length).toBeGreaterThan(1);
+    expect(api.asked("POST", CREATE).length).toBeGreaterThan(1);
   });
 
   it("asks again when the call never arrived", async () => {
@@ -83,9 +87,9 @@ describe("a request", () => {
     };
     const endpoint = new Endpoint(new HttpTransport("https://api.test", api.key, answer as typeof fetch), null);
 
-    const listed = await endpoint.answer("GET", "/v1/workspaces", { idempotent: false });
+    const read = await endpoint.answer("GET", USAGE, { idempotent: false });
     expect(attempts).toBe(2);
-    expect(listed.workspaces).toHaveLength(3);
+    expect(read.path).toBe("account/usage");
   });
 
   it("refuses an answer of another API major version", async () => {

@@ -80,10 +80,9 @@ impl Key<'_> {
 
     /// Turn running commands unattended in `workspace` on or off.
     pub(super) async fn unattended(&self, workspace: &str, on: bool) -> (u16, Value) {
-        self.send(
-            hyper::Method::PUT,
-            &format!("/v1/workspaces/{workspace}/unattended"),
-            &json!({"on": on}),
+        self.post(
+            &format!("/v1/workspaces/{workspace}/resources/account/workspaces/actions/unattended"),
+            &json!({"workspace": workspace, "on": on}),
         )
         .await
     }
@@ -98,9 +97,11 @@ impl Key<'_> {
 
     /// Whether `workspace`'s listing says it runs commands unattended.
     async fn listed_unattended(&self, workspace: &str) -> bool {
-        let (status, listed) = self.get("/v1/workspaces").await;
+        let (status, listed) = self
+            .post("/v1/resources/account/workspaces/actions/list", &json!({}))
+            .await;
         assert_eq!(status, 200, "{listed}");
-        let row = listed["workspaces"]
+        let row = listed["result"]["workspaces"]
             .as_array()
             .into_iter()
             .flatten()
@@ -112,10 +113,13 @@ impl Key<'_> {
     /// A key reaching `workspace` alone, named `name`: its token.
     pub(super) async fn mint(&self, workspace: &str, name: &str) -> String {
         let (status, minted) = self
-            .post("/v1/keys", &json!({"workspace": workspace, "name": name}))
+            .post(
+                "/v1/resources/account/keys/actions/mint",
+                &json!({"workspace": workspace, "name": name}),
+            )
             .await;
-        assert_eq!(status, 201, "{minted}");
-        minted["token"].as_str().unwrap().to_owned()
+        assert_eq!(status, 200, "{minted}");
+        minted["result"]["token"].as_str().unwrap().to_owned()
     }
 }
 
@@ -192,9 +196,17 @@ pub(super) async fn backend(on_server: &OnServer) -> (SigningKey, String) {
 
 /// A new workspace of the backend key's person named `name`: its id.
 pub(super) async fn workspace(key: &Key<'_>, name: &str) -> String {
-    let (status, made) = key.post("/v1/workspaces", &json!({"name": name})).await;
-    assert_eq!(status, 201, "{made}");
-    made["id"].as_str().unwrap().to_owned()
+    let (status, made) = key
+        .post(
+            "/v1/resources/account/workspaces/actions/create",
+            &json!({"name": name}),
+        )
+        .await;
+    assert_eq!(status, 200, "{made}");
+    made["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
 }
 
 /// Whether `answer` is a run still pending, as one waiting for the person
@@ -482,12 +494,13 @@ async fn branch_runs_unasked_and_goes_on_apart() {
     let (status, branched) = beside(
         &mut page,
         backend.post(
-            &format!("/v1/workspaces/{template}/branches"),
-            &json!({"name": "Applicant: Jane Doe"}),
+            "/v1/resources/account/workspaces/actions/branch",
+            &json!({"workspace": template, "name": "Applicant: Jane Doe"}),
         ),
     )
     .await;
-    assert_eq!(status, 201, "{branched}");
+    assert_eq!(status, 200, "{branched}");
+    let branched = &branched["result"]["workspace"];
     let branch = branched["id"].as_str().unwrap().to_owned();
     assert_eq!(branched["unattended"], true, "{branched}");
     let branchs = Key {

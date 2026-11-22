@@ -66,7 +66,7 @@ async def test_host_serves_the_same_routes_in_process(monkeypatch):
         "applicant-jane-doe",
     ]
     assert apps.path == "apps"
-    assert native.calls[0] == ("GET", "/v1/workspaces")
+    assert native.calls[0] == ("POST", "/v1/resources/account/workspaces/actions/list")
     assert native.calls[-1] == (
         "GET",
         f"/v1/workspaces/{WORKSPACE_ID}/resources",

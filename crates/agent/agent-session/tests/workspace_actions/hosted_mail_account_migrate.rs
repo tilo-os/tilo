@@ -196,10 +196,16 @@ async fn a_migrated_account_is_connected_and_its_mail_is_read_from_its_server() 
     })
     .unwrap();
     let made = client
-        .post("/v1/workspaces", &json!({"name": "Ada's mail"}))
+        .post(
+            "/v1/resources/account/workspaces/actions/create",
+            &json!({"name": "Ada's mail"}),
+        )
         .await
         .unwrap();
-    let workspace = made["id"].as_str().unwrap().to_owned();
+    let workspace = made["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
     // A password the mail server does not take is refused in its words, and nothing is kept.
     let refused = client

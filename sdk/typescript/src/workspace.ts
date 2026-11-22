@@ -414,7 +414,9 @@ export class Workspace {
   async unattended(on = true): Promise<Record<string, unknown>> {
     const endpoint = await this.endpoint();
     const answer = actionAnswerOf(
-      await endpoint.answer("PUT", routes.unattended(endpoint.id), { json: { on } }),
+      await endpoint.answer("POST", routes.action(endpoint.id, "account/workspaces", "unattended"), {
+        json: { workspace: endpoint.id, on },
+      }),
     );
     if (answer.status === "pending") {
       throw endpoint.askOf(answer);

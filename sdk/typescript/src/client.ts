@@ -3,19 +3,21 @@
 import { AskPending, ProtocolError, Refused, refusalOf } from "./errors.ts";
 import { DEFAULT_URL, Endpoint, RETRY_DEADLINE_MS } from "./endpoint.ts";
 import {
+  actionAnswerOf,
   type ApiInfo,
   apiInfoOf,
   type Key,
   keyOf,
   type MintedKey,
   mintedKeyOf,
+  resultOf,
   type Usage,
   usageOf,
   type WorkspaceInfo,
   WorkspaceList,
   workspaceOf,
 } from "./models.ts";
-import { routes } from "./routes.ts";
+import { routes, splitAction } from "./routes.ts";
 import {
   type FetchLike,
   type HostOptions,
@@ -309,7 +311,11 @@ export class Tilo {
 
   /** The person's plan, and per workspace what it keeps and the VM time it ran. */
   async usage(): Promise<Usage> {
-    return usageOf(await this.account().answer("GET", routes.account(), { idempotent: false }));
+    const read = await this.account().answer("GET", routes.accountResource("account/usage"), {
+      idempotent: false,
+    });
+    const fields = read.fields;
+    return usageOf(fields !== null && typeof fields === "object" ? (fields as Record<string, unknown>) : {});
   }
 
   /**
@@ -356,10 +362,38 @@ export class Tilo {
     if (!force && this.catalog !== null) {
       return this.catalog;
     }
-    this.catalog = new WorkspaceList(
-      await this.account().answer("GET", routes.workspaces(), { idempotent: false }),
-    );
+    this.catalog = new WorkspaceList(await this.accountAction("account/workspaces#list"));
     return this.catalog;
+  }
+
+  /**
+   * @internal An action of the account (`account/workspaces#create`), as every action is run:
+   * what it answered.
+   */
+  async accountAction(
+    path: string,
+    json: Record<string, unknown> = {},
+    idempotencyKey: string | null = null,
+  ): Promise<Record<string, unknown>> {
+    const { resource, action } = splitAction(path);
+    const answer = actionAnswerOf(
+      await this.account().answer("POST", routes.accountAction(resource, action), {
+        json,
+        ...(idempotencyKey === null ? {} : { idempotencyKey }),
+      }),
+    );
+    const result = resultOf(answer);
+    return result !== null && typeof result === "object" ? (result as Record<string, unknown>) : {};
+  }
+
+  /** @internal The workspace an action of the account answered. */
+  private static made(answer: Record<string, unknown>): WorkspaceInfo {
+    const workspace = answer.workspace;
+    return workspaceOf(
+      workspace !== null && typeof workspace === "object"
+        ? (workspace as Record<string, unknown>)
+        : {},
+    );
   }
 
   /** @internal */
@@ -397,9 +431,7 @@ export class Tilo {
 
   /** @internal The workspaces labelled with every one of `labels`. */
   async labelledWorkspaces(labels: Record<string, string>): Promise<WorkspaceList> {
-    return new WorkspaceList(
-      await this.account().answer("GET", routes.workspaces(labels), { idempotent: false }),
-    );
+    return new WorkspaceList(await this.accountAction("account/workspaces#list", { labels }));
   }
 
   /** @internal */
@@ -413,12 +445,7 @@ export class Tilo {
     if (Object.keys(labels).length > 0) {
       json.labels = labels;
     }
-    return workspaceOf(
-      await this.account().answer("POST", routes.workspaces(), {
-        json,
-        ...(idempotencyKey === null ? {} : { idempotencyKey }),
-      }),
-    );
+    return Tilo.made(await this.accountAction("account/workspaces#create", json, idempotencyKey));
   }
 
   /** @internal */
@@ -433,28 +460,23 @@ export class Tilo {
         ? await this.workspaceId(source)
         : source.id;
     this.catalog = null;
-    const json: Record<string, unknown> = { name };
+    const json: Record<string, unknown> = { workspace: id, name };
     if (Object.keys(labels).length > 0) {
       json.labels = labels;
     }
-    return workspaceOf(
-      await this.account().answer("POST", routes.branches(id), {
-        json,
-        ...(idempotencyKey === null ? {} : { idempotencyKey }),
-      }),
-    );
+    return Tilo.made(await this.accountAction("account/workspaces#branch", json, idempotencyKey));
   }
 
   /** @internal */
   async deleteWorkspace(workspace: string | Workspace): Promise<Record<string, unknown>> {
     const id = await this.workspaceId(workspace);
     this.catalog = null;
-    return this.account().answer("DELETE", routes.workspace(id));
+    return this.accountAction("account/workspaces#delete", { workspace: id });
   }
 
   /** @internal */
   async keysList(): Promise<Key[]> {
-    const listed = await this.account().answer("GET", routes.keys(), { idempotent: false });
+    const listed = await this.accountAction("account/keys#list");
     return Array.isArray(listed.keys)
       ? listed.keys
           .filter((key): key is Record<string, unknown> => key !== null && typeof key === "object")
@@ -475,12 +497,12 @@ export class Tilo {
     if (expiresIn !== null) {
       json.expires_in = expiresIn;
     }
-    return mintedKeyOf(await this.account().answer("POST", routes.keys(), { json }));
+    return mintedKeyOf(await this.accountAction("account/keys#mint", json));
   }
 
   /** @internal */
   async revokeKey(grant: string): Promise<Record<string, unknown>> {
-    return this.account().answer("DELETE", routes.key(grant));
+    return this.accountAction("account/keys#revoke", { grant });
   }
 
   /** @internal A key the person approves on their own device: `AskPending` until they do. */

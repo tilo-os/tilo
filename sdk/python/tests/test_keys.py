@@ -29,7 +29,7 @@ async def test_the_account_lists_this_key_and_the_keys_it_minted(tilo, api):
     assert [key.grant for key in keys] == ["g-root"]
     assert keys[0].scope == "account"
     assert keys[0].browser_pages is True
-    assert api.asked("GET", "/v1/keys")
+    assert api.asked("POST", "/account/keys/actions/list")
 
 
 async def test_a_key_is_minted_for_one_workspace(tilo, api):
@@ -39,7 +39,7 @@ async def test_a_key_is_minted_for_one_workspace(tilo, api):
     assert minted.token == "tilo_sk_minted"
     assert minted.workspace == WORKSPACE_ID
     assert minted.mcp_url.endswith(f"/w/{WORKSPACE_ID}/mcp")
-    assert api.asked("POST", "/v1/keys")[-1]["body"] == (
+    assert api.asked("POST", "/account/keys/actions/mint")[-1]["body"] == (
         b'{"workspace": "' + WORKSPACE_ID.encode() + b'", "name": "jane\'s agent"}'
     )
 
@@ -54,7 +54,7 @@ async def test_a_key_is_revoked_and_answers_which(tilo, api):
     answer = await tilo.keys.revoke("g-root")
 
     assert answer == {"revoked": "g-root"}
-    assert api.asked("DELETE", "/v1/keys/g-root")
+    assert api.asked("POST", "/account/keys/actions/revoke")[-1]["body"] == b'{"grant": "g-root"}'
     assert [key.grant for key in await tilo.keys.list()] == []
 
 
@@ -62,7 +62,9 @@ async def test_a_workspace_is_deleted_and_gone_from_the_listing(tilo, api):
     answer = await tilo.workspaces.delete("jane-doe")
 
     assert answer == {"deleted": WORKSPACE_ID, "revoked_keys": ["g-minted"]}
-    assert api.asked("DELETE", f"/v1/workspaces/{WORKSPACE_ID}")
+    assert api.asked("POST", "/account/workspaces/actions/delete")[-1]["body"] == (
+        b'{"workspace": "' + WORKSPACE_ID.encode() + b'"}'
+    )
     listed = await tilo.workspaces.list()
     assert WORKSPACE_ID not in [workspace.id for workspace in listed]
 
@@ -86,10 +88,10 @@ async def test_a_workspace_is_branched_into_a_new_one_of_the_persons_own(tilo, a
     assert branch.name == "jane-doe, second try"
     assert branch.role == "owner"
     assert branch.labels == {"customer_id": "cus_8121"}
-    call = api.asked("POST", "/branches")[-1]
-    assert call["path"] == f"/v1/workspaces/{WORKSPACE_ID}/branches"
+    call = api.asked("POST", "/workspaces/actions/branch")[-1]
     assert call["body"] == (
-        b'{"name": "jane-doe, second try", "labels": {"customer_id": "cus_8121"}}'
+        b'{"workspace": "' + WORKSPACE_ID.encode() + b'", "name": "jane-doe, second try", '
+        b'"labels": {"customer_id": "cus_8121"}}'
     )
     assert call["headers"]["idempotency-key"] == "cus_8121-retry"
     listed = await tilo.workspaces.list()
@@ -103,8 +105,8 @@ async def test_a_branch_asked_again_with_its_idempotency_key_is_the_same_branch(
 
     assert again.id == first.id
     assert api.ran["workspaces#branch"] == 1
-    assert api.asked("POST", "/branches")[-1]["path"] == (
-        f"/v1/workspaces/{created.id}/branches"
+    assert api.asked("POST", "/workspaces/actions/branch")[-1]["body"] == (
+        b'{"workspace": "' + created.id.encode() + b'", "name": "Acme"}'
     )
 
 
@@ -112,9 +114,8 @@ async def test_a_workspace_branches_itself(tilo, api):
     branch = await tilo.workspace("john-doe").branch("john-doe, audit")
 
     assert branch.name == "john-doe, audit"
-    call = api.asked("POST", "/branches")[-1]
-    assert call["path"] == f"/v1/workspaces/{OTHER_ID}/branches"
-    assert call["body"] == b'{"name": "john-doe, audit"}'
+    call = api.asked("POST", "/workspaces/actions/branch")[-1]
+    assert call["body"] == b'{"workspace": "' + OTHER_ID.encode() + b'", "name": "john-doe, audit"}'
     assert call["headers"]["idempotency-key"]
 
 
@@ -132,9 +133,11 @@ async def test_a_workspace_runs_commands_unattended_once_the_person_allows_it(ti
 
     ask = raised.value
     assert ask.invocation_id == f"unattended-{WORKSPACE_ID}"
-    call = api.asked("PUT", "/unattended")[-1]
-    assert call["path"] == f"/v1/workspaces/{WORKSPACE_ID}/unattended"
-    assert call["body"] == b'{"on": true}'
+    call = api.asked("POST", "/actions/unattended")[-1]
+    assert call["path"] == (
+        f"/v1/workspaces/{WORKSPACE_ID}/resources/account/workspaces/actions/unattended"
+    )
+    assert call["body"] == b'{"workspace": "' + WORKSPACE_ID.encode() + b'", "on": true}'
     listed = await tilo.workspaces.list()
     assert not listed.named(WORKSPACE_ID).unattended, "off until they answer"
 
@@ -158,7 +161,9 @@ async def test_running_commands_unattended_is_turned_off_without_asking(tilo, ap
     answer = await tilo.workspace("jane-doe").unattended(on=False)
 
     assert answer == {"workspace": WORKSPACE_ID, "unattended": False}
-    assert api.asked("PUT", "/unattended")[-1]["body"] == b'{"on": false}'
+    assert api.asked("POST", "/actions/unattended")[-1]["body"] == (
+        b'{"workspace": "' + WORKSPACE_ID.encode() + b'", "on": false}'
+    )
 
 
 async def test_a_minted_key_makes_a_client_of_its_own(tilo):
@@ -203,7 +208,7 @@ async def test_a_terminal_sign_in_shows_a_link_and_polls_for_the_key(tilo, api):
 async def test_the_account_says_what_its_workspaces_kept_and_ran(tilo, api):
     usage = await tilo.usage()
 
-    assert api.asked("GET", "/v1/account")
+    assert api.asked("GET", "/v1/resources/account/usage")
     assert usage.host == "api.test"
     assert usage.plan == "free"
     assert [row.workspace for row in usage.workspaces] == [WORKSPACE_ID, "other"]

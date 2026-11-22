@@ -101,7 +101,7 @@ fn a_program_of_this_login_answers_as_the_person_at_the_sessions_own_api() {
     let mut listed = serde_json::Value::Null;
     until(&mut session, "the desktop's workspace list", |_| {
         listed = runtime
-            .block_on(client.get("/v1/workspaces"))
+            .block_on(client.workspaces())
             .unwrap_or(serde_json::Value::Null);
         listed
             .get("workspaces")

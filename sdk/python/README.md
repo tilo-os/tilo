@@ -48,12 +48,13 @@ The sync client has the same surface without `await`: `from tilo import Tilo`.
   them as `Authorization: Bearer` over httpx. `AsyncTilo.host(key_file)`
   instead serves the same `/v1` routes in process, through the `tilo._native`
   extension, reaching the host the key file names as a device of the person.
-- **Account and workspaces.** `GET /v1/workspaces` lists what the key reaches,
-  `POST /v1/workspaces` makes one, `DELETE /v1/workspaces/{id}` deletes one
-  with everything in it. `POST /v1/workspaces/{id}/branches` branches one:
+- **Account and workspaces.** The account's actions, run as every action is
+  (`POST /v1/resources/account/workspaces/actions/list`): `workspaces#list`
+  lists what the key reaches, `#create` makes one, `#delete` deletes one with
+  everything in it, and `#branch` branches one:
   `await tilo.workspaces.branch(template, "Acme")` answers a new workspace of
   the person's own that starts with everything `template` holds and goes on
-  apart from it. `GET /v1/account` is the person's plan and what each
+  apart from it. `account/usage` is the person's plan and what each
   workspace keeps.
 - **Actions are invocations.** `await ws.do("notes/Todo#append-paragraph",
   text="Buy milk")` answers the result, or an `Invocation` if the host has not

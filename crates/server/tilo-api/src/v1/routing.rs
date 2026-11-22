@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn another_method_is_named_and_an_unknown_path_is_not_found() {
         assert_eq!(
-            find(&Method::PUT, "/v1/workspaces").unwrap_err(),
+            find(&Method::PUT, "/v1/workspaces/w/webhooks").unwrap_err(),
             Unmatched::Method(vec!["GET", "POST"])
         );
         assert_eq!(

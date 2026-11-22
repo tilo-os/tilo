@@ -13,11 +13,7 @@
   "tags": [
     {
       "name": "Account",
-      "description": "The API itself, the person's account and their workspaces"
-    },
-    {
-      "name": "Keys",
-      "description": "Keys a program holds, and the keys minted from them"
+      "description": "The API itself, and the key's account: the person's workspaces and keys"
     },
     {
       "name": "Resources",
@@ -103,392 +99,6 @@
         ]
       }
     },
-    "/v1/account": {
-      "get": {
-        "operationId": "getAccount",
-        "summary": "The person's plan and what each workspace keeps",
-        "tags": [
-          "Account"
-        ],
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The person's plan and what each workspace keeps",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Account"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces": {
-      "get": {
-        "operationId": "listWorkspaces",
-        "summary": "Every workspace the key reaches, wherever it is hosted",
-        "tags": [
-          "Account"
-        ],
-        "parameters": [
-          {
-            "name": "label",
-            "in": "query",
-            "required": false,
-            "style": "deepObject",
-            "explode": true,
-            "schema": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            },
-            "description": "Only the workspaces labelled so: `label[customer_id]=cus_8121`; several must all match"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Every workspace the key reaches, wherever it is hosted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkspaceList"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "createWorkspace",
-        "summary": "Make a workspace of the person's own",
-        "tags": [
-          "Account"
-        ],
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": "Make a workspace of the person's own",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Workspace"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NewWorkspace"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/branches": {
-      "post": {
-        "operationId": "branchWorkspace",
-        "summary": "Branch a workspace of the person's own: a new one of theirs that starts as its copy and goes on apart",
-        "tags": [
-          "Account"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": "Branch a workspace of the person's own: a new one of theirs that starts as its copy and goes on apart",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Workspace"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NewBranch"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/unattended": {
-      "put": {
-        "operationId": "setUnattended",
-        "summary": "Let keys made for this workspace alone run commands in its machine without asking each time, or ask again",
-        "tags": [
-          "Resources"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "It ran",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ActionAnswer"
-                }
-              }
-            }
-          },
-          "202": {
-            "description": "It has not finished, or waits for the person: follow `Location`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ActionAnswer"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UnattendedChange"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/name": {
-      "put": {
-        "operationId": "renameWorkspace",
-        "summary": "Name the workspace, for every list and device of it; its owners and moderators may",
-        "tags": [
-          "Resources"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Name the workspace, for every list and device of it; its owners and moderators may",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Workspace"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WorkspaceName"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}": {
-      "delete": {
-        "operationId": "deleteWorkspace",
-        "summary": "Delete a workspace of the person's own, with everything in it: final",
-        "tags": [
-          "Account"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Delete a workspace of the person's own, with everything in it: final",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeletedWorkspace"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/workspaces/{workspace}/export": {
       "get": {
         "operationId": "exportWorkspace",
@@ -537,14 +147,50 @@
         }
       }
     },
-    "/v1/keys": {
+    "/v1/resources": {
       "get": {
-        "operationId": "listKeys",
-        "summary": "This key and the keys it minted",
+        "operationId": "listAccountResources",
+        "summary": "What the key's account holds under a path (`account/workspaces`, `account/keys`): its rows and actions",
         "tags": [
-          "Keys"
+          "Account"
         ],
         "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "What to list: a resource path, or nothing for the apps"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Where the previous page ended"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "How many rows at most"
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "`resources` or `actions` only"
+          },
           {
             "$ref": "#/components/parameters/Invocation"
           },
@@ -554,11 +200,11 @@
         ],
         "responses": {
           "200": {
-            "description": "This key and the keys it minted",
+            "description": "What the key's account holds under a path (`account/workspaces`, `account/keys`): its rows and actions",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/KeyList"
+                  "$ref": "#/components/schemas/Listing"
                 }
               }
             }
@@ -574,14 +220,91 @@
             }
           }
         }
-      },
-      "post": {
-        "operationId": "mintKey",
-        "summary": "Mint a key reaching one workspace, for an agent there",
+      }
+    },
+    "/v1/resources/{path}": {
+      "get": {
+        "operationId": "readAccountResource",
+        "summary": "One resource of the key's account: `account/workspaces`, `account/keys`, `account/usage`",
         "tags": [
-          "Keys"
+          "Account"
         ],
         "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A resource path, each segment percent-encoded"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Where the previous page ended"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One resource of the key's account: `account/workspaces`, `account/keys`, `account/usage`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Resource"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/resources/{path}/actions/{action}": {
+      "post": {
+        "operationId": "runAccountAction",
+        "summary": "Run an action of the key's account (`account/workspaces#create`, `account/keys#mint`), its arguments as the body",
+        "tags": [
+          "Account"
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A resource path, each segment percent-encoded"
+          },
+          {
+            "name": "action",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The action's id"
+          },
           {
             "$ref": "#/components/parameters/Invocation"
           },
@@ -593,12 +316,22 @@
           }
         ],
         "responses": {
-          "201": {
-            "description": "Mint a key reaching one workspace, for an agent there",
+          "200": {
+            "description": "It ran",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MintedKey"
+                  "$ref": "#/components/schemas/ActionAnswer"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "It has not finished, or waits for the person: follow `Location`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionAnswer"
                 }
               }
             }
@@ -619,58 +352,8 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NewKey"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/keys/{grant}": {
-      "delete": {
-        "operationId": "revokeKey",
-        "summary": "Revoke this key or one it minted, and every key it minted",
-        "tags": [
-          "Keys"
-        ],
-        "parameters": [
-          {
-            "name": "grant",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The key's grant, as `GET /v1/keys` lists it"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Revoke this key or one it minted, and every key it minted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RevokedKey"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
+                "type": "object",
+                "description": "The action's arguments: x-tilo-actions names each action's schema"
               }
             }
           }
@@ -2468,11 +2151,6 @@
           "scope"
         ]
       },
-      "Account": {
-        "type": "object",
-        "additionalProperties": true,
-        "description": "The person's account on their host: their plan, and per workspace what it\nkeeps and the VM time it ran."
-      },
       "Workspace": {
         "type": "object",
         "properties": {
@@ -2514,89 +2192,6 @@
           "name"
         ],
         "description": "A workspace as the account lists it: what `/v1` answers, and what an MCP\nclient and the desktop read of the person's workspaces."
-      },
-      "WorkspaceList": {
-        "type": "object",
-        "properties": {
-          "workspaces": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Workspace"
-            }
-          }
-        },
-        "required": [
-          "workspaces"
-        ]
-      },
-      "NewWorkspace": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "labels": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "Labels for your programs to find it by, `customer_id` → `cus_8121`:\nat most 16, each name 1 to 63 of a-z, 0-9, `_`, `-` and `.`, each value\n1 to 256 printable characters. Only keys of yours read them; nobody\ninvited in does."
-          }
-        },
-        "required": [
-          "name"
-        ]
-      },
-      "NewBranch": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "labels": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "Labels for your programs to find it by, `customer_id` → `cus_8121`:\nat most 16, each name 1 to 63 of a-z, 0-9, `_`, `-` and `.`, each value\n1 to 256 printable characters. Only keys of yours read them; nobody\ninvited in does."
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": "A branch of a workspace: a new workspace of the person's own that starts\nwith everything the source holds and goes on apart from it."
-      },
-      "UnattendedChange": {
-        "type": "object",
-        "properties": {
-          "on": {
-            "type": "boolean",
-            "description": "`true` asks the person to let them, on their approving device, and\nholds for the branches made from the workspace too; `false` asks again\nfrom the next command on."
-          }
-        },
-        "required": [
-          "on"
-        ],
-        "description": "Whether keys made for a workspace alone run commands in its machine\nwithout asking the person each time."
-      },
-      "DeletedWorkspace": {
-        "type": "object",
-        "properties": {
-          "deleted": {
-            "type": "string"
-          },
-          "revoked_keys": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "The keys that reached only it, revoked with it.",
-            "default": []
-          }
-        },
-        "required": [
-          "deleted"
-        ]
       },
       "WorkspaceExport": {
         "type": "object",
@@ -2730,96 +2325,6 @@
           "error"
         ],
         "description": "One resource an export could not read, and why."
-      },
-      "KeyList": {
-        "type": "object",
-        "properties": {
-          "keys": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/KeyRow"
-            }
-          }
-        },
-        "required": [
-          "keys"
-        ]
-      },
-      "NewKey": {
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "type": "string",
-            "description": "The one workspace it reaches."
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "How History and the grants page name its agent."
-          },
-          "expires_in": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "uint64",
-            "minimum": 0,
-            "description": "Seconds until it expires; at most this key's own lifetime and 89 days."
-          }
-        },
-        "required": [
-          "workspace"
-        ]
-      },
-      "MintedKey": {
-        "type": "object",
-        "properties": {
-          "grant": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "token": {
-            "type": "string",
-            "description": "The key itself: shown once."
-          },
-          "workspace": {
-            "type": "string"
-          },
-          "mcp_url": {
-            "type": "string",
-            "description": "Where an agent connects with it over MCP."
-          },
-          "expires_at_ms": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "uint64",
-            "minimum": 0
-          }
-        },
-        "required": [
-          "grant",
-          "name",
-          "token",
-          "workspace",
-          "mcp_url"
-        ]
-      },
-      "RevokedKey": {
-        "type": "object",
-        "properties": {
-          "revoked": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "revoked"
-        ]
       },
       "Listing": {
         "type": "object",
@@ -3188,19 +2693,6 @@
           "shown"
         ],
         "description": "What an app's window shows for a resource: its view's semantic lines, the\nsame ones an MCP client's `tilo_view` prints, and a picture with `picture`."
-      },
-      "WorkspaceName": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "1 to 80 characters."
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": "What the workspace is called from now on, by every list and device of it."
       },
       "Program": {
         "type": "object",

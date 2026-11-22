@@ -154,11 +154,7 @@ fn parameters() -> Value {
 const TAGS: &[(&str, &str)] = &[
     (
         "Account",
-        "The API itself, the person's account and their workspaces",
-    ),
-    (
-        "Keys",
-        "Keys a program holds, and the keys minted from them",
+        "The API itself, and the key's account: the person's workspaces and keys",
     ),
     (
         "Resources",
@@ -178,9 +174,6 @@ const TAGS: &[(&str, &str)] = &[
 
 /// The group `path` is listed in: by its first segment inside a workspace.
 fn tag_of(path: &str) -> &'static str {
-    if path.starts_with("/v1/keys") {
-        return "Keys";
-    }
     let Some(inside) = path.strip_prefix("/v1/workspaces/{workspace}/") else {
         return "Account";
     };
@@ -192,8 +185,6 @@ fn tag_of(path: &str) -> &'static str {
         Some("webhooks") => "Webhooks",
         Some("uploads" | "content") => "Files",
         Some("programs") => "Programs",
-        // A branch is another workspace of the account's.
-        Some("branches") => "Account",
         _ => "Resources",
     }
 }
@@ -207,7 +198,6 @@ fn path_parameter(name: &str) -> &'static str {
         "action" => "The action's id",
         "invocation" => "The invocation, as an action answered it",
         "content" => "`tilo.content:<hash>`, as an upload or an action answered it",
-        "grant" => "The key's grant, as `GET /v1/keys` lists it",
         "webhook" => "The webhook's id, as its creation answered it",
         "upload" => "The upload's id, chosen by the caller when it opened the upload",
         _ => "",
@@ -225,13 +215,6 @@ fn operation_of(operation: &Operation) -> Value {
         })
         .collect();
     parameters.extend(operation.query.iter().map(|(name, description)| {
-        if *name == super::LABEL_QUERY {
-            // Labels, each its own parameter: `label[customer_id]=cus_8121`.
-            return json!({"name": name, "in": "query", "required": false,
-                          "style": "deepObject", "explode": true,
-                          "schema": {"type": "object", "additionalProperties": {"type": "string"}},
-                          "description": description});
-        }
         json!({"name": name, "in": "query", "required": false, "schema": {"type": "string"},
                "description": description})
     }));
@@ -350,24 +333,9 @@ mod tests {
             schemas["notes.notebook.rename.Arguments"]["required"],
             json!(["title"])
         );
-        // A branch is made from the workspace the path names, of the body's
-        // name and labels, and answered as any workspace made is.
-        let branch = &described["paths"]["/v1/workspaces/{workspace}/branches"]["post"];
-        assert_eq!(branch["operationId"], "branchWorkspace");
-        assert_eq!(branch["tags"], json!(["Account"]));
-        assert_eq!(
-            branch["requestBody"]["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/NewBranch"
-        );
-        assert_eq!(
-            branch["responses"]["201"]["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/Workspace"
-        );
-        assert_eq!(
-            schemas["NewBranch"]["properties"]["labels"],
-            schemas["NewWorkspace"]["properties"]["labels"],
-            "a branch is labelled as a workspace made is"
-        );
-        assert_eq!(schemas["NewBranch"]["required"], json!(["name"]));
+        // The account's actions are run as any action is, outside every workspace.
+        let run = &described["paths"]["/v1/resources/{path}/actions/{action}"]["post"];
+        assert_eq!(run["operationId"], "runAccountAction");
+        assert_eq!(run["tags"], json!(["Account"]));
     }
 }

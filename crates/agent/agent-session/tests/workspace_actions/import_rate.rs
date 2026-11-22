@@ -181,12 +181,15 @@ async fn import_beside_the_person() -> (Vec<List>, Vec<Call>) {
     let (status, made) = importer
         .send(
             hyper::Method::POST,
-            "/v1/workspaces",
+            "/v1/resources/account/workspaces/actions/create",
             &json!({ "name": "Team" }),
         )
         .await;
-    assert_eq!(status, 201, "{made}");
-    let base = format!("/v1/workspaces/{}", made["id"].as_str().unwrap());
+    assert_eq!(status, 200, "{made}");
+    let base = format!(
+        "/v1/workspaces/{}",
+        made["result"]["workspace"]["id"].as_str().unwrap()
+    );
     importer.act(&base, "tasks", "open", &json!({})).await;
     let issues = "tasks%2Ftasks.issues";
     // The tracker takes writes once the workspace serves the key's session, as

@@ -8,13 +8,15 @@
 //!
 //! - **Pinned** (a one-workspace grant): the session serves that one
 //!   workspace. It cannot name another: the server admits the grant nowhere
-//!   else, and the server offers no tool that lists or makes workspaces.
+//!   else; the account it reaches is its own keys ([`crate::account`]).
 //! - **Account** (an all-workspaces grant): the session offers the
 //!   workspace tools with one more argument, `workspace`. A call naming a
 //!   workspace is served in it, entering it the first time; a call naming
-//!   none acts on the account itself, which the server answers:
-//!   `account/workspaces#create`, `account/keys#mint` and the rest
-//!   ([`crate::account`]).
+//!   none walks the account's tree alone: `account/workspaces#create`,
+//!   `account/keys#mint` and the rest.
+//!
+//! Every tree a session walks publishes the account beside the workspace's own actions
+//! ([`crate::account::Joined`]), so its actions are reached as any other is.
 //!
 //! A program the API runs (`POST …/programs`) runs in a program session of
 //! its own: the `tilo` tool's session (its `let`s, the references its answers
@@ -25,8 +27,8 @@
 //! first.
 //!
 //! A server inside a Tilo desktop serving its own person ([`Here`]) forwards nothing: the
-//! desktop answers each workspace itself, and the account's own actions (making, branching and
-//! deleting workspaces, keys) are not answered there.
+//! desktop answers each workspace itself, and lists its workspaces; the account's other actions
+//! go to the server its login reaches, where there is one.
 //!
 //! The session's name is the person's: the client's name and a number of
 //! their own sessions ("Claude Code #2"), which History groups the session's
@@ -34,10 +36,7 @@
 //! does, while the session lives: the host is the session's one voice, so the
 //! server says nothing of it itself.
 
-pub mod keys;
-pub mod models;
-pub mod unattended;
-
+use crate::account::{Account, Joined, ROOT_TREE};
 pub use crate::server::Workspace;
 use crate::server::{Connection, ServerError};
 use crate::store::Scope;
@@ -90,9 +89,6 @@ pub type Provider = Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>;
 /// the workspace's actions. The API's routes call it typed; the MCP endpoint speaks MCP over it.
 struct Served {
     server: McpServer<Provider>,
-    /// One of the person's devices keeps the workspace, and answers its actions
-    /// itself: the server holds nothing of it.
-    on_device: bool,
 }
 
 /// A workspace as the desktop here reaches it.
@@ -138,6 +134,7 @@ pub fn held(id: String, name: String) -> Workspace {
 }
 
 /// How a session reaches the person's workspaces.
+#[derive(Clone)]
 pub(crate) enum Reach {
     /// The grant's own connection, to wherever the call is forwarded.
     Forwarded(Arc<Connection>),
@@ -166,8 +163,10 @@ pub struct Session {
     caller: tilo_actions::remote::Caller,
     /// How the session reaches the workspaces.
     reach: Reach,
-    /// The server, which answers the account's own actions.
-    server: std::sync::Weak<crate::Server>,
+    /// The account's actions, in every tree the session walks.
+    account: Account,
+    /// The account's tree alone, which a call naming no workspace walks.
+    own: McpServer<Provider>,
     /// The sessions in the workspaces it reaches, by [`queue`], each entered
     /// under its own lock.
     served: tokio::sync::Mutex<HashMap<String, Entered<Served>>>,
@@ -223,25 +222,37 @@ impl Session {
     }
 
     pub(crate) fn new(
-        grant: String,
+        grant: &crate::store::Grant,
         scope: Scope,
         label: String,
         cert: &tilo_user_identity::DeviceCert,
         reach: Reach,
         server: std::sync::Weak<crate::Server>,
     ) -> Self {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let person = hex::encode(cert.user_public_key);
+        let caller = tilo_actions::remote::Caller::authenticated(
+            cert.user_public_key,
+            cert.device_public_key,
+        );
+        let account = Account::new(server, grant.clone(), reach.clone(), caller.clone());
+        let grant = grant.id.clone();
+        let own = McpServer::new(
+            Joined::provider(ROOT_TREE, None, account.clone()),
+            ROOT_TREE.to_owned(),
+            person.clone(),
+        )
+        .with_agent_session(&id);
         Self {
             grant,
             scope,
             label,
-            id: uuid::Uuid::new_v4().simple().to_string(),
-            person: hex::encode(cert.user_public_key),
-            caller: tilo_actions::remote::Caller::authenticated(
-                cert.user_public_key,
-                cert.device_public_key,
-            ),
+            id,
+            person,
+            caller,
             reach,
-            server,
+            account,
+            own,
             served: tokio::sync::Mutex::default(),
             programs: tokio::sync::Mutex::default(),
             tools: Mutex::default(),
@@ -261,14 +272,6 @@ impl Session {
             .last_used
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
-    }
-
-    /// The grant's own connection, for the account's own actions.
-    pub(crate) fn connection(&self) -> Result<Arc<Connection>, Refusal> {
-        match &self.reach {
-            Reach::Forwarded(connection) => Ok(Arc::clone(connection)),
-            Reach::Here(here) => here.connection().ok_or(Refusal::NoAccountHere),
-        }
     }
 
     /// Whether the session still reaches its workspaces.
@@ -327,20 +330,18 @@ impl Session {
                     return Err(Refusal::NotFound);
                 }
                 let reached = here.enter(workspace).map_err(Refusal::Unavailable)?;
-                let server =
-                    McpServer::for_person(reached.provider, workspace.to_owned(), &reached.person)
-                        .with_work_group(tilo_actions::WorkGroup {
-                            id: format!("{}-{}", self.id, program.unwrap_or_default()),
-                            label: Some(self.label.clone()),
-                            kind: "api".into(),
-                            declared_id: None,
-                            session: None,
-                        })
-                        .with_task_hosts(Some(reached.tasks));
-                let held = Arc::new(Served {
-                    server,
-                    on_device: false,
-                });
+                let provider =
+                    Joined::provider(workspace, Some(reached.provider), self.account.clone());
+                let server = McpServer::for_person(provider, workspace.to_owned(), &reached.person)
+                    .with_work_group(tilo_actions::WorkGroup {
+                        id: format!("{}-{}", self.id, program.unwrap_or_default()),
+                        label: Some(self.label.clone()),
+                        kind: "api".into(),
+                        declared_id: None,
+                        session: None,
+                    })
+                    .with_task_hosts(Some(reached.tasks));
+                let held = Arc::new(Served { server });
                 *entered = Some(Arc::clone(&held));
                 drop(entered);
                 return Ok(held);
@@ -363,14 +364,12 @@ impl Session {
             .remote(&endpoint, &device.endpoint_addr, workspace);
             Served {
                 server: self.agent_surface(Arc::new(actions), workspace),
-                on_device: true,
             }
         } else {
             let id = connection.server().enter(connection, workspace).await?;
             Served {
                 server: self
                     .agent_surface(Arc::new(connection.device.workspace_actions(id)), workspace),
-                on_device: false,
             }
         };
         let held = Arc::new(held);
@@ -379,8 +378,10 @@ impl Session {
         Ok(held)
     }
 
-    /// The agent surface over `actions`, the actions of `workspace`, in this session.
+    /// The agent surface over `actions`, the actions of `workspace`, with the account's beside
+    /// them, in this session.
     fn agent_surface(&self, actions: Provider, workspace: &str) -> McpServer<Provider> {
+        let actions = Joined::provider(workspace, Some(actions), self.account.clone());
         let catalogue =
             tilo_mcp::task_hosts::WorkspaceCatalogue::new(Arc::clone(&actions), self.caller());
         McpServer::new(actions, workspace.to_owned(), self.person.clone())
@@ -389,26 +390,6 @@ impl Session {
                 Some(&self.person),
                 Arc::new(catalogue),
             ))))
-    }
-
-    /// Whether one of the person's devices keeps `workspace`, as the session entered it, or as
-    /// their list says before it does.
-    async fn on_device(&self, workspace: &str, program: Option<&str>) -> bool {
-        if !matches!(self.reach, Reach::Forwarded(_)) {
-            return false;
-        }
-        let slot = self
-            .served
-            .lock()
-            .await
-            .get(&queue(workspace, program))
-            .cloned();
-        if let Some(entered) = slot.as_ref().and_then(|slot| slot.try_lock().ok())
-            && let Some(held) = entered.as_ref()
-        {
-            return held.on_device;
-        }
-        self.device_address(workspace).await.is_some()
     }
 
     /// Answer `request` in `workspace`'s session, showing the person what a
@@ -421,31 +402,6 @@ impl Session {
     /// names one.
     async fn serve_in(&self, workspace: &str, program: Option<&str>, request: Value) -> Reply {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let looking = timing_start();
-        let on_device = self.on_device(workspace, program).await;
-        timing_done("api.device", looking);
-        // The server answers the unattended runs of a workspace it keeps; a device
-        // that keeps one answers them itself.
-        if !on_device
-            && matches!(self.reach, Reach::Forwarded(_))
-            && request.get("method").and_then(Value::as_str) == Some("tools/call")
-        {
-            let tool = request
-                .pointer("/params/name")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let arguments = request.pointer("/params/arguments").unwrap_or(&Value::Null);
-            let structured = request
-                .pointer("/params/_meta/so.tilo.mcp/structured")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            if unattended::addresses(tool, arguments) {
-                let answered = self
-                    .unattended(workspace, tool, arguments, structured)
-                    .await;
-                return Reply::one(result(&id, &answered));
-            }
-        }
         let entering = timing_start();
         let served = match self.served(workspace, program).await {
             Ok(held) => held,
@@ -524,29 +480,6 @@ impl Session {
     pub(crate) async fn handle(&self, request: Value) -> Reply {
         self.touch();
         if let Some(workspace) = self.pinned().map(str::to_owned) {
-            if let (Some(id), Some("tools/call")) = (
-                request.get("id"),
-                request.get("method").and_then(Value::as_str),
-            ) {
-                let tool = request
-                    .pointer("/params/name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let arguments = request.pointer("/params/arguments").unwrap_or(&Value::Null);
-                let structured = request
-                    .pointer("/params/_meta/so.tilo.mcp/structured")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                if let Some(refused) = crate::account::beyond_workspace(tool, arguments, structured)
-                {
-                    return Reply::one(result(id, &refused));
-                }
-                // Its workspace answers a call in it; the account answers the
-                // keys the key holds there.
-                if crate::account::on_account(tool, arguments) {
-                    return self.account(id, tool, arguments, structured).await;
-                }
-            }
             return Box::pin(self.serve(&workspace, request)).await;
         }
         let id = request.get("id").cloned();
@@ -584,26 +517,13 @@ impl Session {
         if uuid::Uuid::parse_str(named).is_ok() {
             return Some(named.to_owned());
         }
-        let listed = self
-            .account(
-                &json!("resolve"),
-                "tilo_ls",
-                &json!({"path": "account/workspaces"}),
-                true,
-            )
-            .await;
-        let rows = listed
-            .messages
-            .first()?
-            .pointer("/result/structuredContent/rows")?
-            .as_array()?;
         let wanted = named.trim().to_lowercase().replace(' ', "-");
-        rows.iter().find_map(|row| {
-            let label = row.get("label").and_then(Value::as_str)?;
-            (label.trim().to_lowercase().replace(' ', "-") == wanted)
-                .then(|| row.get("name").and_then(Value::as_str).map(str::to_owned))
-                .flatten()
-        })
+        self.workspaces(&Labels::new())
+            .await
+            .ok()?
+            .into_iter()
+            .find(|workspace| workspace.name.trim().to_lowercase().replace(' ', "-") == wanted)
+            .map(|workspace| workspace.id)
     }
 
     fn known_tools(&self) -> Option<Vec<Value>> {
@@ -634,39 +554,23 @@ impl Session {
         Some(tools)
     }
 
+    /// A call of an account session: in the workspace it names, or on the account's tree when
+    /// it names none.
     async fn account_call(&self, id: &Value, mut request: Value) -> Reply {
-        let name = request
-            .pointer("/params/name")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        let arguments = request
+        let named = request
             .pointer("/params/arguments")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        let named = arguments
-            .get(WORKSPACE_ARGUMENT)
+            .and_then(|arguments| arguments.get(WORKSPACE_ARGUMENT))
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let resolved = match named {
-            Some(named) => Some(self.workspace_id(&named).await.unwrap_or(named)),
-            None => None,
-        };
-        let Some(workspace) = resolved else {
-            if crate::account::addresses(&name, &arguments) {
-                let structured = request
-                    .pointer("/params/_meta/so.tilo.mcp/structured")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                return self.account(id, &name, &arguments, structured).await;
+        let Some(named) = named else {
+            if !on_account(request.pointer("/params/arguments")) {
+                return Reply::one(error(id, -32602, NAME_THE_WORKSPACE));
             }
-            return Reply::one(error(
-                id,
-                -32602,
-                "name the workspace this acts in: `workspace`, its id or its name as \
-                 account/workspaces#list answers them; only paths under `account` need none",
-            ));
+            return Box::pin(self.own.handle(request))
+                .await
+                .map_or_else(Reply::accepted, Reply::one);
         };
+        let workspace = self.workspace_id(&named).await.unwrap_or(named);
         if let Some(arguments) = request
             .pointer_mut("/params/arguments")
             .and_then(Value::as_object_mut)
@@ -678,38 +582,6 @@ impl Session {
             self.learn_tools(&workspace).await;
         }
         reply
-    }
-
-    /// Answer a call on the account. The first workspace made is where the
-    /// workspace tools come from: the client is told its tools changed, so
-    /// it lists them again.
-    async fn account(&self, id: &Value, name: &str, arguments: &Value, structured: bool) -> Reply {
-        let Some(server) = self.server.upgrade() else {
-            return Reply::one(error(id, -32000, "the server is shutting down"));
-        };
-        let answered = server
-            .account_call(&self.grant, self, name, arguments, structured)
-            .await;
-        let created = answered
-            .pointer("/structuredContent/result/workspace/id")
-            .or_else(|| answered.pointer("/structuredContent/result/workspace"))
-            .and_then(Value::as_str)
-            .filter(|_| name == "tilo_do")
-            .map(str::to_owned);
-        let answer = result(id, &answered);
-        if let Some(created) = created
-            && self.known_tools().is_none()
-            && self.learn_tools(&created).await.is_some()
-        {
-            return Reply {
-                messages: vec![
-                    json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"}),
-                    answer,
-                ],
-                status: 200,
-            };
-        }
-        Reply::one(answer)
     }
 
     /// Call `tool` with `arguments` in `workspace` (`None` for the account, or for the one
@@ -734,30 +606,19 @@ impl Session {
             (Some(pinned), Some(asked)) if pinned != asked => {
                 return Err(beyond_scope());
             }
-            (Some(pinned), _) => {
-                // Its workspace answers a call in it; the account answers the keys it holds
-                // there.
-                if let Some(refused) = crate::account::beyond_workspace(tool, &arguments, true) {
-                    return structured(&refused);
-                }
-                if crate::account::on_account(tool, &arguments) {
-                    return self.account_typed(tool, &arguments).await;
-                }
-                pinned.to_owned()
-            }
+            (Some(pinned), _) => pinned.to_owned(),
             (None, Some(named)) => self
                 .workspace_id(named)
                 .await
                 .unwrap_or_else(|| named.to_owned()),
-            (None, None) if crate::account::addresses(tool, &arguments) => {
-                return self.account_typed(tool, &arguments).await;
+            (None, None) if on_account(Some(&arguments)) => {
+                return Box::pin(self.own.typed(tool, arguments, group))
+                    .await
+                    .map_err(|refused| {
+                        ApiError::of_answer(Some(&refused.error), refused.action.as_ref())
+                    });
             }
-            (None, None) => {
-                return Err(ApiError::new(
-                    "invalid_request",
-                    "name the workspace this acts in; only paths under `account` need none",
-                ));
-            }
+            (None, None) => return Err(ApiError::new("invalid_request", NAME_THE_WORKSPACE)),
         };
         self.typed_in(&workspace, None, tool, arguments, group)
             .await
@@ -773,31 +634,15 @@ impl Session {
         arguments: Value,
         group: Option<Value>,
     ) -> Result<Value, ApiError> {
-        // The server answers the unattended runs of a workspace it keeps; a device
-        // that keeps one answers them itself.
-        if unattended::addresses(tool, &arguments)
-            && matches!(self.reach, Reach::Forwarded(_))
-            && !self.on_device(workspace, program).await
-        {
-            return structured(&self.unattended(workspace, tool, &arguments, true).await);
-        }
         let served = self.served(workspace, program).await?;
         Box::pin(served.server.typed(tool, arguments, group))
             .await
             .map_err(|refused| ApiError::of_answer(Some(&refused.error), refused.action.as_ref()))
     }
 
-    /// The account's own answer to `tool`: what it typed.
-    async fn account_typed(&self, tool: &str, arguments: &Value) -> Result<Value, ApiError> {
-        let server = self
-            .server
-            .upgrade()
-            .ok_or_else(|| ApiError::new("unavailable", "the server is shutting down"))?;
-        structured(
-            &server
-                .account_call(&self.grant, self, tool, arguments, true)
-                .await,
-        )
+    /// The account's actions, as this session reaches them.
+    pub(crate) const fn account(&self) -> &Account {
+        &self.account
     }
 
     /// Run `arguments` (the `tilo` tool's: `{program, confirm}`) in
@@ -877,32 +722,18 @@ fn queue(workspace: &str, program: Option<&str>) -> String {
     program.map_or_else(|| workspace.to_owned(), |id| format!("{workspace} {id}"))
 }
 
-/// The typed result in a tool result made as MCP (the account's own answers, the workspace's
-/// people, a workspace a device of the person's hosts), or its refusal. A result said in words
-/// alone (`{status, text}`) typed nothing: the words are why.
-fn structured(answer: &Value) -> Result<Value, ApiError> {
-    let said = answer
-        .pointer("/content/0/text")
+/// Why a call of an account session that names no workspace was refused.
+const NAME_THE_WORKSPACE: &str = "name the workspace this acts in: `workspace`, its id or its \
+name as account/workspaces#list answers them; only paths under `account` need none";
+
+/// Whether a call with `arguments` and no workspace walks the account's tree: a path under
+/// `account`, or none, which lists it.
+fn on_account(arguments: Option<&Value>) -> bool {
+    let path = arguments
+        .and_then(|arguments| arguments.get("path"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let typed = answer
-        .get("structuredContent")
-        .ok_or_else(|| ApiError::new("failed", said))?;
-    let status = typed.get("status").and_then(Value::as_str);
-    match typed.get("text").and_then(Value::as_str) {
-        Some(words) if typed.as_object().is_some_and(|fields| fields.len() == 2) => {
-            let code = if status == Some("failed") {
-                "failed"
-            } else {
-                "not_found"
-            };
-            Err(ApiError::new(code, words))
-        }
-        _ if status == Some("failed") => {
-            Err(ApiError::of_answer(typed.get("error"), typed.get("action")))
-        }
-        _ => Ok(typed.clone()),
-    }
+    path.is_empty() || path.split(['/', '#']).next() == Some("account")
 }
 
 /// What an account session is told first: how to reach the account and its
@@ -931,7 +762,7 @@ path lists: its people (`workspace/members`), its open invitations (`workspace/i
 the servers keeping it (`workspace/servers`), the versions of apps and the bots it \
 uses (`workspace/apps`) and its mail accounts (`workspace/mail-accounts`). \
 A command an agent runs in a workspace's Linux machine (`terminal#run`) asks the person each \
-time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}` asks them once \
+time; `tilo_do {path: \"account/workspaces#unattended\", args: {workspace, on: true}}` asks them once \
 to let keys minted for that workspace alone run commands there without asking (and in branches \
 made from it), answering `pending` until they decide; this key itself is still asked, and \
 `{on: false}` asks again from the next command. \

@@ -63,16 +63,16 @@ describe.skipIf(!KEY_FILE)("the native part on a real host", () => {
     const h = host();
     const name = `native-${crypto.randomUUID().slice(0, 8)}`;
     const retried = { "idempotency-key": name };
-    const made = await whole(h, "POST", "/v1/workspaces", { name }, retried);
-    expect(made.status).toBe(201);
-    const again = await whole(h, "POST", "/v1/workspaces", { name }, retried);
-    expect(again.json.id).toBe(made.json.id);
+    const made = await whole(h, "POST", "/v1/resources/account/workspaces/actions/create", { name }, retried);
+    expect(made.status).toBe(200);
+    const again = await whole(h, "POST", "/v1/resources/account/workspaces/actions/create", { name }, retried);
+    expect(again.json.result.workspace.id).toBe(made.json.result.workspace.id);
 
-    const listed = await whole(h, "GET", "/v1/workspaces");
+    const listed = await whole(h, "POST", "/v1/resources/account/workspaces/actions/list", {});
     expect(listed.status).toBe(200);
-    expect(JSON.stringify(listed.json)).toContain(made.json.id);
+    expect(JSON.stringify(listed.json)).toContain(made.json.result.workspace.id);
 
-    const workspace = made.json.id;
+    const workspace = made.json.result.workspace.id;
     const opened = await whole(h, "POST", `/v1/workspaces/${workspace}/resources/tasks/actions/open`, {});
     expect(opened.status).toBe(200);
     const apps = await whole(h, "GET", `/v1/workspaces/${workspace}/resources`);
@@ -82,8 +82,8 @@ describe.skipIf(!KEY_FILE)("the native part on a real host", () => {
 
   test("a workspace's events stream as they happen", async () => {
     const h = host();
-    const made = await whole(h, "POST", "/v1/workspaces", { name: "native-events" });
-    const workspace = made.json.id;
+    const made = await whole(h, "POST", "/v1/resources/account/workspaces/actions/create", { name: "native-events" });
+    const workspace = made.json.result.workspace.id;
     const reply = await h.request("GET", `/v1/workspaces/${workspace}/events`, {}, new Uint8Array());
     expect(reply.status).toBe(200);
     expect(reply.headers["content-type"]).toStartWith("text/event-stream");

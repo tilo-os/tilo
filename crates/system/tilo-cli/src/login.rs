@@ -581,7 +581,7 @@ pub fn login(ticket: &str, agent: Option<&str>) -> Result<ExitCode> {
 
 /// The workspace this computer's daemon serves before a login exists: the one it founded.
 async fn founded_workspace(client: &Client) -> Result<String> {
-    let listed = client.get("/v1/workspaces").await?;
+    let listed = client.workspaces().await?;
     listed
         .get("workspaces")
         .and_then(Value::as_array)

@@ -111,64 +111,6 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         )
         .json(200, "ApiInfo"),
         op(
-            "getAccount",
-            Method::GET,
-            "/v1/account",
-            "The person's plan and what each workspace keeps",
-        )
-        .json(200, "Account"),
-        op(
-            "listWorkspaces",
-            Method::GET,
-            "/v1/workspaces",
-            "Every workspace the key reaches, wherever it is hosted",
-        )
-        .query(&[(
-            super::LABEL_QUERY,
-            "Only the workspaces labelled so: `label[customer_id]=cus_8121`; several must all match",
-        )])
-        .json(200, "WorkspaceList"),
-        op(
-            "createWorkspace",
-            Method::POST,
-            "/v1/workspaces",
-            "Make a workspace of the person's own",
-        )
-        .body(Body::Json("NewWorkspace"))
-        .json(201, "Workspace"),
-        op(
-            "branchWorkspace",
-            Method::POST,
-            "/v1/workspaces/{workspace}/branches",
-            "Branch a workspace of the person's own: a new one of theirs that starts as its copy and goes on apart",
-        )
-        .body(Body::Json("NewBranch"))
-        .json(201, "Workspace"),
-        op(
-            "setUnattended",
-            Method::PUT,
-            "/v1/workspaces/{workspace}/unattended",
-            "Let keys made for this workspace alone run commands in its machine without asking each time, or ask again",
-        )
-        .body(Body::Json("UnattendedChange"))
-        .answers(Answer::Action),
-        op(
-            "renameWorkspace",
-            Method::PUT,
-            "/v1/workspaces/{workspace}/name",
-            "Name the workspace, for every list and device of it; its owners and moderators may",
-        )
-        .body(Body::Json("WorkspaceName"))
-        .json(200, "Workspace"),
-        op(
-            "deleteWorkspace",
-            Method::DELETE,
-            "/v1/workspaces/{workspace}",
-            "Delete a workspace of the person's own, with everything in it: final",
-        )
-        .mutating()
-        .json(200, "DeletedWorkspace"),
-        op(
             "exportWorkspace",
             Method::GET,
             "/v1/workspaces/{workspace}/export",
@@ -176,28 +118,29 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         )
         .json(200, "WorkspaceExport"),
         op(
-            "listKeys",
+            "listAccountResources",
             Method::GET,
-            "/v1/keys",
-            "This key and the keys it minted",
+            "/v1/resources",
+            "What the key's account holds under a path (`account/workspaces`, `account/keys`): its rows and actions",
         )
-        .json(200, "KeyList"),
+        .query(PAGE)
+        .json(200, "Listing"),
         op(
-            "mintKey",
+            "readAccountResource",
+            Method::GET,
+            "/v1/resources/{path}",
+            "One resource of the key's account: `account/workspaces`, `account/keys`, `account/usage`",
+        )
+        .query(&[("cursor", "Where the previous page ended")])
+        .json(200, "Resource"),
+        op(
+            "runAccountAction",
             Method::POST,
-            "/v1/keys",
-            "Mint a key reaching one workspace, for an agent there",
+            "/v1/resources/{path}/actions/{action}",
+            "Run an action of the key's account (`account/workspaces#create`, `account/keys#mint`), its arguments as the body",
         )
-        .body(Body::Json("NewKey"))
-        .json(201, "MintedKey"),
-        op(
-            "revokeKey",
-            Method::DELETE,
-            "/v1/keys/{grant}",
-            "Revoke this key or one it minted, and every key it minted",
-        )
-        .mutating()
-        .json(200, "RevokedKey"),
+        .body(Body::Arguments)
+        .answers(Answer::Action),
         op(
             "listResources",
             Method::GET,

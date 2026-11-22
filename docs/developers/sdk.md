@@ -21,8 +21,8 @@ is `tilo`: plain `tilo` on PyPI is another project's name, so only the distribut
 
 The CLI calls [`/v1`](api.md): `POST
 /v1/workspaces/<workspace>/resources/<path>/actions/<action>` for an action,
-`POST /v1/workspaces` for one more workspace,
-`POST /v1/workspaces/<workspace>/branches` for a branch of one. It reaches the API through an
+`POST /v1/resources/account/workspaces/actions/create` for one more workspace,
+`…/actions/branch` for a branch of one. It reaches the API through an
 API server with `TILO_API_KEY`, or with no server at all: on a computer `tilo
 login` made one of your devices, through the process holding that device's
 session, and for a script, as a key of its own in process (`tilo keys export

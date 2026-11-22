@@ -57,6 +57,31 @@ impl V1<'_> {
             .await;
         json_of(reply).await
     }
+
+    /// Run the account's `action` (`workspaces#create`) as any action is run: the status, and
+    /// what it answered, or why it was refused.
+    async fn account(
+        &self,
+        action: &str,
+        body: &Value,
+        extra: &[(&'static str, &str)],
+    ) -> (u16, Value) {
+        let (status, answer) = self.post(&account_action(action), body, extra).await;
+        (
+            status,
+            if status == 200 {
+                answer["result"].clone()
+            } else {
+                answer
+            },
+        )
+    }
+}
+
+/// Where the account's `action` (`keys#revoke`) is run.
+fn account_action(action: &str) -> String {
+    let (resource, action) = action.split_once('#').expect("resource#action");
+    format!("/v1/resources/account/{resource}/actions/{action}")
 }
 
 /// A webhook's receiver: a server on this machine that takes every delivery, and what it
@@ -170,14 +195,17 @@ async fn a_webhook_of_a_hosted_api_is_delivered() {
         token: approved_key(&on_server, &ada, &page, "Visa backend").await,
     };
     let (status, made) = backend
-        .post(
-            "/v1/workspaces",
+        .account(
+            "workspaces#create",
             &json!({"name": "Applicant: Jane Doe"}),
             &[],
         )
         .await;
-    assert_eq!(status, 201, "{made}");
-    let base = format!("/v1/workspaces/{}", made["id"].as_str().unwrap());
+    assert_eq!(status, 200, "{made}");
+    let base = format!(
+        "/v1/workspaces/{}",
+        made["workspace"]["id"].as_str().unwrap()
+    );
 
     let receiver = HookReceiver::start();
     let beside = test_http::Responder::silent();
@@ -282,13 +310,13 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
     // A workspace, made once however often the same request is retried.
     let new = json!({"name": "Applicant: Jane Doe"});
     let retry = [("idempotency-key", "make-jane")];
-    let (status, made) = backend.post("/v1/workspaces", &new, &retry).await;
-    assert_eq!(status, 201, "{made}");
-    let workspace = made["id"].as_str().unwrap().to_owned();
+    let (status, made) = backend.account("workspaces#create", &new, &retry).await;
+    assert_eq!(status, 200, "{made}");
+    let workspace = made["workspace"]["id"].as_str().unwrap().to_owned();
     let replayed = backend
         .send(
             hyper::Method::POST,
-            "/v1/workspaces",
+            &account_action("workspaces#create"),
             new.to_string().as_bytes(),
             &retry,
         )
@@ -296,17 +324,21 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
     assert_eq!(replayed.headers()["idempotent-replayed"], "true");
     let (_, again) = json_of(replayed).await;
     assert_eq!(
-        again["id"], made["id"],
+        again["result"]["workspace"]["id"], made["workspace"]["id"],
         "a retry answers the first workspace"
     );
     let (status, conflict) = backend
-        .post("/v1/workspaces", &json!({"name": "Someone else"}), &retry)
+        .account(
+            "workspaces#create",
+            &json!({"name": "Someone else"}),
+            &retry,
+        )
         .await;
     assert_eq!(
         (status, &conflict["error"]["code"]),
         (409, &json!("idempotency_conflict"))
     );
-    let (status, listed) = backend.get("/v1/workspaces").await;
+    let (status, listed) = backend.account("workspaces#list", &json!({}), &[]).await;
     assert_eq!(status, 200, "{listed}");
     let named = listed["workspaces"]
         .as_array()
@@ -459,13 +491,13 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
 
     // A key for that workspace alone reaches it and nothing else.
     let (status, minted) = backend
-        .post(
-            "/v1/keys",
+        .account(
+            "keys#mint",
             &json!({"workspace": workspace, "name": "Jane's agent"}),
             &[],
         )
         .await;
-    assert_eq!(status, 201, "{minted}");
+    assert_eq!(status, 200, "{minted}");
     let agent = V1 {
         api: &api,
         token: minted["token"].as_str().unwrap().to_owned(),
@@ -483,7 +515,7 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
         "{others}"
     );
     let (status, minting) = agent
-        .post("/v1/keys", &json!({"workspace": workspace}), &[])
+        .account("keys#mint", &json!({"workspace": workspace}), &[])
         .await;
     assert!(status >= 400, "a minted key mints none: {minting}");
 
@@ -502,7 +534,7 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
         api: &second,
         token: minted["token"].as_str().unwrap().to_owned(),
     };
-    let (status, listed) = elsewhere.get("/v1/keys").await;
+    let (status, listed) = elsewhere.account("keys#list", &json!({}), &[]).await;
     assert_eq!(status, 200, "{listed}");
     assert_eq!(
         listed["keys"][0]["grant"], minted["grant"],
@@ -514,16 +546,16 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
     let (status, revoked) = json_of(
         backend
             .send(
-                hyper::Method::DELETE,
-                &format!("/v1/keys/{}", minted["grant"].as_str().unwrap()),
-                b"",
+                hyper::Method::POST,
+                &account_action("keys#revoke"),
+                json!({"grant": minted["grant"]}).to_string().as_bytes(),
                 &[("idempotency-key", "revoke-jane")],
             )
             .await,
     )
     .await;
     assert_eq!(status, 200, "{revoked}");
-    let (status, refused) = elsewhere.get("/v1/keys").await;
+    let (status, refused) = elsewhere.account("keys#list", &json!({}), &[]).await;
     assert_eq!(
         (status, &refused["error"]["code"]),
         (401, &json!("key_revoked")),
@@ -532,26 +564,24 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
 
     // Deleting the workspace revokes the key that reached only it.
     let (status, minted) = backend
-        .post(
-            "/v1/keys",
+        .account(
+            "keys#mint",
             &json!({"workspace": workspace, "name": "Jane's second agent"}),
             &[],
         )
         .await;
-    assert_eq!(status, 201, "{minted}");
+    assert_eq!(status, 200, "{minted}");
     let agent = V1 {
         api: &api,
         token: minted["token"].as_str().unwrap().to_owned(),
     };
-    let deleted = backend
-        .send(
-            hyper::Method::DELETE,
-            &base,
-            b"",
+    let (status, deleted) = backend
+        .account(
+            "workspaces#delete",
+            &json!({ "workspace": workspace }),
             &[("idempotency-key", "drop-jane")],
         )
         .await;
-    let (status, deleted) = json_of(deleted).await;
     assert_eq!(status, 200, "{deleted}");
     assert_eq!(
         deleted["revoked_keys"],
@@ -588,10 +618,17 @@ async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
         token: script.clone(),
     };
     let (status, made) = working
-        .post("/v1/workspaces", &json!({"name": "Imported issues"}), &[])
+        .account(
+            "workspaces#create",
+            &json!({"name": "Imported issues"}),
+            &[],
+        )
         .await;
-    assert_eq!(status, 201, "{made}");
-    let base = format!("/v1/workspaces/{}", made["id"].as_str().unwrap());
+    assert_eq!(status, 200, "{made}");
+    let base = format!(
+        "/v1/workspaces/{}",
+        made["workspace"]["id"].as_str().unwrap()
+    );
     let (listing, reading, writing) = (
         format!("{base}/resources"),
         format!("{base}/resources/tasks/tasks.issues"),
@@ -623,15 +660,26 @@ async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
     )
     .reaching_at(on_server.hosted.web.host_info().clone());
     let computer = tilo_api::direct::Direct::new(&file).unwrap();
+    let json = [("content-type".to_owned(), "application/json".to_owned())];
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let listed_script = loop {
-        let (status, listed) = json_of(computer.request("GET", "/v1/keys", &[], b"").await).await;
+        let (status, listed) = json_of(
+            computer
+                .request("POST", &account_action("keys#list"), &json, b"{}")
+                .await,
+        )
+        .await;
         assert_eq!(status, 200, "{listed}");
-        if let Some(row) = listed["keys"].as_array().into_iter().flatten().find(|row| {
-            row["name"]
-                .as_str()
-                .is_some_and(|name| name == "Linear import")
-        }) {
+        if let Some(row) = listed["result"]["keys"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|row| {
+                row["name"]
+                    .as_str()
+                    .is_some_and(|name| name == "Linear import")
+            })
+        {
             break row.clone();
         }
         assert!(
@@ -647,20 +695,33 @@ async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
     );
     let grant = listed_script["grant"].as_str().unwrap().to_owned();
 
-    let revoking = [(
-        "idempotency-key".to_owned(),
-        "revoke-linear-import".to_owned(),
-    )];
+    let revoking = [
+        json[0].clone(),
+        (
+            "idempotency-key".to_owned(),
+            "revoke-linear-import".to_owned(),
+        ),
+    ];
     let (status, revoked) = json_of(
         computer
-            .request("DELETE", &format!("/v1/keys/{grant}"), &revoking, b"")
+            .request(
+                "POST",
+                &account_action("keys#revoke"),
+                &revoking,
+                json!({ "grant": grant }).to_string().as_bytes(),
+            )
             .await,
     )
     .await;
     assert_eq!(status, 200, "{revoked}");
-    let (_, listed) = json_of(computer.request("GET", "/v1/keys", &[], b"").await).await;
+    let (_, listed) = json_of(
+        computer
+            .request("POST", &account_action("keys#list"), &json, b"{}")
+            .await,
+    )
+    .await;
     assert!(
-        listed["keys"]
+        listed["result"]["keys"]
             .as_array()
             .into_iter()
             .flatten()
@@ -712,7 +773,7 @@ async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
         api: &anew,
         token: working.token.clone(),
     };
-    let (status, refused) = script.get("/v1/keys").await;
+    let (status, refused) = script.account("keys#list", &json!({}), &[]).await;
     assert_eq!(
         (status, &refused["error"]["code"]),
         (401, &json!("key_revoked")),
@@ -755,20 +816,39 @@ async fn a_key_its_program_holds_reaches_the_host_directly() {
     ];
     let (status, made) = json_of(
         direct
-            .request("POST", "/v1/workspaces", &retried, new.as_bytes())
+            .request(
+                "POST",
+                &account_action("workspaces#create"),
+                &retried,
+                new.as_bytes(),
+            )
             .await,
     )
     .await;
-    assert_eq!(status, 201, "{made}");
+    assert_eq!(status, 200, "{made}");
+    let made = &made["result"]["workspace"];
     let (_, again) = json_of(
         direct
-            .request("POST", "/v1/workspaces", &retried, new.as_bytes())
+            .request(
+                "POST",
+                &account_action("workspaces#create"),
+                &retried,
+                new.as_bytes(),
+            )
             .await,
     )
     .await;
-    assert_eq!(again["id"], made["id"], "a retry makes no second workspace");
+    assert_eq!(
+        again["result"]["workspace"]["id"], made["id"],
+        "a retry makes no second workspace"
+    );
     let workspace = made["id"].as_str().unwrap();
-    let (status, listed) = json_of(direct.request("GET", "/v1/workspaces", &[], b"").await).await;
+    let (status, listed) = json_of(
+        direct
+            .request("POST", &account_action("workspaces#list"), &json, b"{}")
+            .await,
+    )
+    .await;
     assert_eq!(status, 200, "{listed}");
     assert!(listed.to_string().contains(workspace), "{listed}");
     let (status, opened) = json_of(
@@ -881,10 +961,13 @@ pub(super) async fn own_workspace(
         token: approved_key(on_server, person, page, "Visa backend").await,
     };
     let (status, made) = backend
-        .post("/v1/workspaces", &json!({"name": "Ada's notes"}), &[])
+        .account("workspaces#create", &json!({"name": "Ada's notes"}), &[])
         .await;
-    assert_eq!(status, 201, "{made}");
-    made["id"].as_str().expect("a workspace").to_owned()
+    assert_eq!(status, 200, "{made}");
+    made["workspace"]["id"]
+        .as_str()
+        .expect("a workspace")
+        .to_owned()
 }
 
 /// The process holding the session of `person`'s computer `tilo login` made a
@@ -1230,10 +1313,13 @@ async fn a_hosted_workspace_streams_changes_finds_and_undoes_runs() {
         token: approved_key(&on_server, &ada, &page, "Notes backend").await,
     };
     let (status, made) = backend
-        .post("/v1/workspaces", &json!({"name": "Letters"}), &[])
+        .account("workspaces#create", &json!({"name": "Letters"}), &[])
         .await;
-    assert_eq!(status, 201, "{made}");
-    let base = format!("/v1/workspaces/{}", made["id"].as_str().unwrap());
+    assert_eq!(status, 200, "{made}");
+    let base = format!(
+        "/v1/workspaces/{}",
+        made["workspace"]["id"].as_str().unwrap()
+    );
     let mut stream = backend
         .send(hyper::Method::GET, &format!("{base}/events"), b"", &[])
         .await
@@ -1329,11 +1415,11 @@ async fn a_file_larger_than_one_request_goes_up_in_pieces_that_resume() {
         token: approved_key(&served, &ada, &page, "Visa backend").await,
     };
     let (_, made) = backend
-        .post("/v1/workspaces", &json!({"name": "Contracts"}), &[])
+        .account("workspaces#create", &json!({"name": "Contracts"}), &[])
         .await;
     let base = format!(
         "/v1/workspaces/{}/uploads",
-        made["id"].as_str().expect("a workspace")
+        made["workspace"]["id"].as_str().expect("a workspace")
     );
     // A file of the size one request would not carry, its bytes all
     // different so a piece lost or doubled shows.
@@ -1421,7 +1507,7 @@ async fn a_file_larger_than_one_request_goes_up_in_pieces_that_resume() {
             hyper::Method::GET,
             &format!(
                 "/v1/workspaces/{}/content/{}",
-                made["id"].as_str().unwrap(),
+                made["workspace"]["id"].as_str().unwrap(),
                 content.as_str().unwrap()
             ),
             b"",
@@ -1455,10 +1541,13 @@ async fn a_call_reaches_the_server_that_keeps_the_workspace_though_another_answe
             token: token.clone(),
         };
         let (status, made) = home
-            .post("/v1/workspaces", &json!({"name": "Contracts"}), &[])
+            .account("workspaces#create", &json!({"name": "Contracts"}), &[])
             .await;
-        assert_eq!(status, 201, "{made}");
-        let workspace = made["id"].as_str().expect("a workspace").to_owned();
+        assert_eq!(status, 200, "{made}");
+        let workspace = made["workspace"]["id"]
+            .as_str()
+            .expect("a workspace")
+            .to_owned();
 
         // What the test rests on: the other server lets her key's device connect and lists
         // nothing for it, and her own keeps the workspace.
@@ -1514,7 +1603,7 @@ async fn a_call_reaches_the_server_that_keeps_the_workspace_though_another_answe
             status, 200,
             "a call for her workspace reaches the server that keeps it: {held}"
         );
-        let (status, listed) = through.get("/v1/workspaces").await;
+        let (status, listed) = through.account("workspaces#list", &json!({}), &[]).await;
         assert_eq!(status, 200, "{listed}");
         assert!(
             listed["workspaces"]
@@ -1548,7 +1637,7 @@ async fn a_key_works_at_every_api_server() {
         api: &second,
         token: token.clone(),
     };
-    let (status, listed) = elsewhere.get("/v1/workspaces").await;
+    let (status, listed) = elsewhere.account("workspaces#list", &json!({}), &[]).await;
     assert_eq!(status, 200, "{listed}");
     assert!(listed["workspaces"].is_array(), "{listed}");
 
@@ -1557,7 +1646,7 @@ async fn a_key_works_at_every_api_server() {
         api: &served.api,
         token,
     };
-    let (status, listed) = home.get("/v1/workspaces").await;
+    let (status, listed) = home.account("workspaces#list", &json!({}), &[]).await;
     assert_eq!(status, 200, "{listed}");
 }
 
@@ -1575,7 +1664,7 @@ async fn a_call_is_served_after_the_host_it_used_goes_away() {
             api: &on_server.api,
             token: token.clone(),
         };
-        let (status, listed) = home.get("/v1/workspaces").await;
+        let (status, listed) = home.account("workspaces#list", &json!({}), &[]).await;
         assert_eq!(status, 200, "{listed}");
 
         // The server the call used stops serving; another takes the key's calls.
@@ -1593,7 +1682,7 @@ async fn a_call_is_served_after_the_host_it_used_goes_away() {
             api: &second,
             token,
         };
-        let (status, listed) = elsewhere.get("/v1/workspaces").await;
+        let (status, listed) = elsewhere.account("workspaces#list", &json!({}), &[]).await;
         assert_eq!(status, 200, "{listed}");
     })
     .await;
@@ -1628,7 +1717,7 @@ async fn no_host_that_can_read_the_workspace_is_a_typed_refusal() {
         api: &nowhere,
         token,
     };
-    let (status, refused) = backend.get("/v1/workspaces").await;
+    let (status, refused) = backend.account("workspaces#list", &json!({}), &[]).await;
     assert_eq!(status, 503, "{refused}");
     assert_eq!(refused["error"]["code"], "unavailable", "{refused}");
     let message = refused["error"]["message"].as_str().unwrap_or_default();
@@ -1702,10 +1791,13 @@ async fn a_key_made_for_a_script_reaches_the_workspaces_stores_as_its_persons_ag
             token: token.clone(),
         };
         let (status, made) = backend
-            .post("/v1/workspaces", &json!({"name": "Ada's own"}), &[])
+            .account("workspaces#create", &json!({"name": "Ada's own"}), &[])
             .await;
-        assert_eq!(status, 201, "{made}");
-        let workspace = made["id"].as_str().expect("a workspace").to_owned();
+        assert_eq!(status, 200, "{made}");
+        let workspace = made["workspace"]["id"]
+            .as_str()
+            .expect("a workspace")
+            .to_owned();
 
         let holder = Arc::new(tilo_api::server::Server::new(
             served.hosted.web.host_info().clone(),

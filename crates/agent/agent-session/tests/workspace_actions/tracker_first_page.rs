@@ -47,12 +47,15 @@ async fn first_page_after_a_restart(size: usize) -> Duration {
         let (status, workspace) = agent
             .send(
                 hyper::Method::POST,
-                "/v1/workspaces",
+                "/v1/resources/account/workspaces/actions/create",
                 json!({"name": "Company"}).to_string().as_bytes(),
             )
             .await;
-        assert_eq!(status, 201, "{workspace}");
-        let base = format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap());
+        assert_eq!(status, 200, "{workspace}");
+        let base = format!(
+            "/v1/workspaces/{}",
+            workspace["result"]["workspace"]["id"].as_str().unwrap()
+        );
         agent.act(&base, "tasks", "open", &json!({})).await;
         agent.act(&base, "contacts", "open", &json!({})).await;
         for start in (0..size).step_by(LONG_LIST) {

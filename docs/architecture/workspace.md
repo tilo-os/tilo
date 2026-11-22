@@ -859,8 +859,7 @@ The source is read and never changed.
 **A workspace a host keeps.** A host that keeps workspaces of people's own
 (tilo.sh) branches one of them as the host operation `workspace.branch-own`
 {`workspace`, `name`, `branch`?, `labels`?}, beside `workspace.create-own`; the
-API offers it as `POST /v1/workspaces/{workspace}/branches` and the account
-action `account/workspaces#branch`. Only the person who owns the source
+API offers it as the account action `account/workspaces#branch`. Only the person who owns the source
 branches it, from a device of theirs or a key reaching all their workspaces; a
 key for one workspace makes none, and someone else's workspace is not theirs
 to branch. The host is a member of every channel of the workspaces it governs,

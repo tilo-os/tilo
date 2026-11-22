@@ -122,13 +122,16 @@ async fn workspace(agent: &Agent<'_>, name: &str) -> (String, String) {
     let (status, made) = agent
         .send(
             hyper::Method::POST,
-            "/v1/workspaces",
+            "/v1/resources/account/workspaces/actions/create",
             json!({ "name": name }).to_string().as_bytes(),
             "application/json",
         )
         .await;
-    assert_eq!(status, 201, "{made}");
-    let id = made["id"].as_str().unwrap().to_owned();
+    assert_eq!(status, 200, "{made}");
+    let id = made["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     (format!("/v1/workspaces/{id}"), id)
 }
 

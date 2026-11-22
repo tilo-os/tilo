@@ -76,23 +76,29 @@ async fn call(session: &mut Mcp<'_>, tool: &str, arguments: Value) -> (u16, Valu
 }
 
 /// The ids `token` lists among its workspaces.
-async fn listed(api: &Arc<Server>, token: &str, query: &str) -> Vec<String> {
+async fn listed(api: &Arc<Server>, token: &str, labels: &Value) -> Vec<String> {
     let (status, list) = rest(
         api,
         token,
-        hyper::Method::GET,
-        &format!("/v1/workspaces{query}"),
-        b"",
+        hyper::Method::POST,
+        &account_action("workspaces#list"),
+        json!({ "labels": labels }).to_string().as_bytes(),
         &[],
     )
     .await;
     assert_eq!(status, 200, "{list}");
-    list["workspaces"]
+    list["result"]["workspaces"]
         .as_array()
         .unwrap()
         .iter()
         .map(|row| row["id"].as_str().unwrap().to_owned())
         .collect()
+}
+
+/// Where the account's `action` (`keys#mint`) is run.
+fn account_action(action: &str) -> String {
+    let (resource, action) = action.split_once('#').expect("resource#action");
+    format!("/v1/resources/account/{resource}/actions/{action}")
 }
 
 /// What `path` with `args` answered once it finished: a pending answer is
@@ -228,12 +234,13 @@ async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
                 &api,
                 &key,
                 hyper::Method::POST,
-                "/v1/workspaces",
+                &account_action("workspaces#create"),
                 body.to_string().as_bytes(),
                 &[("idempotency-key", retry.as_str())],
             )
             .await;
-            assert_eq!(status, 201, "{made}");
+            assert_eq!(status, 200, "{made}");
+            let made = &made["result"]["workspace"];
             assert_eq!(made["labels"]["customer_id"], id.as_str(), "{made}");
             (customer, made["id"].as_str().unwrap().to_owned())
         });
@@ -249,7 +256,7 @@ async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
         &api,
         &key,
         hyper::Method::POST,
-        "/v1/workspaces",
+        &account_action("workspaces#create"),
         json!({"name": "Applicant 0", "labels": {"customer_id": "cus_0", "batch": "spring"}})
             .to_string()
             .as_bytes(),
@@ -257,18 +264,27 @@ async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
     )
     .await;
     assert!(status < 300, "{again}");
-    assert_eq!(again["id"], workspaces[0].as_str(), "{again}");
+    assert_eq!(
+        again["result"]["workspace"]["id"],
+        workspaces[0].as_str(),
+        "{again}"
+    );
 
     // The batch lists whole; each customer's id finds its one workspace; a
     // label nobody has finds none.
-    let batch = listed(&api, &key, "?label%5Bbatch%5D=spring").await;
+    let batch = listed(&api, &key, &json!({"batch": "spring"})).await;
     assert_eq!(batch.len(), CUSTOMERS, "{batch:?}");
     for (customer, workspace) in workspaces.iter().enumerate() {
-        let found = listed(&api, &key, &format!("?label[customer_id]=cus_{customer}")).await;
+        let found = listed(
+            &api,
+            &key,
+            &json!({ "customer_id": format!("cus_{customer}") }),
+        )
+        .await;
         assert_eq!(found, std::slice::from_ref(workspace));
     }
     assert!(
-        listed(&api, &key, "?label[customer_id]=cus_x")
+        listed(&api, &key, &json!({"customer_id": "cus_x"}))
             .await
             .is_empty()
     );
@@ -292,7 +308,7 @@ async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
         &api,
         &key,
         hyper::Method::POST,
-        "/v1/workspaces",
+        &account_action("workspaces#create"),
         br#"{"name": "x", "labels": {"Customer ID": "1"}}"#,
         &[],
     )
@@ -307,12 +323,13 @@ async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
             &api,
             &key,
             hyper::Method::POST,
-            "/v1/keys",
+            &account_action("keys#mint"),
             json!({"workspace": workspace}).to_string().as_bytes(),
             &[],
         )
         .await;
-        assert_eq!(status, 201, "{key}");
+        assert_eq!(status, 200, "{key}");
+        let key = key["result"].clone();
         assert_eq!(
             key["mcp_url"],
             format!("{ISSUER}/w/{workspace}/mcp").as_str(),
@@ -328,7 +345,7 @@ async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
             let url = key["mcp_url"].as_str().unwrap().to_owned();
             work(&api, &url, &token, &format!("Checklist of cus_{customer}")).await;
             // Its key lists its own workspace, and no other.
-            let own = listed(&api, &token, "").await;
+            let own = listed(&api, &token, &json!({})).await;
             assert_eq!(own, [key["workspace"].as_str().unwrap()]);
         });
     }
@@ -354,14 +371,14 @@ async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
         let (status, revoked) = rest(
             &api,
             &key,
-            hyper::Method::DELETE,
-            &format!("/v1/keys/{grant}"),
-            b"",
+            hyper::Method::POST,
+            &account_action("keys#revoke"),
+            json!({ "grant": grant }).to_string().as_bytes(),
             &[],
         )
         .await;
         assert_eq!(status, 200, "{revoked}");
-        assert_eq!(revoked["revoked"], grant, "{revoked}");
+        assert_eq!(revoked["result"]["revoked"], grant, "{revoked}");
     }
     for (customer, agent) in open.iter_mut().enumerate() {
         let (status, listed) = call(agent, "tilo_ls", json!({})).await;
@@ -414,9 +431,9 @@ async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
             let (status, deleted) = rest(
                 &api,
                 &key,
-                hyper::Method::DELETE,
-                &format!("/v1/workspaces/{workspace}"),
-                b"",
+                hyper::Method::POST,
+                &account_action("workspaces#delete"),
+                json!({ "workspace": workspace }).to_string().as_bytes(),
                 &[],
             )
             .await;
@@ -426,14 +443,18 @@ async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
     while let Some(deleted) = deleting.join_next().await {
         deleted.unwrap();
     }
-    assert!(listed(&api, &key, "?label[batch]=spring").await.is_empty());
+    assert!(
+        listed(&api, &key, &json!({"batch": "spring"}))
+            .await
+            .is_empty()
+    );
     for key in &minted {
         let (status, refused) = rest(
             &api,
             key["token"].as_str().unwrap(),
-            hyper::Method::GET,
-            "/v1/workspaces",
-            b"",
+            hyper::Method::POST,
+            &account_action("workspaces#list"),
+            b"{}",
             &[],
         )
         .await;
@@ -506,26 +527,29 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
                 &api,
                 &key,
                 hyper::Method::POST,
-                "/v1/workspaces",
+                &account_action("workspaces#create"),
                 json!({"name": name, "labels": {"customer_id": name}})
                     .to_string()
                     .as_bytes(),
                 &[],
             )
             .await;
-            assert_eq!(status, 201, "{made}");
-            let workspace = made["id"].as_str().unwrap().to_owned();
+            assert_eq!(status, 200, "{made}");
+            let workspace = made["result"]["workspace"]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
             let (status, minted) = rest(
                 &api,
                 &key,
                 hyper::Method::POST,
-                "/v1/keys",
+                &account_action("keys#mint"),
                 json!({"workspace": workspace}).to_string().as_bytes(),
                 &[],
             )
             .await;
-            assert_eq!(status, 201, "{minted}");
-            (workspace, minted)
+            assert_eq!(status, 200, "{minted}");
+            (workspace, minted["result"].clone())
         }
     };
     let (a, a_key) = make("cus_a").await;
@@ -580,9 +604,15 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
                 "{tool} {arguments} at {path} answered B's: {answer}"
             );
         }
-        // The account is beyond it: no listing of B, no deleting or minting there.
+        // The account is beyond it: its list is A alone, and nothing is deleted or
+        // minted there.
+        let listing = session
+            .tilo_do(json!({"path": "account/workspaces#list", "args": {}}))
+            .await;
+        let rows = &listing["result"]["structuredContent"]["result"]["workspaces"];
+        assert_eq!(rows.as_array().map(Vec::len), Some(1), "{listing}");
+        assert_eq!(rows[0]["id"], a.as_str(), "{listing}");
         for (action, args) in [
-            ("account/workspaces#list", json!({})),
             ("account/workspaces#delete", json!({"workspace": b})),
             ("account/keys#mint", json!({"workspace": b})),
             ("account/keys#revoke", json!({"grant": b_grant})),
@@ -604,8 +634,6 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
     for operation in tilo_api::v1::operations::OPERATIONS.iter() {
         let route = route_against(operation.path, &b, &b_page, &b_content, &b_grant);
         let body = match operation.id {
-            "createWorkspace" => json!({"name": "cus_c"}),
-            "mintKey" => json!({"workspace": b}),
             "runProgram" => json!({"program": "notes"}),
             "createWebhook" => json!({"url": "https://example.com/hook"}),
             _ => json!({"title": PLANTED}),
@@ -631,7 +659,7 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
                 "{} {route}",
                 operation.id
             );
-        } else if !matches!(operation.id, "getApi" | "listWorkspaces" | "listKeys") {
+        } else if !matches!(operation.id, "getApi" | "listAccountResources") {
             assert!(
                 status >= 400,
                 "{} {route} ran for A's key: {status} {answer}",
@@ -640,7 +668,10 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
         }
     }
     // A's key lists A alone, and only its own key.
-    assert_eq!(listed(&api, &a_token, "").await, std::slice::from_ref(&a));
+    assert_eq!(
+        listed(&api, &a_token, &json!({})).await,
+        std::slice::from_ref(&a)
+    );
 
     // B is as its agent left it: its page, its file, its key.
     let mut b_agent = mcp(&api, &format!("/w/{b}/mcp"), &b_token);
@@ -663,5 +694,8 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
         !pages.iter().any(|row| row.to_string().contains(PLANTED)),
         "{pages:?}"
     );
-    assert_eq!(listed(&api, &key, "?label[customer_id]=cus_b").await, [b]);
+    assert_eq!(
+        listed(&api, &key, &json!({"customer_id": "cus_b"})).await,
+        [b]
+    );
 }

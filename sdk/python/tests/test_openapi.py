@@ -24,7 +24,7 @@ def contract() -> Contract:
 
 def call(
     method: str = "GET",
-    path: str = "/v1/workspaces",
+    path: str = "/v1/workspaces/11111111-2222-3333-4444-555555555555/webhooks",
     *,
     query: dict[str, str] | None = None,
     body: bytes = b"",
@@ -49,7 +49,8 @@ def answer(body: Any, status: int = 200, content_type: str = "application/json")
     )
 
 
-LISTED = {"workspaces": [{"id": "11111111-2222-3333-4444-555555555555", "name": "jane-doe"}]}
+HOOKS = "/v1/workspaces/11111111-2222-3333-4444-555555555555/webhooks"
+LISTED = {"webhooks": [{"id": "h1", "url": "https://example.test/hook", "events": []}]}
 
 
 def test_a_documented_exchange_passes(contract: Contract) -> None:
@@ -64,20 +65,20 @@ def test_a_path_the_spec_does_not_name_is_refused(contract: Contract) -> None:
 def test_a_method_the_path_does_not_route_is_refused(contract: Contract) -> None:
     with pytest.raises(ContractError, match="declares no PATCH"):
         contract.check(
-            call("PATCH", "/v1/workspaces", body=b"{}", content_type="application/json"),
+            call("PATCH", HOOKS, body=b"{}", content_type="application/json"),
             answer({}),
         )
 
 
 def test_an_answer_with_an_undeclared_property_is_refused(contract: Contract) -> None:
-    listed = {"workspaces": [{"id": "x", "name": "jane-doe", "bogus": 1}]}
+    listed = {"webhooks": [{"id": "x", "url": "https://x", "events": [], "bogus": 1}]}
     with pytest.raises(ContractError, match="bogus is not a property the spec names"):
         contract.check(call(), answer(listed))
 
 
 def test_an_answer_short_a_required_property_is_refused(contract: Contract) -> None:
-    with pytest.raises(ContractError, match="has no `name`"):
-        contract.check(call(), answer({"workspaces": [{"id": "x"}]}))
+    with pytest.raises(ContractError, match="has no `url`"):
+        contract.check(call(), answer({"webhooks": [{"id": "x", "events": []}]}))
 
 
 def test_a_refusal_shaped_like_something_else_is_refused(contract: Contract) -> None:
@@ -88,12 +89,12 @@ def test_a_refusal_shaped_like_something_else_is_refused(contract: Contract) -> 
 
 
 def test_a_body_with_an_undeclared_property_is_refused(contract: Contract) -> None:
-    sent = b'{"name": "x", "bogus": true}'
+    sent = b'{"url": "https://x", "bogus": true}'
     # A 201 answer, as the route declares, so only the request is at fault.
     with pytest.raises(ContractError, match=r"body\.bogus is not a property"):
         contract.check(
-            call("POST", "/v1/workspaces", body=sent, content_type="application/json"),
-            answer({"id": "x", "name": "x"}, 201),
+            call("POST", HOOKS, body=sent, content_type="application/json"),
+            answer({"id": "x", "url": "https://x", "events": []}, 201),
         )
 
 

@@ -326,6 +326,33 @@ impl Client {
         Ok(answer.json())
     }
 
+    /// Run `action` on the account's `resource` (`account/workspaces`,
+    /// `create`), which no workspace holds: what it answered. One put to the person, who has
+    /// not answered yet, is refused as waiting for them: it is done once they allow it.
+    pub async fn account(&self, resource: &str, action: &str, args: &Value) -> Result<Value> {
+        let path = format!("/v1/resources/{}/actions/{action}", encode_path(resource));
+        let mut answer = self.post(&path, args).await?;
+        if answer.get("status").and_then(Value::as_str) == Some("pending") {
+            return Err(anyhow::Error::new(Refusal {
+                code: crate::v1::AWAITING_APPROVAL.to_owned(),
+                message: "Waiting for your approval: Tilo asks you on the devices that hold \
+                          your identity (your Tilo tab). It is done once you allow it there."
+                    .to_owned(),
+                retry_after_ms: None,
+            }));
+        }
+        Ok(answer
+            .get_mut("result")
+            .map_or_else(|| serde_json::json!({}), Value::take))
+    }
+
+    /// The workspaces this key reaches, as `account/workspaces#list` lists
+    /// them: `{"workspaces": [...]}`.
+    pub async fn workspaces(&self) -> Result<Value> {
+        self.account("account/workspaces", "list", &serde_json::json!({}))
+            .await
+    }
+
     /// `PUT path` with `body` as its JSON, under a new idempotency key: the
     /// answer.
     pub async fn put(&self, path: &str, body: &Value) -> Result<Value> {
@@ -365,7 +392,7 @@ impl Client {
     }
 
     /// The workspace `named`: an id as it is, or the workspace of that name
-    /// this key reaches, as `GET /v1/workspaces` lists them. Every command
+    /// this key reaches, as `account/workspaces#list` lists them. Every command
     /// that takes `-w` resolves its name here, whatever the key is: a name
     /// two of them share is refused, each named by its id, and so is one none
     /// of them answers to, with the ones the key does reach.
@@ -373,7 +400,9 @@ impl Client {
         if is_uuid(named) {
             return Ok(named.to_owned());
         }
-        let listed = self.get("/v1/workspaces").await?;
+        let listed = self
+            .account("account/workspaces", "list", &serde_json::json!({}))
+            .await?;
         let workspaces = listed
             .get("workspaces")
             .and_then(Value::as_array)
@@ -1229,14 +1258,14 @@ mod tests {
                 status: 403,
                 body: serde_json::json!({"error": {"code": "beyond_scope",
                     "message": "this key does not reach that workspace",
-                    "next_steps": ["GET /v1/workspaces names the workspaces it reaches"]}})
+                    "next_steps": ["account/workspaces#list names the workspaces it reaches"]}})
                 .to_string()
                 .into_bytes(),
             };
             assert_eq!(
                 answer.refused().to_string(),
                 "this key does not reach that workspace (beyond_scope)\n  \
-             GET /v1/workspaces names the workspaces it reaches"
+             account/workspaces#list names the workspaces it reaches"
             );
             let bare = Answer {
                 status: 500,
@@ -1478,7 +1507,7 @@ mod tests {
             },
         };
         let began = Instant::now();
-        let listed = client.get("/v1/workspaces").await.unwrap();
+        let listed = client.get("/v1/resources").await.unwrap();
         assert!(
             listed.get("workspaces").is_some(),
             "the call answered once the workspace served it: {listed}"

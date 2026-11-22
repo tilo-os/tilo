@@ -6,8 +6,6 @@
 //! JSON as the app gives them; their types are the app's surface, which the
 //! description carries per app ([`super::openapi`]).
 
-use std::collections::BTreeMap;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
@@ -62,51 +60,7 @@ pub struct ApiInfo {
     pub key: Option<KeyRow>,
 }
 
-/// The person's account on their host: their plan, and per workspace what it
-/// keeps and the VM time it ran.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Account(pub Map<String, Value>);
-
 pub use crate::server::Workspace;
-
-/// Whether keys made for a workspace alone run commands in its machine
-/// without asking the person each time.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct UnattendedChange {
-    /// `true` asks the person to let them, on their approving device, and
-    /// holds for the branches made from the workspace too; `false` asks again
-    /// from the next command on.
-    pub on: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WorkspaceList {
-    pub workspaces: Vec<Workspace>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewWorkspace {
-    pub name: String,
-    /// Labels for your programs to find it by, `customer_id` → `cus_8121`:
-    /// at most 16, each name 1 to 63 of a-z, 0-9, `_`, `-` and `.`, each value
-    /// 1 to 256 printable characters. Only keys of yours read them; nobody
-    /// invited in does.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub labels: BTreeMap<String, String>,
-}
-
-/// A branch of a workspace: a new workspace of the person's own that starts
-/// with everything the source holds and goes on apart from it.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewBranch {
-    pub name: String,
-    /// Labels for your programs to find it by, `customer_id` → `cus_8121`:
-    /// at most 16, each name 1 to 63 of a-z, 0-9, `_`, `-` and `.`, each value
-    /// 1 to 256 printable characters. Only keys of yours read them; nobody
-    /// invited in does.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub labels: BTreeMap<String, String>,
-}
 
 /// One resource an export could not read, and why.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -130,14 +84,6 @@ pub struct WorkspaceExport {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct DeletedWorkspace {
-    pub deleted: String,
-    /// The keys that reached only it, revoked with it.
-    #[serde(default)]
-    pub revoked_keys: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct KeyRow {
     pub grant: String,
     pub name: String,
@@ -158,40 +104,6 @@ pub struct KeyRow {
     pub expires_at_ms: Option<u64>,
     #[serde(default)]
     pub browser_pages: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct KeyList {
-    pub keys: Vec<KeyRow>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewKey {
-    /// The one workspace it reaches.
-    pub workspace: String,
-    /// How History and the grants page name its agent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// Seconds until it expires; at most this key's own lifetime and 89 days.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_in: Option<u64>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct MintedKey {
-    pub grant: String,
-    pub name: String,
-    /// The key itself: shown once.
-    pub token: String,
-    pub workspace: String,
-    /// Where an agent connects with it over MCP.
-    pub mcp_url: String,
-    pub expires_at_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct RevokedKey {
-    pub revoked: String,
 }
 
 /// One parameter of an action, as its app publishes it.
@@ -441,13 +353,6 @@ pub struct View {
     pub picture: Option<String>,
 }
 
-/// What the workspace is called from now on, by every list and device of it.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WorkspaceName {
-    /// 1 to 80 characters.
-    pub name: String,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Program {
     /// tilolang: `notes.notebook.notes.filter(.pinned)`.
@@ -633,26 +538,15 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
     each![
         Error,
         ApiInfo,
-        Account,
         Workspace,
-        WorkspaceList,
-        NewWorkspace,
-        NewBranch,
-        UnattendedChange,
-        DeletedWorkspace,
         WorkspaceExport,
         KeyRow,
-        KeyList,
-        NewKey,
-        MintedKey,
-        RevokedKey,
         Listing,
         Resource,
         ActionAnswer,
         SearchHits,
         Link,
         View,
-        WorkspaceName,
         Program,
         ProgramAnswer,
         Uploaded,

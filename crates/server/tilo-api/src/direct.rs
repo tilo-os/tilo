@@ -609,7 +609,7 @@ mod tests {
         tokio::spawn(direct.serve(listener));
 
         let client = crate::client::Client::session(&socket);
-        let listed = client.get("/v1/workspaces").await.unwrap();
+        let listed = client.workspaces().await.unwrap();
         assert_eq!(listed["workspaces"][0]["id"], WORKSPACE, "{listed}");
         assert_eq!(listed["workspaces"][0]["name"], "Release", "{listed}");
         let apps = client
@@ -623,7 +623,11 @@ mod tests {
             "the desktop's own actions answer the listing: {apps}"
         );
         let refused = client
-            .post("/v1/workspaces", &serde_json::json!({"name": "Another"}))
+            .account(
+                "account/workspaces",
+                "create",
+                &serde_json::json!({"name": "Another"}),
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -676,16 +680,19 @@ mod tests {
             .unwrap();
         tokio::spawn(connection);
         let request = hyper::Request::builder()
-            .method("GET")
-            .uri("/v1/workspaces")
-            .body(http_body_util::Full::new(hyper::body::Bytes::new()))
+            .method("POST")
+            .uri("/v1/resources/account/workspaces/actions/list")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(hyper::body::Bytes::from_static(
+                b"{}",
+            )))
             .unwrap();
         let answer = sender.send_request(request).await.unwrap();
         assert_eq!(answer.status(), 200, "a request with no key is answered");
         let body = answer.into_body().collect().await.unwrap().to_bytes();
         let listed: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
-            listed["workspaces"][0]["id"], WORKSPACE,
+            listed["result"]["workspaces"][0]["id"], WORKSPACE,
             "the desktop answers as its own key: {listed}"
         );
         std::fs::remove_dir_all(&dir).unwrap();

@@ -46,10 +46,16 @@ async fn a_key_installs_an_app_version_and_asks_for_a_bot_through_the_action_api
     })
     .unwrap();
     let made = client
-        .post("/v1/workspaces", &json!({"name": "Ada's builds"}))
+        .post(
+            "/v1/resources/account/workspaces/actions/create",
+            &json!({"name": "Ada's builds"}),
+        )
         .await
         .unwrap();
-    let workspace = made["id"].as_str().unwrap().to_owned();
+    let workspace = made["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
     // Hand the workspace her package in the pieces the server takes, then
     // make its version the one the workspace uses.

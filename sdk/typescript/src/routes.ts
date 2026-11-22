@@ -47,18 +47,12 @@ const segment = encodeURIComponent;
 /** The API's routes, each a function of what names it. */
 export const routes = {
   info: () => PREFIX,
-  account: () => `${PREFIX}/account`,
 
-  workspaces: (labels: Record<string, string> = {}) =>
-    `${PREFIX}/workspaces${query(
-      Object.fromEntries(Object.entries(labels).map(([name, value]) => [`label[${name}]`, value])),
-    )}`,
-  workspace: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}`,
-  branches: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/branches`,
-  unattended: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/unattended`,
-
-  keys: () => `${PREFIX}/keys`,
-  key: (grant: string) => `${PREFIX}/keys/${segment(grant)}`,
+  /** A resource of the key's account (`account/usage`), which no workspace holds. */
+  accountResource: (path: string) => `${PREFIX}/resources/${encodePath(path)}`,
+  /** An action of the key's account (`account/workspaces`, `create`). */
+  accountAction: (path: string, action: string) =>
+    `${PREFIX}/resources/${encodePath(path)}/actions/${segment(action)}`,
 
   resources: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/resources`,
   resource: (workspace: string, path: string) =>

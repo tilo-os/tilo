@@ -67,12 +67,13 @@ async def test_a_bad_key_file_is_refused():
 async def test_a_workspace_is_made_once_and_its_apps_answer(host):
     name = f"native-{uuid.uuid4().hex[:8]}"
     retried = {"idempotency-key": name}
-    status, _, made = await whole(host, "POST", "/v1/workspaces", {"name": name}, retried)
-    assert status == 201, made
-    _, _, again = await whole(host, "POST", "/v1/workspaces", {"name": name}, retried)
-    assert again["id"] == made["id"], "a retry makes no second workspace"
+    status, _, made = await whole(host, "POST", "/v1/resources/account/workspaces/actions/create", {"name": name}, retried)
+    assert status == 200, made
+    made = made["result"]["workspace"]
+    _, _, again = await whole(host, "POST", "/v1/resources/account/workspaces/actions/create", {"name": name}, retried)
+    assert again["result"]["workspace"]["id"] == made["id"], "a retry makes no second workspace"
 
-    status, _, listed = await whole(host, "GET", "/v1/workspaces")
+    status, _, listed = await whole(host, "POST", "/v1/resources/account/workspaces/actions/list", {})
     assert status == 200, listed
     assert made["id"] in json.dumps(listed)
 
@@ -87,8 +88,8 @@ async def test_a_workspace_is_made_once_and_its_apps_answer(host):
 
 
 async def test_a_workspaces_events_stream_as_they_happen(host):
-    _, _, made = await whole(host, "POST", "/v1/workspaces", {"name": "native-events"})
-    workspace = made["id"]
+    _, _, made = await whole(host, "POST", "/v1/resources/account/workspaces/actions/create", {"name": "native-events"})
+    workspace = made["result"]["workspace"]["id"]
     status, headers, events = await host.request(
         "GET", f"/v1/workspaces/{workspace}/events", {}, b""
     )
