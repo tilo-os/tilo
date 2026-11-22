@@ -1769,21 +1769,6 @@ reason = "requires a native ARM KVM host and QEMU"
 check = "validation-drive-aarch64"
 
 [[unrequired]]
-suite = "os/dev/test-joined-device-startup.sh"
-reason = "boots the guarded dev disk in a VM and signs in"
-check = "os-acceptance-{arch}"
-
-[[unrequired]]
-suite = "os/dev/test-nearby-pairing.sh"
-reason = "boots three VMs (KVM) from the guarded dev disk, the third pairing through a device without the identity key; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect"
-check = "nearby-unlock-x86_64"
-
-[[unrequired]]
-suite = "os/dev/test-device-admin-reach.sh"
-reason = "boots three VMs (KVM) from the guarded dev disk on separate networks; two reach each other only through a server the third runs"
-check = "os-acceptance-{arch}"
-
-[[unrequired]]
 suite = "os/dev/test-installed-desktop.sh"
 reason = "boots the guarded dev disk in a VM and signs in at its greeter"
 check = "os-acceptance-{arch}"

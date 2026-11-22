@@ -1002,8 +1002,7 @@ files = [
 ]
 
 # The host CLI, so a Tilo dev machine is a developer's machine too: it drives
-# other devices over SSH, or beyond the LAN through tilo-device-admin beside
-# it (os/dev/test-device-admin-reach.sh drives a device that way).
+# other devices over SSH, or beyond the LAN through tilo-device-admin beside it.
 [[component]]
 name = "vm-cli"
 kind = "userspace"

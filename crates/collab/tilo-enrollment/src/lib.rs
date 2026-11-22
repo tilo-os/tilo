@@ -6,9 +6,8 @@
 //! the answer that admits a machine and the certificate it gains — and the
 //! serving side: what a device of the person's does when a machine dials it
 //! over the internet, whoever is there to answer. It also installs the
-//! verified answer on the joining native device. The image's helper
-//! (`tilo-enroll`) and the person's session both call it, so an enrollment is
-//! one implementation, not one per surface. Computers and browsers also
+//! verified answer on the joining native device. The person's session calls
+//! it, so an enrollment is one implementation, not one per surface. Computers and browsers also
 //! use [`requester`] to ask a workspace server for a member certificate.
 //!
 //! Which methods an image offers is its own declaration
