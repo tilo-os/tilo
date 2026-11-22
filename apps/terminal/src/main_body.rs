@@ -2446,8 +2446,6 @@ impl TerminalWidget {
             self.ensure_session();
         }
         self.poll_folder_picker();
-        // Pump here too: a host that never calls `update` still advances the terminal.
-        self.pump();
         self.type_asked_run();
         self.show_setup_failure();
         self.begin_reconnect_if_lost();
@@ -5670,7 +5668,9 @@ pub(crate) fn after_waiting(payload: &[u8]) -> Option<&[u8]> {
         None => (payload, &[][..]),
     };
     serde_json::from_slice::<serde_json::Value>(line)
-        .is_ok_and(|reply| reply.get("result").and_then(serde_json::Value::as_str) == Some("waiting"))
+        .is_ok_and(|reply| {
+            reply.get("result").and_then(serde_json::Value::as_str) == Some("waiting")
+        })
         .then_some(rest)
 }
 
