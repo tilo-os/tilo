@@ -129,10 +129,13 @@ fn ask(step: &str, title: &str, args: &serde_json::Value) -> Result<std::process
         out: &mut stdout,
         err: &mut stderr,
     };
-    let address = ActionAddress::new(machines::RESOURCE, step).encode();
-    let code = front::run_address(
+    let code = front::run_target(
         &sockets,
-        (machines::PROVIDER, &address, title),
+        tilo_actions::remote::RemoteActionTarget {
+            provider: machines::PROVIDER.to_owned(),
+            address: ActionAddress::new(machines::RESOURCE, step),
+        },
+        title,
         args,
         &Spelling::tilo(),
         &mut io,

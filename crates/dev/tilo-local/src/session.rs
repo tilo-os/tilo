@@ -60,7 +60,8 @@ Builds and starts the same session as `cargo desktop`, on an offscreen output
 and rendering on the CPU (lavapipe), with its own runtime directory, session
 bus and state. It runs in the foreground until Ctrl-C; once it answers it
 prints how to reach it: tilo-control (snapshot, list-targets, click, type,
-actions list and invoke) on its control socket, and the MCP server.
+windows) and the action model's frames on its control socket, and the MCP
+server.
 
 No one answers a headless session's MCP server, so it is started with an
 agent key, STATE/agent.key: an MCP client presenting it (TILO_AGENT_KEY=FILE
@@ -301,8 +302,8 @@ fn reach(options: &Options, ready: &str, took: Duration) -> String {
         "\n==> {what} ({} to start). Ctrl-C stops it.\n\
          \x20   state:      {state}\n\
          \x20   logs:       {state}/logs/session.log\n\
-         \x20   drive it:   TILO_TEST_CONTROL={control} {bin}/tilo-control actions list\n\
-         \x20               (also: windows, list-targets, click TARGET, type TEXT; headless: snapshot FILE.png)\n\
+         \x20   drive it:   TILO_TEST_CONTROL={control} {bin}/tilo-control windows\n\
+         \x20               (also: list-targets, click TARGET, type TEXT; headless: snapshot FILE.png)\n\
          \x20   MCP server: {runtime}/tilo-session/agent.sock (MCP over newline-delimited JSON-RPC){agent}\n\
          \x20   where:      {runtime}/session.json\n\n",
         seconds(took),

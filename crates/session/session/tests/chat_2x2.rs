@@ -18,7 +18,9 @@
               until their sessions end"
 )]
 
-use crate::common::people::{Device, Person, Site, join_together, share_the_fleet, start_together};
+use crate::common::people::{
+    Device, Person, Site, at, join_together, share_the_fleet, start_together,
+};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use tilo_server_protocol::workspaces::Role;
@@ -276,23 +278,11 @@ fn a_direct_message_is_one_notice_that_names_who_wrote() {
 /// Choose `action` of `notice` on this device, as pressing its button does: the notifications'
 /// own `act`, by the id the state dump lists the notice under.
 fn choose(device: &Device, notice: &Value, action: &str) {
-    let listed = device.ask(&json!({"op": "actions_enumerate", "query": "notification"}));
-    let row = listed["answer"]["actions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|row| {
-            row["resource"] == json!("session:notifications") && row["operation"] == json!("act")
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "{} offers no act on its notifications: {listed}",
-                device.label
-            )
-        });
+    let act = device
+        .offered("session:notifications", "act")
+        .unwrap_or_else(|| panic!("{} offers no act on its notifications", device.label));
     let answer = device.act_wait(
-        row["provider"].as_str().expect("a provider"),
-        row["id"].as_str().expect("an action's id"),
+        &act,
         &json!({"notification": notice["id"], "action": action}),
     );
     assert!(
@@ -756,8 +746,7 @@ fn chat_opens_first_in_a_workspace_made_after_the_session_restarted() {
         laptop.showing()
     });
     let made = laptop.act_wait(
-        "so.tilo.session",
-        "desktop:chrome\u{1f}new-workspace",
+        &at("so.tilo.session", "desktop:chrome", "new-workspace"),
         &serde_json::json!({"name": "Research"}),
     );
     assert!(
@@ -790,8 +779,7 @@ fn chat_opens_on_a_device_alone_in_a_workspace_it_made_and_in_its_branch() {
     laptop.start();
     tilo_test_env::wait_for("the laptop showing a workspace", || laptop.showing());
     let made = laptop.act_wait(
-        "so.tilo.session",
-        "desktop:chrome\u{1f}new-workspace",
+        &at("so.tilo.session", "desktop:chrome", "new-workspace"),
         &serde_json::json!({"name": "Research"}),
     );
     assert!(
@@ -805,8 +793,7 @@ fn chat_opens_on_a_device_alone_in_a_workspace_it_made_and_in_its_branch() {
     laptop.wait_for_window("so.tilo.chat");
 
     let branched = laptop.act_wait(
-        "so.tilo.session",
-        "desktop:chrome\u{1f}branch-workspace",
+        &at("so.tilo.session", "desktop:chrome", "branch-workspace"),
         &serde_json::json!({"source": research, "name": "Question A"}),
     );
     assert!(branched.get("err").is_none(), "the branch: {branched}");

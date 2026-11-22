@@ -5,7 +5,7 @@
 
 #![cfg(target_os = "linux")]
 
-use crate::common::people::{Person, shared_invitation};
+use crate::common::people::{Person, new_workspace, shared_invitation};
 use serde_json::json;
 
 /// The invitation the shell hands out admits the person it was made for: their device joins the
@@ -106,9 +106,9 @@ fn a_link_made_right_after_start_names_the_relay_the_device_is_reached_through()
     laptop.start();
     // Made on this session, so its record names this device as its own host and its person may
     // invite into it.
-    let made = laptop.act_wait("actions", "workspace.create", &json!({}));
+    let made = laptop.act_wait(&new_workspace(), &json!({}));
     assert_eq!(
-        made["answer"]["receipt"]["update"]["state"],
+        made["update"]["state"],
         json!("succeeded"),
         "{} makes a workspace: {made}\n{}",
         laptop.label,

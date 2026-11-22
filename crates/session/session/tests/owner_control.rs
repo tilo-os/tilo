@@ -18,6 +18,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use tilo_actions::remote::{RemoteActionMessage, RemoteActionTarget};
+
+use crate::common::{action_answer, action_frame, invoking, listing, refused};
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
@@ -54,6 +57,14 @@ const DEV_ONLY: [&str; 17] = [
 /// Run frames until `done` holds; `false` when it never did.
 fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) -> bool {
     crate::common::reached(session, |session| done(session))
+}
+
+/// An action no provider publishes.
+fn missing() -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: "nothing".to_owned(),
+        address: tilo_actions::ActionAddress::new("nowhere:missing", "missing"),
+    }
 }
 
 /// Send `request` on the socket at `socket` as `tilo-control` does, running the session until it
@@ -161,37 +172,46 @@ fn the_owner_socket_serves_the_action_model_and_the_state_it_shows() {
 
     // A person's own scripts drive the desktop through the model it publishes: the actions it lists
     // and invokes, and the state it shows.
-    let listed = ask(&mut session, &owner, &json!({"op": "actions_enumerate"}));
+    let listed = ask(&mut session, &owner, &listing(""));
     assert!(
-        listed["answer"]["actions"].is_array(),
+        !crate::common::listed(&listed).is_empty(),
         "the actions are listed: {listed}"
     );
-    let invoked = ask(
-        &mut session,
-        &owner,
-        &json!({"op": "actions_invoke", "provider": "nothing", "id": "nowhere:missing"}),
-    );
+    let invoked = ask(&mut session, &owner, &invoking(&missing(), &json!({})));
     assert_eq!(
-        invoked["err"]["code"], "unknown_action",
+        refused(&invoked),
+        Some("unknown_action"),
         "the socket invokes through the broker, which says no such action: {invoked}"
     );
+    let invocation = tilo_actions::InvocationId::new();
     let status = ask(
         &mut session,
         &owner,
-        &json!({"op": "actions_status", "invocation_id": 999}),
+        &action_frame(RemoteActionMessage::Observe {
+            correlation: 1,
+            invocation,
+            wait_ms: None,
+            seen: None,
+        }),
     );
-    assert_eq!(
-        status["err"]["code"], "unknown_invocation",
-        "the socket follows an invocation: {status}"
+    assert!(
+        matches!(
+            action_answer(&status),
+            RemoteActionMessage::Update { state: None, .. }
+        ),
+        "the socket follows an invocation, and knows of none it never started: {status}"
     );
     let cancelled = ask(
         &mut session,
         &owner,
-        &json!({"op": "actions_cancel", "invocation_id": 999}),
+        &action_frame(RemoteActionMessage::Cancel { invocation }),
     );
-    assert_eq!(
-        cancelled["err"]["code"], "unknown_invocation",
-        "the socket cancels an invocation: {cancelled}"
+    assert!(
+        matches!(
+            action_answer(&cancelled),
+            RemoteActionMessage::CancelResponse { result: Err(_), .. }
+        ),
+        "the socket cancels an invocation, and none it never started: {cancelled}"
     );
     let state = ask(&mut session, &owner, &json!({"op": "state_dump"}));
     assert_eq!(state["state"]["chrome"]["session_locked"], false, "{state}");
@@ -274,19 +294,15 @@ fn a_locked_session_invokes_nothing_through_the_owner_socket() {
     // A pass more, so the socket reads the lock the frame was drawn under.
     session.step(Duration::from_millis(1)).expect("a turn");
 
-    let invoked = ask(
-        &mut session,
-        &owner,
-        &json!({"op": "actions_invoke", "provider": "nothing", "id": "nowhere:missing"}),
-    );
-    assert_eq!(
-        invoked["err"]["code"], "locked",
+    let invoked = ask(&mut session, &owner, &invoking(&missing(), &json!({})));
+    assert!(
+        refused(&invoked).is_some() && invoked.to_string().contains("locked"),
         "the owner's socket invokes nothing while the screen is locked: {invoked}"
     );
     // The listing stays readable: what the person may run is not the lock's to hide.
-    let listed = ask(&mut session, &owner, &json!({"op": "actions_enumerate"}));
+    let listed = ask(&mut session, &owner, &listing(""));
     assert!(
-        listed["answer"]["actions"].is_array(),
+        !crate::common::listed(&listed).is_empty(),
         "the actions are still listed: {listed}"
     );
     // The state it shows carries nothing the lock hides: no windows, no workspaces, no titles.
@@ -372,13 +388,10 @@ fn unlock_through_the_development_socket(
         shown["state"]["workspace_tree"].is_object(),
         "the shell is shown again once it is unlocked: {shown}"
     );
-    let invoked = ask(
-        session,
-        owner,
-        &json!({"op": "actions_invoke", "provider": "nothing", "id": "nowhere:missing"}),
-    );
+    let invoked = ask(session, owner, &invoking(&missing(), &json!({})));
     assert_eq!(
-        invoked["err"]["code"], "unknown_action",
+        refused(&invoked),
+        Some("unknown_action"),
         "the socket invokes again once the screen is unlocked: {invoked}"
     );
 }
@@ -399,52 +412,38 @@ fn the_owner_socket_runs_an_advertised_desktop_shortcut() {
     );
     session.step(Duration::from_millis(1)).expect("a turn");
 
-    let listed = ask(
-        &mut session,
-        &owner,
-        &json!({"op": "actions_enumerate", "query": "shortcut"}),
-    );
-    let actions = listed["answer"]["actions"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let advertised = actions
-        .iter()
-        .find(|row| row["resource"] == "desktop:chrome" && row["operation"] == "shortcut")
+    let listed = ask(&mut session, &owner, &listing("shortcut"));
+    let advertised = crate::common::listed(&listed)
+        .into_iter()
+        .filter_map(|row| {
+            Some(RemoteActionTarget {
+                provider: row.provider,
+                address: row.action?.address,
+            })
+        })
+        .find(|target| {
+            target.address.resource == "desktop:chrome" && target.address.action == "shortcut"
+        })
         .unwrap_or_else(|| panic!("the chrome advertises its shortcut action: {listed}"));
-    let provider = advertised["provider"].as_str().expect("a provider");
-    let id = advertised["id"].as_str().expect("an id");
 
     // `tab_menu` is a shortcut of the table, and the shell runs it.
     let invoked = ask(
         &mut session,
         &owner,
-        &json!({
-            "op": "actions_invoke",
-            "provider": provider,
-            "id": id,
-            "args": {"action": "tab_menu"},
-        }),
+        &invoking(&advertised, &json!({"action": "tab_menu"})),
     );
-    assert!(
-        !invoked.to_string().contains("unknown_action"),
-        "an advertised shortcut is not answered as an unknown action: {invoked}"
-    );
-    assert!(invoked.get("err").is_none(), "the shell runs it: {invoked}");
+    assert_eq!(refused(&invoked), None, "the shell runs it: {invoked}");
 
     // A step the shell does not publish is told apart from one it would not run: a caller reads
     // that no such action exists, rather than that its own authority was refused.
-    let missing = ask(
-        &mut session,
-        &owner,
-        &json!({
-            "op": "actions_invoke",
-            "provider": provider,
-            "id": "desktop:chrome\u{1f}not-a-shortcut",
-        }),
-    );
+    let unpublished = RemoteActionTarget {
+        provider: advertised.provider,
+        address: tilo_actions::ActionAddress::new("desktop:chrome", "not-a-shortcut"),
+    };
+    let missing = ask(&mut session, &owner, &invoking(&unpublished, &json!({})));
     assert_eq!(
-        missing["err"]["code"], "unknown_action",
+        refused(&missing),
+        Some("unknown_action"),
         "an address the shell publishes nothing at says so: {missing}"
     );
 }

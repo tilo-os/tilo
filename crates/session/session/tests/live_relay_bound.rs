@@ -35,7 +35,7 @@ use tilo_live::native::ALPN;
 use tilo_live::preface::CLOSE_BUSY;
 use tilo_live::relay::{MAX_ADMITTING, MAX_ADMITTING_STRANGERS};
 
-use crate::common::people::{Device, log_sessions_at, two_devices_of_one_person};
+use crate::common::people::{Device, log_sessions_at, new_workspace, two_devices_of_one_person};
 
 /// What the devices' sessions log here: the live session says which relay it missed and why only
 /// below `info`.
@@ -112,9 +112,9 @@ fn eventually(
 /// from the person's list and holds: its id.
 fn made_on(maker: &Device, other: &Device) -> String {
     let before = maker.on_shell();
-    let made = maker.act_wait("actions", "workspace.create", &json!({}));
+    let made = maker.act_wait(&new_workspace(), &json!({}));
     assert_eq!(
-        made["answer"]["receipt"]["update"]["state"],
+        made["update"]["state"],
         json!("succeeded"),
         "{} makes a workspace: {made}\n{}",
         maker.label,

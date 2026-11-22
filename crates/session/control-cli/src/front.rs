@@ -2,32 +2,45 @@
 //! of those things.
 //!
 //! `tilo open`, `tilo action …`, `tilo do`, the standalone `action` and
-//! `app open` are all this module, over the one control protocol
-//! ([`crate::client`]). Each request goes through the first socket that serves
-//! this process: the device admin's socket at their own login, or the
+//! `app open` are all this module. Each sends the action model's own frames
+//! ([`RemoteActionFrame`]) through the first socket that serves this process
+//! ([`crate::client`]): the device admin's socket at their own login, or the
 //! session's MCP server from inside an app such as Terminal, which acts with
-//! that app's workspace scope. Nothing here picks authority; the desktop
-//! decides what each socket may do.
+//! that app's workspace scope. Nothing here picks authority or a workspace;
+//! the desktop decides both.
 //!
-//! Actions are named for people: the slug of their title
-//! (`new-terminal-window`), made unique within a listing by the place they
-//! act on or a short tag. A name is matched again on every call, and words
-//! of a title find it too, so `tilo do "new terminal"` works.
+//! An action is named by its id (`new-window`), or its title
+//! (`new-terminal-window`), as the published tree picks them
+//! ([`tilo_actions::tree::pick_action`]); `place#action` names one where
+//! several places offer an action of that name.
 
 use std::io::Write;
 use std::path::Path;
 
+use serde_json::{Map, Value};
+use tilo_actions::remote::{
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, CatalogueQuery,
+    CatalogueRow, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus,
+    RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, application_open_target,
+    provider_workspace,
+};
+use tilo_actions::tree::{action_rank, app_meant, bind_choices, folded, pick_action};
+use tilo_actions::{ActionDescriptor, InvocationId, InvocationUpdate};
+
 use crate::client::{ControlSocket, Desktop, Unreachable};
 
-/// How long an invocation is waited for before its answer: the desktop
-/// holds the reply until the action settles or this runs out.
-const RUN_WAIT_MS: u64 = 5_000;
+/// How long one wait for an invocation lasts: the desktop holds the answer
+/// until the action settles or this runs out, and it is asked again.
+const RUN_WAIT_MS: u32 = 5_000;
 
-/// Rows one listing asks for.
-const LIST_LIMIT: usize = 200;
+/// Pages one listing reads at most.
+const LIST_PAGES: usize = 8;
 
 /// Candidates shown when a name fits more than one action.
 const AMBIGUOUS_SHOWN: usize = 8;
+
+/// The installed-app address that opens files and links in an app.
+const OPEN_WITH_PREFIX: &str = "open-with:";
 
 /// How this program's commands are spelled in the examples it prints:
 /// `tilo do` and `tilo open`, or `action run` and `app open`.
@@ -69,475 +82,6 @@ pub struct Io<'a> {
     pub err: &'a mut dyn Write,
 }
 
-/// One parameter an action takes.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Param {
-    pub name: String,
-    pub ty: String,
-    pub required: bool,
-    pub description: String,
-    pub choices: Vec<String>,
-    pub nullable: bool,
-}
-
-/// One row of the desktop's listing, as a person reads it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Action {
-    pub provider: String,
-    pub id: String,
-    pub kind: String,
-    pub title: String,
-    pub subtitle: Option<String>,
-    pub params: Vec<Param>,
-}
-
-impl Action {
-    fn from_row(row: &serde_json::Value) -> Option<Self> {
-        let text = |key: &str| row.get(key).and_then(serde_json::Value::as_str);
-        let params = row
-            .get("params")
-            .and_then(serde_json::Value::as_array)
-            .map(|params| params.iter().filter_map(Param::from_row).collect())
-            .unwrap_or_default();
-        Some(Self {
-            provider: text("provider")?.to_string(),
-            id: text("id")?.to_string(),
-            kind: text("kind").unwrap_or_default().to_string(),
-            title: text("title").unwrap_or_default().to_string(),
-            subtitle: text("subtitle")
-                .map(str::trim)
-                .filter(|subtitle| !subtitle.is_empty())
-                .map(str::to_string),
-            params,
-        })
-    }
-
-    /// Whether it opens an app rather than acting inside one.
-    fn is_application(&self) -> bool {
-        self.kind == "Apps"
-    }
-
-    /// The names it answers to: its title's slug, that and where it acts,
-    /// and that and a tag of its address.
-    fn names(&self) -> [String; 3] {
-        let base = slug(&self.title);
-        let base = if base.is_empty() {
-            slug(&self.id)
-        } else {
-            base
-        };
-        let place = self
-            .subtitle
-            .as_deref()
-            .map(slug)
-            .filter(|place| !place.is_empty())
-            .map_or_else(|| base.clone(), |place| format!("{base}-{place}"));
-        let tag = format!("{base}-{}", address_tag(&self.provider, &self.id));
-        [base, place, tag]
-    }
-}
-
-impl Param {
-    fn from_row(row: &serde_json::Value) -> Option<Self> {
-        let text = |key: &str| row.get(key).and_then(serde_json::Value::as_str);
-        Some(Self {
-            name: text("name")?.to_string(),
-            ty: text("type").unwrap_or("text").to_string(),
-            required: row
-                .get("required")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
-            description: text("description").unwrap_or_default().trim().to_string(),
-            choices: row
-                .get("choices")
-                .and_then(serde_json::Value::as_array)
-                .map(|choices| {
-                    choices
-                        .iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
-            nullable: row
-                .get("nullable")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
-        })
-    }
-
-    /// `title (text)`, `count (whole number)`, `mode (dark or light)`.
-    fn summary(&self) -> String {
-        format!("{} ({})", self.name, self.what())
-    }
-
-    fn what(&self) -> String {
-        if !self.choices.is_empty() {
-            return one_of(&self.choices);
-        }
-        match self.ty.as_str() {
-            "integer" => "whole number".into(),
-            "number" => "number".into(),
-            "boolean" => "yes or no".into(),
-            "array" => "list".into(),
-            "object" => "JSON object".into(),
-            "datetime" => "date and time".into(),
-            "resource" => "item".into(),
-            _ => "text".into(),
-        }
-    }
-}
-
-fn one_of(choices: &[String]) -> String {
-    match choices {
-        [] => String::new(),
-        [only] => only.clone(),
-        [init @ .., last] => format!("{} or {last}", init.join(", ")),
-    }
-}
-
-/// Lower-case words joined by `-`: `New terminal window` → `new-terminal-window`.
-#[must_use]
-pub fn slug(text: &str) -> String {
-    let mut out = String::new();
-    for ch in text.chars().flat_map(char::to_lowercase) {
-        if ch.is_alphanumeric() {
-            out.push(ch);
-        } else if !out.is_empty() && !out.ends_with('-') {
-            out.push('-');
-        }
-        if out.len() >= 48 {
-            break;
-        }
-    }
-    out.trim_end_matches('-').to_string()
-}
-
-/// Four hex digits of the address, stable for as long as the address is.
-fn address_tag(provider: &str, id: &str) -> String {
-    // FNV-1a: small, dependency-free and stable across builds.
-    let mut hash: u32 = 0x811c_9dc5;
-    for byte in provider.bytes().chain([0]).chain(id.bytes()) {
-        hash ^= u32::from(byte);
-        hash = hash.wrapping_mul(0x0100_0193);
-    }
-    format!("{:04x}", hash & 0xffff)
-}
-
-/// Each action's name in `actions`: the first of its names no other row in
-/// the listing shares.
-#[must_use]
-pub fn display_names(actions: &[Action]) -> Vec<String> {
-    let all: Vec<[String; 3]> = actions.iter().map(Action::names).collect();
-    all.iter()
-        .enumerate()
-        .map(|(at, names)| {
-            names
-                .iter()
-                .find(|name| {
-                    all.iter()
-                        .enumerate()
-                        .all(|(other, theirs)| other == at || !theirs.contains(name))
-                })
-                .or_else(|| names.last())
-                .cloned()
-                .unwrap_or_default()
-        })
-        .collect()
-}
-
-/// What a typed name picks out of a listing.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Pick {
-    One(usize),
-    Many(Vec<usize>),
-    None,
-}
-
-/// Pick the action `input` names in `actions`: an address (`provider:id`)
-/// exactly, else a name exactly, else the actions whose title holds every
-/// word typed.
-#[must_use]
-pub fn pick(input: &str, actions: &[Action]) -> Pick {
-    let input = input.trim();
-    if let Some(at) = actions.iter().position(|action| {
-        format!(
-            "{}:{}",
-            crate::client::printable_id(&action.provider),
-            crate::client::printable_id(&action.id)
-        ) == input
-    }) {
-        return Pick::One(at);
-    }
-    let wanted = slug(input);
-    let named: Vec<usize> = actions
-        .iter()
-        .enumerate()
-        .filter(|(_, action)| action.names().contains(&wanted))
-        .map(|(at, _)| at)
-        .collect();
-    match named.as_slice() {
-        [one] => return Pick::One(*one),
-        [] => {}
-        _ => return Pick::Many(named),
-    }
-    let words: Vec<&str> = wanted.split('-').filter(|word| !word.is_empty()).collect();
-    if words.is_empty() {
-        return Pick::None;
-    }
-    let fits: Vec<usize> = actions
-        .iter()
-        .enumerate()
-        .filter(|(_, action)| {
-            let title = slug(&action.title);
-            let title: Vec<&str> = title.split('-').collect();
-            words
-                .iter()
-                .all(|word| title.iter().any(|part| part.starts_with(word)))
-        })
-        .map(|(at, _)| at)
-        .collect();
-    match fits.as_slice() {
-        [] => Pick::None,
-        [one] => Pick::One(*one),
-        _ => Pick::Many(fits),
-    }
-}
-
-/// Turn what was typed after an action's name into its arguments, checked
-/// against what it takes. `key=value`, `--key value` and `--key=value` name
-/// a parameter; a lone value goes to the one parameter that is required (or
-/// the only one).
-///
-/// # Errors
-/// A sentence saying what was wrong and what the action takes.
-pub fn bind_args(
-    action: &Action,
-    words: &[String],
-) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    let mut args = serde_json::Map::new();
-    let mut bare: Vec<&str> = Vec::new();
-    let mut iter = words.iter();
-    while let Some(word) = iter.next() {
-        if let Some(flag) = word.strip_prefix("--") {
-            let (key, value) = if let Some((key, value)) = flag.split_once('=') {
-                (key.to_string(), value.to_string())
-            } else {
-                let value = iter
-                    .next()
-                    .ok_or_else(|| format!("--{flag} needs a value after it."))?;
-                (flag.to_string(), value.clone())
-            };
-            insert(action, &mut args, &key, &value)?;
-        } else if let Some((key, value)) = word.split_once('=')
-            && action.params.iter().any(|param| param.name == key)
-        {
-            insert(action, &mut args, key, value)?;
-        } else {
-            bare.push(word);
-        }
-    }
-    if !bare.is_empty() {
-        let target = lone_target(action, &args).ok_or_else(|| {
-            if action.params.is_empty() {
-                format!("“{}” takes nothing.", action.title)
-            } else {
-                format!(
-                    "Say which option “{}” is for: {}.",
-                    bare.join(" "),
-                    takes(action)
-                )
-            }
-        })?;
-        let value = bare.join(" ");
-        let name = target.name.clone();
-        insert(action, &mut args, &name, &value)?;
-    }
-    if let Some(missing) = action
-        .params
-        .iter()
-        .find(|param| param.required && !args.contains_key(&param.name))
-    {
-        return Err(format!(
-            "“{}” needs {}. It takes {}.",
-            action.title,
-            missing.summary(),
-            takes(action)
-        ));
-    }
-    Ok(args)
-}
-
-/// Arguments for an action whose parameters this side has not seen: each
-/// `name=value` (or `--name=value`), its value as the JSON it reads as, else
-/// as text (`count=3` is a number, `title=Groceries` text). Whoever carries out
-/// the action checks them against what it takes: the desktop for an action named
-/// by its address, the workspace for one `tilo do -w` names.
-///
-/// # Errors
-/// The sentence that names a word that is no `name=value`.
-pub fn arguments(words: &[String]) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    let mut args = serde_json::Map::new();
-    for word in words {
-        let Some((key, value)) = word.trim_start_matches("--").split_once('=') else {
-            return Err(format!("Write “{word}” as name=value."));
-        };
-        let value = serde_json::from_str(value).unwrap_or_else(|_| value.into());
-        args.insert(key.to_string(), value);
-    }
-    Ok(args)
-}
-
-/// The parameter a lone value is for: the one required parameter not yet
-/// given, or the only parameter.
-fn lone_target<'a>(
-    action: &'a Action,
-    given: &serde_json::Map<String, serde_json::Value>,
-) -> Option<&'a Param> {
-    let open: Vec<&Param> = action
-        .params
-        .iter()
-        .filter(|param| param.required && !given.contains_key(&param.name))
-        .collect();
-    match (open.as_slice(), action.params.as_slice()) {
-        ([one], _) => Some(one),
-        ([], [only]) if !given.contains_key(&only.name) => Some(only),
-        _ => None,
-    }
-}
-
-fn takes(action: &Action) -> String {
-    if action.params.is_empty() {
-        return "nothing".into();
-    }
-    action
-        .params
-        .iter()
-        .map(Param::summary)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn insert(
-    action: &Action,
-    args: &mut serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    raw: &str,
-) -> Result<(), String> {
-    let param = action
-        .params
-        .iter()
-        .find(|param| param.name == key)
-        .ok_or_else(|| {
-            format!(
-                "“{}” has no option “{key}”. It takes {}.",
-                action.title,
-                takes(action)
-            )
-        })?;
-    let value = coerce(param, raw)?;
-    args.insert(param.name.clone(), value);
-    Ok(())
-}
-
-fn coerce(param: &Param, raw: &str) -> Result<serde_json::Value, String> {
-    use serde_json::Value;
-    if param.nullable && raw == "null" {
-        return Ok(Value::Null);
-    }
-    if !param.choices.is_empty() && !param.choices.iter().any(|choice| choice == raw) {
-        return Err(format!(
-            "{} must be {}, not “{raw}”.",
-            param.name,
-            one_of(&param.choices)
-        ));
-    }
-    let wrong = || format!("{} must be a {}, not “{raw}”.", param.name, param.what());
-    match param.ty.as_str() {
-        "integer" => raw.parse::<i64>().map(Value::from).map_err(|_| wrong()),
-        "number" => raw
-            .parse::<f64>()
-            .ok()
-            .and_then(serde_json::Number::from_f64)
-            .map(Value::Number)
-            .ok_or_else(wrong),
-        "boolean" => match raw.to_lowercase().as_str() {
-            "yes" | "true" | "on" | "1" => Ok(Value::Bool(true)),
-            "no" | "false" | "off" | "0" => Ok(Value::Bool(false)),
-            _ => Err(format!("{} must be yes or no, not “{raw}”.", param.name)),
-        },
-        "array" | "object" => {
-            let value: Value = serde_json::from_str(raw).map_err(|_| {
-                format!(
-                    "{} must be a {} written as JSON, not “{raw}”.",
-                    param.name,
-                    param.what()
-                )
-            })?;
-            let fits = if param.ty == "array" {
-                value.is_array()
-            } else {
-                value.is_object()
-            };
-            if fits { Ok(value) } else { Err(wrong()) }
-        }
-        _ => Ok(Value::String(raw.to_string())),
-    }
-}
-
-fn listing_request(query: &str, kinds: &[&str]) -> serde_json::Value {
-    let mut request = serde_json::json!({
-        "op": "actions_enumerate",
-        "query": query,
-        "limit": LIST_LIMIT,
-        "detail": "compact",
-    });
-    if !kinds.is_empty()
-        && let Some(object) = request.as_object_mut()
-    {
-        object.insert("kinds".into(), kinds.to_vec().into());
-    }
-    request
-}
-
-/// A listing's rows and whether more were left out.
-struct Listing {
-    actions: Vec<Action>,
-    total: Option<u64>,
-    truncated: bool,
-}
-
-fn listing(desktop: &mut Desktop, query: &str, kinds: &[&str]) -> Result<Listing, Failure> {
-    let answer = desktop
-        .request(&listing_request(query, kinds))
-        .map_err(Failure::Unreachable)?;
-    if let Some(err) = answer.get("err") {
-        return Err(Failure::Refused(err.clone()));
-    }
-    let answer = answer.get("answer").cloned().unwrap_or_default();
-    Ok(Listing {
-        actions: answer
-            .get("actions")
-            .and_then(serde_json::Value::as_array)
-            .map(|rows| rows.iter().filter_map(Action::from_row).collect())
-            .unwrap_or_default(),
-        total: answer.get("total").and_then(serde_json::Value::as_u64),
-        truncated: answer
-            .get("truncated")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false),
-    })
-}
-
-/// Why a command could not finish.
-enum Failure {
-    Unreachable(Unreachable),
-    /// The desktop answered `err`.
-    Refused(serde_json::Value),
-    /// A sentence of our own.
-    Said(String),
-}
-
 /// The one sentence a person reads when the desktop could not be reached.
 #[must_use]
 pub fn unreachable_sentence(why: &Unreachable) -> String {
@@ -554,55 +98,216 @@ pub fn unreachable_sentence(why: &Unreachable) -> String {
     }
 }
 
-fn refused_sentence(err: &serde_json::Value, spelling: &Spelling) -> String {
-    let code = err
-        .get("code")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let message = err
-        .get("message")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    match code {
-        "unknown_action" => format!(
+/// The sentence a person reads for a refusal of the desktop.
+fn refused(error: &ActionCallError, spelling: &Spelling) -> String {
+    match error {
+        ActionCallError::UnknownAction => format!(
             "That isn't something this desktop can do now. See what it can: {}",
             spelling.list
         ),
-        "session_locked" => "Unlock the desktop first.".into(),
-        "not_permitted" => "You haven't allowed that here.".into(),
-        _ if message.is_empty() => "That didn't work.".into(),
-        _ => message.to_string(),
+        ActionCallError::NotPermitted => "You haven't allowed that here.".into(),
+        other => other.to_string(),
     }
 }
 
-/// The sentence a person reads for `failure`.
-fn sentence(failure: &Failure, spelling: &Spelling) -> String {
-    match failure {
-        Failure::Unreachable(why) => unreachable_sentence(why),
-        Failure::Refused(err) => refused_sentence(err, spelling),
-        Failure::Said(sentence) => sentence.clone(),
+/// Ask the desktop `message` as a frame and read the frame it answers.
+fn ask(desktop: &mut Desktop, message: RemoteActionMessage) -> Result<RemoteActionMessage, String> {
+    let frame =
+        serde_json::to_value(RemoteActionFrame::new(message)).map_err(|error| error.to_string())?;
+    let answer = desktop
+        .request(&frame)
+        .map_err(|why| unreachable_sentence(&why))?;
+    if let Some(err) = answer.get("err") {
+        return Err(err
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("That didn't work.")
+            .to_owned());
+    }
+    serde_json::from_value::<RemoteActionFrame>(answer)
+        .map(|frame| frame.message)
+        .map_err(|error| format!("The desktop answered something this can't read: {error}"))
+}
+
+fn connect(sockets: &[ControlSocket]) -> Result<Desktop, String> {
+    Desktop::connect(sockets).map_err(|why| unreachable_sentence(&why))
+}
+
+/// The actions the desktop offers that `filter` mentions: the first of its
+/// words narrows the listing the desktop answers, and each row then holds
+/// every word.
+fn offered(
+    desktop: &mut Desktop,
+    filter: &str,
+    spelling: &Spelling,
+) -> Result<Vec<CatalogueRow>, String> {
+    let words: Vec<String> = filter
+        .split(|c: char| c.is_whitespace() || c == '-')
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let mut query = CatalogueQuery {
+        needle: words.first().cloned().unwrap_or_default(),
+        max_results: MAX_CATALOGUE_PAGE,
+        ..CatalogueQuery::default()
+    };
+    let mut rows = Vec::new();
+    for _ in 0..LIST_PAGES {
+        let page = match ask(
+            desktop,
+            RemoteActionMessage::CatalogueRequest {
+                correlation: 1,
+                query: query.clone(),
+            },
+        )? {
+            RemoteActionMessage::CatalogueResponse { result, .. } => {
+                result.map_err(|error| refused(&error, spelling))?
+            }
+            _ => return Err("The desktop answered something else.".into()),
+        };
+        rows.extend(
+            page.rows
+                .into_iter()
+                .filter(|row| row.action.is_some() && mentions(row, &words)),
+        );
+        if page.exhausted || page.next_cursor.is_empty() {
+            break;
+        }
+        query.revision = Some(page.revision);
+        query.cursor = page.next_cursor;
+    }
+    Ok(rows)
+}
+
+/// The action a listed row offers.
+fn action(row: &CatalogueRow) -> &ActionDescriptor {
+    row.action
+        .as_ref()
+        .unwrap_or_else(|| unreachable!("only rows with an action are kept"))
+}
+
+/// Whether `row` mentions every one of `words`.
+fn mentions(row: &CatalogueRow, words: &[String]) -> bool {
+    let Some(action) = row.action.as_ref() else {
+        return false;
+    };
+    let said = [
+        action.action_label.as_str(),
+        action.address.action.as_str(),
+        row.resource.label.as_str(),
+        row.resource.id.as_str(),
+        row.app_id.as_str(),
+    ]
+    .map(str::to_lowercase);
+    words
+        .iter()
+        .all(|word| said.iter().any(|text| text.contains(word.as_str())))
+}
+
+/// Where `row` acts, as a person names it: its resource's label, or its
+/// app's.
+fn place(row: &CatalogueRow) -> String {
+    let label = row.resource.label.trim();
+    let named = if label.is_empty() {
+        row.app_id.rsplit('.').next().unwrap_or(&row.app_id)
+    } else {
+        label
+    };
+    named.to_lowercase().replace(char::is_whitespace, "-")
+}
+
+/// Whether `row` acts at the place `name` names: its resource, by label or
+/// id, or its app.
+fn at(row: &CatalogueRow, name: &str) -> bool {
+    let wanted = folded(name);
+    row.resource.id == name
+        || folded(&row.resource.label) == wanted
+        || folded(&row.app_id) == wanted
+        || folded(row.app_id.rsplit('.').next().unwrap_or_default()) == wanted
+}
+
+/// The name `row` is typed by among `rows`: its action's id where no other
+/// row offers one of that id, else that and its place.
+fn name_of(row: &CatalogueRow, rows: &[CatalogueRow]) -> String {
+    let id = &action(row).address.action;
+    let shared = rows
+        .iter()
+        .filter(|other| action(other).address.action == *id)
+        .count();
+    if shared > 1 {
+        format!("{}#{id}", place(row))
+    } else {
+        id.clone()
     }
 }
 
-fn report(failure: &Failure, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
-    let _ = writeln!(io.err, "{}", sentence(failure, spelling));
-    1
+/// The row `name` picks among `rows`: `place#action`, or an action by its id
+/// or its title, as the published tree picks one.
+fn find<'a>(
+    rows: &'a [CatalogueRow],
+    name: &str,
+    spelling: &Spelling,
+) -> Result<&'a CatalogueRow, String> {
+    let (within, wanted) = match name.rsplit_once('#') {
+        Some((place, wanted)) => (Some(place), wanted),
+        None => (None, name),
+    };
+    let here: Vec<&CatalogueRow> = rows
+        .iter()
+        .filter(|row| within.is_none_or(|within| at(row, within)))
+        .collect();
+    let actions: Vec<ActionDescriptor> = here.iter().map(|row| action(row).clone()).collect();
+    let picked = pick_action(wanted, &actions, "this desktop")
+        .or_else(|_| pick_action(&wanted.replace('-', " "), &actions, "this desktop"))
+        .map_err(|_| {
+            format!(
+                "Nothing here is called “{name}”. See what this desktop can do: {}",
+                spelling.list
+            )
+        })?;
+    let rank = action_rank(wanted, picked);
+    let mut fits: Vec<&CatalogueRow> = here
+        .iter()
+        .copied()
+        .filter(|row| {
+            let offered = action(row);
+            if rank.is_some() {
+                action_rank(wanted, offered) == rank
+            } else {
+                offered.action_label == picked.action_label
+            }
+        })
+        .collect();
+    fits.dedup_by(|a, b| a.provider == b.provider && action(a).address == action(b).address);
+    match fits.as_slice() {
+        [one] => Ok(one),
+        [] => Err("That didn't work.".into()),
+        several => {
+            use std::fmt::Write as _;
+            let mut text = format!("“{name}” could be more than one thing. Say which:");
+            for row in several.iter().take(AMBIGUOUS_SHOWN) {
+                let _ = write!(
+                    text,
+                    "\n  {} {}#{}    {}",
+                    spelling.run,
+                    place(row),
+                    action(row).address.action,
+                    action(row).action_label
+                );
+            }
+            Err(text)
+        }
+    }
 }
 
-fn connect(sockets: &[ControlSocket]) -> Result<Desktop, Failure> {
-    Desktop::connect(sockets).map_err(Failure::Unreachable)
-}
-
-/// `tilo action list [filter]`: what this desktop can do, grouped by kind.
+/// `tilo action list [filter]`: what this desktop can do.
 pub fn list(sockets: &[ControlSocket], filter: &str, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
-    let result = connect(sockets).and_then(|mut desktop| listing(&mut desktop, filter.trim(), &[]));
-    let listing = match result {
-        Ok(listing) => listing,
+    let mut desktop = match Desktop::connect(sockets) {
+        Ok(desktop) => desktop,
         // A desktop is where this desktop's actions are; a hosted workspace
         // lists what it holds with `tilo ls`, which is the command to reach
         // instead when there is no session here.
-        Err(Failure::Unreachable(Unreachable::NoDesktop)) => {
+        Err(Unreachable::NoDesktop) => {
             let _ = writeln!(
                 io.err,
                 "This needs a Tilo desktop session. In a hosted workspace, `tilo ls -w <workspace>` \
@@ -610,9 +315,13 @@ pub fn list(sockets: &[ControlSocket], filter: &str, spelling: &Spelling, io: &m
             );
             return 1;
         }
-        Err(failure) => return report(&failure, spelling, io),
+        Err(why) => return said(Err(unreachable_sentence(&why)), io),
     };
-    if listing.actions.is_empty() {
+    let rows = match offered(&mut desktop, filter.trim(), spelling) {
+        Ok(rows) => rows,
+        Err(sentence) => return said(Err(sentence), io),
+    };
+    if rows.is_empty() {
         let _ = if filter.trim().is_empty() {
             writeln!(io.out, "This desktop offers nothing right now.")
         } else {
@@ -620,144 +329,64 @@ pub fn list(sockets: &[ControlSocket], filter: &str, spelling: &Spelling, io: &m
         };
         return 0;
     }
-    let names = display_names(&listing.actions);
+    let names: Vec<String> = rows.iter().map(|row| name_of(row, &rows)).collect();
     let width = names
         .iter()
         .map(|name| name.chars().count())
         .max()
         .unwrap_or(0);
-    let mut kinds: Vec<&str> = Vec::new();
-    for action in &listing.actions {
-        if !kinds.contains(&action.kind.as_str()) {
-            kinds.push(&action.kind);
-        }
-    }
-    for (group, kind) in kinds.iter().enumerate() {
-        if group > 0 {
-            let _ = writeln!(io.out);
-        }
-        let heading = if kind.is_empty() { "Other" } else { kind };
-        let _ = writeln!(io.out, "{heading}");
-        for (action, name) in listing.actions.iter().zip(&names) {
-            if action.kind != *kind {
-                continue;
-            }
-            let mut line = format!("  {name:<width$}  {}", action.title);
-            if let Some(subtitle) = &action.subtitle {
-                line.push_str("  ");
-                line.push_str(subtitle);
-            }
-            let _ = writeln!(io.out, "{}", line.trim_end());
-        }
-    }
-    if listing.truncated {
-        let shown = listing.actions.len();
-        let _ = match listing.total {
-            Some(total) => writeln!(
-                io.err,
-                "\nShowing {shown} of {total}. Add words to narrow it down: {} <words>",
-                spelling.list
-            ),
-            None => writeln!(
-                io.err,
-                "\nShowing the first {shown}. Add words to narrow it down: {} <words>",
-                spelling.list
-            ),
-        };
+    for (row, name) in rows.iter().zip(&names) {
+        let line = format!(
+            "{name:<width$}  {}  {}",
+            action(row).action_label,
+            row.resource.label
+        );
+        let _ = writeln!(io.out, "{}", line.trim_end());
     }
     0
 }
 
-/// Find the one action `name` picks, listing with its words. An address
-/// (`provider:id`, as `show` prints it) is taken as it is: names never hold
-/// a colon.
-fn find(desktop: &mut Desktop, name: &str, spelling: &Spelling) -> Result<Action, Failure> {
-    if let Some((provider, id)) = name.split_once(':')
-        && !provider.is_empty()
-        && !id.is_empty()
-        && !provider.contains(char::is_whitespace)
-    {
-        return Ok(Action {
-            provider: crate::client::id_from_printed(provider),
-            id: crate::client::id_from_printed(id),
-            kind: String::new(),
-            title: name.to_string(),
-            subtitle: None,
-            params: Vec::new(),
-        });
-    }
-    let listing = listing(desktop, &slug(name).replace('-', " "), &[])?;
-    match pick(name, &listing.actions) {
-        Pick::One(at) => listing
-            .actions
-            .get(at)
-            .cloned()
-            .ok_or_else(|| Failure::Said("That didn't work.".into())),
-        Pick::None => Err(Failure::Said(format!(
-            "Nothing here is called “{name}”. See what this desktop can do: {}",
-            spelling.list
-        ))),
-        Pick::Many(candidates) => {
-            use std::fmt::Write as _;
-            let names = display_names(&listing.actions);
-            let mut text = format!("“{name}” could be more than one thing. Say which:");
-            let shown = candidates
-                .iter()
-                .take(AMBIGUOUS_SHOWN)
-                .filter_map(|at| Some((listing.actions.get(*at)?, names.get(*at)?)));
-            for (action, display) in shown {
-                let _ = write!(text, "\n  {} {display}    {}", spelling.run, action.title);
-                if let Some(subtitle) = &action.subtitle {
-                    let _ = write!(text, "  {subtitle}");
-                }
-            }
-            Err(Failure::Said(text))
-        }
-    }
-}
-
 /// `tilo action show NAME`: what an action does, where, and what it takes.
 pub fn show(sockets: &[ControlSocket], name: &str, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
-    let result = connect(sockets).and_then(|mut desktop| find(&mut desktop, name, spelling));
-    let action = match result {
-        Ok(action) => action,
-        Err(failure) => return report(&failure, spelling, io),
+    let rows = match connect(sockets).and_then(|mut desktop| offered(&mut desktop, name, spelling))
+    {
+        Ok(rows) => rows,
+        Err(sentence) => return said(Err(sentence), io),
     };
-    let display = display_names(std::slice::from_ref(&action))
-        .pop()
-        .unwrap_or_default();
-    let _ = writeln!(io.out, "{}", action.title);
-    if let Some(subtitle) = &action.subtitle {
-        let _ = writeln!(io.out, "{subtitle}");
+    let row = match find(&rows, name, spelling) {
+        Ok(row) => row,
+        Err(sentence) => return said(Err(sentence), io),
+    };
+    let offered = action(row);
+    let display = name_of(row, &rows);
+    let _ = writeln!(io.out, "{}", offered.action_label);
+    if !row.resource.label.is_empty() {
+        let _ = writeln!(io.out, "{}", row.resource.label);
     }
     let _ = writeln!(io.out);
     let _ = writeln!(io.out, "Name      {display}");
-    if !action.kind.is_empty() {
-        let _ = writeln!(io.out, "Kind      {}", action.kind);
-    }
     let _ = writeln!(
         io.out,
-        "Address   {}:{}",
-        crate::client::printable_id(&action.provider),
-        crate::client::printable_id(&action.id)
+        "Address   {} {}#{}",
+        row.provider, offered.address.resource, offered.address.action
     );
-    if action.params.is_empty() {
+    if offered.params.is_empty() {
         let _ = writeln!(io.out, "Takes     nothing");
     } else {
         let _ = writeln!(io.out, "Takes");
-        let width = action
+        let width = offered
             .params
             .iter()
             .map(|param| param.name.chars().count())
             .max()
             .unwrap_or(0);
-        for param in &action.params {
+        for param in &offered.params {
             let need = if param.required {
                 "required"
             } else {
                 "optional"
             };
-            let mut line = format!("  {:<width$}  {}, {need}", param.name, param.what());
+            let mut line = format!("  {:<width$}  {}, {need}", param.name, param.ty.label());
             if !param.description.is_empty() && param.description != param.name {
                 line.push_str("  ");
                 line.push_str(&param.description);
@@ -765,41 +394,112 @@ pub fn show(sockets: &[ControlSocket], name: &str, spelling: &Spelling, io: &mut
             let _ = writeln!(io.out, "{line}");
         }
     }
-    let example = example_args(&action);
+    let example: String = offered
+        .params
+        .iter()
+        .filter(|param| param.required)
+        .map(|param| format!(" {}=…", param.name))
+        .collect();
     let _ = writeln!(io.out, "\nExample\n  {} {display}{example}", spelling.run);
     0
 }
 
-fn example_args(action: &Action) -> String {
-    action
-        .params
-        .iter()
-        .filter(|param| param.required)
-        .map(|param| {
-            let value = param.choices.first().cloned().unwrap_or_else(|| {
-                match param.ty.as_str() {
-                    "integer" | "number" => "1",
-                    "boolean" => "yes",
-                    "array" => "'[]'",
-                    "object" => "'{}'",
-                    _ => "…",
-                }
-                .to_string()
-            });
-            (param.name.as_str(), value)
-        })
-        .fold(String::new(), |mut out, (name, value)| {
-            use std::fmt::Write as _;
-            let _ = write!(out, " {name}={value}");
-            out
-        })
+/// Turn what was typed after an action's name into its arguments:
+/// `name=value`, `--name=value` and `--name value` name a parameter, each
+/// value the JSON it reads as or else text; a lone value goes to the one
+/// parameter that is required (or the only one). The desktop checks them
+/// against what the action takes.
+///
+/// # Errors
+/// A sentence saying what was wrong and what the action takes.
+fn bind_args(offered: &ActionDescriptor, words: &[String]) -> Result<Map<String, Value>, String> {
+    let takes = || {
+        if offered.params.is_empty() {
+            "nothing".to_owned()
+        } else {
+            offered
+                .params
+                .iter()
+                .map(|param| format!("{} ({})", param.name, param.ty.label()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    };
+    let mut args = Map::new();
+    let mut bare: Vec<&str> = Vec::new();
+    let mut iter = words.iter();
+    while let Some(word) = iter.next() {
+        let named = |key: &str| offered.params.iter().any(|param| param.name == key);
+        if let Some(flag) = word.strip_prefix("--") {
+            let (key, value) = match flag.split_once('=') {
+                Some((key, value)) => (key.to_owned(), value.to_owned()),
+                None => (
+                    flag.to_owned(),
+                    iter.next()
+                        .ok_or_else(|| format!("--{flag} needs a value after it."))?
+                        .clone(),
+                ),
+            };
+            args.insert(key, read_value(&value));
+        } else if let Some((key, value)) = word.split_once('=')
+            && named(key)
+        {
+            args.insert(key.to_owned(), read_value(value));
+        } else {
+            bare.push(word);
+        }
+    }
+    if !bare.is_empty() {
+        let open: Vec<_> = offered
+            .params
+            .iter()
+            .filter(|param| param.required && !args.contains_key(param.name.as_ref()))
+            .collect();
+        let lone = match (open.as_slice(), offered.params.as_slice()) {
+            ([one], _) => Some(*one),
+            ([], [only]) if !args.contains_key(only.name.as_ref()) => Some(only),
+            _ => None,
+        };
+        let Some(lone) = lone else {
+            return Err(format!(
+                "Say which option “{}” is for: “{}” takes {}.",
+                bare.join(" "),
+                offered.action_label,
+                takes()
+            ));
+        };
+        args.insert(lone.name.to_string(), read_value(&bare.join(" ")));
+    }
+    bind_choices(offered, &mut args);
+    Ok(args)
+}
+
+/// A value as typed: the JSON it reads as (`3`, `true`, `[1]`), else text.
+fn read_value(raw: &str) -> Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_owned()))
+}
+
+/// Arguments for an action whose parameters this side has not seen: each
+/// `name=value` (or `--name=value`), its value as the JSON it reads as, else
+/// as text (`count=3` is a number, `title=Groceries` text). Whoever carries out
+/// the action checks them against what it takes.
+///
+/// # Errors
+/// The sentence that names a word that is no `name=value`.
+pub fn arguments(words: &[String]) -> Result<Map<String, Value>, String> {
+    let mut args = Map::new();
+    for word in words {
+        let Some((key, value)) = word.trim_start_matches("--").split_once('=') else {
+            return Err(format!("Write “{word}” as name=value."));
+        };
+        args.insert(key.to_string(), read_value(value));
+    }
+    Ok(args)
 }
 
 /// `tilo do NAME [args]`: do one action, waiting for how it went, and say
 /// its answer: the lines a person reads, or with `json` the typed answer
-/// itself. The answer is the one Tilo's API gives for an action in a hosted
-/// workspace ([`act`]), so `tilo do` reads and prints one shape wherever the
-/// action ran.
+/// itself, the one shape `tilo do -w` answers too.
 pub fn run(
     sockets: &[ControlSocket],
     name: &str,
@@ -808,43 +508,136 @@ pub fn run(
     spelling: &Spelling,
     io: &mut Io<'_>,
 ) -> u8 {
-    say(act(sockets, name, words, spelling), json, io)
+    let answered = connect(sockets).and_then(|mut desktop| {
+        let rows = offered(
+            &mut desktop,
+            name.rsplit('#').next().unwrap_or(name),
+            spelling,
+        )?;
+        let row = find(&rows, name, spelling)?;
+        let args = bind_args(action(row), words)?;
+        invoke(
+            &mut desktop,
+            target(row),
+            args,
+            &action(row).action_label,
+            spelling,
+        )
+    });
+    say(answered, json, io)
 }
 
-/// The action `name` finds, with `words` bound as its arguments, carried out at
-/// the desktop these sockets reach: its answer as Tilo's API answers an action
-/// (`status`, `invocation`, `result`), or the sentence that says why it never
-/// started or did not work.
-///
-/// # Errors
-/// What a person reads when the action could not start, failed or was
-/// cancelled.
-pub fn act(
+/// What `row` invokes.
+fn target(row: &CatalogueRow) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: row.provider.clone(),
+        address: action(row).address.clone(),
+    }
+}
+
+/// Do the desktop's own action `target` with `args`, called `title` where
+/// the answer names it: a verb `tilo` spells itself (`tilo workspace
+/// branch`), which needs no listing to find. Says what it answers, as `tilo
+/// do` says an answer.
+pub fn run_target(
     sockets: &[ControlSocket],
-    name: &str,
-    words: &[String],
+    target: RemoteActionTarget,
+    title: &str,
+    args: &Value,
     spelling: &Spelling,
-) -> Result<serde_json::Value, String> {
-    let mut desktop = connect(sockets).map_err(|failure| sentence(&failure, spelling))?;
-    let action =
-        find(&mut desktop, name, spelling).map_err(|failure| sentence(&failure, spelling))?;
-    let args = if action.kind.is_empty() && action.params.is_empty() {
-        // Named by its address: the desktop checks the arguments.
-        arguments(words)?
+    io: &mut Io<'_>,
+) -> u8 {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let answered = connect(sockets)
+        .and_then(|mut desktop| invoke(&mut desktop, target, args, title, spelling));
+    say(answered, false, io)
+}
+
+/// Invoke `target` with `args` and follow it until it ends: its answer as
+/// Tilo's API answers an action, or the sentence that says why there is none.
+/// An action that takes longer than one wait is followed on: a command that
+/// printed "still going" and exited as if it had worked would leave the
+/// person, or the script after it, without its answer.
+fn invoke(
+    desktop: &mut Desktop,
+    target: RemoteActionTarget,
+    args: Map<String, Value>,
+    title: &str,
+    spelling: &Spelling,
+) -> Result<Value, String> {
+    let invocation = InvocationId::new();
+    let argument = if args.is_empty() {
+        InvokeArgument::None
     } else {
-        bind_args(&action, words)?
+        InvokeArgument::Json(args)
     };
-    invoke(
-        &mut desktop,
-        &action,
-        &serde_json::Value::Object(args),
-        spelling,
-    )
+    let request = InvokeRequest {
+        invocation,
+        target,
+        argument,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: Some(RUN_WAIT_MS),
+        appearance: None,
+        signed: None,
+    };
+    let mut status = match ask(desktop, RemoteActionMessage::Invoke(request))? {
+        RemoteActionMessage::Receipt(receipt) => receipt.status,
+        _ => return Err("The desktop answered something else.".into()),
+    };
+    while matches!(status, ReceiptStatus::Accepted) {
+        let observed = ask(
+            desktop,
+            RemoteActionMessage::Observe {
+                correlation: 1,
+                invocation,
+                wait_ms: Some(RUN_WAIT_MS),
+                seen: None,
+            },
+        )?;
+        let RemoteActionMessage::Update {
+            state: Some(state), ..
+        } = observed
+        else {
+            return Err(format!("The desktop lost track of “{title}”."));
+        };
+        if state.read_answered
+            && let InvocationUpdate::Item { value, .. } = &state.update
+        {
+            return Ok(serde_json::json!({
+                "status": "ok", "invocation": invocation, "result": value,
+            }));
+        }
+        status = state.receipt().status;
+    }
+    match status {
+        ReceiptStatus::Completed { output } => {
+            let mut typed = serde_json::json!({"status": "ok", "invocation": invocation});
+            if let Some(fields) = typed.as_object_mut() {
+                if let Some(value) = output.value.filter(|value| !value.is_null()) {
+                    fields.insert("result".into(), value);
+                }
+                if !output.resources.is_empty() {
+                    fields.insert("resources".into(), output.resources.into());
+                }
+            }
+            Ok(typed)
+        }
+        ReceiptStatus::Failed { error } if error.message.trim().is_empty() => {
+            Err(format!("“{title}” didn't work."))
+        }
+        ReceiptStatus::Failed { error } => Err(error.message),
+        ReceiptStatus::Rejected { error } => Err(refused(&error, spelling)),
+        ReceiptStatus::Cancelled { .. } => Err(format!("“{title}” was cancelled.")),
+        ReceiptStatus::Accepted => Err(format!("“{title}” is still going.")),
+    }
 }
 
 /// Say `answered`: the answer as [`answer_text`] words it, or as typed JSON
 /// when `json`; what went wrong on standard error, in words either way.
-pub fn say(answered: Result<serde_json::Value, String>, json: bool, io: &mut Io<'_>) -> u8 {
+pub fn say(answered: Result<Value, String>, json: bool, io: &mut Io<'_>) -> u8 {
     match answered {
         Ok(answer) if json => {
             let _ = writeln!(
@@ -858,6 +651,14 @@ pub fn say(answered: Result<serde_json::Value, String>, json: bool, io: &mut Io<
             let _ = writeln!(io.out, "{}", answer_text(&answer));
             0
         }
+        Err(sentence) => said(Err(sentence), io),
+    }
+}
+
+/// Nothing to say once it worked; the sentence when it did not.
+fn said(answered: Result<(), String>, io: &mut Io<'_>) -> u8 {
+    match answered {
+        Ok(()) => 0,
         Err(sentence) => {
             let _ = writeln!(io.err, "{sentence}");
             1
@@ -869,24 +670,16 @@ pub fn say(answered: Result<serde_json::Value, String>, json: bool, io: &mut Io<
 /// how it stands and the resource it acted on, what it answered, what it
 /// made or changed, and the links to it.
 #[must_use]
-pub fn answer_text(answer: &serde_json::Value) -> String {
+pub fn answer_text(answer: &Value) -> String {
     use std::fmt::Write as _;
-    let text = |name: &str| {
-        answer
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-    };
+    let text = |name: &str| answer.get(name).and_then(Value::as_str).unwrap_or_default();
     let path = text("path");
     // An action names the resource it resolved to; one that names none says
     // its status alone.
     let mut said = match text("status") {
         "pending" => {
             let mut said = format!("pending {}", text("invocation"));
-            match answer
-                .pointer("/ask/url")
-                .and_then(serde_json::Value::as_str)
-            {
+            match answer.pointer("/ask/url").and_then(Value::as_str) {
                 Some(url) => {
                     let _ = write!(said, ": it waits for you, at {url}");
                 }
@@ -901,8 +694,8 @@ pub fn answer_text(answer: &serde_json::Value) -> String {
         status => format!("{status} {path}"),
     };
     match answer.get("result") {
-        None | Some(serde_json::Value::Null) => {}
-        Some(serde_json::Value::String(result)) => {
+        None | Some(Value::Null) => {}
+        Some(Value::String(result)) => {
             let _ = write!(said, "\n{result}");
         }
         Some(result) => {
@@ -913,155 +706,24 @@ pub fn answer_text(answer: &serde_json::Value) -> String {
     // the path the next command can take as it is.
     for resource in answer
         .get("resources")
-        .and_then(serde_json::Value::as_array)
+        .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(serde_json::Value::as_str)
+        .filter_map(Value::as_str)
     {
         let _ = write!(said, "\n-> {resource}");
     }
     let links = answer
         .get("links")
-        .and_then(serde_json::Value::as_array)
+        .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(serde_json::Value::as_str)
-        .chain(answer.get("link").and_then(serde_json::Value::as_str));
+        .filter_map(Value::as_str)
+        .chain(answer.get("link").and_then(Value::as_str));
     for link in links {
         let _ = write!(said, "\n{link}");
     }
     said
-}
-
-/// Do the desktop's own action `id` of `provider` with `args`, called `title` where the answer
-/// names it: a verb `tilo` spells itself (`tilo workspace branch`), which needs no listing to
-/// find. Says what it answers, as `tilo do` says an answer.
-pub fn run_address(
-    sockets: &[ControlSocket],
-    (provider, id, title): (&str, &str, &str),
-    args: &serde_json::Value,
-    spelling: &Spelling,
-    io: &mut Io<'_>,
-) -> u8 {
-    let action = Action {
-        provider: provider.to_owned(),
-        id: id.to_owned(),
-        kind: String::new(),
-        title: title.to_owned(),
-        subtitle: None,
-        params: Vec::new(),
-    };
-    let answered = connect(sockets)
-        .map_err(|failure| sentence(&failure, spelling))
-        .and_then(|mut desktop| invoke(&mut desktop, &action, args, spelling));
-    say(answered, false, io)
-}
-
-/// Invoke `action` with `args` and wait for how it went: its answer as Tilo's
-/// API answers an action, or the sentence that says why there is none.
-fn invoke(
-    desktop: &mut Desktop,
-    action: &Action,
-    args: &serde_json::Value,
-    spelling: &Spelling,
-) -> Result<serde_json::Value, String> {
-    let request =
-        crate::client::invoke_wire(&action.provider, &action.id, args, None, Some(RUN_WAIT_MS));
-    let mut answer = desktop
-        .request(&request)
-        .map_err(|why| sentence(&Failure::Unreachable(why), spelling))?;
-    // An action that takes longer than one wait is followed until it ends: a
-    // command that printed "still going" and exited as if it had worked would
-    // leave the person, or the script after it, without its answer.
-    while let Some(number) = still_going(&answer) {
-        let status = serde_json::json!({
-            "op": "actions_status", "invocation_id": number, "wait_ms": RUN_WAIT_MS,
-        });
-        answer = desktop
-            .request(&status)
-            .map_err(|why| sentence(&Failure::Unreachable(why), spelling))?;
-    }
-    typed(&answer, action, spelling)
-}
-
-/// The desktop's number for the invocation `answer` names while it has not
-/// ended yet; `None` once it ended, or when the answer is a refusal.
-fn still_going(answer: &serde_json::Value) -> Option<u64> {
-    let receipt = answer.pointer("/answer/receipt")?;
-    let state = receipt
-        .pointer("/update/state")
-        .and_then(serde_json::Value::as_str)?;
-    matches!(state, "accepted" | "progress")
-        .then(|| receipt.get("broker_invocation_id")?.as_u64())
-        .flatten()
-}
-
-/// The desktop's `answer` to an invocation of `action`, as Tilo's API answers
-/// an action: `ok` with its `result` once it succeeded, `pending` while it
-/// is still going, each with its `invocation`. A refusal, a failure and a cancel
-/// are the sentence a person reads instead.
-fn typed(
-    answer: &serde_json::Value,
-    action: &Action,
-    spelling: &Spelling,
-) -> Result<serde_json::Value, String> {
-    use std::fmt::Write as _;
-    if let Some(err) = answer.get("err") {
-        let code = err
-            .get("code")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        if code == "invalid_arguments" {
-            let mut said = err
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            if !action.kind.is_empty() {
-                let _ = write!(said, "\nIt takes {}.", takes(action));
-            }
-            return Err(said);
-        }
-        return Err(refused_sentence(err, spelling));
-    }
-    let receipt = answer.get("answer").cloned().unwrap_or_default();
-    let update = receipt
-        .pointer("/receipt/update")
-        .cloned()
-        .unwrap_or_default();
-    let text = |pointer: &str| {
-        update
-            .pointer(pointer)
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-    };
-    let status = match text("/state").as_deref() {
-        Some("failed") => {
-            let message = text("/error/message").unwrap_or_default();
-            return Err(if message.trim().is_empty() {
-                format!("“{}” didn't work.", action.title)
-            } else {
-                message
-            });
-        }
-        Some("cancelled") => return Err(format!("“{}” was cancelled.", action.title)),
-        Some("accepted" | "running" | "queued" | "pending") => "pending",
-        _ => "ok",
-    };
-    let mut typed = serde_json::json!({"status": status});
-    if let Some(fields) = typed.as_object_mut() {
-        if let Some(invocation) = receipt.pointer("/receipt/invocation") {
-            fields.insert("invocation".into(), invocation.clone());
-        }
-        if let Some(result) = update
-            .pointer("/output/value")
-            .or_else(|| receipt.pointer("/receipt/output/value"))
-            .filter(|value| !value.is_null())
-        {
-            fields.insert("result".into(), result.clone());
-        }
-    }
-    Ok(typed)
 }
 
 /// Whether `item` is a link (`https://…`, `mailto:…`) rather than a path.
@@ -1095,39 +757,29 @@ pub fn open_item(item: &str, cwd: &Path) -> String {
     absolute.to_string_lossy().into_owned()
 }
 
-/// The app `input` names among `actions`, as search and Enter would take
-/// it: its id exactly, its name exactly, or the desktop's best match.
-#[must_use]
-pub fn pick_app(input: &str, actions: &[Action]) -> Option<usize> {
-    let apps = || {
-        actions
-            .iter()
-            .enumerate()
-            .filter(|(_, action)| action.is_application())
-    };
-    let input = input.trim();
-    let by_id = apps().find(|(_, action)| {
-        let id = action.id.as_str();
-        id == input || id.rsplit_once(':').is_some_and(|(_, tail)| tail == input)
-    });
-    let by_name = || apps().find(|(_, action)| action.title.eq_ignore_ascii_case(input));
-    by_id
-        .or_else(by_name)
-        .or_else(|| apps().next())
-        .map(|(at, _)| at)
+/// The app `row` opens, when it is the workspace's open of an app: its id.
+fn opens(row: &CatalogueRow) -> Option<&str> {
+    let offered = action(row);
+    (offered.address.action == APPLICATION_OPEN_ACTION
+        && provider_workspace(&row.provider).is_some())
+    .then(|| {
+        offered
+            .address
+            .resource
+            .strip_prefix(APPLICATION_RESOURCE_PREFIX)
+    })
+    .flatten()
 }
 
-/// The listing kinds that are apps: Tilo apps (here or to get) and the
-/// host's own.
-const APP_KINDS: &[&str] = &["app"];
+/// The apps among `rows`: each one's id, with the name it is listed by.
+fn apps(rows: &[CatalogueRow]) -> Vec<(&str, &str, &CatalogueRow)> {
+    rows.iter()
+        .filter_map(|row| Some((opens(row)?, row.resource.label.as_str(), row)))
+        .collect()
+}
 
-/// The installed-app address that opens files and links (the shell's
-/// `open-with:` row of the `applications` provider).
-const OPEN_WITH_PREFIX: &str = "open-with:";
-
-/// `tilo open APP [file|link…]`: open an app by id, name or a word of its
-/// name, getting it first when this device does not have it yet, exactly
-/// as search and Enter do; with files or links, open those in it.
+/// `tilo open APP [file|link…]`: open an app by id, name or the start of its
+/// name, as search and Enter do; with files or links, open those in it.
 pub fn open(
     sockets: &[ControlSocket],
     app: &str,
@@ -1138,81 +790,51 @@ pub fn open(
 ) -> u8 {
     let mut desktop = match connect(sockets) {
         Ok(desktop) => desktop,
-        Err(failure) => return report(&failure, spelling, io),
+        Err(sentence) => return said(Err(sentence), io),
     };
-    let query = if app.contains('.') && !app.contains(' ') {
-        app.to_string()
-    } else {
-        slug(app).replace('-', " ")
+    let rows = match offered(&mut desktop, app, spelling) {
+        Ok(rows) => rows,
+        Err(sentence) => return said(Err(sentence), io),
     };
-    let listing = match listing(&mut desktop, &query, APP_KINDS) {
-        Ok(listing) => listing,
-        Err(failure) => return report(&failure, spelling, io),
+    let apps = apps(&rows);
+    let listed: Vec<(&str, &str)> = apps.iter().map(|(id, label, _)| (*id, *label)).collect();
+    let chosen = match app_meant(app, &listed) {
+        Ok(Some(id)) => apps.iter().find(|(listed, _, _)| *listed == id),
+        Ok(None) => None,
+        Err(sentence) => return said(Err(sentence), io),
     };
-    let Some(chosen) = pick_app(app, &listing.actions)
-        .and_then(|at| listing.actions.get(at))
-        .cloned()
-    else {
+    let Some(&(id, label, row)) = chosen else {
         let _ = writeln!(io.err, "There is no app called “{app}”.");
         return 1;
     };
-    if items.is_empty() {
-        return opened(
-            invoke(&mut desktop, &chosen, &serde_json::json!({}), spelling),
-            io,
-        );
-    }
-    if chosen.provider != "applications" || chosen.id.contains(':') {
-        let _ = writeln!(
-            io.err,
-            "{} isn't on this device yet. Open it once to get it: {} {}",
-            chosen.title,
-            spelling.open,
-            slug(&chosen.title)
-        );
-        return 1;
-    }
-    let open_with = Action {
-        id: format!("{OPEN_WITH_PREFIX}{}", chosen.id),
-        params: Vec::new(),
-        ..chosen
+    let (target, args) = if items.is_empty() {
+        (target(row), Map::new())
+    } else {
+        let workspace = provider_workspace(&row.provider).unwrap_or_default();
+        let items: Vec<String> = items.iter().map(|item| open_item(item, cwd)).collect();
+        let mut args = Map::new();
+        args.insert("open".into(), items.into());
+        (
+            application_open_target(workspace, &format!("{OPEN_WITH_PREFIX}{id}")),
+            args,
+        )
     };
-    let items: Vec<String> = items.iter().map(|item| open_item(item, cwd)).collect();
-    opened(
-        invoke(
-            &mut desktop,
-            &open_with,
-            &serde_json::json!({ "open": items }),
-            spelling,
-        ),
+    said(
+        invoke(&mut desktop, target, args, label, spelling).map(drop),
         io,
     )
 }
 
-/// How opening went: nothing to say once the app is up, the sentence when it
-/// is not.
-fn opened(answered: Result<serde_json::Value, String>, io: &mut Io<'_>) -> u8 {
-    match answered {
-        Ok(_) => 0,
-        Err(sentence) => {
-            let _ = writeln!(io.err, "{sentence}");
-            1
-        }
-    }
-}
-
-/// Names that complete `prefix` after `tilo do`: the desktop's own ranking
-/// of the titles it holds, so a word inside a title completes too.
+/// Names that complete `prefix` after `tilo do`.
 #[must_use]
 pub fn complete_actions(sockets: &[ControlSocket], prefix: &str) -> Vec<String> {
     let Ok(mut desktop) = Desktop::connect(sockets) else {
         return Vec::new();
     };
-    let query = slug(prefix).replace('-', " ");
-    let Ok(listing) = listing(&mut desktop, &query, &[]) else {
+    let Ok(rows) = offered(&mut desktop, prefix, &Spelling::tilo()) else {
         return Vec::new();
     };
-    display_names(&listing.actions)
+    rows.iter().map(|row| name_of(row, &rows)).collect()
 }
 
 /// App names that complete `prefix` after `tilo open`.
@@ -1221,15 +843,12 @@ pub fn complete_apps(sockets: &[ControlSocket], prefix: &str) -> Vec<String> {
     let Ok(mut desktop) = Desktop::connect(sockets) else {
         return Vec::new();
     };
-    let query = slug(prefix).replace('-', " ");
-    let Ok(listing) = listing(&mut desktop, &query, APP_KINDS) else {
+    let Ok(rows) = offered(&mut desktop, prefix, &Spelling::tilo()) else {
         return Vec::new();
     };
-    let mut names: Vec<String> = listing
-        .actions
-        .iter()
-        .filter(|action| action.is_application())
-        .map(|action| slug(&action.title))
+    let mut names: Vec<String> = apps(&rows)
+        .into_iter()
+        .map(|(_, label, _)| label.to_lowercase().replace(char::is_whitespace, "-"))
         .filter(|name| !name.is_empty())
         .collect();
     let mut seen = std::collections::HashSet::new();

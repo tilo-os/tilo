@@ -551,12 +551,16 @@ pub fn read_first_line(stream: &mut std::os::unix::net::UnixStream) -> io::Resul
 }
 
 /// Whether `line` is a request of the desktop's control protocol — one JSON
-/// object naming its `op` — rather than MCP's JSON-RPC. `tilo action` and
-/// `tilo open` speak it from inside a terminal app.
+/// object naming its `op`, or an action frame naming its `version` — rather
+/// than MCP's JSON-RPC. `tilo do` and `tilo open` send frames from inside a
+/// terminal app.
 #[must_use]
 pub fn is_control_request(line: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(line).is_ok_and(|request| {
-        request.get("op").is_some_and(serde_json::Value::is_string)
+        (request.get("op").is_some_and(serde_json::Value::is_string)
+            || request
+                .get("version")
+                .is_some_and(serde_json::Value::is_u64))
             && request.get("jsonrpc").is_none()
     })
 }
@@ -1023,8 +1027,9 @@ mod tests {
 
         phase control_requests_are_told_from_mcp_by_their_op;
         {
+            assert!(is_control_request(br#"{"op":"state_dump"}"#));
             assert!(is_control_request(
-                br#"{"args":{},"id":"x","op":"actions_invoke","provider":"p"}"#
+                br#"{"version":2,"message":{"CatalogueRequest":{"correlation":1}}}"#
             ));
             assert!(!is_control_request(
                 br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#

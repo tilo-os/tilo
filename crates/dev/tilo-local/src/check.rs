@@ -288,6 +288,9 @@ fn control(bin: &Path, socket: &str, runtime: &str, args: &[&str]) -> Result<Str
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// The action model's frame that asks a session for the first page of its catalogue.
+const CATALOGUE_FRAME: &str = r#"{"version":2,"message":{"CatalogueRequest":{"correlation":1}}}"#;
+
 /// The smoke test for `cargo desktop --check` and `cargo headless --check`.
 pub fn session(repo: &Path, asked: &Options) -> Result<ExitCode, String> {
     let began = Instant::now();
@@ -525,20 +528,16 @@ fn probe(
             &["snapshot", &shot.display().to_string()],
         )?;
         said.push(format!("snapshot {}", shot.display()));
-        let actions = control(bin, &socket, &runtime, &["actions", "list"])?;
-        let count = actions
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .count();
-        if count == 0 {
-            return Err("tilo-control actions list printed nothing".into());
+        // The first page of the session's catalogue, asked as the action model's frame: what
+        // `tilo action list` and an agent's tools read.
+        let listed = control(bin, &socket, &runtime, &["raw", CATALOGUE_FRAME])?;
+        let count = listed.matches("\"app_id\":").count();
+        if !listed.contains("\"CatalogueResponse\"") || !listed.contains("\"Ok\"") || count == 0 {
+            return Err(format!("the session listed no actions: {listed}"));
         }
         said.push(format!(
-            "tilo-control actions list: {count} lines, the first:"
+            "the session's catalogue: {count} rows on its first page"
         ));
-        for line in actions.lines().take(5) {
-            said.push(format!("  {line}"));
-        }
         let agent = crate::mcp::Agent {
             bin,
             runtime: Path::new(&runtime),

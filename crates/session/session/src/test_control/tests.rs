@@ -120,10 +120,6 @@ tilo_test_env::scenario! {
         // own scripts, which drive the desktop through the model it publishes and read the state it
         // shows — never through the pointer, the keyboard or a picture of the screen.
         let owner = [
-            Op::ActionsCancel,
-            Op::ActionsEnumerate,
-            Op::ActionsInvoke,
-            Op::ActionsStatus,
             Op::ProcessMemory,
             Op::ProfileStart,
             Op::ProfileStatus,
@@ -155,10 +151,6 @@ tilo_test_env::scenario! {
         assert_eq!(
             names,
             [
-                "actions_cancel",
-                "actions_enumerate",
-                "actions_invoke",
-                "actions_status",
                 "click_at",
                 "click_named",
                 "drag",
@@ -353,27 +345,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_action_the_person_may_not_run_is_not_a_refused_socket;
-    {
-        assert_eq!(
-            action_refusal(&ActionCallError::NotPermitted)["err"]["code"],
-            "not_allowed"
-        );
-        assert_eq!(
-            action_refusal(&ActionCallError::StaleRevision)["err"]["code"],
-            "stale_cursor"
-        );
-        assert_eq!(
-            action_refusal(&ActionCallError::UnknownAction)["err"]["code"],
-            "unknown_action"
-        );
-        assert_eq!(
-            action_refusal(&ActionCallError::InvalidRequest {
-                reason: "bad".into()
-            })["err"]["code"],
-            "invalid_arguments"
-        );
-    }
 }
 
 tilo_test_env::scenario! {
@@ -385,67 +356,6 @@ tilo_test_env::scenario! {
         assert_eq!(named_key("Super"), Some(125));
         assert_eq!(named_key("enter"), None);
         assert_eq!(named_key("a"), None);
-    }
-
-    phase a_tools_address_names_the_action_the_model_routes_to;
-    {
-        let open = legacy_target("applications", "so.tilo.notes", "workspace-1")
-            .expect("an app the workspace can open");
-        assert_eq!(open.provider, "workspace:workspace-1");
-        assert_eq!(open.address.resource, "app.so.tilo.notes");
-        assert_eq!(
-            open.address.action,
-            tilo_actions::remote::APPLICATION_OPEN_ACTION
-        );
-
-        let app = legacy_target(
-            "app-actions",
-            "application:workspace-1:so.tilo.notes:abc\u{1f}notes.page:abc\u{1f}new-page",
-            "workspace-1",
-        )
-        .expect("an app's own action");
-        assert_eq!(app.provider, "application:workspace-1:so.tilo.notes:abc");
-        assert_eq!(app.address.resource, "notes.page:abc");
-        assert_eq!(app.address.action, "new-page");
-
-        let session = legacy_target(
-            "so.tilo.session",
-            "desktop:tab:5\u{1f}close-tab",
-            "workspace-1",
-        )
-        .expect("the session's own action");
-        assert_eq!(session.provider, "so.tilo.session");
-        assert_eq!(session.address.resource, "desktop:tab:5");
-        assert_eq!(session.address.action, "close-tab");
-
-        // The workspace verbs by the names tools spell them are the session's own.
-        for (spelled, action) in [
-            ("workspace.create", "new-workspace"),
-            ("workspace.branch", "branch-workspace"),
-        ] {
-            let verb =
-                legacy_target("actions", spelled, "workspace-1").expect("the session's verb");
-            assert_eq!(verb.provider, "so.tilo.session");
-            assert_eq!(verb.address.resource, "desktop:chrome");
-            assert_eq!(verb.address.action, action);
-        }
-        assert!(legacy_target("actions", "workspace.nothing", "workspace-1").is_err());
-
-        assert!(legacy_target("app-actions", "half-an-id", "workspace-1").is_err());
-        assert!(legacy_target("applications", "", "workspace-1").is_err());
-        assert!(legacy_target("so.tilo.session", "no-action", "workspace-1").is_err());
-    }
-
-    phase a_cursor_carries_the_listing_it_was_cut_from;
-    {
-        let cursor = encode_cursor("12.34", &[1, 2, 255]);
-        assert_eq!(cursor, "12.34~0102ff");
-        assert_eq!(
-            decode_cursor(&cursor),
-            Some(("12.34".to_owned(), vec![1, 2, 255]))
-        );
-        assert_eq!(decode_cursor("nonsense"), None);
-        assert_eq!(decode_cursor("12.34~zz"), None);
     }
 
     phase the_input_a_tool_injects_is_answered_where_a_device_hands_its_own;
@@ -478,7 +388,6 @@ tilo_test_env::scenario! {
         // pass has drawn it.
         for op in [
             Op::ClickNamed,
-            Op::ActionsInvoke,
             Op::StateDump,
             Op::Snapshot,
             Op::Watch,

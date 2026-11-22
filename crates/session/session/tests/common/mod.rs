@@ -35,6 +35,10 @@ use std::time::Duration;
 use tilo_session_core::layout;
 
 use serde_json::{Map, Value, json};
+use tilo_actions::remote::{
+    CatalogueQuery, CatalogueRow, Confirmation, InvocationReceipt, InvokeArgument, InvokeRequest,
+    ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+};
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_service::{Questions, Service as _, Started};
 use tilo_session::{AppSocket, Options, Session};
@@ -1342,6 +1346,84 @@ pub fn control(session: &mut Session, socket: &Path, request: &Value) -> Value {
     wait_for(session, "the test-control socket's answer", |_| {
         answered.try_recv().ok()
     })
+}
+
+/// The action frame that asks `message` of a session's control socket, as the line it sends.
+pub fn action_frame(message: RemoteActionMessage) -> Value {
+    serde_json::to_value(RemoteActionFrame::new(message)).expect("a frame")
+}
+
+/// The action message a session's control socket answered a frame with.
+pub fn action_answer(answer: &Value) -> RemoteActionMessage {
+    serde_json::from_value::<RemoteActionFrame>(answer.clone())
+        .unwrap_or_else(|error| panic!("{answer} is no action frame: {error}"))
+        .message
+}
+
+/// The frame that lists the first page of what a session publishes that mentions `needle`.
+pub fn listing(needle: &str) -> Value {
+    action_frame(RemoteActionMessage::CatalogueRequest {
+        correlation: 1,
+        query: CatalogueQuery {
+            needle: needle.to_owned(),
+            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        },
+    })
+}
+
+/// The rows a listing frame was answered with.
+pub fn listed(answer: &Value) -> Vec<CatalogueRow> {
+    match action_answer(answer) {
+        RemoteActionMessage::CatalogueResponse {
+            result: Ok(page), ..
+        } => page.rows,
+        other => panic!("a listing was answered with {other:?}"),
+    }
+}
+
+/// The request that invokes `target` with `args` (none when empty), holding its answer up to
+/// `wait_ms` for it to settle.
+pub fn invocation(
+    target: &RemoteActionTarget,
+    args: &Value,
+    confirmation: Option<Confirmation>,
+    wait_ms: Option<u32>,
+) -> InvokeRequest {
+    InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: target.clone(),
+        argument: match args.as_object() {
+            Some(args) if !args.is_empty() => InvokeArgument::Json(args.clone()),
+            _ => InvokeArgument::None,
+        },
+        context: None,
+        confirmation,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// The frame that invokes `target` with `args`, answered once it is admitted.
+pub fn invoking(target: &RemoteActionTarget, args: &Value) -> Value {
+    action_frame(RemoteActionMessage::Invoke(invocation(
+        target, args, None, None,
+    )))
+}
+
+/// The code an invocation frame was refused with, or `None` when it was admitted.
+pub fn refused(answer: &Value) -> Option<&'static str> {
+    match action_answer(answer) {
+        RemoteActionMessage::Receipt(InvocationReceipt {
+            status: ReceiptStatus::Rejected { error },
+            ..
+        }) => Some(error.code()),
+        RemoteActionMessage::Receipt(_) => None,
+        other => panic!("an invocation was answered with {other:?}"),
+    }
 }
 
 /// The surface the shell shows over the windows now, as the surface stack's reading names it:

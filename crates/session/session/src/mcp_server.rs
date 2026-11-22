@@ -1683,6 +1683,8 @@ pub(crate) struct Host {
     /// The agent session an admitted agent's connection is: each step it takes says there what
     /// it is doing. `None` for the person's own connection.
     agent_session: Option<Arc<SessionAt>>,
+    /// Whether every invocation is the person at this device's own ([`Self::as_local_person`]).
+    local_person: bool,
 }
 
 /// What the catalogue says of one action a session was offered: the words the person reads the step
@@ -1867,7 +1869,16 @@ impl Host {
             session_actions: None,
             agent: None,
             agent_session: None,
+            local_person: false,
         }
+    }
+
+    /// The same API, invoking every action as the person at this device
+    /// ([`Self::invoke_as_local_person`]): what this device's own control sockets answer frames
+    /// with.
+    pub(crate) const fn as_local_person(mut self) -> Self {
+        self.local_person = true;
+        self
     }
 
     /// The same server, for the agent session `session` of `sessions`: what it does is said there,
@@ -2164,7 +2175,7 @@ impl ActionProvider for Host {
         // per-role permissions. Device identity belongs to this device's own control sockets alone
         // ([`Host::invoke_as_local_person`]), and the person's own steps on the session go to the loop
         // wherever they come from ([`Host::invoke_within`]).
-        self.invoke_within(caller, request, false)
+        self.invoke_within(caller, request, self.local_person)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {

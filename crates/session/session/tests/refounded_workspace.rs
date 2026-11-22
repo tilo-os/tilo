@@ -11,7 +11,7 @@ use serde_json::json;
 use tilo_server_protocol::workspaces::Role;
 
 use crate::closed_tasks::{APP, titles, tracker};
-use crate::common::people::{Device, Person, Site};
+use crate::common::people::{Device, Person, Site, at};
 
 /// The issues the tracker holds on `device`, once it reads every one of `wanted`.
 fn wait_for_issues(device: &Device, wanted: &[&str]) {
@@ -40,8 +40,8 @@ fn wait_for_issues(device: &Device, wanted: &[&str]) {
 fn make_issue(device: &Device, title: &str) {
     device.open(APP);
     device.wait_for_window(APP);
-    let (provider, id) = device.app_action(APP, "create");
-    let made = device.act_confirming(&provider, &id, &json!({ "title": title }));
+    let create = device.app_action(APP, "create");
+    let made = device.act_confirming(&create, &json!({ "title": title }));
     assert!(
         made.get("err").is_none(),
         "{} made no issue: {made}",
@@ -88,8 +88,7 @@ fn an_unenrolled_device_of_the_owner_making_the_hosted_workspace_leaves_it_whole
         restored.showing().filter(|shown| !shown.is_empty())
     });
     let asked = restored.act_wait(
-        "so.tilo.session",
-        "desktop:chrome\u{1f}new-workspace",
+        &at("so.tilo.session", "desktop:chrome", "new-workspace"),
         &json!({"workspace": site.workspace, "name": "Acme"}),
     );
     assert!(asked.get("err").is_none(), "the shell answers: {asked}");

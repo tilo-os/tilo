@@ -22,8 +22,9 @@
 
 use std::time::Instant;
 
-use crate::common::people::{Device, Person, Site, join_together};
+use crate::common::people::{Device, Person, Site, at, join_together, target};
 use serde_json::{Value, json};
+use tilo_actions::remote::RemoteActionTarget;
 use tilo_server_protocol::workspaces::Role;
 
 /// The app whose record the step changes.
@@ -33,15 +34,11 @@ const TITLE: &str = "Book the ferry";
 
 /// The workspace's `start` of the closed [`APP`], as the host names it: the instance it runs with
 /// no window answers with, or the refusal.
-fn start_action(workspace: &str) -> (String, String) {
-    (
-        tilo_actions::remote::workspace_provider(workspace),
-        format!(
-            "{}{APP}{}{}",
-            tilo_actions::remote::APPLICATION_RESOURCE_PREFIX,
-            tilo_actions::KEY_SEP,
-            tilo_actions::remote::APPLICATION_START_ACTION
-        ),
+fn start_action(workspace: &str) -> RemoteActionTarget {
+    at(
+        &tilo_actions::remote::workspace_provider(workspace),
+        &format!("{}{APP}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX),
+        tilo_actions::remote::APPLICATION_START_ACTION,
     )
 }
 
@@ -118,47 +115,43 @@ fn wait_for_the_issue(device: &Device) -> Value {
     }
 }
 
-/// The tracker's `create` as the instance `peer` publishes it: the provider and action id the
-/// agent's step names, once that instance offers it.
-fn published_create(device: &Device, peer: u64) -> (String, String) {
+/// The tracker's `create` as the instance `peer` publishes it: what the agent's step names, once
+/// that instance offers it.
+fn published_create(device: &Device, peer: u64) -> RemoteActionTarget {
     let wanted = peer.to_string();
     let mut listed = None;
     tilo_test_env::wait_until(format!("{} publishes Tasks' create", device.label), || {
-        let answer = device.actions();
-        listed = answer["answer"]["actions"]
-            .as_array()
-            .and_then(|rows| {
-                rows.iter().find(|row| {
-                    row["provider"].as_str() == Some(wanted.as_str())
-                        && row["application"] == APP
-                        && row["operation"] == "create"
-                })
+        listed = device
+            .actions()
+            .iter()
+            .find(|row| {
+                row.provider == wanted
+                    && row.app_id == APP
+                    && row
+                        .action
+                        .as_ref()
+                        .is_some_and(|action| action.address.action == "create")
             })
-            .map(|row| {
-                (
-                    row["provider"].as_str().expect("a provider").to_owned(),
-                    row["id"].as_str().expect("an action id").to_owned(),
-                )
-            });
+            .map(target);
         listed.is_some()
     });
     listed.expect("the tracker's create is published by the instance the host started")
 }
 
-/// Invoke `(provider, id)` on `device` with `args` and wait for what it answered, with the
-/// person's own confirmation given where the action asks first.
-fn step(device: &Device, (provider, id): &(String, String), args: &Value) -> Value {
-    let answer = device.act_wait(provider, id, args);
-    match answer["answer"]["receipt"]["update"]["state"].as_str() {
-        Some("succeeded") => answer["answer"]["receipt"]["update"]["output"]["value"].clone(),
+/// Invoke `action` on `device` with `args` and wait for what it answered.
+fn step(device: &Device, action: &RemoteActionTarget, args: &Value) -> Value {
+    let id = &action.address;
+    let answer = device.act_wait(action, args);
+    match answer["update"]["state"].as_str() {
+        Some("succeeded") => answer["update"]["output"]["value"].clone(),
         Some("failed") => panic!(
-            "{} {id} failed: {}\n{answer}\n{}",
+            "{} {id:?} failed: {}\n{answer}\n{}",
             device.label,
-            answer["answer"]["receipt"]["update"]["output"]["error"],
+            answer["update"]["output"]["error"],
             device.diagnostic()
         ),
         other => panic!(
-            "{} {id} ended as {other:?}: {answer}\n{}",
+            "{} {id:?} ended as {other:?}: {answer}\n{}",
             device.label,
             device.diagnostic()
         ),
@@ -256,15 +249,9 @@ fn an_agents_step_makes_an_issue_with_tasks_closed_and_the_persons_devices_read_
     laptop.open(APP);
     laptop.wait_for_window(APP);
     tilo_test_env::wait_until("Tasks' window to publish the issue", || {
-        laptop.actions()["answer"]["actions"]
-            .as_array()
-            .is_some_and(|rows| {
-                rows.iter().any(|row| {
-                    row["provider"]
-                        .as_str()
-                        .is_some_and(|provider| provider.parse::<u64>().is_ok())
-                        && row.to_string().contains(TITLE)
-                })
-            })
+        laptop.actions().iter().any(|row| {
+            row.provider.parse::<u64>().is_ok()
+                && serde_json::to_string(row).is_ok_and(|row| row.contains(TITLE))
+        })
     });
 }
