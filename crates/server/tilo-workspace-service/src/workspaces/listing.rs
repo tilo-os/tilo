@@ -184,22 +184,11 @@ fn faces(members: &[tilo_peer_state::Member], online: &BTreeSet<[u8; 32]>) -> (V
     (faces, count)
 }
 
-/// The part a listing hands everyone who joins through the entry. A listing hands
-/// out no more than an editor holds ([`EntryPolicy::checked`]), so one written
-/// another way still hands out no governance.
-fn listed_part(role: Role) -> Role {
-    if Role::Editor.includes(role) {
-        role
-    } else {
-        Role::Editor
-    }
-}
-
 /// `entry`'s listing as the directory and the pages read it.
 fn listing_of_entry(entry: &EntryPolicy) -> Option<Listing> {
     entry.listing.as_ref().map(|listing| Listing {
         description: listing.description.clone(),
-        default_role: listed_part(listing.default_role),
+        default_role: listing.default_role,
     })
 }
 
@@ -292,9 +281,6 @@ impl Workspaces {
         device: &DeviceCert,
         listing: Listing,
     ) -> Result<Listing, CollaborationError> {
-        let listing = listing
-            .checked()
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
         let settling = ListingPolicy {
             description: listing.description,
             default_role: listing.default_role,
@@ -676,7 +662,7 @@ impl Workspaces {
             // are; the owner holds the workspace whatever an invitation names.
             let role = member
                 .filter(|role| role.assignable())
-                .unwrap_or_else(|| listed_part(listing.default_role));
+                .unwrap_or(listing.default_role);
             let token = hex::encode(rand::random::<[u8; 32]>());
             let grant = self.entry_grant(workspace, role, now, &token)?;
             // A person an invitation of the workspace's own names is handed

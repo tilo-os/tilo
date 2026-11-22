@@ -119,11 +119,6 @@ pub enum Change {
     RemoveRole {
         id: String,
     },
-    /// Legacy whole-set assignment, kept for replay. New changes set one role at a time.
-    SetMemberRoles {
-        person: String,
-        roles: BTreeSet<String>,
-    },
     /// Assign or remove one custom role without replacing other assignments.
     SetMemberCustomRole {
         person: String,
@@ -163,7 +158,6 @@ impl Change {
             Self::TransferOwnership { .. } => governance::TRANSFER_OWNERSHIP,
             Self::Grant(_)
             | Self::DefineRole { .. }
-            | Self::SetMemberRoles { .. }
             | Self::SetMemberCustomRole { assigned: true, .. } => governance::GRANT,
             Self::Revoke(_)
             | Self::RemoveRole { .. }
@@ -184,7 +178,6 @@ impl Change {
             | Self::Restrict { person, .. }
             | Self::Unrestrict { person }
             | Self::SetRole { person, .. }
-            | Self::SetMemberRoles { person, .. }
             | Self::SetMemberCustomRole { person, .. }
             | Self::TransferOwnership { person } => Some(person),
             Self::Grant(_)
@@ -975,13 +968,6 @@ impl WorkspacePolicy {
                     |grant| !matches!(&grant.grantee, Grantee::CustomRole(role) if role == &id),
                 );
             }
-            Change::SetMemberRoles { person, roles } => {
-                if roles.is_empty() {
-                    self.assigned_roles.remove(&person);
-                } else {
-                    self.assigned_roles.insert(person, roles);
-                }
-            }
             Change::SetMemberCustomRole {
                 person,
                 role,
@@ -1109,9 +1095,6 @@ impl WorkspacePolicy {
             Change::Revoke(id) => self.check_revocation(id),
             Change::DefineRole { id, name } => Self::check_role_definition(id, name),
             Change::RemoveRole { id } => self.require_custom_role(id),
-            Change::SetMemberRoles { person, roles } => {
-                self.check_member_roles(actor, person, roles, cx)
-            }
             Change::SetMemberCustomRole {
                 person,
                 role,
@@ -1233,27 +1216,6 @@ impl WorkspacePolicy {
         } else {
             Err(Refusal::UnknownGrant(id.clone()))
         }
-    }
-
-    fn check_member_roles(
-        &self,
-        actor: &Authority<'_>,
-        person: &str,
-        roles: &BTreeSet<String>,
-        cx: &Context<'_>,
-    ) -> Result<(), Refusal> {
-        if !self.members.contains_key(person) {
-            return Err(Refusal::NotAMember(person.to_owned()));
-        }
-        for role in roles {
-            self.require_custom_role(role)?;
-        }
-        for grant in &self.grants {
-            if matches!(&grant.grantee, Grantee::CustomRole(id) if roles.contains(id)) {
-                Self::check_within(actor, grant, cx)?;
-            }
-        }
-        Ok(())
     }
 
     fn check_member_custom_role(

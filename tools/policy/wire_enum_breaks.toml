@@ -674,3 +674,8 @@ reason = "a request an app instance sends the workspace service over its port an
 file = "crates/collab/actions/src/remote.rs"
 enum = "RemoteActionMessage"
 reason = "the search request and answer went: a workspace's search is the `tilo.search` provider's `search#find` action, asked and answered as an invocation. The frame is JSON, named by variant, and the remote-action envelope version is bumped from 2 to 3 with the removal, so a peer at the old version is refused as undeliverable instead of sending a search no one reads"
+
+[[break]]
+file = "crates/collab/action-policy/src/workspace.rs"
+enum = "Change"
+reason = "`SetMemberRoles`, a whole-set role assignment no build ever wrote, went. It was added after the stored governance this tree still reads was written, so that governance numbers its variants without it and reads as it was written again; only frames written in the few days between its addition and its removal shift, and those are development data"

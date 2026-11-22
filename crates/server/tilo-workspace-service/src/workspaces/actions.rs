@@ -182,8 +182,6 @@ pub(crate) const SET_CONNECTOR_SECRET: &str = "set-connector-secret";
 const CONNECTOR_SECRETS: [(&str, &str); 1] = [("so.tilo.discord", "bot-token")];
 /// Most bytes a connector secret takes.
 const MAX_CONNECTOR_SECRET: usize = 512;
-/// The roles a public workspace hands out at its entry.
-const ENTRY_ROLES: [&str; 3] = ["viewer", "commenter", "editor"];
 
 /// How long an invitation stays redeemable when the caller does not say.
 const DEFAULT_INVITATION_HOURS: u64 = 7 * 24;
@@ -678,7 +676,12 @@ fn publish_params() -> Vec<ActionParam> {
             ParamType::Text,
             "The role everyone who joins from the directory gets.",
         )
-        .with_choices(ENTRY_ROLES),
+        .with_choices(
+            Role::ALL
+                .into_iter()
+                .filter(|role| Role::Editor.includes(*role))
+                .map(Role::key),
+        ),
         ActionParam::optional(
             "description",
             ParamType::Text,
