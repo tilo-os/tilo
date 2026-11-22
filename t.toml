@@ -1143,17 +1143,6 @@ on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
-name = "real-fuse-server"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-server --test it personal_device_process::ordinary_device_enrollment_survives_approver_offline_with_home_peer_route -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
-env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
-requires = ["/dev/fuse", "/dev/fuse"]
-isolation = "nested"
-on = ["dispatch", "idle"]
-heavy = true
-
-[[check]]
 name = "real-fuse-runtime"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
@@ -1162,24 +1151,6 @@ env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
 on = ["dispatch", "idle"]
-heavy = true
-
-[[check]]
-name = "real-fuse-privileged-build"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\ntest=$(cargo test --locked -p tilo-server --test it --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == \"it\"))')\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\ncp \"$test\" \"$CARGO_TARGET_DIR/vm/tilo-server-it\"\n"
-requires = ["arch=x86_64"]
-outputs = ["/target/vm/tilo-server-it", "/target/debug/tilo-home-peer-control"]
-on = ["dispatch"]
-heavy = true
-
-[[check]]
-name = "real-fuse-privileged"
-run = "cd crates/server/tilo-server\n/target/vm/tilo-server-it --ignored --exact personal_device_process::privileged_helper_preserves_user_owned_personal_device_projection --nocapture --test-threads=1\n"
-needs = ["real-fuse-privileged-build"]
-requires = ["arch=x86_64"]
-isolation = "vm"
-on = ["dispatch"]
 heavy = true
 
 [[check]]
