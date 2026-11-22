@@ -225,3 +225,99 @@ tilo_test_env::scenario! {
             });
     }
 }
+
+/// Notes that are installed and not running, in a workspace that refuses to start them as not
+/// serving this caller yet while `unserved` holds, as a workspace just made does.
+#[derive(Clone)]
+struct Unserved {
+    notes: Notes,
+    unserved: Arc<Mutex<bool>>,
+}
+
+impl ActionProvider for Unserved {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        self.notes.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let invocation = request.invocation;
+        if request.target.address.action == "start" && *self.unserved.lock().unwrap() {
+            let refused = ActionCallError::NotReady;
+            let error = tilo_actions::ActionFailure {
+                code: refused.code().to_owned(),
+                message: refused.to_string(),
+                details: None,
+                retryable: false,
+            };
+            let failed = InvocationUpdate::Failed { invocation, error };
+            return Pending::ready(Ok(InvocationState::new(invocation, failed).receipt()));
+        }
+        self.notes.invoke(caller, request)
+    }
+
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.notes.observe(caller, id)
+    }
+
+    fn here(&self, caller: &Caller) -> Option<Vec<Here>> {
+        self.notes.here(caller)
+    }
+
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        self.notes.cancel(caller, id)
+    }
+
+    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        self.notes.resource_search()
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_write_whose_app_the_workspace_did_not_start_yet_is_asked_again;
+
+    phase it_is_told_not_ready_with_its_id;
+    // A write in an app the workspace would not start yet, as it does not serve this caller
+    // yet, is told so as not ready, with its invocation id; asked again under that id once the
+    // workspace serves it, it starts the app and is done.
+    {
+        let unserved = Unserved {
+            notes: Notes::new(false),
+            unserved: Arc::new(Mutex::new(true)),
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap()
+            .block_on(async {
+                let server = agent(&unserved);
+                let read = json!({"path": "notes#read"});
+                let (refused, failed) = answer(&server, "tilo_do", read.clone()).await;
+                assert!(failed, "{refused}");
+                assert_eq!(refused["error"]["code"], "not_ready", "{refused}");
+                assert!(
+                    refused["error"]["next_steps"][0].is_string(),
+                    "it is told what to do: {refused}"
+                );
+                let id = refused["invocation_id"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("it names its invocation: {refused}"))
+                    .to_owned();
+
+                *unserved.unserved.lock().unwrap() = false;
+                let mut again = read;
+                again["invocation_id"] = json!(id);
+                let (done, failed) = answer(&server, "tilo_do", again).await;
+                assert!(!failed, "{done}");
+                assert_eq!(done["status"], "ok", "{done}");
+            });
+    }
+}

@@ -1041,6 +1041,13 @@ impl ActionCallError {
         matches!(self, Self::NotReady | Self::Unanswered)
     }
 
+    /// Whether `code` is the [`code`](Self::code) of a refusal the same call is asked again
+    /// for ([`Self::ask_again`]), as a failed invocation carries it.
+    #[must_use]
+    pub fn ask_again_code(code: &str) -> bool {
+        code == Self::NotReady.code() || code == Self::Unanswered.code()
+    }
+
     /// Whether the provider refused a directory action that asks for
     /// confirmation because the request named no revision
     /// ([`CONFIRMED_ACTION_NEEDS_REVISION`]).

@@ -157,8 +157,13 @@ pub enum Unresolved {
         name: String,
         reason: Box<Unresolved>,
     },
-    /// Starting `app_id` did not end in its running: how it ended instead.
-    NotStarted { app_id: String, why: String },
+    /// Starting `app_id` did not end in its running: how it ended instead, and the code its
+    /// start failed with (empty when it did not fail).
+    NotStarted {
+        app_id: String,
+        why: String,
+        code: String,
+    },
     /// A name the walk could not place, said whole (one several resources or apps carry, a
     /// window of another app, an action no resource offers).
     Said(String),
@@ -242,7 +247,13 @@ impl fmt::Display for Unresolved {
                 "no running app is named {name}, and the installed apps could not be read: {}",
                 reason.words()
             ),
-            Self::NotStarted { app_id, why } => write!(out, "{app_id} did not start: {why}"),
+            // A start refused for a reason the same call is asked again for (the workspace
+            // not serving the caller yet, or not answering) keeps that code before its words,
+            // so a caller reading them is told to ask again rather than that nothing is there.
+            Self::NotStarted { app_id, why, code } if ActionCallError::ask_again_code(code) => {
+                write!(out, "{code}: {app_id} did not start: {why}")
+            }
+            Self::NotStarted { app_id, why, .. } => write!(out, "{app_id} did not start: {why}"),
         }
     }
 }
