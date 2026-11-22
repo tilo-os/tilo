@@ -659,6 +659,11 @@ impl Widget for PermissionPrompt {
         }
     }
 
+    /// A host that shows the prompt among its own parts takes the person's choice from it.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
     }

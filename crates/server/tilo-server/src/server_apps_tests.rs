@@ -205,3 +205,40 @@ tilo_test_env::scenario! {
         assert!(!apps.attest_process(me, APP, WORKSPACE));
     }
 }
+
+tilo_test_env::scenario! {
+    fn the_servers_apps_keep_content_in_its_one_store;
+
+    phase an_app_reaches_the_store_through_the_launchers_scoped_connection;
+    {
+        // The launcher's own resolution connects an app in a workspace to the server's store, and
+        // what the app keeps there reads back through that connection.
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("blobs.sock");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _content = runtime
+            .block_on(ContentService::start(&root.path().join("content"), &socket))
+            .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(launcher::services::BLOB_SOCKET_ENV, &socket);
+        let connection = launcher::services::resolve_blob_bind(APP, Some(WORKSPACE), false)
+            .unwrap()
+            .expect("the store is running");
+        let app = tilo_fs_client::blobs::BlobClient::from_app_stream(
+            std::os::unix::net::UnixStream::from(connection.host),
+        )
+        .unwrap();
+        let kept = app.put(b"a picture the person chose", "image/png").unwrap();
+        assert_eq!(
+            app.read_all(&kept.hash).unwrap(),
+            tilo_fs_client::blobs::ReadOutcome::Ready {
+                bytes: b"a picture the person chose".to_vec(),
+                total_len: 26,
+            }
+        );
+    }
+}

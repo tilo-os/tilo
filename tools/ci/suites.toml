@@ -1298,7 +1298,6 @@ inputs = [
   "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
   "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
   "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
-  "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg",
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "dist/session/tilo-files-workspace.service",
   "os/usr/lib/tmpfiles.d/tilo.conf",
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
@@ -1308,7 +1307,6 @@ inputs = [
 readers = [
   "crates/system/fs/src/main.rs",
   "crates/system/fs/tests/cloud_mount.rs",
-  "crates/system/fs/tests/cloud_mount/import.rs",
 ]
 
 [[cargo]]

@@ -1,21 +1,17 @@
 //! The external accounts Files shows, as the workspace's accounts record holds them
 //! ([`accounts::person::PersonAccounts`], the record Settings keeps and every app follows): where
 //! each one mounts, and what to say when it cannot. Files reads no account file of its own; the
-//! system's cloud service, which keeps each account's folder in sync and browses one that is only
-//! imported from, is what reaches the server with the account's secret.
+//! system's cloud service, which keeps each account's folder in sync, is what reaches the server
+//! with the account's secret.
 
 use std::path::{Path, PathBuf};
 
 use accounts::cloud_types::{FilesMode, files_mode};
-use accounts::{Account, AccountId, AccountTypeId};
+use accounts::{Account, AccountId};
 use serde_json::Value;
 
 pub const WEBDAV_TYPE: &str = "webdav";
 pub const NEXTCLOUD_TYPE: &str = "nextcloud";
-pub const GOOGLE_DRIVE_TYPE: &str = "google-drive";
-pub const ONEDRIVE_TYPE: &str = "onedrive";
-pub const DROPBOX_TYPE: &str = "dropbox";
-pub const ICLOUD_DRIVE_TYPE: &str = "icloud-drive";
 pub const MAX_REMOTE_ACCOUNTS: usize = 64;
 const MAX_LABEL_CHARS: usize = 120;
 const MAX_HOST_CHARS: usize = 253;
@@ -27,28 +23,12 @@ pub struct RemoteAccount {
     pub label: String,
     pub host: String,
     pub health: RemoteAccountHealth,
-    pub files_mode: FilesMode,
     pub mount: Option<PathBuf>,
 }
 
 impl RemoteAccount {
-    pub fn is_import(&self) -> bool {
-        self.files_mode == FilesMode::Import
-    }
-
     pub fn badge(&self) -> Option<String> {
-        if self.is_import()
-            && matches!(
-                self.health,
-                RemoteAccountHealth::Healthy
-                    | RemoteAccountHealth::NeverChecked
-                    | RemoteAccountHealth::Syncing
-            )
-        {
-            Some(crate::i18n::t("files-account-import-only"))
-        } else {
-            self.health.badge().map(str::to_owned)
-        }
+        self.health.badge().map(str::to_owned)
     }
 }
 
@@ -56,10 +36,6 @@ impl RemoteAccount {
 pub enum RemoteAccountKind {
     WebDav,
     Nextcloud,
-    GoogleDrive,
-    OneDrive,
-    Dropbox,
-    ICloudDrive,
 }
 
 impl RemoteAccountKind {
@@ -67,21 +43,6 @@ impl RemoteAccountKind {
         match self {
             Self::WebDav => "WebDAV",
             Self::Nextcloud => "Nextcloud",
-            Self::GoogleDrive => "Google Drive",
-            Self::OneDrive => "OneDrive",
-            Self::Dropbox => "Dropbox",
-            Self::ICloudDrive => "iCloud Drive",
-        }
-    }
-
-    /// A fixed public service name, not a configured credential endpoint.
-    fn service_host(self) -> Option<&'static str> {
-        match self {
-            Self::WebDav | Self::Nextcloud => None,
-            Self::GoogleDrive => Some("drive.google.com"),
-            Self::OneDrive => Some("onedrive.live.com"),
-            Self::Dropbox => Some("www.dropbox.com"),
-            Self::ICloudDrive => Some("www.icloud.com"),
         }
     }
 }
@@ -186,7 +147,6 @@ pub const MOUNTS_DIR: &str = "Remote";
 
 /// Name each account's folder exactly as the cloud service does: every
 /// sync file account's label (enabled or not), unique in account-id order.
-/// Import accounts never reserve a folder name or receive a mount.
 fn assign_mounts(projected: &mut [RemoteAccount], store: &accounts::AccountStore, root: &Path) {
     let labels: Vec<(&str, &str)> = store
         .all()
@@ -197,10 +157,6 @@ fn assign_mounts(projected: &mut [RemoteAccount], store: &accounts::AccountStore
         .collect();
     let names = cloud_source::tree::mount_names(&labels);
     for account in projected.iter_mut() {
-        if account.is_import() {
-            account.mount = None;
-            continue;
-        }
         account.mount = names
             .iter()
             .find(|(id, _)| id == account.id.as_str())
@@ -209,12 +165,6 @@ fn assign_mounts(projected: &mut [RemoteAccount], store: &accounts::AccountStore
 }
 
 fn is_file_account(account: &Account) -> bool {
-    if matches!(
-        account.type_id.as_str(),
-        GOOGLE_DRIVE_TYPE | ONEDRIVE_TYPE | DROPBOX_TYPE | ICLOUD_DRIVE_TYPE
-    ) {
-        return true;
-    }
     matches!(account.type_id.as_str(), WEBDAV_TYPE | NEXTCLOUD_TYPE)
         && (account.type_id.as_str() != NEXTCLOUD_TYPE
             || account
@@ -230,14 +180,12 @@ fn is_file_account(account: &Account) -> bool {
 }
 
 fn from_account(account: &Account) -> Option<RemoteAccount> {
-    let files_mode = files_mode(account)?;
+    if files_mode(account)? != FilesMode::Sync {
+        return None;
+    }
     let kind = match account.type_id.as_str() {
         WEBDAV_TYPE => RemoteAccountKind::WebDav,
         NEXTCLOUD_TYPE => RemoteAccountKind::Nextcloud,
-        GOOGLE_DRIVE_TYPE => RemoteAccountKind::GoogleDrive,
-        ONEDRIVE_TYPE => RemoteAccountKind::OneDrive,
-        DROPBOX_TYPE => RemoteAccountKind::Dropbox,
-        ICLOUD_DRIVE_TYPE => RemoteAccountKind::ICloudDrive,
         _ => return None,
     };
     if kind == RemoteAccountKind::Nextcloud
@@ -249,14 +197,11 @@ fn from_account(account: &Account) -> Option<RemoteAccount> {
     {
         return None;
     }
-    let host = match kind.service_host() {
-        Some(host) => host.to_owned(),
-        None => account
-            .config
-            .get("server_url")
-            .and_then(Value::as_str)
-            .and_then(server_host)?,
-    };
+    let host = account
+        .config
+        .get("server_url")
+        .and_then(Value::as_str)
+        .and_then(server_host)?;
     let label = bounded_label(if account.display_name.trim().is_empty() {
         kind.label()
     } else {
@@ -275,7 +220,6 @@ fn from_account(account: &Account) -> Option<RemoteAccount> {
         label,
         host,
         health,
-        files_mode,
         mount: None,
     })
 }
@@ -316,17 +260,6 @@ pub fn resource_id(id: &AccountId) -> String {
     format!("files.remote-account:{}", hex::encode(id.as_str()))
 }
 
-pub fn type_id(kind: RemoteAccountKind) -> AccountTypeId {
-    match kind {
-        RemoteAccountKind::WebDav => WEBDAV_TYPE.into(),
-        RemoteAccountKind::Nextcloud => NEXTCLOUD_TYPE.into(),
-        RemoteAccountKind::GoogleDrive => GOOGLE_DRIVE_TYPE.into(),
-        RemoteAccountKind::OneDrive => ONEDRIVE_TYPE.into(),
-        RemoteAccountKind::Dropbox => DROPBOX_TYPE.into(),
-        RemoteAccountKind::ICloudDrive => ICLOUD_DRIVE_TYPE.into(),
-    }
-}
-
 pub fn account_of_resource(resource: &str) -> Option<String> {
     let hex_id = resource.strip_prefix("files.remote-account:")?;
     String::from_utf8(hex::decode(hex_id).ok()?).ok()
@@ -339,9 +272,8 @@ mod tests {
     tilo_test_env::scenario! {
         fn remote_accounts_project_safely_from_the_accounts_record;
 
-        phase import_accounts_are_visible_without_mounts_or_reserved_mount_names;
+        phase import_accounts_are_not_projected;
         {
-            let home = tempfile::tempdir().unwrap();
             let mut store = accounts::AccountStore::new();
             for (id, mode) in [("a-import", "import"), ("b-sync", "sync")] {
                 let mut account = Account::new(id, WEBDAV_TYPE);
@@ -352,54 +284,24 @@ mod tests {
                 });
                 store.upsert(account);
             }
-            let loaded = from_store(&store, Some(home.path()));
-            assert_eq!(loaded.len(), 2);
-            let import = loaded.iter().find(|account| account.is_import()).unwrap();
-            assert_eq!(import.id.as_str(), "a-import");
-            assert_eq!(import.mount, None);
-            let sync = loaded.iter().find(|account| !account.is_import()).unwrap();
-            assert_eq!(sync.mount, Some(home.path().join("Remote/Cloud")));
-            assert!(
-                from_store(&store, None)
-                    .iter()
-                    .all(|account| account.mount.is_none())
-            );
+            let loaded = from_store(&store, None);
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[0].id.as_str(), "b-sync");
         }
 
         phase unknown_files_modes_are_not_projected;
         {
-            let mut account = Account::new("cloud", GOOGLE_DRIVE_TYPE);
-            account.config = serde_json::json!({"files_mode": "unknown"});
+            let mut account = Account::new("cloud", WEBDAV_TYPE);
+            account.config = serde_json::json!({
+                "server_url": "https://files.example/dav",
+                "files_mode": "unknown",
+            });
             assert!(from_account(&account).is_none());
-            account.config = serde_json::json!({});
+            account.config = serde_json::json!({
+                "server_url": "https://files.example/dav",
+            });
             let legacy = from_account(&account).unwrap();
-            assert_eq!(legacy.files_mode, FilesMode::Sync);
-            assert!(!legacy.is_import());
-        }
-
-        phase remote_links_use_cloud_daemon_names_when_oauth_provider_labels_collide;
-        {
-            for provider in ["google-drive", "onedrive", "dropbox", "icloud-drive"] {
-                let home = tempfile::tempdir().unwrap();
-                let mut store = accounts::AccountStore::new();
-                let mut oauth = Account::new("a-cloud", provider);
-                oauth.display_name = "Cloud".into();
-                store.upsert(oauth);
-                let mut dav = Account::new("z-dav", WEBDAV_TYPE);
-                dav.display_name = "Cloud".into();
-                dav.config = serde_json::json!({"server_url":"https://files.example/dav"});
-                store.upsert(dav);
-                let loaded = from_store(&store, Some(home.path()));
-                let dav = loaded
-                    .iter()
-                    .find(|account| account.id.as_str() == "z-dav")
-                    .unwrap();
-                assert_eq!(
-                    dav.mount,
-                    Some(home.path().join("Remote/Cloud (2)")),
-                    "{provider}"
-                );
-            }
+            assert_eq!(legacy.id.as_str(), "cloud");
         }
 
         phase accounts_keep_their_mount_folders_and_say_they_are_not_checked;

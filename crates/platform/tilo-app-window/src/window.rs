@@ -25,11 +25,11 @@ use std::rc::Rc;
 use page::{chosen_item, content_nodes, node_of_key};
 use tilo_render_protocol::patch::validate::{PatchLimits, Validator};
 use tilo_render_protocol::patch::{self as wire, Answer, Level, ToApp, ToUi, Transport, Words};
-use ui::tokens::{MotionSource, Rhythm, TextRole};
-use ui::widget::arrange::{Fit, Part, Row, Stack};
+use ui::tokens::{MotionSource, Rhythm};
+use ui::widget::arrange::{Fit, Part, Stack};
 use ui::widget::toast::ToastKind;
 use ui::widget::{
-    Absent, Button, ButtonRole, Element, NavPane, NavShell, SidebarPlacement, Text, Widget,
+    Absent, Element, NavPane, NavShell, PermissionPrompt, PromptChoice, SidebarPlacement, Widget,
 };
 
 use crate::i18n::{t, t_args};
@@ -1309,68 +1309,51 @@ impl AppWindow {
         }
     }
 
-    /// The Ask bar: trusted chrome naming who asks for what, with the person's choices.
-    fn ask_bar(&self, ask: &wire::Ask) -> Element {
-        let by = t_args(
-            "tilolang-ask-by",
-            &[("invoker", ask.invoker.as_str().into())],
+    /// The Ask bar: trusted chrome naming who asks for what, with the person's choices. It is the
+    /// system's permission prompt, which no app can draw, so an app cannot forge it.
+    fn ask_bar(ask: &wire::Ask) -> Element {
+        let question = t_args(
+            "tilolang-ask-action",
+            &[("action", ask.action.as_str().into())],
         );
-        let text = |id: &str, value: &str, role: TextRole| {
-            part(
-                Box::new(Text::new(value).with_role(role).with_id(id)),
-                Fit::hug(),
-            )
-        };
-        let answer = |id: &str, role: ButtonRole, to: Answer| {
-            let answers = Rc::clone(&self.answers);
-            part(
-                Box::new(
-                    Button::new(id, &t(id))
-                        .role(role)
-                        .on_view(move || answers.borrow_mut().push(to)),
-                ),
-                Fit::hug(),
-            )
-        };
-        let choices = Row::row()
-            .fill_width()
-            .push_part(answer(
-                "tilolang-ask-confirm",
-                ButtonRole::Primary,
-                Answer::Allow,
-            ))
-            .push_part(answer(
-                "tilolang-ask-decline",
-                ButtonRole::Secondary,
-                Answer::Decline,
-            ))
-            .push_part(answer(
-                "tilolang-ask-always",
-                ButtonRole::Plain,
-                Answer::Always,
-            ));
         Box::new(
-            Stack::stack()
-                .gap(Rhythm::Related)
-                .with_id("tilolang-ask")
-                .push_part(text(
-                    "tilolang-ask-title",
-                    &t("tilolang-ask-title"),
-                    TextRole::Heading,
-                ))
-                .push_part(text("tilolang-ask-action", &ask.action, TextRole::Body))
-                .push_part(text("tilolang-ask-by", &by, TextRole::Caption))
-                .push_part(part(Box::new(choices), Fit::hug())),
+            // Who asks stands over the question, as an app asking for a capability does.
+            PermissionPrompt::for_owner(ask.invoker.clone(), question)
+                .with_icon(ui::icons::Icon::Shield)
+                .with_choices(vec![
+                    (PromptChoice::Allow, t("tilolang-ask-confirm")),
+                    (PromptChoice::Always, t("tilolang-ask-always")),
+                    (PromptChoice::Deny, t("tilolang-ask-decline")),
+                ]),
         )
     }
 
+    /// The person's answer on the Ask bar since the last look, taken from the prompt.
+    fn take_ask_answer(&mut self) -> Option<Answer> {
+        self.ask.as_ref()?;
+        let prompt = self
+            .body
+            .children_mut()
+            .into_iter()
+            .nth(Self::ASK_PART)?
+            .as_any_mut()?
+            .downcast_mut::<PermissionPrompt>()?;
+        Some(match prompt.pending_choice.take()? {
+            PromptChoice::Allow | PromptChoice::Session => Answer::Allow,
+            PromptChoice::Always => Answer::Always,
+            PromptChoice::Deny => Answer::Decline,
+        })
+    }
+
+    const ASK_PART: usize = 1;
+
     fn rebuild_ask(&mut self, ask: Option<&wire::Ask>) {
         let bar: Element = match ask {
-            Some(ask) => self.ask_bar(ask),
+            Some(ask) => Self::ask_bar(ask),
             None => Box::new(Absent::new()),
         };
         self.ask = ask.cloned();
-        self.set_body_part(1, bar, Fit::hug());
+        self.set_body_part(Self::ASK_PART, bar, Fit::hug());
     }
 
     const FORM_PART: usize = 2;
@@ -1440,6 +1423,9 @@ impl AppWindow {
         // What was typed while the keyboard was on its way to the field a press opened goes there
         // once it arrived.
         self.release_landing();
+        if let Some(answer) = self.take_ask_answer() {
+            self.answers.borrow_mut().push(answer);
+        }
         for answer in std::mem::take(&mut *self.answers.borrow_mut()) {
             self.out.push(ToApp::Answer(answer));
         }

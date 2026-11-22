@@ -614,3 +614,33 @@ reason = "the reason beside a 403 is read by the `tilo login` that asked a momen
 file = "crates/platform/imager-backend/src/account_sources/mod.rs"
 enum = "Provider"
 reason = "the installer's private discovery, review and handoff values live in one running install and are never read by another build: the deferred journal is bound to the install plan it was written for and every account is re-discovered before it is imported, so no bytes are kept"
+
+[[break]]
+file = "crates/runtime/tilo-fs-client/src/cloud.rs"
+enum = "CloudRequest"
+reason = "the device's cloud service and the apps that control it speak this over a Unix socket, one frame per request, and both ends ship in one build: no byte is stored or sent to another version"
+
+[[break]]
+file = "crates/runtime/tilo-fs-client/src/cloud.rs"
+enum = "CloudResponse"
+reason = "the service's half of the same socket exchange, between ends of one build; no reply is kept or read back"
+
+[[break]]
+file = "crates/runtime/tilo-fs-client/src/cloud.rs"
+enum = "FileReply"
+reason = "a mounted account's answer to one file request, relayed as JSON lines inside the same build's service and mount processes; nothing is kept"
+
+[[break]]
+file = "crates/platform/tilo-cloud-files/src/cloud.rs"
+enum = "FileReply"
+reason = "the browser build's copy of the same one-request answer; it mirrors the native type and carries nothing stored"
+
+[[break]]
+file = "crates/system/fs/src/cloud/credential.rs"
+enum = "ToMount"
+reason = "one line on the pipe from the service to a mount process it started from the same build; no message outlives the process pair"
+
+[[break]]
+file = "apps/file-explorer/src/file_ops.rs"
+enum = "Change"
+reason = "a settled change in the files record; the removed variants were written only by the import-once transfer this change deletes, and a files record is a pre-release document whose only writers are the apps in the same build"

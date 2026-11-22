@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.file-explorer@a60404f9d4b9ee48";
+export const SURFACE = "so.tilo.file-explorer@7781c8bc046cc857";
 
 export interface Bookmark {
   place: string;
@@ -168,18 +168,6 @@ export interface Folder extends tilo.Resource {
     entries: string[];
     to: string;
   }): Promise<unknown>;
-  importMounted(args: {
-    device: string;
-    paths: string[];
-    folder: string;
-  }): Promise<unknown>;
-  cloudImport(args: {
-    device: string;
-    job_id: string;
-    account: string;
-    entries: unknown[];
-    destination: unknown;
-  }): Promise<unknown>;
   writeFile(args: {
     device: string;
     folder: string;
@@ -222,12 +210,11 @@ export interface Folder extends tilo.Resource {
   copySelection(): Promise<void>;
   clipboardStatus(): Promise<void>;
   openTerminal(): Promise<void>;
-  cloudProgress(): Promise<void>;
 }
 
 /** The actions `Folder` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const FOLDER_ACTIONS = ["addBookmark", "addBookmarkMany", "removeBookmark", "removeBookmarkMany", "newFolder", "rename", "trash", "move", "copyInto", "importMounted", "cloudImport", "writeFile", "compress", "extract", "recordClipboardTransfer", "recordTrashRestore", "revert", "handOver", "readText", "copySelection", "clipboardStatus", "openTerminal", "cloudProgress"] as const;
+export const FOLDER_ACTIONS = ["addBookmark", "addBookmarkMany", "removeBookmark", "removeBookmarkMany", "newFolder", "rename", "trash", "move", "copyInto", "writeFile", "compress", "extract", "recordClipboardTransfer", "recordTrashRestore", "revert", "handOver", "readText", "copySelection", "clipboardStatus", "openTerminal"] as const;
 
 /** The `files.folder` kind at `path`. */
 export function folder(ws: tilo.Workspace, path: string): Folder {

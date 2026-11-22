@@ -2594,3 +2594,55 @@ fn a_window_awaits_its_apps_first_view_and_a_part_awaits_nothing() {
         "a part of a shell holds back none of the shell's keys"
     );
 }
+
+/// What an app's run waits on a person for is asked on the system's own permission prompt, naming
+/// the action and who asked for it, and the person's choice there is the answer the app hears.
+#[test]
+fn an_ask_is_the_systems_prompt_and_its_choice_answers_the_app() {
+    let mut page = titled_page();
+    page.push(ToUi::Ask(Some(wire::Ask {
+        action: "Search".to_owned(),
+        invoker: "Ada".to_owned(),
+    })));
+    let (mut app, mut harness) = drawn(&page);
+    node_named(&harness, "Allow “Search”? requested by Ada");
+    let always = node_named(&harness, "Always allow");
+    harness
+        .perform_a11y_action(always, &ui::a11y::Action::Activate)
+        .expect("the prompt offers to always allow");
+    drawn_window(&mut harness).flush();
+    let answers: Vec<Answer> = told(&mut app)
+        .into_iter()
+        .filter_map(|message| match message {
+            ToApp::Answer(answer) => Some(answer),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answers, vec![Answer::Always]);
+}
+
+/// A field the app marks as where the person types next (a search a press showed) takes the
+/// keyboard when it appears, and a field without the mark leaves the keyboard where it is.
+#[test]
+fn a_field_marked_autofocus_takes_the_keyboard_when_it_appears() {
+    let plain = bound_page("ui.TextInput", &[], Value::text(""));
+    let (mut app, mut harness) = drawn(&plain);
+    assert_eq!(drawn_window(&mut harness).focused_field(), None);
+    let search = bound_page(
+        "ui.TextInput",
+        &[
+            ("autofocus", Value::Bool(true)),
+            ("placeholder", Value::text("Search YouTube")),
+        ],
+        Value::text(""),
+    );
+    send(&mut app, &search);
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_field().as_deref(),
+        Some("field"),
+        "the keyboard is in the search field, where the person types next"
+    );
+}
