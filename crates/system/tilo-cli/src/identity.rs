@@ -544,11 +544,13 @@ async fn through_entry(person: &Person, site: &str) -> Result<()> {
     else {
         return Ok(());
     };
-    // The site publishes who its host is and where it is dialled (`home.host.info`).
-    let info: tilo_server_protocol::web::PageHost = serde_json::from_value(
+    // The site publishes who its host is and where it is dialled (`home.host.info`): the host's
+    // `web-host.json` as one JSON object, written as a string the page reads by parsing it
+    // (`entry.json`, the web entry's `TILO_WEB_HOME_HOST_INFO`).
+    let info: tilo_server_protocol::web::PageHost = serde_json::from_str(
         entry
             .pointer("/home/host/info")
-            .cloned()
+            .and_then(Value::as_str)
             .with_context(|| format!("{site} names no host certificate and address"))?,
     )?;
     let address: tilo_server_protocol::web::ServerAddress = info

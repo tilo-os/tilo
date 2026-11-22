@@ -1262,10 +1262,10 @@ async fn host_at(
     }
     let entry: Value = serde_json::from_slice(&body)
         .map_err(|error| format!("{origin} did not say which holder it is: {error}"))?;
-    let info: PageHost = serde_json::from_value(
+    let info: PageHost = serde_json::from_str(
         entry
             .pointer("/home/host/info")
-            .cloned()
+            .and_then(Value::as_str)
             .ok_or_else(|| format!("{origin} names no host certificate and address"))?,
     )
     .map_err(|error| format!("{origin} did not say which holder it is: {error}"))?;
