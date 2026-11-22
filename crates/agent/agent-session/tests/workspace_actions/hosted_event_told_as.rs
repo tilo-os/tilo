@@ -71,6 +71,17 @@ async fn told_outside(
 }
 
 /// One action on a person's events as `caller` takes it, refused or not.
+/// How `tried` was answered, as a test names it: done, or which refusal.
+fn refusal(tried: &Result<serde_json::Value, ActionCallError>) -> &'static str {
+    match tried {
+        Ok(_) => "done",
+        Err(ActionCallError::NotPermitted) => "not permitted",
+        Err(ActionCallError::UnknownAction) => "unknown action",
+        Err(ActionCallError::Refused { .. }) => "refused",
+        Err(_) => "another error",
+    }
+}
+
 fn tried(
     up: &Up,
     workspace: &str,
@@ -372,18 +383,23 @@ async fn how_an_events_result_is_told_is_said_only_where_an_event_is_set_up_at_a
     let (bo, _) = tilo_user_identity::UserIdentity::generate("Bo", 2);
     let another =
         Caller::authenticated(bo.verifying_key().to_bytes(), [9; 32]).in_workspace(&workspace);
+    // A person and the agent acting for them are refused as whoever the workspace's policy
+    // gives no reach to its events; a bot, which asks for no person, is told there is no such
+    // action.
     let others = [
-        ("another person", another.clone()),
+        ("another person", another.clone(), "not permitted"),
         (
             "another person's agent",
             another.delegated_to("helper").named("Helper"),
+            "not permitted",
         ),
         (
             "a bot",
             Caller::bot("greeter", ada, [5; 32]).in_workspace(&workspace),
+            "unknown action",
         ),
     ];
-    for (who, other) in &others {
+    for (who, other, refused) in &others {
         let set_up = tried(
             &up,
             &workspace,
@@ -396,11 +412,9 @@ async fn how_an_events_result_is_told_is_said_only_where_an_event_is_set_up_at_a
                 "toldAs": "brief",
             }),
         );
-        assert!(
-            matches!(
-                set_up,
-                Err(ActionCallError::Refused { .. } | ActionCallError::UnknownAction)
-            ),
+        assert_eq!(
+            refusal(&set_up),
+            *refused,
             "{who} sets nothing up: {set_up:?}"
         );
         let changed = tried(
@@ -410,11 +424,9 @@ async fn how_an_events_result_is_told_is_said_only_where_an_event_is_set_up_at_a
             workspace_events::CHANGE,
             &serde_json::json!({"event": id, "toldAs": "brief"}),
         );
-        assert!(
-            matches!(
-                changed,
-                Err(ActionCallError::Refused { .. } | ActionCallError::UnknownAction)
-            ),
+        assert_eq!(
+            refusal(&changed),
+            *refused,
             "{who} changes nothing: {changed:?}"
         );
     }
@@ -534,10 +546,7 @@ async fn an_events_brief_reaches_its_own_person_and_nobody_else() {
             "toldAs": "brief",
         }),
     );
-    assert!(
-        matches!(theirs_too, Err(ActionCallError::Refused { .. })),
-        "{theirs_too:?}"
-    );
+    assert_eq!(refusal(&theirs_too), "not permitted", "{theirs_too:?}");
     assert_eq!(listed(&up, &workspace, &me), serde_json::json!([]));
 
     // The assistant's own event, told as a brief, fires and is answered.
