@@ -506,9 +506,10 @@ fn switching_the_theme_changes_how_the_shell_looks_not_its_layout() {
     });
 }
 
-/// The window in front wears the focus ring: the shell's frames draw the window the session has in
-/// front — the one the keyboard goes to — in the accent, and follow it wherever the keyboard goes,
-/// whether the window was opened, brought forward or left from another start.
+/// The window in front wears the focus ring: the shell's layout names the window the session has in
+/// front — the one the keyboard goes to — and its frames draw that one in the accent, following the
+/// keyboard wherever it goes. A press on another window's bar asks the session to bring it forward,
+/// so the press, a key and an agent's `session.focus` move the one keyboard.
 #[test]
 fn the_shells_window_in_front_is_the_sessions() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
@@ -524,8 +525,8 @@ fn the_shells_window_in_front_is_the_sessions() {
     place(&mut session, &inbox, 700, 60, 480, 360);
     step(&mut session, 40);
 
-    // The shell frames the window the session has in front, whichever window that is: what its
-    // frame's `focused` is read from.
+    // The shell's layout names the window the session has in front, whichever window that is:
+    // what its frame's `focused` is read from.
     let first = front_window(&session).expect("a window in front");
     assert_eq!(
         framed(&session).as_deref(),
@@ -533,8 +534,8 @@ fn the_shells_window_in_front_is_the_sessions() {
         "the shell frames the window in front, the one the session gave the keyboard to"
     );
 
-    // Bringing another window forward — a press on it, a key to it, or an agent's
-    // `session.focus` — moves the shell's frame with the keyboard.
+    // Bringing another window forward — a key to it, or an agent's `session.focus` — moves the
+    // shell's frame with the keyboard.
     let other = tab_outside(&session, &first);
     session
         .invoke(
@@ -551,6 +552,45 @@ fn the_shells_window_in_front_is_the_sessions() {
         Some(front.as_str()),
         "the shell's frame follows the window the session brought forward"
     );
+
+    // A press on the first window's bar brings it back: the shell asks the session, and the
+    // keyboard and the frame go there together.
+    let name = window_name(&session, &first);
+    crate::common::press_where(&mut session, &format!("{name}'s bar"), |session| {
+        session
+            .shell_controls(&name)
+            .into_iter()
+            .max_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
+            .map(|(x, y, w, _)| (x, y, w, 16.0))
+    });
+    step(&mut session, 40);
+    assert_eq!(
+        front_window(&session).as_deref(),
+        Some(first.as_str()),
+        "a press on a window's bar gives that window the keyboard"
+    );
+    assert_eq!(
+        framed(&session).as_deref(),
+        Some(first.as_str()),
+        "and the shell frames it as the one in front"
+    );
+}
+
+/// What the shell names the window `strip`: the name its frame is read by.
+fn window_name(session: &Session, strip: &str) -> String {
+    let reading = session.layout_reading();
+    let strip = reading
+        .strips
+        .iter()
+        .find(|held| held.key == strip)
+        .expect("the window's strip");
+    reading
+        .places
+        .iter()
+        .find(|place| place.key == strip.active)
+        .or_else(|| reading.places.iter().find(|place| place.strip == strip.key))
+        .map(|place| place.name.clone())
+        .expect("a place in the window")
 }
 
 /// The window the session has in front, by its key: the one the keyboard goes to.
@@ -560,12 +600,10 @@ fn front_window(session: &Session) -> Option<String> {
     })
 }
 
-/// The window the shell frames as the one in front, as its own record holds it.
+/// The window the shell frames as the one in front, as the session publishes it in the shell's
+/// layout.
 fn framed(session: &Session) -> Option<String> {
-    session
-        .shell_setting("focused")
-        .and_then(|held| held.as_str().map(str::to_owned))
-        .filter(|held| !held.is_empty())
+    Some(session.layout_reading().front).filter(|front| !front.is_empty())
 }
 
 /// A window that is not the one in front `front`, as its tab's id: one of the shell's places

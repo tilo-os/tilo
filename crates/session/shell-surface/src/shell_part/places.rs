@@ -103,6 +103,7 @@ fn note(service: &mut ResourceService, title: &str) -> String {
 fn layout(record: &str, shows: &str, shown_as: &str) -> LayoutReading {
     LayoutReading {
         person: "Pat".to_owned(),
+        front: String::new(),
         people: Vec::new(),
         queries: Vec::new(),
         workspaces: vec![LayoutWorkspaceReading {

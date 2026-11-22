@@ -93,6 +93,8 @@ view frame_classic(a: Layout, p: LayoutPlace, focused: Bool, lists: Bool) {
         carries: p.resource,
         fill,
     ) {
+        // A press on the window's bar brings it forward, the keyboard in it.
+        on press: session.activate(place: the_place(p.key))
         controls: {
             frame_buttons(a, p, focused and lists)
         }
@@ -177,11 +179,10 @@ enum BarRoom {
     one
 }
 
-/// The strip in front: the one the shell's own view of the layout names, else the first
+/// The strip in front: the one whose window has the keyboard on this device, else the first
 /// that has a place on the desktop.
 fn focused_strip(a: Layout) -> Option<LayoutStrip> {
-    let v = viewing
-    if let named = a.strips.find(s -> s.key == v.focused) {
+    if let named = a.strips.find(s -> s.key == a.front) {
         named
     } else { a.strips.find(s -> s.placed) }
 }

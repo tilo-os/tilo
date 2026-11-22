@@ -144,9 +144,6 @@ pub(crate) struct Shell {
     /// The theme the person's appearance settings make: every part draws in it, and a part made for
     /// a display plugged in later starts in it.
     theme: ui::Theme,
-    /// The window in front the shell was last told, by its key: the one the session gives the
-    /// keyboard to, whose frame the shell draws as the focused one.
-    front: Option<String>,
 }
 
 impl Shell {
@@ -192,7 +189,6 @@ impl Shell {
             services_seen: None,
             record_synced: std::cell::RefCell::new(None),
             theme,
-            front: None,
         };
         shell.person = shell.lists.person.clone();
         shell.follow_outputs(compositor, surfaces);
@@ -926,40 +922,6 @@ impl Shell {
         work
     }
 
-    /// Tell the shell which window stands in front — the one the session gives the keyboard to —
-    /// so its frame wears the focused edge, the accent, wherever the keyboard came from: a window
-    /// opened, brought forward, a workspace switched, or one a previous session left in front.
-    /// The shell's own record is read once, at the first pass, and written only where it differs
-    /// from the window the session places, so a start whose record already agrees adds no step to
-    /// the person's history.
-    pub(crate) fn show_front(&mut self, front: Option<tilo_desktop_model::ids::GroupId>) {
-        let key = front.map_or_else(String::new, |group| group.to_string());
-        if self.front.as_deref() == Some(key.as_str()) {
-            return;
-        }
-        let Some((_, part)) = self.parts.first() else {
-            return;
-        };
-        // Read what the record holds once, so a start whose record already names this window adds
-        // no step to the person's history: after that the window this last named is compared.
-        if self.front.is_none() {
-            let held = self
-                .record_setting("focused")
-                .and_then(|held| held.as_str().map(str::to_owned));
-            if held.as_deref() == Some(key.as_str()) {
-                self.front = Some(key);
-                return;
-            }
-        }
-        self.front = Some(key.clone());
-        if let Err(error) = part
-            .borrow_mut()
-            .run_action("focus_strip", vec![Value::from(key)])
-        {
-            tracing::warn!(%error, "the shell is not told its window in front");
-        }
-    }
-
     /// Draw every part in `theme` : the person changed their appearance.
     pub(crate) fn set_theme(&mut self, theme: &ui::Theme) {
         self.theme = theme.clone();
@@ -1531,15 +1493,6 @@ impl crate::Session {
         }
     }
 
-    /// Tell the shell the window the session has in front, as it places it: the shell draws that
-    /// window's frame as the focused one, whose edge is the accent.
-    fn follow_front_window(shared: &crate::Shared, shell: &mut Shell) {
-        let front = shared.handle.read(|tree| {
-            tilo_desktop_surface::navigation::active_route(tree).map(|route| route.group)
-        });
-        shell.show_front(front);
-    }
-
     /// Keep the shell's own record: say once if the copy this device kept could not be opened,
     /// write what the parts committed into the copy on this device, and carry it to the person's
     /// other devices and take in what theirs holds. Cheap when nothing moved, which every pass runs.
@@ -1623,7 +1576,6 @@ impl crate::Session {
         shell.publish_readings(&self.shared.services.borrow());
         shell.follow_places(&layout, &mut self.shared.services.borrow_mut());
         shell.publish_layout(layout);
-        Self::follow_front_window(&self.shared, shell);
         // What the places draw reads its pictures from the document media of the workspaces
         // those places stand in: the parts draw in the session's own process, which the launcher
         // handed no store of its own, so the session lends them one (`docs/architecture/apps.md`

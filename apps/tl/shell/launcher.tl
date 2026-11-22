@@ -125,14 +125,13 @@ view app_row(a: device.App) {
     }
 }
 
-/// The key of the strip in front: the one the person brought forward, or else the layout's
+/// The key of the strip in front: the one whose window has the keyboard, or else the layout's
 /// last, so a found resource joins the window they are working in. Empty while the layout has
 /// no strip.
 fn front_strip() -> Text {
     let a = layout
-    let v = viewing
-    if v.focused != "" {
-        return v.focused
+    if a.front != "" {
+        return a.front
     }
     if let last = a.strips.last() {
         return last.key

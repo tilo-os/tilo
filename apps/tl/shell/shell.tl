@@ -106,7 +106,7 @@ template view style_shell(a: Layout, traditional: Bool, body: View) {
 view strips(a: Layout) {
     let lists = shell_lists(false, space.width_class == .expanded or space.width_class == .wide)
     style_shell(a, false) {
-        strips_view(a, viewing, lists, fill)
+        strips_view(a, lists, fill)
     }
 }
 

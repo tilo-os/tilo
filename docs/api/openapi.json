@@ -33310,7 +33310,8 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "person"
+              "person",
+              "front"
             ],
             "type": "string"
           },
@@ -33446,38 +33447,6 @@
       "tl.so.tilo.shell.Layout.tab_place_here.Arguments": {
         "type": "object",
         "properties": {
-          "v": {
-            "pick": "resource",
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "resource_kind": "tl.so.tilo.shell.Viewing",
-            "type": "object"
-          },
           "s": {
             "pick": "resource",
             "properties": {
@@ -33544,7 +33513,6 @@
           }
         },
         "required": [
-          "v",
           "s",
           "target"
         ],
@@ -33627,6 +33595,47 @@
           "at"
         ],
         "description": "Rank the place `place` at `at` among its strip's tabs: what dragging a pill within the\nwindow's bar does, as the shell's own `move` with the place it goes before. The strip reports\nthe pill's place among the tabs with the moved pill taken out, so the tab it lands before is\nthat index of the others; the last place goes last."
+      },
+      "tl.so.tilo.shell.Layout.bring_forward.Arguments": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.shell.LayoutStrip",
+            "type": "object"
+          }
+        },
+        "required": [
+          "s"
+        ],
+        "description": "Brings the window of the strip `s` to the front, the keyboard in it: the session brings its\nplace in front forward, as it does for a press, a script or an agent alike. A strip with no\nplace has no window to bring."
       },
       "tl.so.tilo.shell.LayoutQuery.$create.Arguments": {
         "type": "object",
@@ -34018,8 +34027,7 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "style",
-              "focused"
+              "style"
             ],
             "type": "string"
           },
@@ -34067,137 +34075,6 @@
           "style"
         ],
         "description": "Shows the shell through the style `style`: a package and a view (`so.tilo.shell:strips`).\nSwitching keeps the layout: the same places stand where they were, drawn another way."
-      },
-      "tl.so.tilo.shell.Viewing.focus_strip.Arguments": {
-        "type": "object",
-        "properties": {
-          "strip": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "strip"
-        ],
-        "description": "Makes the strip `strip` the one in front: what a press on a column's header does."
-      },
-      "tl.so.tilo.shell.Viewing.detach_place.Arguments": {
-        "type": "object",
-        "properties": {
-          "s": {
-            "pick": "resource",
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "resource_kind": "tl.so.tilo.shell.LayoutStrip",
-            "type": "object"
-          },
-          "place": {
-            "pick": "resource",
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "resource_kind": "tl.so.tilo.session.Place",
-            "type": "object"
-          }
-        },
-        "required": [
-          "s",
-          "place"
-        ],
-        "description": "Give the place `place` a window of its own: what dragging a tab out of its window's bar does,\nas the shell's own `split-right` for the window in front. The place stands in front of its new\nwindow, and that window comes to the front of the shell."
-      },
-      "tl.so.tilo.shell.Viewing.show_place.Arguments": {
-        "type": "object",
-        "properties": {
-          "strip": {
-            "type": "string"
-          },
-          "place": {
-            "pick": "resource",
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "resource_kind": "tl.so.tilo.session.Place",
-            "type": "object"
-          }
-        },
-        "required": [
-          "strip",
-          "place"
-        ],
-        "description": "Shows the place `place` and brings its strip forward with it: what choosing a tab does, and\nthe same arranging action a script or an agent runs. The strip's own reading moves first, the\nshell then brings the place in front of its strip."
       },
       "tl.so.tilo.shell.size_place.Arguments": {
         "type": "object",
@@ -34365,6 +34242,88 @@
           "place"
         ],
         "description": "Look for what the place `place`'s search names again."
+      },
+      "tl.so.tilo.shell.detach_place.Arguments": {
+        "type": "object",
+        "properties": {
+          "place": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Place",
+            "type": "object"
+          }
+        },
+        "required": [
+          "place"
+        ],
+        "description": "Give the place `place` a window of its own: what dragging a tab out of its window's bar does,\nas the shell's own `split-right` for the window in front. The place stands in front of its new\nwindow, and that window comes to the front of the shell."
+      },
+      "tl.so.tilo.shell.show_place.Arguments": {
+        "type": "object",
+        "properties": {
+          "place": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Place",
+            "type": "object"
+          }
+        },
+        "required": [
+          "place"
+        ],
+        "description": "Shows the place `place` and brings its window forward with it, the keyboard in it: what\nchoosing a tab does, and the same arranging action a script or an agent runs."
       },
       "tl.so.tilo.lang.tasks.Task.$create.Arguments": {
         "type": "object",
@@ -43309,6 +43268,12 @@
     },
     {
       "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.Layout",
+      "action": "bring_forward",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.Layout.bring_forward.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.LayoutQuery",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.shell.LayoutQuery.$create.Arguments"
@@ -43507,24 +43472,6 @@
     },
     {
       "app": "so.tilo.shell",
-      "resource": "tl.so.tilo.shell.Viewing",
-      "action": "focus_strip",
-      "arguments": "#/components/schemas/tl.so.tilo.shell.Viewing.focus_strip.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tl.so.tilo.shell.Viewing",
-      "action": "detach_place",
-      "arguments": "#/components/schemas/tl.so.tilo.shell.Viewing.detach_place.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tl.so.tilo.shell.Viewing",
-      "action": "show_place",
-      "arguments": "#/components/schemas/tl.so.tilo.shell.Viewing.show_place.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell",
       "action": "size_place",
       "arguments": "#/components/schemas/tl.so.tilo.shell.size_place.Arguments"
@@ -43564,6 +43511,18 @@
       "resource": "tl.so.tilo.shell",
       "action": "query_retry",
       "arguments": "#/components/schemas/tl.so.tilo.shell.query_retry.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell",
+      "action": "detach_place",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.detach_place.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell",
+      "action": "show_place",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.show_place.Arguments"
     },
     {
       "app": "so.tilo.lang.tasks",

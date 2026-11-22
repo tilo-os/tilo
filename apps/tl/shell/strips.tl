@@ -32,10 +32,10 @@ fn rows_of(a: Layout, workspace: Text) -> List<LayoutRow> {
     a.rows.filter(r -> r.workspace == workspace)
 }
 
-/// The strip the shell shows in front: the one the person brought forward, or the window that
-/// came last, so the strip in front follows what arrived.
-fn strip_in_front(a: Layout, v: Viewing) -> Text {
-    if v.focused != "" { v.focused } else { a.strips.last()?.key ?? "" }
+/// The strip the shell shows in front: the one whose window has the keyboard on this device, as
+/// the session reads it, or the window that came last while none has.
+fn strip_in_front(a: Layout) -> Text {
+    if a.front != "" { a.front } else { a.strips.last()?.key ?? "" }
 }
 
 /// The strips maximized: each shows alone, filling the shell, the others behind
@@ -125,17 +125,17 @@ view style_menu(v: Viewing) {
 /// `current`). The others are a switch away in the bar, not a second shell under this one, so the
 /// view draws the front workspace's rows and no other's — two workspaces side by side would halve
 /// the room every window has, and an empty one would take half of it for nothing.
-view strips_view(a: Layout, v: Viewing, lists: Bool) {
+view strips_view(a: Layout, lists: Bool) {
     let maximizing = maximized_strips(a)
     if not maximizing.is_empty() {
         row(gap: .group, fill) {
             for s in maximizing {
-                strip_window(a, v, s, lists, fill(1))
+                strip_window(a, s, lists, fill(1))
             }
         }
     } else if let workspace = shown_workspace(a) {
         scroll(axis: .both) {
-            workspace_rows(a, v, workspace.key, lists, fill(1))
+            workspace_rows(a, workspace.key, lists, fill(1))
         }
     } else {
         // A shell the session has published no workspace of yet: it holds nothing to draw.
@@ -158,10 +158,10 @@ fn shown_workspace(a: Layout) -> Option<LayoutWorkspace> {
 
 /// The rows of one workspace, filling the room the shell gives them: a workspace's rows stand
 /// under one another, each the height of its share of the shell.
-view workspace_rows(a: Layout, v: Viewing, workspace: Text, lists: Bool) {
+view workspace_rows(a: Layout, workspace: Text, lists: Bool) {
     stack(gap: .group, fill) {
         for held in rows_of(a, workspace) {
-            rows_of_the_shell(a, v, held, lists, fill(1))
+            rows_of_the_shell(a, held, lists, fill(1))
         }
     }
 }
@@ -175,13 +175,13 @@ view workspace_rows(a: Layout, v: Viewing, workspace: Text, lists: Bool) {
 ///
 /// A row is not named here: the strip a person is in is what the bar's strip pill says, and the
 /// row itself carries no label of its own (docs/design-language.md, `BarChip`).
-view rows_of_the_shell(a: Layout, v: Viewing, held: LayoutRow, lists: Bool) {
+view rows_of_the_shell(a: Layout, held: LayoutRow, lists: Bool) {
     let strips = strips_of(a, held.key)
-    let front = strips.find(s -> s.key == strip_in_front(a, v)) ?? strips.last()
+    let front = strips.find(s -> s.key == strip_in_front(a)) ?? strips.last()
     stack(gap: .related, fill) {
         if space.compact {
             if let s = front {
-                strip_window(a, v, s, lists, fill(1))
+                strip_window(a, s, lists, fill(1))
             } else {
                 ui.EmptyState("No window here yet", inline: true)
             }
@@ -189,7 +189,7 @@ view rows_of_the_shell(a: Layout, v: Viewing, held: LayoutRow, lists: Bool) {
             scroll(axis: .horizontal, fill) {
                 row(gap: .group, align: .stretch, fill) {
                     for s in strips {
-                        row_window(a, v, s, lists)
+                        row_window(a, s, lists)
                     }
                     if strips.is_empty() {
                         ui.EmptyState("No window here yet", inline: true)
@@ -205,8 +205,8 @@ view rows_of_the_shell(a: Layout, v: Viewing, held: LayoutRow, lists: Bool) {
 /// and a lone window takes the room its neighbours left. Never narrower than 44rem — the room a
 /// window's bar, its tabs and an app's own layout need — so a row of more windows than the shell
 /// holds keeps their width and scrolls along it, as the chrome's own row does.
-view row_window(a: Layout, v: Viewing, s: LayoutStrip, lists: Bool) {
-    strip_window(a, v, s, lists, fill: if s.width <= 0 { 667 } else { s.width }, min: 44rem)
+view row_window(a: Layout, s: LayoutStrip, lists: Bool) {
+    strip_window(a, s, lists, fill: if s.width <= 0 { 667 } else { s.width }, min: 44rem)
 }
 
 /// One strip: the window its places make, filling the room it is given. Its bar runs across its
@@ -225,13 +225,13 @@ view row_window(a: Layout, v: Viewing, s: LayoutStrip, lists: Bool) {
 /// of the place it was let go under). Every one is an arranging action of the session's, so a
 /// press, a key and an agent make the same change, attributed and undoable. A window's bar
 /// likewise carries its place's document, so another window's bar takes it as a tab.
-view strip_window(a: Layout, v: Viewing, s: LayoutStrip, lists: Bool) {
-    let in_front = s.key == strip_in_front(a, v)
+view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
+    let in_front = s.key == strip_in_front(a)
     let placed = places_of(a, s.key)
     let chosen = placed.find(p -> p.key == s.active)
     let shown = chosen ?? placed.first()
     ui.DropTarget {
-        on drop(target: host.Resource): tab_place_here(a, v, s, target)
+        on drop(target: host.Resource): tab_place_here(a, s, target)
         ui.WindowFrame(
             name: window_name(shown),
             focused: in_front,
@@ -239,18 +239,20 @@ view strip_window(a: Layout, v: Viewing, s: LayoutStrip, lists: Bool) {
             carries: window_resource(shown),
             fill,
         ) {
+            // A press on the window's bar brings it forward, the keyboard in it.
+            on press: bring_forward(a, s)
             // The window fills the room the drop target around it is given: the target only
             // takes what is dropped on it, and the window keeps the strip's whole height.
             controls: {
-                window_controls(a, v, s, shown, in_front, lists)
+                window_controls(a, s, shown, in_front, lists)
             }
             tabs: {
                 if placed.len() > 1 and shell.strips_tabs {
                     ui.TabStrip(place_in_front(s), focused: in_front) {
-                        on activate(p: session.Place): show_place(v, s.key, p)
+                        on activate(p: session.Place): show_place(p)
                         on close(p: session.Place): session.close(place: p)
                         on reorder(p: session.Place, at: Int): reorder_place(a, s, p, at)
-                        on detach(p: session.Place): detach_place(v, s, p)
+                        on detach(p: session.Place): detach_place(p)
                         for p in placed {
                             ui.TabItem(the_place(p.key), title: place_title(p))
                         }
@@ -281,11 +283,10 @@ fn window_resource(shown: Option<LayoutPlace>) -> Text {
 /// comes to the front of them, so the window shows what was dropped on it. A place already in
 /// this strip is only brought to the front, so dropping a window on itself raises it rather than
 /// opening a second place. The strip comes forward with it.
-action tab_place_here(a: Layout, v: Viewing, s: LayoutStrip, target: host.Resource) (
+action tab_place_here(a: Layout, s: LayoutStrip, target: host.Resource) (
     icon: .columns_2,
     label: "Tab it here",
 ) {
-    focus_strip(v, s.key)
     if let p = place_showing(target.id()) {
         if p.strip != s.key {
             session.move(
@@ -294,10 +295,9 @@ action tab_place_here(a: Layout, v: Viewing, s: LayoutStrip, target: host.Resour
                 strip: the_strip(s.key),
                 before: .none,
             )
-        } else {
-            session.activate(place: the_place(p.key))
         }
-    }
+        session.activate(place: the_place(p.key))
+    } else { bring_forward(a, s) }
 }
 
 /// The document key of the place a tab names: its resource id is `shell:place:<key>`, so the key is
@@ -338,11 +338,7 @@ action reorder_place(a: Layout, s: LayoutStrip, place: session.Place, at: Int) (
 /// Give the place `place` a window of its own: what dragging a tab out of its window's bar does,
 /// as the shell's own `split-right` for the window in front. The place stands in front of its new
 /// window, and that window comes to the front of the shell.
-action detach_place(v: Viewing, s: LayoutStrip, place: session.Place) (
-    icon: .columns_2,
-    label: "Its own window",
-) {
-    focus_strip(v, s.key)
+action detach_place(place: session.Place) (icon: .columns_2, label: "Its own window") {
     session.split_right(tab: place_key(place))
 }
 
@@ -365,12 +361,19 @@ fn place_in_front(s: LayoutStrip) -> Option<session.Place> {
     if s.active != "" { the_place(s.active) }
 }
 
-/// Shows the place `place` and brings its strip forward with it: what choosing a tab does, and
-/// the same arranging action a script or an agent runs. The strip's own reading moves first, the
-/// shell then brings the place in front of its strip.
-action show_place(v: Viewing, strip: Text, place: session.Place) {
-    focus_strip(v, strip)
+/// Shows the place `place` and brings its window forward with it, the keyboard in it: what
+/// choosing a tab does, and the same arranging action a script or an agent runs.
+action show_place(place: session.Place) {
     session.activate(place: place)
+}
+
+/// Brings the window of the strip `s` to the front, the keyboard in it: the session brings its
+/// place in front forward, as it does for a press, a script or an agent alike. A strip with no
+/// place has no window to bring.
+action bring_forward(a: Layout, s: LayoutStrip) (icon: .app_window, label: "Bring to front") {
+    if let p = strip_place(a, s) {
+        session.activate(place: the_place(p.key))
+    }
 }
 
 /// A window's own controls, in the pill at the trailing end of its one bar: the window's menu,
@@ -382,7 +385,6 @@ action show_place(v: Viewing, strip: Text, place: session.Place) {
 /// so every action stands once.
 view window_controls(
     a: Layout,
-    v: Viewing,
     s: LayoutStrip,
     shown: Option<LayoutPlace>,
     in_front: Bool,
@@ -407,7 +409,7 @@ view window_controls(
             }
             if not in_front {
                 ui.MenuItem("Bring to front", icon: .app_window) {
-                    on choose: focus_strip(v, s.key)
+                    on choose: bring_forward(a, s)
                 }
             }
             if let p = shown {

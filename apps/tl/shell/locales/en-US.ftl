@@ -177,6 +177,9 @@ d-oomdh5mi = Layout
 d-uykuo63i = Person
     .doc = The person at this device, by their name.
 
+d-k4p3z4ee = Front
+    .doc = The strip whose window has the keyboard on this device, by its key; empty for none.
+
 d-yb7sokzs = People
     .doc = The others here in the workspace in front.
 
@@ -375,7 +378,7 @@ d-soy4vimv = Shell
 d-farfsl4d-filter-pinned = Pinned
 
 d-nkjtmr33 = Viewing
-    .doc = What the person shows of their layout, and which strip stands in front: the shell's own view of it, in their profile (`resources: .profile`, `root viewing: Viewing`).
+    .doc = What the person shows of their layout: the shell's own view of it, in their profile (`resources: .profile`, `root viewing: Viewing`).
     .noun = { $count ->
         [one] viewing
        *[other] viewings
@@ -383,9 +386,6 @@ d-nkjtmr33 = Viewing
 
 d-kna5sco4 = Style
     .doc = The style the person shows, as a view reference: a package and a view (`so.tilo.shell:strips`, `me.styles:timeline`).
-
-d-6b2coqll = Focused
-    .doc = The strip in front, by its key; empty for none.
 
 d-nxjnwtsd = Edge
     .doc = The person's shell: which parts the top bar and the dock have, in what order, on which edge, how they look and when they show.
@@ -699,11 +699,6 @@ d-7j7tzynq = Show as
 
 d-7j7tzynq-style = Style
 
-d-dkylvhw4 = In front
-    .doc = Makes the strip `strip` the one in front: what a press on a column's header does.
-
-d-dkylvhw4-strip = Strip
-
 d-zm35wbjg = A workspace
     .doc = Adds a workspace, with one row, to `a`, and returns the row's key.
 
@@ -766,8 +761,6 @@ d-4vtnv5px-place = Place
 d-mtt6d3af = Tab it here
     .doc = Tab the place whose window's bar was dragged onto the strip `s` into that strip: a person drags one window's bar onto another's to make its tabs, and the window's menu's "Move into … as a tab" runs the same arranging action.
 
-d-mtt6d3af-v = V
-
 d-mtt6d3af-s = S
 
 d-mtt6d3af-target = Target
@@ -784,16 +777,17 @@ d-n2ez6yop-at = At
 d-d64rg4sw = Its own window
     .doc = Give the place `place` a window of its own: what dragging a tab out of its window's bar does, as the shell's own `split-right` for the window in front.
 
-d-d64rg4sw-s = S
-
 d-d64rg4sw-place = Place
 
 d-b3rfswle = Show place
-    .doc = Shows the place `place` and brings its strip forward with it: what choosing a tab does, and the same arranging action a script or an agent runs.
-
-d-b3rfswle-strip = Strip
+    .doc = Shows the place `place` and brings its window forward with it, the keyboard in it: what choosing a tab does, and the same arranging action a script or an agent runs.
 
 d-b3rfswle-place = Place
+
+d-wln2heq6 = Bring to front
+    .doc = Brings the window of the strip `s` to the front, the keyboard in it: the session brings its place in front forward, as it does for a press, a script or an agent alike.
+
+d-wln2heq6-s = S
 
 d-jipcl6u3 = Style settings
     .doc = The style's own settings, and the two ways of changing a style (`docs/designs/app-language/ shell.md` §6): without an agent, in the one place a person's settings live, and with an agent, by the same actions the person's controls run.

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.shell@5e245baf5ac433cb";
+export const SURFACE = "so.tilo.shell@70b7e43063356178";
 
 /** One part a person can put on the top bar, in their order. The case's icon is the glyph the settings and the drag ghost show for it. One of "menu", "workspace", "app_menu", "strip", "tasks", "clock", "people", "status", "power", "agent", "spacer". */
 export type BarPartKind = "menu" | "workspace" | "app_menu" | "strip" | "tasks" | "clock" | "people" | "status" | "power" | "agent" | "spacer";
@@ -209,7 +209,6 @@ export interface SetFramesSnapArgs {
 
 /** The arguments of `tab_place_here`. */
 export interface TabPlaceHereArgs {
-  v: Viewing;
   s: LayoutStrip;
   target: unknown;
 }
@@ -221,20 +220,14 @@ export interface ReorderPlaceArgs {
   at: number;
 }
 
+/** The arguments of `bring_forward`. */
+export interface BringForwardArgs {
+  s: LayoutStrip;
+}
+
 /** The arguments of `show_style`. */
 export interface ShowStyleArgs {
   style: string;
-}
-
-/** The arguments of `focus_strip`. */
-export interface FocusStripArgs {
-  strip: string;
-}
-
-/** The arguments of `show_place`. */
-export interface ShowPlaceArgs {
-  strip: string;
-  place: unknown;
 }
 
 /** The arguments of `size_place`. */
@@ -258,6 +251,11 @@ export interface QueryShowArgs {
 /** The arguments of `query_retry`. */
 export interface QueryRetryArgs {
   place: string;
+}
+
+/** The arguments of `show_place`. */
+export interface ShowPlaceArgs {
+  place: unknown;
 }
 
 /** Shell — `tl.so.tilo.shell.Shell`. */
@@ -519,6 +517,7 @@ export function dockItem(ws: tilo.Workspace, path: string): DockItem {
 /** Layout — `tl.so.tilo.shell.Layout`. */
 export interface Layout extends tilo.Resource {
   uykuo63i: string;  // person
+  k4p3z4ee: string;  // front
   yb7sokzs: Array<tilo.Entry<LayoutPerson>>;  // people
   "7n7jrcg3": Array<tilo.Entry<LayoutWorkspace>>;  // workspaces
   hqul2vwj: Array<tilo.Entry<LayoutRow>>;  // rows
@@ -558,7 +557,6 @@ export interface Layout extends tilo.Resource {
   }): Promise<string>;
   /** Tab the place whose window's bar was dragged onto the strip `s` into that strip: a person drags one window's bar onto another's to make its tabs, and the window's menu's 'Move into … as a tab' runs the same arranging action. The place lands after the strip's other tabs and comes to the front of them, so the window shows what was dropped on it. A place already in this strip is only brought to the front, so dropping a window on itself raises it rather than opening a second place. The strip comes forward with it. */
   tab_place_here(args: {
-    v: Viewing;
     s: LayoutStrip;
     target: unknown;
   }): Promise<void>;
@@ -572,11 +570,17 @@ export interface Layout extends tilo.Resource {
   }): Promise<void>;
   /** Runs `reorder_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   reorder_placeMany(items: ReorderPlaceArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Brings the window of the strip `s` to the front, the keyboard in it: the session brings its place in front forward, as it does for a press, a script or an agent alike. A strip with no place has no window to bring. */
+  bring_forward(args: {
+    s: LayoutStrip;
+  }): Promise<void>;
+  /** Runs `bring_forward` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  bring_forwardMany(items: BringForwardArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Layout` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LAYOUT_ACTIONS = ["a_workspace", "a_front_workspace", "a_strip", "a_note_place", "a_foreign_place", "a_query_place", "tab_place_here", "tab_place_hereMany", "reorder_place", "reorder_placeMany"] as const;
+export const LAYOUT_ACTIONS = ["a_workspace", "a_front_workspace", "a_strip", "a_note_place", "a_foreign_place", "a_query_place", "tab_place_here", "tab_place_hereMany", "reorder_place", "reorder_placeMany", "bring_forward", "bring_forwardMany"] as const;
 
 /** The `tl.so.tilo.shell.Layout` kind at `path`. */
 export function layout(ws: tilo.Workspace, path: string): Layout {
@@ -720,36 +724,17 @@ export function layoutPlace(ws: tilo.Workspace, path: string): LayoutPlace {
 /** Viewing — `tl.so.tilo.shell.Viewing`. */
 export interface Viewing extends tilo.Resource {
   kna5sco4: string;  // style
-  "6b2coqll": string;  // focused
   /** Shows the shell through the style `style`: a package and a view (`so.tilo.shell:strips`). Switching keeps the layout: the same places stand where they were, drawn another way. */
   show_style(args: {
     style: string;
   }): Promise<void>;
   /** Runs `show_style` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   show_styleMany(items: ShowStyleArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Makes the strip `strip` the one in front: what a press on a column's header does. */
-  focus_strip(args: {
-    strip: string;
-  }): Promise<void>;
-  /** Runs `focus_strip` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  focus_stripMany(items: FocusStripArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Give the place `place` a window of its own: what dragging a tab out of its window's bar does, as the shell's own `split-right` for the window in front. The place stands in front of its new window, and that window comes to the front of the shell. */
-  detach_place(args: {
-    s: LayoutStrip;
-    place: unknown;
-  }): Promise<void>;
-  /** Shows the place `place` and brings its strip forward with it: what choosing a tab does, and the same arranging action a script or an agent runs. The strip's own reading moves first, the shell then brings the place in front of its strip. */
-  show_place(args: {
-    strip: string;
-    place: unknown;
-  }): Promise<void>;
-  /** Runs `show_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  show_placeMany(items: ShowPlaceArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Viewing` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const VIEWING_ACTIONS = ["show_style", "show_styleMany", "focus_strip", "focus_stripMany", "detach_place", "show_place", "show_placeMany"] as const;
+export const VIEWING_ACTIONS = ["show_style", "show_styleMany"] as const;
 
 /** The `tl.so.tilo.shell.Viewing` kind at `path`. */
 export function viewing(ws: tilo.Workspace, path: string): Viewing {
@@ -798,11 +783,21 @@ export interface TiloShell extends tilo.Resource {
   }): Promise<void>;
   /** Runs `query_retry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   query_retryMany(items: QueryRetryArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Give the place `place` a window of its own: what dragging a tab out of its window's bar does, as the shell's own `split-right` for the window in front. The place stands in front of its new window, and that window comes to the front of the shell. */
+  detach_place(args: {
+    place: unknown;
+  }): Promise<void>;
+  /** Shows the place `place` and brings its window forward with it, the keyboard in it: what choosing a tab does, and the same arranging action a script or an agent runs. */
+  show_place(args: {
+    place: unknown;
+  }): Promise<void>;
+  /** Runs `show_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  show_placeMany(items: ShowPlaceArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `TiloShell` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TILOSHELL_ACTIONS = ["size_place", "size_placeMany", "drew_place", "place_dropped", "place_droppedMany", "open_first", "a_style_settings", "query_show", "query_showMany", "query_retry", "query_retryMany"] as const;
+export const TILOSHELL_ACTIONS = ["size_place", "size_placeMany", "drew_place", "place_dropped", "place_droppedMany", "open_first", "a_style_settings", "query_show", "query_showMany", "query_retry", "query_retryMany", "detach_place", "show_place", "show_placeMany"] as const;
 
 /** The `tl.so.tilo.shell` kind at `path`. */
 export function tiloShell(ws: tilo.Workspace, path: string): TiloShell {

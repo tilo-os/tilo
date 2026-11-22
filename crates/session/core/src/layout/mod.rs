@@ -1655,11 +1655,40 @@ impl Layout {
                 .report_drawn(workspace, group, clamp_side(*height));
             return Ok(());
         }
+        // Bringing a place to the front gives its window the keyboard: the window in front is this
+        // device's, never a change of the layout. A place already shown in its window only comes
+        // forward, and the layout records nothing: pressing the window in front again is nothing.
+        let brought = match action {
+            LayoutAction::Activate { place } => Some(*place),
+            _ => None,
+        };
+        if let Some(place) = brought {
+            let (shown, in_front) = self.handle.read(|tree| {
+                let shown = tree
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .flat_map(|strip| &strip.window_groups)
+                    .any(|group| group.active_tab == place);
+                let in_front = tilo_desktop_surface::navigation::active_route(tree)
+                    .is_some_and(|route| route.tab == place);
+                (shown, in_front)
+            });
+            if shown {
+                if !in_front {
+                    self.handle.focus_tab(place);
+                }
+                return Ok(());
+            }
+        }
         let mut tree = before.clone();
         if !change(&mut tree, action, by_the_person, &catalog)? {
             return Ok(());
         }
         self.handle.replace_tree(tree.clone());
+        if let Some(place) = brought {
+            self.handle.focus_tab(place);
+        }
         // The place a resource was put on shows that resource from now on,
         // and the layout keeps it beside the window it came with.
         // A place that shows another resource from now on says so in the layout's own record map,

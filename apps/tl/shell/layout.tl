@@ -10,12 +10,16 @@
 /// Every entry names the shell that made it (`shell`): a shell that does not know an entry
 /// another shell made keeps it and never changes or removes it.
 /// The person's layout as the session reads it off the layout: the workspaces it holds, its
-/// rows, its strips, and every place. Which style it shows and which strip stands in front are
-/// the shell's own view of it (`viewing`), this package's document, so a shell is picked per
+/// rows, its strips, every place, and the window this device has in front. Which style it shows
+/// is the shell's own view of it (`viewing`), this package's document, so a shell is picked per
 /// person and device without changing what the layout holds.
 type Layout (origin: session.layout) {
     /// The person at this device, by their name.
     person: Text merge register
+    /// The strip whose window has the keyboard on this device, by its key; empty for none. The
+    /// session reads it off this device's shell, so it is never a change of the layout, and a press
+    /// that brings a window forward asks the session (`session.activate`).
+    front: Text merge register
     /// The others here in the workspace in front.
     people: Collection<LayoutPerson>
     workspaces: Collection<LayoutWorkspace>
@@ -155,19 +159,16 @@ fn permille_of(w: Width) -> Int {
     }
 }
 
-/// What the person shows of their layout, and which strip stands in front: the shell's own
-/// view of it, in their profile (`resources: .profile`, `root viewing: Viewing`). The layout
-/// is the session's and the same whichever way it is shown; this is what changes when the
-/// person picks a style or brings a strip forward, and switching keeps every place where
-/// it was.
+/// What the person shows of their layout: the shell's own view of it, in their profile
+/// (`resources: .profile`, `root viewing: Viewing`). The layout is the session's and the same
+/// whichever way it is shown; this is what changes when the person picks a style, and switching
+/// keeps every place where it was.
 type Viewing {
     /// The style the person shows, as a view reference: a package and a view
     /// (`so.tilo.shell:strips`, `me.styles:timeline`). A style is a view of the
     /// layout any installed package declares; empty shows this shell's
     /// strips.
     style: Text
-    /// The strip in front, by its key; empty for none.
-    focused: Text
 }
 
 root viewing: Viewing
@@ -191,9 +192,4 @@ view viewing_settings(v: Viewing) {
 action show_style(v: Viewing, style: Text) (icon: .layout_grid, label: "Show as") {
     require v.style != style "It is shown that way already"
     v.style = style
-}
-
-/// Makes the strip `strip` the one in front: what a press on a column's header does.
-action focus_strip(v: Viewing, strip: Text) (icon: .columns_2, label: "In front") {
-    v.focused = strip
 }
