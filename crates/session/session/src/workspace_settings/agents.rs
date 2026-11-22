@@ -89,7 +89,7 @@ impl Host for crate::engine_records::EngineRecords {
             return;
         };
         let (workspace_id, agent) = (workspace.id(), agent.to_owned());
-        let change = tilo_action_policy::Change::add_agent(agent.clone(), person.clone());
+        let change = tilo_action_policy::Change::add_agent(agent.clone(), person.clone(), None);
         // The member list's change lands when the workspace takes it; until then the agent
         // answers that it is not a member yet.
         drop(crate::landing::off_loop(async move {

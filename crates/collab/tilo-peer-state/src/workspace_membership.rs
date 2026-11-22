@@ -559,7 +559,7 @@ fn validate_member_change(change: &tilo_action_policy::Change) -> Result<(), Str
             }
             person
         }
-        Change::RemoveAgent { agent } => return valid_agent_id(agent),
+        Change::RemoveAgent { agent, .. } => return valid_agent_id(agent),
         Change::Grant(grant) if grant.id.as_str().trim().is_empty() => {
             return Err("a grant needs an id".into());
         }

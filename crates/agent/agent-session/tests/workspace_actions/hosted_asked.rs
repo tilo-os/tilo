@@ -750,8 +750,8 @@ async fn make_own_agent(workspaces: &Workspaces, workspace: &str, person: &str) 
         .unwrap();
 }
 
-/// Bea, a plain member, makes her own agent, and her own device adds it to the workspace's
-/// member list acting for her: nobody sets up a grant for it. Cy, another plain member, may not
+/// Bea, a plain member, makes her own agent, and the server adds it to the workspace's member
+/// list acting for her, as a member write for her: nobody sets up a grant for it. Cy, another plain member, may not
 /// add an agent acting for her. She mentions Scout in a channel, and it answers her, reading
 /// what she reads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -777,12 +777,22 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     let bea_person = hex::encode(bea.cert.user_public_key);
 
     let refused = workspaces
-        .add_agent(&workspace, &cy.cert, "cys-scout", &bea_person)
+        .add_agent(
+            &workspace,
+            MemberId::person(hex::encode(cy.cert.user_public_key)),
+            "cys-scout",
+            &bea_person,
+        )
         .await
         .expect_err("Cy may not add an agent acting for Bea");
     make_own_agent(&workspaces, &workspace, &bea_person).await;
     workspaces
-        .add_agent(&workspace, &bea.cert, SCOUT, &bea_person)
+        .add_agent(
+            &workspace,
+            MemberId::person(bea_person.clone()),
+            SCOUT,
+            &bea_person,
+        )
         .await
         .expect("Bea adds her own agent");
     let policy = workspaces.policy_of(&workspace).await.unwrap();

@@ -151,7 +151,12 @@ pub(super) async fn make_agent(
     // The page asks its host to take the agent into the workspace's member list, acting for
     // the person.
     workspaces
-        .add_agent(workspace, workspaces.governor(), SCOUT, person)
+        .add_agent(
+            workspace,
+            ui::tilo_resource::MemberId::person(person.to_owned()),
+            SCOUT,
+            person,
+        )
         .await
         .expect("the workspace takes Scout as a member");
 }
