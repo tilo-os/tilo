@@ -527,12 +527,12 @@ d-dhradxj7 = Account notice
 
 d-7rcrynvm = Mail
     .w-add-a-mail-account-in-settings = Add a mail account in Settings
-    .w-mail = Mail
     .w-recovered-mail = Recovered mail
+    .w-mail = Mail
 
 d-4fjgzcq6 = Unified
-    .w-all-accounts = All accounts
     .w-recovered-mail = Recovered mail
+    .w-all-accounts = All accounts
     .w-all-inboxes = All inboxes
     .w-all-mail = All mail
     .w-labels = Labels

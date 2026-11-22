@@ -33,7 +33,7 @@ type Mailbox (origin: imap.mailbox) {
 }
 
 /// A conversation: messages that answer each other, newest last.
-type Thread (origin: imap.thread) {
+type Thread (origin: imap.thread, title: subject) {
     key: Text merge register
     account: Text merge register
     subject: Text
@@ -84,7 +84,7 @@ type Label {
 }
 
 /// A message.
-type Message (origin: imap.message) {
+type Message (origin: imap.message, title: subject) {
     key: Text merge register
     account: Text merge register
     subject: Text
@@ -1023,6 +1023,7 @@ view mail(m: Mail) {
             // page with nothing left to show. There is no account, so there is no sidebar.
             ui.NavShell(
                 content_kind: .document,
+                title: "Recovered mail",
                 sidebar_title: "Mail",
                 overview_title: "Recovered mail",
                 overview_count: m.recovered_mail.len(),
@@ -1056,6 +1057,7 @@ view unified(m: Mail) {
         let shown = a.threads.matching(query)
         ui.NavShell(
             content_kind: .document,
+            title: if query == "recovered" { "Recovered mail" } else { title },
             sidebar_title: "All accounts",
             overview_title: if query == "recovered" { "Recovered mail" } else { title },
             overview_count: if query == "recovered" {
@@ -1097,7 +1099,7 @@ view unified(m: Mail) {
                         }
                     }
                     for acct in m.accounts {
-                        ui.NavSection(acct.name) {
+                        ui.NavSection(acct.address) {
                             for p in places {
                                 ui.NavItem("{acct.key}/{p.query}", p.label, icon: p.icon) {
                                     on select: open(acct)
@@ -1162,6 +1164,7 @@ view mailboxes(a: Account) {
     let title = place_title(m, query)
     ui.NavShell(
         content_kind: .document,
+        title: a.address,
         sidebar_title: a.address,
         overview_title: title,
         overview_count: shown.len(),
