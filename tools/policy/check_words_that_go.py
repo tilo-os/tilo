@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
-"""The words docs/architecture/core.md says go are only ever used less.
+"""The words docs/architecture/core.md says go get no new names.
 
 Each row of that page's "Words that go" table names a concept the design does
 not have. `words_that_go.toml` lists, for each row, the identifiers and text
-that spell it, and `words_that_go_baseline.json` how often the code holds them.
-This check counts them again over the code (Rust, tilolang, TypeScript,
-JavaScript and Python; never vendored code or docs, never comments, and inside a
-string only what is shaped like an identifier, `held_by` but not the prose word
-"held"). It fails only when a row's specific words are used more than their
-baseline says: a change added a use of a word that goes. A row's generic words
-(`record`, `kind`, `document`, `held`...) are too common in ordinary code to hold
-every push to, so they are counted and printed but never fail. A count that falls
-never fails either; `--update` lowers the baseline to it, and never raises one.
-The check also fails when the table and `words_that_go.toml` no longer name the
-same rows.
+that spell it, and `words_that_go_baseline.json` the names that hold them today.
+This check reads the code again (Rust, tilolang, TypeScript, JavaScript and
+Python; never vendored code or docs, never comments, and inside a string only
+what is shaped like an identifier, `held_by` but not the prose word "held") and
+fails when a row's specific words appear in a name the baseline does not list:
+new code named a concept that goes. More calls to a name that already exists,
+or code moved from one file to another, are printed but never fail. A row that
+counts the lines of some files instead of names fails when those files grow.
 
-A count falls when the code that holds the concept is deleted. A rename alone
-moves the word out of the count without removing the concept, so it is not a
-way to lower one.
+A row's generic words (`record`, `kind`, `document`, `held`...) are too common
+in ordinary code to judge by name, so they are counted and printed but never
+fail. Nothing that shrinks fails: `--update` drops the names that are gone and
+lowers a line count, and never adds a name or raises a count. The check also
+fails when the table and `words_that_go.toml` no longer name the same rows.
+
+A name goes when the code that holds the concept is deleted. A rename alone
+takes the word out of the code without removing the concept, so it is not a way
+to lower a row.
 
     python3 tools/policy/check_words_that_go.py            # check
-    python3 tools/policy/check_words_that_go.py --print    # every row's count
-    python3 tools/policy/check_words_that_go.py --update   # lower the baseline to the counts
+    python3 tools/policy/check_words_that_go.py --print    # every row's names and uses
+    python3 tools/policy/check_words_that_go.py --update   # drop the names that are gone
 """
 from __future__ import annotations
 
@@ -32,6 +35,7 @@ import subprocess
 import sys
 import tomllib
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -158,8 +162,17 @@ def spec_rows() -> list[str]:
     return rows
 
 
-def count(root: Path, rows: list[dict]) -> dict[str, tuple[int, int]]:
-    """Each row's uses of its specific words, and of its generic ones."""
+@dataclass
+class Row:
+    """What the code holds of one row."""
+
+    names: set[str]
+    uses: int
+    lines: int
+    generic: int
+
+
+def count(root: Path, rows: list[dict]) -> dict[str, Row]:
     identifiers: Counter[str] = Counter()
     texts: Counter[str] = Counter()
     literals = sorted({text for row in rows for text in row.get("text", [])})
@@ -176,21 +189,27 @@ def count(root: Path, rows: list[dict]) -> dict[str, tuple[int, int]]:
                 lines[prefix] += sum(1 for line in body.splitlines() if line.strip())
     split = {identifier: words(identifier) for identifier in identifiers}
 
-    def uses(terms: list[str]) -> int:
+    def holding(terms: list[str]) -> set[str]:
         runs = [tuple(term.split()) for term in terms if not term.startswith("=")]
         whole = {tuple(term[1:].split()) for term in terms if term.startswith("=")}
-        return sum(
-            used
-            for identifier, used in identifiers.items()
+        return {
+            identifier
+            for identifier in identifiers
             if split[identifier] in whole or any(holds(split[identifier], run) for run in runs)
-        )
+        }
 
     counts = {}
     for row in rows:
-        specific = uses(row.get("idents", []))
-        specific += sum(texts[literal] for literal in row.get("text", []))
-        specific += sum(lines[prefix] for prefix in row.get("paths", []))
-        counts[row["row"]] = (specific, uses(row.get("generic", [])))
+        names = holding(row.get("idents", []))
+        names |= {literal for literal in row.get("text", []) if texts[literal]}
+        uses = sum(identifiers[name] for name in names if name in identifiers)
+        uses += sum(texts[literal] for literal in row.get("text", []))
+        counts[row["row"]] = Row(
+            names=names,
+            uses=uses,
+            lines=sum(lines[prefix] for prefix in row.get("paths", [])),
+            generic=sum(identifiers[name] for name in holding(row.get("generic", []))),
+        )
     return counts
 
 
@@ -210,35 +229,45 @@ def main(argv: list[str]) -> int:
     counts = count(ROOT, rows)
     baseline = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
     if "--print" in argv:
-        print(f"{'specific':>8} {'baseline':>8} {'generic':>8}  row")
+        print(f"{'names':>6} {'uses':>7} {'lines':>6} {'generic':>8}  row")
         for row in named:
-            specific, generic = counts[row]
-            print(f"{specific:>8} {baseline.get(row, '-'):>8} {generic:>8}  {row}")
+            now = counts[row]
+            print(f"{len(now.names):>6} {now.uses:>7} {now.lines:>6} {now.generic:>8}  {row}")
         return 0
     if "--update" in argv:
-        lowered = {
-            row: min(counts[row][0], baseline.get(row, counts[row][0])) for row in named
-        }
-        BASELINE.write_text(json.dumps(lowered, indent=2) + "\n", encoding="utf-8")
+        written = {}
+        for row in named:
+            now, was = counts[row], baseline.get(row)
+            names = now.names if was is None else now.names & set(was["names"])
+            lines = now.lines if was is None else min(now.lines, was["lines"])
+            written[row] = {"names": sorted(names), "lines": lines}
+        BASELINE.write_text(json.dumps(written, indent=1) + "\n", encoding="utf-8")
         print(f"wrote {BASELINE.relative_to(ROOT)}", file=sys.stderr)
         return 0
     for row in named:
-        was, now = baseline.get(row), counts[row][0]
+        now, was = counts[row], baseline.get(row)
         if was is None:
-            problems.append(f"{BASELINE.relative_to(ROOT)}: no count for '{row}' ({now} now)")
-        elif now > was:
-            problems.append(f"'{row}': {now} uses, {now - was} more than the baseline's {was}")
+            problems.append(f"{BASELINE.relative_to(ROOT)}: no entry for '{row}'")
+            continue
+        new = sorted(now.names - set(was["names"]))
+        if new:
+            problems.append(f"'{row}': new names {', '.join(new)}")
+        if now.lines > was["lines"]:
+            problems.append(
+                f"'{row}': {now.lines} lines, {now.lines - was['lines']} more than the"
+                f" baseline's {was['lines']}"
+            )
     for problem in problems:
         print(problem)
     if problems:
         print(
-            "words that go: a word that goes gained a use, or the rows differ. Name the new"
-            " code with the word core.md's table has instead; a word goes with the code that"
-            " holds its concept. A lower count is lowered into the baseline with `--update`.",
+            "words that go: new code named a concept core.md's table says goes, or the rows"
+            " differ. Name it with the word the table has instead. A name that is gone is"
+            " dropped from the baseline with `--update`.",
             file=sys.stderr,
         )
         return 1
-    print(f"words that go: {len(named)} rows at or below their baseline", file=sys.stderr)
+    print(f"words that go: {len(named)} rows hold no new names", file=sys.stderr)
     return 0
 
 

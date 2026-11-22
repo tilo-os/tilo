@@ -4,14 +4,14 @@
 #   row     the row's first cell in core.md, which names it in the baseline
 #   idents  identifiers counted: each is a run of words matched against the words of an
 #           identifier (`app_keeper`, `AppKeeper` and `APP_KEEPER` all hold "keeper"), the last
-#           word also in its plural. A use above the baseline fails the check.
+#           word also in its plural. A name holding one that the baseline does not list fails.
 #           A term starting with `=` is the whole identifier (`=answers` is `answers` and
 #           `Answers`, not a test named `…_answers_…`).
 #   generic identifiers matched the same way, but words so common in ordinary code that they
 #           are counted and printed only, never failing the check
-#   text    exact text counted wherever it is in the code, strings included
-#   paths   files (or a directory, ending in `/`) whose every line of code counts, for a row
-#           whose concept is a piece of code rather than a name
+#   text    exact text found wherever it is in the code, strings included; it counts as a name
+#   paths   files (or a directory, ending in `/`) whose lines of code are counted, for a row
+#           whose concept is a piece of code rather than a name: more lines than the baseline fail
 #
 # A row lists the identifiers that name its concept. Words too common to tell apart from
 # ordinary English (the settings scopes `Personal` and `Shared`, `store` as a kind of device,
