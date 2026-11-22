@@ -249,7 +249,6 @@ async fn the_message_after_an_answer_gets_a_turn_of_its_own() {
     page.peer.close();
 }
 
-
 /// A reminder's turn is worked on when she writes, and a look reads her message then. That
 /// look enters the place only once the reminder's answer stands. The turn that begins is told
 /// the conversation as it stands now, that answer included, not as the look read it. What a
