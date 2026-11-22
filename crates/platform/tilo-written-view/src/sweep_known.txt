@@ -29,7 +29,6 @@ UNTYPED | so.tilo.ebook | ebook.library | entries.*.content
 UNTYPED | so.tilo.ebook | ebook.library | entries.*.index
 UNTYPED | so.tilo.ebook | ebook.library | fonts.*.kind
 UNTYPED | so.tilo.file-explorer | files.folder | ops
-UNTYPED | so.tilo.file-explorer | tilo.accounts | accounts.*.config
 UNTYPED | so.tilo.git-client | git_client.repo | shared
 UNTYPED | so.tilo.hex-editor | hex-editor.document | bytes
 UNTYPED | so.tilo.maps | maps.workspace | recents
