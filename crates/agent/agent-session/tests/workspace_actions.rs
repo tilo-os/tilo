@@ -212,6 +212,9 @@ mod member_roles;
 #[path = "workspace_actions/one_workspace_list.rs"]
 mod one_workspace_list;
 #[cfg(test)]
+#[path = "workspace_actions/own_agent.rs"]
+mod own_agent;
+#[cfg(test)]
 #[path = "workspace_actions/packaged_model.rs"]
 mod packaged_model;
 #[cfg(test)]
