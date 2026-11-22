@@ -4909,7 +4909,7 @@ impl Widget for TextInput {
         let value = self.display_text();
         let style = self.line_style(cx.theme().text_scale);
         let look = crate::composition::TextLook::new(value.clone(), &style, None);
-        let placeholder = (!self.placeholder.is_empty()).then(|| self.placeholder.clone());
+        let placeholder = (!self.placeholder.is_empty()).then(|| widget_text(&self.placeholder));
         cx.field(value, self.multiline, placeholder, look);
         let theme = cx.theme();
         if self.multiline {

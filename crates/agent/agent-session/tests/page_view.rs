@@ -18,63 +18,75 @@ fn element(html: &str, marks: &[&str]) -> Option<u32> {
     })
 }
 
+/// The number of the button whose words are `words`, which a press on them lands on.
+fn button_saying(html: &str, words: &str) -> Option<u32> {
+    let at = html.find(&format!(">{words}<"))?;
+    let before = html.get(..at)?;
+    let open = before.get(before.rfind("<button")?..)?.split('>').next()?;
+    if !open.contains("data-a=\"activate\"") {
+        return None;
+    }
+    open.split("data-p=\"").nth(1)?.split('"').next()?.parse().ok()
+}
+
 #[test]
-fn a_person_writes_a_note_on_the_notebooks_page() {
-    let notebook = ConfinedReplica::open_page(
+fn a_person_writes_an_issue_on_the_trackers_page() {
+    let tracker = ConfinedReplica::open_page(
         &catalogue(),
-        ("so.tilo.notes", WORKSPACE),
+        ("so.tilo.tasks", WORKSPACE),
         &MemberId::person("ada"),
         &ReplicaActor::Owner,
         Seed::New,
     )
-    .expect("the notebook opens as a page");
-    let _ = notebook.take_mutation();
-    // A new workspace holds none of what the notebook keeps beside it, as its
+    .expect("the tracker opens as a page");
+    let _ = tracker.take_mutation();
+    // A new workspace holds none of what the tracker keeps beside it, as its
     // serving devices answer a page's worker.
-    let _ = notebook.page_show(None);
-    for wanted in notebook.wanted_resources() {
-        notebook
+    let _ = tracker.page_show(None);
+    for wanted in tracker.wanted_resources() {
+        tracker
             .workspace_answered(&wanted, ui::resource::WorkspaceAnswer::HoldsNone)
             .expect("told");
     }
-    let _ = notebook.take_document_mutations();
+    let _ = tracker.take_document_mutations();
 
     let shown = std::time::Instant::now();
-    let (title, css, body) = notebook.page_show(None).expect("the page shows");
+    let (title, css, body) = tracker.page_show(None).expect("the page shows");
     println!("page shown in {:?}, {} bytes", shown.elapsed(), body.len());
-    assert_eq!(title, "Notes");
+    assert_eq!(title, "Tasks");
     assert!(css.contains("--tilo-ground"), "the theme's colours: {css}");
     assert!(
         body.starts_with("<div data-p=\"0\""),
         "the page's body: {body}"
     );
 
-    let new_note = element(&body, &["data-a=\"activate\"", "aria-label=\"New note\""])
-        .unwrap_or_else(|| panic!("the page offers a new note: {body}"));
-    let acted = std::time::Instant::now();
-    let patches = notebook
-        .page_act(Some((new_note, None, PageAction::Activate)))
-        .expect("the person's click is acted on");
-    println!("click answered in {:?}", acted.elapsed());
-    assert!(!patches.is_empty(), "a new note changes the page");
-    let field = patches
-        .iter()
-        .find_map(|(_, html)| element(html, &["data-w=\"TextInput\"", "data-a=\"value\""]))
-        .unwrap_or_else(|| panic!("the new note's title is a field: {patches:?}"));
-
+    let field = element(
+        &body,
+        &["data-a=\"value\"", "placeholder=\"What needs doing\""],
+    )
+    .unwrap_or_else(|| panic!("the page offers a new issue's title as a field: {body}"));
     let typed = std::time::Instant::now();
-    let patches = notebook
+    tracker
         .page_act(Some((field, None, PageAction::Value("Groceries".into()))))
         .expect("the person's typing is acted on");
     println!("typing answered in {:?}", typed.elapsed());
+
+    let (_, _, body) = tracker.page_show(None).expect("the page shows");
+    let new_issue = button_saying(&body, "New issue")
+        .unwrap_or_else(|| panic!("the page offers a new issue: {body}"));
+    let acted = std::time::Instant::now();
+    let patches = tracker
+        .page_act(Some((new_issue, None, PageAction::Activate)))
+        .expect("the person's click is acted on");
+    println!("click answered in {:?}", acted.elapsed());
     assert!(
         patches.iter().any(|(_, html)| html.contains("Groceries")),
-        "the note's row says what was typed: {patches:?}"
+        "the new issue's row says what was typed: {patches:?}"
     );
-    let wrote = notebook.take_mutation().expect("the notebook's changes");
-    let wrote_beside = notebook
+    let wrote = tracker.take_mutation().expect("the tracker's changes");
+    let wrote_beside = tracker
         .take_document_mutations()
-        .expect("the changes to its notes");
+        .expect("the changes to its issues");
     assert!(
         wrote.is_some() || !wrote_beside.is_empty(),
         "what was typed is handed back to be saved"
@@ -82,7 +94,7 @@ fn a_person_writes_a_note_on_the_notebooks_page() {
 
     // Nothing moved since: the page answers no change.
     assert!(
-        notebook.page_act(None).expect("asked again").is_empty(),
+        tracker.page_act(None).expect("asked again").is_empty(),
         "an unchanged page sends nothing"
     );
 }
