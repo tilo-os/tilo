@@ -59,7 +59,15 @@ pub(super) async fn open(
             }
         })),
     );
-    open_with_groups(own, identity, engine, (endpoint, reachability), groups, records).await
+    open_with_groups(
+        own,
+        identity,
+        engine,
+        (endpoint, reachability),
+        groups,
+        records,
+    )
+    .await
 }
 
 /// [`open`] with `groups` keeping the workspaces' keys: keys a test makes itself, where the
