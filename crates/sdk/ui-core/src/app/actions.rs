@@ -2983,162 +2983,7 @@ impl App {
             // Projected View actions resolve their retained widget through the
             // current checked map, including after the palette has closed.
             self.rebuild_action_palette_admission();
-            let argument = pending.wire_argument();
-            let continuation_arguments = pending.continuation_arguments();
-            let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
-            let palette_request = ResourceInvocation::new(&pending.address, &actor)
-                .argument(argument.as_deref())
-                .confirmed(true)
-                .evidence(Some(pending.confirmation_evidence()))
-                .ambient_context(Some(&pending.context));
-            // Confirmation was collected by the palette, but the request has
-            // not crossed the session broker yet. Host-required documents are
-            // therefore submitted to that broker rather than applied here.
-            let original_valid = pending.ordinary.as_ref().map_or(Ok(()), |request| {
-                request.validate(
-                    self.root_widget.as_ref(),
-                    &self.state.doc,
-                    &self.control_domain,
-                )
-            });
-            let result = if let Err(error) = original_valid {
-                Err(error)
-            } else if let Some(target) = pending.history_target.clone() {
-                let draft = match pending.history_draft_identity.as_ref() {
-                    Some(Ok(captured)) => crate::bound_dispatch::control_draft_identity(
-                        self.root_widget.as_ref(),
-                        &self.state.doc,
-                        &target,
-                        &pending.address,
-                    )
-                    .and_then(|current| {
-                        (current == *captured).then_some(()).ok_or_else(|| {
-                            tilo_actions::ApiError::Unavailable {
-                                code: "stale_pending_palette_action".into(),
-                                reason: "The palette action resolution domain changed while History was open".into(),
-                            }
-                        })
-                    }),
-                    Some(Err(reason)) => Err(tilo_actions::ApiError::Unavailable {
-                        code: "stale_pending_palette_action".into(),
-                        reason: reason.clone(),
-                    }),
-                    None => Ok(()),
-                };
-                let captured = pending
-                    .history_identity
-                    .as_ref()
-                    .ok_or_else(|| tilo_actions::ApiError::Unavailable {
-                        code: "stale_pending_palette_action".into(),
-                        reason: "The original palette action identity was not captured".into(),
-                    })
-                    .and_then(|identity| {
-                        identity
-                            .clone()
-                            .map_err(|reason| tilo_actions::ApiError::Unavailable {
-                                code: "stale_pending_palette_action".into(),
-                                reason,
-                            })
-                    });
-                let current = if pending.history_seen.is_some() {
-                    pending
-                        .history_identity
-                        .as_ref()
-                        .ok_or_else(|| tilo_actions::ApiError::Unavailable {
-                            code: "stale_pending_palette_action".into(),
-                            reason: "The original exact palette identity was not captured".into(),
-                        })
-                        .and_then(|identity| {
-                            identity
-                                .clone()
-                                .map_err(|reason| tilo_actions::ApiError::Unavailable {
-                                    code: "stale_pending_palette_action".into(),
-                                    reason,
-                                })
-                        })
-                } else {
-                    crate::bound_dispatch::control_draft_identity(
-                        self.root_widget.as_ref(),
-                        &self.state.doc,
-                        &target,
-                        &pending.address,
-                    )
-                };
-                let observation = match pending.history_seen.as_ref() {
-                    Some(Ok(captured)) => pending.control_invocation().ok_or_else(|| {
-                        tilo_actions::ApiError::InvalidArguments(
-                            "The retained palette arguments are incomplete".into(),
-                        )
-                    }).and_then(|invocation| {
-                        let original_arguments = continuation_arguments.as_ref().ok_or_else(|| {
-                            tilo_actions::ApiError::InvalidArguments(
-                                "The retained palette argument representation is invalid".into(),
-                            )
-                        })?;
-                        crate::bound_dispatch::control_observation_with_arguments(
-                            self.root_widget.as_ref(), &self.state.doc, &target, &invocation,
-                            original_arguments,
-                        ).and_then(|current| {
-                            (current == *captured).then_some(()).ok_or_else(|| {
-                                tilo_actions::ApiError::Unavailable {
-                                    code: "stale_pending_palette_action".into(),
-                                    reason: "The exact action encoding changed while History was open".into(),
-                                }
-                            })
-                        })
-                    }),
-                    Some(Err(reason)) => Err(tilo_actions::ApiError::Unavailable {
-                        code: "stale_pending_palette_action".into(),
-                        reason: reason.clone(),
-                    }),
-                    None => pending.control_invocation().ok_or_else(|| {
-                        tilo_actions::ApiError::InvalidArguments(
-                            "The retained palette arguments are incomplete".into(),
-                        )
-                    }).and_then(|invocation| {
-                        let original_arguments = continuation_arguments.as_ref().ok_or_else(|| {
-                            tilo_actions::ApiError::InvalidArguments(
-                                "The retained palette argument representation is invalid".into(),
-                            )
-                        })?;
-                        crate::bound_dispatch::control_observation_with_arguments(
-                            self.root_widget.as_ref(), &self.state.doc, &target, &invocation,
-                            original_arguments,
-                        ).map(|_| ())
-                    }),
-                };
-                match (draft, captured, current, observation) {
-                    (Ok(()), Ok(captured), Ok(current), Ok(())) if captured == current => match target {
-                        crate::bound_dispatch::local_target::LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker(&target, &palette_request, None),
-                        crate::bound_dispatch::local_target::LocalResourceTarget::Outer => self.invoke_unbound_resource_action(&palette_request),
-                    },
-                    (Ok(()), Ok(_), Ok(_), Ok(())) => Err(tilo_actions::ApiError::Unavailable {
-                        code: "stale_pending_palette_action".into(),
-                        reason: "The action meaning or confirmation policy changed while History was open".into(),
-                    }),
-                    (Err(error), _, _, _)
-                    | (_, Err(error), _, _)
-                    | (_, _, Err(error), _)
-                    | (_, _, _, Err(error)) => Err(error),
-                }
-            } else if let Some(request) = pending.ordinary.as_ref() {
-                match &request.target {
-                    crate::bound_dispatch::local_target::LocalResourceTarget::Component(target) => {
-                        self.invoke_bound_target_with_broker(target, &palette_request, None)
-                    }
-                    crate::bound_dispatch::local_target::LocalResourceTarget::Outer => {
-                        self.invoke_unbound_resource_action(&palette_request)
-                    }
-                }
-            } else if let Some(result) =
-                self.invoke_history_address_local(&pending.address, argument.as_deref())
-            {
-                result
-            } else if let Some(target) = pending.bound.as_ref() {
-                self.invoke_bound_target_with_broker(target, &palette_request, None)
-            } else {
-                self.invoke_resource_action(palette_request)
-            };
+            let result = crate::app_core::ControlCore::run_palette_operation(self, &pending);
             if let Err(error) = result {
                 tracing::warn!(%error, "resource operation failed");
                 if pending.history_target.is_some() {
@@ -3379,17 +3224,23 @@ impl crate::app_core::ControlCore for App {
         self.invoke_unbound_resource_action(request)
     }
 
-    fn is_host_action_resource(&self, resource: &str) -> bool {
-        resource == local_input_capture::UNSAVED_RESOURCE
-    }
-
-    fn run_local_history_address(
+    fn history_address(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        argument: &str,
+        argument: Option<&str>,
+    ) -> Option<Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>> {
+        self.invoke_history_address_local(address, argument)
+    }
+
+    fn invoke_chosen_address(
+        &mut self,
+        request: &ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        self.invoke_history_address_local(address, Some(argument))
-            .unwrap_or_else(|| Err(tilo_actions::ApiError::Unknown(address.clone())))
+        self.invoke_resource_action(*request)
+    }
+
+    fn is_host_action_resource(&self, resource: &str) -> bool {
+        resource == local_input_capture::UNSAVED_RESOURCE
     }
 
     fn embedded_history_acted(&mut self) {

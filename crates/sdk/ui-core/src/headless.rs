@@ -7252,58 +7252,9 @@ impl FrameHarness {
             .as_deref_mut()
             .and_then(|palette| palette.take_operation());
         if let Some(pending) = pending {
-            let result = (|| {
-                let request = pending.ordinary.as_ref().ok_or_else(|| {
-                    tilo_actions::ApiError::InvalidArguments(
-                        "Missing original confirmation request".into(),
-                    )
-                })?;
-                request.validate(self.root.as_ref(), &self.state.doc, &self.control_domain)?;
-                if let Some(target) = &pending.history_target {
-                    let captured = pending
-                        .history_seen
-                        .as_ref()
-                        .and_then(|w| w.as_ref().ok())
-                        .ok_or_else(|| tilo_actions::ApiError::Unavailable {
-                            code: "unsupported_continuation_identity".into(),
-                            reason: "Original History continuation evidence is unavailable".into(),
-                        })?;
-                    let invocation = pending.control_invocation().ok_or_else(|| {
-                        tilo_actions::ApiError::InvalidArguments("Invalid retained request".into())
-                    })?;
-                    let current = crate::bound_dispatch::control_observation_with_arguments(
-                        self.root.as_ref(),
-                        &self.state.doc,
-                        target,
-                        &invocation,
-                        &request.arguments,
-                    )?;
-                    if &current != captured {
-                        return Err(tilo_actions::ApiError::Unavailable {
-                            code: "stale_pending_palette_action".into(),
-                            reason: "History continuation changed".into(),
-                        });
-                    }
-                }
-                let argument = match &request.arguments {
-                    crate::bound_dispatch::ControlContinuationArguments::Json(json) => {
-                        Some(crate::app_core::json_argument(json))
-                    }
-                    crate::bound_dispatch::ControlContinuationArguments::Text(text) => {
-                        Some(text.clone())
-                    }
-                    crate::bound_dispatch::ControlContinuationArguments::Immediate => None,
-                };
-                let author = tilo_actions::Actor::Member(self.author.clone());
-                self.invoke_local_target(
-                    &request.target,
-                    &crate::app_core::ResourceInvocation::new(&request.address, &author)
-                        .argument(argument.as_deref())
-                        .confirmed(true),
-                )
-            })();
+            let result = self.run_palette_operation(&pending);
             if let Err(error) = result {
-                tracing::warn!(%error,"headless confirmation refused");
+                tracing::warn!(%error, "resource operation failed");
                 if pending.history_target.is_some() {
                     if let Some(palette) = self.action_palette.as_deref_mut() {
                         palette.retain_history_refusal(pending, error.to_string());
@@ -8301,22 +8252,12 @@ impl FrameHarness {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        let selected = crate::bound_dispatch::discover_bound_resources(
-            self.root.as_ref(),
-            &self.state.doc,
-            Some(address),
-        )
-        .map_err(crate::bound_dispatch::BoundActionError::Dispatch)
-        .and_then(|snapshots| crate::bound_dispatch::select_bound_target(&snapshots, address, None))
-        .map_err(crate::bound_dispatch::BoundActionError::into_api)?;
         let argument = crate::app_core::json_argument(arguments);
-        let request = crate::app_core::ResourceInvocation::new(address, actor)
-            .argument(Some(&argument))
-            .confirmed(confirmed);
-        match selected {
-            Some(target) => self.invoke_bound_control(&target, &request),
-            None => self.invoke_outer_control(&request),
-        }
+        self.invoke_chosen_address(
+            &crate::app_core::ResourceInvocation::new(address, actor)
+                .argument(Some(&argument))
+                .confirmed(confirmed),
+        )
     }
 
     /// The document rendered as JSON, for a harness to diff across a restart.
@@ -8841,18 +8782,42 @@ impl crate::app_core::ControlCore for FrameHarness {
             .map(|resolved| resolved.confirmation_for_json(&intent.arguments))
     }
 
-    fn run_local_history_address(
+    fn history_address(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        argument: &str,
+        argument: Option<&str>,
+    ) -> Option<Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>> {
+        let history = self.history.as_ref()?;
+        tilo_actions::api::resolve(&[history.api_resource()], address)?;
+        Some(
+            self.run_local_history_action(address, argument)
+                .map(|()| {
+                    crate::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput::default(),
+                    )
+                })
+                .map_err(tilo_actions::ApiError::Failed),
+        )
+    }
+
+    fn invoke_chosen_address(
+        &mut self,
+        request: &crate::app_core::ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        self.run_local_history_action(address, Some(argument))
-            .map(|()| {
-                crate::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )
-            })
-            .map_err(tilo_actions::ApiError::Failed)
+        let selected = crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            Some(request.address),
+        )
+        .map_err(crate::bound_dispatch::BoundActionError::Dispatch)
+        .and_then(|snapshots| {
+            crate::bound_dispatch::select_bound_target(&snapshots, request.address, None)
+        })
+        .map_err(crate::bound_dispatch::BoundActionError::into_api)?;
+        match selected {
+            Some(target) => self.invoke_bound_control(&target, request),
+            None => self.invoke_outer_control(request),
+        }
     }
 
     fn take_search_invocation(

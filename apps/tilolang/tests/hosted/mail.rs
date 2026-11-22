@@ -691,7 +691,7 @@ fn an_editors_check_now_is_offered_and_asks_on_the_ask_bar() {
     let _settled = ui::motion::testing::settled();
     let servers = servers();
     let connector = MailConnector::of(account(&servers));
-    let mut session = connector.attach(Session::bo_editing(APP, Window::live));
+    let mut session = connector.attach(Session::bo_editing(APP, Window::in_harness));
     synced(&mut session);
     let check = session
         .hosted()
