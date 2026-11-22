@@ -89,7 +89,7 @@ impl Inner {
             }
             Answer::Refused { error } => Err(io::Error::other(error)),
             Answer::SignIn { .. } | Answer::Asks { .. } => {
-                Err(io::Error::other("the session answered another ask"))
+                Err(io::Error::other(accounts::sign_ins::NOT_ANSWERED))
             }
         }
     }

@@ -26,6 +26,7 @@ use tilo_resource::{Id, Replica};
 use zeroize::Zeroizing;
 
 use super::Workspaces;
+use super::account_logins::VAULT_NOT_HERE;
 #[cfg(feature = "device-keys")]
 use super::person_settings::kept_sign_ins::HostSignIns;
 
@@ -39,9 +40,6 @@ const MAX_VAULT_BYTES: usize = 64 * 1024 * 1024;
 /// a document is bounded in size.
 #[cfg(feature = "device-keys")]
 const CARRIED_PER_WRITE: usize = 16;
-
-/// The words for a vault this device cannot open.
-const UNAVAILABLE: &str = "The workspace's vault is not open on this device";
 
 /// The workspace's vault as this device read it: the document, its keys, and its entries
 /// opened with them.
@@ -109,7 +107,7 @@ impl Workspaces {
         let state = self
             .state(workspace)
             .await
-            .ok_or_else(|| UNAVAILABLE.to_owned())?;
+            .ok_or_else(|| VAULT_NOT_HERE.to_owned())?;
         if let Err(reason) = state.check_document_read(
             self.inner.host.cert.device_public_key,
             APP,
@@ -117,7 +115,7 @@ impl Workspaces {
             tilo_clock::wall(),
         ) {
             tracing::debug!(%workspace, %reason, "the policy does not let this device read the vault");
-            return Err(UNAVAILABLE.to_owned());
+            return Err(VAULT_NOT_HERE.to_owned());
         }
         // The keys are made where nobody made them yet, as this device's own write of any of
         // the workspace's documents makes them.
@@ -127,9 +125,9 @@ impl Workspaces {
             Some(Ok(keys)) => keys,
             Some(Err(reason)) => {
                 tracing::debug!(%workspace, %reason, "the vault's keys are not held here");
-                return Err(UNAVAILABLE.to_owned());
+                return Err(VAULT_NOT_HERE.to_owned());
             }
-            None => return Err(UNAVAILABLE.to_owned()),
+            None => return Err(VAULT_NOT_HERE.to_owned()),
         };
         Box::pin(self.read_vault(workspace, keys)).await
     }
@@ -593,22 +591,18 @@ fn seal_entry(keys: &key_group::ContentKeys, entry: &SecretItem) -> Result<Strin
 }
 
 /// Whether the workspace's policy lets `by` read the workspace's vault document, the node every
-/// reader of it is decided on, or with `app` that app's node: for `by`'s whole acting. Only the
-/// machine secrets a workspace's programs are started with ask this.
+/// reader of it is decided on: for `by`'s whole acting. Only the machine secrets a workspace's
+/// programs are started with ask this.
 #[cfg(feature = "agents")]
 pub(crate) fn may_read_vault(
     policy: &tilo_action_policy::WorkspacePolicy,
     workspace: &str,
     by: &tilo_actions::remote::Caller,
-    app: Option<&str>,
 ) -> bool {
     let acting = by.acting();
     let mut granted = acting.handed_preset(workspace);
     granted.extend(by.granted(&[]));
-    let node = app.map_or_else(
-        || collab_types::document_node(workspace, APP, WORKSPACE_VAULT_DOCUMENT),
-        |app| tilo_action_policy::TreePath::workspace(workspace).app(app),
-    );
+    let node = collab_types::document_node(workspace, APP, WORKSPACE_VAULT_DOCUMENT);
     let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
     tilo_action_policy::Authority::of_acting(acting, policy, &granted)
         .decide(&node, tilo_action_policy::ActionKind::Read, &cx)

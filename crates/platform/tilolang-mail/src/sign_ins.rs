@@ -21,12 +21,9 @@ use std::collections::BTreeSet;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
-use accounts::sign_ins::{Answer, Ask, Client, Hurrier};
+use accounts::sign_ins::{Answer, Ask, Client, Hurrier, NOT_ANSWERED};
 
 use crate::engine::{AccountSource, MailAccount};
-
-/// What a mail account is refused with when the session's account sign-ins ended.
-pub const SIGN_INS_ENDED: &str = "The session no longer answers this account's sign-in";
 
 /// The accounts the connector signs in to, and the person's yes to those the workspace's rules
 /// ask them about first.
@@ -128,7 +125,7 @@ fn following(
                 for account in kept.iter_mut() {
                     account.config.password.clear();
                     account.asks = None;
-                    account.refused = Some(SIGN_INS_ENDED.to_owned());
+                    account.refused = Some(NOT_ANSWERED.to_owned());
                 }
                 drop(kept);
                 changed();
@@ -207,7 +204,7 @@ fn signed_in(
             Ok(Answer::SignIn { secret }) => config.password = secret.to_string(),
             Ok(Answer::Refused { error }) => refused = Some(error),
             Ok(Answer::Asks { question }) => asks = Some(question),
-            Ok(Answer::Accounts { .. }) | Err(_) => refused = Some(SIGN_INS_ENDED.to_owned()),
+            Ok(Answer::Accounts { .. }) | Err(_) => refused = Some(NOT_ANSWERED.to_owned()),
         }
     }
     Some(MailAccount {
@@ -439,12 +436,7 @@ mod tests {
         changes.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(
             by_address(&source),
-            vec![(
-                ROBIN.into(),
-                String::new(),
-                Some(SIGN_INS_ENDED.into()),
-                None
-            )]
+            vec![(ROBIN.into(), String::new(), Some(NOT_ANSWERED.into()), None)]
         );
     }
 

@@ -30,10 +30,6 @@ pub(crate) const LOG: &str = tilo_startup_metrics::ACCOUNT_PASSWORDS_TARGET;
 /// What an app is told when its ask is not one it may make.
 pub(crate) const REFUSED: &str = "This account's secret is not available to this app";
 
-/// What is said while this device's workspace service is not up yet.
-pub(crate) const NO_VAULT_YET: &str = "This device is still opening its workspaces, so no account's password is available yet. \
-     Try again in a moment.";
-
 /// Answer `command`, an account's password kept or released, that `app` sent on `by`'s own
 /// connection in `workspace`; `confirmed` when the person said yes to a release the workspace's
 /// rules ask about first.

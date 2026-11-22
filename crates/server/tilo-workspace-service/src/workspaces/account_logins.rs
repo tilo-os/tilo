@@ -10,7 +10,7 @@
 //! the places its entry names, and each release is written down in the entry's uses first.
 
 use accounts::person::PersonAccounts;
-use accounts::vault_items::{ItemError, ItemId, ItemKind, NewItem, Place, Released, UsedFor};
+use accounts::vault_items::{ItemId, ItemKind, NewItem, Place, Released, UsedFor};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_peer_state::workspace_documents::DocumentRead;
@@ -18,6 +18,7 @@ use tilo_resource::{Replica, Resource as _};
 use zeroize::Zeroizing;
 
 use super::Workspaces;
+use super::person_settings::kept_sign_ins;
 
 /// What a release of an account's password is written down as.
 const SIGN_IN: &str = "tilo.accounts/sign-in";
@@ -50,9 +51,10 @@ pub const NOT_ON_A_FOREIGN_DEVICE: &str = "This device is not one of your own, s
                                            password is handed to it. Sign in from your own \
                                            device.";
 
-/// The words for an account whose vault entry is gone.
-pub const ENTRY_GONE: &str = "This account's password is no longer in the workspace's vault. \
-                              Sign the account in again in Settings.";
+/// The words for a device that cannot open the workspace's vault now: its workspaces are still
+/// opening, or the vault's keys have not reached it yet.
+pub const VAULT_NOT_HERE: &str = "This device cannot open the workspace's vault yet, so no \
+                                  account's password is available. Try again in a moment.";
 
 /// The words for an entry of the vault that no enabled account of the workspace signs in with.
 pub const NOT_NAMED: &str = "No account of this workspace signs in with that entry of its vault";
@@ -84,16 +86,6 @@ fn accounts_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentR
 #[must_use]
 pub fn accounts_document() -> String {
     collab_types::workspace_document_id(PersonAccounts::KIND)
-}
-
-/// What `error` says to whoever signs in: the vault's own words, an entry that is gone said as
-/// such.
-fn said(error: String) -> String {
-    if error == ItemError::NotFound.to_string() {
-        ENTRY_GONE.to_owned()
-    } else {
-        error
-    }
 }
 
 impl Workspaces {
@@ -232,13 +224,11 @@ impl Workspaces {
             .all()
             .iter()
             .find(|account| {
-                account.enabled
-                    && super::person_settings::kept_sign_ins::sign_in_of(&account.config).as_ref()
-                        == Some(item)
+                account.enabled && kept_sign_ins::sign_in_of(&account.config).as_ref() == Some(item)
             })
             .ok_or(NOT_NAMED)?;
-        let places = super::person_settings::kept_sign_ins::places_of(account)?;
-        let id = ItemId::parse(item.id()).ok_or(ENTRY_GONE)?;
+        let places = kept_sign_ins::places_of(account)?;
+        let id = kept_sign_ins::id_of(item)?;
         // An agent is named; a person's own use is theirs, as every other release writes it.
         let who = by
             .agent_called()
@@ -249,21 +239,24 @@ impl Workspaces {
             account.display_name.as_str()
         };
         let what = format!("{app} signed in to {name}");
+        let mut refusal = None;
         let released = self
             .changing_vault(workspace, |items| {
-                items.use_as_kept(
-                    &id,
-                    &places,
-                    &who,
-                    UsedFor {
-                        using: SIGN_IN,
-                        what: &what,
-                        allowed: None,
-                    },
-                )
+                items
+                    .use_as_kept(
+                        &id,
+                        &places,
+                        &who,
+                        UsedFor {
+                            using: SIGN_IN,
+                            what: &what,
+                            allowed: None,
+                        },
+                    )
+                    .inspect_err(|error| refusal = Some(kept_sign_ins::refused(error)))
             })
             .await
-            .map_err(said)?;
+            .map_err(|error| refusal.unwrap_or(error))?;
         // A grant a provider's page left is handed out as the access token it holds now, never
         // with the refresh token that renews it.
         super::person_settings::oauth_grant::signs_in_with(

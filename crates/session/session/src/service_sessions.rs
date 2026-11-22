@@ -164,7 +164,9 @@ impl BrowserServiceSessionServices for ServiceSessions {
         };
         let not_yet = |why: &str| -> ItemAnswering {
             tracing::warn!(target: crate::account_passwords::LOG, app = context.app_id(), why, "an account's password was asked for before this device holds its workspaces");
-            ready(Err(crate::account_passwords::NO_VAULT_YET.into()))
+            ready(Err(
+                tilo_workspace_service::workspaces::account_logins::VAULT_NOT_HERE.into(),
+            ))
         };
         let Some(service) = self.service.service() else {
             return not_yet("its own workspace service is not open yet");
@@ -185,9 +187,9 @@ impl BrowserServiceSessionServices for ServiceSessions {
                 .await
         });
         Box::pin(async move {
-            answering
-                .await
-                .map_err(|_| crate::account_passwords::NO_VAULT_YET.to_owned())?
+            answering.await.map_err(|_| {
+                tilo_workspace_service::workspaces::account_logins::VAULT_NOT_HERE.to_owned()
+            })?
         })
     }
 

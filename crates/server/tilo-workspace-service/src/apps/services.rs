@@ -474,7 +474,7 @@ pub trait BrowserServiceSessionServices: Send + Sync {
     ) -> ItemAnswering {
         let _ = (context, command);
         Box::pin(std::future::ready(Err(
-            "This device keeps no account's password".to_owned(),
+            crate::workspaces::account_logins::VAULT_NOT_HERE.to_owned(),
         )))
     }
     fn disconnect(&self, peer_id: u64);

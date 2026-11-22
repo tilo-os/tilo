@@ -60,7 +60,7 @@ pub(in crate::workspaces) fn places_of(account: &accounts::Account) -> Result<Ve
 }
 
 /// The id the reference names.
-fn id_of(reference: &ItemRef) -> Result<ItemId, String> {
+pub(in crate::workspaces) fn id_of(reference: &ItemRef) -> Result<ItemId, String> {
     ItemId::parse(reference.id()).ok_or_else(|| GONE.to_owned())
 }
 
@@ -70,7 +70,7 @@ fn reference_of(id: &ItemId) -> Result<ItemRef, String> {
 }
 
 /// Words for an account's sign-in that the vault did not hand out.
-fn refused(error: &ItemError) -> String {
+pub(in crate::workspaces) fn refused(error: &ItemError) -> String {
     match error {
         ItemError::NotFound => GONE.to_owned(),
         ItemError::WrongPlace => ELSEWHERE.to_owned(),

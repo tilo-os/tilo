@@ -35,6 +35,10 @@ use crate::Account;
 pub const RUNTIME_DIR_NAME: &str = "tilo-account-sign-ins";
 const SOCKET_NAME: &str = "socket";
 
+/// What a client is told when the session no longer answers its sign-in, or answered another
+/// ask than its own.
+pub const NOT_ANSWERED: &str = "The session no longer answers this account's sign-in";
+
 /// The longest a line of either side may be: the accounts of every workspace held here.
 pub const MAX_LINE: usize = 4 * 1024 * 1024;
 

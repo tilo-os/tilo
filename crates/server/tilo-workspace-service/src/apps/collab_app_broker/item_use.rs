@@ -4,12 +4,10 @@
 use std::sync::Arc;
 
 use super::{BrokerError, wire};
+use crate::workspaces::account_logins::VAULT_NOT_HERE;
 
 /// What an app is told when its connection is not a person's own.
 const NOT_A_PERSONS_APP: &str = "Only a person's own app keeps or uses an account's password.";
-
-/// What an app is told when this device keeps no workspace vault to answer from.
-const NO_VAULT_HERE: &str = "This device cannot reach the workspace's passwords right now.";
 
 /// What an app that is not Browser is told when it asks for a vault item's text.
 const ITEMS_ARE_BROWSERS: &str =
@@ -99,7 +97,7 @@ fn delegate_account_secret(
     context.revalidate().map_err(refused)?;
     let service = service
         .cloned()
-        .ok_or_else(|| refused(NO_VAULT_HERE.to_owned()))?;
+        .ok_or_else(|| refused(VAULT_NOT_HERE.to_owned()))?;
     let answering = service.account_secret(context, command.clone());
     let context = context.clone();
     Ok(Box::pin(async move {
@@ -111,7 +109,7 @@ fn delegate_account_secret(
         let reply = answering.await.map_err(BrokerError::failed)?;
         context.revalidate().map_err(refused)?;
         if !reply.matches(&command) {
-            return Err(refused(NO_VAULT_HERE.to_owned()));
+            return Err(refused(VAULT_NOT_HERE.to_owned()));
         }
         reply.encode().map_err(|error| refused(error.to_string()))
     }))
