@@ -9,6 +9,8 @@ import {ASK_MS, domView, setupLater, showPrompt, CONNECTED_MS, KEPT_LOST_MS, QUI
 const here = name => new URL(name, import.meta.url);
 const CODE = 'K7Q-MX2P';
 const NEXT = 'R3T-WX9Z';
+/** A ticket as a page's host serves one: `tilo1` and postcard bytes in hex. */
+const TICKET = `tilo1${'ab'.repeat(80)}`;
 
 /** A view that records what it was told, in order. */
 function fakeView() {
@@ -62,16 +64,17 @@ function fixture({copy, site, stored = new Map(), online = () => true, clock = 0
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
-test('the setup prompt is one line: install, log in with the code by the installed path, follow what tilo says', () => {
+test('the setup prompt is one line: install, log in with the ticket by the installed path, follow what tilo says', () => {
   // The installer starts `login` with the `tilo` it just put in place, by its full path: an agent's
   // shell on a fresh machine has no ~/.local/bin on its PATH (dist/install/tilo.sh).
-  assert.equal(setupPrompt(CODE),
-    'Set up Tilo for me: run curl -fsSL tilo.sh | sh -s login K7Q-MX2P, then do what it tells you.');
-  assert.equal(setupPrompt(CODE, {site: 'https://tilo.sh'}), setupPrompt(CODE), 'tilo.sh is the default site');
-  assert.equal(setupPrompt(CODE, {site: 'https://dev.tilo.example'}),
-    'Set up Tilo for me: run curl -fsSL https://dev.tilo.example | sh -s login K7Q-MX2P --site https://dev.tilo.example, then do what it tells you.');
-  assert.equal(signInPrompt(CODE), 'Sign me in to Tilo: run tilo login K7Q-MX2P, then do what it tells you.');
-  assert.equal(manualCommands(CODE), 'curl -fsSL tilo.sh | sh -s login K7Q-MX2P');
+  assert.equal(setupPrompt(TICKET),
+    `Set up Tilo for me: run curl -fsSL tilo.sh | sh -s login ${TICKET}, then do what it tells you.`);
+  assert.equal(setupPrompt(TICKET, {site: 'https://tilo.sh'}), setupPrompt(TICKET), 'tilo.sh is the default site');
+  // A ticket names the host it is served from, so no site is said, even on a site of another name.
+  assert.equal(setupPrompt(TICKET, {site: 'https://dev.tilo.example'}),
+    `Set up Tilo for me: run curl -fsSL https://dev.tilo.example | sh -s login ${TICKET}, then do what it tells you.`);
+  assert.equal(signInPrompt(TICKET), `Sign me in to Tilo: run tilo device add ${TICKET}, then do what it tells you.`);
+  assert.equal(manualCommands(TICKET), `curl -fsSL tilo.sh | sh -s login ${TICKET}`);
   assert.equal(MCP_URL, 'https://mcp.tilo.sh');
 });
 

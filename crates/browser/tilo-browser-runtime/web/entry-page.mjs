@@ -1336,6 +1336,7 @@ const LET_IN_MS = 30_000;
 function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
   const host = new URL(origin).origin;
   const codes = loginCodes(runtime, host);
+  const tickets = ticketCodes({origin: host, identity});
   let actions = null;
   const agentActions = async () => {
     if (actions) return actions;
@@ -1352,18 +1353,21 @@ function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
   // another person or host is not this tab's to follow.
   const ours = saved => saved?.person === identity.userPublicKey && saved?.host === host;
   const make = () => makeCode().catch(error => { throw hostNamed(error, host); });
+  // Setting up is a ticket this tab's host serves for the person's own
+  // workspace, which the person's agent's computer logs in with: the tab
+  // approves that computer with its root.
   const makeCode = async () => {
-    const agents = await agentActions();
-    const pairing = await agents.connectAgent({workspace: workspace ?? await setupWorkspace(), watch: false});
-    const made = watched(await codes.create(pairing.link), agents);
-    return {...made, saved: {...made.saved, person: identity.userPublicKey, host,
-      invite: pairing.invite, inviteExpiresAt: pairing.expiresAt}};
+    const own = workspace ? {id: workspace, name: null} : await setupOwnWorkspace();
+    const made = await tickets.create(own.id, own.name);
+    return {...made, saved: {...made.saved, person: identity.userPublicKey, host}};
   };
   const resume = saved => {
     if (!ours(saved)) return null;
-    // The link in the code names an invite this tab made before it was
-    // loaded again: the agent's device answering it is approved here, as
-    // it would have been.
+    // A ticket kept from before a reload names the same workspace the computer
+    // enters: followed again here, and approved here.
+    if (saved.id) return tickets.resume(saved);
+    // A sign-in code kept from before a reload: the link in it names an invite
+    // this tab made then, and the agent's device answering it is approved here.
     const made = codes.resume(saved);
     if (!saved.invite) return made;
     const adopted = agentActions().then(async agents => {
@@ -1373,7 +1377,7 @@ function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
     adopted.catch(error => console.warn('first screen: approving your agent', error));
     return {...made, follow: async () => watched(made, await adopted).follow()};
   };
-  return {codes, ours, make, resume};
+  return {codes, tickets, ours, make, resume};
 }
 
 /**
@@ -1460,12 +1464,25 @@ async function signInWorkspace(peer, {origin, home = null}) {
  * is in where the host keeps none. Waits for the tab to be let in.
  */
 async function setupWorkspace() {
-  const peer = await Promise.race([pageLetIn, new Promise(resolve => setTimeout(resolve, LET_IN_MS, null))]);
+  return (await setupOwnWorkspace()).id;
+}
+
+/**
+ * The person's own workspace on the host this tab is let into, as the host answers it:
+ * `{id, name}`. Waits for the tab to be let in.
+ */
+async function setupOwnWorkspace() {
+  const peer = await setupPeer();
   if (!peer?.workspace) throw Object.assign(new Error('this tab is not in its workspace yet'), {code: 'not-let-in'});
   const own = await askOwnWorkspace(peer);
-  const workspace = own?.id ?? setUpIn;
-  if (!workspace) throw Object.assign(new Error('your workspace could not be made; try again'), {code: 'no-workspace'});
-  return workspace;
+  if (own) return own;
+  if (setUpIn) return {id: setUpIn, name: null};
+  throw Object.assign(new Error('your workspace could not be made; try again'), {code: 'no-workspace'});
+}
+
+/** This tab's peer, once it is in its workspace, or `null` after the wait. */
+async function setupPeer() {
+  return Promise.race([pageLetIn, new Promise(resolve => setTimeout(resolve, LET_IN_MS, null))]);
 }
 
 /** The person's own workspace on the home host, or null, once asked for. */
@@ -1498,6 +1515,74 @@ async function ensureOwnWorkspace(peer, store = globalThis.localStorage) {
  * where it is (the host's `Polled`). A refusal is a `LoginCodeError` whose
  * `code` says its kind (`not-a-device`, `unknown`, `unreachable`, …).
  */
+/** The routes a page reaches its host's tickets at, below the host's API prefix. */
+const TICKET_MINT = '/peer/v1/ticket';
+const TICKET_ASKED = '/peer/v1/ticket/asked';
+const TICKET_ANSWER = '/peer/v1/ticket/answer';
+/** How long a ticket works, as the host serves it (`TICKET_LIFETIME_NS`). */
+const TICKET_LIFE_MS = 10 * 60_000;
+
+/**
+ * The tickets this tab's host serves it for its agent's computer: `create(workspace, name)`
+ * asks for one and answers it the way `loginCodes` answers a code (`{code, expiresAt, follow(),
+ * saved}`), and `resume(saved)` follows one kept before a reload again. A ticket is the longer
+ * text the prompt carries; the [id] under it is what this page asks the host by.
+ *
+ * The host serves the ticket on its iroh endpoint; the tab approves the computer that shows up
+ * with it by signing, with the root it holds, the certificate the host built and the question
+ * with its own device key (`peer.approveAsked`).
+ */
+function ticketCodes({origin, identity}) {
+  const post = httpsPost(origin);
+  const call = async (path, body) => {
+    const reply = await post(path, JSON.stringify(body)).catch(error => { throw hostNamed(error, origin); });
+    const text = new TextDecoder().decode(reply.body);
+    if (reply.status >= 400) {
+      let said = null;
+      try { said = JSON.parse(text)?.error ?? null; } catch { /* not JSON */ }
+      throw hostNamed(Object.assign(new Error(said ?? 'the host refused this ticket'), {status: reply.status}), origin);
+    }
+    return text ? JSON.parse(text) : null;
+  };
+  return {
+    async create(workspace, name) {
+      const made = await call(TICKET_MINT, {user: hex(identity.userPublicKey), workspace, name: name ?? null,
+        site: globalThis.location?.origin ?? null});
+      return this.resume({code: made.ticket, expiresAt: Date.now() + TICKET_LIFE_MS, follow: made.id, id: made.id});
+    },
+    resume(saved) {
+      let answering = false;
+      return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
+        follow: async () => {
+          const status = await call(TICKET_ASKED, {id: saved.follow}) ?? {};
+          const agent = status.agent ?? null;
+          if (status.certified) return {resolved: true, expired: false, steps: ['logged-in', 'entered'], agent};
+          if (status.declined) {
+            return {resolved: true, expired: false, steps: ['failed'], agent, detail: status.declined};
+          }
+          if (status.asked && !answering) {
+            answering = true;
+            try {
+              const peer = await setupPeer();
+              const person = currentIdentity();
+              if (!peer?.approveAsked || !person) throw new Error('this tab cannot approve your agent');
+              const approved = JSON.parse(await peer.approveAsked(person, JSON.stringify(status.asked)));
+              await call(TICKET_ANSWER, {id: saved.follow, approved});
+            } catch (error) {
+              console.warn('first screen: approving your agent', error);
+              await call(TICKET_ANSWER, {id: saved.follow, declined: String(error?.message ?? error)})
+                .catch(() => {});
+            } finally {
+              answering = false;
+            }
+          }
+          return {resolved: Boolean(status.asked), expired: Date.now() > saved.expiresAt,
+            steps: status.asked ? ['resolved'] : [], agent};
+        }};
+    },
+  };
+}
+
 function loginCodes(runtime, origin) {
   const post = httpsPost(origin);
   const named = error => { throw hostNamed(error, origin); };

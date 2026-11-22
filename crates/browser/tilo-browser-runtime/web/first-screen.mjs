@@ -134,26 +134,27 @@ const siteOf = site => (!site || site === HOME_SITE ? null : site);
  * on a machine whose PATH does not name where it went (a fresh one, or an
  * agent's shell, which never rereads the profile that would add it). */
 export const installCommand = (site, args = '') => `curl -fsSL ${siteOf(site) ?? 'tilo.sh'} | sh${args ? ` -s ${args}` : ''}`;
-/** `login <code>`, naming `site` unless it is tilo.sh. */
-const loginArgs = (code, site) => `login ${code}${siteOf(site) ? ` --site ${site}` : ''}`;
-/** `tilo login <code>`, naming `site` unless it is tilo.sh. */
-export const loginCommand = (code, site) => `tilo ${loginArgs(code, site)}`;
+/** `login <ticket>`: a ticket names the host it is served from, so no site is said. */
+const loginArgs = code => `login ${code}`;
+/** `tilo login <ticket>`. */
+export const loginCommand = code => `tilo ${loginArgs(code)}`;
 
 /** The prompt that has an agent set Tilo up: one line, complete on its own,
  * since `tilo login` tells the agent the rest. */
 export function setupPrompt(code, {site} = {}) {
-  return `Set up Tilo for me: run ${installCommand(site, loginArgs(code, site))}, then do what it tells you.`;
+  return `Set up Tilo for me: run ${installCommand(site, loginArgs(code))}, then do what it tells you.`;
 }
 
-/** The prompt that has an agent sign this tab in as the person. */
-export function signInPrompt(code, {site} = {}) {
-  return `Sign me in to Tilo: run ${loginCommand(code, site)}, then do what it tells you.`;
+/** The prompt that has an agent sign this tab in as the person, on a computer
+ * that is already one of their devices: it approves this tab with the ticket. */
+export function signInPrompt(code) {
+  return `Sign me in to Tilo: run tilo device add ${code}, then do what it tells you.`;
 }
 
 /** The command for someone who sets up by hand: their agent then adds the MCP server
  * (`MCP_URL`) where its own configuration keeps servers. */
 export function manualCommands(code, {site} = {}) {
-  return installCommand(site, loginArgs(code, site));
+  return installCommand(site, loginArgs(code));
 }
 
 /** "10 more minutes", the time left until `expiresAt` (ms) at `now` in whole
