@@ -18,9 +18,6 @@ use provider_settings_ui::widgets::{
     Item, SettingsSection, block, note, page_of, rows, section, value_row,
 };
 
-mod theme_tiles;
-use theme_tiles::ThemeTiles;
-
 crate::effects::effect_family!(AppearanceEffect => answer);
 
 const WALLPAPER_ASPECT: f64 = 16.0 / 10.0;
@@ -425,6 +422,11 @@ pub(super) fn mode_label(mode: &String) -> String {
     t(&format!("settings-appearance-mode-{mode}"))
 }
 
+/// The name a person reads for `look`.
+fn look_label(look: ui::theme::Look) -> String {
+    t(&format!("settings-appearance-look-{}", look.id()))
+}
+
 /// The look, the mode and the accent: what a person picks to make Tilo theirs, each
 /// shown as what it gives and applied the moment it is picked.
 fn theme_card(cx: &ViewCx<AppearancePrefs>) -> Element {
@@ -432,10 +434,33 @@ fn theme_card(cx: &ViewCx<AppearancePrefs>) -> Element {
     let chosen = cx.value(|prefs: &AppearancePrefs| (prefs.look_choice(), prefs.accent.clone()));
     let tiles = cx.switch(&chosen, |cx, (look, accent)| {
         let accent = accent.as_deref().and_then(ui::tokens::PresenceHue::from_id);
-        Box::new(cx.actions().bind(
-            ThemeTiles::new(look.clone(), accent),
-            AppearancePrefs::PICK_THEME,
-        ))
+        let options: Vec<ui::widget::PictureOption> = ui::theme::Look::ALL
+            .iter()
+            .map(|each| {
+                ui::widget::PictureOption::new(
+                    look_label(*each),
+                    ui::widget::Picture::Look {
+                        look: *each,
+                        accent,
+                    },
+                )
+            })
+            .collect();
+        let selected = ui::theme::Look::ALL
+            .iter()
+            .position(|each| each.id() == look);
+        let picker = ui::widget::PictureChoice::new(options, selected)
+            .with_id("appearance.theme")
+            .with_accessible_name(t("settings-appearance-look"));
+        let picker = cx.actions().bind(
+            picker,
+            AppearancePrefs::PICK_THEME.try_map(|index: usize| {
+                ui::theme::Look::ALL
+                    .get(index)
+                    .map(|look| look.id().to_owned())
+            }),
+        );
+        Box::new(picker)
     });
     let accent = cx.value(|prefs: &AppearancePrefs| (prefs.look(), prefs.accent.clone()));
     let swatches = cx.switch(&accent, |cx, (look, accent)| -> Element {
