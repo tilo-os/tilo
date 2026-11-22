@@ -8,19 +8,21 @@ const MOD: &str = "mod";
 
 fn report(replica: &mut Replica<Moderation>, person: &str, reason: &str) -> Result<(), String> {
     replica
-        .apply(Moderation::REPORT.with(moderation::Report {
-            person: MemberId::person(person),
-            app: Some("so.tilo.chat".into()),
-            record: Some("general".into()),
-            item: Some("m1".into()),
+        .apply(Moderation::REPORT_MESSAGE.with(moderation::ReportMessage {
+            author: MemberId::person(person),
+            message: "m1".into(),
             reason: NonBlank::parse(reason).expect("a test reason says something"),
         }))
         .map(drop)
         .map_err(|error| error.to_string())
 }
 
-fn decide(outcome: Outcome, until_ms: Option<i64>, reports: Vec<String>) -> moderation::Decide {
-    moderation::Decide {
+fn decide(
+    outcome: Outcome,
+    until_ms: Option<i64>,
+    reports: Vec<String>,
+) -> moderation::DecideReports {
+    moderation::DecideReports {
         id: "d1".into(),
         person: MemberId::person(MALLORY),
         reports,
@@ -48,7 +50,7 @@ fn a_person_reports_someone_and_it_stays_open_until_decided() {
 
     let mut moderator = ada.fork().as_author(MOD);
     moderator
-        .apply(Moderation::DECIDE.with(decide(Outcome::NoAction, None, vec![id.clone()])))
+        .apply(Moderation::DECIDE_REPORTS.with(decide(Outcome::NoAction, None, vec![id.clone()])))
         .unwrap();
     let state = moderator.state().unwrap();
     assert_eq!(state.open_reports().count(), 0);
@@ -65,7 +67,7 @@ fn reports_are_bounded() {
         "nobody reports themselves"
     );
     assert!(
-        serde_json::from_value::<moderation::Report>(
+        serde_json::from_value::<moderation::ReportPerson>(
             serde_json::json!({"person": {"person": MALLORY}, "reason": "   "})
         )
         .is_err(),
@@ -92,34 +94,38 @@ fn a_decision_is_validated() {
     moderator.set_now_ms(1_000);
     assert!(
         moderator
-            .apply(Moderation::DECIDE.with(decide(Outcome::Restrict, None, Vec::new())))
+            .apply(Moderation::DECIDE_REPORTS.with(decide(Outcome::Restrict, None, Vec::new())))
             .is_err(),
         "a restriction needs an end"
     );
     assert!(
         moderator
-            .apply(Moderation::DECIDE.with(decide(Outcome::Restrict, Some(500), Vec::new())))
+            .apply(Moderation::DECIDE_REPORTS.with(decide(
+                Outcome::Restrict,
+                Some(500),
+                Vec::new()
+            )))
             .is_err(),
         "in the future"
     );
     assert!(
         moderator
-            .apply(Moderation::DECIDE.with(decide(Outcome::Ban, Some(5_000), Vec::new())))
+            .apply(Moderation::DECIDE_REPORTS.with(decide(Outcome::Ban, Some(5_000), Vec::new())))
             .is_err(),
         "only a restriction ends"
     );
     assert!(
         moderator
-            .apply(Moderation::DECIDE.with(decide(Outcome::Ban, None, vec!["nope".into()])))
+            .apply(Moderation::DECIDE_REPORTS.with(decide(Outcome::Ban, None, vec!["nope".into()])))
             .is_err(),
         "unknown report"
     );
     moderator
-        .apply(Moderation::DECIDE.with(decide(Outcome::Restrict, Some(61_000), Vec::new())))
+        .apply(Moderation::DECIDE_REPORTS.with(decide(Outcome::Restrict, Some(61_000), Vec::new())))
         .unwrap();
     assert!(
         moderator
-            .apply(Moderation::DECIDE.with(decide(Outcome::Ban, None, Vec::new())))
+            .apply(Moderation::DECIDE_REPORTS.with(decide(Outcome::Ban, None, Vec::new())))
             .is_err(),
         "ids are unique"
     );
@@ -129,10 +135,10 @@ fn a_decision_is_validated() {
 fn a_moderator_overturns_once() {
     let mut moderator = Replica::<Moderation>::new().as_author(MOD);
     moderator
-        .apply(Moderation::DECIDE.with(decide(Outcome::Ban, None, Vec::new())))
+        .apply(Moderation::DECIDE_REPORTS.with(decide(Outcome::Ban, None, Vec::new())))
         .unwrap();
     let overturn = || {
-        Moderation::OVERTURN.with(moderation::Overturn {
+        Moderation::OVERTURN_DECISION.with(moderation::OverturnDecision {
             decision: "d1".into(),
             note: "It was a joke between friends.".into(),
         })
@@ -153,11 +159,15 @@ fn deciding_and_overturning_sit_under_the_moderation_node() {
             .actions
             .iter()
             .find(|action| action.id == id)
-            .and_then(|action| action.contract.field.clone())
+            .expect("the moderation record publishes this action")
+            .contract
+            .field
+            .as_deref()
     };
-    assert_eq!(field("decide").as_deref(), Some("moderation"));
-    assert_eq!(field("overturn").as_deref(), Some("moderation"));
-    assert_eq!(field("report"), None);
+    assert_eq!(field("decide-reports"), Some("moderation"));
+    assert_eq!(field("overturn-decision"), Some("moderation"));
+    assert_eq!(field("report-message"), None);
+    assert_eq!(field("report-person"), None);
 }
 
 /// A moderation resource from before a decision's reports and take-backs were model values:
@@ -206,4 +216,44 @@ fn a_decision_kept_as_json_strings_migrates_to_lists() {
     );
     assert_eq!(decision.outcome, Outcome::Ban);
     assert_eq!(decision.reasoning, "spam in every channel");
+}
+
+#[test]
+fn a_moderator_can_reconsider_a_report_after_the_bot_looked_at_it() {
+    let mut ada = Replica::<Moderation>::new().as_author(ADA);
+    report(&mut ada, MALLORY, "spam").unwrap();
+    let id = ada
+        .state()
+        .unwrap()
+        .open_reports()
+        .next()
+        .unwrap()
+        .id
+        .clone();
+    let mut bot = ada.fork().as_bot_for("moderation", MOD);
+    bot.apply(Moderation::DECIDE_REPORTS.with(decide(Outcome::NoAction, None, vec![id.clone()])))
+        .unwrap();
+
+    let mut later = decide(Outcome::Ban, None, vec![id.clone()]);
+    later.id = "human-review".into();
+    assert!(
+        bot.apply(Moderation::DECIDE_REPORTS.with(later.clone()))
+            .is_err()
+    );
+
+    let mut moderator = bot.fork().as_author(MOD);
+    moderator
+        .apply(Moderation::DECIDE_REPORTS.with(later))
+        .unwrap();
+    let state = moderator.state().unwrap();
+    assert_eq!(
+        state
+            .reports
+            .find(&Id::from_raw(id))
+            .unwrap()
+            .decision
+            .as_deref(),
+        Some("human-review")
+    );
+    assert_eq!(state.decisions.len(), 2);
 }

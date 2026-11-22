@@ -460,12 +460,8 @@ pub enum Cmd {
     /// could not arrive.
     Redial(Topic),
     /// Ask the hosts of the joined workspace on `ws` for the record on `channel`: what they hold of
-    /// it, and their changes to it from then on; `own` names it this device's person's own record.
-    OpenDocument {
-        ws: Topic,
-        channel: [u8; 32],
-        own: Option<tilo_server_protocol::OwnedGroup>,
-    },
+    /// it, and their changes to it from then on.
+    OpenDocument { ws: Topic, channel: [u8; 32] },
     /// Send this device's owner's outgoing ownership of the workspace on `ws` to its peers.
     PublishOwnership(Topic),
     /// Say which devices workspace `ws` admits, and until when each of their certificates holds.

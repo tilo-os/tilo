@@ -9,8 +9,7 @@ resource it creates ("New workbook") and the actions it offers while closed
 manifest:
 
 * `apps/<app>/tilo-app.toml`: id, name, category, `platforms`,
-  `[package.names]`, `[resources]` (its kinds, and the ones each member keeps
-  as their own), `[[offers]]`;
+  `[package.names]`, `[resources]` (its kinds), `[[offers]]`;
 * `apps/<app>/surface.toml`: each resource kind's label, and the kind of the
   record a window of the app opens (its first resource);
 * `apps/<app>/search/*.ftl`: `search-keywords`, and `app-tagline` (English
@@ -119,11 +118,6 @@ def resource_types(app_dir: pathlib.Path, manifest: dict, package: dict) -> list
     return out
 
 
-def own_kinds(manifest: dict) -> list[str]:
-    """The kinds each member of a workspace keeps one record of as their own."""
-    return list(manifest.get("resources", {}).get("own", []))
-
-
 def window_kind(app_dir: pathlib.Path) -> str:
     """The kind of the record a window of the app opens: its surface's first resource."""
     surface_path = app_dir / "surface.toml"
@@ -206,7 +200,6 @@ def native_apps(root: pathlib.Path) -> list[dict]:
                 keywords=search_keywords(app_dir),
                 resource_types=resource_types(app_dir, manifest, package),
                 actions=offers(manifest),
-                own=own_kinds(manifest),
                 window_kind=window_kind(app_dir),
                 windows_personal=windows_are_personal(app_dir),
                 window_documents=window_documents(app_dir),
@@ -314,11 +307,6 @@ def render(apps: list[dict], surfaced: list[dict]) -> str:
         "/// `(an id an app answers by besides its own, the app it names)`.",
         "pub(super) const PREVIOUS: &[(&str, &str)] = &[",
         *(f"    ({text(old)}, {text(app['id'])})," for app in apps for old in app["previously"]),
-        "];",
-        "",
-        "/// `(app, kind)` of each kind an app's members each keep as their own (`[resources] own`).",
-        "pub(super) const OWN_KINDS: &[(&str, &str)] = &[",
-        *(f"    ({text(app['id'])}, {text(kind)})," for app in apps for kind in app["own"]),
         "];",
         "",
         "/// The apps a window of which is the person's own (`WINDOWS_ARE_PERSONAL`).",

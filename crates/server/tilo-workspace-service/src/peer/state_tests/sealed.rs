@@ -40,7 +40,6 @@ fn write(fixture: &Fixture, seq: u64, sealed: bool) -> Envelope {
         cluster_id: workspace.into(),
         document_id: record.into(),
         envelope: Box::new(op),
-        own: None,
         readers: None,
     })
     .unwrap();

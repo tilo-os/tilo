@@ -63,7 +63,7 @@ impl Workspaces {
             .iter()
             .find(|verb| verb.id == call.action)
             .ok_or_else(denied)?;
-        if surface.person || surface.own || verb.kind != ActionKind::Undoable || verb.destructive {
+        if surface.person || verb.kind != ActionKind::Undoable || verb.destructive {
             return Err(denied());
         }
         let edit = Edit::<()>::from_json(

@@ -48,12 +48,6 @@ pub struct Surface {
     /// person's store.
     #[serde(default, skip_serializing_if = "is_false")]
     pub person: bool,
-    /// A member's own record in the workspace: one per member, which only
-    /// their devices receive, as the package's manifest declares it (a
-    /// tilolang package's `resources: .own`). What carries the declaration to
-    /// every process that runs a package installed after the build.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub own: bool,
     /// Absent from a surface file that lists none.
     #[serde(default)]
     pub verbs: Vec<VerbSurface>,

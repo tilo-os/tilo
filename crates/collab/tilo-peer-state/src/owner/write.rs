@@ -638,7 +638,6 @@ impl NativeWorkspaceOwner {
                             cluster_id: workspace.to_string(),
                             document_id: document.clone(),
                             envelope: envelope.clone(),
-                            own: None,
                             readers: None,
                         });
                         waiting = Some(WriteRefusal::ChangeRefused(change));
@@ -665,7 +664,6 @@ impl NativeWorkspaceOwner {
                             cluster_id: workspace.to_string(),
                             document_id: document.clone(),
                             envelope: envelope.clone(),
-                            own: None,
                             readers: None,
                         });
                         waiting = Some(declined.clone());
@@ -684,7 +682,6 @@ impl NativeWorkspaceOwner {
                         cluster_id: workspace.to_string(),
                         document_id: document.clone(),
                         envelope: envelope.clone(),
-                        own: None,
                         readers: None,
                     };
                     live.workspace_mut()

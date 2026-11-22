@@ -8098,7 +8098,6 @@ dependencies = [
  "tilo-device-identity",
  "tilo-endpoint-reachability",
  "tilo-files",
- "tilo-server-protocol",
  "tilo-user-identity",
  "workspace-hack",
 ]
@@ -10086,6 +10085,7 @@ dependencies = [
  "tilo-paths",
  "tilo-process",
  "tilo-recurrence",
+ "tilo-resource",
  "tilo-seal",
  "tilo-secrets",
  "tilo-test-env",
@@ -17369,6 +17369,7 @@ dependencies = [
 name = "tilo-action-policy"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "hex",
  "postcard",
  "serde",
@@ -17376,6 +17377,7 @@ dependencies = [
  "tilo-app-id",
  "tilo-clock",
  "tilo-test-env",
+ "uuid",
 ]
 
 [[package]]
@@ -23507,6 +23509,7 @@ dependencies = [
  "key-group",
  "launcher",
  "libc",
+ "moderation-model",
  "n0-future",
  "neighbour-wire",
  "parking_lot",

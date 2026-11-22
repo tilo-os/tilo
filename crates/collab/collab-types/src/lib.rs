@@ -64,7 +64,6 @@ pub mod inbound;
 pub mod member;
 pub mod mls_governance;
 pub mod op;
-pub mod own_resource;
 pub mod peer;
 pub mod personal;
 pub mod presence;
@@ -136,7 +135,6 @@ pub use op::{
     next_unordered_document_sequence, sealed_before_reader_sets, validate_document_payload_route,
     validate_whole_document_payload_route,
 };
-pub use own_resource::{OwnResource, own_kinds};
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use personal::{
     is_personal_cluster, person_document_context, person_document_for_workspace,
@@ -159,6 +157,13 @@ pub use redaction::{
 pub use role::{ArtifactKind, OpKind, Role};
 pub use stamp::Stamp;
 pub use tilo_action_policy::{MemberId, PersonId, PersonIdError};
+
+/// Whether an installation can be named in a bot's signed delegation.
+#[must_use]
+pub fn is_bot_installation_id(value: &str) -> bool {
+    value == tilo_action_policy::bot::MODERATION
+        || uuid::Uuid::parse_str(value).is_ok_and(|id| id.hyphenated().to_string() == value)
+}
 pub use validator::{
     DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, validate_admitted_inbound_op,
     validate_replayed_inbound_op,
@@ -168,7 +173,7 @@ pub use validator::{
     document_access_target,
 };
 pub use workspace_document::{
-    WORKSPACE_DOCUMENTS, WorkspaceDocument, workspace_document, workspace_document_id,
-    workspace_document_of_kind,
+    WORKSPACE_DOCUMENTS, WorkspaceDocument, shared_workspace_document, workspace_document,
+    workspace_document_id, workspace_document_of_kind,
 };
 pub use workspace_id::WorkspaceId;

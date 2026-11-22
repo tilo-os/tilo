@@ -639,7 +639,7 @@ impl Workspaces {
                 Some(std::mem::take(&mut sign_in.username)).filter(|name| !name.is_empty())
             });
         let kept = adding.password.clone();
-        super::person_settings::add_mail_with(
+        Box::pin(super::person_settings::add_mail_with(
             self.account_tester(),
             (self.vault_at(workspace), root),
             AddMailAccount {
@@ -655,7 +655,7 @@ impl Workspaces {
                 services: person_accounts::Services::default(),
             },
             Some(kept),
-        )
+        ))
         .await
     }
 

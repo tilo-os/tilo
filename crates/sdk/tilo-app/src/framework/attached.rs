@@ -919,11 +919,9 @@ impl AttachedView {
         &self,
         resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
-        self.permissions.borrow().permitted_resource_on(
-            self.definition.app_id(),
-            self.checkout.id.as_str(),
-            resource,
-        )
+        self.permissions
+            .borrow()
+            .permitted_resource(self.definition.app_id(), resource)
     }
 
     /// The resource `id` with its own actions, as the member may reach

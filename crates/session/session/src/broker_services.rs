@@ -178,11 +178,14 @@ pub(crate) fn document_reads(
 
 /// Where this device's own workspace service is installed, and what the session's own roles read
 /// the workspaces it holds from.
-pub(crate) fn session_documents() -> (
+/// The reads of this device's own workspace service on `service`, which other parts of the
+/// session hold too: what they read of a workspace is what its roles read here.
+pub(crate) fn session_documents_on(
+    service: tilo_workspace_service::service::ServiceSlot,
+) -> (
     tilo_workspace_service::service::ServiceSlot,
     Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
 ) {
-    let service = tilo_workspace_service::service::ServiceSlot::default();
     let reads = Arc::new(
         tilo_workspace_service::apps::service_reads::ServiceDocuments::on(service.clone()),
     ) as Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>;

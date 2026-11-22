@@ -430,6 +430,7 @@ chat-message-more = Mehr
 chat-message-bar-delete-now = Nachricht jetzt löschen
 chat-message-bar-remove-now = Nachricht jetzt entfernen
 chat-menu-report-message = Nachricht melden
+chat-moderation-record-unavailable = Die Moderation wird noch geladen. Versuche es gleich erneut.
 chat-menu-report-sender = Absender melden
 chat-menu-ban = Aus dem Arbeitsbereich ausschließen
 chat-menu-volume = Lautstärke
@@ -544,4 +545,3 @@ chat-secret-not-kept = Der Tresor hat es nicht aufbewahrt. Versuch es noch einma
 chat-secret-answer-saved = Es ist jetzt in meinem Tresor.
 chat-secret-answer-declined = Das möchte ich lieber nicht angeben.
 
-chat-import-previous-drafts = Frühere Kanalentwürfe importieren

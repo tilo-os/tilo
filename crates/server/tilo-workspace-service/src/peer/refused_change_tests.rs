@@ -202,7 +202,6 @@ impl Lounge {
             cluster_id: self.workspace.clone(),
             document_id: RECORD.into(),
             envelope: Box::new(envelope),
-            own: None,
             readers: None,
         }
     }

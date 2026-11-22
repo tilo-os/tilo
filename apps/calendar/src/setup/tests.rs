@@ -207,13 +207,16 @@ tilo_test_env::scenario! {
             server_url: server.url(),
             ..Default::default()
         };
-        let mut store = AccountStore::new();
-        store.upsert(Account::new(id.clone(), "google-drive"));
-        store.save_in(root.path()).unwrap();
         let service = tilo_dav::oauth::Service::for_test_origin(credential_store, &server.url()).unwrap();
         let url = format!("{}/cal/", server.url());
         let client = service
-            .authorised(Some(id.as_str()), &config.server_url, "", "", &url)
+            .authorised(
+                Some(&Account::new(id.clone(), accounts::cloud_types::GOOGLE_DRIVE)),
+                &config.server_url,
+                "",
+                "",
+                &url,
+            )
             .unwrap();
         let run = |future| ui::rt::block_on(future).expect("test thread may block");
         assert_eq!(

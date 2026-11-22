@@ -1409,27 +1409,25 @@ impl ChatApp {
                     if let Some(author) = self.message(&id).map(|m| m.author.clone())
                         && let Some(reason) = menu_report_reason()
                     {
-                        self.apply_now(
-                            doc,
-                            Chat::REPORT_MESSAGE.with(chat::ReportMessage {
+                        self.file_report(&chat_model::Moderation::REPORT_MESSAGE.with(
+                            chat_model::moderation::ReportMessage {
                                 message: id.clone(),
                                 author,
                                 reason,
-                            }),
-                        );
+                            },
+                        ));
                     }
                 }
                 MenuAction::ReportAuthor => {
                     if let Some(author) = self.message(&id).map(|m| m.author.clone())
                         && let Some(reason) = menu_report_reason()
                     {
-                        self.apply_now(
-                            doc,
-                            Chat::REPORT_PERSON.with(chat::ReportPerson {
+                        self.file_report(&chat_model::Moderation::REPORT_PERSON.with(
+                            chat_model::moderation::ReportPerson {
                                 person: author,
                                 reason,
-                            }),
-                        );
+                            },
+                        ));
                     }
                 }
                 _ => {}

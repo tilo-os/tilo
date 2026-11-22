@@ -1911,7 +1911,6 @@ mod tests {
             cluster_id: CLUSTER.into(),
             document_id: RECORD.into(),
             envelope: Box::new(op),
-            own: None,
             readers: None,
         };
         Frame::of(&message).unwrap()
@@ -2325,7 +2324,6 @@ mod tests {
                 cluster_id: CLUSTER.into(),
                 document_id: RECORD.into(),
                 envelope: Box::new(unsigned),
-                own: None,
                 readers: None,
             };
             assert_eq!(Frame::of(&message), Err(Refusal::Unsigned));
@@ -2346,7 +2344,6 @@ mod tests {
                 cluster_id: CLUSTER.into(),
                 document_id: RECORD.into(),
                 envelope: Box::new(cleartext),
-                own: None,
                 readers: None,
             };
             assert_eq!(Frame::of(&message), Err(Refusal::NotSealed));
@@ -2368,7 +2365,6 @@ mod tests {
                 cluster_id: CLUSTER.into(),
                 document_id: RECORD.into(),
                 envelope: Box::new(mls),
-                own: None,
                 readers: None,
             };
             assert_eq!(Frame::of(&message), Err(Refusal::NotSealed));
@@ -2579,7 +2575,6 @@ mod tests {
                     cluster_id: CLUSTER.into(),
                     document_id: format!("resource:{resource}"),
                     envelope: Box::new(op),
-                    own: None,
                     readers: None,
                 })
                 .unwrap()

@@ -42,13 +42,13 @@ pub(crate) struct ShellRecord {
 }
 
 impl ShellRecord {
-    /// The shell's resources kept for `person` when this device keeps state at `state` (`None` on
-    /// a session that keeps nothing — a test's, a screenshot's — which draws the defaults and
-    /// writes nothing), read back from what an earlier session kept on this device; none on a
-    /// device that never showed the shell, whose defaults this session's first part seeds by the
-    /// package's migrations.
-    pub(crate) fn open(state: Option<&Path>, person: &str) -> Self {
-        let id = document_id(person);
+    /// The shell's resources when this device keeps state at `state` (`None` on a session that
+    /// keeps nothing — a test's, a screenshot's — which draws the defaults and writes nothing),
+    /// read back from what an earlier session kept on this device; none on a device that never
+    /// showed the shell, whose defaults this session's first part seeds by the package's
+    /// migrations.
+    pub(crate) fn open(state: Option<&Path>) -> Self {
+        let id = document_id();
         let Some(dir) = state.and_then(|_| person_dir()) else {
             return Self::keeping(LocalPort::in_memory(), None, id, None);
         };
@@ -155,14 +155,11 @@ impl ShellRecord {
     }
 }
 
-/// Keep the shell document's existing id within the person's profile so their settings and
-/// layout keep their history. An uncertified profile uses a device-local id.
-fn document_id(person: &str) -> String {
-    tilolang_tilo::member_document_of(APP, person).unwrap_or_else(|| {
-        ui::resource::person::document_id(&ui::resource::ResourceType::new(APP))
-            .as_str()
-            .to_owned()
-    })
+/// The shell document's id in the person's profile.
+fn document_id() -> String {
+    ui::resource::person::document_id(&ui::resource::ResourceType::new(APP))
+        .as_str()
+        .to_owned()
 }
 
 /// Where the person's own records are kept on this device: the directory the launcher binds into

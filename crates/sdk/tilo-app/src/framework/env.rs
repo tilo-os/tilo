@@ -546,12 +546,6 @@ impl<R: Resource> ResourceEnv<R> {
         }
     }
 
-    /// The app's fixture record of `P` from the previous storage model.
-    #[cfg(feature = "test-support")]
-    pub fn person<P: Resource>(&self) -> Option<super::PersonResource<P>> {
-        self.storage.person::<P>()
-    }
-
     /// The record `P` the person keeps for themselves, in their own scope
     /// rather than in the window's workspace: presentation data only they use
     /// on their own devices, such as the signature they sign documents with or

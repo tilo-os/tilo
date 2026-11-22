@@ -1,5 +1,5 @@
 use super::*;
-use tilo_enrollment::approval::{ApprovalOptions, register_home_peer};
+use tilo_enrollment::approval::ApprovalOptions;
 use tilo_enrollment::client::PairingCause;
 use tilo_enrollment::protocol::{
     Approver, PAIR_MAGIC, Request, Response, ResponseRoute, decrypt_pair_offer, decrypt_request,
@@ -14,7 +14,6 @@ use tilo_enrollment::{WindowClosed, open_answer, response_statement_digest, veri
 use tilo_identity::certification_ceremony::pairing_code;
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::enrollment::NonceStore;
-use tilo_server::HomePeerRegistration;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::verify_device_cert;
 use tilo_user_identity::{
@@ -405,8 +404,8 @@ fn payload(root: &ed25519_dalek::SigningKey) -> ResponsePayload {
         server_node_id: [8; 32],
         cert,
         public_identity_json: None,
-        fleet_json: Some(b"[]".to_vec()),
-        home_peers_json: None,
+        fleet_json: None,
+        introducer: None,
     }
 }
 
@@ -487,7 +486,7 @@ fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
             vec![issuer_cert, cert],
             Vec::new(),
         )),
-        home_peers_json: Some(b"[]".to_vec()),
+        introducer: None,
     };
     install_answer(&prepared, options, &payload, b"response", &mut |_| Ok(())).unwrap();
 
@@ -588,8 +587,7 @@ tilo_test_env::scenario! {
         response
             .payload
             .fleet_json
-            .as_mut()
-            .unwrap()
+            .get_or_insert_with(Vec::new)
             .extend_from_slice(b"\n");
         let changed = postcard::to_stdvec(&response).unwrap();
         assert!(verify_response(&changed, &token(&root)).is_err());
@@ -776,19 +774,6 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     fleet_store(approver_root.path(), approver_identities.path(), None)
         .remember_certificate(&hex::encode(root.verifying_key().to_bytes()), issuer_cert)
         .unwrap();
-    let home_device = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-    let mut home_cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: home_device.verifying_key().to_bytes(),
-        device_label: "Home peer".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut home_cert, &root).unwrap();
-    register_home_peer(approver_root.path(), &home_cert, [43; 32], &[], None).unwrap();
 
     // Seed the new device's key so the approval pins exactly this device:
     // an unpinned approver answers whichever device solicits first.
@@ -875,12 +860,21 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     verify_device_cert_at(&cert, finished_ns - ISSUANCE_CLOCK_ALLOWANCE_NS)
         .expect("a device whose clock trails the approver's accepts its certificate");
     assert!(cert.issued_at_ns >= started_ns - ISSUANCE_CLOCK_ALLOWANCE_NS);
-    let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
-        &std::fs::read(tilo_server::home_peer_registry_path(new_root.path())).unwrap(),
+    // It asks the device that approved it into the person's workspace.
+    let introducer = tilo_server_protocol::servers::read_introducer(
+        new_root.path(),
+        &root.verifying_key().to_bytes(),
     )
-    .unwrap();
-    assert_eq!(peers.len(), 1);
-    assert_eq!(peers[0].server_node_id, hex::encode([43; 32]));
+    .unwrap()
+    .expect("the new device keeps its introducer");
+    assert_eq!(
+        introducer.device.device_public_key,
+        issuer.verifying_key().to_bytes()
+    );
+    assert_eq!(
+        introducer.endpoint.id.as_bytes(),
+        &tilo_server::daemon::server_node_id(&issuer)
+    );
     let record = tilo_identity::store::resolve_active_identity(new_identities.path()).unwrap();
     let identity = tilo_identity::store::load_from_path(record).unwrap();
     assert!(
@@ -889,8 +883,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
             .is_err()
     );
     // Each machine now lists the other, and itself, as this person's
-    // devices: the list remote actions and wake address. The always-on
-    // home peer is a home peer, not a personal device.
+    // devices: the list remote actions and wake address.
     let personal = |root: &std::path::Path| -> Vec<String> {
         serde_json::from_slice(
             &std::fs::read(tilo_server_protocol::personal_device_peer_path(root))
@@ -1021,69 +1014,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase approved_home_peer_registration_exposes_distinct_stable_node_ids;
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let dir = tempfile::tempdir().unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let cert = payload(&root).cert;
-        register_home_peer(
-            dir.path(),
-            &cert,
-            [8_u8; 32],
-            &[
-                tilo_server_protocol::WorkspaceId::from_u128(2),
-                tilo_server_protocol::WorkspaceId::from_u128(9),
-            ],
-            None,
-        )
-        .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(tilo_server::home_peer_registry_path(dir.path())).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            json[0]["device_node_id"],
-            hex::encode(cert.device_public_key)
-        );
-        assert_eq!(json[0]["server_node_id"], hex::encode([8; 32]));
-        assert_eq!(
-            json[0]["server_workspace_ids"],
-            serde_json::json!([
-                "00000000-0000-0000-0000-000000000002",
-                "00000000-0000-0000-0000-000000000009"
-            ])
-        );
-        assert_eq!(
-            std::fs::metadata(tilo_server::home_peer_registry_path(dir.path()))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o644
-        );
-    }
-
-    phase invalid_existing_home_peer_registry_is_never_overwritten;
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let path = tilo_server::home_peer_registry_path(dir.path());
-        tilo_files::native::atomic::write_creating_parent(&path, b"not json").unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        assert!(
-            register_home_peer(
-                dir.path(),
-                &payload(&root).cert,
-                [8_u8; 32],
-                &[tilo_server_protocol::WorkspaceId::from_u128(2)],
-                None
-            )
-            .is_err()
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), b"not json");
-    }
-
     phase dropped_response_can_be_retried_with_the_same_authenticated_ack;
     {
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
@@ -1140,8 +1070,8 @@ tilo_test_env::scenario! {
     }
 }
 
-const KAT_RESPONSE_SIGNATURE: &str = "f2e0f87f43add15a0f50e44ea768db6530e4a7545916d46a7023be012ed07247\
-    867339b34d04722cf575ae4cdba9ac104faa653d23890572c0fae9c2b9aad802";
+const KAT_RESPONSE_SIGNATURE: &str = "a95c0d1726cbac42665394fa280b4429c48e70f3a7bd74f4108b3d979bfb884c\
+    3e06db372a55f2818ff01a1c72835ba80e267e822c5e1e93f3c329da8849f00d";
 const KAT_ACK: &str = "0404040404040404040404040404040417cb79fb2b4120f2b1ec65e4198d6e08\
     b28e813feb01e4a400839b85e18080ce0aa39056fd697d25fd6d7afbe84dbb81\
     f52d9e543b4aa167cf6472c602c8079a402f82443b34fd9707a575979dc100ce\

@@ -359,7 +359,6 @@ fn collaborating(
             hosts: sync::configured_hosts(),
             continuity,
             wake: options.wake.handle(),
-            personal: personal.as_ref().map(|personal| personal.sync().clone()),
             lan: tilo_endpoint_reachability::Nearby::from_env(options.wake.handle()),
             relays: options
                 .relays

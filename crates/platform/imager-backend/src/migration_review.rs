@@ -683,7 +683,7 @@ fn running_setup_paths(home: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
     let data = std::fs::canonicalize(&data).unwrap_or(data);
-    [tilo_paths::SETTINGS_PERSON, tilo_paths::SETTINGS_DEVICE]
+    [tilo_paths::SETTINGS_DEVICE]
         .into_iter()
         .filter_map(|name| {
             data.join(name)

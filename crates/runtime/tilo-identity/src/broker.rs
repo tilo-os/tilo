@@ -490,7 +490,7 @@ fn sign_collaboration_op(
     // record of the person's this app keeps in their own cluster: never
     // another app's, and never a kind it does not declare.
     let workspace_record =
-        launch_workspace && collab_types::workspace_document(app_id, document_id).is_some();
+        launch_workspace && collab_types::shared_workspace_document(app_id, document_id).is_some();
     if (!bound.keeps_records_of(app_id) && !workspace_record)
         || (!launch_workspace && !bound.keeps_person_record(document_id))
     {
@@ -601,7 +601,7 @@ fn group_keys(
     if (launch_workspace
         && !bound.keeps_records_of(route.app_id)
         && !bound.reads_documents_of(route.app_id)
-        && collab_types::workspace_document(route.app_id, route.document_id).is_none())
+        && collab_types::shared_workspace_document(route.app_id, route.document_id).is_none())
         || (!launch_workspace && !bound.keeps_person_record(route.document_id))
     {
         return Response::Denied("group keys requested for a different launch route".into());

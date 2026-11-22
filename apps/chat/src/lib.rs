@@ -161,3 +161,5 @@ pub(crate) fn standalone_models() -> Option<ui::models::Models> {
     }
     None
 }
+
+pub use chat_model::{MODERATION_DOCUMENT, Moderation};

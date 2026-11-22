@@ -168,6 +168,9 @@ impl GovernedWorkspace {
                 "{app} record written by a device that may not edit"
             ));
         }
+        if self.moderation_history_pending(app, document) {
+            return Err("the workspace's moderation history is still arriving".into());
+        }
         Ok(())
     }
 

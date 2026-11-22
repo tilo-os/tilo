@@ -859,13 +859,13 @@ tilo_test_env::scenario! {
     }
 
     phase an_agents_day_is_read_on_its_row_and_set_in_its_review;
-    // What an agent spends and may spend reads on its row; its keeper sets the
-    // day from its review, where a typed amount is taken by Set and by Enter.
+    // What an agent spends and may spend reads on its row; a member the workspace
+    // lets sets the day from its review, where a typed amount is taken by Set and by Enter.
     {
         let (mut app, _) = mounted("agents");
         assert!(
             says(&mut app, "$0.42 of $5 today"),
-            "the row counts the day on its line under the name, under who keeps it"
+            "the row counts the day on its line under the name, under who added it"
         );
         assert!(
             says(&mut app, "$1.20 today"),
@@ -930,9 +930,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_review_offers_the_day_to_the_agents_keeper_alone;
-    // What an agent may spend a day is its keeper's to set, as its model is: a
-    // review someone else opens says who sets it and offers no field.
+    phase a_review_offers_the_day_only_to_whom_the_workspace_lets_set_it;
+    // What an agent may spend a day is set by whom the workspace lets, as its model
+    // is: a review someone else opens says who sets it and offers no field.
     {
         let mut settings = staged_settings("agent-review");
         let limit = settings
@@ -944,7 +944,7 @@ tilo_test_env::scenario! {
             .as_mut()
             .expect("the agent's day");
         limit.can_choose = false;
-        limit.note = "Only Ada sets what it may spend a day.".to_owned();
+        limit.note = "Only editors set what it may spend a day.".to_owned();
         let state = WorkspaceSettingsState::default();
         state.show(settings);
         state.presentation().open(false);
@@ -953,18 +953,18 @@ tilo_test_env::scenario! {
         app.harness().resize(VIEWPORT).unwrap();
         app.settle();
 
-        assert!(says(&mut app, "Only Ada sets what it may spend a day."));
+        assert!(says(&mut app, "Only editors set what it may spend a day."));
         assert!(
             app.harness()
                 .perform_named("ws-agent-limit-field", &A11yAction::Focus)
                 .is_err(),
-            "someone who is not keeper is offered no field"
+            "someone the workspace does not let is offered no field"
         );
     }
 
-    phase a_review_offers_the_model_to_the_agents_keeper_alone;
-    // The model an agent plans with is its keeper's to choose: a review someone
-    // else opens says who chooses and offers no Use.
+    phase a_review_offers_the_model_only_to_whom_the_workspace_lets_choose_it;
+    // The model an agent plans with is chosen by whom the workspace lets: a review
+    // someone else opens says who chooses and offers no Use.
     {
         let mut settings = staged_settings("agent-review");
         let models = settings
@@ -976,7 +976,7 @@ tilo_test_env::scenario! {
             .as_mut()
             .expect("the agent's models");
         models.can_choose = false;
-        models.note = Some("Only Ada chooses the model it runs on".to_owned());
+        models.note = Some("Only editors choose the model it runs on".to_owned());
         let state = WorkspaceSettingsState::default();
         state.show(settings);
         state.presentation().open(false);
@@ -986,7 +986,7 @@ tilo_test_env::scenario! {
         app.settle();
 
         assert!(
-            says(&mut app, "Only Ada chooses the model it runs on"),
+            says(&mut app, "Only editors choose the model it runs on"),
             "the review says who chooses"
         );
         let uses = app
@@ -995,7 +995,7 @@ tilo_test_env::scenario! {
             .into_iter()
             .filter(|(_, node)| node.label() == Some("Use"))
             .count();
-        assert_eq!(uses, 0, "no model is offered to someone who is not keeper");
+        assert_eq!(uses, 0, "no model is offered to someone the workspace does not let");
     }
 
     phase an_agent_is_answered_through_the_api_too;

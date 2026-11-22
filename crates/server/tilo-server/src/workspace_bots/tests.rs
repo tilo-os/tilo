@@ -135,18 +135,19 @@ async fn member_runner(
     .unwrap()
 }
 
-/// Restricts for half an hour and takes back what the person did.
-struct FakeJudge;
+/// Recommends a membership change and taking back what the person did.
+struct FakeJudge(Outcome);
 
 impl Judge for FakeJudge {
     fn model(&self) -> &'static str {
         "fake-model"
     }
 
-    async fn judge(&self, _case: &Case) -> Result<Verdict, JudgeError> {
+    async fn judge(&self, case: &Case) -> Result<Verdict, JudgeError> {
+        assert_eq!(case.activity.len(), 3, "the reported person's three posts");
         Ok(Verdict {
-            outcome: Outcome::Restrict,
-            minutes: Some(30),
+            outcome: self.0,
+            minutes: (self.0 == Outcome::Restrict).then_some(30),
             revert: true,
             reasoning: "They flooded the channel with the same link.".into(),
         })
@@ -312,6 +313,10 @@ fn flood(doc: &mut AutoCommit) -> Result<String, tilo_actions::api::ApiError> {
 
 /// Mallory's three identical posts in `general` beside Ada's, and Ada's
 /// report of one.
+#[expect(
+    clippy::future_not_send,
+    reason = "the test reads its page as a local replica on the test's own thread"
+)]
 async fn flood_posts(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert, general: &str) {
     let (ada, mallory) = (hex::encode(ADA), hex::encode(MALLORY));
     post_in(
@@ -331,18 +336,55 @@ async fn flood_posts(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert
         )
         .await;
     }
+    let primary = workspaces
+        .resource_document(workspace, CHAT, "")
+        .await
+        .unwrap()
+        .unwrap();
+    let id = moderation_id().unwrap();
+    let mut page = Replica::open(
+        &AppCatalogue::native(),
+        CHAT,
+        workspace,
+        &MemberId::person(&ada),
+        ReplicaActor::Owner,
+        Seed::Existing {
+            record: collab_types::document::DocumentId::package_primary(),
+            changes: vec![primary],
+        },
+    )
+    .unwrap();
+    for kind in [
+        "tilo.workspace.emoji",
+        chat::skills::Skills::KIND,
+        Moderation::KIND,
+    ] {
+        let id =
+            collab_types::document::DocumentId::parse(&collab_types::workspace_document_id(kind))
+                .unwrap();
+        page.workspace_answered(id, collaboration::resource::WorkspaceAnswer::HoldsNone);
+    }
+    page.invoke(
+        &tilo_actions::api::ActionAddress::new(Moderation::KIND, "report-message"),
+        serde_json::json!({"message": spam, "author": {"person": mallory}, "reason": "spam"})
+            .as_object()
+            .unwrap(),
+        false,
+    )
+    .unwrap();
+    let mutations = page.take_document_mutations().unwrap();
+    let (_, mutation) = mutations
+        .into_iter()
+        .find(|(record, _)| *record == id)
+        .unwrap();
+    let DocumentMutation::Snapshot(bytes) = mutation else {
+        panic!("the first report starts the record")
+    };
     workspaces
-        .author_application(workspace, cert, &AppCatalogue::native(), CHAT, "", |doc| {
-            chat::demo::apply_as(
-                doc,
-                &ada,
-                chat::Chat::REPORT_MESSAGE.with(chat::chat::chat::ReportMessage {
-                    message: spam,
-                    author: MemberId::person(mallory),
-                    reason: "spam".parse().unwrap(),
-                }),
-            )
-            .map_err(|error| error.to_string())
+        .author_workspace_document(workspace, cert, (CHAT, id.as_str()), |doc| {
+            tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
+                .map(drop)
+                .map_err(|error| error.to_string())
         })
         .await
         .unwrap();

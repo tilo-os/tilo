@@ -13,6 +13,7 @@ fn author() -> OwnStoreAuthor<'static> {
     OwnStoreAuthor {
         device: DEVICE.to_owned(),
         store: STORE,
+        subtree: None,
     }
 }
 

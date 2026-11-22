@@ -665,8 +665,11 @@ impl Session {
         published.add(Rc::clone(&lists_surface));
         // The chrome above the windows: its own tree, beside the shell's.
         let intents = Rc::new(RefCell::new(Vec::new()));
-        // Where this device's own workspace service is installed, and what its roles read from.
-        let (workspace_service, document_reads) = crate::broker_services::session_documents();
+        // Where this device's own workspace service is installed, and what its roles read from:
+        // every role here reads what its workspaces hold through it.
+        let (workspace_service, document_reads) = crate::broker_services::session_documents_on(
+            tilo_workspace_service::service::ServiceSlot::default(),
+        );
         let writes = crate::broker_services::session_writes(workspace_service.clone());
         // A write the service takes to a layout or a view has it read again off the loop.
         desktops.follow_writes(workspace_service.clone());
@@ -739,8 +742,8 @@ impl Session {
             Some(peer_documents.clone()),
             (workspace_service.clone(), &changes),
         );
-        if let Some(personal) = sync.as_ref().and_then(|sync| sync.personal()) {
-            conversations.use_personal_store(personal.sync().clone());
+        if let Some(resources) = sync.as_ref().and_then(|sync| sync.person_resources()) {
+            conversations.use_store(resources);
         }
         // The records the session itself writes are the workspaces' own, and its writes reach this
         // device's apps as a member's do. Search finds the records the workspaces hold, and

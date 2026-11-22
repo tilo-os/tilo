@@ -7803,7 +7803,7 @@ mod tests {
         use imager_backend::account_transfer::{SourceRoots, discover};
         let source = crate::setup::test_support::qualified_tempdir();
         let config = source.path().join(".config");
-        let mut store = ::accounts::AccountStore::new();
+        let record = imager_backend::account_store::Accounts::empty();
         let mut account = ::accounts::Account::new("work-files", "webdav");
         account.display_name = "Work files".into();
         account.config = serde_json::json!({
@@ -7811,8 +7811,8 @@ mod tests {
             "username": "ada",
             "note": "private-configuration-not-for-projection"
         });
-        store.upsert(account);
-        store.save_in(&config.join("tilo")).unwrap();
+        record.keep(&account).unwrap();
+        record.project(&config.join("tilo")).unwrap();
         let metadata = ::accounts::store_path_in(&config.join("tilo"));
         let original = std::fs::read(&metadata).unwrap();
         let roots = SourceRoots {

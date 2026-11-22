@@ -87,6 +87,8 @@ mod placed_terminal;
 mod presence_batching;
 #[path = "record_content_routing.rs"]
 mod record_content_routing;
+#[path = "region_follows.rs"]
+mod region_follows;
 #[path = "remote_action_routing.rs"]
 mod remote_action_routing;
 #[path = "server_cost.rs"]

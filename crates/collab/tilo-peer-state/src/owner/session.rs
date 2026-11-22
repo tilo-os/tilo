@@ -290,7 +290,6 @@ pub fn app_write(
         cluster_id,
         document_id,
         envelope,
-        own,
         readers: _,
     } = msg
     else {
@@ -317,7 +316,6 @@ pub fn app_write(
         author: access,
         replayed,
         envelope: (**envelope).clone(),
-        own: own.clone().filter(|own| own.names(document_id)),
     })
 }
 

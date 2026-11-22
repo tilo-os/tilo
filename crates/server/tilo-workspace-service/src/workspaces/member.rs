@@ -1325,7 +1325,6 @@ impl Workspaces {
             app,
             document,
             envelope,
-            own,
             readers,
         } = &request.operation
         else {
@@ -1344,7 +1343,6 @@ impl Workspaces {
             cluster_id: workspace_id.to_string(),
             document_id: document.clone(),
             envelope: envelope.clone(),
-            own: own.clone(),
             readers: readers.clone(),
         };
         let binding = request.binding()?;
@@ -1427,7 +1425,6 @@ impl Workspaces {
             app,
             document: record,
             envelope,
-            own,
             readers,
         } = &request.operation
         else {
@@ -1445,7 +1442,6 @@ impl Workspaces {
             cluster_id: workspace_id.to_string(),
             document_id: record.clone(),
             envelope: envelope.clone(),
-            own: own.clone(),
             readers: readers.clone(),
         };
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;

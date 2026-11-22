@@ -16,6 +16,7 @@ use std::sync::{Arc, mpsc};
 
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
+use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::WorkspaceId;
 use ui::permissions::MemberId;
 use ui::resource::workspace::WorkspaceResources;
@@ -61,6 +62,10 @@ struct Inner {
     /// The writes under way, by workspace, app and wire record, with the heads each one writes up
     /// to: a record is written again once its write is done.
     writing: RefCell<HashMap<DocumentKey, (Writing, Vec<automerge::ChangeHash>)>>,
+    /// The records the session's services keep as an app's window keeps them — a tilolang app's
+    /// record, a document of the app's own — by workspace, app and wire record: each the one
+    /// document the service runs over, replicated with the engine here.
+    documents: RefCell<HashMap<DocumentKey, Document>>,
     /// Wakes the session's loop when the session wrote to a record, so the write reaches the
     /// engine on the next pass.
     wake: tilo_service::Wake,
@@ -68,6 +73,42 @@ struct Inner {
 
 /// A record, by workspace, app and wire record.
 type DocumentKey = (String, String, String);
+
+/// A document a service of the session keeps in a workspace: one other threads write too.
+#[derive(Clone)]
+pub(crate) struct KeptDoc(Arc<std::sync::Mutex<automerge::AutoCommit>>);
+
+impl KeptDoc {
+    /// `doc` kept for a service that writes it from another thread.
+    pub(crate) fn shared(doc: Arc<std::sync::Mutex<automerge::AutoCommit>>) -> Self {
+        Self(doc)
+    }
+
+    fn borrow_mut(&self) -> std::sync::MutexGuard<'_, automerge::AutoCommit> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// An app's record a service of the session runs over, as the engine and the service hold it.
+struct Document {
+    /// The document itself, the service's: what it runs over and changes.
+    doc: KeptDoc,
+    /// The heads of `doc` the engine holds, as far as this copy knows: `None` until it was read
+    /// from the engine or founded there.
+    synced: Option<Vec<automerge::ChangeHash>>,
+    /// The revision of the engine's copy last taken in here.
+    revision: Option<[u8; 32]>,
+    /// The heads `doc` stood at when it was handed over: while it still stands there, it holds
+    /// only what the service started it with (a development session's scenario data), which a
+    /// record the workspace already holds takes the place of.
+    handed: Vec<automerge::ChangeHash>,
+}
 
 /// One record as the engine and this copy hold it.
 struct Replica {
@@ -106,6 +147,7 @@ impl EngineRecords {
                 unread: RefCell::default(),
                 keeping: Cell::default(),
                 writing: RefCell::default(),
+                documents: RefCell::default(),
                 wake,
             }
         }))
@@ -132,6 +174,7 @@ impl EngineRecords {
         for (workspace, app) in opened {
             self.0.read(&workspace, &app);
         }
+        self.0.read_documents(None);
     }
 
     /// Whether the workspaces' copy is here and holds `workspace`: where a record kept in it is
@@ -158,17 +201,50 @@ impl EngineRecords {
             })
     }
 
-    /// The members' own records the workspaces' copy holds of `workspace`, each with whose it is.
-    pub(crate) fn own_records(
-        &self,
-        workspace: &str,
-    ) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
-        self.0
-            .reads
+    /// Keep `doc`, `app`'s `record` in `workspace` as a service of the session runs over it, in
+    /// the workspace: what the workspace holds of the record is taken into it, and what the
+    /// service writes in it is written into the workspace and handed to this device's apps, the
+    /// app's windows among them, as a member's write is. A record the workspace holds no copy of
+    /// is founded with what `doc` holds; one it holds takes the place of what `doc` was started
+    /// with, and is merged with anything written in it since.
+    pub(crate) fn keep_document(&self, workspace: &str, (app, record): (&str, &str), doc: KeptDoc) {
+        if self
+            .0
+            .documents
             .borrow()
-            .as_ref()
-            .map(|reads| reads.own_records(workspace))
-            .unwrap_or_default()
+            .values()
+            .any(|kept| kept.doc.same(&doc))
+        {
+            return;
+        }
+        let handed = doc.borrow_mut().get_heads();
+        self.0.documents.borrow_mut().insert(
+            (workspace.to_owned(), app.to_owned(), record.to_owned()),
+            Document {
+                doc,
+                synced: None,
+                revision: None,
+                handed,
+            },
+        );
+        self.0.read_documents(Some(workspace));
+        (self.0.wake)();
+    }
+
+    /// What wakes the session's loop to write what changed in a kept document into the workspace.
+    pub(crate) fn wake(&self) -> tilo_service::Wake {
+        std::sync::Arc::clone(&self.0.wake)
+    }
+
+    /// Whether the document kept as `app`'s `record` in `workspace` ([`Self::keep_document`]) took
+    /// in what the workspace holds of it, or founded it there: before then it holds only what it
+    /// was handed.
+    pub(crate) fn kept_read(&self, workspace: &str, (app, record): (&str, &str)) -> bool {
+        self.0
+            .documents
+            .borrow()
+            .get(&(workspace.to_owned(), app.to_owned(), record.to_owned()))
+            .is_some_and(|kept| kept.synced.is_some())
     }
 
     /// Name `record` in `app`'s index of `workspace` , as the app's windows name the records they
@@ -273,6 +349,12 @@ impl EngineRecords {
         for (workspace, app) in due {
             self.0.read(&workspace, &app);
         }
+        for workspace in &moved {
+            self.0.read_documents(Some(workspace));
+        }
+        // A document the workspace had none of on the last look, or could not be read then, is
+        // looked for again.
+        self.0.read_documents_unsynced();
         self.write();
     }
 
@@ -426,6 +508,178 @@ impl Inner {
         }
     }
 
+    /// Take what the engine holds of the documents kept in `workspace` (every workspace's, `None`)
+    /// into them.
+    fn read_documents(&self, workspace: Option<&str>) {
+        let keys: Vec<DocumentKey> = self
+            .documents
+            .borrow()
+            .keys()
+            .filter(|(held, _, _)| workspace.is_none_or(|workspace| held == workspace))
+            .cloned()
+            .collect();
+        for key in keys {
+            self.read_document(&key);
+        }
+    }
+
+    /// [`Self::read_documents`] of the documents the engine was never read for yet.
+    fn read_documents_unsynced(&self) {
+        let keys: Vec<DocumentKey> = self
+            .documents
+            .borrow()
+            .iter()
+            .filter(|(_, document)| document.synced.is_none())
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in keys {
+            self.read_document(&key);
+        }
+    }
+
+    /// Take what the engine holds of the document `key` into it: the first time, the record the
+    /// workspace holds takes the place of what the document was handed over with, while nothing
+    /// was written in it since; anything else is merged.
+    fn read_document(&self, key: &DocumentKey) {
+        let Some(reads) = self.reads.borrow().clone() else {
+            return;
+        };
+        let (workspace, app, record) = key;
+        if !reads.holds(workspace, app, record) {
+            return;
+        }
+        let known = self
+            .documents
+            .borrow()
+            .get(key)
+            .and_then(|document| document.revision);
+        let (bytes, revision) = match reads.read(workspace, app, record, None) {
+            Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole {
+                revision,
+                bytes,
+                ..
+            }) => (bytes, revision),
+            // Unchanged, or not to be read yet (its keys are on their way): read again on a
+            // later pass.
+            Ok(_) => return,
+            Err(error) => {
+                tracing::warn!(%error, %workspace, %app, %record, "a record is not read");
+                return;
+            }
+        };
+        if known == Some(revision) {
+            // The service stands where this copy last read it.
+            return;
+        }
+        let mut documents = self.documents.borrow_mut();
+        let Some(document) = documents.get_mut(key) else {
+            return;
+        };
+        let theirs = match automerge::AutoCommit::load(&bytes) {
+            Ok(theirs) => theirs,
+            Err(error) => {
+                tracing::warn!(%error, %workspace, %app, %record, "a record does not read");
+                return;
+            }
+        };
+        let mut doc = document.doc.borrow_mut();
+        let first = document.synced.is_none();
+        if first && doc.get_heads() == document.handed {
+            // What the service was started with yields to the record the workspace holds.
+            let mut theirs = theirs;
+            theirs.set_actor(doc.get_actor().clone());
+            *doc = theirs;
+        } else {
+            let mut theirs = theirs;
+            if let Err(error) = doc.merge_incoming(&mut theirs) {
+                tracing::warn!(%error, %workspace, %app, %record, "a record is not taken in");
+                return;
+            }
+        }
+        document.synced = Some(heads_of(&bytes));
+        document.revision = Some(revision);
+        tracing::debug!(%workspace, %app, %record, first, "a kept record took in the workspace's copy");
+    }
+
+    /// Write what the services changed in the documents kept in the workspaces into the engine,
+    /// and hand each write to this device's apps. Answers the workspaces and apps whose writes
+    /// wait for a later pass.
+    fn write_documents(&self, engine: &Arc<Engine>) -> BTreeSet<(String, String)> {
+        let mut unwritten = BTreeSet::new();
+        let Some(writes) = self.writes() else {
+            return unwritten;
+        };
+        let keys: Vec<DocumentKey> = self.documents.borrow().keys().cloned().collect();
+        for key in keys {
+            let (workspace, app, record) = &key;
+            let Some(room) = WorkspaceId::parse(workspace) else {
+                continue;
+            };
+            if !engine.holds(room) || self.writing.borrow().contains_key(&key) {
+                continue;
+            }
+            let (changes, founding, heads) = {
+                let documents = self.documents.borrow();
+                let Some(document) = documents.get(&key) else {
+                    continue;
+                };
+                let mut doc = document.doc.borrow_mut();
+                let heads = doc.get_heads();
+                match &document.synced {
+                    Some(synced) if *synced == heads => continue,
+                    Some(synced) => (doc.save_after(synced), false, heads),
+                    // A record the workspace holds is written once it was read here: one never
+                    // read is founded by this write, never over what the workspace holds.
+                    None if self.holds_resource(&key) => {
+                        unwritten.insert((workspace.clone(), app.clone()));
+                        continue;
+                    }
+                    None => (doc.save(), true, heads),
+                }
+            };
+            let sealed = match engine.resource_write_keys(room, (app, record)) {
+                Ok(SealKeys::Here(keys)) => Some(keys),
+                Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
+                    unwritten.insert((workspace.clone(), app.clone()));
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, %workspace, %app, %record, "a record is not written");
+                    unwritten.insert((workspace.clone(), app.clone()));
+                    continue;
+                }
+            };
+            let (writes, writing_key) = (Arc::clone(&writes), key.clone());
+            let mut writing = Writing::write(Arc::clone(&self.wake), async move {
+                writes
+                    .write(
+                        &writing_key.0,
+                        &changes,
+                        tilo_peer_state::workspace_documents::DocumentWriting {
+                            app: &writing_key.1,
+                            document: &writing_key.2,
+                            readers: None,
+                            founding,
+                            snapshot: founding,
+                            sealed: sealed.as_ref(),
+                        },
+                    )
+                    .await
+            });
+            match writing.done() {
+                Some(written) => {
+                    if !self.written(&key, written, heads) {
+                        unwritten.insert((workspace.clone(), app.clone()));
+                    }
+                }
+                None => {
+                    self.writing.borrow_mut().insert(key, (writing, heads));
+                }
+            }
+        }
+        unwritten
+    }
+
     /// Keep the engine's copy of a record no copy has open, for whoever opens it next.
     fn keep(&self, workspace: &str, app: &str, record: &str, bytes: Vec<u8>) -> Result<(), String> {
         let key = crate::platform::records::storage_key(app, workspace, record)
@@ -547,6 +801,9 @@ impl Inner {
                 }
             }
         }
+        // The documents the services keep are written too: each one's heads say whether anything
+        // is left to write, so every pass looks.
+        unwritten.extend(self.write_documents(&engine));
         // What the workspace did not take yet is written again on the next pass.
         self.written.borrow_mut().extend(unwritten);
     }
@@ -583,7 +840,9 @@ impl Inner {
         match written {
             Ok(write) => {
                 let key = (workspace.clone(), app.clone(), record.clone());
-                if let Some(replica) = self.replicas.borrow_mut().get_mut(&key) {
+                if let Some(document) = self.documents.borrow_mut().get_mut(&key) {
+                    document.synced = Some(heads);
+                } else if let Some(replica) = self.replicas.borrow_mut().get_mut(&key) {
                     replica.sync.advance(heads);
                 }
                 if let Some(apps) = self.apps.borrow().as_ref() {

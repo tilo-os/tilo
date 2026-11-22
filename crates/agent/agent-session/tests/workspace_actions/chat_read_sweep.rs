@@ -943,7 +943,7 @@ fn by_message(
         .collect();
     let report =
         json!({"message": message, "author": {"person": author}, "reason": "It looks odd."});
-    calls.push((String::new(), "report-message", report));
+    calls.push(("tilo.moderation".to_owned(), "report-message", report));
     calls
 }
 

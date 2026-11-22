@@ -506,7 +506,6 @@ fn build_meta(
         tagline: module.app.tagline.clone(),
         keywords: module.app.keywords.clone(),
         previously: module.app.previously.clone(),
-        own_resources: module.app.own_resources,
         profile_resources: module.app.profile_resources,
         web: module.app.web.clone(),
         ..PackageMeta::default()

@@ -18,9 +18,9 @@ pub fn stays(app: &str, record: &str) -> bool {
         return true;
     }
     match app {
-        // Every conversation, and each person's drafts and read marks. The workspace's own emoji
-        // and agents are Chat's to keep but the workspace's, so they come along.
-        CHAT => collab_types::workspace_document(app, record).is_none(),
+        // Conversations, drafts, read marks and moderation history stay behind.
+        // The workspace's emoji come along.
+        CHAT => collab_types::shared_workspace_document(app, record).is_none(),
         // The runtime branches the environments, with their own files; the branch's layout is
         // written from its own windows, never the source's layout of everyone's.
         TERMINAL | crate::ownership::DESKTOP_APP => true,

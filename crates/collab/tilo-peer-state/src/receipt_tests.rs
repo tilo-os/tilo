@@ -388,7 +388,6 @@ fn signed_write_stamped(
         cluster_id: WORKSPACE.into(),
         document_id: RECORD.into(),
         envelope: Box::new(envelope),
-        own: None,
         readers: None,
     }
 }
@@ -403,7 +402,6 @@ fn sealed(message: NeighbourMsg, key: &SigningKey, units: &[UnitPath]) -> Neighb
         cluster_id,
         document_id,
         mut envelope,
-        own,
         readers,
     } = message
     else {
@@ -431,7 +429,6 @@ fn sealed(message: NeighbourMsg, key: &SigningKey, units: &[UnitPath]) -> Neighb
         cluster_id,
         document_id,
         envelope,
-        own,
         readers,
     }
 }
@@ -613,7 +610,6 @@ tilo_test_env::scenario! {
             cluster_id,
             document_id,
             mut envelope,
-            own,
             readers,
         } = wrote_other
         else {
@@ -644,7 +640,6 @@ tilo_test_env::scenario! {
             cluster_id,
             document_id,
             envelope,
-            own,
             readers,
         };
         let refused = receive(&mut peer, &guest, lying).unwrap_err();
@@ -789,7 +784,6 @@ tilo_test_env::scenario! {
                 cluster_id,
                 document_id,
                 mut envelope,
-                own,
                 readers,
             } = message
             else {
@@ -803,7 +797,6 @@ tilo_test_env::scenario! {
                 cluster_id,
                 document_id,
                 envelope,
-                own,
                 readers,
             }
         };
@@ -850,7 +843,6 @@ tilo_test_env::scenario! {
                 cluster_id: WORKSPACE.into(),
                 document_id: RECORD.into(),
                 envelope: Box::new(envelope),
-                own: None,
                 readers: None,
             },
         )
@@ -1077,7 +1069,6 @@ fn upgraded_write(
         cluster_id: WORKSPACE.into(),
         document_id: RECORD.into(),
         envelope: Box::new(envelope),
-        own: None,
         readers: None,
     }
 }

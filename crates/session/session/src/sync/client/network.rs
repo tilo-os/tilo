@@ -154,9 +154,10 @@ impl Serving {
         actions: Arc<std::sync::OnceLock<DeviceActions>>,
         protocols: tilo_network_actor::own_service::Protocols,
         documents: Option<super::PeerDocuments>,
-        (service, records): (
+        (service, records, person): (
             tilo_workspace_service::service::ServiceSlot,
             crate::platform::records::Changes,
+            crate::person_resources::PersonResources,
         ),
     ) -> Self {
         Self {
@@ -168,6 +169,7 @@ impl Serving {
                 documents,
                 service,
                 records,
+                person,
             },
         }
     }
@@ -191,6 +193,9 @@ pub(crate) struct Beside {
     pub(crate) service: tilo_workspace_service::service::ServiceSlot,
     /// The session's stream of record changes, which what that service serves waits on.
     pub(crate) records: crate::platform::records::Changes,
+    /// The person's own workspace's resources, read and written through that service once it
+    /// opened.
+    pub(crate) person: crate::person_resources::PersonResources,
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
@@ -594,6 +599,7 @@ async fn listening(
         documents,
         service,
         records,
+        person,
     }: Beside,
     bound: &Bound,
 ) -> Option<Listening> {
@@ -674,6 +680,12 @@ async fn listening(
     // Other devices' writes reach this device's apps from its workspace service, which holds
     // every workspace this device governs or joined.
     let service = own_service.as_ref().and_then(OwnService::get);
+    if let (true, Some(service)) = (opened, &service) {
+        person.attach(
+            service.workspaces().clone(),
+            &tokio::runtime::Handle::current(),
+        );
+    }
     if let (true, Some(documents), Some(service)) = (opened, documents, service) {
         documents.follow(service.workspaces());
     }
@@ -704,6 +716,13 @@ async fn listening(
     if let (true, Some(engine)) = (opened, engine) {
         let noting = Arc::clone(engine);
         tokio::spawn(async move { super::own_service::note_open_links(&noting).await });
+        #[cfg(target_os = "linux")]
+        {
+            let founding = Arc::clone(engine);
+            tokio::spawn(
+                async move { super::own_service::found_person_workspace(&founding).await },
+            );
+        }
         // The workspaces this device took part in before its service held them are held there too.
         if let Some(service) = own_service.clone() {
             let holding = Arc::clone(engine);
@@ -937,8 +956,8 @@ async fn carry_out(
         Cmd::ConnectDevice(addr) => network.send(NetCmd::Connect { addr }).await.is_ok(),
         Cmd::Replay(ws) => network.send(NetCmd::NativeReplay { ws }).await.is_ok(),
         Cmd::Redial(ws) => network.send(NetCmd::RedialWorkspace { ws }).await.is_ok(),
-        Cmd::OpenDocument { ws, channel, own } => network
-            .send(NetCmd::OpenDocument { ws, channel, own })
+        Cmd::OpenDocument { ws, channel } => network
+            .send(NetCmd::OpenDocument { ws, channel })
             .await
             .is_ok(),
         Cmd::PublishOwnership(ws) => network.send(NetCmd::NativePublish { ws }).await.is_ok(),

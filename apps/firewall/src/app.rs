@@ -206,7 +206,7 @@ impl Store {
         self.dispatcher = Some(cx.dispatcher());
         if cx.mode().is_live() {
             let workspace = cx.workspace().unwrap_or_default();
-            self.applied = Some((AppliedOnDevice::open(cx, &workspace), workspace));
+            self.applied = Some((cx.settings::<AppliedOnDevice>(), workspace));
         }
         self.host_writes = cx.mode() == RunMode::Live || cfg!(test);
         if self.host_writes {

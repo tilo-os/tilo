@@ -692,15 +692,13 @@ impl Server {
             // whose record of their servers says what it should be.
             if enrolled_server {
                 // The person's own devices make it when they first need it; a
-                // server that came later asks an earlier one, as its
-                // enrollment named them, to take it in.
-                let earlier = earlier_servers(&cfg.identity_root, &identity.device_cert)?;
+                // server that came later asks the device that approved it to
+                // take it in.
+                let introducer = introducer(&cfg.identity_root, &identity.device_cert)?;
                 if crate::servers::holds_person_workspace(governed).await {
                     crate::servers::enroll(governed, &endpoint.addr()).await
-                } else if earlier.is_empty() {
-                    Ok(())
-                } else {
-                    // Until an earlier server takes this one in, it holds no
+                } else if let Some(introducer) = introducer {
+                    // Until its introducer takes this one in, it holds no
                     // Servers workspace and so cannot read the plan it was
                     // installed from. Once it does, it finishes installing and
                     // applies the document from then on.
@@ -709,11 +707,13 @@ impl Server {
                         tokio::spawn(admitted_first_boot(
                             endpoint.clone(),
                             identity.clone(),
-                            earlier,
+                            introducer,
                             governed.clone(),
                             cfg.state_root.clone(),
                         )),
                     );
+                    Ok(())
+                } else {
                     Ok(())
                 }
                 .map_err(|error| ServerError::Identity(format!("admin workspace: {error}")))?;
@@ -763,14 +763,12 @@ impl Server {
                     governed.clone(),
                     endpoint.clone(),
                     cfg.state_root.clone(),
+                    cfg.identity_root.clone(),
                 )),
             );
             if !enrolled_server
                 && !crate::servers::holds_person_workspace(governed).await
-                && let Some((server, addr)) =
-                    earlier_servers(&cfg.identity_root, &identity.device_cert)?
-                        .into_iter()
-                        .next()
+                && let Some((server, addr)) = introducer(&cfg.identity_root, &identity.device_cert)?
             {
                 push_background_task(
                     &background_tasks,
@@ -1056,29 +1054,24 @@ fn site_name(web_entry: &str) -> String {
         .to_owned()
 }
 
-/// The servers of this server's person that its enrollment named, earlier
-/// ones than itself, each where it was last dialled: none for the person's
-/// first server.
+/// The device of this device's person that approved it, to ask into their
+/// workspace, where it is dialled: none once this device holds the
+/// workspace, and none for the person's first device.
 ///
 /// # Errors
-/// The list of them cannot be read.
-fn earlier_servers(
+/// The introducer it keeps cannot be read.
+fn introducer(
     identity_root: &std::path::Path,
     own: &tilo_user_identity::DeviceCert,
-) -> Result<Vec<(tilo_user_identity::DeviceCert, EndpointAddr)>, ServerError> {
-    let registry = crate::home_peer_registry_path(identity_root);
-    // One that cannot be read stops the start rather than have this server
-    // make a second admin workspace beside the one the others hold.
-    let peers = crate::read_home_peers(&registry)
-        .map_err(|error| ServerError::Identity(format!("the person's servers: {error}")))?;
-    Ok(peers
-        .into_iter()
-        .filter_map(|peer| Some((peer.device_cert?, peer.server_endpoint?)))
-        .filter(|(cert, _)| {
-            cert.user_public_key == own.user_public_key
-                && cert.device_public_key != own.device_public_key
-        })
-        .collect())
+) -> Result<Option<(tilo_user_identity::DeviceCert, EndpointAddr)>, ServerError> {
+    // One that cannot be read stops the start rather than have this device
+    // make a second workspace of the person's beside the one the others hold.
+    let introducer =
+        tilo_server_protocol::servers::read_introducer(identity_root, &own.user_public_key)
+            .map_err(|error| ServerError::Identity(format!("the introducer: {error}")))?;
+    Ok(introducer
+        .filter(|introducer| introducer.device.device_public_key != own.device_public_key)
+        .map(|introducer| (introducer.device, introducer.endpoint)))
 }
 
 /// Apply the person's Servers workspace's document from the moment this
@@ -1088,6 +1081,7 @@ async fn follow_once_held(
     workspaces: crate::workspaces::Workspaces,
     endpoint: Endpoint,
     state_root: PathBuf,
+    identity_root: PathBuf,
 ) {
     use tokio::sync::broadcast::error::RecvError;
     let mut listed = workspaces.listing_changes();
@@ -1102,6 +1096,10 @@ async fn follow_once_held(
             return;
         }
     }
+    // Holding the workspace, this device needs no introducer any more.
+    if let Err(error) = tilo_server_protocol::servers::keep_introducer(&identity_root, None) {
+        tracing::warn!(%error, "this device kept the introducer it no longer needs");
+    }
     let following = crate::servers::applied::follow(
         &workspaces,
         crate::servers::applied::Requests::default(),
@@ -1113,38 +1111,42 @@ async fn follow_once_held(
     }
 }
 
-/// Ask a server of the person's that holds their Servers workspace to take
-/// this device in: it holds that workspace from then on like any other of
-/// theirs. A server that cannot be reached is asked again after a while,
-/// longer each time.
+/// Ask the device of the person's that introduces this one, which holds their
+/// workspace, to take this device in: it holds that workspace from then on
+/// like any other of theirs. One that cannot be reached, or does not hold the
+/// workspace yet, is asked again after a while, longer each time.
 async fn ask_to_be_taken_in(
     endpoint: Endpoint,
     identity: ServerIdentity,
-    server: tilo_user_identity::DeviceCert,
+    introducer: tilo_user_identity::DeviceCert,
     addr: EndpointAddr,
 ) {
     let mut wait = Duration::from_secs(1);
+    let device = hex::encode(introducer.device_public_key);
     loop {
-        let asked = crate::client::ServerClient::manage_home_peer(
-            &endpoint,
-            addr.clone(),
-            identity.user_public_key,
-            server.device_public_key,
-            identity.device_cert.clone(),
-            identity.device_signing_key.clone(),
-            identity.revocations.clone(),
-            HomePeerManagementRequest::HoldAdmin {
-                endpoint: endpoint.addr(),
-            },
-        )
+        let asked = async {
+            let session = crate::client::ServerClient::connect_v2_to_own_device(
+                endpoint.clone(),
+                addr.clone(),
+                identity.user_public_key,
+                introducer.device_public_key,
+                identity.device_cert.clone(),
+                identity.device_signing_key.clone(),
+                identity.revocations.clone(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            tilo_server_session::workspaces::take_into_person_workspace(&session, &endpoint.addr())
+                .await
+        }
         .await;
         match asked {
-            Ok(_) => {
-                tracing::info!(server = %hex::encode(server.device_public_key), "a server handed this device its Servers workspace");
+            Ok(()) => {
+                tracing::info!(%device, "a device of the person's took this one into their workspace");
                 return;
             }
             Err(error) => {
-                tracing::info!(server = %hex::encode(server.device_public_key), %error, "a server did not hand this device its Servers workspace");
+                tracing::info!(%device, %error, "a device of the person's did not take this one into their workspace");
             }
         }
         tokio::time::sleep(wait).await;
@@ -1152,18 +1154,18 @@ async fn ask_to_be_taken_in(
     }
 }
 
-/// A machine installed from a plan asks its person's earlier servers to take
-/// it in, waits until it holds their Servers workspace, finishes the
-/// installation its plan describes and applies the workspace's document from
-/// then on.
+/// A machine installed from a plan asks the device that introduces it to take
+/// it in among the person's servers, waits until it holds their workspace,
+/// finishes the installation its plan describes and applies the workspace's
+/// document from then on.
 async fn admitted_first_boot(
     endpoint: Endpoint,
     identity: ServerIdentity,
-    earlier: Vec<(tilo_user_identity::DeviceCert, EndpointAddr)>,
+    introducer: (tilo_user_identity::DeviceCert, EndpointAddr),
     workspaces: crate::workspaces::Workspaces,
     state_root: PathBuf,
 ) {
-    ask_to_be_admitted(endpoint.clone(), identity.clone(), earlier).await;
+    ask_to_be_admitted(endpoint.clone(), identity.clone(), introducer).await;
     // The hand-over is the holders' to make: one of them names this device in
     // the workspace, which then reaches it, and it holds the workspace.
     let mut wait = Duration::from_millis(500);
@@ -1198,38 +1200,37 @@ async fn admitted_first_boot(
     );
 }
 
-/// Ask the person's earlier servers, in turn, to take this one in among
-/// their servers, until one does; it is then handed the admin workspace.
-/// One that cannot be reached is asked again after a while, longer each time.
+/// Ask the device that introduces this server to take it in among the
+/// person's servers; it is then handed their workspace. One that cannot be
+/// reached is asked again after a while, longer each time.
 async fn ask_to_be_admitted(
     endpoint: Endpoint,
     identity: ServerIdentity,
-    earlier: Vec<(tilo_user_identity::DeviceCert, EndpointAddr)>,
+    (introducer, addr): (tilo_user_identity::DeviceCert, EndpointAddr),
 ) {
     let mut wait = Duration::from_secs(1);
+    let device = hex::encode(introducer.device_public_key);
     loop {
-        for (server, addr) in &earlier {
-            let asked = crate::client::ServerClient::manage_home_peer(
-                &endpoint,
-                addr.clone(),
-                identity.user_public_key,
-                server.device_public_key,
-                identity.device_cert.clone(),
-                identity.device_signing_key.clone(),
-                identity.revocations.clone(),
-                HomePeerManagementRequest::AdmitServer {
-                    endpoint: endpoint.addr(),
-                },
-            )
-            .await;
-            match asked {
-                Ok(_) => {
-                    tracing::info!(server = %hex::encode(server.device_public_key), "an earlier server took this one in");
-                    return;
-                }
-                Err(error) => {
-                    tracing::info!(server = %hex::encode(server.device_public_key), %error, "an earlier server did not take this one in");
-                }
+        let asked = crate::client::ServerClient::manage_home_peer(
+            &endpoint,
+            addr.clone(),
+            identity.user_public_key,
+            introducer.device_public_key,
+            identity.device_cert.clone(),
+            identity.device_signing_key.clone(),
+            identity.revocations.clone(),
+            HomePeerManagementRequest::AdmitServer {
+                endpoint: endpoint.addr(),
+            },
+        )
+        .await;
+        match asked {
+            Ok(_) => {
+                tracing::info!(%device, "the introducing device took this server in");
+                return;
+            }
+            Err(error) => {
+                tracing::info!(%device, %error, "the introducing device did not take this server in");
             }
         }
         tokio::time::sleep(wait).await;
@@ -1560,19 +1561,6 @@ impl ProtocolHandler for ManagementProtocol {
             postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
                 .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         match request {
-            HomePeerManagementRequest::HoldAdmin { endpoint } => {
-                // A device of the person's holds their Servers workspace like
-                // any other workspace of theirs: it asks a server that holds
-                // it to take it in, and never makes one itself.
-                let workspaces = self.workspaces.as_ref().ok_or_else(|| {
-                    AcceptError::from_err(std::io::Error::other(
-                        "this home peer keeps no Servers workspace",
-                    ))
-                })?;
-                crate::servers::take_in(workspaces, &peer.cert, &endpoint)
-                    .await
-                    .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
-            }
             HomePeerManagementRequest::AdmitServer { endpoint } => {
                 let workspaces = self.workspaces.as_ref().ok_or_else(|| {
                     AcceptError::from_err(std::io::Error::other(
@@ -1895,7 +1883,7 @@ mod tests {
             .await
             .unwrap();
             let primary_workspaces = primary.workspaces().expect("the device holds workspaces");
-            crate::servers::founded(primary_workspaces).await.unwrap();
+            crate::servers::found(primary_workspaces).await.unwrap();
             crate::servers::admit(primary_workspaces, &server_cert, &server.node_addr())
                 .await
                 .unwrap();

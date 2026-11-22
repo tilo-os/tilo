@@ -87,28 +87,6 @@ pub(super) struct AdmittedCommit {
     told: tokio::sync::oneshot::Sender<()>,
 }
 
-/// Why `delta` is not `peer`'s to commit ([`commit_refusal`]), including a
-/// write to an archived member document.
-async fn own_commit_refusal(
-    ws: &SharedWorkspace,
-    peer: &AuthenticatedPeer,
-    author: [u8; 32],
-    delta: &Envelope,
-) -> Option<Refusal> {
-    let signed_person = (author == peer.device_public_key).then_some(peer.user_public_key);
-    if let Some(refusal) = commit_refusal(ws, author, delta, signed_person).await {
-        return Some(refusal);
-    }
-    let Envelope::Delta { delta: bytes, .. } = delta else {
-        return None;
-    };
-    if author != peer.device_public_key {
-        return None;
-    }
-    let store = ws.lock().await.store.clone();
-    crate::surfaces::own_refusal(&store, &peer.user_public_key, bytes)
-}
-
 /// Check, claim and queue `env`, a `Commit`, without waiting for it to be
 /// durable: its answer ([`CommitAdmission::answer`]) waits for that. A
 /// connection admits the commits it is sent one after another, in the order
@@ -190,7 +168,7 @@ pub(super) async fn admit_commit(
         delta,
         signature: [0; 64],
     };
-    if let Some(refusal) = own_commit_refusal(&ws, peer, author_device_public_key, &delta).await {
+    if let Some(refusal) = commit_refusal(&ws, author_device_public_key, &delta).await {
         return refused(refusal);
     }
     let authored = delta.clone();
@@ -306,7 +284,6 @@ async fn commit_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
     delta: &Envelope,
-    signed_person: Option<[u8; 32]>,
 ) -> Option<Refusal> {
     let Envelope::Delta { delta: bytes, .. } = delta else {
         return None;
@@ -318,18 +295,15 @@ async fn commit_refusal(
         author,
         &named,
         |device_access, payloads| {
-            crate::surfaces::refusal(payloads, bytes, device_access, signed_person).is_some()
+            crate::surfaces::refusal(payloads, bytes, device_access).is_some()
                 || crate::surfaces::role_refusal(bytes, device_access, author).is_some()
         },
     ))
     .await;
     let device_access = decision.device_access;
-    if let Some(refusal) = crate::surfaces::refusal(
-        &*decision.payloads,
-        bytes,
-        device_access.as_deref(),
-        signed_person,
-    ) {
+    if let Some(refusal) =
+        crate::surfaces::refusal(&*decision.payloads, bytes, device_access.as_deref())
+    {
         let refusal = super::state::behind_governance(decision.governance_behind, refusal);
         tracing::warn!(%refusal, device = %hex::encode(author), "refused a document change");
         file_refusal_of(ws, delta, &refusal.to_string()).await;

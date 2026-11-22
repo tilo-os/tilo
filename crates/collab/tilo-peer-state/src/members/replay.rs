@@ -216,6 +216,8 @@ pub(crate) fn carry(
         replayed.owner_moved |= replayed.policy.owner != owner;
         replayed.heads = BTreeSet::from([id]);
     }
+    replayed.policy.place_person_records();
+    order(&mut replayed.policy);
     // Every carry a test makes is checked against replaying the state.
     #[cfg(test)]
     {
@@ -350,6 +352,8 @@ fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspaceP
             }
         }
     }
+    policy.place_person_records();
+    order(&mut policy);
     (policy, unadmitted, owner_moved)
 }
 

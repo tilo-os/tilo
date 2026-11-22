@@ -547,10 +547,10 @@ mod tests {
             fs::create_dir_all(&namespace).unwrap();
             fs::set_permissions(&namespace, fs::Permissions::from_mode(0o700)).unwrap();
             // The setup held its settings profile in this Home; its lock stays.
-            let person = home.join(".local/share").join(tilo_paths::SETTINGS_PERSON);
-            fs::create_dir_all(&person).unwrap();
-            fs::write(person.join("canonical.lock"), b"").unwrap();
-            fs::write(person.join("state.automerge"), b"real settings").unwrap();
+            let settings = home.join(".local/share").join(tilo_paths::SETTINGS_DEVICE);
+            fs::create_dir_all(&settings).unwrap();
+            fs::write(settings.join("canonical.lock"), b"").unwrap();
+            fs::write(settings.join("state.automerge"), b"real settings").unwrap();
             fs::write(home.join("document"), b"real document").unwrap();
             let proofs = OriginalPreparation::review(&home)
                 .unwrap()
@@ -577,8 +577,8 @@ mod tests {
             let forged: OriginalOmission = serde_json::from_value(forged).unwrap();
             assert!(forged.validate_shape().is_err());
             // A different file in its place is Home data again.
-            fs::write(person.join("replacement"), b"").unwrap();
-            fs::rename(person.join("replacement"), &lock).unwrap();
+            fs::write(settings.join("replacement"), b"").unwrap();
+            fs::rename(settings.join("replacement"), &lock).unwrap();
             assert!(SourceInventory::capture_original_home(&pin, &proofs).is_err());
         }
     }

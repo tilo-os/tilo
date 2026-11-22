@@ -17,110 +17,8 @@ use automerge::transaction::Transactable as _;
 
 /// The durable layout this build writes and reads. A change to what is
 /// stored bumps this: a build refuses state of another version by name
-/// rather than reading it as this one's, except the version before, which it
-/// brings up ([`brought_up`]).
-pub const DURABLE_VERSION: u32 = 11;
-
-/// The version before [`DURABLE_VERSION`], which this build brings up ([`brought_up`]).
-const BROUGHT_UP: u32 = 10;
-
-/// `bytes`, a durable state, in this build's layout: version 10 brought up to 11, any other as it
-/// is, for [`Durable::read`] to read or refuse.
-///
-/// Version 10 was written in two layouts. A write waiting to be sent (`pending`) that is a
-/// document write ([`NeighbourMsg::AppDocument`]) ends with its reader set from the build that
-/// gave document writes one, and ends before it in the builds before; nothing else differs, and
-/// nothing in the bytes says which. Version 11 is the later layout. A state that reads whole as
-/// that layout is it; any other is read as the earlier layout, its waiting document writes naming
-/// no reader set, as a write of today does for an app's own document.
-pub(super) fn brought_up(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, String> {
-    if postcard::take_from_bytes::<u32>(bytes).map_err(err)?.0 != BROUGHT_UP {
-        return Ok(bytes.into());
-    }
-    let durable = match postcard::take_from_bytes::<Durable<'_>>(bytes) {
-        Ok((durable, [])) => durable,
-        _ => before_reader_sets(bytes).map_err(|error| {
-            format!(
-                "this state is of durable layout {BROUGHT_UP} and reads as neither of its \
-                 layouts: {error}. Move the state directory aside, or start with an empty one"
-            )
-        })?,
-    };
-    postcard::to_allocvec(&Durable {
-        version: DURABLE_VERSION,
-        ..durable
-    })
-    .map(Into::into)
-    .map_err(err)
-}
-
-/// A version 10 state written before document writes carried a reader set ([`brought_up`]).
-fn before_reader_sets(bytes: &[u8]) -> Result<Durable<'_>, postcard::Error> {
-    type ThroughDocuments = (u32, String, [u8; 32], Option<Vec<u8>>, Vec<DurableDocument>);
-    let ((version, workspace, owner, workspace_bytes, documents), rest) =
-        postcard::take_from_bytes::<ThroughDocuments>(bytes)?;
-    let ((receipts, certificates, revocations, pending, pending_bytes, exact), rest) =
-        take_tail_before_reader_sets(rest)?;
-    let (sealed, rest) = postcard::take_from_bytes::<SealedHistory>(rest)?;
-    if !rest.is_empty() {
-        return Err(postcard::Error::DeserializeBadEncoding);
-    }
-    Ok(Durable {
-        version,
-        workspace,
-        owner,
-        workspace_bytes,
-        documents,
-        receipts,
-        certificates,
-        revocations,
-        pending,
-        pending_bytes,
-        exact,
-        sealed,
-    })
-}
-
-/// The fields of `Durable` after its documents and before its sealed histories at the start of
-/// `bytes`, as a version 10 state written before document writes carried a reader set holds
-/// them ([`brought_up`]), and the bytes after them.
-fn take_tail_before_reader_sets(bytes: &[u8]) -> Result<(TailFields<'_>, &[u8]), postcard::Error> {
-    type BeforePending = (
-        BTreeMap<String, Vec<u8>>,
-        Vec<DeviceCert>,
-        Vec<tilo_user_identity::RevocationEntry>,
-        usize,
-    );
-    let ((receipts, certificates, revocations, count), mut rest) =
-        postcard::take_from_bytes::<BeforePending>(bytes)?;
-    let mut pending = VecDeque::new();
-    for _ in 0..count {
-        let (key, message, sent);
-        (key, rest) = postcard::take_from_bytes::<[u8; 32]>(rest)?;
-        (message, rest) = NeighbourMsg::take_before_reader_sets(rest)?;
-        (sent, rest) = postcard::take_from_bytes::<bool>(rest)?;
-        pending.push_back((key, message, sent));
-    }
-    let ((pending_bytes, exact), rest) = postcard::take_from_bytes::<(usize, Option<&[u8]>)>(rest)?;
-    // The bytes the waiting writes take, as this build writes them: a document write one more,
-    // for the reader set it names none of.
-    let documents = pending
-        .iter()
-        .filter(|(_, message, _)| matches!(message, NeighbourMsg::AppDocument { .. }))
-        .count();
-    let pending_bytes = pending_bytes.saturating_add(documents);
-    Ok((
-        (
-            receipts,
-            certificates,
-            revocations,
-            pending,
-            pending_bytes,
-            exact,
-        ),
-        rest,
-    ))
-}
+/// rather than reading it as this one's.
+pub const DURABLE_VERSION: u32 = 12;
 
 /// A replica's durable state. `exact` is the exact admission index, present
 /// once the replica selects exact admissions; `sealed` holds each encrypted
@@ -399,18 +297,14 @@ impl StatePeer {
     /// it changed: the tree takes again only their leaves.
     pub fn durable_hash(&self) -> Result<[u8; 32], String> {
         let (before, after) = self.around_documents(Digests::Taken)?;
-        let root = self
-            .core
-            .documents
-            .root(|route, entry| self.leaf(route, entry))?;
+        let root = self.core.documents.root(Self::leaf)?;
         fold_durable_hash(&before, root, &after)
     }
 
     /// The leaf of `route`'s document `entry` in the documents' tree: the lengths and digests of its
     /// part of the durable encoding and of its sealed history, made once per state of it.
-    fn leaf(&self, route: &Route, entry: &backend::StoredDocument) -> Result<[u8; 32], String> {
-        let own = self.core.own.get(route);
-        let document = entry.digests(|| digest_document(route, entry, own))?;
+    fn leaf(route: &Route, entry: &backend::StoredDocument) -> Result<[u8; 32], String> {
+        let document = entry.digests(|| digest_document(route, entry))?;
         let sealed = if entry.keeps_sealed() {
             entry.sealed.digested_parts(route, &entry.resealed)?
         } else {
@@ -444,8 +338,7 @@ impl StatePeer {
         let (before, after) = self.around_documents(Digests::Kept)?;
         let mut leaves = Vec::with_capacity(self.core.documents.len());
         for (route, entry) in &self.core.documents {
-            let own = self.core.own.get(route);
-            let encoded = entry.encoded(route, || encode_document(route, entry, own))?;
+            let encoded = entry.encoded(route, || encode_document(route, entry))?;
             let document: Vec<_> = encoded.document.iter().map(stretch).collect();
             let sealed: Vec<_> = encoded
                 .sealed
@@ -540,8 +433,7 @@ impl StatePeer {
     pub(crate) fn durable_layout(&self) -> Result<DurableParts, String> {
         let (before, after) = self.around_documents(Digests::Kept)?;
         let documents = self.core.documents.parts(|route, entry| {
-            let own = self.core.own.get(route);
-            let encoded = entry.encoded(route, || encode_document(route, entry, own))?;
+            let encoded = entry.encoded(route, || encode_document(route, entry))?;
             Ok(DocumentParts {
                 document: flatten(&encoded.document),
                 sealed: encoded
@@ -671,7 +563,6 @@ impl StatePeer {
                     .covered_snapshot
                     .as_ref()
                     .map(|snapshot| snapshot.0.bytes.clone()),
-                own: self.core.own.get(route).cloned(),
             })
             .collect();
         let sealed: SealedHistory = self
@@ -739,8 +630,7 @@ impl StatePeer {
         revocations: RevocationList,
         now: SystemTime,
     ) -> Result<Self, String> {
-        let bytes = brought_up(bytes)?;
-        let durable = Durable::read(&bytes, workspace)?;
+        let durable = Durable::read(bytes, workspace)?;
         let owner = durable.owner;
         let exact_admissions = durable
             .exact
@@ -769,7 +659,6 @@ impl StatePeer {
                 exact_selected: exact_admissions.is_some(),
                 exact_admissions: exact_admissions.unwrap_or_default(),
                 native_cut_publisher: None,
-                own: BTreeMap::new(),
             },
             surfaces: process_default().0,
             app_surfaces: process_default().1,
@@ -801,10 +690,6 @@ impl StatePeer {
                 &document.covered,
                 document.covered_snapshot.as_deref(),
             )?;
-            // What the record is, as it was kept: only for the record it names.
-            if let Some(own) = document.own.filter(|own| own.names(&document.route.record)) {
-                peer.core.own.insert(document.route.clone(), own);
-            }
             let channel = InboundState {
                 last_seq_per_author: document
                     .watermarks
@@ -918,11 +803,7 @@ impl StatePeer {
 /// while the base lasts; the runs of changes since the base, each the same
 /// allocation while it lasts; the fields after the document — and its sealed
 /// history, when it holds one.
-fn encode_document(
-    route: &Route,
-    entry: &Document,
-    own: Option<&collab_types::OwnResource>,
-) -> Result<backend::EncodedDocument, String> {
+fn encode_document(route: &Route, entry: &Document) -> Result<backend::EncodedDocument, String> {
     fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
         postcard::to_extend(value, out).map_err(err)
     }
@@ -943,7 +824,6 @@ fn encode_document(
                 .covered_snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.0.bytes.as_slice()),
-            own,
         ),
         Vec::new(),
     )?;
@@ -1096,7 +976,7 @@ impl DurableParts {
         };
         let mut rest = bytes;
         let version: u32 = take(&mut rest)?;
-        if version != DURABLE_VERSION && version != BROUGHT_UP {
+        if version != DURABLE_VERSION {
             return Err(format!(
                 "this state is of durable layout {version}, and this build reads layout \
                  {DURABLE_VERSION}. Move the state directory aside, or start with an empty one"
@@ -1118,34 +998,7 @@ impl DurableParts {
             );
         }
         let tail_from = at(rest);
-        // A version 10 state is split as it was written, in either of its layouts
-        // ([`brought_up`]): what a journal appended to it copies its stretches as they are.
-        let today = postcard::take_from_bytes::<TailFields<'_>>(rest)
-            .ok()
-            .map(|(_, after)| after)
-            .filter(|after| {
-                version == DURABLE_VERSION
-                    || postcard::take_from_bytes::<SealedHistory>(after)
-                        .is_ok_and(|(_, after)| after.is_empty())
-            });
-        rest = match today {
-            Some(after) => after,
-            None if version == BROUGHT_UP => {
-                take_tail_before_reader_sets(rest)
-                    .map_err(|error| {
-                        format!(
-                            "this state is of durable layout {BROUGHT_UP} and reads as neither \
-                             of its layouts: {error}. Move the state directory aside, or start \
-                             with an empty one"
-                        )
-                    })?
-                    .1
-            }
-            None => {
-                let _fields: TailFields<'_> = take(&mut rest)?;
-                rest
-            }
-        };
+        let _fields: TailFields<'_> = take(&mut rest)?;
         let sealed: usize = take(&mut rest)?;
         let tail = part(tail_from, at(rest));
         for _ in 0..sealed {
@@ -1262,11 +1115,7 @@ fn length_and_digest(bytes: &[u8]) -> super::StretchDigest {
 
 /// [`encode_document`] as the lengths and digests of its parts, taken without keeping the
 /// document's bytes: what a session that stores nothing folds into its durable hash.
-fn digest_document(
-    route: &Route,
-    entry: &Document,
-    own: Option<&collab_types::OwnResource>,
-) -> Result<Vec<super::StretchDigest>, String> {
+fn digest_document(route: &Route, entry: &Document) -> Result<Vec<super::StretchDigest>, String> {
     fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
         postcard::to_extend(value, out).map_err(err)
     }
@@ -1289,7 +1138,6 @@ fn digest_document(
                 .covered_snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.0.bytes.as_slice()),
-            own,
         ),
         Vec::new(),
     )?;

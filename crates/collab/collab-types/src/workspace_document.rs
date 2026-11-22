@@ -1,15 +1,10 @@
-//! Documents that every app of a workspace opens beside its own: one per kind
-//! and workspace, kept by one app (its owner), read and changed from any
-//! app's window of the workspace.
+//! Records that apps keep for the whole workspace, beside their other records.
+//! Each kind has one document per workspace, reached on the owner's route.
 //!
-//! An app's launch otherwise reaches only its own routes. These documents are
-//! the exception, named here one by one: every app of the workspace may join
-//! and write the route `(owner, workspace, workspace_document_id(kind))` of its
-//! launch workspace, and nothing else of the owner's. The workspace's grants
-//! on the owner's resource decide every change, wherever it is made, as they
-//! decide the owner's own.
+//! Other apps can join a shared workspace record from their own windows;
+//! the workspace's grants on its owner still decide every read and change.
 
-/// A document every app of a workspace opens.
+/// A record an app keeps for the whole workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorkspaceDocument {
     /// The app that keeps it: whose surface and grants decide its changes.
@@ -18,7 +13,7 @@ pub struct WorkspaceDocument {
     pub kind: &'static str,
 }
 
-/// Every document every app of a workspace opens.
+/// The records apps keep for their whole workspace.
 pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
     // The workspace's own emoji, which any view draws for `:name:`
     // (`tilo-workspace-emoji`).
@@ -37,12 +32,17 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
         app: "so.tilo.chat",
         kind: "chat.skills",
     },
-    // The workspace's agents: their names, colours, keepers and models,
+    // The workspace's agents: their names, colours, models and who added them,
     // which the workspace settings sheet, the apps and their devices all
     // read (`tilo-workspace-agent`).
     WorkspaceDocument {
         app: "so.tilo.assistant",
         kind: "tilo.workspace.agent",
+    },
+    // The reports and decisions Chat keeps for its workspace.
+    WorkspaceDocument {
+        app: "so.tilo.chat",
+        kind: "tilo.moderation",
     },
     // Each person's place in the workspace's tilolang apps: their windows' and
     // lenses' state and what they have seen, kept once for every package of the
@@ -105,6 +105,13 @@ pub fn workspace_document(app: &str, document: &str) -> Option<&'static Workspac
     WORKSPACE_DOCUMENTS
         .iter()
         .find(|known| known.app == app && known.kind == kind)
+}
+
+/// A workspace record that even apps without a declared read of its owner may join.
+#[must_use]
+pub fn shared_workspace_document(app: &str, document: &str) -> Option<&'static WorkspaceDocument> {
+    workspace_document(app, document)
+        .filter(|_| !tilo_action_policy::roles::is_workspace_moderation(app, document))
 }
 
 #[cfg(test)]

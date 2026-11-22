@@ -5,7 +5,7 @@
 //! a phone, the page and a server.
 //!
 //! The module serves the workspace's chat resource: its channels and
-//! categories, each person's read marks, reviewed feedback, moderation and what
+//! categories, each person's read marks, reviewed feedback and what
 //! an agent keeps of a conversation. Each person's drafts are their own, written
 //! on their own devices, so no other holder applies them.
 
@@ -13,5 +13,6 @@ tilo_model_guest::model!(
     "chat",
     chat_model::Chat,
     chat_model::ChatDrafts,
+    chat_model::Moderation,
     chat_model::skills::Skills,
 );

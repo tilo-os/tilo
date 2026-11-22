@@ -855,7 +855,7 @@ fn session(root: &Path) -> Arc<accounts::sign_ins::fixture::Fixture> {
     Arc::clone(
         sessions
             .entry(root.to_path_buf())
-            .or_insert_with(|| Arc::new(accounts::sign_ins::fixture::Fixture::serve(root, root))),
+            .or_insert_with(|| Arc::new(accounts::sign_ins::fixture::Fixture::serve(root))),
     )
 }
 
@@ -885,13 +885,11 @@ fn account_store(root: &Path, url: &str, enabled: bool) {
 }
 
 fn account_of_type(root: &Path, type_id: &str, config: serde_json::Value, enabled: bool) {
-    let mut store = accounts::AccountStore::load_in(root);
     let mut account = accounts::Account::new("files-1", type_id);
     account.display_name = "Work files".into();
     account.enabled = enabled;
     account.config = config;
-    store.upsert(account);
-    store.save_in(root).unwrap();
+    session(root).keep_account(account);
 }
 
 struct Served {
@@ -1366,9 +1364,7 @@ tilo_test_env::scenario! {
         account_store(root, server.root_url().as_str(), true);
         service.reconcile();
         assert_eq!(service.mounted().len(), 1);
-        let mut store = accounts::AccountStore::load_in(root);
-        store.remove(&accounts::AccountId::from("files-1"));
-        store.save_in(root).unwrap();
+        session(root).remove_account("files-1");
         service.reconcile();
         assert!(service.mounted().is_empty());
         assert!(
@@ -1424,13 +1420,11 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
     let config_root = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let root = config_root.path();
-    let mut store = accounts::AccountStore::new();
     let mut account = accounts::Account::new("cloud-1", "nextcloud");
     account.display_name = "Cloud".into();
     account.config =
         serde_json::json!({"server_url": server.server_url().as_str(), "username": USER});
-    store.upsert(account);
-    store.save_in(root).unwrap();
+    session(root).keep_account(account);
     publish(root, "cloud-1", PASSWORD);
 
     let mut service = CloudService::new(

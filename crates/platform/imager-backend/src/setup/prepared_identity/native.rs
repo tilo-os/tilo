@@ -381,7 +381,6 @@ impl PreparedIdentity {
             identity_public_key: self.public_key,
             identity_record: record,
             certificates: Vec::new(),
-            home_peers: Vec::new(),
             signer,
         })
     }

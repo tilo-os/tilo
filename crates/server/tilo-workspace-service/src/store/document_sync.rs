@@ -77,17 +77,10 @@ pub(super) struct Classes {
     when_opened: bool,
     /// Each chain's head: its highest part and that part's channel.
     heads: HashMap<ChainKey, (u64, [u8; 32])>,
-    /// The person (their user root key) whose own record each channel
-    /// carries: only their devices are sent it.
-    owners: HashMap<[u8; 32], [u8; 32]>,
     /// The people (their user root keys) who read each channel's resource
     /// store document read by a set of people: only their devices are sent
     /// it. A set its frames never named, or named unlike its id, is no one.
     readers: HashMap<[u8; 32], BTreeSet<[u8; 32]>>,
-    /// The person (their user root key) of each member device whose retained
-    /// identity was read for it ([`WorkspaceStore::device_person`]): a
-    /// certificate binds its device to one person for good.
-    pub(super) people: HashMap<[u8; 32], [u8; 32]>,
     /// The chain each chain's head channel ([`neighbour_wire::chain_head`])
     /// names, for every chain with a part.
     chains: HashMap<[u8; 32], ChainKey>,
@@ -104,16 +97,6 @@ pub(super) struct Classes {
 impl Classes {
     fn learn(&mut self, channel: [u8; 32], route: &Route) {
         let (app, record) = (route.app_id.as_str(), route.document_id.as_str());
-        // A frame naming the record's kind and person is taken at its word
-        // only for the record those two name, on that record's channel: its id
-        // derives from them, so no other person's frame claims it, whichever
-        // arrived first.
-        if let Some(own) = &route.own
-            && own.names(record)
-            && neighbour_wire::app_document_group(app, record) == channel
-        {
-            self.owners.insert(channel, own.owner);
-        }
         // The set a frame names is taken only when it is the set the id names
         // by its digest: no frame widens a document past the people its id
         // was placed for.
@@ -169,7 +152,6 @@ impl Classes {
                 app_id: app.to_owned(),
                 cluster_id: String::new(),
                 document_id: record.to_owned(),
-                own: None,
                 readers: None,
             },
         );
@@ -210,23 +192,17 @@ impl Classes {
         })
     }
 
-    /// Who alone may be sent the document `channel` carries: its person, for
-    /// a member's own one, or its reader set's people. `None` when every
-    /// member may.
+    /// Who alone may be sent the document `channel` carries: its reader set's people. `None`
+    /// when every member may.
     fn readers_of(&self, channel: &[u8; 32]) -> Option<BTreeSet<[u8; 32]>> {
-        if let Some(owner) = self.owners.get(channel) {
-            return Some(BTreeSet::from([*owner]));
-        }
         self.readers.get(channel).cloned()
     }
 
     /// Whether a device of `person` may be sent the document `channel` carries.
     fn reaches(&self, channel: &[u8; 32], person: &[u8; 32]) -> bool {
-        self.owners.get(channel).is_none_or(|owner| owner == person)
-            && self
-                .readers
-                .get(channel)
-                .is_none_or(|people| people.contains(person))
+        self.readers
+            .get(channel)
+            .is_none_or(|people| people.contains(person))
     }
 
     /// The channel of the head of the chain whose head channel is `chain`
@@ -334,28 +310,10 @@ impl WorkspaceStore {
         classes.reach(channel).unwrap_or(Reach::Everyone)
     }
 
-    /// The person (their user root key) whose own record `channel` carries, if
-    /// it carries one: only that person's devices are sent its frames, and
-    /// nobody else opens it. A channel this store has not seen yet is learned
-    /// from `body`, the co-edit body of a frame on it, when one is given.
-    pub(crate) fn resource_owner(
-        &self,
-        channel: &[u8; 32],
-        body: Option<&[u8]>,
-    ) -> Option<[u8; 32]> {
-        if let Some(owner) = self.classes().owners.get(channel) {
-            return Some(*owner);
-        }
-        let (route, _) = self.payloads.open_document(body?)?;
-        let mut classes = self.classes();
-        classes.learn(*channel, &route);
-        classes.owners.get(channel).copied()
-    }
-
     /// Whether a device of the person whose user root key is `person` may be
     /// sent the record `channel` carries: any device for a record of the
-    /// workspace, only that person's for a person's own one, only its
-    /// people's for a resource store's document a set of people reads.
+    /// workspace, only its people's for a resource store's document a set of
+    /// people reads.
     pub(crate) fn reaches_person(&self, channel: &[u8; 32], person: &[u8; 32]) -> bool {
         // Every retained record's person is known first: a host that just
         // started has read no lineage yet.
@@ -366,40 +324,31 @@ impl WorkspaceStore {
         self.classes().reaches(channel, person)
     }
 
-    /// The person (their user root key) whose own record the state frame
-    /// `delta` changes: retained on a record's channel, or sent as it is.
-    /// `None` for a frame of no member's own record.
-    pub(crate) fn frame_owner(&self, delta: &[u8]) -> Option<[u8; 32]> {
-        let channel = self.frame_channel(delta)?;
-        self.classes().owners.get(&channel).copied()
-    }
-
-    /// Who alone may be sent the document the state frame `delta` changes:
-    /// its person, for a member's own one, or the people of its reader set,
-    /// for a resource store's document only they read. `None` for a document
-    /// every member reads.
+    /// Who alone may be sent the document the state frame `delta` changes: the
+    /// people of its reader set, for a resource store's document only they
+    /// read. `None` for a document every member reads.
     pub(crate) fn frame_readers(&self, delta: &[u8]) -> Option<BTreeSet<[u8; 32]>> {
         let channel = self.frame_channel(delta)?;
         self.classes().readers_of(&channel)
     }
 
     /// Where the document the state frame `delta` changes is retained, which
-    /// document that is learned from the frame unless its person is known
-    /// already: retained there, or sent as it is.
+    /// document that is learned from the frame: retained there, or sent as it
+    /// is.
     fn frame_channel(&self, delta: &[u8]) -> Option<[u8; 32]> {
         if let Some(
             crate::coedit::CoeditPayload::Checkpoint { channel, body }
             | crate::coedit::CoeditPayload::RetainedDelta { channel, body },
         ) = crate::coedit::CoeditPayload::decode(delta)
         {
-            self.resource_owner(&channel, Some(&body));
+            if let Some((route, _)) = self.payloads.open_document(&body) {
+                self.classes().learn(channel, &route);
+            }
             return Some(channel);
         }
         let (route, _) = self.payloads.open_document(delta)?;
         let channel = neighbour_wire::app_document_group(&route.app_id, &route.document_id);
-        if !self.classes().owners.contains_key(&channel) {
-            self.classes().learn(channel, &route);
-        }
+        self.classes().learn(channel, &route);
         Some(channel)
     }
 
@@ -456,24 +405,6 @@ impl WorkspaceStore {
     /// a channel's governance — carries none.
     pub(super) fn carries_document(&self, name: &OsStr) -> bool {
         lineage_channel(name).is_some_and(|channel| self.classes().channels.contains_key(&channel))
-    }
-
-    /// Take `own` to be `app`'s record of its kind and person, as its person's
-    /// device said opening it: before anything of it is written, every other
-    /// member opening it is told it is not theirs. The id derives from the
-    /// kind and person, so a device names no other person's record this way.
-    pub(crate) fn learn_own(&self, app: &str, own: &collab_types::OwnResource) {
-        let record = own.document_id();
-        self.classes().learn(
-            neighbour_wire::app_document_group(app, &record),
-            &Route {
-                app_id: app.to_owned(),
-                cluster_id: String::new(),
-                document_id: record,
-                own: Some(own.clone()),
-                readers: None,
-            },
-        );
     }
 
     /// Take `channel` to carry `app`'s `record`, as a frame retained on it

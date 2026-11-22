@@ -541,7 +541,6 @@ async fn served_answers_with_the_refusal_of_a_write_the_workspace_refused() {
         cluster_id: write.cluster_id.clone(),
         document_id: "elsewhere".into(),
         envelope: Box::new(write.envelope.clone()),
-        own: write.own.clone(),
         readers: None,
     };
     let (channel, retention) =

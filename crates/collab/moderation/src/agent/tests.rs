@@ -179,14 +179,14 @@ impl WorkspaceApi for FakeWorkspace {
         Ok(())
     }
 
-    fn decide(&mut self, decision: moderation::Decide) -> Result<(), String> {
+    fn decide(&mut self, decision: moderation::DecideReports) -> Result<(), String> {
         let mut agent = self
             .moderation
             .fork()
             .as_agent_for(crate::agent().id(), OWNER);
         agent.set_now_ms(self.now);
         agent
-            .apply(Moderation::DECIDE.with(decision))
+            .apply(Moderation::DECIDE_REPORTS.with(decision))
             .map_err(|error| error.to_string())?;
         self.moderation
             .sync_with(&mut agent)
@@ -212,11 +212,8 @@ fn vandalised() -> FakeWorkspace {
         workspace.act(MALLORY, Board::DELETE.with(id));
     }
     let mut ada = workspace.moderation.fork().as_author(ADA);
-    ada.apply(Moderation::REPORT.with(moderation::Report {
+    ada.apply(Moderation::REPORT_PERSON.with(moderation::ReportPerson {
         person: MemberId::person(MALLORY),
-        app: None,
-        record: None,
-        item: None,
         reason: NonBlank::parse("deleted all our cards").expect("a test reason says something"),
     }))
     .unwrap();
@@ -325,10 +322,12 @@ fn a_ban_removes_and_a_moderator_overturning_restores() {
         .id
         .clone();
     helper
-        .apply(Moderation::OVERTURN.with(moderation::Overturn {
-            decision: id.clone(),
-            note: "Mallory was cleaning up test cards Ada asked her to.".into(),
-        }))
+        .apply(
+            Moderation::OVERTURN_DECISION.with(moderation::OverturnDecision {
+                decision: id.clone(),
+                note: "Mallory was cleaning up test cards Ada asked her to.".into(),
+            }),
+        )
         .unwrap();
     workspace.moderation.sync_with(&mut helper).unwrap();
     let decision = workspace
@@ -355,9 +354,12 @@ fn the_agent_cannot_reach_a_moderator_and_records_that() {
         .policy
         .members
         .insert(MALLORY.to_owned(), Role::Moderator);
-    let agent = ModerationAgent::new(FakeJudge::answering(Outcome::Restrict, Some(30), true));
+    let mut judge = FakeJudge::answering(Outcome::Restrict, Some(30), true);
+    judge.verdict.reasoning = "é".repeat(crate::model::MAX_REASONING_CHARS);
+    let agent = ModerationAgent::new(judge);
     let moderation = workspace.moderation.state().unwrap();
     let enforced = consider(&agent, &mut workspace, &moderation, MALLORY).unwrap();
+    assert!(enforced.failures.is_empty(), "{:?}", enforced.failures);
     assert_eq!(enforced.decision.ruling.outcome, Outcome::NoAction);
     assert!(enforced.decision.ruling.reasoning.contains("Not enforced"));
     assert!(workspace.invoked.is_empty(), "nothing taken back");
@@ -373,11 +375,8 @@ fn the_agent_cannot_reach_a_moderator_and_records_that() {
 fn a_report_about_someone_who_did_nothing_never_reaches_the_model() {
     let mut workspace = vandalised();
     let mut ada = workspace.moderation.fork().as_author(MALLORY);
-    ada.apply(Moderation::REPORT.with(moderation::Report {
+    ada.apply(Moderation::REPORT_PERSON.with(moderation::ReportPerson {
         person: MemberId::person(ADA),
-        app: None,
-        record: None,
-        item: None,
         reason: NonBlank::parse("she is annoying").expect("a test reason says something"),
     }))
     .unwrap();

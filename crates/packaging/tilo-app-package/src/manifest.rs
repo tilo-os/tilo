@@ -1046,23 +1046,11 @@ impl serde::Serialize for SplashSegment {
 pub struct Resources {
     #[serde(default)]
     pub kinds: Vec<String>,
-    /// The kinds of [`Self::kinds`] each member of a workspace keeps one record of as their own
-    /// (their mailbox, their settings): only that person's devices receive it, only they read or
-    /// change it whatever their role, and a window on it never stands on a workspace's shared
-    /// desktop. Every other kind is the workspace's.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub own: Vec<String>,
 }
 
 impl Resources {
     fn is_empty(&self) -> bool {
-        self.kinds.is_empty() && self.own.is_empty()
-    }
-
-    /// Whether each member keeps their own record of `kind` ([`Self::own`]).
-    #[must_use]
-    pub fn is_own(&self, kind: &str) -> bool {
-        self.own.iter().any(|own| own == kind)
+        self.kinds.is_empty()
     }
 }
 

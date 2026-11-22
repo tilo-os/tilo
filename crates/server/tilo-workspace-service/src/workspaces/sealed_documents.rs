@@ -993,13 +993,7 @@ impl Workspaces {
                 (
                     workspace.workspace().to_owned(),
                     workspace.workspace_id(),
-                    peer.sealed_routes()
-                        .into_iter()
-                        .map(|(app, record)| {
-                            let own = peer.own_resource(&app, &record);
-                            (app, record, own)
-                        })
-                        .collect::<Vec<_>>(),
+                    peer.sealed_routes(),
                 )
             };
             let Some(workspace) = self
@@ -1013,13 +1007,12 @@ impl Workspaces {
             else {
                 continue;
             };
-            for (app, record, own) in routes {
+            for (app, record) in routes {
                 let channel = neighbour_wire::app_document_group(&app, &record);
                 let route = crate::compaction::Route {
                     app_id: app,
                     cluster_id: name.clone(),
                     document_id: record,
-                    own,
                     readers: None,
                 };
                 if let Err(error) = compactor
@@ -1065,8 +1058,7 @@ impl Workspaces {
                     .await
                     .is_empty()
                 {
-                    let own = peer.own_resource(&app, &record);
-                    holed.push((app, record, own));
+                    holed.push((app, record));
                 }
             }
             if holed.is_empty() {
@@ -1083,13 +1075,12 @@ impl Workspaces {
             else {
                 continue;
             };
-            for (app, record, own) in holed {
+            for (app, record) in holed {
                 let channel = neighbour_wire::app_document_group(&app, &record);
                 let route = crate::compaction::Route {
                     app_id: app,
                     cluster_id: name.clone(),
                     document_id: record,
-                    own,
                     readers: None,
                 };
                 if let Err(error) = compactor

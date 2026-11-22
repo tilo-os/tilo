@@ -8,6 +8,7 @@
 )]
 
 use super::*;
+use crate::account_store::Accounts;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::AtomicUsize;
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
@@ -140,13 +141,13 @@ pub fn assert_adopted_projection(controller: &mut AccountsController) {
     let adopted =
         portable::import_sealed_accounts(destination.path(), &sealed, &key, binding.as_bytes())
             .unwrap();
-    assert!(connected_accounts(destination.path(), &adopted) == expected);
+    assert!(connected_accounts(&Accounts::read(destination.path()).unwrap(), &adopted) == expected);
 }
 
 #[test]
 fn projection_follows_selected_canonical_services_without_merging_identities_or_providers() {
     let (_directory, _server, _opener, _urls, mut controller) = setup(false);
-    let mut store = AccountStore::load_in(&controller.root);
+    let accounts = Accounts::read(&controller.root).unwrap();
     for identity in ["personal@example.org", "work@example.org"] {
         let mut account = new_account("email");
         account.config = serde_json::json!({
@@ -155,7 +156,7 @@ fn projection_follows_selected_canonical_services_without_merging_identities_or_
             "email": identity,
         });
         controller.selected.push(account.id.clone());
-        store.upsert(account);
+        accounts.keep(&account).unwrap();
     }
     let mut nextcloud = new_account("nextcloud");
     nextcloud.config = serde_json::json!({
@@ -164,8 +165,8 @@ fn projection_follows_selected_canonical_services_without_merging_identities_or_
         "use_files": true,
     });
     controller.selected.push(nextcloud.id.clone());
-    store.upsert(nextcloud);
-    store.save_in(&controller.root).unwrap();
+    accounts.keep(&nextcloud).unwrap();
+    accounts.project(&controller.root).unwrap();
     let connected = controller.connected();
     assert_eq!(connected.len(), 3);
     assert_eq!(connected[0].provider, Provider::Google);
@@ -176,10 +177,10 @@ fn projection_follows_selected_canonical_services_without_merging_identities_or_
     assert!(!accounts::vault_dir_in(&controller.root).exists());
     // A later canonical change must be observed, not a cached request snapshot.
     let last = controller.selected[2].clone();
-    let mut account = store.get(&last).unwrap().clone();
+    let mut account = accounts.get(last.as_str()).unwrap().unwrap();
     account.config.as_object_mut().unwrap().remove("use_files");
-    store.upsert(account);
-    store.save_in(&controller.root).unwrap();
+    accounts.keep(&account).unwrap();
+    accounts.project(&controller.root).unwrap();
     let after = controller.connected();
     assert_eq!(after.len(), 2);
     assert!(
@@ -217,7 +218,7 @@ tilo_test_env::scenario! {
         until(|| controller.poll() != AccountsStatus::SigningIn);
         assert!(controller.status() == AccountsStatus::Added);
         assert_eq!(controller.selected().len(), 1);
-        assert_eq!(AccountStore::load_in(&controller.root).len(), 1);
+        assert_eq!(Accounts::read(&controller.root).unwrap().all().unwrap().len(), 1);
         assert_eq!(server.verifiers().len(), 1);
         let selected = controller.selected().to_vec();
         assert!(
@@ -301,7 +302,7 @@ tilo_test_env::scenario! {
         assert!(std::net::TcpStream::connect(("127.0.0.1", redirect.port().unwrap())).is_err());
         assert!(controller.poll() == AccountsStatus::Ready);
         assert!(controller.selected().is_empty());
-        assert_eq!(AccountStore::load_in(&controller.root).len(), 0);
+        assert_eq!(Accounts::read(&controller.root).unwrap().all().unwrap().len(), 0);
         assert!(opener.closes.load(Ordering::SeqCst) >= 2);
     }
 

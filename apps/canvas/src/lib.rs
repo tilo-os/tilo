@@ -100,7 +100,7 @@ impl ResourceApp for App {
         let recents = cx
             .mode()
             .is_live()
-            .then(|| document::DeviceArtworkRecents::open(cx, &workspace));
+            .then(|| cx.settings::<document::DeviceArtworkRecents>());
         let tools = tools::Tools {
             recents: recents.as_ref().map_or_else(
                 || LocalState::new(document::DeviceArtworkRecents::default()),

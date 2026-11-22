@@ -141,7 +141,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@f043af2c68620b30"
+    __surface__ = "so.tilo.mail@475d66c5b44ea800"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -197,7 +197,7 @@ class Account(Resource):
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@f043af2c68620b30"
+    __surface__ = "so.tilo.mail@475d66c5b44ea800"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -207,7 +207,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@f043af2c68620b30"
+    __surface__ = "so.tilo.mail@475d66c5b44ea800"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -382,13 +382,13 @@ class Thread(Resource):
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@f043af2c68620b30"
+    __surface__ = "so.tilo.mail@475d66c5b44ea800"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@f043af2c68620b30"
+    __surface__ = "so.tilo.mail@475d66c5b44ea800"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -448,7 +448,7 @@ class Message(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@f043af2c68620b30"
+    __surface__ = "so.tilo.mail@475d66c5b44ea800"
     m2g6zrle: str  # from
     hd3o4gkq: str  # to
     cwukhrvn: str  # cc
@@ -497,7 +497,7 @@ class Draft(Resource):
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@f043af2c68620b30"
+    __surface__ = "so.tilo.mail@475d66c5b44ea800"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -613,5 +613,5 @@ class Mail(Resource):
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@f043af2c68620b30"
+    __surface__ = "so.tilo.mail@475d66c5b44ea800"
 

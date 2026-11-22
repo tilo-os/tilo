@@ -139,7 +139,7 @@ pub(super) fn admit(f: &Fixture) -> SessionAgent {
         .push(crate::apps::services::ListedAgent {
             id: agent.delegation.agent_id.clone(),
             name: "Claude Code".into(),
-            keeper: hex::encode(agent.device.user_public_key),
+            keeper: String::new(),
         });
     f.native.sessions.lock().unwrap().push((
         SESSION.into(),

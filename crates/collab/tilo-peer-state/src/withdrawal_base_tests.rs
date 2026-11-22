@@ -354,7 +354,6 @@ fn signed_write(
         cluster_id: WORKSPACE.into(),
         document_id: DOCUMENT.into(),
         envelope: Box::new(envelope),
-        own: None,
         readers: None,
     }
 }

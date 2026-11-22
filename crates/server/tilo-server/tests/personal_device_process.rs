@@ -2,8 +2,9 @@
 //!
 //! The approver and recipient are separate `tilo-enroll` processes.  This is
 //! intentionally above the crypto unit tests: it proves the on-disk projection
-//! that the shell reads is only published after the signed LAN exchange and
-//! remains enough to reach a home peer once the approving device is gone.
+//! that the shell reads is only published after the signed LAN exchange, and
+//! that the new device keeps the approving one to ask into the person's
+//! workspace.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,14 +26,8 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use ed25519_dalek::SigningKey;
 use tilo_device_identity::IdentityPaths;
 use tilo_enrollment::client::{PairingState, PairingStatus, pair_device_command};
-use tilo_server::daemon::ServerIdentity;
-use tilo_server::{Envelope, HomePeerRegistration, ServerClient, ServerConfig};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-use crate::common::client_endpoint;
-use tilo_server::WorkspaceId;
-
-const FILE_WORKSPACE: WorkspaceId = WorkspaceId::from_u128(42);
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 /// How long each `tilo-enroll` side waits for the other, as `--timeout`.
 /// Both write durably between the exchanges, and on a loaded worker that
@@ -88,9 +83,7 @@ fn write_approver_fixture(
     identities: &std::path::Path,
     root: &SigningKey,
     approver: &SigningKey,
-    home: &SigningKey,
-    server_endpoint: Option<iroh::EndpointAddr>,
-) -> HomePeerRegistration {
+) {
     let paths = IdentityPaths::under(root_dir);
     paths.ensure_directories().unwrap();
     tilo_identity::provisioning::import_single_device_root(
@@ -131,32 +124,10 @@ fn write_approver_fixture(
         .join(format!("{}.json", hex::encode(user)));
     std::fs::create_dir_all(fleet_path.parent().unwrap()).unwrap();
     std::fs::write(fleet_path, serde_json::to_vec_pretty(&fleet).unwrap()).unwrap();
-
-    let home_cert = signed_cert(root, home, "Home peer", DeviceCapabilities::member());
-    let registration = HomePeerRegistration {
-        schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-        device_node_id: hex::encode(home_cert.device_public_key),
-        server_node_id: hex::encode(tilo_server::daemon::server_node_id(home)),
-        server_endpoint,
-        label: "Home peer".into(),
-        user_public_key: hex::encode(user),
-        device_cert: Some(home_cert),
-        server_workspace_ids: vec![FILE_WORKSPACE],
-    };
-    tilo_files::native::atomic::write_creating_parent(
-        &tilo_server::home_peer_registry_path(root_dir),
-        &serde_json::to_vec_pretty(&vec![registration.clone()]).unwrap(),
-    )
-    .unwrap();
-    registration
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "keeps enrollment and offline-owner continuity in one process-level trace"
-)]
-async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_route() {
+#[test]
+fn an_approved_device_keeps_its_approver_as_introducer() {
     let workspace = tempfile::tempdir().unwrap();
     let approver_root = workspace.path().join("approver-tilo");
     let approver_identities = workspace.path().join("approver-identities");
@@ -165,32 +136,9 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     std::fs::create_dir_all(&approver_identities).unwrap();
     std::fs::create_dir_all(&recipient_identities).unwrap();
 
-    // Production Iroh endpoints publish these identities outside the guest.
-    // Concurrent CI jobs must not register the same transport identity.
     let root = SigningKey::generate(&mut UnwrapErr(SysRng));
     let approver = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let home = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let state = tempfile::tempdir().unwrap();
-    let home_cert = signed_cert(&root, &home, "Home peer", DeviceCapabilities::member());
-    let server = crate::common::start_server(
-        ServerConfig::loopback(state.path().to_path_buf()),
-        ServerIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_signing_key: home.clone(),
-            device_cert: home_cert,
-            revocations: RevocationList::new(),
-        },
-    )
-    .await
-    .unwrap();
-    let source_registration = write_approver_fixture(
-        &approver_root,
-        &approver_identities,
-        &root,
-        &approver,
-        &home,
-        Some(server.node_addr()),
-    );
+    write_approver_fixture(&approver_root, &approver_identities, &root, &approver);
 
     // Seed the recipient key before starting either process so approval pins
     // the exact device and domain-separated server service identities.
@@ -275,51 +223,22 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         assert_eq!(metadata.gid(), owner.gid(), "{} gid", fleet.display());
     }
 
-    let transferred: Vec<HomePeerRegistration> = serde_json::from_slice(
-        &std::fs::read(tilo_server::home_peer_registry_path(&recipient_root)).unwrap(),
+    // The approver has exited; the new device asks it, where its service
+    // answers, into the person's workspace once it comes up.
+    let introducer = tilo_server_protocol::servers::read_introducer(
+        &recipient_root,
+        &root.verifying_key().to_bytes(),
     )
-    .unwrap();
-    assert_eq!(transferred, vec![source_registration.clone()]);
-    assert!(
-        transferred[0]
-            .server_workspace_ids
-            .contains(&FILE_WORKSPACE)
-    );
-
-    // The approver process has exited; the transferred, authenticated server
-    // address remains enough to reach the home peer without DNS/lookup.
+    .unwrap()
+    .expect("the new device keeps its introducer");
     assert_eq!(
-        hex::encode(server.node_addr().id.as_bytes()),
-        transferred[0].server_node_id,
-        "the transferred registration names the actual home-peer service"
+        introducer.device.device_public_key,
+        approver.verifying_key().to_bytes()
     );
-    crate::common::hold_workspace(&server, FILE_WORKSPACE, &[&member_cert]).await;
-    let transferred_addr = transferred[0]
-        .server_endpoint
-        .clone()
-        .expect("enrollment must transfer the server address hint");
-    let client = ServerClient::connect(
-        client_endpoint().await,
-        transferred_addr,
-        root.verifying_key().to_bytes(),
-        member_cert.clone(),
-        recipient,
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    client
-        .send(Envelope::Subscribe {
-            workspace_id: FILE_WORKSPACE,
-        })
-        .unwrap();
-    assert!(matches!(
-        crate::common::next(&client, |env| matches!(env, Envelope::Ready { .. })).await,
-        Envelope::Ready {
-            workspace_id: FILE_WORKSPACE,
-            ..
-        }
-    ));
+    assert_eq!(
+        introducer.endpoint.id.as_bytes(),
+        &tilo_server::daemon::server_node_id(&approver)
+    );
 }
 
 fn fleet_lists(identities: &std::path::Path, user: [u8; 32], label: &str) -> bool {
@@ -472,15 +391,7 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
 
         let root = SigningKey::generate(&mut UnwrapErr(SysRng));
         let approver = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let home = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let registration = write_approver_fixture(
-            &approver_root,
-            &approver_identities,
-            &root,
-            &approver,
-            &home,
-            None,
-        );
+        write_approver_fixture(&approver_root, &approver_identities, &root, &approver);
         std::fs::set_permissions(&approver_root, std::fs::Permissions::from_mode(0o700)).unwrap();
 
         let recipient = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -584,11 +495,16 @@ wait "$approval"
             tilo_device_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
         assert_eq!(cert.capabilities, DeviceCapabilities::member());
         assert!(!recipient_identities.join("secrets").exists());
-        let transferred: Vec<HomePeerRegistration> = serde_json::from_slice(
-            &std::fs::read(tilo_server::home_peer_registry_path(&recipient_root)).unwrap(),
+        let introducer = tilo_server_protocol::servers::read_introducer(
+            &recipient_root,
+            &root.verifying_key().to_bytes(),
         )
-        .unwrap();
-        assert_eq!(transferred, vec![registration]);
+        .unwrap()
+        .expect("the new device keeps its introducer");
+        assert_eq!(
+            introducer.device.device_public_key,
+            approver.verifying_key().to_bytes()
+        );
         for path in [
             recipient_paths.user_pubkey.parent().unwrap().to_path_buf(),
             recipient_paths
@@ -605,7 +521,7 @@ wait "$approval"
             recipient_paths.device_privkey.clone(),
             recipient_paths.device_cert.clone(),
             recipient_paths.device_cert_for_user(&root.verifying_key().to_bytes()),
-            tilo_server::home_peer_registry_path(&recipient_root),
+            tilo_server_protocol::servers::introducer_path(&recipient_root),
             recipient_identities.join("pairing-status.json"),
             recipient_identities.join("fleets").join(format!(
                 "{}.json",

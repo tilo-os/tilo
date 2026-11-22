@@ -1,5 +1,5 @@
 //! The chat resource: the workspace's categories and channels, each person's
-//! read marks, reviewed feedback and moderation. Chat's resource is the chat of
+//! read marks and reviewed feedback. Chat's resource is the chat of
 //! one Tilo workspace and holds no workspaces of its own: every channel of the
 //! resource is the workspace's. The channels' messages are kept in parts beside
 //! it ([`crate::parts`]), so the resource stays small however long the conversation
@@ -152,10 +152,6 @@ pub struct Chat {
     pub read: BTreeMap<String, BTreeMap<String, crate::parts::ReadMark>>,
     /// Reviewed feedback filed in a channel, under its submission's id.
     pub feedback: Collection<FeedbackReport>,
-    /// Reports of people and messages, and what the workspace's moderators (or
-    /// its host's moderation agent) decided on them.
-    #[model(readonly)]
-    pub moderation: moderation_model::Moderation,
     /// What the workspace's server keeps of the files members post, as the host
     /// says: a member's Chat refuses, in plain words, a file its server would
     /// not take, rather than posting one that never reaches it.
@@ -714,77 +710,6 @@ impl Chat {
             marks.remove(&key);
         }
         Ok(())
-    }
-
-    /// Report message.
-    ///
-    /// Tells the workspace's moderators that this message, and its author,
-    /// should not be here.
-    #[action(audience = "agents")]
-    pub fn report_message(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("The message")] message: String,
-        #[param("Who wrote it")] author: MemberId,
-        #[param("What is wrong with it")] reason: NonBlank,
-    ) -> Result<(), Refusal> {
-        if author.id().is_empty() || author.id().len() > 4096 {
-            return Err(Refusal::new("a reported message is someone's"));
-        }
-        self.moderation.report(
-            cx,
-            author,
-            Some("so.tilo.chat".to_owned()),
-            None,
-            Some(message),
-            reason,
-        )
-    }
-
-    /// Report person.
-    ///
-    /// Tells the workspace's moderators that this person is misbehaving.
-    #[action]
-    pub fn report_person(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("The person")] person: MemberId,
-        #[param("What they did")] reason: NonBlank,
-    ) -> Result<(), Refusal> {
-        if !person.is_person() {
-            return Err(Refusal::new("there is no such person"));
-        }
-        self.moderation.report(cx, person, None, None, None, reason)
-    }
-
-    /// Decide on a report.
-    ///
-    /// Resources what was done about a person and why, settling their
-    /// reports; the workspace's governance and history carry it out.
-    #[action(moderation, audience = "agents")]
-    pub fn decide_reports(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("A new id for the decision")] id: String,
-        #[param("The person decided on")] person: MemberId,
-        #[param("The reports it settles")] reports: Vec<String>,
-        #[param("What is done, and why")] ruling: moderation_model::Ruling,
-    ) -> Result<(), Refusal> {
-        self.moderation.decide(cx, id, person, reports, ruling)
-    }
-
-    /// Overturn a decision.
-    ///
-    /// A Moderator's word against an earlier decision; the server lifts what
-    /// it imposed and restores what it took back.
-    #[action(moderation, audience = "agents")]
-    pub fn overturn_decision(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("The decision")] decision: String,
-        #[param("Why")] note: String,
-    ) -> Result<(), Refusal> {
-        self.moderation.overturn(cx, decision, note)
     }
 
     /// Mark as read.

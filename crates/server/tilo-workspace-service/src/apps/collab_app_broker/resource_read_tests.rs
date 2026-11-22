@@ -22,10 +22,6 @@ use crate::apps::test_support::{
 
 const NOTES: &str = "so.tilo.notes";
 const MAIL: &str = "so.tilo.mail";
-/// The kind of the record Mail keeps each member's own.
-const OWN_KIND: &str = "tl.so.tilo.mail";
-/// Another member of the workspace, by a byte of their user root key.
-const ANOTHER_MEMBER: &str = "b2";
 
 struct Bytes(Vec<u8>);
 impl DocumentBytes for Bytes {
@@ -44,8 +40,6 @@ struct Owner {
     /// What this device holds of a workspace's sealed records; `None` for a
     /// workspace whose every record it holds whole.
     sealed: Option<Sealed>,
-    /// The members whose own Mail record this device holds writes of, which name it theirs.
-    own_people: Mutex<Vec<String>>,
 }
 
 /// The records of a sealed workspace this device holds writes of, by record id.
@@ -66,15 +60,6 @@ impl NativeDocumentReads for Owner {
             Some(sealed) if sealed.whole.contains(&record) => ResourceRead::Sealed,
             Some(_) => ResourceRead::Own,
         }
-    }
-    fn own_resource(&self, _: &str, app: &str, record: &str) -> Option<collab_types::OwnResource> {
-        (app == MAIL).then_some(())?;
-        self.own_people
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|person| collab_types::OwnResource::of_person(person, OWN_KIND))
-            .find(|own| own.names(record))
     }
     fn holds_resource(&self, workspace: &str, app: &str, record: &str) -> bool {
         self.resource_read(workspace, app, record) != ResourceRead::Own
@@ -193,7 +178,6 @@ fn fixture_with(owner: Owner) -> Fixture {
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
-    *owner.own_people.lock().unwrap() = vec![person.clone(), ANOTHER_MEMBER.repeat(32)];
     let owner = Arc::new(owner);
     let origin = Arc::new(Origin::default());
     let services = ProcessServices {
@@ -245,17 +229,10 @@ impl Fixture {
     }
 }
 
-/// `person`'s own record of Mail, the one an app with `resources: .own` keeps.
-fn own_resource(person: &str) -> String {
-    collab_types::OwnResource::of_person(person, OWN_KIND)
-        .expect("a person's own record")
-        .document_id()
-}
-
 tilo_test_env::scenario! {
     fn records_are_read_here_as_the_workspace_allows;
 
-    phase an_agent_reads_the_workspace_records_and_its_persons_own;
+    phase an_agent_reads_the_workspace_records;
     {
         let f = fixture();
         let caller = f.agent("scribe");
@@ -263,12 +240,6 @@ tilo_test_env::scenario! {
             f.read(&caller, NOTES, "").unwrap(),
             ResourceCopy::Document(format!("{NOTES}/").into_bytes()),
             "the workspace's Notes record, with no Notes window anywhere"
-        );
-        let own = own_resource(&f.person);
-        assert_eq!(
-            f.read(&caller, MAIL, &own).unwrap(),
-            ResourceCopy::Document(format!("{MAIL}/{own}").into_bytes()),
-            "the person's own Mail record, read acting for them"
         );
     }
 
@@ -303,15 +274,6 @@ tilo_test_env::scenario! {
     {
         let f = fixture();
         let caller = f.agent("scribe");
-        // Another member's own record: the person may not read it, so neither may their agent.
-        let theirs = own_resource(&ANOTHER_MEMBER.repeat(32));
-        assert!(
-            matches!(
-                f.read(&caller, MAIL, &theirs),
-                Err(ActionCallError::Refused { .. })
-            ),
-            "another member's own record"
-        );
         // A record the workspace denies the agent: its person's authority does not widen it.
         assert!(matches!(
             f.read(&caller, NOTES, "private"),

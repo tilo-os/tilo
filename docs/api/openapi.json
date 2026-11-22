@@ -8306,256 +8306,6 @@
         ],
         "description": ""
       },
-      "chat.workspace.report-message.Arguments": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "author": {
-            "oneOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "person": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "person"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "agent": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "agent"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "bot": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "bot"
-                ],
-                "type": "object"
-              }
-            ]
-          },
-          "reason": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "message",
-          "author",
-          "reason"
-        ],
-        "description": ""
-      },
-      "chat.workspace.report-person.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "oneOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "person": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "person"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "agent": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "agent"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "bot": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "bot"
-                ],
-                "type": "object"
-              }
-            ]
-          },
-          "reason": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "reason"
-        ],
-        "description": ""
-      },
-      "chat.workspace.decide-reports.Arguments": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "person": {
-            "oneOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "person": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "person"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "agent": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "agent"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "bot": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "bot"
-                ],
-                "type": "object"
-              }
-            ]
-          },
-          "reports": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "ruling": {
-            "additionalProperties": false,
-            "properties": {
-              "model": {
-                "type": "string"
-              },
-              "outcome": {
-                "enum": [
-                  "no-action",
-                  "restrict",
-                  "ban"
-                ],
-                "type": "string"
-              },
-              "reasoning": {
-                "type": "string"
-              },
-              "reverted": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "app": {
-                      "type": "string"
-                    },
-                    "changes": {
-                      "maximum": 4294967295,
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "record": {
-                      "type": "string"
-                    },
-                    "run": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "app",
-                    "record",
-                    "run",
-                    "changes"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "until_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "outcome",
-              "reasoning"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "id",
-          "person",
-          "reports",
-          "ruling"
-        ],
-        "description": ""
-      },
-      "chat.workspace.overturn-decision.Arguments": {
-        "type": "object",
-        "properties": {
-          "decision": {
-            "type": "string"
-          },
-          "note": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "decision",
-          "note"
-        ],
-        "description": ""
-      },
       "chat.workspace.mark-read.Arguments": {
         "type": "object",
         "properties": {
@@ -11073,6 +10823,256 @@
           "receipt",
           "key",
           "markdown"
+        ],
+        "description": ""
+      },
+      "tilo.moderation.report-message.Arguments": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "author": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bot": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bot"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "reason": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "author",
+          "reason"
+        ],
+        "description": ""
+      },
+      "tilo.moderation.report-person.Arguments": {
+        "type": "object",
+        "properties": {
+          "person": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bot": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bot"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "reason": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "reason"
+        ],
+        "description": ""
+      },
+      "tilo.moderation.decide-reports.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "person": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bot": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bot"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "reports": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ruling": {
+            "additionalProperties": false,
+            "properties": {
+              "model": {
+                "type": "string"
+              },
+              "outcome": {
+                "enum": [
+                  "no-action",
+                  "restrict",
+                  "ban"
+                ],
+                "type": "string"
+              },
+              "reasoning": {
+                "type": "string"
+              },
+              "reverted": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "app": {
+                      "type": "string"
+                    },
+                    "changes": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "record": {
+                      "type": "string"
+                    },
+                    "run": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "app",
+                    "record",
+                    "run",
+                    "changes"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "until_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "outcome",
+              "reasoning"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "person",
+          "reports",
+          "ruling"
+        ],
+        "description": ""
+      },
+      "tilo.moderation.overturn-decision.Arguments": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "note"
         ],
         "description": ""
       },
@@ -37053,30 +37053,6 @@
     {
       "app": "so.tilo.chat",
       "resource": "chat.workspace",
-      "action": "report-message",
-      "arguments": "#/components/schemas/chat.workspace.report-message.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "report-person",
-      "arguments": "#/components/schemas/chat.workspace.report-person.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "decide-reports",
-      "arguments": "#/components/schemas/chat.workspace.decide-reports.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "overturn-decision",
-      "arguments": "#/components/schemas/chat.workspace.overturn-decision.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
       "action": "mark-read",
       "arguments": "#/components/schemas/chat.workspace.mark-read.Arguments"
     },
@@ -37283,6 +37259,30 @@
       "resource": "chat.drafts",
       "action": "import-previous",
       "arguments": "#/components/schemas/chat.drafts.import-previous.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tilo.moderation",
+      "action": "report-message",
+      "arguments": "#/components/schemas/tilo.moderation.report-message.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tilo.moderation",
+      "action": "report-person",
+      "arguments": "#/components/schemas/tilo.moderation.report-person.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tilo.moderation",
+      "action": "decide-reports",
+      "arguments": "#/components/schemas/tilo.moderation.decide-reports.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tilo.moderation",
+      "action": "overturn-decision",
+      "arguments": "#/components/schemas/tilo.moderation.overturn-decision.Arguments"
     },
     {
       "app": "so.tilo.chat",

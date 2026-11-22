@@ -2,7 +2,7 @@
 //! workspace's keys read and change them.
 //!
 //! The workspace's chat is [`Chat`]: its channels and categories, each person's
-//! read marks, reviewed feedback, moderation and what an agent keeps of a
+//! read marks, reviewed feedback and what an agent keeps of a
 //! conversation it answers in. What a person is writing and has not sent is
 //! [`ChatDrafts`], their own resource. The channel's messages are kept in parts
 //! beside the resource (`chat.messages`), each a resource of its own, so the chat
@@ -30,3 +30,5 @@ pub use effects::ChatEffect;
 pub use feedback::{Report, TriageEntry, TriageUpdate};
 pub use model::ChannelKind;
 pub use parts::ReadMark;
+
+pub use moderation_model::{DOCUMENT as MODERATION_DOCUMENT, Moderation, moderation};

@@ -60,11 +60,11 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
-    WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, mcp_server,
-    person_accounts, person_asking, person_connections, person_formats, person_models,
-    person_telling, person_vault, server_account, workspace_governance_address,
-    workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
-    workspace_member, workspace_person,
+    WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, formats,
+    mcp_server, person_accounts, person_asking, person_connections, person_models, person_telling,
+    person_vault, server_account, workspace_governance_address, workspace_governance_child,
+    workspace_governance_operation, workspace_governance_resource, workspace_member,
+    workspace_person,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -1681,13 +1681,12 @@ impl Workspaces {
             (WORKSPACE_GOVERNANCE_PROVIDER, Some(workspace_id)) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(asked) = mail::account_action(&request.target.address) {
-                    return self
-                        .mail_account_invoke(
-                            (Some(workspace_id), caller, certificate),
-                            asked,
-                            request,
-                        )
-                        .await;
+                    return Box::pin(self.mail_account_invoke(
+                        (Some(workspace_id), caller, certificate),
+                        asked,
+                        request,
+                    ))
+                    .await;
                 }
                 // The tree publishes each verb where a person looks for it
 
@@ -1733,7 +1732,7 @@ impl Workspaces {
             // mail server and no vault of its own.
             #[cfg(not(target_arch = "wasm32"))]
             (person_accounts::PROVIDER, _) => {
-                self.person_accounts_invoke(workspace_id, caller, certificate, request)
+                Box::pin(self.person_accounts_invoke(workspace_id, caller, certificate, request))
                     .await
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -1745,11 +1744,17 @@ impl Workspaces {
             // nothing of it is read back, and no agent asks.
             // The same holds for what their agents no longer ask them, in
             // the same store: read and taken back by the person alone, and
-            // written by no request. The formats and zone the person reads dates in
-            // are theirs alone too.
+            // written by no request.
             #[cfg(not(target_arch = "wasm32"))]
-            (person_vault::PROVIDER | person_asking::PROVIDER | person_formats::PROVIDER, _) => {
+            (person_vault::PROVIDER | person_asking::PROVIDER, _) => {
                 self.person_alone_invoke(workspace_id, caller, certificate, request)
+                    .await
+            }
+            // The formats and zone the person reads dates in: theirs alone,
+            // kept in their own workspace on their own devices.
+            #[cfg(not(target_arch = "wasm32"))]
+            (formats::PROVIDER, _) => {
+                self.formats_invoke(workspace_id, caller, certificate, request)
                     .await
             }
             // What the person calls important, and what may interrupt
@@ -2899,7 +2904,7 @@ impl ServiceWorkspaceActions {
     /// read them, as invocation `request` asks ([`person_accounts::WATCH`]):
     /// the accounts now, as its first item; [`Self::accounts_moved`] moves it
     /// on.
-    fn follow_accounts(
+    async fn follow_accounts(
         &self,
         workspaces: &Workspaces,
         caller: &Caller,
@@ -2907,6 +2912,8 @@ impl ServiceWorkspaceActions {
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionCallError> {
         let invocation = request.invocation;
+        // Read before the log is taken: the log is never held across a wait.
+        let value = workspaces.accounts_listing(&workspace).await?;
         let mut log = self.log();
         if log.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {
             return log
@@ -2919,7 +2926,7 @@ impl ServiceWorkspaceActions {
             InvocationUpdate::Item {
                 invocation,
                 sequence: 1,
-                value: workspaces.accounts_listing(&workspace)?,
+                value,
             },
         );
         let receipt = state.receipt();
@@ -2939,11 +2946,16 @@ impl ServiceWorkspaceActions {
 
     /// Read the person's accounts again for the follow `id`; whether they
     /// moved.
-    fn accounts_moved(&self, workspaces: &Workspaces, caller: &Caller, id: &InvocationId) -> bool {
+    async fn accounts_moved(
+        &self,
+        workspaces: &Workspaces,
+        caller: &Caller,
+        id: &InvocationId,
+    ) -> bool {
         let Some(workspace) = self.shared.account_follows.lock_recover().get(id).cloned() else {
             return false;
         };
-        let Ok(value) = workspaces.accounts_listing(&workspace) else {
+        let Ok(value) = workspaces.accounts_listing(&workspace).await else {
             return false;
         };
         let mut log = self.log();
@@ -3100,6 +3112,7 @@ impl ActionProvider for InWorkspace {
                     )
                     .await?;
                 host.follow_accounts(&workspaces, &caller, reach.workspace.to_string(), &request)
+                    .await
             });
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -3163,12 +3176,8 @@ impl ActionProvider for InWorkspace {
         {
             self.server.mcp_moved(workspaces, caller, id);
         }
-        // As does a follow of the person's accounts.
-        if self.server.follows_accounts(caller, id)
-            && let Some(workspaces) = self.server.shared.workspaces.get()
-        {
-            self.server.accounts_moved(workspaces, caller, id);
-        }
+        // A follow of the workspace's accounts is read again as they change
+        // ([`Self::next_change`]): reading the record waits on it.
         self.server.log().get(caller, id).cloned()
     }
 
@@ -3180,14 +3189,14 @@ impl ActionProvider for InWorkspace {
         if self.server.follows_accounts(caller, id) {
             let workspaces = self.server.shared.workspaces.get()?.clone();
             let mut changes = workspaces.person_settings_changes();
-            if self.server.accounts_moved(&workspaces, caller, id) {
-                return Some(Pending::ready(()));
-            }
             let (host, caller, id) = (self.server.clone(), caller.clone(), *id);
             return Some(self.server.spawn(async move {
+                if host.accounts_moved(&workspaces, &caller, &id).await {
+                    return;
+                }
                 // Bounded, as a waiter's deadline is only checked when woken.
                 let _ = tokio::time::timeout(FOLLOW_WAKE, changes.changed()).await;
-                host.accounts_moved(&workspaces, &caller, &id);
+                host.accounts_moved(&workspaces, &caller, &id).await;
             }));
         }
         if !self.server.follows_mcp(caller, id) {
@@ -3281,7 +3290,7 @@ const PROVIDERS: [&str; 11] = [
     // What the agents on this server learned about the person.
     LEARNED,
     // The formats and the zone the person reads dates in.
-    person_formats::PROVIDER,
+    formats::PROVIDER,
 ];
 
 /// What a server that governs workspaces answers remote actions addressed to it

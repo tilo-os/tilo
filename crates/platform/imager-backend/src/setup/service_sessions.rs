@@ -5,7 +5,8 @@ pub mod source;
 use super::account_transfer::{Connector, PasswordSealedAccounts};
 #[cfg(target_os = "linux")]
 use accounts::Account;
-use accounts::{AccountId, AccountStore, SecretVault};
+use accounts::person::PersonAccounts;
+use accounts::{AccountId, SecretVault};
 #[cfg(all(target_os = "linux", feature = "installation"))]
 use browser_continuity::sessions::OriginStorage;
 use browser_continuity::sessions::Service;
@@ -44,6 +45,19 @@ fn is_legacy_protocol(value: impl std::borrow::Borrow<u32>) -> bool {
 pub struct SelectedSession {
     pub id: String,
     pub service: Service,
+}
+impl SelectedSession {
+    /// The workspace's account of this website session, bound to the setup operation `binding`.
+    #[must_use]
+    pub fn account(&self, binding: &str) -> Account {
+        let mut account = Account::new(
+            self.id.clone(),
+            account_credentials::service_sessions::SERVICE_SESSION_TYPE,
+        );
+        account.config =
+            serde_json::json!({"service": self.service.as_str(), "setup_binding": binding});
+        account
+    }
 }
 impl Declaration {
     /// # Errors
@@ -187,7 +201,7 @@ impl PreparedSessions {
             }
         }
         let stage = private_stage()?;
-        let mut store = AccountStore::new();
+        let mut record = PersonAccounts::default();
         let mut vault = SecretVault::open_in(stage.path());
         let mut selected = Vec::new();
         for (_, (mut session, cookie_digest)) in material {
@@ -207,27 +221,24 @@ impl PreparedSessions {
                 }
                 digest.finalize().into()
             };
-            let id = session.session_id.clone();
-            let service = session.service;
+            let chosen = SelectedSession {
+                id: session.session_id.clone(),
+                service: session.service,
+            };
             let mut secret =
                 account_credentials::service_sessions::service_session_secret(&session)
                     .map_err(|_| invalid())?;
-            let mut account = Account::new(
-                id.clone(),
-                account_credentials::service_sessions::SERVICE_SESSION_TYPE,
-            );
-            account.config =
-                serde_json::json!({"service":service.as_str(), "setup_binding":binding});
+            let account = chosen.account(&binding);
             vault.put(&account.id, &secret);
             secret.password.zeroize();
             if let Some(token) = secret.token.as_mut() {
                 token.zeroize();
             }
-            store.upsert(account);
-            selected.push(SelectedSession { id, service });
+            record.keep(&account).map_err(|_| invalid())?;
+            selected.push(chosen);
         }
         vault.try_save().map_err(|_| invalid())?;
-        store.save_in(stage.path())?;
+        record.project_in(stage.path()).map_err(|_| invalid())?;
         Ok(Self {
             stage,
             identity,
@@ -246,9 +257,13 @@ impl PreparedSessions {
         let credential_store =
             account_credentials::CredentialStore::for_root(Some(self.stage.path().to_owned()));
         let mut consumer_protocol = 1;
-        for id in &ids {
+        for selected in &self.selected {
             let session = credential_store
-                .service_session(id, self.identity, &self.binding)
+                .service_session(
+                    &selected.account(&self.binding),
+                    self.identity,
+                    &self.binding,
+                )
                 .map_err(|_| invalid())?;
             consumer_protocol = consumer_protocol.max(session.schema);
         }
@@ -346,7 +361,7 @@ fn import_checked_stage(
     let mut consumer_protocol = 1;
     for selected in &declaration.sessions {
         let session = credential_store
-            .service_session(&AccountId::from(selected.id.clone()), identity, binding)
+            .service_session(&selected.account(binding), identity, binding)
             .map_err(|_| invalid())?;
         if session.service != selected.service {
             return Err(invalid());
@@ -539,7 +554,7 @@ mod tests {
         let session =
             account_credentials::CredentialStore::for_root(Some(target.path().to_owned()))
                 .service_session(
-                    &AccountId::from(declaration.sessions[0].id.clone()),
+                    &declaration.sessions[0].account("exact-operation"),
                     [7; 32],
                     "exact-operation",
                 )

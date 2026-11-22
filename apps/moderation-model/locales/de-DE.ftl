@@ -1,6 +1,7 @@
 ## Actions
 
 tilo-moderation = Moderation
-tilo-moderation-report = Person melden
-tilo-moderation-decide = Entscheiden
-tilo-moderation-overturn = Entscheidung aufheben
+tilo-moderation-report-message = Nachricht melden
+tilo-moderation-report-person = Person melden
+tilo-moderation-decide-reports = Über eine Meldung entscheiden
+tilo-moderation-overturn-decision = Entscheidung aufheben

@@ -1432,7 +1432,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         let acting = caller.acting();
         let person = acting.person_id().or_else(|| acting.acted_for_person())?;
         let person: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
-        let (formats, zone) = workspaces.person_region(&person)?;
+        let (formats, zone) = self.runtime.block_on(workspaces.region(&person))?;
         Some(tilo_agent_session::worker::PersonRegion { formats, zone })
     }
 

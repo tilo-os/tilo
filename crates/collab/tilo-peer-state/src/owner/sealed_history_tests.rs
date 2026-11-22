@@ -150,7 +150,6 @@ async fn write_all(
                         app: APP.into(),
                         document: String::new(),
                         envelope: Box::new(op),
-                        own: None,
                         readers: None,
                     },
                 })
@@ -212,7 +211,6 @@ async fn a_named_store_document_keeps_its_reader_scope_through_local_admission()
                 app: APP.into(),
                 document: document.clone(),
                 envelope: Box::new(envelope),
-                own: None,
                 readers: Some(readers.clone()),
             },
         }])
@@ -1631,7 +1629,6 @@ async fn a_write_the_holder_signed_and_admitted_is_published_once() {
                     app: APP.into(),
                     document: String::new(),
                     envelope: Box::new(op),
-                    own: None,
                     readers: None,
                 },
             })

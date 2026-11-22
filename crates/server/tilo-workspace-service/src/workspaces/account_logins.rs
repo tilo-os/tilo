@@ -80,7 +80,6 @@ pub struct AccountLogin {
 }
 
 /// The route the workspace's accounts record travels on in `workspace`.
-#[cfg(all(test, any(feature = "agents", feature = "apps")))]
 fn accounts_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
     tilo_peer_state::document_frame::DocumentRoute {
         app_id: accounts::person::ACCOUNTS_OWNER.to_owned(),
@@ -211,9 +210,8 @@ impl Workspaces {
     /// ([`accounts::email::password_item`]), released only for the servers that account names
     /// now, with the use written into the entry first, saying which app signed in to which
     /// account. Any kind of account and any app: what decides is whether `by` may use
-    /// Passwords. A grant a provider's own page left is released as its access token alone.
-    /// Where the workspace's rules ask first, this device asks the person on their approving
-    /// devices, and releases it once they said yes; a device that asks nobody answers
+    /// Passwords. Where the workspace's rules ask first, this device asks the person on their
+    /// approving devices, and releases it once they said yes; a device that asks nobody answers
     /// [`ASKS_FIRST`], and no agent is asked for its person.
     ///
     /// # Errors
@@ -277,15 +275,7 @@ impl Workspaces {
             })
             .await
             .map_err(|error| refusal.unwrap_or(error))?;
-        // A grant a provider's page left is handed out as the access token it holds now, never
-        // with the refresh token that renews it.
-        super::person_settings::oauth_grant::signs_in_with(
-            self.vault_at(workspace),
-            &self.workspace_root(workspace),
-            account,
-            released,
-        )
-        .await
+        Ok(released)
     }
 
     /// Ask `by`'s person, on their approving devices, whether `app` signs in to the account
@@ -455,58 +445,154 @@ impl Workspaces {
         account: &str,
         item: &ItemRef,
     ) -> Result<(), String> {
-        let bytes = self
-            .accounts_document(workspace)
-            .await?
-            .ok_or("this workspace keeps no accounts on this device")?;
-        let keys = match self.own_route_keys(&accounts_route(workspace), false).await {
-            Some(Ok(keys)) => Some(keys),
-            Some(Err(reason)) => return Err(reason),
-            None => None,
-        };
-        let changes = {
-            // Written as Settings writes it: each change claims Settings' verb, which every
-            // member decides against Settings' surface.
-            let mut replica = Replica::<PersonAccounts>::load(&bytes)
-                .map_err(|error| error.to_string())?
-                .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
+        self.change_workspace_accounts(workspace, |held| {
+            let mut kept = held
+                .account(account)
+                .ok_or("the workspace's accounts hold no such account")?;
+            let before = kept.config.clone();
+            accounts::email::set_password_item(&mut kept.config, Some(&item.to_string()));
+            Ok((
+                (kept.config != before)
+                    .then(|| PersonAccounts::saving(&kept))
+                    .into_iter()
+                    .collect(),
+                (),
+            ))
+        })
+        .await
+    }
+
+    /// Keep `account` in `workspace`'s accounts: added, or in place of the one with its id.
+    ///
+    /// # Errors
+    /// The record does not take the write on this device.
+    pub async fn keep_workspace_account(
+        &self,
+        workspace: &str,
+        account: &accounts::Account,
+    ) -> Result<(), String> {
+        self.change_workspace_accounts(workspace, |held| {
+            let edit = (held.account(account.id.as_str()).as_ref() != Some(account))
+                .then(|| PersonAccounts::saving(account));
+            Ok((edit.into_iter().collect(), ()))
+        })
+        .await
+    }
+
+    /// Remove the account `id` from `workspace`'s accounts. Whether it was there.
+    ///
+    /// # Errors
+    /// The record does not take the write on this device.
+    pub async fn remove_workspace_account(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Result<bool, String> {
+        self.change_workspace_accounts(workspace, |held| {
+            let kept = held.account(id).is_some();
+            let edit = kept.then(|| {
+                PersonAccounts::REMOVE_ACCOUNT.with(tilo_resource::Id::from_raw(id.to_owned()))
+            });
+            Ok((edit.into_iter().collect(), kept))
+        })
+        .await
+    }
+
+    /// Read `workspace`'s accounts, let `change` say the edits it makes of them and what it
+    /// answers, and write those edits as this device's own write of the record, made where
+    /// nobody made it yet. Each edit claims Settings' verb, which every member decides against
+    /// Settings' surface.
+    ///
+    /// # Errors
+    /// `change` refused, the record does not read, or it does not take the write on this
+    /// device.
+    pub(crate) async fn change_workspace_accounts<T>(
+        &self,
+        workspace: &str,
+        change: impl FnOnce(
+            &PersonAccounts,
+        ) -> Result<(Vec<tilo_resource::Invoke<PersonAccounts>>, T), String>,
+    ) -> Result<T, String> {
+        let bytes = self.accounts_document(workspace).await?;
+        let founding = bytes.is_none();
+        let (changes, answer) = {
+            let mut replica = match &bytes {
+                Some(bytes) => {
+                    Replica::<PersonAccounts>::load(bytes).map_err(|error| error.to_string())?
+                }
+                None => Replica::from_doc(founding_accounts(workspace)?),
+            }
+            .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
+            let state = replica.state().map_err(|error| error.to_string())?;
+            let (edits, answer) = change(&state)?;
+            if edits.is_empty() {
+                return Ok(answer);
+            }
             replica.doc_mut().set_actor(automerge::ActorId::from(
                 self.signing_device().device().to_vec(),
             ));
-            let heads = replica.heads();
-            let state = replica.state().map_err(|error| error.to_string())?;
-            let kept = state
-                .accounts
-                .get(&tilo_resource::Id::from_raw(account.to_owned()))
-                .ok_or("the workspace's accounts hold no such account")?;
-            let mut config = kept.config.clone();
-            accounts::email::set_password_item(&mut config, Some(&item.to_string()));
-            if config == kept.config {
-                return Ok(());
+            let heads = if founding {
+                Vec::new()
+            } else {
+                replica.heads()
+            };
+            for edit in edits {
+                replica
+                    .apply_confirmed(edit)
+                    .map_err(|error| error.to_string())?;
             }
-            replica
-                .apply_confirmed(PersonAccounts::SAVE_ACCOUNT.with((
-                    account.to_owned(),
-                    kept.type_id.clone(),
-                    kept.display_name.clone(),
-                    config,
-                    kept.enabled,
-                    kept.tint,
-                )))
-                .map_err(|error| error.to_string())?;
-            replica.doc_mut().save_after(&heads)
+            let changes = if founding {
+                replica.save()
+            } else {
+                replica.doc_mut().save_after(&heads)
+            };
+            (changes, answer)
+        };
+        let keys = match self
+            .own_route_keys(&accounts_route(workspace), founding)
+            .await
+        {
+            Some(Ok(keys)) => Some(keys),
+            Some(Err(reason)) => return Err(reason),
+            None => None,
         };
         self.own_write(
             workspace,
             (accounts::person::ACCOUNTS_OWNER, &accounts_document()),
             None,
             &changes,
-            false,
-            false,
+            founding,
+            founding,
             keys.as_ref(),
         )
         .await
-        .map(drop)
-        .map_err(|refusal| refusal.to_string())
+        .map_err(|refusal| refusal.to_string())?;
+        Ok(answer)
     }
+}
+
+/// The accounts record's genesis in `workspace`: the same change Settings makes it with on any
+/// device, so a record this device makes and one a window made at the same time are one
+/// document.
+#[cfg(any(feature = "agents", feature = "apps"))]
+fn founding_accounts(workspace: &str) -> Result<automerge::AutoCommit, String> {
+    let id = collab_types::document::DocumentId::parse(&accounts_document())
+        .ok_or("the accounts record's id is no document's")?;
+    let kind = collab_types::document::ResourceType::new(PersonAccounts::KIND);
+    let mut doc = automerge::AutoCommit::new();
+    collaboration::resource::genesis(
+        &mut doc,
+        &collab_types::document::DocumentCheckout::new(id, kind),
+        workspace,
+        |doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(doc)
+}
+
+/// Where this service is built without the resources' genesis, the accounts nobody kept yet are
+/// made by the first member's Settings.
+#[cfg(not(any(feature = "agents", feature = "apps")))]
+fn founding_accounts(_workspace: &str) -> Result<automerge::AutoCommit, String> {
+    Err("The workspace's accounts are made by Settings on a member's device first".to_owned())
 }

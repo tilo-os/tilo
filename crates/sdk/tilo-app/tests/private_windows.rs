@@ -51,7 +51,7 @@ impl ResourceApp for Browsing {
     const PRIVATE_WINDOWS: bool = true;
 
     fn view(cx: &mut ViewCx<Tabs>) -> Element {
-        let person = cx.person::<Visits>();
+        let person = cx.profile_resource::<Visits>();
         SEEN.with(|seen| *seen.borrow_mut() = Some((cx.is_private(), person.is_some())));
         if let Some(visits) = person {
             visits

@@ -284,38 +284,38 @@ tilo_test_env::scenario! {
         let mut talk = Talk::new();
         talk.apply(post("buy cheap links")).unwrap();
         let message = talk.said("buy cheap links");
-        let mut ada = talk.chat;
-        let mut bo = ada.fork().as_author(BO);
-        bo.apply(Chat::REPORT_MESSAGE.with(chat::ReportMessage {
+        use chat_model::{Moderation, moderation};
+        let mut bo = ui::tilo_resource::Replica::<Moderation>::new().as_author(BO);
+        bo.apply(Moderation::REPORT_MESSAGE.with(moderation::ReportMessage {
             message: message.to_string(),
             author: MemberId::person(ADA),
             reason: "spam".parse().unwrap(),
         }))
         .unwrap();
         let state = bo.state().unwrap();
-        let report = state.moderation.open_reports().next().unwrap();
+        let report = state.open_reports().next().unwrap();
         assert_eq!(report.person, MemberId::person(ADA), "a message report names its author");
         assert_eq!(report.item, Some(message.to_string()));
         assert!(
-            bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
+            bo.apply(Moderation::REPORT_PERSON.with(moderation::ReportPerson {
                 person: MemberId::person(BO),
                 reason: "me".parse().unwrap(),
             }))
             .is_err(),
             "nobody reports themselves"
         );
-        bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
+        bo.apply(Moderation::REPORT_PERSON.with(moderation::ReportPerson {
             person: MemberId::person(ADA),
             reason: "spamming the channel".parse().unwrap(),
         }))
         .unwrap();
         assert_eq!(
-            bo.state().unwrap().moderation.open_reports_on(&MemberId::person(ADA)).count(),
+            bo.state().unwrap().open_reports_on(&MemberId::person(ADA)).count(),
             2
         );
 
         let field = |id: &str| {
-            Chat::declarations()
+            Moderation::declarations()
                 .into_iter()
                 .find(|decl| decl.id == id)
                 .map(|decl| decl.field)

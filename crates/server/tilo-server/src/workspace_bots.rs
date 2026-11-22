@@ -17,57 +17,19 @@
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_action_policy::bot::{MODERATION, MODERATION_GRANT, moderation_grant};
-use tilo_action_policy::{Actor, Change, Grant, MemberAccess, MemberId, WorkspacePolicy};
+use tilo_action_policy::{ActionKind, Grant, MemberAccess};
+use tilo_actions::MemberId;
 use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Judge, ModerationAgent};
 use tilo_resource::Resource as _;
-use tilo_server_session::workspaces::RemoveMemberRequest;
 use tilo_user_identity::DeviceCert;
 
 use crate::moderation::{ReplicaApi, files_a_report};
 use crate::workspaces::{ResourceWrite, Workspaces};
+use chat::{MODERATION_DOCUMENT, Moderation};
 
 /// The app whose record holds the workspace's reports and decisions.
 use tilo_app_id::apps::CHAT;
-
-/// Enforces one of the moderation agent's governance changes on `workspace` as
-/// the workspace's root, held to the workspace's policy like a Moderator's own.
-pub async fn govern(
-    workspaces: &Workspaces,
-    workspace: &str,
-    host: &DeviceCert,
-    change: &Change,
-) -> Result<(), String> {
-    let person = match change {
-        Change::Restrict { person, .. }
-        | Change::Unrestrict { person }
-        | Change::Ban { person }
-        | Change::Unban { person } => person,
-        other => return Err(format!("the moderation agent does not {}", other.action())),
-    };
-    let user_public_key: [u8; 32] = hex::decode(person)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| format!("{person} is not a person"))?;
-    let request = RemoveMemberRequest {
-        request_id: *blake3::hash(
-            &serde_json::to_vec(&(change, tilo_clock::unix_now_ns())).unwrap_or_default(),
-        )
-        .as_bytes(),
-        user_public_key,
-    };
-    let done = match change {
-        Change::Restrict { until_ms, .. } => {
-            workspaces
-                .restrict_member(workspace, host, request, *until_ms)
-                .await
-        }
-        Change::Unrestrict { .. } => workspaces.unrestrict_member(workspace, host, request).await,
-        Change::Ban { .. } => workspaces.ban_member(workspace, host, request).await,
-        _ => workspaces.unban_member(workspace, host, request).await,
-    };
-    done.map(drop).map_err(|error| error.to_string())
-}
 
 /// The workspace's moderation agent, installed by the workspace's root and woken by
 /// filed reports.
@@ -76,7 +38,8 @@ pub struct ModerationBot<J> {
     workspace: String,
     host: DeviceCert,
     agent: std::sync::Arc<ModerationAgent<J>>,
-    /// The chat record's heads the agent has read up to, hex; `None` until
+    certifier: membership::HostRootCertifier,
+    /// The moderation record's heads the agent has read up to, hex; `None` until
     /// its first look, which answers whatever reports are open.
     cursor: Option<Vec<String>>,
 }
@@ -88,27 +51,36 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
         workspaces: Workspaces,
         workspace: String,
         host: DeviceCert,
+        owner_root: ed25519_dalek::SigningKey,
         agent: ModerationAgent<J>,
     ) -> Self {
         Self {
             workspaces,
             workspace,
             host,
+            certifier: membership::HostRootCertifier::new(owner_root),
             agent: std::sync::Arc::new(agent),
             cursor: None,
         }
     }
 
     /// Answer the workspace's reports at start, then each time a member's write
-    /// to the chat files one, until the workspace is no longer governed here.
+    /// to the moderation record files one, until the workspace is no longer governed here.
     pub async fn run(mut self) {
         let mut writes = self.workspaces.document_writes();
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        // The first tick is now; the first pass waits a whole period, as later ones do.
+        tick.tick().await;
         loop {
             if let Err(error) = self.wake().await {
                 tracing::warn!(workspace = %self.workspace, %error, "moderation agent did not finish a look");
             }
             loop {
-                match writes.recv().await {
+                let next = tokio::select! {
+                    _ = tick.tick() => break,
+                    next = writes.recv() => next,
+                };
+                match next {
                     Ok(write) if self.watches(&write) => break,
                     Ok(_) => {}
                     // Missed writes are read from the record itself.
@@ -120,24 +92,24 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
     }
 
     fn watches(&self, write: &ResourceWrite) -> bool {
-        write.workspace == self.workspace && write.app == CHAT && write.record.is_empty()
+        write.workspace == self.workspace
+            && write.app == CHAT
+            && write.record == MODERATION_DOCUMENT
     }
 
-    /// Read the chat's changes after the cursor and, when one of them filed
+    /// Read the moderation record's changes after the cursor and, when one of them filed
     /// a report (or on the first look), decide every open report: while a
     /// person who governs the workspace has it turned on.
     ///
     /// # Errors
-    /// The workspace's grants or the chat record could not be read, opened or
-    /// written.
+    /// The workspace's grants or records could not be read, opened or written.
     pub async fn wake(&mut self) -> Result<(), String> {
         // Turned off, it looks at nothing: the reports wait from where it
         // left off until a person turns it on again.
-        let Some(grant) = installed_moderation_grant(&self.workspaces, &self.workspace).await?
-        else {
+        if !enabled(&self.workspaces, &self.workspace).await? {
             return Ok(());
-        };
-        let Some(bytes) = self.record().await? else {
+        }
+        let Some(bytes) = self.document(MODERATION_DOCUMENT).await? else {
             return Ok(());
         };
         let (reported, heads) = reports_since(&self.workspace, &bytes, self.cursor.as_deref())?;
@@ -145,30 +117,48 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
             self.cursor = Some(heads);
             return Ok(());
         }
-        let root = hex::encode(self.host.user_public_key);
-        let parts = self.parts().await?;
-        let (workspaces, governed, host) = (
-            self.workspaces.clone(),
-            self.workspace.clone(),
-            self.host.clone(),
+        self.keep_bot().await?;
+        let bot = self.certifier.device_key(MODERATION);
+        let device = bot.verifying_key().to_bytes();
+        let access = self
+            .workspaces
+            .bot_access(&self.workspace, device)
+            .await
+            .map_err(|error| error.to_string())?;
+        let decision = tilo_actions::action_node(
+            &access.policy.node(),
+            CHAT,
+            Moderation::KIND,
+            MODERATION_DOCUMENT,
+            Some(tilo_action_policy::roles::MODERATION_FIELD),
+            "decide-reports",
         );
+        if !reads(&access, MODERATION_DOCUMENT)
+            || !access.allows(&decision, ActionKind::Undoable, tilo_clock::wall())
+        {
+            return Err("the moderation bot may not read and decide reports".into());
+        }
+        let chat = if reads(&access, "") {
+            self.document("").await?
+        } else {
+            None
+        };
+        let parts = self.parts(&access).await?;
+        let workspaces = self.workspaces.clone();
+        let governed = self.workspace.clone();
+        let reports = moderation_id()?;
         let agent = std::sync::Arc::clone(&self.agent);
         let handle = tokio::runtime::Handle::current();
-        // The replica runs app code in a confined worker and is driven
-        // synchronously from one thread, so the whole look is held on a
-        // blocking thread; the workspace's locks are only taken per call.
-        let (mutation, beside) = tokio::task::spawn_blocking(move || {
-            let mut replica = bot_replica(&governed, &root, grant, bytes, parts)?;
-            let mut govern =
-                |change: Change| handle.block_on(govern(&workspaces, &governed, &host, &change));
-            let mut api = chat_api(&mut replica, &mut govern);
+        // Ask the judge off the workspace lock. The replica keeps only the
+        // report IDs sent for judgment, even if new reports arrive meanwhile.
+        let (mutation, mut beside) = tokio::task::spawn_blocking(move || {
+            let mut replica = bot_replica(&governed, access, chat, bytes, parts)?;
+            let mut api = ReplicaApi::new(&mut replica, reports, tilo_clock::unix_now_ms_i64());
             let moderation = api
                 .moderation()
-                .ok_or("the chat's moderation record did not read")?;
+                .ok_or("the workspace moderation record did not read")?;
             for person in ModerationAgent::<J>::reported(&moderation) {
                 let look = ModerationAgent::<J>::look(&mut api, &moderation, &person);
-                // A model that gives no verdict leaves the report open for
-                // a human Moderator.
                 let (verdict, model) = match handle.block_on(agent.verdict(&look)) {
                     Ok(answer) => answer,
                     Err(error) => {
@@ -176,6 +166,16 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
                         continue;
                     }
                 };
+                // A governance change while the model was thinking takes
+                // effect before it can enforce this verdict.
+                let current = handle
+                    .block_on(workspaces.bot_access(&governed, device))
+                    .map_err(|error| error.to_string())?;
+                if !reads(&current, MODERATION_DOCUMENT)
+                    || !current.allows(&decision, ActionKind::Undoable, tilo_clock::wall())
+                {
+                    return Err("the moderation bot's grant no longer reaches this decision".into());
+                }
                 let enforced = ModerationAgent::<J>::enforce(&mut api, look, verdict, model);
                 for failure in enforced.failures {
                     tracing::warn!(%person, %failure, "moderation step failed");
@@ -190,20 +190,73 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
         .await
         .map_err(|error| error.to_string())??;
         if let Some(mutation) = mutation {
-            self.publish("", mutation).await?;
+            self.publish(&bot, "", mutation).await?;
         }
-        // What it took back of the messages is in the chat's parts.
+        // Carry out Chat's undos before publishing the decision that names them.
+        beside.sort_by_key(|(record, _)| record.as_str() == MODERATION_DOCUMENT);
         for (record, mutation) in beside {
-            self.publish(record.as_str(), mutation).await?;
+            self.publish(&bot, record.as_str(), mutation).await?;
         }
-        // Remember only the heads the bot looked at. Members may have filed
-        // more reports while it waited for a verdict or published its changes.
+        // Remember only what the bot looked at, not reports filed during judgment.
         self.cursor = Some(heads);
         Ok(())
     }
 
+    async fn keep_bot(&self) -> Result<(), String> {
+        let installed_at_ms = self
+            .workspaces
+            .installed_bot(&self.workspace, MODERATION)
+            .await
+            .map_err(|error| error.to_string())?
+            .map_or_else(tilo_clock::unix_now_ms_i64, |bot| {
+                bot.installation.installed_at_ms
+            });
+        let shortcut = tilo_automation::Shortcut {
+            id: MODERATION.into(),
+            name: "Moderation".into(),
+            inputs: Vec::new(),
+            steps: Vec::new(),
+            step_timeout_secs: None,
+            output: None,
+            grant: Vec::new(),
+            triggers: Vec::new(),
+            saved_by: None,
+            saved_proof: None,
+        };
+        // The built-in runner uses the installed Chat-only grant. The
+        // governed identity adds no program grants.
+        let program = tilo_automation::program::canonical_bytes(&shortcut)
+            .map_err(|error| error.to_string())?;
+        let bot = installed::InstalledBot {
+            installation: MODERATION.into(),
+            entry: MODERATION.into(),
+            name: shortcut.name,
+            program: String::from_utf8(program).map_err(|error| error.to_string())?,
+            inputs: serde_json::Map::new(),
+            installed_at_ms,
+            release: String::new(),
+        };
+        membership::keep_member(
+            &self.workspaces,
+            &self.workspace,
+            &self.host,
+            &self.certifier,
+            &bot,
+        )
+        .await?;
+        self.workspaces.keep_bot_device(
+            &self.workspace,
+            MODERATION,
+            self.certifier.device_key(MODERATION),
+        );
+        Ok(())
+    }
+
     /// The parts of the chat's messages the workspace holds, each whole.
-    async fn parts(&self) -> Result<Vec<(collab_types::document::DocumentId, Vec<u8>)>, String> {
+    async fn parts(
+        &self,
+        access: &MemberAccess,
+    ) -> Result<Vec<(collab_types::document::DocumentId, Vec<u8>)>, String> {
         let mut parts = Vec::new();
         for (app, record) in self
             .workspaces
@@ -211,9 +264,11 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
             .await
             .map_err(|error| error.to_string())?
         {
-            let Some(part) = collab_types::document::DocumentId::parse(&record)
-                .filter(|record| app == CHAT && chat::parts::part_index(record).is_some())
-            else {
+            let Some(part) = collab_types::document::DocumentId::parse(&record).filter(|record| {
+                app == CHAT
+                    && chat::parts::part_index(record).is_some()
+                    && reads(access, record.as_str())
+            }) else {
                 continue;
             };
             if let Some(bytes) = self
@@ -228,36 +283,40 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
         Ok(parts)
     }
 
-    async fn record(&self) -> Result<Option<Vec<u8>>, String> {
+    async fn document(&self, record: &str) -> Result<Option<Vec<u8>>, String> {
         self.workspaces
-            .resource_document(&self.workspace, CHAT, "")
+            .resource_document(&self.workspace, CHAT, record)
             .await
             .map_err(|error| error.to_string())
     }
 
-    /// Put the bot's changes into the workspace's chat record (`""`) or one of
-    /// its parts, as the governor publishes any change: they keep their own
-    /// entries, so history names the bot for its installer.
-    async fn publish(&self, record: &str, mutation: DocumentMutation) -> Result<(), String> {
+    async fn publish(
+        &self,
+        bot: &ed25519_dalek::SigningKey,
+        record: &str,
+        mutation: DocumentMutation,
+    ) -> Result<(), String> {
         let bytes = match mutation {
             DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
         };
         self.workspaces
-            .author_application(
+            .publish_as_bot(
                 &self.workspace,
                 &self.host,
+                bot,
                 &AppCatalogue::native(),
                 CHAT,
                 record,
-                |doc| {
-                    tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                        .map(drop)
-                        .map_err(|error| error.to_string())
-                },
+                &bytes,
             )
             .await
             .map_err(|error| error.to_string())
     }
+}
+
+fn reads(access: &MemberAccess, record: &str) -> bool {
+    let node = collab_types::document_node(access.workspace(), CHAT, record);
+    access.allows(&node, ActionKind::Read, tilo_clock::wall())
 }
 
 /// Whether a change after `since` filed a report (always, with no cursor
@@ -274,8 +333,8 @@ fn reports_since(
     };
     let events = tilo_agent_session::bot::events_since(
         workspace,
-        "",
-        chat::Chat::KIND,
+        MODERATION_DOCUMENT,
+        Moderation::KIND,
         doc.document(),
         since,
     );
@@ -348,54 +407,69 @@ async fn installed_moderation_grant(
             && grant.node == expected.node
             && grant.kinds == expected.kinds
             && grant.answer == expected.answer
-            && grant.lifetime == expected.lifetime
+            && grant.is_live(&tilo_action_policy::Context::at_time(tilo_clock::wall()))
     }))
 }
 
-/// The moderation agent's replica of the workspace's chat, holding the parts of
-/// its messages beside it: the root's installation, granted reading and
-/// undoable changes in the workspace.
+fn moderation_id() -> Result<collab_types::document::DocumentId, String> {
+    collab_types::document::DocumentId::parse(MODERATION_DOCUMENT)
+        .ok_or_else(|| "the moderation record has no document id".to_owned())
+}
+
 fn bot_replica(
     workspace: &str,
-    installer: &str,
-    grant: Grant,
-    bytes: Vec<u8>,
+    access: MemberAccess,
+    chat: Option<Vec<u8>>,
+    reports: Vec<u8>,
     parts: Vec<(collab_types::document::DocumentId, Vec<u8>)>,
 ) -> Result<Replica, String> {
-    let access = MemberAccess::person(WorkspacePolicy::new(workspace, installer), installer)
-        .acting_as(Actor::Member(MemberId::bot(MODERATION)), [grant]);
+    let installer = access
+        .person_id()
+        .ok_or("the moderation bot has no installer")?
+        .to_owned();
+    let seed = chat.map_or(Seed::New, |bytes| Seed::Existing {
+        record: collab_types::document::DocumentId::package_primary(),
+        changes: vec![bytes],
+    });
     let mut replica = Replica::open(
         &AppCatalogue::native(),
         CHAT,
         workspace,
-        &tilo_actions::MemberId::bot(MODERATION),
+        &MemberId::bot(MODERATION),
         ReplicaActor::Bot {
             installation: MODERATION.into(),
-            installer: installer.into(),
+            installer,
             access,
         },
-        Seed::Existing {
-            record: collab_types::document::DocumentId::package_primary(),
-            changes: vec![bytes],
-        },
+        seed,
     )
     .map_err(|error| error.to_string())?;
+    replica
+        .apply_document(&moderation_id()?, &DocumentMutation::Snapshot(reports))
+        .map_err(|error| error.to_string())?;
+    // The bot opens moderation and message history. Answer the other
+    // workspace routes so the replica can publish the records it holds.
+    for resource in collab_types::WORKSPACE_DOCUMENTS
+        .iter()
+        .filter(|resource| resource.app == CHAT && resource.kind != Moderation::KIND)
+    {
+        let id = collab_types::document::DocumentId::parse(&collab_types::workspace_document_id(
+            resource.kind,
+        ))
+        .ok_or("a Chat workspace resource has no document id")?;
+        let answer = if resource.kind == "tilo.workspace.emoji" {
+            collaboration::resource::WorkspaceAnswer::HoldsNone
+        } else {
+            collaboration::resource::WorkspaceAnswer::NotYours
+        };
+        replica.workspace_answered(id, answer);
+    }
     for (part, bytes) in parts {
-        // A part it cannot hold leaves only that part's posts out of its
-        // look, not every report.
         if let Err(error) = replica.apply_document(&part, &DocumentMutation::Snapshot(bytes)) {
             tracing::warn!(record = %part.as_str(), %error, "moderation agent leaves out a part of the chat");
         }
     }
     Ok(replica)
-}
-
-fn chat_api<'a>(
-    replica: &'a mut Replica,
-    govern: &'a mut dyn FnMut(Change) -> Result<(), String>,
-) -> ReplicaApi<'a, chat::Chat> {
-    let now = tilo_clock::unix_now_ms_i64();
-    ReplicaApi::new(replica, |chat: &chat::Chat| &chat.moderation, govern, now)
 }
 
 pub mod attachments;

@@ -618,7 +618,7 @@ fn out_of_band_payload(
         server_node_id: tilo_server::daemon::server_node_id(device),
         public_identity_json: Some(public_identity_document(user, "My Tilo identity")?),
         fleet_json: Some(serde_json::to_vec_pretty(&fleet)?),
-        home_peers_json: Some(b"[]".to_vec()),
+        introducer: None,
         cert,
     })
 }

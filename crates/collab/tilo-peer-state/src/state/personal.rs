@@ -78,9 +78,6 @@ const DEVICES_KIND: &str = "identity.devices";
 /// have, which of their devices holds, hosts and shows each, and where each
 /// is hosted (`tilo_user_identity::WorkspaceDirectory` reads and writes it).
 pub const WORKSPACES_KIND: &str = "identity.workspaces";
-/// The kind of the person's resource that holds the settings that follow
-/// them between their devices: one value per setting, under its key.
-pub const SETTINGS_KIND: &str = "identity.settings";
 /// The kind of the person's resource that holds the Wi-Fi passphrases their
 /// devices share: one sealed credential per network, under its id in hex.
 pub const WIFI_KIND: &str = "identity.wifi";
@@ -759,7 +756,7 @@ impl PersonalStore {
     }
 
     /// The person's own resource of `kind` ([`WORKSPACES_KIND`],
-    /// [`SETTINGS_KIND`]) as this device holds it: the whole document. `None`
+    /// [`WIFI_KIND`]) as this device holds it: the whole document. `None`
     /// while no device of theirs wrote it. No app reads these: the session
     /// keeps them for the person.
     #[must_use]
@@ -1187,6 +1184,7 @@ impl PersonalStore {
         let author = OwnStoreAuthor {
             device: hex::encode(source),
             store: &store_key,
+            subtree: owner,
         };
         // What a device hands on was signed when its owner wrote it, which may
         // be long before: its age is no reason to refuse it.
@@ -1271,13 +1269,6 @@ impl PersonalStore {
             .artifact_resources
             .insert(envelope.artifact, route.record.clone());
         store_key.clone_into(&mut state.workspace);
-        // A resource of a device's own subtree is that device's, as a member's
-        // own document in a workspace is that member's.
-        if let Some(owner) = resource_owner(&route.record) {
-            state
-                .artifact_owners
-                .insert(envelope.artifact, hex::encode(owner));
-        }
         candidate
     }
 
@@ -1339,7 +1330,6 @@ impl PersonalStore {
             envelope: Box::new(envelope),
             // The person's own store holds only theirs: none is a member's own
             // resource of a workspace.
-            own: None,
             readers: None,
         }
     }
@@ -1462,9 +1452,6 @@ impl PersonalStore {
             channel.artifact_apps.insert(artifact, document.app);
             channel.artifact_resources.insert(artifact, document.record);
             channel.workspace.clone_from(&store_key);
-            if let Some(owner) = resource_owner(&route.record) {
-                channel.artifact_owners.insert(artifact, hex::encode(owner));
-            }
             channel.surfaces = default_surfaces();
             channel.last_seq_per_author = document
                 .watermarks
@@ -1683,6 +1670,9 @@ struct OwnStoreAuthor<'a> {
     device: String,
     /// The store's key: the workspace its nodes are under.
     store: &'a str,
+    /// The device whose own subtree the written resource is in, when it is in one
+    /// ([`resource_owner`]): that device's alone to write.
+    subtree: Option<[u8; 32]>,
 }
 
 impl collab_types::ChangeAuthor for OwnStoreAuthor<'_> {
@@ -1693,6 +1683,12 @@ impl collab_types::ChangeAuthor for OwnStoreAuthor<'_> {
         kind: ActionKind,
         cx: &Context<'_>,
     ) -> Answer {
+        if self
+            .subtree
+            .is_some_and(|device| hex::encode(device) != self.device)
+        {
+            return Answer::Deny;
+        }
         let owner = Authority::person(
             Party::new(vec![Grantee::person(self.device.clone())], []).owning(TreePath::root()),
         )
@@ -2525,7 +2521,6 @@ mod tests {
                     cluster_id: a.store_key(),
                     document_id: route.record,
                     envelope: Box::new(envelope),
-                    own: None,
                     readers: None,
                 },
                 now(),

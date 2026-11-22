@@ -450,8 +450,16 @@ mod live {
         let target = target.to_owned();
         ui::rt::app()
             .spawn_blocking(move || {
+                // The calendar of a Google account a member turned it on for signs in with
+                // that account's grant.
+                let account = config.oauth_account_id.as_deref().map(|id| {
+                    accounts::Account::new(
+                        accounts::AccountId::from(id),
+                        accounts::cloud_types::GOOGLE_DRIVE,
+                    )
+                });
                 service.authorised(
-                    config.oauth_account_id.as_deref(),
+                    account.as_ref(),
                     &config.server_url,
                     &config.username,
                     &config.password,

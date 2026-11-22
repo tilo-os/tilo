@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use account_credentials::{CredentialStore, OAuthCloud};
 use accounts::cloud_types::{self, FilesMode};
-use accounts::{Account, AccountId, AccountStore};
+use accounts::{Account, AccountId};
 use anyhow::{Context as _, Result, anyhow, bail};
 use cloud_source::{CloudSource, ExportFormat, ItemId, ItemKind};
 use serde_json::{Value, json};
@@ -73,12 +73,10 @@ pub fn connect(
         password_account(source, type_id, url, login, secret_file)?
     };
     cloud_types::set_files_mode(&mut account.config, FilesMode::Import);
-    let id = migration_sources::vault::persist(
-        &root,
-        || Ok::<_, anyhow::Error>(AccountStore::load_in(&root)),
-        account,
-        secret,
-    )?;
+    let mut workspace = super::workspace::Held::connect()?;
+    let id = migration_sources::vault::persist::<anyhow::Error>(&root, &account, secret)?;
+    let saving = accounts::person::PersonAccounts::saving(&account);
+    super::workspace::change_accounts(&mut workspace, (&saving.address(), &saving.arguments))?;
     place.keep(&place.path(source.key, "account.json"), &id.as_str())?;
     Ok(json!({
         "source": source.key,
@@ -238,16 +236,13 @@ fn password_account(
 
 /// The account `source` was connected with last.
 fn account(place: &Place, source: &Source) -> Result<Account> {
-    let root = config_root()?;
-    let store = AccountStore::load_in(&root);
+    let record = super::workspace::accounts(&mut super::workspace::Held::connect()?)?;
     let type_id = type_of(source.key)?;
     let kept: Option<String> = place.read(&place.path(source.key, "account.json"))?;
-    store
-        .all()
-        .iter()
-        .filter(|account| account.type_id.as_str() == type_id)
+    record
+        .of_type(type_id)
+        .into_iter()
         .find(|account| kept.as_ref().is_none_or(|id| account.id.as_str() == id))
-        .cloned()
         .ok_or_else(|| {
             anyhow!(
                 "{} is not connected: {}",

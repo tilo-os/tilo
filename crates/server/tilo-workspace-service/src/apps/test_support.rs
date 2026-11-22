@@ -132,40 +132,38 @@ impl WorkspaceAuthority for WorkspaceTreeHandle {
     }
 }
 
-/// A workspace's `chat.agent` record as a test holds it: which agents it
-/// names, and who keeps each.
+/// A workspace's record of its agents as a test holds it: which agents it
+/// names, by workspace.
 #[derive(Clone, Default)]
 pub struct KeptAgents {
-    kept: Vec<(String, String, String)>,
+    listed: Vec<(String, String)>,
 }
 
 impl KeptAgents {
-    /// The record of `workspace` naming `agent`, kept by `keeper`.
+    /// The record of `workspace` naming `agent`.
     #[must_use]
-    pub fn keeping(mut self, workspace: &str, agent: &str, keeper: &str) -> Self {
-        self.kept
-            .push((workspace.to_owned(), agent.to_owned(), keeper.to_owned()));
+    pub fn listing(mut self, workspace: &str, agent: &str) -> Self {
+        self.listed.push((workspace.to_owned(), agent.to_owned()));
         self
     }
 }
 
 impl crate::apps::services::AgentRoster for KeptAgents {
     fn listed(&self, workspace: &str) -> Vec<crate::apps::services::ListedAgent> {
-        self.kept
+        self.listed
             .iter()
-            .filter(|(held, _, _)| held == workspace)
-            .map(|(_, agent, keeper)| crate::apps::services::ListedAgent {
+            .filter(|(held, _)| held == workspace)
+            .map(|(_, agent)| crate::apps::services::ListedAgent {
                 id: agent.clone(),
                 name: agent.clone(),
-                keeper: keeper.clone(),
+                keeper: String::new(),
             })
             .collect()
     }
 }
 
 /// The workspaces' agents, read off the grants a fixture gave them: an agent
-/// works in a workspace whose grants name it, kept by whoever owns the
-/// workspace.
+/// works in a workspace whose grants name it.
 struct TreeAgents(crate::apps::test_support::WorkspaceTreeHandle);
 
 impl crate::apps::services::AgentRoster for TreeAgents {
@@ -173,36 +171,15 @@ impl crate::apps::services::AgentRoster for TreeAgents {
         Vec::new()
     }
 
-    fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
-        let held = {
-            let tree = self.0.read();
-            crate::apps::services::workspace_in(&tree.desktop, workspace)?.clone()
-        };
-        let node = held.node();
-        let kept = held.policy.grants.iter().any(|grant| {
-            grant.node == node
-                && grant.answer == Answer::Allow
-                && grant.grantee.agent_id() == Some(agent)
-        });
-        if !kept {
-            return None;
-        }
-        // A fixture workspace names its owner, or — where it has none — is
-        // kept by the one person its grants speak for.
-        if let Some(owner) = held.owner() {
-            return Some(owner.clone());
-        }
-        let mut people: Vec<&str> = held
-            .policy
-            .grants
-            .iter()
-            .filter_map(|grant| grant.grantee.person_id())
-            .collect();
-        people.sort_unstable();
-        people.dedup();
-        match people.as_slice() {
-            [only] => Some((*only).to_owned()),
-            _ => None,
-        }
+    fn lists(&self, workspace: &str, agent: &str) -> bool {
+        let tree = self.0.read();
+        crate::apps::services::workspace_in(&tree.desktop, workspace).is_some_and(|held| {
+            let node = held.node();
+            held.policy.grants.iter().any(|grant| {
+                grant.node == node
+                    && grant.answer == Answer::Allow
+                    && grant.grantee.agent_id() == Some(agent)
+            })
+        })
     }
 }

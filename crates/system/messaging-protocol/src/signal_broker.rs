@@ -22,7 +22,7 @@ use tilo_messaging::{
 /// association and provider fingerprint. Editable metadata alone is insufficient.
 pub struct Authorization {
     pub directory: tilo_contact_directory::ContactDirectory,
-    pub accounts: accounts::AccountStore,
+    pub accounts: accounts::person::PersonAccounts,
     pub binding: LiveBinding,
     pub route: Route,
     retained: Option<Arc<dyn std::any::Any + Send + Sync>>,
@@ -32,7 +32,7 @@ impl Authorization {
     /// This snapshot alone creates no credential permission.
     pub fn new(
         directory: tilo_contact_directory::ContactDirectory,
-        accounts: accounts::AccountStore,
+        accounts: accounts::person::PersonAccounts,
         binding: LiveBinding,
         route: Route,
     ) -> Self {
@@ -205,7 +205,7 @@ impl SignalBroker {
             .map_err(|_| SendError::Revoked)?;
         let enabled = auth
             .accounts
-            .get(&accounts::AccountId::new(route.sender.as_str()))
+            .account(route.sender.as_str())
             .is_some_and(|account| account.enabled);
         auth.listed(route, &self.scope, enabled)?;
         Ok(auth)

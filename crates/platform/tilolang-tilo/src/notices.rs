@@ -161,15 +161,12 @@ struct Held {
 
 impl Held {
     /// The notice this notice shows as, and where choosing it lands: the app that keeps what it
-    /// opens, the document of the workspace that person's app keeps (their own, for an app that
-    /// keeps one), and the resource itself, published as the session names it.
+    /// opens, the workspace's document of the app, and the resource itself, published as the
+    /// session names it.
     fn shown(&self, host: &Host, person: &str) -> Option<Notice> {
         let schema = crate::schema::lookup(&self.opens.ty)?;
         let package = host.package(&schema.app);
-        let record = package
-            .as_ref()
-            .and_then(|package| crate::own_document(&package.meta, person))
-            .unwrap_or_default();
+        let record = String::new();
         let app = package.as_ref().map_or_else(
             || schema.app.clone(),
             |package| crate::publish::app_name(&*host.runtime().words(), &package.meta),

@@ -6,8 +6,79 @@ use serde_json::{Value, json};
 use test_http::{Reply, Request, Responder};
 use zeroize::Zeroizing;
 
+use crate::account_store::Accounts;
 use crate::migration_store::MigrationStore;
+use accounts::AccountId;
+use accounts::person::PersonAccounts;
 use migration_sources::service::*;
+use tilo_resource::Replica;
+
+/// The destination's accounts record, read so a landed edit can be kept and projected, as the
+/// page does for the workspace whose session has not started yet.
+fn record(config_root: &Path) -> Replica<PersonAccounts> {
+    let mut record = Replica::<PersonAccounts>::new();
+    for account in Accounts::read(config_root).unwrap().all().unwrap() {
+        record
+            .apply_confirmed(PersonAccounts::saving(&account))
+            .unwrap();
+    }
+    record
+}
+
+fn project(config_root: &Path, record: &mut Replica<PersonAccounts>) {
+    record.state().unwrap().project_in(config_root).unwrap();
+}
+
+fn connect(config_root: &Path, address: ServiceAddress) -> Result<AccountId, ServiceError> {
+    let mut record = record(config_root);
+    let (id, edit) =
+        migration_sources::service::connect(config_root, &record.state().unwrap(), address)?;
+    record
+        .apply_confirmed(edit)
+        .map_err(|_| ServiceError::Storage)?;
+    project(config_root, &mut record);
+    Ok(id)
+}
+
+fn connected(config_root: &Path) -> Vec<(AccountId, ServiceKind, String)> {
+    let record = record(config_root);
+    migration_sources::service::connected(&record.state().unwrap())
+}
+
+fn review(config_root: &Path, account: &str) -> Result<ServiceReview, ServiceError> {
+    let record = record(config_root);
+    migration_sources::service::review(config_root, &record.state().unwrap(), account)
+}
+
+fn run(
+    config_root: &Path,
+    journal: &mut ServiceJournal,
+    landing: &mut dyn Landing,
+    save: &mut dyn FnMut(&ServiceJournal) -> Result<(), String>,
+    cancel: &AtomicBool,
+) -> Result<ServiceReport, ServiceError> {
+    let mut record = record(config_root);
+    let state = record.state().unwrap();
+    let mut publish = |account: &str| {
+        let edit = migration_sources::service::publish_mail(&record.state().unwrap(), account)?;
+        record
+            .apply_confirmed(edit)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    };
+    let result = migration_sources::service::run(
+        config_root,
+        &state,
+        journal,
+        landing,
+        &mut publish,
+        save,
+        cancel,
+    );
+    drop(publish);
+    project(config_root, &mut record);
+    result
+}
 
 const OUTLINE_KEY: &str = "ol_api_secretkey";
 const LINEAR_KEY: &str = "lin_api_secretkey";
@@ -611,8 +682,8 @@ fn a_mail_account_waits_for_review_then_reaches_mail_with_its_vaulted_password()
     .unwrap();
     assert_eq!(account.as_str(), "ops@acme.test");
     let pending = |config: &Path| {
-        let store = accounts::AccountStore::load_in(config);
-        let stored = store.get(&account).unwrap().clone();
+        let store = crate::account_store::Accounts::read(config).unwrap();
+        let stored = store.get(account.as_str()).unwrap().unwrap();
         assert_eq!(stored.type_id.as_str(), accounts::email::TYPE_ID);
         accounts::email::AccountConfig::from_value(stored.config).unwrap()
     };
@@ -642,11 +713,11 @@ fn a_mail_account_waits_for_review_then_reaches_mail_with_its_vaulted_password()
     assert_no_secret(fixture.store.root(), PASSWORD);
 
     // An account the person set up another way is never taken over.
-    let mut store = accounts::AccountStore::load_in(&fixture.config);
+    let record = crate::account_store::Accounts::read(&fixture.config).unwrap();
     let mut other = accounts::Account::new(accounts::AccountId::new("me@acme.test"), "email");
     other.config = json!({"email": "me@acme.test"});
-    store.upsert(other);
-    store.save_in(&fixture.config).unwrap();
+    record.keep(&other).unwrap();
+    record.project(&fixture.config).unwrap();
     assert_eq!(
         connect(
             &fixture.config,

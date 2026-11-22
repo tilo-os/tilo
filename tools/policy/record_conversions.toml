@@ -1,13 +1,12 @@
-# Where a resource kind's data went when the kind moved between apps, or
-# joined or left an app's `[resources] own` list, read by
+# Where a resource kind's data went when the kind moved between apps, read by
 # tools/policy/check_resource_placement.py. A kind that moves takes what a
 # person kept with it; an entry here says how it was carried over, or what the
 # person loses.
 #
 # [[change]]
 # kind = "<the resource kind>"
-# app = "<the app whose surface or own list changed>"
-# change = "moved" | "removed" | "joined-own" | "left-own"
+# app = "<the app whose surface changed>"
+# change = "moved" | "removed"
 # conversion = "<path>:<fn>"   # a function in this tree that carries the data
 # lost = "<what a person loses, and why>"   # or what could not be carried
 
@@ -18,52 +17,10 @@ change = "removed"
 conversion = "crates/server/tilo-workspace-service/src/workspaces/agent_roster.rs:copy_agents"
 
 [[change]]
-kind = "browser.address-book"
-app = "browser"
-change = "left-own"
-conversion = "apps/browser/src/resource.rs:open_record"
-
-[[change]]
-kind = "browser.browsing-history"
-app = "browser"
-change = "left-own"
-conversion = "apps/browser/src/resource.rs:open_record"
-
-[[change]]
-kind = "browser.page-record"
-app = "browser"
-change = "left-own"
-conversion = "apps/browser/src/resource.rs:open_record"
-
-[[change]]
-kind = "browser.personal-bookmarks"
-app = "browser"
-change = "left-own"
-conversion = "apps/browser/src/resource.rs:open_record"
-
-[[change]]
-kind = "canvas.recent-artworks"
-app = "canvas"
-change = "left-own"
-conversion = "apps/canvas/src/document.rs:open"
-
-[[change]]
 kind = "canvas.recent-artworks"
 app = "canvas"
 change = "removed"
 conversion = "apps/canvas/src/document.rs:open"
-
-[[change]]
-kind = "chat.drafts"
-app = "chat"
-change = "left-own"
-conversion = "apps/chat/src/drafts.rs:import_previous"
-
-[[change]]
-kind = "chat.learned"
-app = "chat"
-change = "left-own"
-lost = "What a person told the native Chat's agents to remember about them. Only the session's agent turns for the native Chat read it, and those are gone with it; the tilolang Chat keeps no learned facts, so they are not carried."
 
 [[change]]
 kind = "chat.learned"
@@ -72,34 +29,10 @@ change = "removed"
 lost = "What a person told the native Chat's agents to remember about them. Only the session's agent turns for the native Chat read it, and those are gone with it; the tilolang Chat keeps no learned facts, so they are not carried."
 
 [[change]]
-kind = "tilo.chain-unsent"
-app = "chat"
-change = "left-own"
-conversion = "crates/sdk/tilo-app/src/framework/chain/waiting.rs:apply_pending"
-
-[[change]]
-kind = "clocks.on-devices"
-app = "clocks"
-change = "left-own"
-conversion = "apps/clocks/src/schedule.rs:new"
-
-[[change]]
 kind = "clocks.on-devices"
 app = "clocks"
 change = "removed"
 conversion = "apps/clocks/src/schedule.rs:new"
-
-[[change]]
-kind = "tilo.chain-unsent"
-app = "contacts"
-change = "left-own"
-conversion = "crates/sdk/tilo-app/src/framework/chain/waiting.rs:apply_pending"
-
-[[change]]
-kind = "disk-usage.recent-folders"
-app = "disk-usage"
-change = "left-own"
-conversion = "apps/disk-usage/src/view.rs:new"
 
 [[change]]
 kind = "disk-usage.recent-folders"
@@ -110,26 +43,8 @@ conversion = "apps/disk-usage/src/view.rs:new"
 [[change]]
 kind = "ebook.files"
 app = "ebook"
-change = "left-own"
-conversion = "apps/ebook/src/local_library.rs:open"
-
-[[change]]
-kind = "ebook.files"
-app = "ebook"
 change = "removed"
 conversion = "apps/ebook/src/local_library.rs:open"
-
-[[change]]
-kind = "tilo.chain-unsent"
-app = "feeds"
-change = "left-own"
-conversion = "crates/sdk/tilo-app/src/framework/chain/waiting.rs:apply_pending"
-
-[[change]]
-kind = "files.recent"
-app = "file-explorer"
-change = "left-own"
-conversion = "apps/file-explorer/src/resource.rs:open"
 
 [[change]]
 kind = "files.recent"
@@ -140,20 +55,8 @@ conversion = "apps/file-explorer/src/resource.rs:open"
 [[change]]
 kind = "firewall.applied"
 app = "firewall"
-change = "left-own"
-conversion = "apps/firewall/src/resource.rs:open"
-
-[[change]]
-kind = "firewall.applied"
-app = "firewall"
 change = "removed"
 conversion = "apps/firewall/src/resource.rs:open"
-
-[[change]]
-kind = "maps.offline-areas"
-app = "maps"
-change = "left-own"
-conversion = "apps/maps/src/app/offline.rs:open"
 
 [[change]]
 kind = "maps.offline-areas"
@@ -162,64 +65,10 @@ change = "removed"
 conversion = "apps/maps/src/app/offline.rs:open"
 
 [[change]]
-kind = "messages.drafts"
-app = "messages"
-change = "left-own"
-conversion = "apps/messages/src/drafts.rs:import_previous"
-
-[[change]]
-kind = "tilo.chain-unsent"
-app = "notes"
-change = "left-own"
-conversion = "crates/sdk/tilo-app/src/framework/chain/waiting.rs:apply_pending"
-
-[[change]]
-kind = "osk.learned"
-app = "osk"
-change = "left-own"
-conversion = "apps/osk/src/surface.rs:attach"
-
-[[change]]
-kind = "pdf.signature-profile"
-app = "pdf-viewer"
-change = "left-own"
-conversion = "apps/pdf-viewer/src/resource.rs:reader_view"
-
-[[change]]
-kind = "settings.root"
-app = "settings"
-change = "left-own"
-lost = "The old Settings window route is retired. Preferences already live in the settings service."
-
-[[change]]
-kind = "tilo.chain-unsent"
-app = "tasks"
-change = "left-own"
-conversion = "crates/sdk/tilo-app/src/framework/chain/waiting.rs:apply_pending"
-
-[[change]]
-kind = "terminal.history"
-app = "terminal"
-change = "left-own"
-conversion = "apps/terminal/src/history.rs:import_previous"
-
-[[change]]
-kind = "terminal.recent-environments"
-app = "terminal"
-change = "left-own"
-conversion = "apps/terminal/src/target.rs:open"
-
-[[change]]
 kind = "terminal.recent-environments"
 app = "terminal"
 change = "removed"
 conversion = "apps/terminal/src/target.rs:open"
-
-[[change]]
-kind = "tube.watch-history"
-app = "tube"
-change = "left-own"
-lost = "history a member kept as their own before it moved into the workspace's, and never imported with the native Tube's Import previous watch history, stays in that member's own documents: no app reads it any more"
 
 [[change]]
 kind = "tube.library"
@@ -232,12 +81,6 @@ kind = "tube.watch-history"
 app = "tube"
 change = "removed"
 conversion = "apps/tl/tube/app.tl:carry_native_tube"
-
-[[change]]
-kind = "video-player.recent"
-app = "video-player"
-change = "left-own"
-conversion = "apps/video-player/src/preferences.rs:open"
 
 [[change]]
 kind = "video-player.recent"

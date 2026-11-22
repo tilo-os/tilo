@@ -19,7 +19,6 @@ fn sealed(
         cluster_id,
         document_id,
         mut envelope,
-        own,
         readers,
     } = message
     else {
@@ -41,7 +40,6 @@ fn sealed(
         cluster_id,
         document_id,
         envelope,
-        own,
         readers,
     }
 }

@@ -248,7 +248,7 @@ mod copy {
                 .chain(peer.sealed_routes())
                 .filter(|(app, record)| {
                     !tilo_desktop_model::branch::stays(app, record)
-                        && peer.own_resource(app, record).is_none()
+                        && !tilo_action_policy::roles::is_private_record(app, record)
                 })
                 .collect();
             drop(peer);

@@ -167,7 +167,7 @@ impl Shell {
         // The shell's own record is the person's, kept where every app's own record of theirs is
         // kept and carried to their other devices as one: read back from what an earlier session
         // kept, or the shell's defaults on a device that never showed the shell.
-        let record = crate::shell_document::ShellRecord::open(state, &lists.person);
+        let record = crate::shell_document::ShellRecord::open(state);
         let mut shell = Self {
             lists,
             announced: std::cell::RefCell::new(std::collections::BTreeSet::new()),

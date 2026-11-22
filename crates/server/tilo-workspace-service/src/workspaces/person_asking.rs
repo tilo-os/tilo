@@ -662,8 +662,6 @@ impl Workspaces {
         if request.target.provider == person_asking::PROVIDER {
             self.person_asking_invoke(workspace_id, caller, certificate, request)
                 .await
-        } else if request.target.provider == tilo_actions::remote::person_formats::PROVIDER {
-            self.formats_invoke(workspace_id, caller, certificate, request)
         } else {
             self.person_vault_invoke(workspace_id, caller, certificate, request)
                 .await

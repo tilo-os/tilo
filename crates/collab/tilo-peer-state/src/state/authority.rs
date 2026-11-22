@@ -299,52 +299,6 @@ impl StatePeer {
         Ok(cert)
     }
 
-    /// The member's own record `app`'s `record` is, as a write of it or the
-    /// app keeping it said ([`Self::keep_own_document`]); `None` for a record
-    /// of the workspace.
-    #[must_use]
-    pub fn own_resource(&self, app: &str, record: &str) -> Option<collab_types::OwnResource> {
-        self.core.own_of(app, record)
-    }
-
-    /// [`Self::own_resource`] for a write the device `author` signs: also the
-    /// author's person's own record of a kind the app's manifest declares each
-    /// member's own ([`collab_types::OwnResource::recognise`]).
-    #[must_use]
-    pub fn own_write(
-        &self,
-        app: &str,
-        record: &str,
-        author: &[u8; 32],
-    ) -> Option<collab_types::OwnResource> {
-        self.core.own_write(app, record, author)
-    }
-
-    /// [`Self::own_write`] as whose resource it is, for one a member writes whatever their role:
-    /// a resource its app declares each member's own, or their view of the workspace's layout.
-    #[must_use]
-    pub fn own_person(&self, app: &str, document: &str, author: &[u8; 32]) -> Option<String> {
-        self.core.own_person(app, document, author)
-    }
-
-    /// The person (user root key) of every member's own record this replica
-    /// knows, by app and record.
-    #[must_use]
-    pub fn own_resources(&self) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
-        self.core
-            .own
-            .iter()
-            .map(|(route, own)| ((route.app.clone(), route.record.clone()), own.owner))
-            .collect()
-    }
-
-    /// Keep `app`'s record `own` names as that member's own record: every
-    /// write of it this replica signs carries its kind and person
-    /// ([`neighbour_wire::NeighbourMsg::AppDocument`]'s `own`).
-    pub fn keep_own_document(&mut self, app: &str, own: &collab_types::OwnResource) {
-        self.core.learn_own(app, &own.document_id(), Some(own));
-    }
-
     /// Verified public identity metadata; never includes signing keys.
     pub fn certificates(&self) -> Vec<DeviceCert> {
         self.core
@@ -1021,32 +975,21 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<(), String> {
         let member = self.membership(device, now)?;
-        let own = self.document_owner(app, document, &member.policy);
-        self.check_read_as(device, &member, (app, document), own.as_ref(), now)
+        self.check_read_as(&member, (app, document), now)
     }
 
     pub(super) fn check_read_as(
         &self,
-        device: [u8; 32],
         member: &MemberAccess,
         (app, document): (&str, &str),
-        own: Option<&collab_types::OwnResource>,
         now: SystemTime,
     ) -> Result<(), String> {
-        let belongs = own.is_none_or(|own| {
-            self.core
-                .certificate_typed(&device, now)
-                .is_ok_and(|cert| cert.user_public_key == own.owner)
-        });
-        if belongs
-            && backend::access::document_read(
-                &member.authority(),
-                &self.core.workspace,
-                (app, document),
-                own,
-                now,
-            )
-        {
+        if backend::access::document_read(
+            &member.authority(),
+            &self.core.workspace,
+            (app, document),
+            now,
+        ) {
             Ok(())
         } else {
             Err(format!("document read forbidden: {app}/{document}"))
@@ -1055,23 +998,18 @@ impl StatePeer {
 
     /// Whether `member` holds the keys of `document` of `app`: it reads the
     /// document, or may act on some part of it, which it cannot do without
-    /// the content the keys seal. A member's own record is its person's alone.
+    /// the content the keys seal.
     fn holds_document_keys_as(
         &self,
-        device: [u8; 32],
         member: &MemberAccess,
         (app, document): (&str, &str),
-        own: Option<&collab_types::OwnResource>,
         now: SystemTime,
     ) -> bool {
-        if self
-            .check_read_as(device, member, (app, document), own, now)
-            .is_ok()
-        {
+        if self.check_read_as(member, (app, document), now).is_ok() {
             return true;
         }
         let root = collab_types::document_access_target(app, document).unwrap_or(document);
-        if own.is_some() || tilo_action_policy::roles::lacks_private_record_owner(app, root) {
+        if tilo_action_policy::roles::lacks_private_record_owner(app, root) {
             return false;
         }
         let kind = self
@@ -1091,19 +1029,6 @@ impl StatePeer {
         )
     }
 
-    /// Resolve personal routes before the first write teaches the replica
-    /// their owner. A document group can be founded before any data exists.
-    pub(super) fn document_owner(
-        &self,
-        app: &str,
-        document: &str,
-        policy: &WorkspacePolicy,
-    ) -> Option<collab_types::OwnResource> {
-        self.core
-            .own_of(app, document)
-            .or_else(|| collab_types::OwnResource::recognise_in(app, document, policy))
-    }
-
     /// Certified key holders whose current authority allows reading this
     /// document. Store-only devices never receive content keys.
     pub fn document_key_holders(
@@ -1112,20 +1037,13 @@ impl StatePeer {
         document: &str,
         now: SystemTime,
     ) -> Result<BTreeSet<[u8; 32]>, String> {
-        let policy = self
-            .core
-            .workspace_doc
-            .as_ref()
-            .ok_or("workspace governance missing")?
-            .workspace_policy(&self.core.workspace);
-        let own = self.document_owner(app, document, policy);
         let devices: Vec<_> = self.governance().key_holders(now)?.into_iter().collect();
         Ok(self
             .governance()
             .access_of(&devices, now)?
             .into_iter()
             .filter_map(|(device, member)| {
-                self.holds_document_keys_as(device, &member, (app, document), own.as_ref(), now)
+                self.holds_document_keys_as(&member, (app, document), now)
                     .then_some(device)
             })
             .collect())
@@ -1550,13 +1468,7 @@ impl StatePeer {
             Some(document) => Some(held_units(&document.doc, envelope)),
             None => enforced.then(AutoCommit::new),
         };
-        // A member's own resource is decided as its person's: they do anything in
-        // it whatever their role, and nobody else anything.
-        let person = self.core.own_person(app_id, record, source);
-        let mut cx = tilo_action_policy::Context::at_time(authorization_time);
-        if let Some(person) = &person {
-            cx = cx.with_own_resource(record, person);
-        }
+        let cx = tilo_action_policy::Context::at_time(authorization_time);
         // A server that is no member's own device takes a member's work under
         // that member's delegation, and only as far as the delegation names:
         // the member's authority bounds it above, the delegation below.
@@ -1611,16 +1523,7 @@ impl StatePeer {
                 false,
             )),
             Err(refusal) => {
-                let mut said = refused_change(&refusal, &route, source, envelope);
-                // Another member's write of a person's view of the layout is refused because the
-                // view is that person's alone, which says more than the grant it lacks.
-                if let Ok(writer) = super::person_of(&member)
-                    && let Err(not_theirs) = tilo_desktop_model::shared_resource::guard::may_write(
-                        app_id, record, writer,
-                    )
-                {
-                    said = format!("document change forbidden: {not_theirs}");
-                }
+                let said = refused_change(&refusal, &route, source, envelope);
                 Err(AuthorizeRefusal::Rules(refusal, said))
             }
         }
@@ -1716,26 +1619,22 @@ impl DocumentKeysBasis<'_> {
             .as_ref()
             .ok_or("workspace governance missing")?
             .workspace_policy(&peer.core.workspace);
-        let own = peer.document_owner(app, document, policy);
         let node = collab_types::document_node(&peer.core.workspace, app, document);
+        let node = tilo_action_policy::roles::decided_node(&node);
         let cx = tilo_action_policy::Context::at_time(now);
         // A rule can exclude a person before they join on a device. Protect
         // the history now, before that device receives the workspace key.
-        if own.is_some()
-            || policy.grants.iter().any(|grant| {
-                grant.kinds.contains(ActionKind::Read)
-                    && grant.answer != tilo_action_policy::Answer::Allow
-                    && grant.is_live(&cx)
-                    && cx.covers(&grant.node, &node)
-            })
-        {
+        if policy.grants.iter().any(|grant| {
+            grant.kinds.contains(ActionKind::Read)
+                && grant.answer != tilo_action_policy::Answer::Allow
+                && grant.is_live(&cx)
+                && cx.covers(&grant.node, &node)
+        }) {
             return Ok(true);
         }
         let (devices, access) = self.holders()?;
         Ok(devices.iter().any(|device| match access.get(device) {
-            Some(member) => {
-                !peer.holds_document_keys_as(*device, member, (app, document), None, now)
-            }
+            Some(member) => !peer.holds_document_keys_as(member, (app, document), now),
             // A holder the governance names to hold the workspace's keys reads
             // what they seal because it is named so, not through a member's
             // role. A server that takes no member's work, or no longer does,

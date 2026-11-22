@@ -1,7 +1,11 @@
-//! One profile's settings, kept as two Automerge documents: the person's in
-//! `<root>/documents/person/` and this device's in `<root>/documents/device/`.
+//! One profile's settings, kept as one Automerge document in `<root>/documents/device/`.
 //!
-//! The documents are kept in the device's document store (`app_state::FsStore` over
+//! The sections that are the person's ([`placement`]) are kept in a resource of the workspace
+//! whose only member is them ([`RoamingSettings`]): a write of one goes there first, and the
+//! document here keeps a copy every process reads without waiting, into which what the person's
+//! other devices wrote there is taken ([`Store::take_roaming`]).
+//!
+//! The document is kept in the device's document store (`app_state::FsStore` over
 //! `<root>/documents`), the same layer an app's own documents live in: one process holds a profile
 //! at a time as the documents' only writer, and its writes append what changed, which the store
 //! commits on its own thread, so no write waits for the disk; a failed save is reported and
@@ -24,27 +28,43 @@ use app_state::held::{Follow, Socket, Watch};
 use app_state::{Save, SavePlan};
 use automerge::ChangeHash;
 use durable_store::{DurableStore, Lease, StorageKey, WriteOp};
-use tilo_paths::{PROFILE_SOCKET, SETTINGS_DEVICE, SETTINGS_PERSON};
+use tilo_paths::{PROFILE_SOCKET, SETTINGS_DEVICE};
 
 use crate::placement::{self, Holder};
-use crate::{ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource, merge_section};
+use crate::{ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource};
 
 /// The prefix of the root keys that keep a document's history (what was
 /// undone) rather than a section.
 pub const BOOKKEEPING: &str = "tilo:";
 
-/// The two documents, as the device document store's reserved keys: the person's is leased first,
-/// and its lock is the profile's ([`tilo_paths::PROFILE_LOCK`]).
-fn key(holder: Holder) -> StorageKey {
-    StorageKey::app(match holder {
-        Holder::Person => SETTINGS_PERSON,
-        Holder::Device => SETTINGS_DEVICE,
-    })
+/// The document, as the device document store's reserved key: its lock is the profile's
+/// ([`tilo_paths::PROFILE_LOCK`]).
+fn key() -> StorageKey {
+    StorageKey::app(SETTINGS_DEVICE)
 }
 
-/// The documents in the order they are leased: the person's first, whose lock is the profile's.
-fn keys() -> [StorageKey; 2] {
-    [key(Holder::Person), key(Holder::Device)]
+/// Where the sections the person holds are theirs: a record their devices share, which a write
+/// of one of those sections goes to before the document here keeps it.
+pub trait RoamingSettings: Send + Sync {
+    /// Write `leaves` (section, leaf and value; `null` for a leaf that went) to the record as one
+    /// change made by `origin`. A refusal keeps the write from the document too.
+    ///
+    /// # Errors
+    /// Why the record did not take the change.
+    fn write(
+        &self,
+        leaves: &[(String, String, Value)],
+        origin: &ChangeOrigin,
+    ) -> Result<(), String>;
+}
+
+/// The leaves of `touched` the person holds.
+fn persons(touched: &[(String, String, Value)]) -> Vec<(String, String, Value)> {
+    touched
+        .iter()
+        .filter(|(section, ..)| placement::holder(section) == Holder::Person)
+        .cloned()
+        .collect()
 }
 
 /// What a write makes of the section it found: the leaves to merge, or
@@ -57,41 +77,23 @@ type DecideSections<'a> =
     dyn FnMut(&Map<String, Value>) -> Option<Vec<(String, Map<String, Value>)>> + 'a;
 
 struct Docs {
-    person: AutoCommit,
-    device: AutoCommit,
+    doc: AutoCommit,
     unsaved: std::collections::BTreeSet<String>,
-    /// What the documents' files stood at when they were last read, for a follower.
+    /// What the document's file stood at when it was last read, for a follower.
     seen: u64,
-    /// Each document's heads as last saved, and how its saves stand since it was last whole.
-    saved: [(Vec<ChangeHash>, SavePlan); 2],
+    /// The document's heads as last saved, and how its saves stand since it was last whole.
+    saved: (Vec<ChangeHash>, SavePlan),
 }
 
 impl Docs {
-    fn doc(&mut self, holder: Holder) -> &mut AutoCommit {
-        match holder {
-            Holder::Person => &mut self.person,
-            Holder::Device => &mut self.device,
-        }
-    }
-
     fn projection(&self) -> Map<String, Value> {
-        let mut document = read_root(&self.device);
-        for (section, leaves) in read_root(&self.person) {
-            if let Value::Object(leaves) = leaves {
-                merge_section(&mut document, &section, leaves);
-            }
-        }
-        document
+        read_root(&self.doc)
     }
 
-    fn loaded(mut person: AutoCommit, mut device: AutoCommit) -> Self {
-        let saved = [
-            (person.get_heads(), SavePlan::default()),
-            (device.get_heads(), SavePlan::default()),
-        ];
+    fn loaded(mut doc: AutoCommit) -> Self {
+        let saved = (doc.get_heads(), SavePlan::default());
         Self {
-            person,
-            device,
+            doc,
             unsaved: std::collections::BTreeSet::new(),
             seen: 0,
             saved,
@@ -122,8 +124,10 @@ pub struct Store {
     follow: Follow,
     follower: std::sync::atomic::AtomicBool,
     may_hold: bool,
-    /// The leases of both documents while this process holds the profile.
-    lock: Mutex<Option<[Lease; 2]>>,
+    /// The document's lease while this process holds the profile.
+    lock: Mutex<Option<Lease>>,
+    /// The person's record, where this process holds the profile for a person.
+    person: Mutex<Option<Arc<dyn RoamingSettings>>>,
     refused: Mutex<Option<String>>,
     docs: Mutex<Docs>,
     snapshot: Mutex<Snapshot>,
@@ -145,7 +149,7 @@ impl std::fmt::Debug for Store {
 
 /// What holding a profile came to.
 enum Hold {
-    Held([Lease; 2]),
+    Held(Lease),
     /// Another process holds it.
     Busy,
     /// Nothing here can be held (no files, or a target without locks): nobody else can hold it,
@@ -154,20 +158,15 @@ enum Hold {
 }
 
 fn try_hold(kept: &dyn DurableStore) -> Hold {
-    let lease = |holder| kept.lease(&key(holder));
-    match lease(Holder::Person) {
-        Ok(person) => match lease(Holder::Device) {
-            Ok(device) => Hold::Held([person, device]),
-            Err(durable_store::StoreError::Busy(_)) => Hold::Busy,
-            Err(_) => Hold::Unlockable,
-        },
+    match kept.lease(&key()) {
+        Ok(lease) => Hold::Held(lease),
         Err(durable_store::StoreError::Busy(_)) => Hold::Busy,
         Err(_) => Hold::Unlockable,
     }
 }
 
-fn load_doc(kept: &dyn DurableStore, holder: Holder) -> std::io::Result<AutoCommit> {
-    let key = key(holder);
+fn load_doc(kept: &dyn DurableStore) -> std::io::Result<AutoCommit> {
+    let key = key();
     let stored = match kept.read(&key) {
         Ok(stored) => stored,
         // A target without files keeps nothing to read.
@@ -188,12 +187,9 @@ fn load_doc(kept: &dyn DurableStore, holder: Holder) -> std::io::Result<AutoComm
     }
 }
 
-/// The documents as their files hold them.
+/// The document as its file holds it.
 fn load_docs(kept: &dyn DurableStore) -> std::io::Result<Docs> {
-    Ok(Docs::loaded(
-        load_doc(kept, Holder::Person)?,
-        load_doc(kept, Holder::Device)?,
-    ))
+    Ok(Docs::loaded(load_doc(kept)?))
 }
 
 impl Store {
@@ -237,7 +233,7 @@ impl Store {
     /// Open the profile kept in `kept`, its holder's socket at `dir/settings.sock`: as its holder
     /// when no other process holds it, else read-only, following the holder.
     fn open_on(kept: Kept, dir: PathBuf, hold: bool) -> std::io::Result<Arc<Self>> {
-        let follow = Follow::of(kept.as_ref(), &keys());
+        let follow = Follow::of(kept.as_ref(), &[key()]);
         let taken = if hold {
             try_hold(kept.as_ref())
         } else {
@@ -264,6 +260,7 @@ impl Store {
             follower: std::sync::atomic::AtomicBool::new(follower),
             may_hold: hold,
             lock: Mutex::new(lock),
+            person: Mutex::new(None),
             refused: Mutex::new(refused),
             docs: Mutex::new(docs),
             snapshot: Mutex::new(Snapshot { document }),
@@ -426,6 +423,17 @@ impl Store {
         origin: &ChangeOrigin,
         decide: &mut DecideSections<'_>,
     ) -> std::io::Result<ConditionalUpdate> {
+        self.write_sections_to(origin, decide, true)
+    }
+
+    /// [`Self::write_sections`], the leaves the person holds written to their record first when
+    /// `to_roaming`; else only here, as what the record already holds.
+    fn write_sections_to(
+        &self,
+        origin: &ChangeOrigin,
+        decide: &mut DecideSections<'_>,
+        to_roaming: bool,
+    ) -> std::io::Result<ConditionalUpdate> {
         let refused = self.refused.lock_recover().clone();
         if let Some(why) = refused
             && !self.take_over()
@@ -443,40 +451,36 @@ impl Store {
         let Some(sections) = decide(&document) else {
             return Ok(ConditionalUpdate::Superseded);
         };
-        make_containers(&mut docs, &sections).map_err(std::io::Error::other)?;
-        let mut touched: Vec<(Holder, String, String, Value)> = Vec::new();
+        make_containers(&mut docs.doc, &sections).map_err(std::io::Error::other)?;
+        let mut touched: Vec<(String, String, Value)> = Vec::new();
         for (name, values) in sections {
             let current = document.get(&name).and_then(Value::as_object);
             for (leaf, value) in values {
                 if current.and_then(|section| section.get(&leaf)) == Some(&value) {
                     continue;
                 }
-                let holder = placement::holder(&name);
-                let doc = docs.doc(holder);
+                let doc = &mut docs.doc;
                 let section =
                     json::map_at(doc, &ROOT, name.as_str()).map_err(std::io::Error::other)?;
                 json::write(doc, &section, leaf.as_str(), &value).map_err(std::io::Error::other)?;
-                touched.push((holder, name.clone(), leaf, value));
+                touched.push((name.clone(), leaf, value));
             }
         }
         if touched.is_empty() {
             return Ok(ConditionalUpdate::Stored);
         }
+        if to_roaming && let Err(error) = self.to_roaming(&touched, origin) {
+            docs.doc.rollback();
+            return Err(error);
+        }
         let message = change_message(origin, &touched, CHANGES.fetch_add(1, Ordering::Relaxed));
         let time = i64::try_from(tilo_clock::unix_now_ms() / 1000).unwrap_or(i64::MAX);
-        for holder in [Holder::Person, Holder::Device] {
-            if touched.iter().any(|(h, ..)| *h == holder) {
-                docs.doc(holder).commit_with(
-                    CommitOptions::default()
-                        .with_message(message.clone())
-                        .with_time(time),
-                );
-            }
-        }
-        let sections = touched
-            .into_iter()
-            .map(|(_, section, ..)| section)
-            .collect();
+        docs.doc.commit_with(
+            CommitOptions::default()
+                .with_message(message)
+                .with_time(time),
+        );
+        let sections = touched.into_iter().map(|(section, ..)| section).collect();
         let document = docs.keep(sections);
         drop(docs);
         self.show(document);
@@ -493,31 +497,23 @@ impl Store {
         }
         let sections = std::mem::take(&mut docs.unsaved);
         let mut saved = Ok(());
-        for (index, holder) in [Holder::Person, Holder::Device].into_iter().enumerate() {
-            let Some((heads, plan)) = docs.saved.get(index).cloned() else {
-                continue;
-            };
-            let doc = docs.doc(holder);
-            let now = doc.get_heads();
-            if now == heads {
-                continue;
-            }
+        let (heads, plan) = docs.saved.clone();
+        let now = docs.doc.get_heads();
+        if now != heads {
             let op = match plan.next() {
-                Save::Full => WriteOp::Replace(doc.save()),
-                Save::Append => WriteOp::Append(doc.save_after(&heads)),
+                Save::Full => WriteOp::Replace(docs.doc.save()),
+                Save::Append => WriteOp::Append(docs.doc.save_after(&heads)),
             };
             let written = op.bytes().len();
-            if let Err(error) = self.kept.write(&key(holder), op.clone(), None) {
+            if let Err(error) = self.kept.write(&key(), op.clone(), None) {
                 saved = Err(error);
-                break;
-            }
-            let mut after = plan;
-            match op {
-                WriteOp::Replace(_) => after.stored_whole(written),
-                WriteOp::Append(_) => after.appended(written),
-            }
-            if let Some(last) = docs.saved.get_mut(index) {
-                *last = (now, after);
+            } else {
+                let mut after = plan;
+                match op {
+                    WriteOp::Replace(_) => after.stored_whole(written),
+                    WriteOp::Append(_) => after.appended(written),
+                }
+                docs.saved = (now, after);
             }
         }
         drop(docs);
@@ -537,24 +533,23 @@ impl Store {
 
     /// Who changed which leaf, oldest first: one object per changed leaf
     /// with `at_ms`, `section`, `leaf`, `after`, `action`, `actor` and
-    /// `invoked_by`, read from the documents' history.
+    /// `invoked_by`, read from the document's history.
     #[must_use]
     pub fn change_log(&self) -> Vec<Value> {
         let mut docs = self.docs.lock_recover();
         let mut changes: BTreeMap<(u64, u64), Value> = BTreeMap::new();
-        for holder in [Holder::Person, Holder::Device] {
-            for change in docs.doc(holder).get_changes_meta(&[]) {
-                let Some(message) = change
-                    .message
-                    .as_deref()
-                    .and_then(|m| serde_json::from_str::<Value>(m).ok())
-                else {
-                    continue;
-                };
-                let number = |key: &str| message.get(key).and_then(Value::as_u64).unwrap_or(0);
-                changes.insert((number("at_ms"), number("sequence")), message);
-            }
+        for change in docs.doc.get_changes_meta(&[]) {
+            let Some(message) = change
+                .message
+                .as_deref()
+                .and_then(|m| serde_json::from_str::<Value>(m).ok())
+            else {
+                continue;
+            };
+            let number = |key: &str| message.get(key).and_then(Value::as_u64).unwrap_or(0);
+            changes.insert((number("at_ms"), number("sequence")), message);
         }
+        drop(docs);
         let field = |value: &Value, key: &str| value.get(key).cloned().unwrap_or_default();
         let mut entries = Vec::new();
         for message in changes.values() {
@@ -576,13 +571,10 @@ impl Store {
 }
 
 impl Store {
-    /// Merge `sections` into the document as one change by `origin`: every
-    /// section's leaves, wherever each is held (this device's document or
-    /// the person's), committed under one message so they are one step
-    /// history takes back together, and one that [`Self::edit_documents`]
-    /// undoes across both. A section held by this device and one by the
-    /// person are written by one call here, which is what a choice spanning
-    /// both (which model the agent answers with, kept half on each) needs.
+    /// Merge `sections` into the document as one change by `origin`: every section's leaves,
+    /// committed under one message so they are one step history takes back together. A choice
+    /// spanning several sections (which model the agent answers with, kept in this device's
+    /// section and the person's) is written by one call here.
     ///
     /// # Errors
     /// The document cannot be written, as [`Self::edit_document`].
@@ -596,13 +588,53 @@ impl Store {
             .map(drop)
     }
 
+    /// Keep the sections the person holds in `record` from now on: a write of one goes there
+    /// first ([`RoamingSettings::write`]). `None` keeps them here alone, as for a device that has no
+    /// person yet.
+    pub fn keep_roaming_in(&self, record: Option<Arc<dyn RoamingSettings>>) {
+        *self.person.lock_recover() = record;
+    }
+
+    /// Take `sections`, what the person's record holds, into the document: the record's own
+    /// values, which go to no record again.
+    ///
+    /// # Errors
+    /// The document cannot be written, as [`Self::update_sections`].
+    pub fn take_roaming(&self, sections: Vec<(String, Map<String, Value>)>) -> std::io::Result<()> {
+        let mutate = std::cell::Cell::new(Some(sections));
+        let origin = ChangeOrigin::action("settings/person-record");
+        self.write_sections_to(&origin, &mut |_| mutate.take(), false)
+            .map(drop)
+    }
+
+    /// Write the leaves of `touched` the person holds to their record, where there is one.
+    fn to_roaming(
+        &self,
+        touched: &[(String, String, Value)],
+        origin: &ChangeOrigin,
+    ) -> std::io::Result<()> {
+        let leaves = persons(touched);
+        let record = self.person.lock_recover().clone();
+        match record {
+            Some(record) if !leaves.is_empty() => record
+                .write(&leaves, origin)
+                .map_err(|why| std::io::Error::other(format!("the person's record: {why}"))),
+            _ => Ok(()),
+        }
+    }
+
+    /// Carry `edit` out on the document as one change by `origin`, recording the leaves it set:
+    /// `section` is the one it is made in, the whole document [`Self::edit_documents`]'s.
+    ///
+    /// # Errors
+    /// `edit` refused, the person's record did not take what it made, or this process cannot
+    /// write the settings.
     pub fn edit_document(
         &self,
         section: &str,
         origin: &ChangeOrigin,
         edit: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> std::io::Result<()> {
-        let holder = placement::holder(section);
         let refused = self.refused.lock_recover().clone();
         if let Some(why) = refused
             && !self.take_over()
@@ -614,9 +646,9 @@ impl Store {
                 ));
             }
             self.take_in_saves();
-            let mut copy = self.docs.lock_recover().doc(holder).fork();
+            let mut copy = self.docs.lock_recover().doc.fork();
             let before = copy.get_heads();
-            if commit_edit(&mut copy, origin, edit)?.is_none() {
+            if commit_edit(&mut copy, origin, edit, |_| Ok(()))?.is_none() {
                 return Ok(());
             }
             let bytes: Vec<u8> = copy
@@ -625,14 +657,17 @@ impl Store {
                 .flat_map(|change| change.raw_bytes().to_vec())
                 .collect();
             let changes = socket::Changes {
-                person: holder == Holder::Person,
                 section: section.to_owned(),
+                origin: origin.clone(),
                 bytes,
             };
             return self.forward_changes(changes, &why);
         }
         let mut docs = self.docs.lock_recover();
-        let Some(mut touched) = commit_edit(docs.doc(holder), origin, edit)? else {
+        let Some(mut touched) = commit_edit(&mut docs.doc, origin, edit, |leaves| {
+            self.to_roaming(leaves, origin)
+        })?
+        else {
             return Ok(());
         };
         if touched.is_empty() {
@@ -649,102 +684,30 @@ impl Store {
         self.save();
     }
 
-    /// Carry `edit` out on the person's document and on this device's,
-    /// committing what each made under one message for `origin`: one step
-    /// history takes back across both, which [`Self::update_sections`]'s
-    /// choice is undone with. Each document's edit is committed only when it
-    /// wrote anything; the change carries the leaves both wrote, so a reader
-    /// of either document's history finds the whole step.
+    /// Carry `edit` out on the whole document as one change by `origin`: one step history takes
+    /// back, which [`Self::update_sections`]'s choice is undone with.
     ///
     /// # Errors
-    /// Either document cannot be read or written, as [`Self::edit_document`].
+    /// As [`Self::edit_document`].
     pub fn edit_documents(
         &self,
         origin: &ChangeOrigin,
-        edit: impl Fn(&mut AutoCommit, Holder) -> Result<(), String>,
+        edit: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> std::io::Result<()> {
-        let refused = self.refused.lock_recover().clone();
-        if let Some(why) = refused
-            && !self.take_over()
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                why,
-            ));
-        }
-        let mut docs = self.docs.lock_recover();
-        let mut written: Vec<(Holder, Vec<String>)> = Vec::new();
-        let mut touched: Vec<(Holder, String, String, Value)> = Vec::new();
-        for holder in [Holder::Person, Holder::Device] {
-            let before = read_root(docs.doc(holder));
-            if let Err(reason) = edit(docs.doc(holder), holder) {
-                // Neither document takes the change: what the other edit
-                // wrote is rolled back with it, so no transaction is left
-                // open on either.
-                docs.doc(Holder::Person).rollback();
-                docs.doc(Holder::Device).rollback();
-                return Err(std::io::Error::other(reason));
-            }
-            if docs.doc(holder).pending_ops() == 0 {
-                continue;
-            }
-            let after = read_root(docs.doc(holder));
-            let mut sections = Vec::new();
-            for name in after
-                .keys()
-                .chain(before.keys().filter(|name| !after.contains_key(*name)))
-            {
-                let section_of = |document: &Map<String, Value>| -> Map<String, Value> {
-                    document
-                        .get(name)
-                        .and_then(Value::as_object)
-                        .cloned()
-                        .unwrap_or_default()
-                };
-                let (was, now) = (section_of(&before), section_of(&after));
-                if was == now {
-                    continue;
-                }
-                sections.push(name.clone());
-                for (leaf, value) in &now {
-                    if was.get(leaf) != Some(value) {
-                        touched.push((holder, name.clone(), leaf.clone(), value.clone()));
-                    }
-                }
-                for leaf in was.keys().filter(|leaf| !now.contains_key(*leaf)) {
-                    touched.push((holder, name.clone(), leaf.clone(), Value::Null));
-                }
-            }
-            written.push((holder, sections));
-        }
-        if touched.is_empty() {
-            return Ok(());
-        }
-        let message = change_message(origin, &touched, CHANGES.fetch_add(1, Ordering::Relaxed));
-        let time = i64::try_from(tilo_clock::unix_now_ms() / 1000).unwrap_or(i64::MAX);
-        let mut sections = Vec::new();
-        for (holder, names) in written {
-            docs.doc(holder).commit_with(
-                CommitOptions::default()
-                    .with_message(message.clone())
-                    .with_time(time),
-            );
-            sections.extend(names);
-        }
-        let document = docs.keep(sections);
-        drop(docs);
-        self.show(document);
-        Ok(())
+        self.edit_document("", origin, edit)
     }
 
+    /// Take `changes`, made to a copy of the document by a process following this one.
     fn take_changes(&self, changes: &socket::Changes) -> std::io::Result<()> {
-        let holder = if changes.person {
-            Holder::Person
-        } else {
-            Holder::Device
-        };
         let mut docs = self.docs.lock_recover();
-        docs.doc(holder)
+        let mut incoming = docs.doc.fork();
+        let before = read_root(&incoming);
+        incoming
+            .load_incoming_whole(&changes.bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        let (_, touched) = differences(&before, &read_root(&incoming));
+        self.to_roaming(&touched, &changes.origin)?;
+        docs.doc
             .load_incoming_whole(&changes.bytes)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         let document = docs.keep(vec![changes.section.clone()]);
@@ -780,7 +743,7 @@ impl Store {
 }
 
 fn make_containers(
-    docs: &mut Docs,
+    doc: &mut AutoCommit,
     sections: &[(String, Map<String, Value>)],
 ) -> Result<(), automerge::AutomergeError> {
     let is_map = |doc: &AutoCommit, obj: &ObjId, key: &str| {
@@ -791,7 +754,6 @@ fn make_containers(
     };
     let mut made = false;
     for (name, values) in sections {
-        let doc = docs.doc(placement::holder(name));
         made |= !is_map(doc, &ROOT, name);
         let section = json::map_at(doc, &ROOT, name.as_str())?;
         for (leaf, value) in values {
@@ -807,21 +769,55 @@ fn make_containers(
             &[],
             CHANGES.fetch_add(1, Ordering::Relaxed),
         );
-        for holder in [Holder::Person, Holder::Device] {
-            docs.doc(holder)
-                .commit_with(CommitOptions::default().with_message(message.clone()));
-        }
+        doc.commit_with(CommitOptions::default().with_message(message));
     }
     Ok(())
 }
 
-/// Run `edit` on `doc` and commit what it made as one change by `origin`,
-/// recording the leaves it set. The sections whose leaves it changed;
-/// `None`, and nothing committed, when it changed nothing at all.
+/// The sections whose leaves differ between `before` and `after`, and each leaf that changed
+/// (section, leaf and its value after; `null` for one that went).
+fn differences(
+    before: &Map<String, Value>,
+    after: &Map<String, Value>,
+) -> (Vec<String>, Vec<(String, String, Value)>) {
+    let section_of = |document: &Map<String, Value>, name: &str| -> Map<String, Value> {
+        document
+            .get(name)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut touched = Vec::new();
+    let mut sections = Vec::new();
+    for name in after
+        .keys()
+        .chain(before.keys().filter(|name| !after.contains_key(*name)))
+    {
+        let (was, now) = (section_of(before, name), section_of(after, name));
+        if was == now {
+            continue;
+        }
+        sections.push(name.clone());
+        for (leaf, value) in &now {
+            if was.get(leaf) != Some(value) {
+                touched.push((name.clone(), leaf.clone(), value.clone()));
+            }
+        }
+        for leaf in was.keys().filter(|leaf| !now.contains_key(*leaf)) {
+            touched.push((name.clone(), leaf.clone(), Value::Null));
+        }
+    }
+    (sections, touched)
+}
+
+/// Run `edit` on `doc` and commit what it made as one change by `origin`, recording the leaves it
+/// set, once `keep` took them. The sections whose leaves it changed; `None`, and nothing
+/// committed, when it changed nothing at all.
 fn commit_edit(
     doc: &mut AutoCommit,
     origin: &ChangeOrigin,
     edit: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    keep: impl FnOnce(&[(String, String, Value)]) -> std::io::Result<()>,
 ) -> std::io::Result<Option<Vec<String>>> {
     let before = read_root(doc);
     if let Err(error) = edit(doc) {
@@ -831,43 +827,10 @@ fn commit_edit(
     if doc.pending_ops() == 0 {
         return Ok(None);
     }
-    let after = read_root(doc);
-    let section_of = |document: &Map<String, Value>, name: &str| -> Map<String, Value> {
-        document
-            .get(name)
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default()
-    };
-    let mut touched: Vec<(Holder, String, String, Value)> = Vec::new();
-    let mut sections: Vec<String> = Vec::new();
-    for name in after
-        .keys()
-        .chain(before.keys().filter(|name| !after.contains_key(*name)))
-    {
-        let (was, now) = (section_of(&before, name), section_of(&after, name));
-        if was == now {
-            continue;
-        }
-        sections.push(name.clone());
-        for (leaf, value) in &now {
-            if was.get(leaf) != Some(value) {
-                touched.push((
-                    placement::holder(name),
-                    name.clone(),
-                    leaf.clone(),
-                    value.clone(),
-                ));
-            }
-        }
-        for leaf in was.keys().filter(|leaf| !now.contains_key(*leaf)) {
-            touched.push((
-                placement::holder(name),
-                name.clone(),
-                leaf.clone(),
-                Value::Null,
-            ));
-        }
+    let (sections, touched) = differences(&before, &read_root(doc));
+    if let Err(error) = keep(&touched) {
+        doc.rollback();
+        return Err(error);
     }
     let message = change_message(origin, &touched, CHANGES.fetch_add(1, Ordering::Relaxed));
     let time = i64::try_from(tilo_clock::unix_now_ms() / 1000).unwrap_or(i64::MAX);
@@ -879,7 +842,6 @@ fn commit_edit(
     Ok(Some(sections))
 }
 
-#[must_use]
 pub fn made_by(message: &str, action_prefix: &str, actor: &str) -> bool {
     serde_json::from_str::<Value>(message).is_ok_and(|message| {
         message
@@ -962,8 +924,8 @@ mod socket {
 
     #[derive(serde::Serialize, serde::Deserialize)]
     pub(super) struct Changes {
-        pub(super) person: bool,
         pub(super) section: String,
+        pub(super) origin: ChangeOrigin,
         pub(super) bytes: Vec<u8>,
     }
 
@@ -1022,7 +984,7 @@ static CHANGES: AtomicU64 = AtomicU64::new(0);
 
 fn change_message(
     origin: &ChangeOrigin,
-    touched: &[(Holder, String, String, Value)],
+    touched: &[(String, String, Value)],
     sequence: u64,
 ) -> String {
     serde_json::json!({
@@ -1030,7 +992,7 @@ fn change_message(
         "sequence": sequence,
         "leaves": touched
             .iter()
-            .map(|(_, section, leaf, after)| {
+            .map(|(section, leaf, after)| {
                 serde_json::json!({"section": section, "leaf": leaf, "after": after})
             })
             .collect::<Vec<_>>(),
@@ -1184,7 +1146,7 @@ fn cached(root: &Path, build: impl FnOnce() -> Arc<Store>) -> Arc<Store> {
 }
 
 fn empty(kept: Kept, dir: PathBuf) -> Arc<Store> {
-    let follow = Follow::of(kept.as_ref(), &keys());
+    let follow = Follow::of(kept.as_ref(), &[key()]);
     Arc::new_cyclic(|me| Store {
         me: me.clone(),
         dir,
@@ -1193,8 +1155,9 @@ fn empty(kept: Kept, dir: PathBuf) -> Arc<Store> {
         follower: std::sync::atomic::AtomicBool::new(false),
         may_hold: false,
         lock: Mutex::new(None),
+        person: Mutex::new(None),
         refused: Mutex::new(None),
-        docs: Mutex::new(Docs::loaded(AutoCommit::new(), AutoCommit::new())),
+        docs: Mutex::new(Docs::loaded(AutoCommit::new())),
         snapshot: Mutex::new(Snapshot {
             document: Arc::new(Map::new()),
         }),
@@ -1300,28 +1263,80 @@ mod tests {
             );
         }
 
-        phase the_persons_and_the_devices_sections_go_to_their_documents;
+        phase a_persons_setting_goes_to_their_record_first;
         {
+            #[derive(Default)]
+            struct Record {
+                taken: Mutex<Vec<(String, String, Value)>>,
+                refuse: std::sync::atomic::AtomicBool,
+            }
+            impl RoamingSettings for Record {
+                fn write(
+                    &self,
+                    leaves: &[(String, String, Value)],
+                    _origin: &ChangeOrigin,
+                ) -> Result<(), String> {
+                    if self.refuse.load(Ordering::Relaxed) {
+                        return Err("refused".into());
+                    }
+                    self.taken.lock_recover().extend_from_slice(leaves);
+                    Ok(())
+                }
+            }
             let dir = tempfile::tempdir().unwrap();
             let store = Store::open(dir.path()).unwrap();
+            let record = Arc::new(Record::default());
+            store.keep_roaming_in(Some(Arc::clone(&record) as Arc<dyn RoamingSettings>));
             store
-                .update_section("appearance", object(json!({"text_scale": 1.5})))
+                .update_sections(
+                    vec![
+                        ("appearance".into(), object(json!({"text_scale": 1.5}))),
+                        ("so.tilo.unknown".into(), object(json!({"x": true}))),
+                    ],
+                    &ChangeOrigin::default(),
+                )
                 .unwrap();
-            store
-                .update_section("so.tilo.unknown", object(json!({"x": true})))
-                .unwrap();
-            let (person, device) = {
-                let docs = store.docs.lock_recover();
-                (read_root(&docs.person), read_root(&docs.device))
-            };
             assert_eq!(
-                Value::Object(person),
-                json!({"appearance": {"text_scale": 1.5}})
+                *record.taken.lock_recover(),
+                [("appearance".to_owned(), "text_scale".to_owned(), json!(1.5))],
+                "only the person's leaf reaches their record"
             );
             assert_eq!(
-                Value::Object(device),
-                json!({"so.tilo.unknown": {"x": true}})
+                Value::Object(store.load()),
+                json!({"appearance": {"text_scale": 1.5}, "so.tilo.unknown": {"x": true}})
             );
+
+            record.refuse.store(true, Ordering::Relaxed);
+            assert!(
+                store
+                    .update_section("appearance", object(json!({"text_scale": 2})))
+                    .is_err()
+            );
+            assert!(
+                store
+                    .edit_document("appearance", &ChangeOrigin::default(), |doc| {
+                        put_leaf(doc, "appearance", "text_scale", 3);
+                        Ok(())
+                    })
+                    .is_err()
+            );
+            assert_eq!(
+                store.load_section_value("appearance")["text_scale"],
+                1.5,
+                "what the record refused is kept nowhere"
+            );
+            store
+                .update_section("power", object(json!({"blank_minutes": 5})))
+                .expect("this device's own setting needs no record");
+
+            store
+                .take_roaming(vec![(
+                    "appearance".into(),
+                    object(json!({"text_scale": 4})),
+                )])
+                .expect("what the record holds is taken in");
+            assert_eq!(store.load_section_value("appearance")["text_scale"], 4);
+            assert_eq!(record.taken.lock_recover().len(), 1, "and not written back");
         }
 
         phase a_nested_value_loses_the_keys_it_no_longer_has;
@@ -1541,8 +1556,8 @@ mod tests {
             assert_eq!(log[0]["leaf"], "text_scale");
             let docs = store.docs.lock_recover();
             assert!(
-                docs.person.get(&ROOT, "tilo:mark").unwrap().is_some(),
-                "in the person's document"
+                docs.doc.get(&ROOT, "tilo:mark").unwrap().is_some(),
+                "in the document"
             );
             drop(docs);
 

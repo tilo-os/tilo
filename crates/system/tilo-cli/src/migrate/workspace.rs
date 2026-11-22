@@ -56,6 +56,14 @@ pub trait Workspace {
     /// The workspace refused it ([`Refused`], by its code) or could not be reached.
     fn ask(&mut self, action: &str, args: Value) -> Result<Answer>;
 
+    /// Read `path` (`record:<app>:<id>`) as its typed answer.
+    ///
+    /// # Errors
+    /// The workspace refused it or could not be reached.
+    fn read(&mut self, path: &str) -> Result<Value> {
+        bail!("{path}: this migration reads nothing of the workspace")
+    }
+
     /// Ask `action` of `path` (`workspace/mail-accounts`) on the workspace's
     /// server, as the person on their own device rather than as their agent: what only they may
     /// do, such as keeping a mail account and its sign-in. Its answer, or why it was refused.
@@ -526,6 +534,10 @@ impl Workspace for Held {
             .person(path, action, args)
     }
 
+    fn read(&mut self, path: &str) -> Result<Value> {
+        self.tool("tilo_read", &json!({"path": path}), None)
+    }
+
     fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
         let wait = u64::try_from(ACTION_WAIT.as_millis()).unwrap_or(u64::MAX);
         let call = self.call(
@@ -575,6 +587,51 @@ impl Workspace for Held {
         Ok(reference.to_owned())
     }
 }
+
+/// The workspace's accounts, as `workspace` reads their record.
+///
+/// # Errors
+/// The record could not be read, or this computer does not hold it yet.
+pub fn accounts(workspace: &mut dyn Workspace) -> Result<accounts::person::PersonAccounts> {
+    let path = format!(
+        "record:{}:{}",
+        accounts::person::ACCOUNTS_OWNER,
+        collab_types::workspace_document_id(accounts::person::PersonAccounts::kind())
+    );
+    let read = workspace.read(&path)?;
+    let record = read
+        .get("records")
+        .and_then(Value::as_array)
+        .and_then(|records| records.first())
+        .ok_or_else(|| anyhow!("the workspace answered no accounts: {read}"))?;
+    if record.get("absent").and_then(Value::as_bool) == Some(true) {
+        return Ok(accounts::person::PersonAccounts::default());
+    }
+    let value = record.get("value").ok_or_else(|| {
+        anyhow!("the workspace's accounts are still arriving on this computer; try again shortly")
+    })?;
+    accounts::person::PersonAccounts::from_readable(value).map_err(|error| anyhow!(error))
+}
+
+/// Make the edit `edit` (its address and arguments) of the workspace's accounts in `workspace`:
+/// the action Settings' own controls make.
+///
+/// # Errors
+/// The workspace refused it or could not be reached.
+pub fn change_accounts(
+    workspace: &mut dyn Workspace,
+    (address, arguments): (
+        &tilo_actions::ActionAddress,
+        &serde_json::Map<String, Value>,
+    ),
+) -> Result<()> {
+    let action = format!("{}/{}", SETTINGS_PATH, address.encode());
+    workspace.ask(&action, Value::Object(arguments.clone()))?;
+    Ok(())
+}
+
+/// Where the agent's paths name Settings, which keeps the workspace's accounts.
+const SETTINGS_PATH: &str = "settings";
 
 /// The workspace through Tilo's API, with the key this computer holds: a hosted workspace reached
 /// over HTTPS (`TILO_API_KEY`, and the server `--api` names), or in process as this computer's own

@@ -105,6 +105,8 @@ impl GovernedWorkspace {
         let (publications, _) = appended::Appended::open(&path, PUBLICATIONS, 0)?;
         let (receipts, _) = appended::Appended::open(&path, RECEIPTS, 0)?;
         let mut this = Self::assemble(record, peer, path, parts, (publications, receipts), device)?;
+        this.moderation_history_checked
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         this.persist()?;
         Ok(this)
     }

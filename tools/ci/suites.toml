@@ -881,8 +881,8 @@ readers = [
   "crates/platform/tilolang-process/src/task.rs",
   "crates/platform/tilolang-process/src/phrases.rs",
   "crates/platform/tilolang-process/tests/process.rs",
-  "crates/platform/tilolang-process/tests/own_resources.rs",
   "crates/platform/tilolang-process/tests/process/native_notes.rs",
+  "crates/platform/tilolang-process/tests/workspace_mail.rs",
 ]
 
 

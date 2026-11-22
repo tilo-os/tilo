@@ -666,7 +666,7 @@ fn workspace_with_members(members: &[(&str, Role)]) -> WorkspacePolicy {
     for (person, role) in members {
         workspace.members.insert((*person).to_owned(), *role);
     }
-    workspace
+    workspace.with_current_roles()
 }
 
 #[test]
@@ -1235,6 +1235,9 @@ tilo_test_env::scenario! {
         assert_eq!(
             describe(&editor, &Ids),
             "workspace r: reading and undoable changes allowed, outside effects ask first. \
+         workspace r › so.tilo.browser-desktop › desktop.person-view: undoable changes not allowed. \
+         workspace r › so.tilo.messages › messages.drafts: reading and undoable changes not allowed. \
+         workspace r › so.tilo.tube › tube.watch-history: reading and undoable changes not allowed. \
          workspace r › tilo.workspace: undoable changes and outside effects not allowed. \
          workspace r › anywhere › moderation: undoable changes and outside effects not allowed."
         );
@@ -1288,14 +1291,24 @@ tilo_test_env::scenario! {
             &alice(),
             &Lifetime::UntilRevoked,
         );
-        assert_eq!(sentences(&viewer, &Ids), "workspace r: reading allowed.");
+        assert_eq!(
+            sentences(&viewer, &Ids),
+            "workspace r › so.tilo.tube › tube.watch-history: reading and undoable changes not \
+         allowed. workspace r › so.tilo.messages › messages.drafts: reading and undoable changes \
+         not allowed. workspace r: reading allowed."
+        );
         let owner = roles::role_preset(Role::Owner, "r").assign(
             "o",
             &Grantee::role(Role::Owner),
             &alice(),
             &Lifetime::UntilRevoked,
         );
-        assert_eq!(sentences(&owner, &Ids), "workspace r: everything allowed.");
+        assert_eq!(
+            sentences(&owner, &Ids),
+            "workspace r › so.tilo.tube › tube.watch-history: reading and undoable changes not \
+         allowed. workspace r › so.tilo.messages › messages.drafts: reading and undoable changes \
+         not allowed. workspace r: everything allowed."
+        );
     }
 
     phase verdicts_explain_themselves;
@@ -2500,9 +2513,11 @@ tilo_test_env::scenario! {
         // A workspace written when the Commenter's rules were fewer, with a stale
         // copy of a Viewer rule and an adjustment of its own to the Editor role.
         let mut stored = workspace_with_members(&[(BOB, Role::Commenter)]);
-        stored
-            .grants
-            .retain(|grant| grant.id.as_str() != "role:commenter:2");
+        let last = format!(
+            "role:commenter:{}",
+            roles::role_rules(Role::Commenter, "r").len() - 1
+        );
+        stored.grants.retain(|grant| grant.id.as_str() != last);
         for grant in &mut stored.grants {
             if grant.id.as_str() == "role:viewer:0" {
                 grant.answer = Answer::Deny;
@@ -2531,6 +2546,8 @@ tilo_test_env::scenario! {
             serde_json::from_value(serde_json::to_value(&stored).unwrap()).unwrap();
         let mut expected = vec![adjustment];
         expected.extend(roles::workspace_role_grants("r", &alice()));
+        expected.push(roles::person_view_grant("r", ALICE));
+        expected.push(roles::person_view_grant("r", BOB));
         expected.push(custom);
         assert_eq!(loaded.grants, expected);
         assert_eq!(stored.clone().with_current_roles().grants, expected);
@@ -2586,4 +2603,196 @@ tilo_test_env::scenario! {
             Err(Refusal::BuiltInRole(GrantId::new("role:viewer:1")))
         );
     }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one walk: each person's change to the layout, and every other person's refusal"
+)]
+fn each_person_changes_their_own_view_of_the_layout_and_no_one_elses() {
+    let mut workspace = WorkspacePolicy::new("r", ALICE);
+    for (person, role) in [(BOB, Role::Editor), (CAROL, Role::Viewer)] {
+        let held = workspace.clone();
+        workspace
+            .apply(
+                ALICE,
+                &held.person_on_device(ALICE, false),
+                Change::AddMember {
+                    person: person.into(),
+                    role,
+                },
+                &cx(),
+                false,
+            )
+            .expect("the owner admits members");
+    }
+    let answer = |workspace: &WorkspacePolicy, person, of: &str, kind| {
+        let node = TreePath::workspace("r")
+            .app(roles::LAYOUT_APP)
+            .resource(roles::person_view_record(of));
+        Authority::person(workspace.party(person))
+            .decide(&node, kind, &cx())
+            .answer
+    };
+    for person in [BOB, CAROL] {
+        assert_eq!(
+            answer(&workspace, person, person, ActionKind::Undoable),
+            Answer::Allow,
+            "{person} changes their own view, whatever their role"
+        );
+        assert_eq!(
+            answer(&workspace, person, ALICE, ActionKind::Read),
+            Answer::Allow
+        );
+    }
+    assert_eq!(
+        answer(&workspace, BOB, CAROL, ActionKind::Undoable),
+        Answer::Deny,
+        "an Editor changes no one else's view"
+    );
+    assert_eq!(
+        answer(&workspace, CAROL, BOB, ActionKind::Undoable),
+        Answer::Deny
+    );
+    let layout = TreePath::workspace("r")
+        .app(roles::LAYOUT_APP)
+        .kind("tilo.desktop")
+        .resource("desktop");
+    assert_eq!(
+        Authority::person(workspace.party(BOB))
+            .decide(&layout, ActionKind::Undoable, &cx())
+            .answer,
+        Answer::Allow,
+        "the layout itself stays every Editor's to change"
+    );
+    assert_eq!(
+        workspace.extra_grants(BOB),
+        0,
+        "the view is no grant beyond the role"
+    );
+
+    let held = workspace.clone();
+    workspace
+        .apply(
+            ALICE,
+            &held.person_on_device(ALICE, false),
+            Change::Restrict {
+                person: BOB.into(),
+                until_ms: NOW + 1,
+            },
+            &cx(),
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        answer(&workspace, BOB, BOB, ActionKind::Undoable),
+        Answer::Deny,
+        "a restriction stops their view too"
+    );
+
+    let held = workspace.clone();
+    workspace
+        .apply(
+            ALICE,
+            &held.person_on_device(ALICE, false),
+            Change::RemoveMember { person: BOB.into() },
+            &cx(),
+            false,
+        )
+        .unwrap();
+    assert!(
+        !workspace
+            .grants
+            .iter()
+            .any(|grant| grant.id == roles::person_view_grant_id(BOB)),
+        "one who leaves keeps no grant on their view"
+    );
+    let stored: WorkspacePolicy =
+        serde_json::from_value(serde_json::to_value(&workspace).unwrap()).unwrap();
+    assert_eq!(
+        stored, workspace,
+        "a stored policy loads with the same views"
+    );
+}
+
+/// A person's private record (what they watched, what they are writing and have not sent) is
+/// theirs by a grant the workspace gives each of its people: no role reaches another's, and
+/// owning the workspace does not either, wherever the record is asked from.
+#[test]
+fn each_persons_private_record_is_theirs_alone_by_the_workspaces_grant() {
+    let (owner, editor) = ("aa".repeat(32), "bb".repeat(32));
+    let mut workspace = WorkspacePolicy::new("r", owner.clone());
+    let held = workspace.clone();
+    workspace
+        .apply(
+            &owner,
+            &held.person_on_device(&owner, false),
+            Change::AddMember {
+                person: editor.clone(),
+                role: Role::Editor,
+            },
+            &cx(),
+            false,
+        )
+        .expect("the owner admits a member");
+    let history = |of: &str| {
+        roles::member_record("tube.watch-history", of).expect("a person id names a record")
+    };
+    let answer = |workspace: &WorkspacePolicy, person: &str, node: &TreePath, kind| {
+        Authority::person(workspace.party(person))
+            .decide(node, kind, &cx())
+            .answer
+    };
+    for (person, other) in [(&owner, &editor), (&editor, &owner)] {
+        let theirs = TreePath::workspace("r")
+            .app("so.tilo.tube")
+            .resource(history(person));
+        for kind in [ActionKind::Read, ActionKind::Undoable] {
+            assert_eq!(
+                answer(&workspace, person, &theirs, kind),
+                Answer::Allow,
+                "{kind:?}"
+            );
+            assert_eq!(
+                answer(&workspace, other, &theirs, kind),
+                Answer::Deny,
+                "neither a role nor ownership reaches another's record: {kind:?}"
+            );
+        }
+    }
+    // A part of the record is decided as the record.
+    let part = TreePath::workspace("r")
+        .app("so.tilo.tube")
+        .kind("tube.watch-history")
+        .resource(format!("derived:part@{}", history(&editor)));
+    assert_eq!(
+        answer(&workspace, &owner, &part, ActionKind::Read),
+        Answer::Deny
+    );
+    assert_eq!(
+        answer(&workspace, &editor, &part, ActionKind::Read),
+        Answer::Allow
+    );
+
+    let mut shared = workspace.clone();
+    shared.grants.push(Grant::new(
+        "share-history",
+        Grantee::person(owner.clone()),
+        TreePath::workspace("r")
+            .app("so.tilo.tube")
+            .kind("tube.watch-history")
+            .resource(history(&editor)),
+        KindSet::READ,
+        Answer::Allow,
+        Grantee::person(editor.clone()),
+    ));
+    let editors = TreePath::workspace("r")
+        .app("so.tilo.tube")
+        .resource(history(&editor));
+    assert_eq!(
+        answer(&shared, &owner, &editors, ActionKind::Read),
+        Answer::Allow,
+        "a grant widens it like any other"
+    );
 }

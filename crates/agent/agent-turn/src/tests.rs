@@ -299,7 +299,7 @@ async fn a_stopped_turn_begins_no_tool() {
 }
 
 /// A turn that has spent what it may stops before its next round, says so, and asks the model
-/// nothing more: an agent working through the night cannot spend past its keeper's limit.
+/// nothing more: an agent working through the night cannot spend past its daily limit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_turn_stops_at_its_budget_and_asks_nothing_more() {
     let server = served(session());

@@ -279,9 +279,7 @@ impl Waiting {
 /// Make the plan `choices` describes for the computer named `name` and mint its
 /// single-use token into a file only this account reads. The plan itself is
 /// published into the person's Servers workspace through the running session
-/// ([`publish`]), so every one of their devices reads it there. `system` is
-/// this computer's identity and `home_peers` the registry its token names the
-/// person's devices from.
+/// ([`publish`]), so every one of their devices reads it there.
 ///
 /// # Errors
 ///
@@ -294,7 +292,7 @@ pub(super) fn prepare(
     installer_url: &str,
 ) -> Result<Created, String> {
     let local = crate::handoff::local_identity_from_env()?;
-    let (token, named) = install_plan::mint(local.system, local.home_peers)?;
+    let (token, named) = install_plan::mint(local.system)?;
     let id = install_plan::new_id();
     let plan = choices.install(name).plan(&id, named)?;
     let token_file = install_plan::plans_dir(local.identity_dir).join(format!("{id}.token"));

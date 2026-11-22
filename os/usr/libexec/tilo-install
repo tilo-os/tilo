@@ -2257,7 +2257,7 @@ if [ -d /run/tilo-installer/setup-handoff ]; then
   # the device certificates and the peer lists are public; a
   # root-only copy makes the session fall back to the Unix account instead of
   # the enrolled person, and it never dials its peers.
-  for public in user-identity/pubkey.bin device/cert.bin personal-device-peers.json home-peers.json; do
+  for public in user-identity/pubkey.bin device/cert.bin peers/personal-device-peers.json peers/introducer.json; do
     path="$HANDOFF_VAR/lib/tilo/$public"
     if [ -f "$path" ] && [ ! -L "$path" ]; then
       chmod 0644 "$path"
@@ -2315,7 +2315,7 @@ if [ -e "$PREPARED_SETUP_RUN/prepared-setup.sealed" ] || [ -L "$PREPARED_SETUP_R
   install_prepared_device_identity "${PREPARED_TARGET_VARS[0]}/lib/tilo/prepared-setup" "${PREPARED_TARGET_VARS[0]}" \
     || die "could not install the approved device identity"
   for prepared_identity_path in device-private device-private/keypair.bin device device/cert.bin \
-    device/certs user-identity user-identity/pubkey.bin peers peers/home-peers.json; do
+    device/certs user-identity user-identity/pubkey.bin peers peers/introducer.json; do
     prepared_identity_file="${PREPARED_TARGET_VARS[0]}/lib/tilo/$prepared_identity_path"
     if [ -e "$prepared_identity_file" ] && [ ! -L "$prepared_identity_file" ]; then
       label_installed_tilo_path "$prepared_identity_file" "/var/lib/tilo/$prepared_identity_path"

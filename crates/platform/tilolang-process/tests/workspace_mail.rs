@@ -224,7 +224,6 @@ impl Member {
 fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let bundle = Arc::new(mail());
-    assert!(!bundle.meta.own_resources);
     let workspace = uuid::Uuid::new_v4();
     let bus = Rc::new(Bus::default());
     let mut ada = member(&bus, workspace, ADA, &bundle);
@@ -232,8 +231,13 @@ fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
 
     assert_eq!(ada.route, RouteSpec::app(MAIL, workspace));
     assert_eq!(bo.route, ada.route);
-    let old = tilolang_tilo::member_document_of(MAIL, ADA).unwrap();
-    assert!(!tilolang_tilo::reaches(MAIL, Some(&old), Some(BO)));
+    assert!(collab_types::validator::requires_independent_document_keys(
+        MAIL, ""
+    ));
+    assert!(collab_types::validator::requires_independent_document_keys(
+        MAIL,
+        &tilo_actions::document_sync::document_chunk("", 1),
+    ));
 
     // Ada's mail arrives: an inbox a week in.
     ada.settle();

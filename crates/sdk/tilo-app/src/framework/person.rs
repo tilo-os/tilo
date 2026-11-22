@@ -3,10 +3,6 @@
 //! the words they taught the on-screen keyboard or the signature they sign
 //! documents with. A record the workspace keeps, one for every member, is
 //! opened as the workspace's ([`super::WorkspaceResource`]).
-//!
-//! The previous storage model kept a member's record of the app's kinds in a
-//! store of its own; [`PersonState::open`] opens one for the fixtures that
-//! exercise the recovery of what it holds (test-support only).
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -382,10 +378,8 @@ impl<P: Resource> PersonResource<P> {
     }
 }
 
-/// An open record: the app that keeps it, its kind, and whether it is the
-/// person's current record rather than one of the earlier member records a
-/// fixture opens.
-type OpenKey = (&'static str, String, bool);
+/// An open record: the app that keeps it and its kind.
+type OpenKey = (&'static str, String);
 
 /// The person's records a root's views opened, shared by every scope of the
 /// root: one [`PersonResource`] per resource kind.
@@ -394,8 +388,6 @@ pub(crate) struct PersonState {
     /// keeps only the settings sections, whose history is the settings
     /// document's.
     records: Option<PersonResources>,
-    /// The app's earlier member records, held for migration.
-    own: Option<PersonResources>,
     app_id: &'static str,
     app_title: &'static str,
     me: tilo_resource::MemberId,
@@ -614,13 +606,12 @@ fn history_operation(record: String, label: &str, undo: bool) -> tilo_actions::A
 impl PersonState {
     pub(crate) fn new(
         records: PersonResources,
-        own: Option<PersonResources>,
         app_id: &'static str,
         app_title: &'static str,
         wake: Option<ui_core::wake::WakeHandle>,
     ) -> Self {
         let me = records.author().clone();
-        Self::named(Some(records), own, me, Vec::new(), app_id, app_title, wake)
+        Self::named(Some(records), me, Vec::new(), app_id, app_title, wake)
     }
 
     /// The person `me`, whose records this host does not hold: their
@@ -634,12 +625,11 @@ impl PersonState {
         app_id: &'static str,
         app_title: &'static str,
     ) -> Self {
-        Self::named(None, None, me, earlier, app_id, app_title, None)
+        Self::named(None, me, earlier, app_id, app_title, None)
     }
 
     fn named(
         records: Option<PersonResources>,
-        own: Option<PersonResources>,
         me: tilo_resource::MemberId,
         earlier: Vec<String>,
         app_id: &'static str,
@@ -648,7 +638,6 @@ impl PersonState {
     ) -> Self {
         Self {
             records,
-            own,
             app_id,
             app_title,
             me,
@@ -664,12 +653,6 @@ impl PersonState {
         }
     }
 
-    /// The previous storage model, for fixtures that exercise recovery.
-    #[cfg(feature = "test-support")]
-    pub(crate) fn open<P: Resource>(&self) -> Option<PersonResource<P>> {
-        self.open_of::<P>(self.app_id, true, false)
-    }
-
     /// The record `P` the person keeps for themselves, in their own scope.
     pub(crate) fn open_profile<P: Resource>(&self) -> Option<PersonResource<P>> {
         debug_assert!(
@@ -677,112 +660,15 @@ impl PersonState {
             "{} is a record the workspace keeps: open it with `shared_workspace`",
             P::KIND
         );
-        self.open_of::<P>(self.app_id, true, true)
+        self.open_of::<P>(self.app_id, true)
     }
 
-    /// Read a previous member record without creating it or publishing its actions.
-    pub(crate) fn legacy_state<P: Resource>(
-        &self,
-        owner: &str,
-    ) -> Result<Option<Rc<P::State>>, String> {
-        self.read_previous::<P, _>(owner, |doc, _, _| Self::read_legacy::<P>(doc))?
-            .transpose()
-    }
-
-    pub(crate) fn legacy_content<P: Resource>(
-        &self,
-        owner: &str,
-    ) -> super::workspace::LegacyMemberContent<P> {
-        self.read_previous::<P, _>(owner, |doc, checkout, content| {
-            let content = content.ok_or("the previous record has no content store")?;
-            Ok((
-                checkout.id.as_str().to_owned(),
-                Self::read_legacy::<P>(doc)?,
-                content,
-            ))
-        })?
-        .transpose()
-    }
-
-    pub(crate) fn legacy_parts<C: super::Chained>(
-        &self,
-        owner: &str,
-        store: &ui_core::resource::ResourceStore,
-    ) -> super::workspace::LegacyMemberParts<C> {
-        let Some((id, content)) = self
-            .read_previous::<C::Base, _>(owner, |_, checkout, content| {
-                (checkout.id.clone(), content)
-            })?
-        else {
-            return Ok(None);
-        };
-        let content = content.ok_or("the earlier record has no content store")?;
-        let chain = C::chain_beside(&id);
-        let kind = ResourceType::new(C::KIND);
-        let parts = store
-            .held_parts(&chain)
-            .into_iter()
-            .map(|index| {
-                let part =
-                    ui_core::resource::DocumentCheckout::new(chain.part(index), kind.clone());
-                let doc = store
-                    .retained_document(&part)
-                    .map_err(|error| error.to_string())?
-                    .ok_or("an earlier part is unavailable")?;
-                let state = C::read(&doc).map_err(|error| error.to_string())?;
-                Ok((index, Rc::new(state)))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        Ok(Some((id.as_str().to_owned(), parts, content)))
-    }
-
-    fn read_previous<P: Resource, T>(
-        &self,
-        owner: &str,
-        read: impl FnOnce(
-            &tilo_resource::Doc,
-            &ui_core::resource::DocumentCheckout,
-            Option<tilo_content::ContentStore>,
-        ) -> T,
-    ) -> Result<Option<T>, String> {
-        if owner != self.app_id {
-            return Ok(None);
-        }
-        if ui_core::invocation_scope::current_invoker()
-            .is_some_and(|invoker| invoker.acting.by.member_id() != Some(&self.me))
-        {
-            return Err("the previous record is available only to its member".into());
-        }
-        let Some(records) = &self.own else {
-            return Ok(None);
-        };
-        records.read_previous_member_resource(ResourceType::new(P::KIND), read)
-    }
-
-    fn read_legacy<P: Resource>(doc: &tilo_resource::Doc) -> Result<Rc<P::State>, String> {
-        let read = |doc: &tilo_resource::Doc| {
-            tilo_resource::Reader::<P>::read(doc).map(|reader| Rc::clone(reader.state()))
-        };
-        let result = if tilo_resource::evolution::needs_migrate::<P>(doc) {
-            let mut migrated = doc.clone();
-            tilo_resource::evolution::migrate::<P>(&mut migrated)
-                .map_err(|error| error.to_string())?;
-            read(&migrated)
-        } else {
-            read(doc)
-        };
-        result.map_err(|error| error.to_string())
-    }
-
-    /// The record `P` the person keeps for themselves, opened on first use,
-    /// published when it is this app's own (`publish`), from the store the
-    /// host keeps their records in (`current`) or from the earlier member
-    /// records a fixture opens.
+    /// The record `P` the person keeps for themselves, opened on first use and
+    /// published when it is this app's own (`publish`).
     fn open_of<P: Resource>(
         &self,
         owner: &'static str,
         publish: bool,
-        current: bool,
     ) -> Option<PersonResource<P>> {
         let open = |record: StoredResource| -> Result<Opened, String> {
             let shared = self.shared_of::<P>(record)?;
@@ -815,7 +701,7 @@ impl PersonState {
             },
             &|doc| P::initialize(doc).map_err(|error| error.to_string()),
             &open,
-            (publish, current),
+            publish,
         )?;
         shared
             .downcast::<Shared<P>>()
@@ -826,28 +712,22 @@ impl PersonState {
     /// The open record of `kind` that the app `owner` keeps, or the one
     /// `open` makes of it, created by `initialize` where it does not exist
     /// yet, kept and (for this app's own, when `publish`) published: the
-    /// part of opening a record that does not depend on its type. `current`
-    /// names the store the person's records are kept in; the other is the
-    /// earlier member records a fixture opens.
+    /// part of opening a record that does not depend on its type.
     fn open_kind(
         &self,
         owner: &'static str,
         of: &PersonResourceType<'_>,
         initialize: &dyn Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
         open: &dyn Fn(StoredResource) -> Result<Opened, String>,
-        (publish, current): (bool, bool),
+        publish: bool,
     ) -> Option<Rc<dyn Any>> {
         let (kind, label) = (of.kind, of.label);
-        let key = (owner, kind.to_owned(), current);
+        let key = (owner, kind.to_owned());
         if let Some(open) = self.opened.borrow().get(&key) {
             return Some(Rc::clone(open));
         }
         let opened = {
-            let records = if current {
-                self.resources_of(owner)?
-            } else {
-                self.own.clone()?
-            };
+            let records = self.resources_of(owner)?;
             open_resource(&records, kind.to_owned(), kind, initialize)
         };
         let record = match opened {
@@ -936,7 +816,7 @@ impl PersonState {
     /// The settings section `kind` held as a record, opened on first use and
     /// published with the undo and redo of each invoker's steps on it.
     pub(crate) fn open_section(&self, kind: Rc<SectionKind>) -> Rc<SectionApi> {
-        let key = (self.app_id, kind.kind.to_owned(), true);
+        let key = (self.app_id, kind.kind.to_owned());
         if let Some(api) = self
             .opened
             .borrow()
@@ -1200,10 +1080,8 @@ impl<P: Resource> super::resources::sealed::Hold<P> for PersonResource<P> {
 impl Drop for PersonState {
     /// The window closes: what the person did is stored before it goes.
     fn drop(&mut self) {
-        for records in self.records.iter().chain(&self.own) {
-            if let Err(error) = records.flush() {
-                tracing::warn!(%error, "the records beside the app's own could not be stored");
-            }
+        if let Some(Err(error)) = self.records.as_ref().map(PersonResources::flush) {
+            tracing::warn!(%error, "the records beside the app's own could not be stored");
         }
     }
 }

@@ -142,7 +142,7 @@ impl AppBrokerState {
 /// private descriptor carries, so a journaled broker admits it there. The
 /// member's own admission is decided after, and separately: an agent still
 /// joins only through the workspace's record of its agents
-/// ([`super::admit_kept_agent`]), and a host-scope worker still delegates no
+/// ([`super::admit_listed_agent`]), and a host-scope worker still delegates no
 /// agent (the join refuses that). This grants no authority by itself — it only
 /// says which connection speaks for the app's route.
 pub(super) fn packaged_app_registration(

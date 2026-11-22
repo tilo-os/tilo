@@ -790,7 +790,6 @@ params = []
             cluster_id: workspace.workspace.clone(),
             document_id: String::new(),
             envelope: Box::new(op),
-            own: None,
             readers: None,
         }
     };

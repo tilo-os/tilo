@@ -28,7 +28,6 @@ impl ShellPayloads for NeighbourPayloads {
             cluster_id,
             document_id,
             envelope,
-            own,
             readers,
             ..
         }) = NeighbourMsg::decode(body)
@@ -40,7 +39,6 @@ impl ShellPayloads for NeighbourPayloads {
                 app_id,
                 cluster_id,
                 document_id,
-                own,
                 readers,
             },
             envelope,
@@ -59,7 +57,6 @@ impl ShellPayloads for NeighbourPayloads {
             cluster_id: route.cluster_id.clone(),
             document_id: route.document_id.clone(),
             envelope: Box::new(op),
-            own: route.own.clone(),
             readers: route.readers.clone(),
         })
         .map_err(|error| error.to_string())

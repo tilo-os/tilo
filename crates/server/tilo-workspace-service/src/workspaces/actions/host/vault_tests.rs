@@ -1146,13 +1146,21 @@ fn provider_named(root: &std::path::Path, provider: &str) -> Option<person_vault
         .and_then(crate::workspaces::person_settings::key_reference)
 }
 
-/// The entry of the workspace's vault the account `account` of the store at `root` names as
-/// its sign-in.
-fn account_named(root: &std::path::Path, account: &str) -> Option<person_vault::ItemRef> {
-    accounts::AccountStore::load_in(root)
-        .get(&accounts::AccountId::from(account.to_owned()))
-        .and_then(|kept| accounts::email::password_item(&kept.config))
-        .and_then(person_vault::ItemRef::parse)
+/// The entry of the workspace's vault the account `account` of the workspace `workspace` names
+/// as its sign-in.
+async fn account_named(
+    workspaces: &Workspaces,
+    workspace: &str,
+    account: &str,
+) -> Option<person_vault::ItemRef> {
+    workspaces
+        .workspace_accounts(workspace)
+        .await
+        .unwrap()
+        .account(account)
+        .and_then(|kept| {
+            accounts::email::password_item(&kept.config).and_then(person_vault::ItemRef::parse)
+        })
 }
 
 /// What the entry `named` of the workspace's vault holds.
@@ -1222,9 +1230,13 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
         &accounts::Secret::password("an account's own"),
     );
     vault.try_save().unwrap();
-    let mut accounts_kept = accounts::AccountStore::load_in(&root);
-    accounts_kept.upsert(mail_account("ada@example.test", "example.test"));
-    accounts_kept.save_in(&root).unwrap();
+    workspaces
+        .keep_workspace_account(
+            &workspace_id.to_string(),
+            &mail_account("ada@example.test", "example.test"),
+        )
+        .await
+        .unwrap();
     let mut store = accounts::SecretStore::open_person(Some(&root));
     let mut entry = accounts::SecretItem::login("Example", "bo", "a passwords entry");
     store.put(&mut entry).unwrap();
@@ -1285,7 +1297,9 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
             .unwrap()
             .is_empty()
     );
-    let named = account_named(&root, "ada@example.test").expect("the account names its entry");
+    let named = account_named(workspaces, &workspace_id.to_string(), "ada@example.test")
+        .await
+        .expect("the account names its entry");
     assert_eq!(
         entry_of(workspaces, workspace_id, &named).await.as_deref(),
         Some("an account's own")
@@ -1311,20 +1325,23 @@ async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
     let workspaces = server.workspaces().clone();
     let (_, workspace_id, _) = governed(&workspaces).await;
     let workspace = workspace_id.to_string();
-    // Its vault opened here before, so the host holds its keys as it starts.
+    // Its vault opened here before, so the host holds its keys as it starts, and its accounts
+    // are the workspace's.
     workspaces.open_vault(&workspace).await.unwrap();
-    server.shutdown().await;
-
-    // The store the host kept, as a host before kept it.
-    let root = workspaces.workspace_root(&workspace);
     let (mail, google) = (
         mail_account(NAME, "example.test"),
         mail_account("ada@gmail.example", "gmail.example"),
     );
-    let mut store = accounts::AccountStore::load_in(&root);
-    store.upsert(mail.clone());
-    store.upsert(google.clone());
-    store.save_in(&root).unwrap();
+    for account in [&mail, &google] {
+        workspaces
+            .keep_workspace_account(&workspace, account)
+            .await
+            .unwrap();
+    }
+    server.shutdown().await;
+
+    // The store the host kept, as a host before kept it.
+    let root = workspaces.workspace_root(&workspace);
     let mut credentials = accounts::AccountCredentials::open_in(&root).unwrap();
     credentials.put_for(&mail, &accounts::Secret::password(PASSWORD));
     credentials.put_for(
@@ -1369,7 +1386,9 @@ async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    let password = account_named(&root, NAME).expect("the mail account names its entry");
+    let password = account_named(workspaces, &workspace, NAME)
+        .await
+        .expect("the mail account names its entry");
     assert_eq!(
         entry_of(workspaces, workspace_id, &password)
             .await
@@ -1382,7 +1401,9 @@ async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
             .expect("the account signs in with its entry");
     assert_eq!(signing_in.password, PASSWORD);
 
-    let grant = account_named(&root, "ada@gmail.example").expect("the grant's account names it");
+    let grant = account_named(workspaces, &workspace, "ada@gmail.example")
+        .await
+        .expect("the grant's account names it");
     let grant = entry_of(workspaces, workspace_id, &grant)
         .await
         .expect("the grant is an entry");

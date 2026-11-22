@@ -68,9 +68,9 @@ impl Minted {
 }
 
 impl Fixture {
-    /// The workspace lists the agent, kept by the person, and its session goes.
-    fn ask(&self, minted: &Minted) {
-        self.list_agent(minted);
+    /// The workspace lists the agent, and its session goes.
+    fn ask(&self, _: &Minted) {
+        self.list_agent();
         self.native.sessions.lock().unwrap().push((
             AGENT_SESSION.into(),
             crate::apps::services::GoingSession::default(),
@@ -100,13 +100,13 @@ impl Fixture {
         Ok(admitted)
     }
 
-    fn list_agent(&self, minted: &Minted) {
+    fn list_agent(&self) {
         let mut listed = self.native.listed.lock().unwrap();
         if listed.is_empty() {
             listed.push(crate::apps::services::ListedAgent {
                 id: AGENT.into(),
                 name: "Claude Code".into(),
-                keeper: hex::encode(minted.device.user_public_key),
+                keeper: String::new(),
             });
         }
     }

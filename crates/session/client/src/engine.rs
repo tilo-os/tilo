@@ -1845,7 +1845,6 @@ mod tests {
                     app: app.to_owned(),
                     document: doc.to_owned(),
                     envelope: Box::new(op),
-                    own: view.peer().own_write(app, doc, &device),
                     readers: None,
                 },
             }])

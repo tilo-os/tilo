@@ -171,18 +171,19 @@ pub fn claim_node(
     surface: &dyn ReceiptSurface,
     action: &ClaimedAction,
 ) -> TreePath {
-    let kind = surface.kind();
-    let resource = TreePath::workspace(document.workspace)
-        .app(document.app)
-        .kind(kind)
-        .resource(published_resource(document.document));
+    let resource = tilo_actions::resource_node(
+        &TreePath::workspace(document.workspace),
+        document.app,
+        surface.kind(),
+        &published_resource(document.document),
+    );
     match action {
         ClaimedAction::Verb { action, item } => {
             let node = match item {
                 Some(item) => resource.item(item.as_str()),
                 None => resource,
             };
-            match surface.verb(&action.action).and_then(|(_, field)| field) {
+            match verb_on(document, surface, &action.action).and_then(|(_, field)| field) {
                 Some(field) => node.field(&field),
                 None => node,
             }
@@ -236,6 +237,30 @@ fn edit_node(resource: TreePath, path: &[PathStep]) -> TreePath {
     tree.action("field-edit")
 }
 
+/// Older Chat changes still travel in signed history after their verbs moved.
+fn verb_on(
+    document: &WrittenDocument<'_>,
+    surface: &dyn ReceiptSurface,
+    action: &str,
+) -> Option<(ActionKind, Option<String>)> {
+    surface.verb(action).or_else(|| {
+        if document.app != tilo_app_id::apps::CHAT
+            || !document.document.is_empty()
+            || surface.kind() != "chat.workspace"
+        {
+            return None;
+        }
+        let field = match action {
+            "report-message" | "report-person" => None,
+            "decide-reports" | "overturn-decision" => {
+                Some(tilo_action_policy::roles::MODERATION_FIELD.to_owned())
+            }
+            _ => return None,
+        };
+        Some((ActionKind::Undoable, field))
+    })
+}
+
 /// The kind of `action` as the app publishes it, or why it is not published.
 fn published_kind(
     document: &WrittenDocument<'_>,
@@ -250,8 +275,7 @@ fn published_kind(
             {
                 return Err(ReceiptRefusal::NotPublished(format!("{action}")));
             }
-            surface
-                .verb(&action.action)
+            verb_on(document, surface, &action.action)
                 .map(|(kind, _)| kind)
                 .ok_or_else(|| ReceiptRefusal::NotPublished(format!("{action}")))
         }
@@ -547,7 +571,13 @@ pub fn published_resource(document: &str) -> String {
 pub fn written_node(document: &WrittenDocument<'_>) -> TreePath {
     TreePath::workspace(document.workspace)
         .app(document.app)
-        .resource(published_resource(document.document))
+        .resource(
+            if tilo_action_policy::roles::is_workspace_moderation(document.app, document.document) {
+                String::new()
+            } else {
+                published_resource(document.document)
+            },
+        )
 }
 
 /// Decide a received op on `record`: a compaction as a write of the record

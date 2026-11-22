@@ -543,6 +543,7 @@ pub struct ChatApp {
     flap_animating: bool,
     /// The person's own drafts resource, so the sidebar can say where the
     /// unsent words are.
+    pub(crate) moderation_record: Option<ui::framework::ResourceOpener<chat_model::Moderation>>,
     pub(crate) drafts_resource: Option<crate::drafts::DraftRecord>,
 
     /// Latest decoded camera picture per person, shown in their call tile
@@ -834,6 +835,7 @@ impl ChatApp {
             call_hovered: None,
             relayout: false,
             flap_animating: false,
+            moderation_record: None,
             drafts_resource: None,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
@@ -1157,6 +1159,14 @@ impl ChatApp {
 
     /// Keep the channel composers' drafts in the workspace.
     #[must_use]
+    pub(crate) fn with_reports(
+        mut self,
+        reports: ui::framework::ResourceOpener<chat_model::Moderation>,
+    ) -> Self {
+        self.moderation_record = Some(reports);
+        self
+    }
+
     pub(crate) fn with_drafts(mut self, record: Option<crate::drafts::DraftRecord>) -> Self {
         if let Some(record) = record {
             self.composer_main.attach_drafts(record.clone());

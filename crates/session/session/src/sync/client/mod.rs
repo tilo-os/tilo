@@ -827,6 +827,14 @@ impl Local {
             .map(|fabric| Arc::clone(fabric) as crate::platform::fabric::SharedLink)
     }
 
+    /// The person's own workspace's resources, read and written through this device's service when
+    /// it holds the workspace.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn person_resources(&self) -> Option<crate::person_resources::PersonResources> {
+        self.fabric.as_ref()?.person_resources()
+    }
+
     /// This session's Nearby Send, when the session made one.
     #[must_use]
     #[cfg(target_os = "linux")]
@@ -1379,9 +1387,6 @@ pub struct Entry {
     pub continuity: Continuity,
     /// What tells the peer actor the network speaks.
     pub wake: Arc<dyn Fn() + Send + Sync>,
-    /// The person's own store, where what lasts of each of their devices is kept; `None` keeps
-    /// nothing of this device for the others (a test, a stand-in session).
-    pub personal: Option<tilo_peer_state::PersonalSync>,
     /// The relays the person's setting names ([`tilo_endpoint_reachability::relays`]), which this
     /// device's endpoint holds back until something needs it dialable.
     pub relays: tilo_endpoint_reachability::EndpointRelays,
@@ -1445,9 +1450,12 @@ impl Client {
         };
         let outgoing: Arc<dyn Outbox> = Arc::new(host_outbox.clone());
         let link_outbox = host_outbox.clone();
+        // What is the person's alone, read from their own workspace once this device's service
+        // holds it.
+        let person = crate::person_resources::PersonResources::default();
         let fabric = fabric_of(
             identity.as_ref(),
-            entry.personal,
+            person.clone(),
             host_outbox,
             entry.continuity,
             lan.clone(),
@@ -1484,7 +1492,7 @@ impl Client {
                         serving,
                         beside,
                         documents,
-                        (service, records),
+                        (service, records, person),
                     ),
                 );
             })?;
@@ -1825,6 +1833,14 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn personal(&self) -> Option<std::cell::Ref<'_, crate::personal::Personal>> {
         self.hosting.local.personal()
+    }
+
+    /// The person's own workspace's resources, which this session reads and writes what is theirs
+    /// alone through once its service holds the workspace.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn person_resources(&self) -> Option<crate::person_resources::PersonResources> {
+        self.hosting.local.person_resources()
     }
 
     /// The person's presence as the surfaces here read it.
@@ -2245,11 +2261,11 @@ fn certified_as(identity: Option<&DeviceIdentity>) -> (Option<[u8; 32]>, String)
 
 /// This device's link onto the person's other devices before the endpoint runs, so a device that
 /// proves itself at the actor's first tick is heard: named by this device's certificate, with what
-/// lasts of the person's devices in `personal`.
+/// lasts of the person's devices in their own workspace's `resources`.
 #[cfg(target_os = "linux")]
 fn fabric_of(
     identity: Option<&DeviceIdentity>,
-    personal: Option<tilo_peer_state::PersonalSync>,
+    resources: crate::person_resources::PersonResources,
     outgoing: HostOutbox,
     continuity: Continuity,
     lan: tilo_endpoint_reachability::Nearby,
@@ -2269,7 +2285,7 @@ fn fabric_of(
     Some(SessionFabric::new(
         device,
         identity.device_cert.device_label.clone(),
-        personal,
+        Some((resources, identity.device_cert.clone())),
         reach,
     ))
 }
@@ -2386,7 +2402,6 @@ impl PeerDocuments {
                 author: write.author,
                 replayed: write.replayed,
                 envelope: write.envelope,
-                own: write.own,
             },
         );
     }

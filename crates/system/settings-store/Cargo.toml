@@ -6,7 +6,7 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "The Tilo desktop settings: the person's and the device's Automerge documents, one forgiving read, one holder per profile."
+description = "The Tilo desktop settings: one Automerge document per profile, the person's sections written to their record first, one forgiving read, one holder per profile."
 
 [lib]
 name = "settings_store"
@@ -33,8 +33,8 @@ unicode-normalization = "0.1.25"
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
-# The device's document store the two documents are kept in: their one holder, and the writer
-# thread that commits their saves.
+# The device's document store the document is kept in: its one holder, and the writer
+# thread that commits its saves.
 tilo-app-state = { version = "0.1.0", path = "../app-state" }
 durable-store = { version = "0.1.0", path = "../durable-store" }
 # The system locale that stands in when the person has chosen no language.

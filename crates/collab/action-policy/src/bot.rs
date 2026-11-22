@@ -74,8 +74,8 @@ pub const MODERATION: &str = "moderation";
 pub const MODERATION_GRANT: &str = "bot:moderation";
 
 /// The grant a person gives the server's moderation agent when they turn it on
-/// in `workspace`: reading and undoable changes in Chat, where reports are
-/// filed and decided, and nothing outside it. `person` is the grantor, a user
+/// in `workspace`: reading and undoable changes in Chat, including its
+/// moderation resource. `person` is the grantor, a user
 /// root, hex.
 #[must_use]
 pub fn moderation_grant(workspace: &str, person: &str) -> Grant {

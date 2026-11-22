@@ -17,12 +17,14 @@ path = "src/lib.rs"
 # wall clock as well as the native one.
 
 [dependencies]
+blake3 = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
 # A direct conversation's id names its members as JSON.
 serde_json.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+uuid.workspace = true
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["use-std"] }

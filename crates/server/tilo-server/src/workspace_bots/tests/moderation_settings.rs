@@ -1,15 +1,17 @@
 //! Turning the workspace's moderation bot on and off: a person's decision, and
 //! the grant it reaches.
 
-use super::messages::{chat_of, posts, texts_by};
+use super::messages::{posts, texts_by};
 use super::{
     ADA, AppCatalogue, CHAT, FakeJudge, MALLORY, MemberId, ModerationAgent, ModerationBot, Outcome,
     bot_server, flood, flood_posts,
 };
+use super::{MODERATION_DOCUMENT, Moderation, owner_root};
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::{governor, restricted_until};
 use tilo_action_policy::bot::MODERATION;
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, Party, TreePath};
+use tilo_resource::Resource as _;
 use tilo_user_identity::DeviceCert;
 
 /// The bot's answer for an undoable change at `node` in `workspace`.
@@ -113,7 +115,20 @@ async fn turn_moderation(workspaces: &Workspaces, workspace: &str, cert: &Device
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_bot() {
+async fn a_bot_declines_a_restriction_and_leaves_the_roles_untouched() {
+    assert_membership_verdict_declined(Outcome::Restrict).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_declines_a_ban_and_leaves_the_roles_untouched() {
+    assert_membership_verdict_declined(Outcome::Ban).await;
+}
+
+#[expect(
+    clippy::future_not_send,
+    reason = "the test reads its records as local replicas on the test's own thread"
+)]
+async fn assert_membership_verdict_declined(outcome: Outcome) {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
@@ -136,7 +151,8 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
         workspaces.clone(),
         workspace.clone(),
         cert.clone(),
-        ModerationAgent::new(FakeJudge),
+        owner_root(),
+        ModerationAgent::new(FakeJudge(outcome)),
     );
     // A grant id alone carries no authority. A grant with the same name and
     // scope that only permits reading must not start the bot.
@@ -167,43 +183,244 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
     // A person who governs the workspace turns it on, and it answers the
     // report left open.
     turn_moderation(&workspaces, &workspace, &cert, true).await;
+    bot.keep_bot().await.unwrap();
+    let grants = workspaces.workspace_grants(&workspace).await.unwrap();
+    let summary = workspaces.summary(&workspace).await.unwrap();
     bot.wake().await.unwrap();
 
     let posted = posts(&workspaces, &workspace).await;
-    assert!(
-        texts_by(&posted, MALLORY).is_empty(),
-        "the flood is taken back"
-    );
+    assert_eq!(texts_by(&posted, MALLORY).len(), 3);
     assert_eq!(texts_by(&posted, ADA), ["hello everyone"]);
-    let after = chat_of(
-        &workspaces
-            .resource_document(&workspace, CHAT, "")
-            .await
-            .unwrap()
-            .unwrap(),
-    );
-    let decision = after.moderation.decisions.iter().next().unwrap();
+    let after = moderation_state(&workspaces, &workspace).await;
+    let decision = after.decisions.iter().next().unwrap();
     assert_eq!(decision.person, MemberId::person(hex::encode(MALLORY)));
-    assert_eq!(decision.outcome, Outcome::Restrict);
-    assert_eq!(
-        after.moderation.open_reports().count(),
-        0,
-        "the report is settled"
-    );
+    assert_eq!(decision.outcome, Outcome::NoAction);
+    assert_eq!(decision.model, "fake-model");
     assert!(
-        restricted_until(&workspaces, &workspace, &cert, MALLORY)
-            .await
-            .is_some(),
-        "Mallory is restricted through the workspace's governance"
+        decision
+            .reasoning
+            .contains("Workspace membership changes require a person with moderation authority")
     );
+    assert!(decision.reverted.is_empty());
+    assert_eq!(decision.by, MemberId::bot(MODERATION));
+    let installed = workspaces
+        .installed_bot(&workspace, MODERATION)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(installed.acting);
+    assert_eq!(after.open_reports().count(), 0, "the report is settled");
+    assert_eq!(
+        restricted_until(&workspaces, &workspace, &cert, MALLORY).await,
+        None
+    );
+    assert_eq!(
+        workspaces.workspace_grants(&workspace).await.unwrap(),
+        grants
+    );
+    let after_summary = workspaces.summary(&workspace).await.unwrap();
+    assert_eq!(after_summary.members, summary.members);
+    assert_eq!(after_summary.devices, summary.devices);
     // The bot's own changes file no report, so they do not wake it again.
     bot.wake().await.unwrap();
-    let after_second_wake = chat_of(
-        &workspaces
-            .resource_document(&workspace, CHAT, "")
+    let after_second_wake = moderation_state(&workspaces, &workspace).await;
+    assert_eq!(after_second_wake, after);
+}
+
+async fn moderation_state(workspaces: &Workspaces, workspace: &str) -> Moderation {
+    let bytes = workspaces
+        .resource_document(workspace, CHAT, MODERATION_DOCUMENT)
+        .await
+        .unwrap()
+        .unwrap();
+    Moderation::read(&automerge::AutoCommit::load(&bytes).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn chat_moderation_history_is_copied_once_with_its_attribution() {
+    Box::pin(assert_moderation_history_restored(false)).await;
+}
+
+#[tokio::test]
+async fn sealed_moderation_history_waits_for_keys_without_founding_an_empty_record() {
+    Box::pin(assert_moderation_history_restored(true)).await;
+}
+
+#[expect(
+    clippy::future_not_send,
+    reason = "the test reads its records as local replicas on the test's own thread"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one walk: the earlier history, its move, and the record each reader opens"
+)]
+async fn assert_moderation_history_restored(sealed: bool) {
+    use crate::workspaces::fixtures::{TestGroupKeys, test_host_holding};
+    use automerge::transaction::Transactable as _;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tilo_resource::Fields as _;
+    use tilo_workspace_service::device_documents::ServiceDocuments;
+    use tilo_workspace_service::workspace_documents::{DeviceDocuments as _, DocumentRead};
+
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let keys = Arc::new(TestGroupKeys::default());
+    let start = || async {
+        if sealed {
+            let _catalogue = AppCatalogue::native();
+            crate::surfaces::decide_receipt(&scratch.path().join("surfaces"));
+            test_host_holding(scratch.path(), &key, &cert, Arc::clone(&keys)).await
+        } else {
+            bot_server(scratch.path(), &key, &cert).await
+        }
+    };
+    let server = start().await;
+    let workspaces = server.workspaces();
+    let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+    workspaces
+        .prepare_application(&workspace, &cert, &AppCatalogue::native(), CHAT, "")
+        .await
+        .unwrap();
+
+    let mut earlier = tilo_resource::Replica::<Moderation>::new().as_author("reporter");
+    earlier
+        .apply(Moderation::REPORT_PERSON.with((
+            MemberId::person("reported"),
+            "A report from before the move".parse().unwrap(),
+        )))
+        .unwrap();
+    let report = earlier
+        .state()
+        .unwrap()
+        .open_reports()
+        .next()
+        .unwrap()
+        .id
+        .clone();
+    let mut earlier = earlier.fork().as_author("moderator");
+    earlier
+        .apply(Moderation::DECIDE_REPORTS.with((
+            "old-decision".to_owned(),
+            MemberId::person("reported"),
+            vec![report],
+            tilo_moderation::Ruling {
+                reasoning: "The original decision".into(),
+                ..tilo_moderation::Ruling::default()
+            },
+        )))
+        .unwrap();
+    let earlier = earlier.state().unwrap();
+    workspaces
+        .author_application(
+            &workspace,
+            &cert,
+            &AppCatalogue::native(),
+            CHAT,
+            "",
+            |doc| {
+                let old = doc
+                    .put_object(automerge::ROOT, "moderation", automerge::ObjType::Map)
+                    .map_err(|error| error.to_string())?;
+                earlier
+                    .write_fields(doc, &old)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .unwrap();
+
+    server.shutdown().await;
+    if sealed {
+        keys.pause(true);
+    }
+    let server = start().await;
+    let workspaces = server.workspaces();
+    if sealed {
+        let routes = workspaces.document_routes(&workspace).await.unwrap();
+        assert!(routes.contains(&(CHAT.to_owned(), String::new())));
+        assert!(!routes.contains(&(CHAT.to_owned(), MODERATION_DOCUMENT.to_owned())));
+        let reads = ServiceDocuments::of(workspaces.clone());
+        assert!(matches!(
+            reads.read(&workspace, CHAT, MODERATION_DOCUMENT, None),
+            Ok(DocumentRead::Pending)
+        ));
+        let error = workspaces
+            .resource_document(&workspace, CHAT, MODERATION_DOCUMENT)
             .await
-            .unwrap()
-            .unwrap(),
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("moderation history is still arriving")
+        );
+        keys.pause(false);
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while workspaces
+                .resource_document(&workspace, CHAT, MODERATION_DOCUMENT)
+                .await
+                .is_err()
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    assert_eq!(moderation_state(workspaces, &workspace).await, earlier);
+    server.shutdown().await;
+
+    let server = start().await;
+    assert_eq!(
+        moderation_state(server.workspaces(), &workspace).await,
+        earlier
     );
-    assert_eq!(after_second_wake.moderation, after.moderation);
+    server.shutdown().await;
+}
+
+#[test]
+fn a_report_written_during_judgment_is_still_after_the_bots_cursor() {
+    use tilo_moderation::Ruling;
+
+    let mut first = tilo_resource::Replica::<Moderation>::new()
+        .as_author("first")
+        .in_app(CHAT, "Chat");
+    first
+        .apply(
+            Moderation::REPORT_PERSON.with((MemberId::person("reported"), "spam".parse().unwrap())),
+        )
+        .unwrap();
+    let state = first.state().unwrap();
+    let report = state.open_reports().next().unwrap();
+    let (_, heads) = super::reports_since("workspace", &first.save(), None).unwrap();
+
+    let mut other = first.fork().as_author("other");
+    other
+        .apply(
+            Moderation::REPORT_PERSON
+                .with((MemberId::person("reported"), "more spam".parse().unwrap())),
+        )
+        .unwrap();
+    let mut judge = first.fork().as_bot_for(MODERATION, "owner");
+    judge
+        .apply(Moderation::DECIDE_REPORTS.with((
+            "decision".to_owned(),
+            MemberId::person("reported"),
+            vec![report.id.clone()],
+            Ruling {
+                reasoning: "first report considered".into(),
+                ..Ruling::default()
+            },
+        )))
+        .unwrap();
+    other.sync_with(&mut judge).unwrap();
+
+    let after = other.state().unwrap();
+    let open: Vec<_> = after
+        .open_reports()
+        .map(|report| report.reporter.clone())
+        .collect();
+    assert_eq!(open, [MemberId::person("other")]);
+    let (reported, _) = super::reports_since("workspace", &other.save(), Some(&heads)).unwrap();
+    assert!(reported);
 }

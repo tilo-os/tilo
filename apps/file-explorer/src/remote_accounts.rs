@@ -107,18 +107,17 @@ pub fn from_record(
     record: &accounts::person::PersonAccounts,
     home: Option<&Path>,
 ) -> Vec<RemoteAccount> {
-    from_store(&record.store(), home)
+    from_accounts(&record.all(), home)
 }
 
-fn from_store(store: &accounts::AccountStore, home: Option<&Path>) -> Vec<RemoteAccount> {
-    let mut projected: Vec<RemoteAccount> = store
-        .all()
+fn from_accounts(all: &[Account], home: Option<&Path>) -> Vec<RemoteAccount> {
+    let mut projected: Vec<RemoteAccount> = all
         .iter()
         .filter_map(from_account)
         .take(MAX_REMOTE_ACCOUNTS)
         .collect();
     if let Some(home) = home {
-        assign_mounts(&mut projected, store, &home.join(MOUNTS_DIR));
+        assign_mounts(&mut projected, all, &home.join(MOUNTS_DIR));
     }
     projected
 }
@@ -147,9 +146,8 @@ pub const MOUNTS_DIR: &str = "Remote";
 
 /// Name each account's folder exactly as the cloud service does: every
 /// sync file account's label (enabled or not), unique in account-id order.
-fn assign_mounts(projected: &mut [RemoteAccount], store: &accounts::AccountStore, root: &Path) {
-    let labels: Vec<(&str, &str)> = store
-        .all()
+fn assign_mounts(projected: &mut [RemoteAccount], all: &[Account], root: &Path) {
+    let labels: Vec<(&str, &str)> = all
         .iter()
         .filter(|account| files_mode(account) == Some(FilesMode::Sync))
         .filter(|account| is_file_account(account))
@@ -274,7 +272,7 @@ mod tests {
 
         phase import_accounts_are_not_projected;
         {
-            let mut store = accounts::AccountStore::new();
+            let mut store = Vec::new();
             for (id, mode) in [("a-import", "import"), ("b-sync", "sync")] {
                 let mut account = Account::new(id, WEBDAV_TYPE);
                 account.display_name = "Cloud".into();
@@ -282,9 +280,9 @@ mod tests {
                     "server_url": "https://files.example/dav",
                     "files_mode": mode,
                 });
-                store.upsert(account);
+                store.push(account);
             }
-            let loaded = from_store(&store, None);
+            let loaded = from_accounts(&store, None);
             assert_eq!(loaded.len(), 1);
             assert_eq!(loaded[0].id.as_str(), "b-sync");
         }
@@ -307,18 +305,18 @@ mod tests {
         phase accounts_keep_their_mount_folders_and_say_they_are_not_checked;
         {
             let home = tempfile::tempdir().unwrap();
-            let mut store = accounts::AccountStore::new();
+            let mut store = Vec::new();
             for (id, label) in [("b", "Cloud"), ("a", "Cloud")] {
                 let mut account = Account::new(id, WEBDAV_TYPE);
                 account.display_name = label.into();
                 account.config = serde_json::json!({"server_url": "https://files.example/dav"});
-                store.upsert(account);
+                store.push(account);
             }
             let mut off = Account::new("c", WEBDAV_TYPE);
             off.config = serde_json::json!({"server_url": "https://files.example/dav"});
             off.enabled = false;
-            store.upsert(off);
-            let loaded = from_store(&store, Some(home.path()));
+            store.push(off);
+            let loaded = from_accounts(&store, Some(home.path()));
             let a = loaded.iter().find(|x| x.id.as_str() == "a").unwrap();
             let b = loaded.iter().find(|x| x.id.as_str() == "b").unwrap();
             let c = loaded.iter().find(|x| x.id.as_str() == "c").unwrap();

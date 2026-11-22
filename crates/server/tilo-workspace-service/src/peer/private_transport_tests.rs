@@ -1324,7 +1324,6 @@ async fn a_workspace_members_role_controls_document_replay_and_open() {
         app_id: app.to_owned(),
         cluster_id: workspace.clone(),
         document_id: document.to_owned(),
-        own: None,
         readers: None,
     };
     let body = runtime
@@ -1379,7 +1378,6 @@ async fn a_workspace_members_role_controls_document_replay_and_open() {
         send(Envelope::OpenDocument {
             workspace_id,
             channel: digest,
-            own: None,
         })
     };
     write.write_all(&open()).await.unwrap();
@@ -1629,7 +1627,6 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
         .write_all(&send(&Envelope::OpenDocument {
             workspace_id: id,
             channel: record,
-            own: None,
         }))
         .await
         .unwrap();

@@ -96,7 +96,6 @@ fn device_with(
             hosts: Vec::new(),
             continuity: permitted(),
             wake: Arc::new(|| {}),
-            personal: None,
             relays,
             lan,
             records: tilo_session::platform::records::Changes::default(),

@@ -6,7 +6,7 @@ use account_credentials::{Capability, OAuthIssuer, OAuthUse, SpotifyIdentity, To
 use accounts::{Account, AccountId};
 use serde::Deserialize;
 
-use super::connect::{ConnectionError, Connector, load_store};
+use super::connect::{ConnectionError, Connector};
 
 const MAX_PROFILE: u64 = 64 * 1024;
 
@@ -114,8 +114,8 @@ impl Connector {
         } else {
             "music.spotify.streaming"
         });
-        let store = load_store(&self.root)?;
-        if let Some(existing) = store.get(&opposite) {
+        let store = self.accounts()?.state()?;
+        if let Some(existing) = store.account(opposite.as_str()) {
             if existing.type_id.as_str() != "spotify" {
                 return Err(ConnectionError::SignInFailed);
             }
@@ -260,10 +260,10 @@ music_streaming = ["streaming", "user-read-private"]
                     secret
                 );
                 assert_eq!(
-                    load_store(&root).unwrap().get(&first).unwrap().config["spotify_user_id"],
+                    crate::account_store::Accounts::read(&root).unwrap().get(first.as_str()).unwrap().unwrap().config["spotify_user_id"],
                     "ada"
                 );
-                assert_eq!(load_store(&root).unwrap().len(), 1);
+                assert_eq!(crate::account_store::Accounts::read(&root).unwrap().all().unwrap().len(), 1);
             }
         }
 
@@ -282,19 +282,19 @@ music_streaming = ["streaming", "user-read-private"]
                 let first = finish(&connector, first_playback).unwrap();
                 let second = finish(&connector, !first_playback).unwrap();
                 api.join().unwrap();
-                let store = load_store(&root).unwrap();
-                assert_eq!(store.len(), 2);
+                let store = crate::account_store::Accounts::read(&root).unwrap();
+                assert_eq!(store.all().unwrap().len(), 2);
                 assert_eq!(
-                    store.get(&first).unwrap().config["spotify_user_id"],
+                    store.get(first.as_str()).unwrap().unwrap().config["spotify_user_id"],
                     "original-name"
                 );
                 assert_eq!(
-                    store.get(&second).unwrap().config["spotify_user_id"],
+                    store.get(second.as_str()).unwrap().unwrap().config["spotify_user_id"],
                     "second-name"
                 );
                 for id in [first, second] {
                     assert_eq!(
-                        store.get(&id).unwrap().config["spotify_account_id"],
+                        store.get(id.as_str()).unwrap().unwrap().config["spotify_account_id"],
                         "immutable-account"
                     );
                 }

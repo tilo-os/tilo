@@ -616,9 +616,11 @@ impl Workspaces {
         let named =
             said(asked.incoming_server.as_deref())?.zip(said(asked.outgoing_server.as_deref())?);
         let root = self.workspace_root(&using.workspace);
-        let kept_as = accounts::AccountId::from(address.clone());
-        if accounts::AccountStore::load_in(&root)
-            .get(&kept_as)
+        if self
+            .workspace_accounts(&using.workspace)
+            .await
+            .map_err(refused)?
+            .account(&address)
             .is_some()
         {
             return Err(refused(ALREADY));

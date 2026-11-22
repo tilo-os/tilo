@@ -129,16 +129,6 @@ impl DeviceDocuments for ServiceDocuments {
         workspaces.own_listing(workspace)
     }
 
-    fn own_records(
-        &self,
-        workspace: &str,
-    ) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
-        let Some(workspaces) = self.0.copies() else {
-            return std::collections::BTreeMap::new();
-        };
-        workspaces.own_records(workspace)
-    }
-
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
         let Some(workspaces) = self.0.copies() else {
             return false;

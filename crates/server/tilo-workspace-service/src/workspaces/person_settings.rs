@@ -15,11 +15,8 @@
 
 /// The sign-ins of the accounts and providers, as entries of the workspace's vault.
 pub(in crate::workspaces) mod kept_sign_ins;
-/// One provider's grant, kept in the workspace's vault and renewed behind one
-/// lock.
-pub(in crate::workspaces) mod oauth_grant;
 mod sending;
-/// Signing in on a provider's own page, and the server's end of it.
+/// Signing in on a provider's own page: a Nextcloud server's login flow.
 mod sign_in;
 pub mod turn_mail;
 
@@ -59,9 +56,7 @@ use kept_sign_ins::{Signing, places_of, sign_in_of};
 mod person_mail;
 #[cfg(feature = "agents")]
 use person_mail::answers_in_public;
-use person_mail::{
-    kept_mail, linked_calendar, mail_accounts, provider_of_servers, remove_calendar,
-};
+use person_mail::{kept_mail, mail_accounts};
 
 /// A person's calendars, kept beside their mail accounts.
 #[cfg(feature = "agents")]
@@ -72,9 +67,8 @@ pub(in crate::workspaces) mod calendars;
 pub(in crate::workspaces) mod mail_connect;
 
 impl Workspaces {
-    /// Where this host keeps `person`'s own settings: their formats and
-    /// zone, and what may interrupt them. Theirs in every workspace, and
-    /// nothing a workspace keeps.
+    /// Where this host keeps what may interrupt `person`. Theirs in every
+    /// workspace, and nothing a workspace keeps.
     pub(super) fn person_settings_root(&self, person: &[u8; 32]) -> PathBuf {
         self.inner.dir.join("people").join(hex::encode(person))
     }
@@ -82,8 +76,13 @@ impl Workspaces {
     /// The mail accounts `workspace` keeps, as [`person_accounts::LIST`]
     /// answers them: what a window following [`person_accounts::WATCH`] is
     /// sent again whenever they change.
-    pub(super) fn accounts_listing(&self, workspace: &str) -> Result<Value, ActionCallError> {
+    pub(super) async fn accounts_listing(&self, workspace: &str) -> Result<Value, ActionCallError> {
+        let held = self
+            .workspace_accounts(workspace)
+            .await
+            .map_err(refused_with)?;
         answer(&Ok::<_, String>(mail_accounts(
+            &held,
             &self.workspace_root(workspace),
         )))
     }
@@ -140,7 +139,6 @@ impl Workspaces {
         workspace: &str,
         address: &str,
     ) -> Result<(), String> {
-        let root = self.workspace_root(workspace);
         let id = accounts::AccountId::from(address.to_owned());
         let mut account = accounts::Account::new(id, accounts::email::TYPE_ID);
         // The stand-in is every server: the account names one of its own, which its password
@@ -164,9 +162,7 @@ impl Workspaces {
             )
             .await?;
         accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
-        let mut store = accounts::AccountStore::load_in(&root);
-        store.upsert(account);
-        store.save_in(&root).map_err(|error| format!("{error:?}"))?;
+        self.keep_workspace_account(workspace, &account).await?;
         self.person_settings_changed();
         Ok(())
     }
@@ -415,7 +411,8 @@ impl Workspaces {
         let root = signing.root;
         match request.target.address.action.as_str() {
             person_accounts::LIST => {
-                let mut listed = mail_accounts(root);
+                let held = signing.vault.accounts().await.map_err(refused_with)?;
+                let mut listed = mail_accounts(&held, root);
                 if agent {
                     // Whose sign-in is running is no agent's business.
                     listed.signing_in.clear();
@@ -548,13 +545,6 @@ fn begun_for(root: &Path, send: &str) -> Result<(PathBuf, BeginSend), ActionCall
     begun_send(root, send).map_err(|reason| ActionCallError::Refused { reason })
 }
 
-/// Let a sign-in go stale, as the minutes passing would: a test's hand on a
-/// clock it cannot wait for.
-#[cfg(test)]
-pub(crate) fn expire_sign_in(id: &str) {
-    sign_in::expire(id);
-}
-
 /// The sign-in a mail account of `workspace` reads with, as the session would be given it.
 #[cfg(test)]
 pub(crate) async fn account_secret_for_test(
@@ -571,24 +561,6 @@ pub(crate) async fn account_secret_for_test(
     account_with_secret(signing, id)
         .await
         .map(|(_, secret)| secret)
-}
-
-/// Keep `tokens` as `account`'s sign-in in `workspace`, as a sign-in on its provider's page
-/// does, and the account with it: a test's hand on a grant it cannot fetch through a browser.
-/// Only the calendar tests take it, and they build with the agents.
-#[cfg(all(test, feature = "agents"))]
-pub(crate) async fn seal_grant_for_test(
-    workspaces: &Workspaces,
-    workspace: &str,
-    account: &accounts::Account,
-    tokens: &tilo_oauth::TokenSet,
-) -> Result<(), String> {
-    let root = workspaces.workspace_root(workspace);
-    let mut account = account.clone();
-    oauth_grant::seal(workspaces.vault_at(workspace), &mut account, tokens).await?;
-    let mut store = accounts::AccountStore::load_in(&root);
-    store.upsert(account);
-    store.save_in(&root).map_err(|error| error.to_string())
 }
 
 /// The `provider` a removing action names.
@@ -650,22 +622,22 @@ pub(super) async fn add_mail_with(
     } else {
         config.display_name.clone_into(&mut account.display_name);
     }
-    // Who provides the account, and which of its services its person uses:
-    // what every later reading answers and what Mail reads it by.
-    let provider = provider_of_servers(&config.imap_host, &config.smtp_host);
+    // Which of its services its person uses: what every later reading
+    // answers and what Mail reads it by.
     let mut settings = config.to_value().map_err(|error| error.to_string())?;
     if let Value::Object(settings) = &mut settings {
-        settings.insert("provider".into(), Value::String(provider.key().to_owned()));
         settings.insert(
             "services".into(),
-            serde_json::to_value(adding.services.within(provider))
+            serde_json::to_value(adding.services.within(person_accounts::Provider::Other))
                 .map_err(|error| error.to_string())?,
         );
     }
     account.config = settings;
 
-    let before = accounts::AccountStore::load_in(root)
-        .get(&account.id)
+    let before = vault
+        .accounts()
+        .await?
+        .account(account.id.as_str())
         .and_then(|before| sign_in_of(&before.config));
     if !adding.password.is_empty() {
         let checking = account.clone();
@@ -700,41 +672,28 @@ pub(super) async fn add_mail_with(
         // Kept again without a password, it keeps the sign-in it had.
         accounts::email::set_password_item(&mut account.config, Some(&before.to_string()));
     }
-    let mut store = accounts::AccountStore::load_in(root);
-    store.upsert(account.clone());
-    store.save_in(root).map_err(|error| error.to_string())?;
-    kept_mail(root, account.id.as_str())
+    vault.keep_account(&account).await?;
+    kept_mail(&vault.accounts().await?, root, account.id.as_str())
 }
 
-/// Remove `account` and its own sign-in together, and the calendar account kept
-/// as its service where it has one. A member's entry it signed in with stays theirs.
+/// Remove `account` and its own sign-in together. A member's entry it signed in with stays
+/// theirs.
 async fn remove_mail(
     (vault, root): (VaultAt<'_>, &Path),
     account: &str,
 ) -> Result<MailAccounts, String> {
-    let mut store = accounts::AccountStore::load_in(root);
-    let id = accounts::AccountId::from(account.to_owned());
-    let linked = store.get(&id).and_then(|kept| linked_calendar(root, kept));
-    let sign_in = store.get(&id).and_then(|kept| sign_in_of(&kept.config));
-    if !store.remove(&id) {
+    let sign_in = vault
+        .accounts()
+        .await?
+        .account(account)
+        .and_then(|kept| sign_in_of(&kept.config));
+    if !vault.remove_account(account).await? {
         return Err("That account is not kept here".into());
     }
-    store.save_in(root).map_err(|error| error.to_string())?;
     if let Some(sign_in) = &sign_in {
         vault.forget_sign_in(account, sign_in).await?;
     }
-    // The calendars kept as its service go with it.
-    if let Some(calendar) = &linked
-        && let Err(why) = remove_calendar((vault, root), calendar).await
-    {
-        tracing::warn!(
-            calendar = %calendar,
-            account,
-            %why,
-            "mail: a removed account's calendar account could not be removed"
-        );
-    }
-    Ok(mail_accounts(root))
+    Ok(mail_accounts(&vault.accounts().await?, root))
 }
 
 /// The account `id` names, with the sign-in the workspace's vault keeps for it, the use
@@ -744,18 +703,16 @@ async fn account_with_secret(
     signing: Signing<'_>,
     id: &str,
 ) -> Result<(accounts::Account, accounts::Secret), String> {
-    let root = signing.root;
-    let store = accounts::AccountStore::load_in(root);
-    let account = store
-        .get(&accounts::AccountId::from(id.to_owned()))
+    let account = signing
+        .vault
+        .accounts()
+        .await?
+        .account(id)
         .filter(|account| account.type_id.as_str() == accounts::email::TYPE_ID)
-        .cloned()
         .ok_or_else(|| "That account is not kept here".to_owned())?;
-    // An account a provider signed in on its own page reads with its bearer
-    // token, kept fresh through the one shared renewal path; any other with
-    // the entry it names, while its settings name the servers that entry
-    // belongs to.
-    let secret = sign_in::mail_secret(signing.vault, root, &account, signing.by).await?;
+    // It reads with the entry it names, while its settings name the servers
+    // that entry belongs to.
+    let secret = sign_in::mail_secret(signing.vault, &account, signing.by).await?;
     Ok((account, secret))
 }
 
@@ -1645,7 +1602,7 @@ mod tests {
     }
 
     /// A workspace's vault held for one test: what the vault document keeps on a host.
-    pub(super) fn held() -> &'static std::sync::Mutex<accounts::vault_items::VaultItems> {
+    pub(super) fn held() -> &'static super::super::vault::TestStores {
         Box::leak(Box::default())
     }
 
@@ -1846,7 +1803,6 @@ mod tests {
         let at = VaultAt::Held(vault);
         // The server check needs a server; keeping and removing are what the
         // store and vault do, so they are proven without one.
-        let mut store = accounts::AccountStore::load_in(root.path());
         for (address, own) in [("ada@example.test", true), ("bo@example.test", false)] {
             let mut account = accounts::Account::new(address, accounts::email::TYPE_ID);
             account.config = serde_json::json!({
@@ -1882,11 +1838,10 @@ mod tests {
                 tilo_actions::remote::person_vault::ItemRef::from_id(added.id.as_str()).unwrap()
             };
             accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
-            store.upsert(account);
+            vault.keep_account(&account);
         }
-        store.save_in(root.path()).expect("the store saves");
 
-        let listed = mail_accounts(root.path());
+        let listed = mail_accounts(&at.accounts().await.unwrap(), root.path());
         assert_eq!(listed.accounts.len(), 2);
         assert!(listed.accounts.iter().all(|account| account.has_secret));
         let json = serde_json::to_string(&listed).unwrap();
@@ -2091,7 +2046,7 @@ mod mail_session_tests {
             .build()
             .unwrap();
         runtime.block_on(account_with_sign_in(signing));
-        let listing = mail_accounts(root);
+        let listing = mail_accounts(&vault.accounts_now(), root);
         assert_eq!(listing.accounts.len(), 1);
         assert!(listing.accounts[0].has_secret);
 
@@ -2245,9 +2200,8 @@ mod mail_session_tests {
     }
 
     /// An account and its sign-in, as a test keeps them: the account in the
-    /// workspace's store, naming its entry of the workspace's vault.
+    /// workspace's accounts, naming its entry of the workspace's vault.
     async fn account_with_sign_in(signing: Signing<'_>) {
-        let root = signing.root;
         let mut account = accounts::Account::new(
             accounts::AccountId::from("ada@example.test"),
             accounts::email::TYPE_ID,
@@ -2275,9 +2229,7 @@ mod mail_session_tests {
             .await
             .unwrap();
         accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
-        let mut store = accounts::AccountStore::load_in(root);
-        store.upsert(account);
-        store.save_in(root).unwrap();
+        signing.vault.keep_account(&account).await.unwrap();
     }
 
     /// A page begins the message, hands its file over in pieces, and sends
@@ -2445,11 +2397,10 @@ mod mail_session_tests {
             "the sign-in is proved before the account is kept"
         );
 
-        let store = accounts::AccountStore::load_in(root);
-        let account = store
-            .get(&accounts::AccountId::from("ada@example.test"))
+        let account = vault
+            .account("ada@example.test")
             .expect("the account is kept");
-        let config = accounts::email::AccountConfig::from_value(account.config.clone()).unwrap();
+        let config = accounts::email::AccountConfig::from_value(account.config).unwrap();
         assert_eq!(
             config.identities,
             vec!["Ada at work <ada@work.example.test>".to_owned()]
@@ -2486,6 +2437,7 @@ mod mail_session_tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let tester = Arc::new(Accepting::default());
+        let vault = super::tests::held();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2493,7 +2445,7 @@ mod mail_session_tests {
         let kept = runtime
             .block_on(add_mail_with(
                 tester.clone(),
-                (VaultAt::Held(super::tests::held()), root),
+                (VaultAt::Held(vault), root),
                 AddMailAccount {
                     address: "ada@example.test".into(),
                     display_name: String::new(),
@@ -2511,11 +2463,10 @@ mod mail_session_tests {
             .unwrap();
         assert!(!kept.has_secret);
         assert!(tester.asked.lock().unwrap().is_empty());
-        let store = accounts::AccountStore::load_in(root);
-        let account = store
-            .get(&accounts::AccountId::from("ada@example.test"))
+        let account = vault
+            .account("ada@example.test")
             .expect("the account is kept");
-        let config = accounts::email::AccountConfig::from_value(account.config.clone()).unwrap();
+        let config = accounts::email::AccountConfig::from_value(account.config).unwrap();
         assert!(config.import_pending);
     }
 
@@ -2527,8 +2478,9 @@ mod mail_session_tests {
         const ADA: &str = "ada@example.test";
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
+        let stores = super::tests::held();
         let signing = Signing {
-            vault: VaultAt::Held(super::tests::held()),
+            vault: VaultAt::Held(stores),
             root,
             by: "",
         };
@@ -2538,11 +2490,9 @@ mod mail_session_tests {
             .unwrap();
         runtime.block_on(account_with_sign_in(signing));
         let names = |incoming: &str| {
-            let mut store = accounts::AccountStore::load_in(root);
-            let mut account = store.get(&accounts::AccountId::from(ADA)).cloned().unwrap();
+            let mut account = stores.account(ADA).unwrap();
             account.config["imap_host"] = incoming.into();
-            store.upsert(account);
-            store.save_in(root).unwrap();
+            stores.keep_account(&account);
         };
         let (_, secret) = runtime.block_on(account_with_secret(signing, ADA)).unwrap();
         assert_eq!(secret.password, "fixture-password");
@@ -2587,8 +2537,9 @@ mod mail_session_tests {
     fn an_account_without_its_sign_in_reaches_no_server() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
+        let stores = super::tests::held();
         let signing = Signing {
-            vault: VaultAt::Held(super::tests::held()),
+            vault: VaultAt::Held(stores),
             root,
             by: "",
         };
@@ -2601,9 +2552,7 @@ mod mail_session_tests {
             "username": "ada@example.test",
             "imap_host": "imap.example.test"
         });
-        let mut store = accounts::AccountStore::load_in(root);
-        store.upsert(account);
-        store.save_in(root).unwrap();
+        stores.keep_account(&account);
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

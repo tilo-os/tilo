@@ -138,10 +138,6 @@ struct Unsigned<'a> {
     expires_at_ns: u64,
 }
 
-fn is_installation_id(value: &str) -> bool {
-    uuid::Uuid::parse_str(value).is_ok_and(|id| id.hyphenated().to_string() == value)
-}
-
 impl Delegation {
     /// Sign a delegation of `device_public_key` with the person's `root`.
     ///
@@ -199,7 +195,9 @@ impl Delegation {
             Delegate::Agent { agent_id } if !text(agent_id) => {
                 return Err(DelegationError::Invalid("agent id"));
             }
-            Delegate::Bot { installation } if !is_installation_id(installation) => {
+            Delegate::Bot { installation }
+                if !collab_types::is_bot_installation_id(installation) =>
+            {
                 return Err(DelegationError::Invalid("installation id"));
             }
             _ => {}

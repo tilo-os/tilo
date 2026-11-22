@@ -76,7 +76,6 @@ pub async fn plaintext_document(
         cluster_id: workspace.into(),
         document_id: record.into(),
         envelope: Box::new(envelope),
-        own: None,
         readers: None,
     };
     let body = postcard::to_stdvec(&message).unwrap();
@@ -410,7 +409,6 @@ impl SealingMember {
             cluster_id: workspace.into(),
             document_id: document.into(),
             envelope: Box::new(op),
-            own: None,
             readers: None,
         }
     }
@@ -530,7 +528,6 @@ impl SealingMember {
             cluster_id: workspace.into(),
             document_id: record.into(),
             envelope: Box::new(envelope),
-            own: None,
             readers: None,
         }
     }

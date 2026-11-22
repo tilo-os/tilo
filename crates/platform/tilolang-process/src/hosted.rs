@@ -1922,11 +1922,8 @@ impl Hosted {
             .document
             .as_deref()
             .and_then(collab_types::person_document_context);
-        let reaches = if profile_record.is_some() {
-            person.and_then(collab_types::personal_cluster_of) == Some(route.cluster_id)
-        } else {
-            tilolang_tilo::reaches(&route.app_id, route.document.as_deref(), person)
-        };
+        let reaches = profile_record.is_none()
+            || person.and_then(collab_types::personal_cluster_of) == Some(route.cluster_id);
         if !reaches {
             let update = failed(
                 invocation,

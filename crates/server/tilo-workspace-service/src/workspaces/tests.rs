@@ -2018,7 +2018,6 @@ async fn a_refused_document_write_is_filed_in_the_workspaces_document() {
         cluster_id: workspace.clone(),
         document_id: record.into(),
         envelope: Box::new(envelope),
-        own: None,
         readers: None,
     })
     .unwrap();

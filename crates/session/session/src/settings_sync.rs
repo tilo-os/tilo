@@ -1,144 +1,201 @@
 //! The person's settings following them to their other devices.
 //!
-//! A profile keeps two documents: the sections the person holds, which follow them, and this
-//! device's, which stay here ([`settings_store::placement`]). The person's are carried by their own
-//! store, as one of its resources ([`tilo_peer_state::SETTINGS_KIND`]): each leaf the person holds
-//! (`tilo.<section>.<leaf>`, an object under a leaf travelling as one value) under its key. What
-//! the person changes here is written there, and what another of their devices wrote there is
-//! taken into the document — so the theme, the language or an app's preference chosen on the
-//! laptop is what this desktop reads next, and nothing of this machine's (`app_device_local`, the
-//! clock, the display) ever leaves it.
+//! The sections that are the person's ([`settings_store::placement`]) are one resource of the
+//! workspace whose only member is them, which every device of theirs takes part in
+//! ([`persons_workspace`]): each leaf (`tilo.<section>.<leaf>`, an object under a leaf travelling
+//! as one value) under its key. A write of one goes to that resource first ([`Record`], the
+//! settings' [`settings_store::RoamingSettings`]), and the settings document keeps a copy every
+//! process reads at once; what another of their devices wrote there is taken into that copy as it
+//! arrives — so the theme, the language or an app's preference chosen on the laptop is what this
+//! desktop reads next, and nothing of this machine's (`app_device_local`, the clock, the
+//! display) ever leaves it.
 //!
-//! The store merges what each device wrote, a later write of one setting winning over an earlier
-//! one, and admits a write only from a device the person's root certified. This device writes only
-//! what changed here since it last agreed with the store, so a setting another device changed
-//! meanwhile is taken in rather than written over.
+//! The resource is kept by the session's copies of its workspaces' resources
+//! ([`EngineRecords::keep_document`]), which merge what each device wrote, a later write of one
+//! setting winning over an earlier one.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use automerge::transaction::Transactable as _;
-use automerge::{AutoCommit, ReadDoc as _};
+use automerge::{AutoCommit, ChangeHash, ReadDoc as _};
 use collab_types::CommitNamed as _;
 use serde_json::{Map, Value};
 use settings_store::person_displays::{PLACEMENTS_KEY, Placements};
 use settings_store::placement::Holder;
-use tilo_peer_state::{PersonalSync, SETTINGS_KIND};
+
+use crate::engine_records::{EngineRecords, KeptDoc};
+
+/// The person's settings as a resource of their workspace: the settings app's.
+pub(crate) const RECORD: (&str, &str) = ("so.tilo.settings", "person");
 
 /// The kind the changes of the person's settings are named as.
 const CHANGE_KIND: &str = "settings";
 
+/// The workspace whose only member is the person, which every device of theirs takes part in
+/// from sign-in.
+pub(crate) fn persons_workspace(person: &[u8; 32]) -> String {
+    tilo_server_protocol::servers::person_workspace_id(person)
+}
+
+/// The person's record, as the settings write to it: every write of a setting the person holds
+/// lands here first, and the session's loop is woken to carry it to the workspace.
+pub(crate) struct Record {
+    doc: Arc<Mutex<AutoCommit>>,
+    wake: tilo_service::Wake,
+}
+
+impl settings_store::RoamingSettings for Record {
+    fn write(
+        &self,
+        leaves: &[(String, String, Value)],
+        _origin: &settings_store::ChangeOrigin,
+    ) -> Result<(), String> {
+        let mut doc = self.doc.lock().unwrap_or_else(PoisonError::into_inner);
+        for (section, leaf, value) in leaves {
+            let key = format!("tilo.{section}.{leaf}");
+            if value.is_null() {
+                if doc
+                    .get(automerge::ROOT, key.as_str())
+                    .ok()
+                    .flatten()
+                    .is_some()
+                {
+                    doc.delete(automerge::ROOT, key.as_str())
+                        .map_err(|error| error.to_string())?;
+                }
+            } else {
+                // Each display's place is its own: what another device placed meanwhile stays.
+                let value = match values(&doc).get(&key) {
+                    Some(theirs) if key == PLACEMENTS_KEY => placements([theirs, value]),
+                    _ => value.clone(),
+                };
+                let text = serde_json::to_string(&value).map_err(|error| error.to_string())?;
+                if text.len() > settings_store::placement::MAX_PERSONAL_VALUE_BYTES {
+                    doc.rollback();
+                    return Err(format!("{key} is too large for the person's devices"));
+                }
+                doc.put(automerge::ROOT, key.as_str(), text)
+                    .map_err(|error| error.to_string())?;
+            }
+            doc.commit_edit(CHANGE_KIND, &key);
+        }
+        drop(doc);
+        (self.wake)();
+        Ok(())
+    }
+}
+
 /// The person's settings, kept in step with their other devices.
 pub(crate) struct SettingsSync {
-    /// The settings document and the person's store as last looked at: while neither moved, there
-    /// is nothing to write or to take.
-    seen: Cell<Option<(Option<settings_store::SettingsStamp>, u64)>>,
-    /// Each setting as this device and the person's store last agreed it; `None` before the first
-    /// pass, which takes what the store holds over what this device kept.
-    agreed: RefCell<Option<BTreeMap<String, Value>>>,
+    /// The person's record, as the session's copies of its workspace's records keep it.
+    record: Arc<Mutex<AutoCommit>>,
+    /// The workspace the record is kept in, once it was handed to the records.
+    kept: RefCell<Option<String>>,
+    /// The record's heads as the settings document last took them in: `None` before the first
+    /// look, which also offers what this device kept before it had the record.
+    seen: RefCell<Option<Vec<ChangeHash>>>,
 }
 
 impl SettingsSync {
     pub(crate) fn new() -> Self {
         Self {
-            seen: Cell::new(None),
-            agreed: RefCell::new(None),
+            record: Arc::new(Mutex::new(AutoCommit::new())),
+            kept: RefCell::new(None),
+            seen: RefCell::new(None),
         }
     }
 
-    /// Write what the person changed here to their store, and take what their other devices
-    /// changed there. Returns whether the settings here changed.
-    pub(crate) fn sync(&self, personal: &PersonalSync) -> bool {
-        let looked = (settings_store::stamp(), *personal.changes().borrow());
-        if self.seen.get() == Some(looked) {
+    /// Keep the person's record in `records` once this device takes part in their workspace, writing
+    /// the settings the person holds there from then on, and take into the settings document what
+    /// the record holds as it moves. Returns whether the settings here changed.
+    pub(crate) fn sync(&self, records: &EngineRecords, person: &[u8; 32]) -> bool {
+        let Some(source) = settings_store::source() else {
+            return false;
+        };
+        let Some(store) = source.store() else {
+            return false;
+        };
+        let workspace = persons_workspace(person);
+        if self.kept.borrow().as_deref() != Some(workspace.as_str()) {
+            if !records.holds(&workspace) {
+                return false;
+            }
+            records.keep_document(
+                &workspace,
+                RECORD,
+                KeptDoc::shared(Arc::clone(&self.record)),
+            );
+            store.keep_roaming_in(Some(Arc::new(Record {
+                doc: Arc::clone(&self.record),
+                wake: records.wake(),
+            })));
+            *self.kept.borrow_mut() = Some(workspace.clone());
+            *self.seen.borrow_mut() = None;
+        }
+        if !records.kept_read(&workspace, RECORD) {
+            return false;
+        }
+        let heads = self.lock().get_heads();
+        if self.seen.borrow().as_ref() == Some(&heads) {
             return false;
         }
         let document = settings_store::load();
-        let held = personal.read(|store| store.person_resource(SETTINGS_KIND));
-        let mut doc = match held.as_deref().map(AutoCommit::load) {
-            Some(Ok(doc)) => doc,
-            Some(Err(error)) => {
-                tracing::warn!(%error, "the person's settings in their store do not read");
-                return false;
+        if self.seen.borrow().is_none() {
+            // What this device kept before it had the person's record (chosen as it was set up,
+            // or before it held the workspace) is the person's where the record holds nothing of
+            // it yet.
+            let offered = offer(&mut self.lock(), &document);
+            if offered {
+                records.write();
             }
-            None => AutoCommit::new(),
-        };
-        let mut agreed = self.agreed.borrow_mut();
-        let first = agreed.is_none();
-        let agreed = agreed.get_or_insert_with(|| values(&doc));
-        if let Err(error) =
-            Self::write(&mut doc, held.is_some(), &document, agreed, first, personal)
-        {
-            tracing::warn!(%error, "the person's settings did not reach their store");
         }
-        let theirs = values(&doc);
-        let changed = take(&document, &theirs);
-        *agreed = theirs;
-        self.seen.set(Some((
-            settings_store::stamp(),
-            *personal.changes().borrow(),
-        )));
+        let theirs = values(&self.lock());
+        let changed = take(store, &document, &theirs);
+        let heads = self.lock().get_heads();
+        *self.seen.borrow_mut() = Some(heads);
         changed
     }
 
-    /// Write each setting the person changed here since this device last agreed with their store
-    /// into `doc` (the store's copy), and publish the change. On the first pass only what the store
-    /// does not hold yet is written: a device that comes up takes the person's settings.
-    fn write(
-        doc: &mut AutoCommit,
-        held: bool,
-        document: &Map<String, Value>,
-        agreed: &BTreeMap<String, Value>,
-        first: bool,
-        personal: &PersonalSync,
-    ) -> Result<(), String> {
-        let stored = values(doc);
-        let base = doc.get_heads();
-        let mut wrote = false;
-        for (key, value) in personal_leaves(document) {
-            if stored.get(&key) == Some(&value)
-                || (first && stored.contains_key(&key))
-                || (!first && agreed.get(&key) == Some(&value))
-            {
-                continue;
-            }
-            // Each display's place is its own: what another device placed meanwhile stays.
-            let value = match stored.get(&key) {
-                Some(theirs) if key == PLACEMENTS_KEY => placements([theirs, &value]),
-                _ => value,
-            };
-            if stored.get(&key) == Some(&value) {
-                continue;
-            }
-            let text = serde_json::to_string(&value).map_err(|error| error.to_string())?;
-            if text.len() > settings_store::placement::MAX_PERSONAL_VALUE_BYTES {
-                tracing::warn!(%key, "a setting is too large for the person's devices");
-                continue;
-            }
-            doc.put(automerge::ROOT, key.as_str(), text)
-                .map_err(|error| error.to_string())?;
-            doc.commit_edit(CHANGE_KIND, &key);
-            wrote = true;
-        }
-        if !wrote {
-            return Ok(());
-        }
-        let mutation = if held {
-            collab_types::DocumentMutation::Incremental(doc.save_after(&base))
-        } else {
-            collab_types::DocumentMutation::Snapshot(doc.save())
-        };
-        personal
-            .publish(|store, key, now| {
-                store.publish_person_resource(SETTINGS_KIND, &mutation, key, now)
-            })
-            .map(drop)
+    fn lock(&self) -> std::sync::MutexGuard<'_, AutoCommit> {
+        self.record.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-/// Take into the document every setting `theirs` holds that it does not: what the person set on
-/// their other devices. Returns whether the document changed.
-fn take(document: &Map<String, Value>, theirs: &BTreeMap<String, Value>) -> bool {
+/// Write into `doc` each setting `document` holds that the person holds and the record does not.
+/// Whether anything was written.
+fn offer(doc: &mut AutoCommit, document: &Map<String, Value>) -> bool {
+    let stored = values(doc);
+    let mut wrote = false;
+    for (key, value) in personal_leaves(document) {
+        if stored.contains_key(&key) {
+            continue;
+        }
+        let Ok(text) = serde_json::to_string(&value) else {
+            continue;
+        };
+        if text.len() > settings_store::placement::MAX_PERSONAL_VALUE_BYTES {
+            tracing::warn!(%key, "a setting is too large for the person's devices");
+            continue;
+        }
+        if let Err(error) = doc.put(automerge::ROOT, key.as_str(), text) {
+            tracing::warn!(%error, %key, "a setting did not reach the person's record");
+            continue;
+        }
+        doc.commit_edit(CHANGE_KIND, &key);
+        wrote = true;
+    }
+    wrote
+}
+
+/// Take into the settings document every setting `theirs` holds that it does not: what the person
+/// set on their other devices. Returns whether the document changed.
+fn take(
+    store: &settings_store::Store,
+    document: &Map<String, Value>,
+    theirs: &BTreeMap<String, Value>,
+) -> bool {
     let mut sections = BTreeMap::<&str, Map<String, Value>>::new();
     for (key, value) in theirs {
         let Some((section, leaf)) = key
@@ -158,19 +215,23 @@ fn take(document: &Map<String, Value>, theirs: &BTreeMap<String, Value>) -> bool
             .or_default()
             .insert(leaf.to_owned(), value.clone());
     }
-    let mut changed = false;
-    for (section, values) in sections {
-        match settings_store::update_section(section, values) {
-            Ok(()) => changed = true,
-            Err(error) => {
-                tracing::warn!(%error, section, "a setting from another device was not kept");
-            }
+    if sections.is_empty() {
+        return false;
+    }
+    let sections = sections
+        .into_iter()
+        .map(|(section, values)| (section.to_owned(), values))
+        .collect();
+    match store.take_roaming(sections) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(%error, "what the person's other devices set was not kept");
+            false
         }
     }
-    changed
 }
 
-/// The settings the store's copy `doc` holds, by key. Two devices that wrote one setting at once
+/// The settings the record `doc` holds, by key. Two devices that wrote one setting at once
 /// settle on one of their values, except for where the person's displays are placed: each display
 /// keeps its newest place, whichever device wrote it.
 fn values(doc: &AutoCommit) -> BTreeMap<String, Value> {

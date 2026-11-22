@@ -23,6 +23,16 @@ use super::super::tests::{caller, settled};
 use crate::workspaces::OwnWorkspaceOffer;
 use crate::workspaces::tests::{governor, test_host};
 
+/// Hold `person`'s own workspace on `workspaces`: the list and devices the
+/// host serves for them live there.
+async fn hold_person_workspace(workspaces: &crate::workspaces::Workspaces, person: [u8; 32]) {
+    let id = tilo_server_protocol::servers::person_workspace_id(&person);
+    workspaces
+        .create_for(crate::workspaces::person_workspace::NAME, Some(&id), person)
+        .await
+        .expect("the person's own workspace");
+}
+
 fn host_request(action: &str, argument: Value) -> InvokeRequest {
     let mut request = super::super::tests::request("", action, argument);
     request.target = tilo_actions::remote::RemoteActionTarget {
@@ -96,6 +106,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
+    hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
     // The site let the person in: an invitation into its home names them.
     let home = workspaces.create("Lounge").await.unwrap().workspace;
     assert!(workspaces.admit_own_through(&home));
@@ -152,7 +163,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
 
     // The desktop keeps the person's list: its own workspaces, hosted on it.
     let kept = json!({"workspaces": [
-        {"workspace": SHELL, "name": "Shell", "host": {"name": "studio", "hint": "00"}},
+        {"workspace": SHELL, "name": "Shell"},
         {"workspace": LAPTOP, "name": "Laptop"},
         {"workspace": here, "name": "On the server"},
     ]});
@@ -176,7 +187,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
     assert_eq!(
         names,
         [
-            (SHELL, Some("studio")),
+            (SHELL, None),
             (LAPTOP, None),
             (here.as_str(), Some("tilo.test")),
         ],
@@ -309,6 +320,7 @@ async fn one_record_lists_every_device_the_persons_root_certified() {
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
+    hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
     let home = workspaces.create("Lounge").await.unwrap().workspace;
     assert!(workspaces.admit_own_through(&home));
     workspaces
@@ -351,7 +363,7 @@ async fn one_record_lists_every_device_the_persons_root_certified() {
     .unwrap();
     // A browser the page's root certified, carried through this host's pairing.
     let browser = key_of(&root, "Firefox", DeviceCapabilities::member());
-    workspaces.keep_issued_device(&browser, "");
+    workspaces.keep_issued_device(&browser, "").await;
 
     let labels = |list: &PersonalList| {
         let mut labels: Vec<(String, bool)> = list
@@ -425,6 +437,7 @@ async fn a_pages_browser_names_its_tab_devices_and_the_list_groups_them() {
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
+    hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
     let tabs: Vec<DeviceCert> = (0..3)
         .map(|_| key_of(&root, "Firefox on Linux", DeviceCapabilities::member()))
         .collect();
@@ -531,6 +544,28 @@ fn listed_device<'a>(
         .unwrap_or_else(|| panic!("{} is in the record", cert.device_label))
 }
 
+/// Whether a session of `device` is open on `workspaces` now, as their record says.
+async fn is_online(workspaces: &crate::workspaces::Workspaces, device: &DeviceCert) -> bool {
+    workspaces
+        .personal(device, &[], &super::Listed::default())
+        .await
+        .devices
+        .iter()
+        .any(|listed| listed.cert.device_public_key == device.device_public_key && listed.online)
+}
+
+/// When a session of `device` was last on `workspaces`, as their record says.
+async fn seen_at(workspaces: &crate::workspaces::Workspaces, device: &DeviceCert) -> Option<i64> {
+    let key = device.device_public_key;
+    workspaces
+        .personal(device, &[], &super::Listed::default())
+        .await
+        .devices
+        .iter()
+        .find(|listed| listed.cert.device_public_key == key)
+        .and_then(|listed| listed.last_active_ms)
+}
+
 /// A listed workspace says when it was made, from the first change its
 /// governance holds, so two workspaces of one name are told apart by it. A
 /// later change to the workspace — a rename — does not move it.
@@ -546,6 +581,7 @@ async fn a_listed_workspace_says_when_it_was_made_and_a_rename_does_not_move_it(
     let actions = ServiceWorkspaceActions::new();
     actions.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
+    hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
     // The site let the person in: an invitation into its home names them.
     let home = workspaces.create("Lounge").await.unwrap().workspace;
     assert!(workspaces.admit_own_through(&home));
@@ -618,19 +654,24 @@ async fn a_keys_sessions_say_when_it_was_here_and_whether_it_is_now() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let root = SigningKey::from_bytes(&rand::random());
+    hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
     let laptop = key_of(&root, "laptop", DeviceCapabilities::member());
     // The record holds the key: a device of theirs kept their list here.
-    workspaces.keep_issued_device(&laptop, "");
+    workspaces.keep_issued_device(&laptop, "").await;
 
-    workspaces.session_opened_at(&laptop, 1_000);
-    let listed = workspaces.personal(&laptop, &[], &super::Listed::default());
+    workspaces.session_opened_at(&laptop, 1_000).await;
+    let listed = workspaces
+        .personal(&laptop, &[], &super::Listed::default())
+        .await;
     let device = listed_device(&listed, &laptop);
     assert!(device.online, "a session of the key is open here now");
     assert_eq!(device.last_active_ms, Some(1_000));
     assert_eq!(device.agent, None);
 
-    workspaces.session_ended_at(&laptop, 5_000);
-    let listed = workspaces.personal(&laptop, &[], &super::Listed::default());
+    workspaces.session_ended_at(&laptop, 5_000).await;
+    let listed = workspaces
+        .personal(&laptop, &[], &super::Listed::default())
+        .await;
     let device = listed_device(&listed, &laptop);
     assert!(!device.online, "no session of the key is open");
     assert_eq!(device.last_active_ms, Some(5_000));
@@ -641,7 +682,8 @@ async fn a_keys_sessions_say_when_it_was_here_and_whether_it_is_now() {
     let server = test_host(dir.path(), &key, &owner).await;
     let listed = server
         .workspaces()
-        .personal(&laptop, &[], &super::Listed::default());
+        .personal(&laptop, &[], &super::Listed::default())
+        .await;
     assert_eq!(listed_device(&listed, &laptop).last_active_ms, Some(5_000));
     server.shutdown().await;
 }
@@ -657,86 +699,35 @@ async fn an_opening_is_written_once_a_minute_and_an_ending_always() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let root = SigningKey::from_bytes(&rand::random());
+    hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
     let laptop = key_of(&root, "laptop", DeviceCapabilities::member());
     let stranger = key_of(&root, "never kept", DeviceCapabilities::member());
-    workspaces.keep_issued_device(&laptop, "");
-    let record = dir.path().join("workspaces").join("personal-lists");
-    let kept_bytes = || {
-        std::fs::read(record.join(format!(
-            "{}.json",
-            hex::encode(root.verifying_key().to_bytes())
-        )))
-        .unwrap()
-    };
-
-    workspaces.session_opened_at(&laptop, 1_000);
-    let opened = kept_bytes();
-    workspaces.session_opened_at(&laptop, 30_000);
+    workspaces.keep_issued_device(&laptop, "").await;
+    workspaces.session_opened_at(&laptop, 1_000).await;
+    assert_eq!(seen_at(workspaces, &laptop).await, Some(1_000));
+    workspaces.session_opened_at(&laptop, 30_000).await;
     assert_eq!(
-        kept_bytes(),
-        opened,
-        "a second session within the minute does not write the record again"
-    );
-    assert_eq!(
-        workspaces
-            .personal(&laptop, &[], &super::Listed::default())
-            .devices
-            .iter()
-            .find(|device| device.cert.device_public_key == laptop.device_public_key)
-            .and_then(|device| device.last_active_ms),
-        Some(1_000)
+        seen_at(workspaces, &laptop).await,
+        Some(1_000),
+        "a second session within the minute does not write when it was here again"
     );
 
-    workspaces.session_ended_at(&laptop, 31_000);
+    workspaces.session_ended_at(&laptop, 31_000).await;
     assert_eq!(
-        workspaces
-            .personal(&laptop, &[], &super::Listed::default())
-            .devices
-            .iter()
-            .find(|device| device.cert.device_public_key == laptop.device_public_key)
-            .and_then(|device| device.last_active_ms),
+        seen_at(workspaces, &laptop).await,
         Some(31_000),
         "the session that ended a moment after one opened is still kept"
     );
 
-    let before = kept_bytes();
-    workspaces.session_opened_at(&stranger, 40_000);
-    assert_eq!(
-        kept_bytes(),
-        before,
+    workspaces.session_opened_at(&stranger, 40_000).await;
+    assert!(
+        workspaces
+            .personal(&stranger, &[], &super::Listed::default())
+            .await
+            .devices
+            .iter()
+            .all(|listed| listed.cert.device_public_key != stranger.device_public_key),
         "a key the person kept no record of writes nothing"
-    );
-    server.shutdown().await;
-}
-
-/// A key whose session says it runs an agent is listed with the agent, for a
-/// person this host is not the own of, and joins their record even when none
-/// of their devices kept a list here: the root that certified it is on no
-/// page of this host's.
-#[tokio::test]
-async fn a_keys_session_says_which_agent_it_runs() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let root = SigningKey::from_bytes(&rand::random());
-    let computer = key_of(&root, "Claude Code on laptop", DeviceCapabilities::member());
-    let stop = std::sync::Arc::new(tokio::sync::Notify::new());
-
-    workspaces.note_agent(&computer, "Claude Code", &stop);
-    let listed = workspaces.personal(&computer, &[], &super::Listed::default());
-    let device = listed_device(&listed, &computer);
-    assert_eq!(device.agent.as_deref(), Some("Claude Code"));
-    assert!(!device.online, "an agent's name is no session open now");
-
-    // Another of their keys reads the same record, and the name stays.
-    let phone = key_of(&root, "phone", DeviceCapabilities::member());
-    workspaces.keep_issued_device(&phone, "");
-    workspaces.note_agent(&computer, "Claude Code", &stop);
-    let listed = workspaces.personal(&phone, &[], &super::Listed::default());
-    assert_eq!(
-        listed_device(&listed, &computer).agent.as_deref(),
-        Some("Claude Code")
     );
     server.shutdown().await;
 }
@@ -755,6 +746,7 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let root = SigningKey::from_bytes(&rand::random());
+    hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
     let laptop_key = SigningKey::from_bytes(&rand::random());
     let mut laptop = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -767,15 +759,11 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
         issuer: None,
     };
     sign_device_cert(&mut laptop, &root).unwrap();
-    workspaces.keep_issued_device(&laptop, "");
-    let online = || {
-        listed_device(
-            &workspaces.personal(&laptop, &[], &super::Listed::default()),
-            &laptop,
-        )
-        .online
-    };
-    assert!(!online(), "no session of the key is open yet");
+    workspaces.keep_issued_device(&laptop, "").await;
+    assert!(
+        !is_online(workspaces, &laptop).await,
+        "no session of the key is open yet"
+    );
 
     let hello = crate::auth::Hello::new(laptop.clone(), [2; 32]);
     let peer = crate::auth::accept_hello(
@@ -816,7 +804,7 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
         context,
     ));
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        while !online() {
+        while !is_online(workspaces, &laptop).await {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
@@ -824,7 +812,9 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
     .expect("the session says in the record that the key is here");
     assert!(
         listed_device(
-            &workspaces.personal(&laptop, &[], &super::Listed::default()),
+            &workspaces
+                .personal(&laptop, &[], &super::Listed::default())
+                .await,
             &laptop
         )
         .last_active_ms
@@ -851,6 +841,7 @@ async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_asks_before_
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
+    hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
     // The site let the person in: an invitation into its home names them.
     let home = workspaces.create("Lounge").await.unwrap().workspace;
     assert!(workspaces.admit_own_through(&home));
@@ -967,6 +958,7 @@ async fn a_devices_session_is_sent_the_list_as_its_person_workspaces_change() {
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
     let root = SigningKey::from_bytes(&rand::random());
+    hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
     // The site let the person in: an invitation into its home names them.
     let home = workspaces.create("Lounge").await.unwrap().workspace;
     assert!(workspaces.admit_own_through(&home));
@@ -1077,9 +1069,10 @@ async fn a_devices_session_is_sent_the_list_when_a_device_is_taken_back() {
     // The person the fixture is set up for: the root it certifies its own
     // device with.
     let root = SigningKey::from_bytes(&[1; 32]);
+    hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
     let desktop = key_of(&root, "studio", DeviceCapabilities::member());
     let laptop = key_of(&root, "laptop", DeviceCapabilities::member());
-    workspaces.keep_issued_device(&desktop, "");
+    workspaces.keep_issued_device(&desktop, "").await;
     // The session of the person's desktop: where their list is sent.
     let (_watch, mut pushed) = session_of(workspaces, &desktop);
     let listed = |list: &PersonalList, device: &DeviceCert| {
@@ -1090,7 +1083,7 @@ async fn a_devices_session_is_sent_the_list_when_a_device_is_taken_back() {
     };
 
     // A laptop paired with them is in the list their sessions are sent.
-    workspaces.keep_issued_device(&laptop, "");
+    workspaces.keep_issued_device(&laptop, "").await;
     next_list(&mut pushed, |list| listed(list, &laptop) == Some(false)).await;
 
     // Their root takes the laptop back, and one of their sessions says so.
@@ -1128,6 +1121,7 @@ async fn a_workspace_governed_here_is_listed_only_as_its_governance_has_the_pers
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
+    hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
     let home = workspaces.create("Lounge").await.unwrap().workspace;
     assert!(workspaces.admit_own_through(&home));
     workspaces
@@ -1151,7 +1145,7 @@ async fn a_workspace_governed_here_is_listed_only_as_its_governance_has_the_pers
 
     // A device of theirs keeps a list naming it as theirs, beside one another device keeps.
     let kept = json!({"workspaces": [
-        {"workspace": SHELL, "name": "Shell", "host": {"name": "studio", "hint": "00"}, "role": "owner"},
+        {"workspace": SHELL, "name": "Shell", "role": "owner"},
         {"workspace": team, "name": "Team", "role": "owner"},
     ]});
     assert_eq!(

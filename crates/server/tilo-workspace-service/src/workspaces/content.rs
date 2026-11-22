@@ -309,11 +309,11 @@ impl Workspaces {
                         .insert((app.clone(), record.clone()), revision);
                     read.documents.push(((app, record), document));
                 }
-                // A person's own record sealed for their devices alone
-                // ([`collab_types::OwnResource`], their drafts) is not the
-                // host's to read: it is named apart, not as unread.
+                // A person's private record sealed for their devices alone
+                // (their drafts) is not the host's to read: it is named apart,
+                // not as unread.
                 Err(why)
-                    if peer.own_resource(&app, &record).is_some()
+                    if tilo_action_policy::roles::is_private_record(&app, &record)
                         && peer.publication().is_sealed_document(&app, &record) =>
                 {
                     tracing::debug!(workspace, %app, %record, %why, "a person's own record is not the host's to read");

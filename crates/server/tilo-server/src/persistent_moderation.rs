@@ -1,12 +1,9 @@
 //! The persistent workspace's moderation agent, when the operator mounts a model
 //! key (`--moderation-key-file`).
 //!
-//! The key is kept in this host's secret store like every provider key, and
-//! the agent's verdicts are enforced through the workspace's own governance, as
-//! the workspace's root: a restriction is the workspace's expiring `restrict:<person>`
-//! Deny, a ban the workspace's ban. Reports, history, decisions and undos go
-//! through the bot's replica of the chat record; the host runs it as the
-//! workspace's moderation bot ([`tilo_server::workspace_bots::ModerationBot`]).
+//! The key is kept in the host's secret store. The workspace's moderation bot
+//! ([`tilo_server::workspace_bots::ModerationBot`]) reads reports and records decisions
+//! with its Chat grant. A person with moderation authority handles membership changes.
 
 use std::path::Path;
 
@@ -41,8 +38,7 @@ pub(crate) const PUBLIC_MODERATION_MODEL_ENV: &str = "TILO_SERVER_MODERATION_MOD
 /// model key ([`PUBLIC_MODERATION_KEY_ENV`]): a public workspace takes in
 /// strangers, so its reports are answered even while its moderators are
 /// away. Each workspace's agent is the persistent workspace's
-/// ([`tilo_server::workspace_bots::ModerationBot`]), its verdicts enforced
-/// through that workspace's governance.
+/// ([`tilo_server::workspace_bots::ModerationBot`]).
 ///
 /// # Errors
 /// The key is named but unusable; the server refuses to start rather than
@@ -82,6 +78,7 @@ pub(crate) fn follow_published(
                 if running.contains_key(&workspace) {
                     continue;
                 }
+                let host = workspaces.governor();
                 // A person decides whether their workspace has a moderation
                 // bot: without their enable it holds no grant and stays off.
                 match tilo_server::workspace_bots::enabled(&workspaces, &workspace).await {
@@ -92,12 +89,27 @@ pub(crate) fn follow_published(
                         continue;
                     }
                 }
+                // The hosted workspace explicitly stored its root when
+                // provisioned. A host without that authority cannot enroll a bot.
+                let root = match store.item("workspace-root", &workspace).get_blocking() {
+                    Ok(Some(secret)) => <[u8; 32]>::try_from(secret.expose())
+                        .ok()
+                        .map(|bytes| ed25519_dalek::SigningKey::from_bytes(&bytes)),
+                    _ => None,
+                };
+                let Some(root) =
+                    root.filter(|root| root.verifying_key().to_bytes() == host.user_public_key)
+                else {
+                    tracing::warn!(%workspace, "no enrolled root for the workspace's moderation bot");
+                    continue;
+                };
                 match load(&store, &key_file, model.as_deref()) {
                     Ok(agent) => {
                         let bot = tilo_server::workspace_bots::ModerationBot::new(
                             workspaces.clone(),
                             workspace.clone(),
-                            workspaces.governor().clone(),
+                            host.clone(),
+                            root,
                             agent,
                         );
                         // A person who governs the workspace turns it on.

@@ -722,16 +722,16 @@ mod tests {
     #[test]
     fn account_transport_drains_progress_while_feeding_private_frame() {
         use account_credentials::portable::{self, PortableBinding};
-        use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
+        use accounts::{Account, AccountId, Secret, SecretVault};
         use sha2::{Digest, Sha256};
         let source = tempfile::tempdir().unwrap();
         let account = Account::new(AccountId::new("selected"), "webdav");
         let mut vault = SecretVault::open_in(source.path());
         vault.put(&account.id, &Secret::password("s".repeat(256 * 1024)));
         vault.try_save().unwrap();
-        let mut store = AccountStore::new();
-        store.upsert(account.clone());
-        store.save_in(source.path()).unwrap();
+        let record = crate::account_store::Accounts::empty();
+        record.keep(&account).unwrap();
+        record.project(source.path()).unwrap();
         let key = tilo_seal::SymmetricKey::generate().unwrap();
         let operation = uuid::Uuid::new_v4().to_string();
         let binding = PortableBinding::new(&operation, "disk", "person", 1000).unwrap();

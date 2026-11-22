@@ -30,7 +30,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use accounts::{AccountId, AccountStore, AccountSyncReporter, AccountSyncStatusStore};
+use accounts::{Account, AccountId, AccountSyncReporter, AccountSyncStatusStore};
 use cloud_source::{Credential, CredentialSource};
 use runtime_fs::cloud::{
     CLOUD_FRAMING, CloudCapabilities, CloudMount, CloudRequest, CloudResponse, CloudSocket,
@@ -173,8 +173,14 @@ impl CloudService {
         }
     }
 
-    fn store(&self) -> AccountStore {
-        self.config.accounts.store()
+    fn accounts(&self) -> Vec<Account> {
+        self.config.accounts.accounts()
+    }
+
+    fn account(&self, id: &str) -> Option<Account> {
+        self.accounts()
+            .into_iter()
+            .find(|account| account.id.as_str() == id)
     }
 
     fn reporter(&self, id: &str) -> AccountSyncReporter {
@@ -190,12 +196,11 @@ impl CloudService {
         let source = if let Some(source) = self.credentials.get(account_id) {
             Arc::clone(source)
         } else {
-            let store = self.store();
-            let Some(account) = store.get(&AccountId::from(account_id)) else {
+            let Some(account) = self.account(account_id) else {
                 let _ = self.reporter(account_id).needs_authentication();
                 return None;
             };
-            let source = self.config.accounts.credential(account);
+            let source = self.config.accounts.credential(&account);
             self.credentials
                 .insert(account_id.to_owned(), Arc::clone(&source));
             source
@@ -230,20 +235,20 @@ impl CloudService {
 
     pub fn reconcile(&mut self) {
         self.retry.clear();
-        let store = self.store();
+        let store = self.accounts();
         self.credentials.retain(|id, _| {
             store
-                .get(&AccountId::from(id.as_str()))
+                .iter()
+                .find(|account| account.id.as_str() == id)
                 .is_some_and(|a| providers::source_spec(a).is_some())
         });
-        let wanted: Vec<MountSpec> = store.all().iter().filter_map(providers::spec_for).collect();
+        let wanted: Vec<MountSpec> = store.iter().filter_map(providers::spec_for).collect();
         tracing::info!(
-            accounts = store.all().len(),
+            accounts = store.len(),
             mounts = ?wanted.iter().map(|spec| spec.account_id.as_str()).collect::<Vec<_>>(),
             "the cloud service follows the file accounts"
         );
         let labels: Vec<(&str, &str)> = store
-            .all()
             .iter()
             .filter(|account| providers::is_file_account(account))
             .map(|account| (account.id.as_str(), account.display_name.as_str()))
@@ -265,7 +270,7 @@ impl CloudService {
             .map(|(id, _)| id.clone())
             .collect();
         for id in stale {
-            let removed = store.get(&AccountId::from(id.as_str())).is_none();
+            let removed = !store.iter().any(|account| account.id.as_str() == id);
             self.unmount(&id, removed);
         }
 
@@ -455,11 +460,7 @@ impl CloudService {
             CloudRequest::SyncNow { account } => {
                 if self.mounts.contains_key(&account) {
                     done(self.send_to(&account, &ToMount::SyncNow))
-                } else if self
-                    .store()
-                    .get(&AccountId::from(account.as_str()))
-                    .is_some()
-                {
+                } else if self.account(&account).is_some() {
                     // A mount that could not start (offline, no credential yet) is tried
                     // again next on this loop rather than at the next retry; starting it
                     // can take a while, so the answer does not wait for it.

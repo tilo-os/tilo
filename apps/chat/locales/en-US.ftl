@@ -133,7 +133,7 @@ chat-agent-failed = Could not finish
 # ($cost), with the tokens it used ($tokens) where its provider counted them.
 chat-agent-answered = { $model }, { $provider }, { $cost }
 # The model a conversation with an agent answers on, before the server says which one, and the choice
-# that follows the keeper's default again.
+# that follows the workspace's default again.
 chat-agent-model = Model
 chat-agent-model-default = Follow the default model
 # What this conversation's answers have cost so far ($cost), the model switcher's second line.
@@ -432,6 +432,7 @@ chat-message-more = More
 chat-message-bar-delete-now = Delete message now
 chat-message-bar-remove-now = Remove message now
 chat-menu-report-message = Report message
+chat-moderation-record-unavailable = Moderation is still loading. Try again in a moment.
 chat-menu-report-sender = Report sender
 chat-menu-ban = Ban from the workspace
 chat-menu-volume = Volume
@@ -542,4 +543,3 @@ chat-secret-not-kept = The vault did not keep it. Try again.
 chat-secret-answer-saved = It is in my vault now.
 chat-secret-answer-declined = I would rather not give that.
 
-chat-import-previous-drafts = Import earlier channel drafts

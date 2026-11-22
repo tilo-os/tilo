@@ -62,7 +62,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 18] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 19] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -225,6 +225,16 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 18] = [
     ),
     (
         Verb {
+            id: LIST_SERVERS,
+            label: "List your servers",
+            check: LIST_SERVERS,
+            kind: ActionKind::Read,
+            params: Vec::new,
+        },
+        ServiceOperation::ListServers,
+    ),
+    (
+        Verb {
             id: ADMIT_MACHINE,
             label: "Take a planned machine in",
             check: ADMIT_MACHINE,
@@ -251,6 +261,8 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 18] = [
 pub(super) const PLAN_MACHINE: &str = "machine.plan";
 /// The machines the person planned and has not installed.
 pub(super) const LIST_MACHINES: &str = "machine.list";
+/// The person's servers, as their workspace's document names them.
+pub(super) const LIST_SERVERS: &str = "machine.servers";
 /// One of them, by its plan.
 pub(super) const SHOW_MACHINE: &str = "machine.show";
 /// Take a machine that enrolled with a plan's token into its entry under its
@@ -719,10 +731,7 @@ impl Workspaces {
             operation if operation.decided_by_its_workspace() => {
                 Box::pin(self.serving_invoke(device, operation, &args, now)).await
             }
-            ServiceOperation::PlanMachine
-            | ServiceOperation::ListMachines
-            | ServiceOperation::ShowMachine
-            | ServiceOperation::AdmitMachine => {
+            operation if operation.of_machines() => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 Box::pin(machine::invoke(self, operation, &args)).await
@@ -903,11 +912,11 @@ impl Workspaces {
         args: &Args,
     ) -> Result<Value, ActionCallError> {
         if operation == ServiceOperation::ReadPersonalList {
-            self.note_own_device(device);
+            self.note_own_device(device).await;
             // A page names its browser's tab keys; one it can't name as the
             // contract says still reads the list.
             if let Ok(Some(browser)) = args.object("browser") {
-                self.note_browser(device, browser);
+                self.note_browser(device, browser).await;
             }
             // A backend finds its customer's workspace by its labels: only
             // the workspaces labelled so are read, however many it has.
@@ -917,7 +926,7 @@ impl Workspaces {
             };
             check_labels(&only.labels).map_err(invalid)?;
             let here = self.listed(device, &only).await;
-            let mut list = self.personal(device, &here, &only);
+            let mut list = self.personal(device, &here, &only).await;
             if only.workspace.is_some() {
                 self.sign_own_addresses(&mut list).await;
             }
@@ -927,6 +936,7 @@ impl Workspaces {
             let key = args.required_text("device")?;
             let name = args.required_text("name")?;
             self.name_device(device, key, name)
+                .await
                 .map_err(|error| refused(&error))?;
             return Ok(serde_json::json!({ "named": key }));
         }
@@ -935,8 +945,9 @@ impl Workspaces {
             .ok_or_else(|| invalid("`list` is required"))?;
         let kept = self
             .keep_personal(device, list)
+            .await
             .map_err(|error| refused(&error))?;
-        self.note_own_device(device);
+        self.note_own_device(device).await;
         Ok(serde_json::json!({ "kept": kept }))
     }
 
@@ -1025,7 +1036,7 @@ impl Workspaces {
     pub(in crate::workspaces) async fn personal_of(&self, device: &DeviceCert) -> PersonalList {
         let only = Listed::default();
         let here = self.listed(device, &only).await;
-        self.personal(device, &here, &only)
+        self.personal(device, &here, &only).await
     }
 
     async fn listed(&self, device: &DeviceCert, only: &Listed) -> Vec<WorkspaceListing> {

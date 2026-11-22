@@ -708,7 +708,7 @@ pub struct TurnRequest {
     pub title: String,
     /// The person's words, with what they are about and the earlier conversation after them.
     pub instruction: String,
-    /// What the agent's keeper told it about how to work for them (its own instruction in the
+    /// What the workspace told the agent about how to work (its own instruction in the
     /// workspace's record of its agents): said to the model before the request, beside what
     /// every agent is told.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -720,13 +720,13 @@ pub struct TurnRequest {
     /// What the request is about, when the person asked about a selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<tilo_actions::SelectionSubject>,
-    /// What the agent may spend on the day its keeper counts. `None` spends unmetered.
+    /// What the agent may spend on the day it is counted on. `None` spends unmetered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spend: Option<AgentSpend>,
 }
 
 ///
-/// The day is its keeper's: the agent's own clock sits wherever its device is,
+/// The day is the counting device's: the agent's own clock sits wherever its device is,
 /// and a day the counter has not reached yet is a day with nothing spent
 /// ([`AgentSpend::left`]).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -734,7 +734,7 @@ pub struct TurnRequest {
 pub struct AgentSpend {
     /// The day counted, `YYYY-MM-DD` by its keeper's clock.
     pub day: String,
-    /// The most its keeper lets it spend that day, in millionths of the
+    /// The most the workspace lets it spend that day, in millionths of the
     /// currency; `None` spends unmetered.
     pub limit_micros: Option<u64>,
     /// What it spent that day, in millionths of the currency.

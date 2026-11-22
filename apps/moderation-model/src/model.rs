@@ -1,14 +1,11 @@
-//! The `tilo.moderation` record: reports, and the decisions taken on them. Anyone in the
-//! workspace may report; only those holding the workspace's `moderation` node (Moderators,
-//! the Owner, and the host's moderation agent, whose delegation carries the Moderator
-//! preset) decide and overturn, because both verbs are `#[action(moderation)]` and the
-//! ordinary grant check places them there.
+//! A workspace's moderation reports and decisions. Chat owns the record.
+//! The workspace's grants decide who can report, decide or overturn a decision.
 
 use automerge::ObjId;
 use serde::{Deserialize, Serialize};
 use tilo_resource::{
-    self, ActionCx, Id, Identified, JsonSchema, Keyed, MemberId, Model, ModelError, NonBlank,
-    Refusal, resource,
+    self, ActionCx, Fields, Id, Identified, JsonSchema, Keyed, MemberId, Model, ModelError,
+    NonBlank, Refusal, resource,
 };
 
 pub const MAX_REASON_CHARS: usize = 500;
@@ -173,10 +170,6 @@ fn id_like(value: &str, what: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
-fn optional_id(value: Option<&String>, what: &str) -> Result<(), Refusal> {
-    value.map_or(Ok(()), |value| id_like(value, what))
-}
-
 /// Rewrite the decisions of the moderation resource stored at `moderation` from before a
 /// decision's reports and take-backs were model values (each one JSON string) into the
 /// shape they are stored in now: a list of report ids and a list of take-backs.
@@ -193,6 +186,19 @@ pub fn upgrade_decisions(
     Ok(())
 }
 
+/// The moderation history still held in a Chat document written before the split.
+/// The earlier document's signed history and original actors are kept there.
+///
+/// # Errors
+/// The old record could not be decoded or brought up to the current shape.
+pub fn earlier_chat_history(doc: &mut tilo_resource::Doc) -> Result<Moderation, ModelError> {
+    let Some(old) = tilo_resource::evolution::map_at(doc, &automerge::ROOT, "moderation")? else {
+        return Ok(Moderation::default());
+    };
+    upgrade_decisions(doc, &old)?;
+    Moderation::read_fields(doc, &old)
+}
+
 impl Moderation {
     /// What the resource holds: the reports made and the decisions taken on them.
     pub fn read_document(
@@ -203,44 +209,23 @@ impl Moderation {
     }
 }
 
-#[resource(
-    kind = "tilo.moderation",
-    params = moderation,
-    version = 2,
-    migrate = Moderation::upgrade,
-    read_content = Moderation::read_document
-)]
 impl Moderation {
-    /// Bring a moderation resource of version 1 up to this one: its decisions' reports and
-    /// take-backs become model values ([`upgrade_decisions`]).
-    fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-        if from != 1 {
-            return Err(ModelError::invalid(format!(
-                "no moderation migration from {from}"
-            )));
-        }
-        upgrade_decisions(doc, &automerge::ROOT)
-    }
-
     /// Report someone.
     ///
     /// Tells the workspace's moderators, and its moderation agent, that this person did
     /// something they should not have, optionally pointing at the message or item.
-    #[action]
-    pub fn report(
+    fn report(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The person reported")] person: MemberId,
-        #[param("The app of the reported content")] app: Option<String>,
-        #[param("The resource of the reported content")] record: Option<String>,
-        #[param("The reported item, such as a message")] item: Option<String>,
-        #[param("What they did")] reason: NonBlank,
+        person: MemberId,
+        item: Option<String>,
+        reason: NonBlank,
     ) -> Result<(), Refusal> {
         let reporter = reporter(cx)?;
         id_like(person.id(), "the person")?;
-        optional_id(app.as_ref(), "the app")?;
-        optional_id(record.as_ref(), "the resource")?;
-        optional_id(item.as_ref(), "the item")?;
+        if let Some(item) = &item {
+            id_like(item, "the item")?;
+        }
         if reporter == person {
             return Err(Refusal::new("you cannot report yourself"));
         }
@@ -270,8 +255,8 @@ impl Moderation {
             id,
             reporter,
             person,
-            app,
-            record,
+            app: item.as_ref().map(|_| "so.tilo.chat".to_owned()),
+            record: None,
             item,
             reason,
             at_ms: cx.now_ms(),
@@ -279,12 +264,67 @@ impl Moderation {
         });
         Ok(())
     }
+}
+
+#[resource(
+    kind = "tilo.moderation",
+    app = "so.tilo.chat",
+    params = moderation,
+    version = 2,
+    migrate = Moderation::upgrade,
+    read_content = Moderation::read_document
+)]
+impl Moderation {
+    /// Bring a moderation resource of version 1 up to this one: its decisions' reports and
+    /// take-backs become model values ([`upgrade_decisions`]).
+    fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+        if from != 1 {
+            return Err(ModelError::invalid(format!(
+                "no moderation migration from {from}"
+            )));
+        }
+        upgrade_decisions(doc, &automerge::ROOT)
+    }
+
+    /// Report message.
+    ///
+    /// Tells the workspace's moderators that this message, and its author,
+    /// should not be here.
+    #[action(audience = "agents")]
+    pub fn report_message(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The message")] message: String,
+        #[param("Who wrote it")] author: MemberId,
+        #[param("What is wrong with it")] reason: NonBlank,
+    ) -> Result<(), Refusal> {
+        if author.id().is_empty() || author.id().len() > 4096 {
+            return Err(Refusal::new("a reported message is someone's"));
+        }
+        self.report(cx, author, Some(message), reason)
+    }
+
+    /// Report person.
+    ///
+    /// Tells the workspace's moderators that this person is misbehaving.
+    #[action]
+    pub fn report_person(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The person")] person: MemberId,
+        #[param("What they did")] reason: NonBlank,
+    ) -> Result<(), Refusal> {
+        if !person.is_person() {
+            return Err(Refusal::new("there is no such person"));
+        }
+        self.report(cx, person, None, reason)
+    }
 
     /// Decide on a person.
     ///
     /// Resources what was done about a person and why, settling the reports named.
-    #[action(moderation)]
-    pub fn decide(
+    #[action(moderation, audience = "agents")]
+    pub fn decide_reports(
         &mut self,
         cx: &mut ActionCx,
         #[param("A new id for the decision")] id: String,
@@ -327,6 +367,11 @@ impl Moderation {
                 .reports
                 .find(&Id::from_raw(report.as_str()))
                 .ok_or_else(|| Refusal::new(format!("no report {report}")))?;
+            if by.is_bot() && held.decision.is_some() {
+                return Err(Refusal::new(format!(
+                    "report {report} has already been decided"
+                )));
+            }
             if held.person != person {
                 return Err(Refusal::new(format!(
                     "report {report} is about someone else"
@@ -360,8 +405,8 @@ impl Moderation {
     ///
     /// Marks a decision as overturned by a Moderator, who lifts its restriction or ban and
     /// brings back what it took back.
-    #[action(moderation)]
-    pub fn overturn(
+    #[action(moderation, audience = "agents")]
+    pub fn overturn_decision(
         &mut self,
         cx: &mut ActionCx,
         #[param("The decision")] decision: String,

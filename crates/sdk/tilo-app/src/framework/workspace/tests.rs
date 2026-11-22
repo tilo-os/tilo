@@ -20,9 +20,9 @@ fn a_known_reader_can_read_their_record_at_any_role() {
     let bob = "b0".repeat(32);
     let mut policy = WorkspacePolicy::new(WORKSPACE, bob.clone());
     policy.members.insert(ada.clone(), Role::Viewer);
-    let route = collab_types::OwnResource::of_person(&ada, History::KIND)
-        .expect("Ada's record has a verifiable owner")
-        .document_id();
+    let policy = policy.with_current_roles();
+    let route = tilo_actions::policy::roles::member_record(History::KIND, &ada)
+        .expect("Ada's record has a verifiable owner");
     let owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
     let open = |person: &str, id| {
         let author = MemberId::person(person);
@@ -69,9 +69,8 @@ fn a_record_whose_store_was_busy_opens_once_the_next_arrival_answers_it() {
     let kept = store.clone();
     let records = WorkspaceResources::new(MemberId::person(&ada), move |_| Ok(kept.clone()));
     let state = WorkspaceState::new(records, APP, "Tube", None, None);
-    let id = collab_types::OwnResource::of_person(&ada, History::KIND)
-        .expect("Ada's record has a verifiable owner")
-        .document_id();
+    let id = tilo_actions::policy::roles::member_record(History::KIND, &ada)
+        .expect("Ada's record has a verifiable owner");
     assert!(
         state
             .open_with::<History>(APP, &id, |_| Err(Unopened::InUse))

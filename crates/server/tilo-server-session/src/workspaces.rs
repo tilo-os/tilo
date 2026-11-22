@@ -84,11 +84,59 @@ pub async fn enter_invitation(
         ("workspace".to_owned(), workspace.into()),
         ("expires_in_seconds".to_owned(), expires_in_seconds.into()),
     ]);
-    let invoke = InvokeRequest {
+    let entered: EnteredWorkspace =
+        match ask_host(client, host_invoke(ENTER_WORKSPACE, arguments)).await? {
+            ReceiptStatus::Completed { output } => {
+                serde_json::from_value(output.value.unwrap_or_default())
+                    .map_err(|error| format!("the server answered no invitation: {error}"))?
+            }
+            ReceiptStatus::Rejected { error } => {
+                return Err(format!("the server refused to enter it: {error}"));
+            }
+            ReceiptStatus::Failed { error } => return Err(error.message),
+            ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
+                return Err("the server did not answer the entry".into());
+            }
+        };
+    let signed = entered.invitation.decode()?.signed_invitation;
+    Ok(tilo_workspace_join::encode_invitation_text(&signed))
+}
+
+/// Ask `client`'s host, a device that holds its person's workspace, to take
+/// this device in, as dialled at `endpoint`: [`TAKE_IN_PERSON`]'s ask. The
+/// device holds the workspace from then on.
+///
+/// # Errors
+///
+/// The host did not answer, holds no such workspace, or refused.
+pub async fn take_into_person_workspace(
+    client: &ServerClient,
+    endpoint: &iroh_base::EndpointAddr,
+) -> Result<(), String> {
+    let endpoint = serde_json::to_string(endpoint).map_err(|error| error.to_string())?;
+    let arguments = serde_json::Map::from_iter([("endpoint".to_owned(), endpoint.into())]);
+    match ask_host(client, host_invoke(TAKE_IN_PERSON, arguments)).await? {
+        ReceiptStatus::Completed { .. } => Ok(()),
+        ReceiptStatus::Rejected { error } => {
+            Err(format!("the device refused to take this in: {error}"))
+        }
+        ReceiptStatus::Failed { error } => Err(error.message),
+        ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
+            Err("the device did not answer".into())
+        }
+    }
+}
+
+/// The host operation `action` with `arguments`, under a new invocation.
+fn host_invoke(
+    action: &str,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> InvokeRequest {
+    InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.to_owned(),
-            address: ActionAddress::new(HOST_WORKSPACES_RESOURCE.to_owned(), ENTER_WORKSPACE),
+            address: ActionAddress::new(HOST_WORKSPACES_RESOURCE.to_owned(), action),
         },
         argument: InvokeArgument::Json(arguments),
         context: None,
@@ -98,22 +146,7 @@ pub async fn enter_invitation(
         wait_ms: None,
         appearance: None,
         signed: None,
-    };
-    let entered: EnteredWorkspace = match ask_host(client, invoke).await? {
-        ReceiptStatus::Completed { output } => {
-            serde_json::from_value(output.value.unwrap_or_default())
-                .map_err(|error| format!("the server answered no invitation: {error}"))?
-        }
-        ReceiptStatus::Rejected { error } => {
-            return Err(format!("the server refused to enter it: {error}"));
-        }
-        ReceiptStatus::Failed { error } => return Err(error.message),
-        ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
-            return Err("the server did not answer the entry".into());
-        }
-    };
-    let signed = entered.invitation.decode()?.signed_invitation;
-    Ok(tilo_workspace_join::encode_invitation_text(&signed))
+    }
 }
 
 /// The provider a server answers its host operations under: creating,

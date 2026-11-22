@@ -788,7 +788,7 @@ fn scout(day: &str, limit_micros: Option<u64>) -> Spender {
 }
 
 /// An agent's day counts every answer, and the call that starts once its
-/// keeper's limit is reached is refused before the provider is asked: the
+/// agent's limit is reached is refused before the provider is asked: the
 /// limit stops a run. A new day starts the count again, another agent has
 /// its own day, and a host that restarts still knows the day.
 #[tokio::test]

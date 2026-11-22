@@ -15,6 +15,7 @@ use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::enrollment::{Certifier, NonceStore, Redemption};
 use tilo_identity::store::{UNNAMED_DISPLAY_NAME, is_chosen_display_name};
 use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::servers::Introducer;
 use tilo_user_identity::{
     DeviceCert, EnrollmentScope, decode_enrollment_token, enrollment_scope, verify_device_cert,
 };
@@ -24,8 +25,8 @@ use crate::protocol::{
     decrypt_request, encrypt_response, make_finalized,
 };
 use crate::{
-    RootSigner, WaitingMachine, bounded_home_peer_registry, deadline_after, fleet_store, load_root,
-    now_ns, remember_personal_devices, restore_owner_from_parent, sign_response, validity_start_ns,
+    RootSigner, WaitingMachine, deadline_after, fleet_store, load_root, now_ns,
+    remember_personal_devices, restore_owner_from_parent, sign_response, validity_start_ns,
 };
 
 /// What a device of the person answering a machine is told to do it. One
@@ -101,7 +102,6 @@ pub struct PendingApproval {
 struct ApprovalProjection {
     public_identity: Option<Vec<u8>>,
     fleet: Option<Vec<u8>>,
-    home_peers: Option<Vec<u8>>,
 }
 
 /// The signed configuration a machine is answered with, and where to.
@@ -235,18 +235,10 @@ fn approval_projection(
     identity: &ApprovalIdentity,
 ) -> anyhow::Result<ApprovalProjection> {
     match options.kind {
-        EnrollmentKind::HomePeer => {
-            Ok(ApprovalProjection {
-                public_identity: None,
-                fleet: None,
-                // The person's servers so far: the first one makes their
-                // admin workspace, a later one asks an earlier one for it.
-                home_peers: Some(bounded_home_peer_registry(
-                    options.identity_root,
-                    identity.user_public_key,
-                )?),
-            })
-        }
+        EnrollmentKind::HomePeer => Ok(ApprovalProjection {
+            public_identity: None,
+            fleet: None,
+        }),
         EnrollmentKind::PersonalDevice => {
             let directory = options
                 .identity_dir
@@ -259,10 +251,6 @@ fn approval_projection(
                     name.as_deref().unwrap_or(UNNAMED_DISPLAY_NAME),
                 )?),
                 fleet: None,
-                home_peers: Some(bounded_home_peer_registry(
-                    options.identity_root,
-                    identity.user_public_key,
-                )?),
             })
         }
     }
@@ -314,13 +302,12 @@ pub fn prepare_approval(
     // every device's does, and it is handed that store, which lists every
     // device they certified. A server that received no session of theirs
     // learns the others from it alone.
+    // Every approval reaching here names its identity directory: the root
+    // that signs a server's certificate is opened from it, and a personal
+    // device's name is read from it.
     let store = options
         .identity_dir
         .map(|identity_dir| fleet_store(options.identity_root, identity_dir, options.person_uid))
-        .or_else(|| DeviceFleetStore::from_env().ok())
-        // A personal device names its identity directory, so only a home peer
-        // reaches this: without one the machine could never ask its person's
-        // devices, which is what the enrollment is for.
         .context(
             "this device holds no identity directory to hand the machine the person's devices from",
         )?;
@@ -338,7 +325,12 @@ pub fn prepare_approval(
             cert: cert.clone(),
             public_identity_json: projection.public_identity,
             fleet_json: projection.fleet,
-            home_peers_json: projection.home_peers,
+            // Whichever kind joins, it asks this device, one of the person's,
+            // into their workspace.
+            introducer: Some(Introducer::of_device(
+                identity.issuer_cert.clone(),
+                &identity.device,
+            )),
         },
         identity.approver(),
     )?;
@@ -403,28 +395,18 @@ pub fn commit_approval(
     pending: &PendingApproval,
     prepared: &PreparedApproval,
 ) -> anyhow::Result<Vec<u8>> {
-    match options.kind {
-        EnrollmentKind::HomePeer => register_home_peer(
-            options.identity_root,
-            &prepared.cert,
-            prepared.server_node_id,
-            &identity.server_workspace_ids,
-            None,
-        )?,
-        EnrollmentKind::PersonalDevice => {
-            // The fleet has listed the device since its token was redeemed.
-            // The device acknowledged the certificate this device just issued
-            // under the identity's root: both are now this person's devices.
-            let personal_peers = remember_personal_devices(
-                options.identity_root,
-                &[
-                    identity.device.verifying_key().to_bytes(),
-                    prepared.cert.device_public_key,
-                ],
-            )?;
-            restore_owner_from_parent(&personal_peers)?;
-        }
-    }
+    // The person's devices have listed it since its token was redeemed. The
+    // device acknowledged the certificate this device just issued under the
+    // identity's root: both are now this person's devices, a server as much
+    // as any other.
+    let personal_peers = remember_personal_devices(
+        options.identity_root,
+        &[
+            identity.device.verifying_key().to_bytes(),
+            prepared.cert.device_public_key,
+        ],
+    )?;
+    restore_owner_from_parent(&personal_peers)?;
     tracing::info!(
         device = %hex::encode(prepared.cert.device_public_key),
         "approved device"
@@ -437,40 +419,6 @@ pub fn commit_approval(
         pending.request.device_public_key,
         identity.approver(),
     )
-}
-
-/// Enter a home peer in this identity's registry, from the certificate that
-/// admitted it.
-pub fn register_home_peer(
-    identity_root: &std::path::Path,
-    cert: &DeviceCert,
-    server_node_id: [u8; 32],
-    server_workspace_ids: &[WorkspaceId],
-    server_endpoint: Option<iroh_base::EndpointAddr>,
-) -> anyhow::Result<()> {
-    use tilo_server_protocol::{
-        HomePeerRegistration, home_peer_registry_path, read_home_peers, valid_home_peer_label,
-        write_home_peers,
-    };
-    if !valid_home_peer_label(&cert.device_label) || server_workspace_ids.len() > 4096 {
-        bail!("home-peer registration exceeds its bounded schema");
-    }
-    let mut registrations = read_home_peers(&home_peer_registry_path(identity_root))
-        .context("the existing home-peer registry is not one this build accepts")?;
-    let device_node_id = hex::encode(cert.device_public_key);
-    registrations.retain(|entry| entry.device_node_id != device_node_id);
-    registrations.push(HomePeerRegistration {
-        schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-        device_node_id,
-        server_node_id: hex::encode(server_node_id),
-        server_endpoint,
-        label: cert.device_label.clone(),
-        user_public_key: hex::encode(cert.user_public_key),
-        device_cert: Some(cert.clone()),
-        server_workspace_ids: server_workspace_ids.to_vec(),
-    });
-    write_home_peers(&home_peer_registry_path(identity_root), &registrations)?;
-    Ok(())
 }
 
 /// The ask a machine waiting to join is put to the person as.

@@ -56,7 +56,7 @@ base64.workspace = true
 browser-continuity = { workspace = true, features = ["native"] }
 blake3.workspace = true
 cap-std = "3.4.6"
-accounts = { path = "../../system/accounts" }
+accounts = { path = "../../system/accounts", features = ["person"] }
 # The source readers live in a crate a plain laptop can build, so the CLI can
 # drive the same code without this crate's desktop stack.
 migration-sources = { path = "../migration-sources" }

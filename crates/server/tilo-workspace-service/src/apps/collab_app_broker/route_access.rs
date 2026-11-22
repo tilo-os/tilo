@@ -38,7 +38,7 @@ pub(super) fn attested_route_access(
     }
     // A workspace record is changed from any app's window of its workspace; the
     // workspace's grants on its owner decide each change.
-    if collab_types::workspace_document(&route.app_id, &route.document_id).is_some() {
+    if collab_types::shared_workspace_document(&route.app_id, &route.document_id).is_some() {
         return Ok(RouteAccess::Own);
     }
     if !personal_cluster && !collab_types::app_surface::reads_app(app, &route.app_id) {

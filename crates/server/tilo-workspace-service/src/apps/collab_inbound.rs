@@ -28,10 +28,6 @@ pub struct RemoteDocument {
     /// (before answering the subscription): old by nature.
     pub replayed: bool,
     pub envelope: SignedOp,
-    /// The member's own record it changes, as the write said
-    /// ([`collab_types::OwnResource`]): only its person is granted anything in
-    /// it.
-    pub own: Option<collab_types::OwnResource>,
 }
 
 impl RemoteDocument {
@@ -44,7 +40,6 @@ impl RemoteDocument {
             app_id,
             document_id,
             envelope,
-            own,
             ..
         } = write.message.as_ref()
         else {
@@ -57,7 +52,6 @@ impl RemoteDocument {
             author: write.access.clone(),
             replayed: write.history,
             envelope: (**envelope).clone(),
-            own: own.clone(),
         })
     }
 }
@@ -160,13 +154,7 @@ fn deliver_at(
                 state
                     .artifact_resources
                     .insert(artifact, document.document_id.clone());
-                if let Some(person) = tilo_desktop_model::shared_resource::guard::own_person(
-                    &document.app_id,
-                    &document.document_id,
-                    document.own.as_ref(),
-                ) {
-                    state.artifact_owners.insert(artifact, person);
-                }
+
                 validate_document(
                     &document.envelope,
                     &document.author,
@@ -450,7 +438,6 @@ mod tests {
                 author: editor(),
                 replayed,
                 envelope,
-                own: None,
             };
             let channels = Arc::new(Mutex::new(BrokerChannels::default()));
             let fanout = FanoutState::new();
@@ -562,7 +549,6 @@ mod tests {
                         author: editor(),
                         replayed: false,
                         envelope: envelope.clone(),
-                        own: None,
                     },
                 )
             })
@@ -638,7 +624,6 @@ mod tests {
                     author: editor(),
                     replayed,
                     envelope,
-                    own: None,
                 },
             );
             delivered.load(std::sync::atomic::Ordering::SeqCst) > before
@@ -716,7 +701,6 @@ mod tests {
                     author: editor(),
                     replayed: false,
                     envelope,
-                    own: None,
                 },
             )
         };

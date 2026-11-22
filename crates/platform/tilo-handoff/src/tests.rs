@@ -345,7 +345,6 @@ fn source_authority(source_dir: &Path) -> (SourceIdentity, [u8; 32]) {
         identity_public_key: person,
         identity_record: record,
         certificates: Vec::new(),
-        home_peers: Vec::new(),
         signer: Arc::new(move |digest: &[u8]| {
             let identity = tilo_identity::store::load_from_path(signer_path.clone())
                 .map_err(|error| io::Error::other(error.to_string()))?;

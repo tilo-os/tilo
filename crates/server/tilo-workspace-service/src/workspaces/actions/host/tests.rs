@@ -91,6 +91,10 @@ async fn invoke(
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one walk: the person creates, lists, renames and leaves a workspace"
+)]
 async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -99,7 +103,6 @@ async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let laptop = owners_laptop();
-
     assert_eq!(
         offered(&host, &laptop, &caller(&laptop)).await,
         [
@@ -119,6 +122,7 @@ async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
             super::PLAN_MACHINE,
             super::LIST_MACHINES,
             super::SHOW_MACHINE,
+            super::LIST_SERVERS,
             super::ADMIT_MACHINE,
             tilo_server_session::workspaces::TAKE_IN_PERSON,
         ]

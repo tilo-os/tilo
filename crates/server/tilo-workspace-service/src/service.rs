@@ -439,7 +439,7 @@ fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::works
     let (repairing, compactor) = (workspaces.clone(), compactor.clone());
     tokio::spawn(async move {
         #[cfg(not(target_arch = "wasm32"))]
-        repairing.carry_vaults_over().await;
+        Box::pin(repairing.carry_vaults_over()).await;
         repairing.reseal_before_reader_sets().await;
         repairing.fold_away_unsent(&compactor).await;
     });

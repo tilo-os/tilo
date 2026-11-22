@@ -937,7 +937,6 @@ params = [{ name = "edit", required = true, schema = { type = "object" } }]
                     app: STORE_FIXTURE.into(),
                     document: route.document.clone(),
                     envelope: Box::new(envelope),
-                    own: None,
                     readers: None,
                 },
             },

@@ -408,10 +408,17 @@ impl Grant {
     /// Whether this grant refuses reading something inside a workspace rather than the workspace
     /// itself: a rule every Tilo read path enforces, never a seal. Its grantee's devices hold the
     /// workspace's keys like every member's, so whoever sets one is told so ([`Answer::Deny`]).
+    /// A person's private records are sealed for that person's devices apart
+    /// ([`crate::roles::has_member_reader`]), so refusing them is no such rule.
     #[must_use]
     pub fn denies_reading_within_workspace(&self) -> bool {
         self.answer == Answer::Deny
             && self.kinds.contains(crate::ActionKind::Read)
+            && !self
+                .node
+                .id_at(crate::Level::App)
+                .zip(self.node.id_at(crate::Level::Kind))
+                .is_some_and(|(app, kind)| crate::roles::has_member_reader(app, kind))
             && self.node.segments().iter().any(|segment| {
                 segment
                     .level()
@@ -461,11 +468,6 @@ pub struct Context<'a> {
     /// renamed app (`crate::earlier`). `None` reads what this process registered
     /// (`crate::earlier::register`).
     pub earlier: Option<&'a EarlierIds>,
-    /// A member's own document the decision is about, as the write or window that
-    /// names it says: `(resource, person)`, the resource's id and the person whose
-    /// own it is. Only that person decides anything in it, whatever their role
-    /// or the workspace's grants.
-    pub own: Option<(&'a str, &'a str)>,
 }
 
 impl<'a> Context<'a> {
@@ -474,27 +476,7 @@ impl<'a> Context<'a> {
         Self {
             now_unix_ms,
             earlier: None,
-            own: None,
         }
-    }
-
-    /// Deciding about `resource`, which is `person`'s own document (the hex of
-    /// their user root key).
-    #[must_use]
-    pub const fn with_own_resource(mut self, resource: &'a str, person: &'a str) -> Self {
-        self.own = Some((resource, person));
-        self
-    }
-
-    /// The person whose own document `node` is in, when the decision is about
-    /// one ([`Self::with_own_resource`]).
-    #[must_use]
-    pub fn owner_of(&self, node: &TreePath) -> Option<&'a str> {
-        let (resource, person) = self.own?;
-        node.segments()
-            .iter()
-            .any(|segment| matches!(segment, crate::Segment::Name(crate::Level::Resource, name) if name == resource))
-            .then_some(person)
     }
 
     /// At `now`, Unix seconds.

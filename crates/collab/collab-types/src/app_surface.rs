@@ -332,26 +332,7 @@ pub fn person_resource_types(app_id: &str) -> Vec<String> {
         .map(|file| {
             file.resources
                 .iter()
-                .filter(|surface| {
-                    surface.person
-                        || surface.own && surface.kind.strip_prefix("tl.") == Some(app_id)
-                })
-                .map(|surface| surface.kind.clone())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// The kinds `app_id`'s surface marks each member's own record in the
-/// workspace (`own`, a tilolang package's `resources: .own`). Empty when this
-/// process holds no surface for it.
-#[must_use]
-pub fn own_resource_types(app_id: &str) -> Vec<String> {
-    surface_of(app_id)
-        .map(|file| {
-            file.resources
-                .iter()
-                .filter(|surface| surface.own)
+                .filter(|surface| surface.person)
                 .map(|surface| surface.kind.clone())
                 .collect()
         })
@@ -476,11 +457,11 @@ mod tests {
 
         phase only_the_kinds_a_surface_marks_are_the_persons;
         {
-            static FILE: &[u8] = b"[[resources]]\nkind = \"test.own\"\nlabel = \"Own\"\nversion = 1\n\n[[resources]]\nkind = \"test.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n";
+            static FILE: &[u8] = b"[[resources]]\nkind = \"test.shared\"\nlabel = \"Shared\"\nversion = 1\n\n[[resources]]\nkind = \"test.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n";
             register_package("test.person-kinds", FILE);
             assert_eq!(person_resource_types("test.person-kinds"), ["test.history"]);
             assert!(keeps_person_resource("test.person-kinds", "test.history"));
-            assert!(!keeps_person_resource("test.person-kinds", "test.own"));
+            assert!(!keeps_person_resource("test.person-kinds", "test.shared"));
             assert!(!keeps_person_resource("test.unknown-app", "test.history"));
         }
 

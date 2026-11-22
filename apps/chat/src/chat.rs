@@ -4,7 +4,7 @@
 //! is posted, quoted, replied to and referred to.
 //!
 //! The workspace's chat resource itself — its channels and categories, read marks,
-//! feedback and moderation — is [`chat_model`]'s ([`crate::chat::Chat`]), as the
+//! and feedback — is [`chat_model`]'s ([`crate::chat::Chat`]), as the
 //! person's drafts are: this module keeps the messages those resources hold in
 //! parts beside them ([`crate::parts`], [`crate::messages`]).
 
@@ -306,7 +306,7 @@ impl Quote {
     }
 }
 
-/// What answered an agent's reply: the provider as its keeper named it, the model, and what the
+/// What answered an agent's reply: the provider as the workspace named it, the model, and what the
 /// turn's calls cost and used. Kept on the reply, so a conversation says which model wrote each
 /// answer even after the person switched models mid-session.
 #[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

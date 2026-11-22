@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@30ee09d42a85747e";
+export const SURFACE = "so.tilo.chat@4c16479f75faf9f5";
 
 export interface Category {
   name: string;
@@ -57,22 +57,6 @@ export interface CropRef {
   height: number;
 }
 
-export interface Decision {
-  id: string;
-  person: string;
-  reports: string[];
-  outcome: Outcome2;
-  until_ms: number | null;
-  reasoning: string;
-  model: string;
-  reverted: Reverted[];
-  by: string;
-  at_ms: number;
-  overturned_by: string | null;
-  overturn_note: string | null;
-  overturned_at_ms: number | null;
-}
-
 export interface Destination {
   workspace: string;
   provider: string;
@@ -104,16 +88,8 @@ export interface Interaction {
   outcome: Outcome;
 }
 
-export interface Moderation {
-  reports: Array<tilo.Entry<Report>>;
-  decisions: Array<tilo.Entry<Decision>>;
-}
-
 /** One of "done", "refused", "failed". */
 export type Outcome = "done" | "refused" | "failed";
-
-/** One of "no-action", "restrict", "ban". */
-export type Outcome2 = "no-action" | "restrict" | "ban";
 
 export interface Part {
   text: string;
@@ -136,30 +112,11 @@ export interface RecordingRef {
   bytes: number;
 }
 
-export interface Report {
-  id: string;
-  reporter: string;
-  person: string;
-  app: string | null;
-  record: string | null;
-  item: string | null;
-  reason: string;
-  at_ms: number;
-  decision: string | null;
-}
-
 export interface ResourceRef {
   kind: string;
   id: string;
   label: string;
   span: Span | null;
-}
-
-export interface Reverted {
-  app: string;
-  record: string;
-  run: string;
-  changes: number;
 }
 
 export interface ReviewedFeedback {
@@ -189,14 +146,6 @@ export interface ReviewedSelection {
 export interface ReviewedText {
   kind: TextKind;
   parts: Part[];
-}
-
-export interface Ruling {
-  outcome: Outcome2;
-  until_ms: number | null;
-  reasoning: string;
-  model: string;
-  reverted: Reverted[];
 }
 
 export interface ScreenshotRef {
@@ -498,6 +447,52 @@ export interface WorkUpdate {
   answered: Answered | null;
 }
 
+export interface Decision {
+  id: string;
+  person: string;
+  reports: string[];
+  outcome: ModerationOutcome;
+  until_ms: number | null;
+  reasoning: string;
+  model: string;
+  reverted: Reverted[];
+  by: string;
+  at_ms: number;
+  overturned_by: string | null;
+  overturn_note: string | null;
+  overturned_at_ms: number | null;
+}
+
+/** One of "no-action", "restrict", "ban". */
+export type ModerationOutcome = "no-action" | "restrict" | "ban";
+
+export interface Report {
+  id: string;
+  reporter: string;
+  person: string;
+  app: string | null;
+  record: string | null;
+  item: string | null;
+  reason: string;
+  at_ms: number;
+  decision: string | null;
+}
+
+export interface Reverted {
+  app: string;
+  record: string;
+  run: string;
+  changes: number;
+}
+
+export interface Ruling {
+  outcome: ModerationOutcome;
+  until_ms: number | null;
+  reasoning: string;
+  model: string;
+  reverted: Reverted[];
+}
+
 export interface Emoji {
   image: unknown;
   added_by: string;
@@ -606,33 +601,6 @@ export interface RenameCategoryArgs {
 /** The arguments of `delete-channel`. */
 export interface DeleteChannelArgs {
   channel: string;
-}
-
-/** The arguments of `report-message`. */
-export interface ReportMessageArgs {
-  message: string;
-  author: unknown;
-  reason: string;
-}
-
-/** The arguments of `report-person`. */
-export interface ReportPersonArgs {
-  person: unknown;
-  reason: string;
-}
-
-/** The arguments of `decide-reports`. */
-export interface DecideReportsArgs {
-  id: string;
-  person: unknown;
-  reports: string[];
-  ruling: Ruling;
-}
-
-/** The arguments of `overturn-decision`. */
-export interface OverturnDecisionArgs {
-  decision: string;
-  note: string;
 }
 
 /** The arguments of `mark-read`. */
@@ -867,6 +835,33 @@ export interface ImportPreviousArgs {
   markdown: string;
 }
 
+/** The arguments of `report-message`. */
+export interface ReportMessageArgs {
+  message: string;
+  author: unknown;
+  reason: string;
+}
+
+/** The arguments of `report-person`. */
+export interface ReportPersonArgs {
+  person: unknown;
+  reason: string;
+}
+
+/** The arguments of `decide-reports`. */
+export interface DecideReportsArgs {
+  id: string;
+  person: unknown;
+  reports: string[];
+  ruling: Ruling;
+}
+
+/** The arguments of `overturn-decision`. */
+export interface OverturnDecisionArgs {
+  decision: string;
+  note: string;
+}
+
 /** The arguments of `add-emoji`. */
 export interface AddEmojiArgs {
   name: string;
@@ -927,7 +922,6 @@ export interface Workspace extends tilo.Resource {
   readonly channels: Array<tilo.Entry<Conversation>>;
   read: Record<string, Record<string, ReadMark>>;
   feedback: Array<tilo.Entry<FeedbackReport>>;
-  readonly moderation: Moderation;
   readonly files: WorkspaceFiles;
   readonly summaries: Record<string, Record<string, Summary>>;
   beginChat(): Promise<void>;
@@ -1014,33 +1008,6 @@ export interface Workspace extends tilo.Resource {
   }): Promise<void>;
   /** Runs `delete-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteChannelMany(items: DeleteChannelArgs[]): Promise<tilo.ActionAnswer[]>;
-  reportMessage(args: {
-    message: string;
-    author: unknown;
-    reason: string;
-  }): Promise<void>;
-  /** Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  reportMessageMany(items: ReportMessageArgs[]): Promise<tilo.ActionAnswer[]>;
-  reportPerson(args: {
-    person: unknown;
-    reason: string;
-  }): Promise<void>;
-  /** Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  reportPersonMany(items: ReportPersonArgs[]): Promise<tilo.ActionAnswer[]>;
-  decideReports(args: {
-    id: string;
-    person: unknown;
-    reports: string[];
-    ruling: Ruling;
-  }): Promise<void>;
-  /** Runs `decide-reports` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  decideReportsMany(items: DecideReportsArgs[]): Promise<tilo.ActionAnswer[]>;
-  overturnDecision(args: {
-    decision: string;
-    note: string;
-  }): Promise<void>;
-  /** Runs `overturn-decision` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  overturnDecisionMany(items: OverturnDecisionArgs[]): Promise<tilo.ActionAnswer[]>;
   markRead(args: {
     channel: string;
     part: number;
@@ -1081,7 +1048,7 @@ export interface Workspace extends tilo.Resource {
 
 /** The actions `Workspace` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKSPACE_ACTIONS = ["beginChat", "beginChatMany", "createCategory", "createCategoryMany", "createChannel", "createChannelMany", "createChannelWithId", "createChannelWithIdMany", "deleteCategory", "deleteCategoryMany", "moveChannel", "moveChannelMany", "moveCategory", "moveCategoryMany", "arrangeChannels", "arrangeChannelsMany", "setChannelCategory", "setChannelCategoryMany", "renameChannel", "renameChannelMany", "setChannelTopic", "setChannelTopicMany", "archiveChannel", "archiveChannelMany", "renameCategory", "renameCategoryMany", "deleteChannel", "deleteChannelMany", "reportMessage", "reportMessageMany", "reportPerson", "reportPersonMany", "decideReports", "decideReportsMany", "overturnDecision", "overturnDecisionMany", "markRead", "markReadMany", "keepSummary", "keepSummaryMany", "submitFeedback", "submitFeedbackMany", "triage", "triageMany", "exportContent", "startCall", "selectInput"] as const;
+export const WORKSPACE_ACTIONS = ["beginChat", "beginChatMany", "createCategory", "createCategoryMany", "createChannel", "createChannelMany", "createChannelWithId", "createChannelWithIdMany", "deleteCategory", "deleteCategoryMany", "moveChannel", "moveChannelMany", "moveCategory", "moveCategoryMany", "arrangeChannels", "arrangeChannelsMany", "setChannelCategory", "setChannelCategoryMany", "renameChannel", "renameChannelMany", "setChannelTopic", "setChannelTopicMany", "archiveChannel", "archiveChannelMany", "renameCategory", "renameCategoryMany", "deleteChannel", "deleteChannelMany", "markRead", "markReadMany", "keepSummary", "keepSummaryMany", "submitFeedback", "submitFeedbackMany", "triage", "triageMany", "exportContent", "startCall", "selectInput"] as const;
 
 /** The `chat.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
@@ -1321,6 +1288,48 @@ export const DRAFTS_ACTIONS = ["startDraft", "startDraftMany", "importPrevious",
 /** The `chat.drafts` kind at `path`. */
 export function drafts(ws: tilo.Workspace, path: string): Drafts {
   return resourceProxy(ws, path, SURFACE, DRAFTS_ACTIONS) as unknown as Drafts;
+}
+
+/** Moderation — `tilo.moderation`. */
+export interface Moderation extends tilo.Resource {
+  readonly reports: Array<tilo.Entry<Report>>;
+  readonly decisions: Array<tilo.Entry<Decision>>;
+  reportMessage(args: {
+    message: string;
+    author: unknown;
+    reason: string;
+  }): Promise<void>;
+  /** Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reportMessageMany(items: ReportMessageArgs[]): Promise<tilo.ActionAnswer[]>;
+  reportPerson(args: {
+    person: unknown;
+    reason: string;
+  }): Promise<void>;
+  /** Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reportPersonMany(items: ReportPersonArgs[]): Promise<tilo.ActionAnswer[]>;
+  decideReports(args: {
+    id: string;
+    person: unknown;
+    reports: string[];
+    ruling: Ruling;
+  }): Promise<void>;
+  /** Runs `decide-reports` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  decideReportsMany(items: DecideReportsArgs[]): Promise<tilo.ActionAnswer[]>;
+  overturnDecision(args: {
+    decision: string;
+    note: string;
+  }): Promise<void>;
+  /** Runs `overturn-decision` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  overturnDecisionMany(items: OverturnDecisionArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Moderation` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const MODERATION_ACTIONS = ["reportMessage", "reportMessageMany", "reportPerson", "reportPersonMany", "decideReports", "decideReportsMany", "overturnDecision", "overturnDecisionMany"] as const;
+
+/** The `tilo.moderation` kind at `path`. */
+export function moderation(ws: tilo.Workspace, path: string): Moderation {
+  return resourceProxy(ws, path, SURFACE, MODERATION_ACTIONS) as unknown as Moderation;
 }
 
 /** Workspace emoji — `tilo.workspace.emoji`. */

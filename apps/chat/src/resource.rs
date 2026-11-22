@@ -98,6 +98,7 @@ impl ResourceApp for ChatShell {
     fn resources(resources: &mut ui::framework::Resources<'_>) {
         resources.chain::<crate::parts::ChatMessages>();
         resources.workspace_record::<crate::drafts::ChatDrafts>(crate::drafts::DOCUMENT);
+        resources.shared_workspace::<chat_model::Moderation>();
         // The workspace's emoji is Chat's: every app of the workspace opens it,
         // and its changes are decided against Chat's surface.
         resources.shared_workspace::<ui::tilo_workspace_emoji::WorkspaceEmoji>();
@@ -142,6 +143,7 @@ impl ResourceApp for ChatShell {
             .with_models(models)
             .with_model_choices(live)
             .with_drafts(drafts)
+            .with_reports(cx.resource_opener::<chat_model::Moderation>(Self::ID))
             // The workspace's names for its agents, read from the list every app of the
             // workspace opens: an agent has no presence here to be named by.
             .with_agents(cx.resource_opener(ui::tilo_workspace_agent::OWNER))
@@ -175,12 +177,6 @@ impl ResourceApp for ChatShell {
         cx.on_stage(window.stager());
         let answering = Rc::clone(&chat);
         let statuses = Rc::clone(&chat);
-        if live {
-            let previous_drafts = cx.resource_opener::<crate::drafts::ChatDrafts>(Self::ID);
-            cx.effects(move |_: crate::drafts::ImportEffect, _| {
-                crate::drafts::import_previous(&previous_drafts).map(ui::framework::Effected::value)
-            });
-        }
         cx.effects(move |effect: ChatEffect, cx| answer(&answering, effect, cx))
             .status(move || statuses.borrow().effect_statuses());
         let rows = Rc::clone(&chat);

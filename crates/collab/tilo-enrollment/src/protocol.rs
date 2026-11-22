@@ -98,9 +98,9 @@ pub struct ResponsePayload {
     pub public_identity_json: Option<Vec<u8>>,
     /// Complete bounded fleet projection after this device was admitted.
     pub fleet_json: Option<Vec<u8>>,
-    /// Current verified home-peer registry, so continuity does not depend on
-    /// the approving laptop remaining online after setup.
-    pub home_peers_json: Option<Vec<u8>>,
+    /// The device the joining one asks into the person's workspace: the
+    /// approving device itself, which is one of the person's.
+    pub introducer: Option<tilo_server_protocol::servers::Introducer>,
 }
 
 /// The approving device's answer when it holds the identity's key: signed by

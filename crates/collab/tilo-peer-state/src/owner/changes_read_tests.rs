@@ -30,7 +30,6 @@ fn commit(joined: &Enrolled, edit: impl FnOnce(&mut AutoCommit)) {
                     app: APP.into(),
                     document: String::new(),
                     envelope,
-                    own: None,
                     readers: None,
                 },
             })

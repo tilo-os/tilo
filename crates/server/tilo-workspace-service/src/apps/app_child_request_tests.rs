@@ -66,12 +66,6 @@ fn publish_notes(
             vec![
                 published(notebook, "create-page", Undoable, &[]),
                 published(notebook, "read-page", Read, &[]),
-                published(
-                    notebook,
-                    "retitle-mine",
-                    Undoable,
-                    &[tilo_actions::OWN_RESOURCE_SCOPE],
-                ),
                 {
                     let mut clear = published(notebook, "clear-done", Undoable, &[]);
                     clear.contract.risk = tilo_actions::RiskLevel::Destructive;
@@ -337,15 +331,9 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
                 &app_asks(&notes_app.handle, after_edit.clone()).await,
             );
 
-            // Down a chain: an edit of the person's own record needs only
-            // reading, so it runs under the read, and reaches no further
-            // than it.
-            let own = notebook("retitle-mine", read);
-            let own = ran(notes, &own, &app_asks(&notes_app.handle, own.clone()).await);
-            for parent in [own, within] {
-                let beyond = app_asks(&notes_app.handle, notebook("create-page", parent)).await;
-                assert!(unconfirmed(&beyond), "{beyond:?}");
-            }
+            // Down a chain: what continues the read reaches no further than it.
+            let beyond = app_asks(&notes_app.handle, notebook("create-page", within)).await;
+            assert!(unconfirmed(&beyond), "{beyond:?}");
             // Naming a confirmation of its own answers nothing.
             let mut claimed = notebook("create-page", read);
             claimed.confirmation = Some(tilo_actions::remote::Confirmation::Confirmed);

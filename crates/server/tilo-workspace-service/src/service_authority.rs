@@ -112,6 +112,9 @@ pub enum ServiceOperation {
     ListMachines,
     /// One of them, named by its plan.
     ShowMachine,
+    /// The host's person's servers, as the document of their workspace
+    /// names them: each one's device key, name and address.
+    ListServers,
     /// Take a machine that enrolled with a plan's token into its entry, under
     /// its device key: the person's device that approved it does this, and the
     /// machine's own report follows when it holds the workspace.
@@ -148,9 +151,23 @@ impl ServiceOperation {
             Self::PlanMachine => "machine.plan",
             Self::ListMachines => "machine.list",
             Self::ShowMachine => "machine.show",
+            Self::ListServers => "machine.servers",
             Self::AdmitMachine => "machine.admit",
             Self::TakeInPersonDevice => "person.take-in",
         }
+    }
+
+    /// Whether the operation is one of the person's machines and servers,
+    /// answered from the document that names them.
+    pub(crate) const fn of_machines(self) -> bool {
+        matches!(
+            self,
+            Self::PlanMachine
+                | Self::ListMachines
+                | Self::ShowMachine
+                | Self::ListServers
+                | Self::AdmitMachine
+        )
     }
 
     /// Whether the operation is about where a workspace is held, which its own
@@ -221,6 +238,7 @@ impl ServiceOperation {
             | Self::PlanMachine
             | Self::ListMachines
             | Self::ShowMachine
+            | Self::ListServers
             | Self::AdmitMachine
             | Self::TakeInPersonDevice => false,
         }
@@ -232,7 +250,7 @@ mod tests {
     use super::ServiceOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [ServiceOperation; 23] = [
+    const ALL: [ServiceOperation; 24] = [
         ServiceOperation::CreateWorkspace,
         ServiceOperation::ListWorkspaces,
         ServiceOperation::EnterWorkspace,
@@ -254,6 +272,7 @@ mod tests {
         ServiceOperation::PlanMachine,
         ServiceOperation::ListMachines,
         ServiceOperation::ShowMachine,
+        ServiceOperation::ListServers,
         ServiceOperation::AdmitMachine,
         ServiceOperation::TakeInPersonDevice,
     ];

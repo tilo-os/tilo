@@ -25,7 +25,7 @@ usage() {
   cat <<EOF
 stack.sh: tilo.sh, whole, on this machine, from this checkout.
 
-  stack.sh up [--images] [--seed] [--discord] [--fake-oauth] [--fresh]
+  stack.sh up [--images] [--seed] [--discord] [--fresh]
       Start everything and print where it is. By default this checkout's
       programs and web bundle, built on the build server in a build
       directory that stays (a drop-in's build directory persists: a change
@@ -170,8 +170,6 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
   mail      the mail sink the entry's mail goes to (production: Resend),
             http://127.0.0.1:BASE+23; stack.sh mail lists what it kept
   discord   with --discord, the fake Discord (crates/dev/fake-discord)
-  oauth     with --fake-oauth, the fake provider sign-in page (crates/dev/fake-oauth),
-            which the server's Google and Microsoft buttons sign in through
   models    with TILO_SH_FAKE_MODELS=1, the fake OpenAI sign-in and model
             providers (crates/dev/fake-model-providers) at
             http://127.0.0.1:BASE+43, which the server signs people in to
@@ -270,7 +268,7 @@ base=${TILO_SH_PORT_BASE:-24100}
 server_port=$base               # Caddy: the server's public origin (eu1.tilo.sh)
 plain_port=$((base + 1))       # the server's origin-forwarding listener (9780)
 packet_port=$((base + 2))      # the relay's packet relay (8443)
-routes_port=$((base + 3))      # the server's own routes (8790): /mode, /avatars, /discord/callback, /accounts/return
+routes_port=$((base + 3))      # the server's own routes (8790): /mode, /avatars, /discord/callback
 iroh_port=$((base + 4))        # the server's iroh endpoint, UDP (7704)
 server_web_port=$((base + 5))   # the server's own dev TLS listener, which nothing here uses
 live_port=$((base + 6))        # Caddy: the live session's origin (live-eu1.tilo.sh)
@@ -284,7 +282,6 @@ mail_port=$((base + 23))       # the mail sink the entry's mail goes to instead 
 mail_stand_in_imap_port=$((base + 24))  # the stand-in mail server's IMAP, when TILO_SH_MAIL_STAND_IN=1
 mail_stand_in_smtp_port=$((base + 25))  # its SMTP
 mail_stand_in_document_port=443        # its settings document, where a mail program asks (https)
-fake_oauth_port=$((base + 26))  # the fake provider sign-in page, with --fake-oauth
 discord_rest_port=$((base + 40))
 discord_gateway_port=$((base + 41))
 discord_control_port=$((base + 42))
@@ -439,7 +436,7 @@ stack_tcp_ports() {
   printf '%s\n' "$server_port" "$plain_port" "$routes_port" "$server_web_port" \
     "$live_port" "$caddy_http_port" "$api_port" "$site_port" "$web_port" \
     "$releases_port" "$mail_port" "$mail_stand_in_imap_port" \
-    "$mail_stand_in_smtp_port" "$fake_oauth_port" "$discord_rest_port" "$discord_gateway_port" \
+    "$mail_stand_in_smtp_port" "$discord_rest_port" "$discord_gateway_port" \
     "$discord_control_port" "$models_port" "$control_port"
 }
 stack_udp_ports() { printf '%s\n' "$packet_port" "$iroh_port" "$link_port"; }
@@ -760,32 +757,6 @@ server_env() {
       # GUILD), its bot token the fake's (TOKEN) in the secrets.
       "TILO_WORKSPACES_BOTS=$bots_path/discord-bridge.json guild=1000 server=Tilo mirror-channels=yes"
     )
-  fi
-  # Signing in on a provider's own page: an operator's real web clients
-  # (TILO_OAUTH_GOOGLE_WEB_CLIENT_ID and the like, see the server's README), or
-  # with --fake-oauth the stand-in page's endpoints.
-  if [[ -n ${fake_oauth:-} ]]; then
-    env+=(
-      TILO_OAUTH_GOOGLE_WEB_CLIENT_ID=fake-oauth-web-client
-      "TILO_OAUTH_GOOGLE_AUTHORIZE_URL=$fake_oauth/authorize"
-      "TILO_OAUTH_GOOGLE_TOKEN_URL=$fake_oauth/token"
-      "TILO_OAUTH_GOOGLE_PROFILE_URL=$fake_oauth/profile"
-      TILO_OAUTH_MICROSOFT_WEB_CLIENT_ID=fake-oauth-web-client
-      "TILO_OAUTH_MICROSOFT_AUTHORIZE_URL=$fake_oauth/authorize"
-      "TILO_OAUTH_MICROSOFT_TOKEN_URL=$fake_oauth/token"
-      "TILO_OAUTH_MICROSOFT_PROFILE_URL=$fake_oauth/profile"
-    )
-  else
-    local oauth
-    for oauth in \
-      TILO_OAUTH_GOOGLE_WEB_CLIENT_ID TILO_OAUTH_GOOGLE_WEB_CLIENT_SECRET \
-      TILO_OAUTH_GOOGLE_AUTHORIZE_URL TILO_OAUTH_GOOGLE_TOKEN_URL \
-      TILO_OAUTH_GOOGLE_PROFILE_URL TILO_OAUTH_GOOGLE_USERINFO_URL \
-      TILO_OAUTH_MICROSOFT_WEB_CLIENT_ID TILO_OAUTH_MICROSOFT_WEB_CLIENT_SECRET \
-      TILO_OAUTH_MICROSOFT_AUTHORIZE_URL TILO_OAUTH_MICROSOFT_TOKEN_URL \
-      TILO_OAUTH_MICROSOFT_PROFILE_URL; do
-      [[ -z ${!oauth:-} ]] || env+=("$oauth=${!oauth}")
-    done
   fi
   # TILO_SH_TERMINAL_ON_MACHINE=1: with no VM host, the workspaces' Terminal
   # (a person's and their agents') starts its programs on this machine, as the
@@ -1566,18 +1537,13 @@ build_programs() {
     say "building the programs ($cargo build --profile $profile; only what changed compiles)"
     # The stand-in mail server is an example, built apart: an example brings its package's
     # dev-dependencies, whose features Cargo turns on for every package in the same build, and the
-    # server built with its test-only features loads fixture fonts its app workers cannot. The
-    # stand-in sign-in page is built there too, for the same reason: it asks for the sign-in
-    # crate's stand-in server.
-    local oauth_programs=()
-    [[ -z ${fake_oauth:-} ]] || oauth_programs=(-p fake-oauth --bin fake-oauth)
+    # server built with its test-only features loads fixture fonts its app workers cannot.
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
       -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
       "${oauth_programs[@]}" \
       --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime \
       --bin tilolang-process >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
-        "${oauth_programs[@]}" \
         -p tilo-account-probe --example mail_stand_in >&2) \
       || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
   fi
@@ -1655,12 +1621,6 @@ copy_programs() {
   if ! cmp -s "$stand_in" "$programs/mail-stand-in"; then
     cp --reflink=auto "$stand_in" "$programs/.mail-stand-in.next" || die 'could not copy mail-stand-in'
     mv -f "$programs/.mail-stand-in.next" "$programs/mail-stand-in"
-  fi
-  # The stand-in sign-in page, only where a stack asked for one.
-  if [[ -n ${fake_oauth:-} && -x $from/fake-oauth ]] \
-    && ! cmp -s "$from/fake-oauth" "$programs/fake-oauth"; then
-    cp --reflink=auto "$from/fake-oauth" "$programs/.fake-oauth.next" || die "could not copy fake-oauth"
-    mv -f "$programs/.fake-oauth.next" "$programs/fake-oauth"
   fi
 }
 
@@ -2066,23 +2026,6 @@ start_native_discord() {
   discord_secrets
 }
 
-# The fake provider sign-in page --fake-oauth starts: it approves every
-# sign-in as one made-up mailbox, and the server's Google and Microsoft
-# buttons are pointed at it, so a real browser can walk the whole flow.
-start_native_fake_oauth() {
-  : > "$state/logs/fake-oauth.log"
-  private_env fake-oauth "$programs" > "$runs/fake-oauth.env"
-  # On its own port of the base: a stack on the build server forwards it, so
-  # the browser here opens the same page the server there exchanges codes with.
-  run_native fake-oauth "$runs/fake-oauth" "$programs/fake-oauth" --port "$fake_oauth_port"
-  local deadline=$((SECONDS + 60))
-  until grep -q '^FAKE_OAUTH_URL=' "$state/logs/fake-oauth.log" 2>/dev/null; do
-    ((SECONDS < deadline)) || die "the fake OAuth page did not start within a minute: $(cat "$state/logs/fake-oauth.log")"
-    sleep 0.2
-  done
-  fake_oauth=$(sed -n 's/^FAKE_OAUTH_URL=//p' "$state/logs/fake-oauth.log" | head -1)
-}
-
 # A step's limit is what the step needs on a machine that is not busy with
 # something else: every wait here is local, and one that runs past it says
 # which step and where to read why, instead of hanging on the whole check's
@@ -2166,7 +2109,6 @@ up_native() {
   trust_bundle
   # After the trust bundle, which every service reads.
   [[ -z ${discord:-} ]] || start_native_discord
-  [[ -z ${fake_oauth:-} ]] || start_native_fake_oauth
   [[ ${TILO_SH_FAKE_MODELS:-0} != 1 ]] || start_native_models
   say "tls up ($((SECONDS - phase))s)"
   phase=$SECONDS
@@ -2252,9 +2194,6 @@ restart_one() {
   make_secrets
   local began=$SECONDS
   if running discord; then discord_api=http://127.0.0.1:$discord_rest_port; fi
-  if running fake-oauth; then
-    fake_oauth=$(sed -n 's/^FAKE_OAUTH_URL=//p' "$state/logs/fake-oauth.log" 2>/dev/null | head -1)
-  fi
   case $name in
     server)
       build_programs
@@ -2320,16 +2259,14 @@ discord_secrets() {
 
 up() {
   local seed='' discord='' fresh='' images=''
-  fake_oauth=''
   for arg in "$@"; do
     case $arg in
       --images) images=1 ;;
       --seed) seed=1 ;;
       --discord) discord=1 ;;
-      --fake-oauth) fake_oauth=1 ;;
       --fresh) fresh=1 ;;
       -h|--help) usage; return ;;
-      *) die "up takes --images, --seed, --discord, --fake-oauth and --fresh, not $arg" ;;
+      *) die "up takes --images, --seed, --discord and --fresh, not $arg" ;;
     esac
   done
   local began=$SECONDS
@@ -2529,7 +2466,7 @@ down() {
   local name
   # Both kinds: the native processes, and the image mode's containers and
   # VM host.
-  for name in web releases api server tls discord fake-oauth models; do
+  for name in web releases api server tls discord models; do
     stop_native "$name"
   done
   # The VM host's disk and identity outlive a plain down, as the stack's state
@@ -2693,11 +2630,11 @@ supervisor_pid() {
 
 # The ports this machine keeps: the server's public origin and the addresses a
 # page dials, the API server the SDKs and agents use, the web entry and the
-# releases, the mail sink and the stand-in mail server's two, the fake
-# provider sign-in page, the fake Discord when one runs, and the fake model
-# providers, whose sign-in page a person's browser opens.
+# releases, the mail sink and the stand-in mail server's two, the fake Discord
+# when one runs, and the fake model providers, whose sign-in page a person's
+# browser opens.
 forward_tcp() {
-  printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$fake_oauth_port,$discord_rest_port,$discord_gateway_port,$discord_control_port,$models_port,$control_port"
+  printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$discord_rest_port,$discord_gateway_port,$discord_control_port,$models_port,$control_port"
 }
 
 # The page reaches the server over QUIC (WebTransport, then iroh), which ssh
@@ -2850,13 +2787,11 @@ control_down() {
   python3 "$here/control.py" down --port "$control_port" --token "$stack_token" -- "$@"
 }
 
-# up_remote [--seed] [--discord]: the stack on the build server, its ports here
-# (with --fake-oauth when up was given it).
+# up_remote [--seed] [--discord]: the stack on the build server, its ports here.
 up_remote() {
   local seed=$1 discord=$2 args=()
   [[ -z $seed ]] || args+=(--seed)
   [[ -z $discord ]] || args+=(--discord)
-  [[ -z ${fake_oauth:-} ]] || args+=(--fake-oauth)
   mkdir -p "$state/logs"
   (cd "$repo" && mkdir -p "$(dirname -- "$remote_state")")
   echo remote > "$state/mode"

@@ -163,7 +163,7 @@ impl AppConnection {
         // authority is the person's own. A packaged app's launcher attestation
         // is not that — it only says which app's route this connection speaks
         // for — so the workspace's own agent joins its package's route through
-        // its record (`admit_kept_agent`) like any app of the workspace.
+        // its record (`admit_listed_agent`) like any app of the workspace.
         let descriptor_worker =
             verified_identity.worker_registration.is_some() && !launcher_attested;
         if descriptor_worker && !person {
@@ -210,7 +210,7 @@ impl AppConnection {
                 let roster = state.services.agents.as_deref().ok_or_else(|| {
                     BrokerError::failed("agent session has no workspace record to join on".into())
                 })?;
-                admit_kept_agent(
+                admit_listed_agent(
                     roster,
                     &route.cluster_id,
                     &mut verified_identity,
@@ -280,5 +280,5 @@ impl AppConnection {
 /// [`attested_route_access`] lets it change the record as the workspace's grants on the
 /// owner decide.
 fn kept_for_every_app_of_the_workspace(route: &CrdtRoute) -> bool {
-    collab_types::workspace_document(&route.app_id, &route.document_id).is_some()
+    collab_types::shared_workspace_document(&route.app_id, &route.document_id).is_some()
 }

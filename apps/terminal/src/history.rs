@@ -11,62 +11,6 @@ pub(crate) use ui::tilo_actions::policy::roles::WORKSPACE_TERMINAL_HISTORY_DOCUM
 pub(crate) type HistoryRecord = ui::framework::WorkspaceResource<CommandHistory>;
 
 #[cfg(feature = "desktop")]
-pub(crate) fn import_previous(
-    opener: &ui::framework::ResourceOpener<CommandHistory>,
-) -> Result<usize, String> {
-    let record = opener
-        .open(DOCUMENT)
-        .filter(|record| record.may_read() && record.may("import-run"))
-        .ok_or("the workspace must grant permission to import commands")?;
-    let Some(previous) = opener.legacy_member_state()? else {
-        return Ok(0);
-    };
-    let held: std::collections::HashSet<_> = record
-        .get()
-        .remembered
-        .values()
-        .map(|run| run.run.clone())
-        .collect();
-    let mut imported = 0;
-    for run in previous
-        .remembered
-        .values()
-        .filter(|run| !held.contains(&run.run))
-    {
-        let environment = run.environment.as_ref().map(|target| target.0.clone());
-        let workspace_run = matches!(
-            environment
-                .as_deref()
-                .and_then(crate::target::SessionTarget::decode),
-            Some(crate::target::SessionTarget::Environment { .. })
-        );
-        if !workspace_run || run.command.0.trim().is_empty() {
-            continue;
-        }
-        record
-            .invoke(&CommandHistory::IMPORT_RUN.with(Ran {
-                command: run.command.0.clone(),
-                cwd: run.cwd.0.clone(),
-                environment,
-                exit: run.exit,
-                ended_ms: run.ended_ms,
-                actor: run.actor.clone(),
-                session: run.session.0.clone(),
-                run: run.run.clone(),
-            }))
-            .map_err(|error| error.to_string())?;
-        imported += usize::from(
-            record
-                .get()
-                .remembered
-                .values()
-                .any(|entry| entry.run == run.run),
-        );
-    }
-    Ok(imported)
-}
-
-#[cfg(feature = "desktop")]
 pub(crate) fn is_device_shell(target: Option<&str>) -> bool {
     matches!(
         target.and_then(crate::target::SessionTarget::decode),

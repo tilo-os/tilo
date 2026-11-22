@@ -11,20 +11,20 @@ use tilo_user_identity::DeviceCapabilities;
 const KEPT_WORKSPACE: &str = "302d59e0-f586-42e1-a59e-3aa613f0f866";
 
 /// The digest of the kept state's bytes: the layout, as it is written.
-const KEPT_LAYOUT: &str = "3d5c64a8079635d0415ed348f5f9f7cb4219cb3f78556a0b8bb4b4d82b356317";
+const KEPT_LAYOUT: &str = "805010bece9f5a73e4dcd66a2cae4eb712cb685770420e367ed9bf00191c3fd2";
 
 /// The durable layout version the kept bytes were written at. A layout change
 /// writes new kept bytes: bump [`DURABLE_VERSION`] and this together, so a
 /// stored state's shape never moves under the version that names it.
-const KEPT_VERSION: u32 = 11;
+const KEPT_VERSION: u32 = 12;
 
 /// [`kept_state`] without an exact index or a sealed history, as `postcard`
 /// wrote it, hex.
-const KEPT: &str = "0b2433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a830110736f2e74696c6f2e73657474696e677329757569643a36353033313630642d366161312d383139382d623736362d31303731303165396137346104856f4a8301030303030303030303030303030303030303030303030303030303030303030304000000010d73657474696e67732e726f6f7402020202020202020202020202020202020202020202020202020202020202020001010101010101010101010101010101010101010101010101010101010101010104040404040404040404040404040404040404040404040404040404040404040c4672616d65776f726b2031360354010909090909090909090909090909090901000000e80701d00f4005050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505010101010101010101010101010101010101010101010101010101010101010106060606060606060606060606060606060606060606060606060606060606061774686520706572736f6e2773206f776e2064657669636503020101000084070040070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070101010101010101010101010101010101010101010101010101010101010101010404040404040404040404040404040404040404040404040404040404040404b817024008080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808010707070707070707070707070707070707070707070707070707070707070707080105010c0000";
+const KEPT: &str = "0c2433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a830110736f2e74696c6f2e73657474696e677329757569643a36353033313630642d366161312d383139382d623736362d31303731303165396137346104856f4a8301030303030303030303030303030303030303030303030303030303030303030304000000000001010101010101010101010101010101010101010101010101010101010101010104040404040404040404040404040404040404040404040404040404040404040c4672616d65776f726b2031360354010909090909090909090909090909090901000000e80701d00f4005050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505010101010101010101010101010101010101010101010101010101010101010106060606060606060606060606060606060606060606060606060606060606061774686520706572736f6e2773206f776e2064657669636503020101000084070040070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070101010101010101010101010101010101010101010101010101010101010101010404040404040404040404040404040404040404040404040404040404040404b817024008080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808010707070707070707070707070707070707070707070707070707070707070707080105010c0000";
 
 /// [`kept_state`] with an exact index and a sealed history, as `postcard`
 /// wrote it, hex.
-const KEPT_SEALED: &str = "0b2433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a830110736f2e74696c6f2e73657474696e677329757569643a36353033313630642d366161312d383139382d623736362d31303731303165396137346104856f4a8301030303030303030303030303030303030303030303030303030303030303030304000000010d73657474696e67732e726f6f7402020202020202020202020202020202020202020202020202020202020202020001010101010101010101010101010101010101010101010101010101010101010104040404040404040404040404040404040404040404040404040404040404040c4672616d65776f726b2031360354010909090909090909090909090909090901000000e80701d00f4005050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505010101010101010101010101010101010101010101010101010101010101010106060606060606060606060606060606060606060606060606060606060606061774686520706572736f6e2773206f776e2064657669636503020101000084070040070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070101010101010101010101010101010101010101010101010101010101010101010404040404040404040404040404040404040404040404040404040404040404b817024008080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808010707070707070707070707070707070707070707070707070707070707070707080105010c017d00012433303264353965302d663538362d343265312d613539652d3361613631336630663836360c736f2e74696c6f2e63686174066c6f756e6765030303030303030303030303030303030303030303030303030303030303030304050505050505050505050505050505050505050505050505050505050505050500010c736f2e74696c6f2e63686174066c6f756e676501067365616c656410000000000000000000000000000000070303030303030303030303030303030303030303030303030303030303030303100000000000000000000000000000000800000004000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+const KEPT_SEALED: &str = "0c2433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a830110736f2e74696c6f2e73657474696e677329757569643a36353033313630642d366161312d383139382d623736362d31303731303165396137346104856f4a8301030303030303030303030303030303030303030303030303030303030303030304000000000001010101010101010101010101010101010101010101010101010101010101010104040404040404040404040404040404040404040404040404040404040404040c4672616d65776f726b2031360354010909090909090909090909090909090901000000e80701d00f4005050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505010101010101010101010101010101010101010101010101010101010101010106060606060606060606060606060606060606060606060606060606060606061774686520706572736f6e2773206f776e2064657669636503020101000084070040070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070101010101010101010101010101010101010101010101010101010101010101010404040404040404040404040404040404040404040404040404040404040404b817024008080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808010707070707070707070707070707070707070707070707070707070707070707080105010c017d00012433303264353965302d663538362d343265312d613539652d3361613631336630663836360c736f2e74696c6f2e63686174066c6f756e6765030303030303030303030303030303030303030303030303030303030303030304050505050505050505050505050505050505050505050505050505050505050500010c736f2e74696c6f2e63686174066c6f756e676501067365616c656410000000000000000000000000000000070303030303030303030303030303030303030303030303030303030303030303100000000000000000000000000000000800000004000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 
 /// Bytes kept as hex, as a test reads them.
 fn kept(hex: &str) -> Vec<u8> {
@@ -124,11 +124,7 @@ tilo_test_env::scenario! {
                 assert_eq!(value.owner, [1; 32]);
                 assert_eq!(value.pending_bytes, 12);
                 assert!(value.exact.is_none());
-                assert_eq!(
-                    value.documents[0].own.as_ref().map(|own| own.owner),
-                    Some([2; 32]),
-                    "a member's own record is kept with what it is"
-                );
+                assert_eq!(value.documents[0].route.app, "so.tilo.settings");
                 assert_eq!(
                     value.certificates[0].issuer.as_ref().map(|issuer| issuer.device_public_key),
                     Some([6; 32]),
@@ -153,20 +149,18 @@ fn kept_pending() -> VecDeque<([u8; 32], NeighbourMsg, bool)> {
     )])
 }
 
-/// One member's own record, kept with what it is.
+/// One record of the workspace.
 fn kept_document() -> DurableDocument {
-    let own = collab_types::OwnResource::new("settings.root", [2; 32]).unwrap();
     DurableDocument {
         route: Route {
             app: "so.tilo.settings".into(),
-            record: own.document_id(),
+            record: "uuid:6503160d-6aa1-8198-b766-107101e9a74a".into(),
         },
         bytes: b"\x85\x6f\x4a\x83".to_vec(),
         watermarks: vec![([3; 32], 4)],
         encryption_required: false,
         covered: BTreeMap::new(),
         covered_snapshot: None,
-        own: Some(own),
     }
 }
 
@@ -243,156 +237,5 @@ fn kept_state(exact: Option<&[u8]>, sealed: SealedHistory) -> Durable<'_> {
         pending_bytes: 12,
         exact,
         sealed,
-    }
-}
-
-/// A document write waiting to be sent, naming the reader set `readers`.
-fn waiting_document_write(readers: Option<&str>) -> NeighbourMsg {
-    NeighbourMsg::AppDocument {
-        peer: 3,
-        app_id: "so.tilo.notes".into(),
-        cluster_id: KEPT_WORKSPACE.into(),
-        document_id: "uuid:1c2f".into(),
-        envelope: Box::new(kept_sealed().remove(0).1.remove(0)),
-        own: None,
-        readers: readers.map(Into::into),
-    }
-}
-
-/// [`kept_state`] with a sealed history and `pending` waiting, at version 10, the bytes they take
-/// counted as this build writes them.
-fn kept_at_10(exact: &[u8], pending: VecDeque<([u8; 32], NeighbourMsg, bool)>) -> Durable<'_> {
-    Durable {
-        version: 10,
-        pending_bytes: pending
-            .iter()
-            .map(|(_, message, _)| postcard::to_stdvec(message).unwrap().len())
-            .sum(),
-        pending,
-        ..kept_state(Some(exact), kept_sealed())
-    }
-}
-
-/// `durable` as a build before reader sets wrote it: each waiting document write ends where
-/// its reader set begins. The fields around `pending` are as today's.
-fn written_before_reader_sets(durable: &Durable<'_>) -> Vec<u8> {
-    let mut bytes = postcard::to_stdvec(&(
-        durable.version,
-        &durable.workspace,
-        &durable.owner,
-        &durable.workspace_bytes,
-        &durable.documents,
-        &durable.receipts,
-        &durable.certificates,
-        &durable.revocations,
-        durable.pending.len(),
-    ))
-    .unwrap();
-    for (key, message, sent) in &durable.pending {
-        bytes.extend_from_slice(key);
-        let mut message = postcard::to_stdvec(message).unwrap();
-        if let NeighbourMsg::AppDocument { readers, .. } = &message_of(&message) {
-            assert!(readers.is_none(), "that build wrote no reader set");
-            assert_eq!(
-                message.pop(),
-                Some(0),
-                "the reader set ends a document write"
-            );
-        }
-        bytes.extend_from_slice(&message);
-        bytes.push(u8::from(*sent));
-    }
-    // That build counted the bytes its waiting writes took as it wrote them.
-    let documents = durable
-        .pending
-        .iter()
-        .filter(|(_, message, _)| matches!(message, NeighbourMsg::AppDocument { .. }))
-        .count();
-    bytes.extend(
-        postcard::to_stdvec(&(
-            durable.pending_bytes.saturating_sub(documents),
-            durable.exact,
-            &durable.sealed,
-        ))
-        .unwrap(),
-    );
-    bytes
-}
-
-fn message_of(bytes: &[u8]) -> NeighbourMsg {
-    postcard::from_bytes(bytes).unwrap()
-}
-
-tilo_test_env::scenario! {
-    fn a_version_10_state_is_brought_up_in_either_of_its_layouts;
-
-    phase a_state_kept_before_reader_sets_reads_with_its_waiting_writes;
-    // Writes waiting to be sent before document writes carried a reader set: a document write
-    // ends before it, and the flag after it is read as the flag, not as a reader set. Before
-    // this step such a state stopped its server ("invalid utf-8"): the flag was taken for the
-    // start of a reader set.
-    {
-        let exact = kept_exact();
-        let pending = VecDeque::from([
-            ([7; 32], waiting_document_write(None), true),
-            ([8; 32], neighbour_wire::NeighbourMsg::Heartbeat { peer: 1, ts: 5 }, false),
-            ([9; 32], waiting_document_write(None), false),
-        ]);
-        let kept = written_before_reader_sets(&kept_at_10(&exact, pending.clone()));
-        assert!(
-            postcard::from_bytes::<Durable<'_>>(&kept).is_err(),
-            "today's layout does not read it"
-        );
-        let brought = brought_up(&kept).expect("version 10 before reader sets comes up");
-        let today = Durable::read(&brought, KEPT_WORKSPACE).expect("it reads as today's layout");
-        assert_eq!(today.version, DURABLE_VERSION);
-        assert_eq!(today.pending, pending, "every waiting write, its flag with it");
-        assert_eq!(
-            backend::validate_pending(&today.pending, today.pending_bytes),
-            Ok(()),
-            "the bytes they take are counted as this build writes them"
-        );
-        assert_eq!(
-            &*brought,
-            postcard::to_stdvec(&Durable {
-                version: DURABLE_VERSION,
-                ..kept_at_10(&exact, pending)
-            })
-            .unwrap(),
-            "everything else as it was kept"
-        );
-    }
-
-    phase a_state_of_10_with_reader_sets_keeps_them;
-    {
-        let exact = kept_exact();
-        let pending = VecDeque::from([
-            ([7; 32], waiting_document_write(Some("readers:ab")), true),
-            ([9; 32], waiting_document_write(None), false),
-        ]);
-        let kept = postcard::to_stdvec(&kept_at_10(&exact, pending.clone())).unwrap();
-        let brought = brought_up(&kept).expect("version 10 with reader sets comes up");
-        let today = Durable::read(&brought, KEPT_WORKSPACE).unwrap();
-        assert_eq!(today.version, DURABLE_VERSION);
-        assert_eq!(today.pending, pending);
-        assert_eq!(brought[1..], kept[1..], "only the version moves");
-    }
-
-    phase a_state_of_today_is_read_as_it_is;
-    {
-        let kept = kept(KEPT_SEALED);
-        assert!(matches!(brought_up(&kept).unwrap(), std::borrow::Cow::Borrowed(_)));
-    }
-
-    phase a_version_10_state_that_reads_as_neither_layout_is_refused;
-    {
-        let exact = kept_exact();
-        let mut kept = written_before_reader_sets(&kept_at_10(
-            &exact,
-            VecDeque::from([([7; 32], waiting_document_write(None), true)]),
-        ));
-        kept.truncate(kept.len().saturating_sub(3));
-        let refused = brought_up(&kept).expect_err("a cut state is refused");
-        assert!(refused.contains("neither of its layouts"), "{refused}");
     }
 }

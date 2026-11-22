@@ -57,30 +57,6 @@ view note(n: Note) {
 const TELLER_APP: &str = "so.tilo.test.teller";
 const WORKSPACE: &str = "workspace";
 
-/// An app that keeps each person's resources in their own document, and tells them about one of
-/// them: what a notice from it names to open is that person's own document, not the workspace's.
-const OWN: (&str, &str) = (
-    r#"app so.tilo.test.own "Own documents" (resources: .own)
-
-type Note {
-    text: Text
-}
-
-action tell(n: Note) uses notify {
-    notify(to: invoker, title: "A note of yours", body: "", opens: n)
-}
-
-root Note
-
-default view note for Note
-
-view note(n: Note) {
-    ui.Text(n.text)
-}
-"#,
-    "",
-);
-
 /// What one device showed and took back, and what its platform said of the notifications it
 /// closed, as the notifications service would.
 #[derive(Clone, Default)]
@@ -661,61 +637,6 @@ fn what_a_notice_opens_resolves_from_another_device() {
         tilo_service::notice::Place::from_activation(&place.activation()),
         Some(place),
         "choosing it opens what it names"
-    );
-}
-
-#[test]
-fn a_notice_from_an_app_with_its_own_documents_opens_the_persons_own() {
-    // A person with a root identity (the hex of their user key) keeps their own document of an
-    // app declaring `resources: .own`; a notice about what they keep there names that document, so
-    // it opens on any device of theirs.
-    let person = "ab".repeat(32);
-    let (own, packages) = Replica::new(&person, Workspace::new(), &[OWN]);
-    let item = own.host.root_of("so.tilo.test.own").unwrap();
-    own.commit();
-    let note = tilolang_tilo::publish::resource_id("so.tilo.test.own", &item.id_string());
-    // The workspace's service, on another device: it tells the person, but publishes none of
-    // what they keep in their own profile, which their own app instance publishes.
-    let Replica { host, doc, .. } = own.fork(&person, &[OWN]);
-    let mut service = ResourceService::new(host, &person);
-    let recorder = Recorder::default();
-    service.set_tell(recorder.clone());
-    service.poll();
-    assert!(recorder.shown.borrow().is_empty(), "nothing yet");
-
-    // The app tells them about the note they keep: one change, written by its action as any
-    // other is, and the device that looked before it is shown it.
-    invoke(
-        &own,
-        &packages[0].meta,
-        "tell",
-        vec![Value::resource(&item)],
-    );
-    if doc.take_in(&own.doc) {
-        service.host().store().moved();
-    }
-    service.poll();
-    assert!(
-        service
-            .resources()
-            .iter()
-            .all(|resource| resource.id.as_str() != note)
-    );
-    assert!(service.read(&note).is_none());
-    assert!(service.invoke(&note, "tell", &Map::new()).is_err());
-
-    let shown = recorder.shown.borrow().clone();
-    assert_eq!(shown.len(), 1, "the person it names: {shown:#?}");
-    let place = place(&shown[0]);
-    assert_eq!(
-        place.record,
-        tilolang_tilo::member_document_of("so.tilo.test.own", &person)
-            .expect("their own document of the workspace")
-    );
-    assert_eq!(place.resource, note);
-    assert_eq!(
-        tilo_service::notice::Place::from_activation(&place.activation()),
-        Some(place)
     );
 }
 

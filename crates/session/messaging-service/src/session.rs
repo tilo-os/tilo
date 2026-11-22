@@ -52,7 +52,8 @@ pub enum Call {
 #[derive(Serialize, Deserialize)]
 pub enum Reply {
     Person {
-        accounts: accounts::AccountStore,
+        /// The workspace's accounts record, in its own JSON form.
+        accounts: serde_json::Value,
         /// The contacts record, in its own JSON form.
         directory: serde_json::Value,
     },

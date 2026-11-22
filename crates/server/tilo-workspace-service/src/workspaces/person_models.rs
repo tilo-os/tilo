@@ -811,7 +811,7 @@ mod tests {
     /// The workspace at `root` with the vault it keeps: one for each root, as each workspace
     /// keeps one of its own.
     fn at(root: &Path) -> (ProviderKeys<'static>, &Path) {
-        type Vaults = BTreeMap<PathBuf, &'static Mutex<accounts::vault_items::VaultItems>>;
+        type Vaults = BTreeMap<PathBuf, &'static crate::workspaces::vault::TestStores>;
         static VAULTS: Mutex<Vaults> = Mutex::new(BTreeMap::new());
         let vault = *VAULTS
             .lock()

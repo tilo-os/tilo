@@ -233,7 +233,7 @@ fn pair_device(
     Methods::of_image(Path::new(DECLARATION))?.ensure(Method::Token)?;
     let root = tilo_identity::provisioning::collaboration_identity_root();
     let name = tilo_paths::session::host_name()
-        .filter(|name| tilo_server_protocol::valid_home_peer_label(name));
+        .filter(|name| tilo_server_protocol::valid_device_label(name));
     let options = JoinOptions {
         identity_root: &root,
         label: name.as_deref().unwrap_or("Tilo device"),

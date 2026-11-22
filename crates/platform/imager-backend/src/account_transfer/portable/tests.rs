@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::account_store::Accounts;
 use accounts::{Secret, SecretVault};
 use zeroize::Zeroizing;
 
@@ -57,11 +58,11 @@ tilo_test_env::scenario! {
                 vec![chosen.clone()]
             );
         }
-        let store = accounts::AccountStore::load_in(&target);
-        assert_eq!(store.len(), 2);
-        assert!(store.get(&chosen).is_some());
-        assert!(store.get(&unrelated).is_some());
-        assert!(store.get(&unselected).is_none());
+        let store = Accounts::read(&target).unwrap();
+        assert_eq!(store.all().unwrap().len(), 2);
+        assert!(store.get(chosen.as_str()).unwrap().is_some());
+        assert!(store.get(unrelated.as_str()).unwrap().is_some());
+        assert!(store.get(unselected.as_str()).unwrap().is_none());
         let vault = SecretVault::open_in(&target);
         assert_eq!(
             vault.get(&chosen).unwrap().password,
@@ -143,11 +144,11 @@ tilo_test_env::scenario! {
         let conflicting = connect(&source, "Second selected", "second-private-password");
         let target_connector = Connector::new(target.clone());
         target_connector.import_tilo(&source, &conflicting).unwrap();
-        let mut store = accounts::AccountStore::load_in(&target);
-        let mut existing = store.get(&conflicting).unwrap().clone();
+        let record = Accounts::read(&target).unwrap();
+        let mut existing = record.get(conflicting.as_str()).unwrap().unwrap();
         existing.display_name = "Changed by target owner".into();
-        store.upsert(existing);
-        store.save_in(&target).unwrap();
+        record.keep(&existing).unwrap();
+        record.project(&target).unwrap();
         let before = std::fs::read(accounts::store_path_in(&target)).unwrap();
         let key = SymmetricKey::generate().unwrap();
         let source_connector = Connector::new(source.clone());
@@ -163,16 +164,16 @@ tilo_test_env::scenario! {
             before
         );
         assert!(
-            accounts::AccountStore::load_in(&target)
-                .get(&first)
+            Accounts::read(&target).unwrap()
+                .get(first.as_str()).unwrap()
                 .is_none()
         );
         assert!(SecretVault::open_in(&target).get(&first).is_none());
-        let mut store = accounts::AccountStore::load_in(&source);
-        let mut contributed = store.get(&first).unwrap().clone();
+        let record = Accounts::read(&source).unwrap();
+        let mut contributed = record.get(first.as_str()).unwrap().unwrap();
         contributed.owner = Some("another-member".into());
-        store.upsert(contributed);
-        store.save_in(&source).unwrap();
+        record.keep(&contributed).unwrap();
+        record.project(&source).unwrap();
         assert!(
             source_connector
                 .seal_selected_accounts(&[first], &key, b"setup-1")
@@ -212,7 +213,7 @@ tilo_test_env::scenario! {
                 .unwrap(),
             vec![first.clone(), second]
         );
-        assert_eq!(accounts::AccountStore::load_in(&target).len(), 3);
+        assert_eq!(Accounts::read(&target).unwrap().all().unwrap().len(), 3);
         assert_eq!(
             SecretVault::open_in(&target)
                 .get(&unrelated)

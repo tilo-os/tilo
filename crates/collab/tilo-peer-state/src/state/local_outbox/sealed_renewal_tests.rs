@@ -85,7 +85,6 @@ fn sealed(peer: &StatePeer, key: &SigningKey, at: SystemTime, ciphertext: &[u8])
         cluster_id: peer.workspace_id().into(),
         document_id: RECORD.into(),
         envelope: Box::new(envelope),
-        own: None,
         readers: None,
     }
 }

@@ -802,37 +802,6 @@ fn channel_drafts_reach_members_with_read_access() {
     assert_eq!(shown(&mut bob), "");
 }
 
-#[test]
-fn earlier_channel_drafts_import_with_their_rich_text() {
-    use crate::drafts::{ChatDrafts, DOCUMENT, ImportEffect};
-    let mut app = TestApp::<ChatShell>::for_person(&"ad".repeat(32)).unwrap();
-    let legacy = app.person::<ChatDrafts>().unwrap();
-    let edit = ChatDrafts::paths()
-        .drafts
-        .key("c_general")
-        .perform(&tilo_document::RichTextAction::AppendParagraph {
-            text: "previous draft".into(),
-        })
-        .unwrap();
-    legacy
-        .invoke(&ui::tilo_resource::Invoke::edit(&edit).unwrap())
-        .unwrap();
-    legacy.record().flush();
-    drop(legacy);
-    app.effect_confirmed(&ImportEffect::ImportPreviousDrafts)
-        .unwrap();
-    let stored = app
-        .shared_resource::<ChatDrafts>(ui::apps::CHAT, DOCUMENT)
-        .unwrap();
-    assert_eq!(
-        stored
-            .read(|doc| crate::projection::draft_text(doc, "c_general"))
-            .unwrap()
-            .trim(),
-        "previous draft"
-    );
-}
-
 /// Filing feedback is commenting: a commenter files a report through the
 /// app's own api, a viewer cannot.
 #[test]

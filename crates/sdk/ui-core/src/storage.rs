@@ -298,17 +298,13 @@ impl SettingsDocument {
         store.edit_document(name, origin, edit)
     }
 
-    /// Change both documents (`Holder::Person`'s and `Holder::Device`'s) through `edit`,
-    /// as one change made by `origin`: one step they are undone together with, for a
-    /// choice kept half on each (which model the agent answers with). `edit` refused, the
-    /// write failed, or this process holds only the values of the settings.
+    /// Change the whole document through `edit`, as one change made by `origin`: one step,
+    /// undone together, for a choice spanning sections (which model the agent answers with).
+    /// `edit` refused, the write failed, or this process holds only the values of the settings.
     pub fn edit_documents(
         &self,
         origin: &settings_store::ChangeOrigin,
-        edit: impl Fn(
-            &mut automerge::AutoCommit,
-            settings_store::placement::Holder,
-        ) -> Result<(), String>,
+        edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
     ) -> std::io::Result<()> {
         let source = self
             .source()

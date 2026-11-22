@@ -2,7 +2,7 @@
 //! async and UI threads. Credentials and unrestricted clients never leave here.
 
 use account_credentials::{CredentialStore, OAuthIssuer, OAuthUse};
-use accounts::{AccountId, AccountStore, SecretVault, cloud_types};
+use accounts::{Account, SecretVault, cloud_types};
 
 use crate::discovery::{self, CalendarCollection};
 use crate::net::{self, DavResponse, Depth, Precondition, Url};
@@ -65,11 +65,11 @@ impl Service {
         })
     }
 
-    /// Discover collections with a canonical Google or Nextcloud credential. Google
-    /// requires the calendar grant, not a mail or files grant.
+    /// Discover collections with the credential of `account`, the workspace's Google or
+    /// Nextcloud account. Google requires the calendar grant, not a mail or files grant.
     pub fn discover(
         &self,
-        id: &AccountId,
+        account: &Account,
         server_url: &str,
         username: &str,
         google: bool,
@@ -81,11 +81,13 @@ impl Service {
             self.fixture.as_ref(),
         )?;
         let credentials = if google {
-            self.google_credential(id)?
+            self.google_credential(account)?
         } else {
-            self.require_type(id, cloud_types::NEXTCLOUD)?;
+            require_type(account, cloud_types::NEXTCLOUD)?;
             let vault = SecretVault::open_person(self.credential_store.config_root());
-            let secret = vault.get(id).ok_or("calendar credential is missing")?;
+            let secret = vault
+                .get(&account.id)
+                .ok_or("calendar credential is missing")?;
             let password = account_credentials::password_credential(&secret);
             if password.is_empty() {
                 return Err("calendar credential is unavailable".into());
@@ -100,12 +102,12 @@ impl Service {
         })
     }
 
-    /// Build an opaque origin-bound async client. An account ID selects Google ownership;
-    /// without one, the supplied Basic password is used. Checks precede any refresh or
-    /// credential use. Refresh is blocking.
+    /// Build an opaque origin-bound async client. The workspace's Google account, when one is
+    /// named, signs in with its grant; without one, the supplied Basic password is used. Checks
+    /// precede any refresh or credential use. Refresh is blocking.
     pub fn authorised(
         &self,
-        id: Option<&str>,
+        account: Option<&Account>,
         server_url: &str,
         username: &str,
         password: &str,
@@ -113,13 +115,13 @@ impl Service {
     ) -> Result<AuthorisedClient, String> {
         let binding = Self::binding(
             server_url,
-            id.is_some(),
+            account.is_some(),
             #[cfg(feature = "test-support")]
             self.fixture.as_ref(),
         )?;
         binding.check(target)?;
-        let credentials = match id {
-            Some(id) => self.google_credential(&AccountId::from(id))?,
+        let credentials = match account {
+            Some(account) => self.google_credential(account)?,
             None => Credentials::new(username, password),
         };
         let client =
@@ -143,36 +145,9 @@ impl Service {
         Ok(binding)
     }
 
-    fn require_type(&self, id: &AccountId, expected: &str) -> Result<(), String> {
-        let store = match self.credential_store.config_root() {
-            Some(root) => AccountStore::load_in(root),
-            None => AccountStore::load(),
-        };
-        let account = store
-            .get(id)
-            .ok_or("canonical calendar account is missing")?;
-        if !account.enabled {
-            return Err("calendar account is disabled".into());
-        }
-        let matches = if expected == cloud_types::GOOGLE_DRIVE {
-            account.type_id.as_str() == cloud_types::GOOGLE_DRIVE
-                || (account.type_id.as_str() == "caldav"
-                    && account
-                        .config
-                        .get("calendar_provider")
-                        .and_then(serde_json::Value::as_str)
-                        == Some("google"))
-        } else {
-            account.type_id.as_str() == expected
-        };
-        if !matches {
-            return Err("account type does not support this calendar provider".into());
-        }
-        Ok(())
-    }
-
-    fn google_credential(&self, id: &AccountId) -> Result<Credentials, String> {
-        self.require_type(id, cloud_types::GOOGLE_DRIVE)?;
+    fn google_credential(&self, account: &Account) -> Result<Credentials, String> {
+        require_type(account, cloud_types::GOOGLE_DRIVE)?;
+        let id = &account.id;
         self.require_calendar_scope(id)?;
         let token = self
             .credential_store
@@ -183,7 +158,7 @@ impl Service {
         Ok(Credentials::bearer(token.to_string()))
     }
 
-    fn require_calendar_scope(&self, id: &AccountId) -> Result<(), String> {
+    fn require_calendar_scope(&self, id: &accounts::AccountId) -> Result<(), String> {
         let scopes = self
             .credential_store
             .oauth_scopes(id)
@@ -197,6 +172,29 @@ impl Service {
         }
         Ok(())
     }
+}
+
+/// That `account` is turned on and of a type that reaches the calendar provider `expected`
+/// names: a Google calendar is the grant of a Google Drive account or a Google calendar server.
+fn require_type(account: &Account, expected: &str) -> Result<(), String> {
+    if !account.enabled {
+        return Err("calendar account is disabled".into());
+    }
+    let matches = if expected == cloud_types::GOOGLE_DRIVE {
+        account.type_id.as_str() == cloud_types::GOOGLE_DRIVE
+            || (account.type_id.as_str() == "caldav"
+                && account
+                    .config
+                    .get("calendar_provider")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("google"))
+    } else {
+        account.type_id.as_str() == expected
+    };
+    if !matches {
+        return Err("account type does not support this calendar provider".into());
+    }
+    Ok(())
 }
 
 fn options() -> Options {

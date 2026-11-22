@@ -6,12 +6,22 @@
 use std::path::Path;
 
 use accounts::email::{AccountConfig, AuthMethod, TYPE_ID};
-use accounts::{Account, AccountId, AccountStore};
+use accounts::person::PersonAccounts;
+use accounts::{Account, AccountId};
+use tilo_resource::Invoke;
 
 use super::{ReviewGroup, ReviewItem, ServiceAddress, ServiceError};
 
-/// Keep the account waiting for review, its password in the vault.
-pub fn connect(config_root: &Path, address: &ServiceAddress) -> Result<AccountId, ServiceError> {
+/// Keep the account waiting for review, its password in the vault, and say the edit that keeps
+/// it in the workspace's record.
+///
+/// # Errors
+/// The address is invalid, the account is already there, or the vault could not be written.
+pub fn connect(
+    config_root: &Path,
+    record: &PersonAccounts,
+    address: &ServiceAddress,
+) -> Result<(AccountId, Invoke<PersonAccounts>), ServiceError> {
     let email = address.login.trim().to_ascii_lowercase();
     let Some((_, domain)) = email.split_once('@') else {
         return Err(ServiceError::InvalidAddress);
@@ -45,24 +55,23 @@ pub fn connect(config_root: &Path, address: &ServiceAddress) -> Result<AccountId
     }
     config.import_pending = true;
     let id = AccountId::new(email.clone());
-    let store = AccountStore::load_in(config_root);
-    if let Some(existing) = store.get(&id)
+    if let Some(existing) = record.account(id.as_str())
         && existing.config.get("service_source").is_none()
     {
         return Err(ServiceError::AlreadyThere);
     }
-    let mut account = Account::new(id, TYPE_ID);
+    let mut account = Account::new(id.clone(), TYPE_ID);
     account.display_name = email;
     account.config = config
         .to_value()
         .map_err(|_| ServiceError::InvalidAddress)?;
     account.config["service_source"] = serde_json::Value::Bool(true);
-    crate::vault::persist(
+    crate::vault::persist::<ServiceError>(
         config_root,
-        || Ok(AccountStore::load_in(config_root)),
-        account,
+        &account,
         accounts::Secret::password(address.secret.to_string()),
-    )
+    )?;
+    Ok((id, PersonAccounts::saving(&account)))
 }
 
 /// The account itself, as the one thing this source brings.
@@ -89,15 +98,13 @@ pub fn review(account: &Account) -> (String, Vec<ReviewGroup>) {
 }
 
 /// Hand the reviewed account to Mail: it stops waiting and signs in with its vaulted password.
-pub fn publish(config_root: &Path, account: &str) -> Result<(), String> {
-    let mut store = AccountStore::load_in(config_root);
-    let mut stored = store
-        .get(&AccountId::new(account))
-        .cloned()
+///
+/// # Errors
+/// The record no longer holds the account.
+pub fn publish(record: &PersonAccounts, account: &str) -> Result<Invoke<PersonAccounts>, String> {
+    let mut stored = record
+        .account(account)
         .ok_or_else(|| "the mail account is gone".to_owned())?;
     stored.config["import_pending"] = serde_json::Value::Bool(false);
-    store.upsert(stored);
-    store
-        .save_in(config_root)
-        .map_err(|error| error.to_string())
+    Ok(PersonAccounts::saving(&stored))
 }

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
+use accounts::{Account, AccountId, Secret, SecretVault};
 
 /// The vault or the account store could not be written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,27 +48,17 @@ pub fn seal(root: &Path, id: &AccountId, secret: &Secret) -> Result<(), VaultErr
     vault.try_save().map_err(|_| VaultError::Storage)
 }
 
-/// Seal `secret` in the vault, then publish `account` to the store `load_store`
-/// reads. The reader runs only after the secret is protected by zeroizing
-/// ownership, so a failure to read the store leaves no secret behind.
+/// Seal `secret` in the vault for `account`, saying its id. The account is the workspace's
+/// record's from then on: the caller keeps it there, so a crash between the two leaves a sealed
+/// orphan, never a plaintext credential or an apparently connected account without its secret.
 ///
 /// # Errors
-/// The store could not be read (`E`), or the vault or store could not be
-/// written (`E: From<VaultError>`).
-pub fn persist<E>(
-    root: &Path,
-    mut load_store: impl FnMut() -> Result<AccountStore, E>,
-    account: Account,
-    secret: Secret,
-) -> Result<AccountId, E>
+/// The vault could not be read or written (`E: From<VaultError>`).
+pub fn persist<E>(root: &Path, account: &Account, secret: Secret) -> Result<AccountId, E>
 where
     E: From<VaultError>,
 {
     let secret = PrivateSecret(secret);
-    let mut store = load_store()?;
     seal(root, &account.id, &secret.0)?;
-    let id = account.id.clone();
-    store.upsert(account);
-    store.save_in(root).map_err(|_| VaultError::Storage)?;
-    Ok(id)
+    Ok(account.id.clone())
 }

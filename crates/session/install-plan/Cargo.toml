@@ -10,7 +10,6 @@ description = "An install plan for a machine at another place: the choices it ma
 install-profile-model = { path = "../install-profile-model" }
 tilo-device-identity = { path = "../../collab/tilo-device-identity" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 tilo-files = { path = "../../platform/tilo-files" }

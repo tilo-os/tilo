@@ -402,10 +402,6 @@ async fn register_subscriber(
     if let Some(mailbox) = presence {
         wr.route_presence(device, &tx, mailbox);
     }
-    // A device is its person's for good: what a write to that person's own
-    // record is queued for while the device is away.
-    wr.store
-        .remember_person(device, source.peer.user_public_key);
     wr.set_state_session(
         &device,
         &tx,

@@ -88,6 +88,21 @@ fn put(
     let service: Arc<dyn BrowserServiceSessionServices> = service.clone();
     delegate_item_use(Some(&service), &context(app, live.clone()), bytes)
 }
+/// `bytes` from `app`'s connection to `services`, answered as the connection's dispatch answers
+/// it: at once, or once the service answered what it answers later. Every stand-in here
+/// answers without waiting.
+fn dispatch(
+    services: &ProcessServices,
+    app: &str,
+    live: Arc<AtomicBool>,
+    bytes: &[u8],
+) -> Result<zeroize::Zeroizing<Vec<u8>>, BrokerError> {
+    let context = context(app, live);
+    match delegate_item_use(services.browser_service_sessions.as_ref(), &context, bytes) {
+        Some(answer) => now(&mut answer?).expect("a stand-in answers without waiting"),
+        None => delegate_browser_service_session_command(services, &context, bytes),
+    }
+}
 /// What `answer` is now, without waiting for it: `None` while nobody answered.
 fn now(
     answer: &mut Answer<zeroize::Zeroizing<Vec<u8>>>,
@@ -115,11 +130,20 @@ impl BrowserServiceSessionServices for Service {
         _: &BrowserServiceSessionRequestContext,
         _: BrowserServiceSessionCommand,
     ) -> Result<BrowserServiceSessionReply, String> {
+        Err("a website session is never answered on the dispatch".into())
+    }
+    fn answered_later(
+        &self,
+        _: &BrowserServiceSessionRequestContext,
+        _: BrowserServiceSessionCommand,
+    ) -> ItemAnswering {
         self.calls.fetch_add(1, Ordering::AcqRel);
         if self.revoke {
             self.live.store(false, Ordering::Release);
         }
-        Ok(BrowserServiceSessionReply::List { sessions: vec![] })
+        Box::pin(std::future::ready(Ok(BrowserServiceSessionReply::List {
+            sessions: vec![],
+        })))
     }
     fn disconnect(&self, _: u64) {}
 }
@@ -178,16 +202,25 @@ impl BrowserServiceSessionServices for AdminService {
     fn command(
         &self,
         _: &BrowserServiceSessionRequestContext,
-        command: BrowserServiceSessionCommand,
+        _: BrowserServiceSessionCommand,
     ) -> Result<BrowserServiceSessionReply, String> {
+        Err("a website session is never answered on the dispatch".into())
+    }
+    fn answered_later(
+        &self,
+        _: &BrowserServiceSessionRequestContext,
+        command: BrowserServiceSessionCommand,
+    ) -> ItemAnswering {
         let BrowserServiceSessionCommand::Forget { id, setup_binding } = command else {
-            return Err("Expected Forget".into());
+            return Box::pin(std::future::ready(Err("Expected Forget".into())));
         };
         self.calls.fetch_add(1, Ordering::AcqRel);
         if self.revoke {
             self.admin.store(false, Ordering::Release);
         }
-        Ok(BrowserServiceSessionReply::Forgotten { id, setup_binding })
+        Box::pin(std::future::ready(Ok(
+            BrowserServiceSessionReply::Forgotten { id, setup_binding },
+        )))
     }
     fn disconnect(&self, _: u64) {}
 }
@@ -216,9 +249,10 @@ tilo_test_env::scenario! {
                 browser_service_sessions: Some(service.clone()),
                 ..Default::default()
             };
-            let result = delegate_browser_service_session_command(
+            let result = dispatch(
                 &services,
-                &context("so.tilo.browser", live.clone()),
+                "so.tilo.browser",
+                live.clone(),
                 &command.encode().unwrap(),
             );
             assert_eq!(result.is_ok(), success);
@@ -251,14 +285,7 @@ tilo_test_env::scenario! {
         }
         .encode()
         .unwrap();
-        assert!(
-            delegate_browser_service_session_command(
-                &services,
-                &context("so.tilo.browser", live),
-                &command,
-            )
-            .is_err()
-        );
+        assert!(dispatch(&services, "so.tilo.browser", live, &command).is_err());
         assert_eq!(service.calls.load(Ordering::Acquire), 0);
     }
 
@@ -275,21 +302,9 @@ tilo_test_env::scenario! {
             ..Default::default()
         };
         let command = BrowserServiceSessionCommand::List {}.encode().unwrap();
-        assert!(
-            delegate_browser_service_session_command(
-                &services,
-                &context("so.tilo.files", live.clone()),
-                &command
-            )
-            .is_err()
-        );
+        assert!(dispatch(&services, "so.tilo.files", live.clone(), &command).is_err());
         assert_eq!(service.calls.load(Ordering::Acquire), 0);
-        let reply = delegate_browser_service_session_command(
-            &services,
-            &context("so.tilo.browser", live.clone()),
-            &command,
-        )
-        .unwrap();
+        let reply = dispatch(&services, "so.tilo.browser", live.clone(), &command).unwrap();
         assert!(
             BrowserServiceSessionReply::decode(&reply)
                 .unwrap()
@@ -297,9 +312,10 @@ tilo_test_env::scenario! {
         );
         assert_eq!(service.calls.load(Ordering::Acquire), 1);
         assert!(
-            delegate_browser_service_session_command(
+            dispatch(
                 &services,
-                &context("so.tilo.browser", live.clone()),
+                "so.tilo.browser",
+                live.clone(),
                 br#"{"kind":"list","person":"foreign"}"#
             )
             .is_err()
@@ -313,18 +329,13 @@ tilo_test_env::scenario! {
             })),
             ..Default::default()
         };
-        let error = delegate_browser_service_session_command(
-            &services,
-            &context("so.tilo.browser", live),
-            &command,
-        )
-        .unwrap_err();
+        let error = dispatch(&services, "so.tilo.browser", live, &command).unwrap_err();
         assert!(
             !error
                 .to_string()
                 .contains("synthetic-private-provider-error")
         );
-        assert!(error.to_string().contains("request refused"));
+        assert!(error.to_string().contains("access ended"));
     }
 
     phase an_items_use_is_waited_for_off_the_dispatch_and_answered_with_its_text_or_its_reason;
@@ -350,10 +361,9 @@ tilo_test_env::scenario! {
         };
         let live = Arc::new(AtomicBool::new(true));
 
-        // Any other command is no item's use: it is answered at once, as it always was.
+        // Whether the session lends items, or what is no command, is answered at once.
         let stood_in = items();
         for other in [
-            BrowserServiceSessionCommand::List {}.encode().unwrap().to_vec(),
             BrowserServiceSessionCommand::LendsItems {}.encode().unwrap().to_vec(),
             b"not a command".to_vec(),
         ] {

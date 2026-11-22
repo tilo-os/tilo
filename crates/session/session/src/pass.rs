@@ -699,10 +699,12 @@ impl Session {
             .as_ref()
             .and_then(|wire| wire.hosting.as_ref());
         self.shared.follow_records(hosted);
-        // The person's settings follow them between their devices in their own store: what they set
-        // here is written there, and what they set there reaches the document this session reads.
-        if let Some(personal) = self.shared.sync.as_ref().and_then(|sync| sync.personal()) {
-            self.shared.settings.sync(personal.sync());
+        // The person's settings follow them between their devices in the workspace whose only
+        // member is them: what they set here is written there first, and what they set there
+        // reaches the document this session reads.
+        if let Some(engine) = &self.shared.engine {
+            let person = engine.identity().device_cert.user_public_key;
+            self.shared.settings.sync(&self.shared.records, &person);
         }
         // What was sent since the last look, by a box, an agent or a script.
         self.shared.deliver_sends();

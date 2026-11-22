@@ -203,7 +203,6 @@ impl Page<'_> {
                     cluster_id: self.workspace.clone(),
                     document_id: DESKTOP_DOCUMENT.into(),
                     envelope: Box::new(op),
-                    own: None,
                     readers: None,
                 }
             })

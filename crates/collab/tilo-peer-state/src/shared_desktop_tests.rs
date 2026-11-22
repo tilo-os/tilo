@@ -207,7 +207,6 @@ fn write_of(
         cluster_id: WORKSPACE.into(),
         document_id: record.into(),
         envelope: Box::new(envelope),
-        own: None,
         readers: None,
     }
 }
@@ -217,7 +216,8 @@ tilo_test_env::scenario! {
 
     phase a_view_of_the_layout_is_its_persons_to_write;
     // A person's view of the workspace's layout is theirs to write: another member reads it and may
-    // not write it, whatever the workspace lets them do to the layout itself.
+    // not write it, whatever the workspace lets them do to the layout itself. The workspace's
+    // policy says so, by a grant it gives each of its people on their own view.
     {
         use tilo_desktop_model::person_view::{PersonView, resource_of};
 
@@ -232,11 +232,24 @@ tilo_test_env::scenario! {
             view.write(doc).unwrap();
         });
         let refused = receive(&mut peer, &guest, intrudes).unwrap_err();
-        assert!(refused.contains("may not write"), "{refused}");
+        assert!(refused.contains("document change forbidden"), "{refused}");
         assert!(
             peer.document(DESKTOP_APP, &theirs).is_none(),
             "nothing of the refused write is taken in"
         );
+
+        let own = resource_of(&person);
+        let looks = write_of(&peer, &key, &person, 1, &own, |doc| {
+            view.write(doc).unwrap();
+        });
+        let taken = peer
+            .receive_from(
+                crate::TransportOrigin::ServerDelta(guest.device_public_key),
+                looks,
+                now(),
+            )
+            .expect("the guest writes their own view");
+        assert_eq!(taken.rejected, 0, "the guest's own view is theirs to write");
     }
 
     phase an_editor_closes_any_window_but_renames_no_strip_someone_else_made;

@@ -59,14 +59,14 @@ pub trait WorkspaceApi {
     ///
     /// # Errors
     /// The record refused it.
-    fn decide(&mut self, decision: moderation::Decide) -> Result<(), String>;
+    fn decide(&mut self, decision: moderation::DecideReports) -> Result<(), String>;
 }
 
 /// What one look at a person did.
 #[derive(Clone, Debug)]
 pub struct Enforced {
     /// The decision as written to the record.
-    pub decision: moderation::Decide,
+    pub decision: moderation::DecideReports,
     /// Takings-back that failed, with why; a decision is still recorded.
     pub failures: Vec<String>,
 }
@@ -226,7 +226,15 @@ impl<J: Judge> ModerationAgent<J> {
         if let Err(why) = governed {
             // Out of the agent's reach (a Moderator, the Owner): record what
             // the model thought, enforce nothing, and leave it to people.
-            reasoning = format!("{reasoning} Not enforced: {why}.");
+            let refusal = format!(" Not enforced: {why}.");
+            let limit = crate::model::MAX_REASONING_CHARS;
+            let room = limit.saturating_sub(refusal.chars().count());
+            reasoning = reasoning
+                .chars()
+                .take(room)
+                .chain(refusal.chars())
+                .take(limit)
+                .collect();
             outcome = Outcome::NoAction;
             until_ms = None;
         }
@@ -235,7 +243,7 @@ impl<J: Judge> ModerationAgent<J> {
         } else {
             Vec::new()
         };
-        let decision = moderation::Decide {
+        let decision = moderation::DecideReports {
             id,
             person: person.clone(),
             reports,

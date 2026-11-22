@@ -132,7 +132,7 @@ pub fn new_id() -> String {
 ///
 /// This computer holds no identity or device key, has no certificate that may
 /// admit a device, or cannot say what time it is.
-pub fn mint(system: &IdentityPaths, home_peers: &Path) -> Result<(String, Token), String> {
+pub fn mint(system: &IdentityPaths) -> Result<(String, Token), String> {
     let user = read_public_key(&system.user_pubkey)
         .map_err(|_| "this computer holds no identity; start `tilo login` first".to_owned())?;
     let device = load_device_key(system)
@@ -158,7 +158,7 @@ pub fn mint(system: &IdentityPaths, home_peers: &Path) -> Result<(String, Token)
         now_ns,
         expires_at_ns,
         nonce,
-        dial_peers(system, home_peers, user),
+        dial_peers(system),
         &device,
     )
     .map_err(|error| format!("cannot mint the machine's token: {error}"))?;
@@ -173,53 +173,21 @@ pub fn mint(system: &IdentityPaths, home_peers: &Path) -> Result<(String, Token)
     ))
 }
 
-/// The person's devices that answer enrollments, as a token names them: each
-/// device's enrollment endpoint ([`enrollment_endpoint`]), which its session
-/// serves while it is up, and the relay that reaches it. A session's own
-/// endpoint answers devices, not enrollments, so a token never names that.
-///
-/// This device is named first: the session on the computer that made the plan
-/// answers the machine even when nothing else of the person's is up. Then each
-/// of their devices that may admit one, as the home-peer registry knows them.
+/// The devices that answer this plan's enrollment, as a token names them:
+/// this device's enrollment endpoint ([`enrollment_endpoint`]), which its
+/// session serves while it is up, and the relay that reaches it. A session's
+/// own endpoint answers devices, not enrollments, so a token never names that.
+/// Only a device that may admit another answers one, and the person's servers
+/// may not, so the device that made the plan is the one named.
 #[must_use]
-pub fn dial_peers(system: &IdentityPaths, home_peers: &Path, user: [u8; 32]) -> Vec<Dial> {
-    let mut dials = Vec::new();
-    if let Ok(device) = load_device_key(system) {
-        dials.push(Dial {
+pub fn dial_peers(system: &IdentityPaths) -> Vec<Dial> {
+    load_device_key(system)
+        .map(|device| Dial {
             endpoint: enrollment_endpoint(&device.verifying_key().to_bytes()),
             relay_url: own_relay(),
-        });
-    }
-    let Ok(peers) = tilo_server_protocol::read_home_peers(home_peers) else {
-        return dials;
-    };
-    for peer in peers {
-        if peer.user_public_key != hex::encode(user) {
-            continue;
-        }
-        let Some(cert) = peer.device_cert else {
-            continue;
-        };
-        if !cert.capabilities.can_admit_devices {
-            continue;
-        }
-        let Some(endpoint) = peer.server_endpoint else {
-            continue;
-        };
-        let relay_url = endpoint
-            .relay_urls()
-            .next()
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        let dial = Dial {
-            endpoint: enrollment_endpoint(&cert.device_public_key),
-            relay_url,
-        };
-        if !dials.contains(&dial) {
-            dials.push(dial);
-        }
-    }
-    dials
+        })
+        .into_iter()
+        .collect()
 }
 
 /// The relay this device's endpoints are reached through, empty when it is
@@ -437,8 +405,7 @@ mod tests {
         )
         .unwrap();
 
-        let home_peers = tilo_server_protocol::home_peer_registry_path(root.path());
-        let (encoded, _) = mint(&paths, &home_peers).unwrap();
+        let (encoded, _) = mint(&paths).unwrap();
         let token = tilo_user_identity::decode_enrollment_token(&encoded).unwrap();
         assert!(
             token.dial.iter().any(

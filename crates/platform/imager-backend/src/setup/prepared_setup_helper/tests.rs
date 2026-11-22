@@ -127,8 +127,10 @@ fn headless_entry_authenticates_imports_and_retries_without_remint_or_secret_res
             key
         );
         assert!(
-            accounts::AccountStore::load_in(&root.join("tilo"))
-                .get(&id)
+            crate::account_store::Accounts::read(&root.join("tilo"))
+                .unwrap()
+                .get(id.as_str())
+                .unwrap()
                 .is_some()
         );
         assert!(!root.join("identities/active").exists());
@@ -368,8 +370,10 @@ fn authenticated_device_label_survives_actual_identity_and_account_import() {
         key
     );
     assert!(
-        accounts::AccountStore::load_in(&root.join("tilo"))
-            .get(&id)
+        crate::account_store::Accounts::read(&root.join("tilo"))
+            .unwrap()
+            .get(id.as_str())
+            .unwrap()
             .is_some()
     );
     assert_eq!(fs::read(&package).unwrap(), original_package);

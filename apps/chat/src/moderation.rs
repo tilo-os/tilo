@@ -52,6 +52,35 @@ pub(crate) fn ban_request(workspace: &str, person: &str) -> InvokeRequest {
 }
 
 impl ChatApp {
+    pub(crate) fn file_report(&self, report: &ui::tilo_resource::Invoke<chat_model::Moderation>) {
+        let refused = self
+            .dispatch
+            .as_ref()
+            .map(ui::framework::Dispatcher::refused);
+        let action = report.id.to_owned();
+        let finish = move |result: Result<(), ui::tilo_actions::ActionError>| {
+            if let (Err(error), Some(refused)) = (result, refused) {
+                refused.set(Some(ui::framework::Refused {
+                    action,
+                    item: None,
+                    reason: error.to_string(),
+                    by_workspace: false,
+                }));
+            }
+        };
+        if let Some(record) = self
+            .moderation_record
+            .as_ref()
+            .and_then(|opener| opener.open(chat_model::MODERATION_DOCUMENT))
+        {
+            record.invoke_then(report, finish);
+        } else {
+            finish(Err(ui::tilo_actions::ActionError::Refused(crate::i18n::t(
+                "chat-moderation-record-unavailable",
+            ))));
+        }
+    }
+
     pub(crate) fn ban_author(&mut self, message: &str) {
         let Some(author) = self.message(message).map(|m| m.author.clone()) else {
             return;

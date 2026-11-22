@@ -292,12 +292,7 @@ fn route_granted(
 /// The document action `spec` carried out on the record `record`.
 pub(crate) fn route_spec(spec: tilo_actions::ActionSpec, record: &str) -> tilo_actions::ActionSpec {
     let _phase = tilo_resource::profiling::Phase::start("app.route_spec");
-    let mut spec = route_operation(spec, RESOURCE_ACTION_TYPE, record);
-    // The workspace's roles do not reach a record of the person's own: the host
-    // lets only its person change it. It keeps its kind, so a change Undo
-    // takes back still runs at once and offers Undo.
-    spec.type_mut().contract.set_own_resource();
-    spec
+    route_operation(spec, RESOURCE_ACTION_TYPE, record)
 }
 
 /// The document action `spec` carried out as the operation `operation` on
@@ -799,16 +794,16 @@ impl<'a> Resources<'a> {
         self
     }
 
-    /// Declare a fixture from the previous storage model.
-    #[cfg(feature = "test-support")]
-    pub fn person<P: Resource>(&mut self) -> &mut Self {
+    /// Declare the app's record of `P` in the person's profile
+    /// ([`ResourceEnv::profile_resource`](super::ResourceEnv::profile_resource)).
+    pub fn profile_resource<P: Resource>(&mut self) -> &mut Self {
         let Some(storage) = self.storage else {
             // Declared, not opened: a host that reads the record without the
             // window ([`super::resource_index`]) reads it by its kind.
             self.chains.push(tilo_resource::ResourceKind::of::<P>());
             return self;
         };
-        let _ = storage.person::<P>();
+        let _ = storage.profile_resource::<P>();
         self
     }
 

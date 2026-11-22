@@ -46,8 +46,8 @@
 //!
 //! A record the host cannot open yet — its workspace's channels hand it the
 //! keys after it joins them — is read again in a moment, further apart each
-//! time. A person's own record ([`collab_types::OwnResource`]) is theirs: the
-//! host keeps its ciphertext and never reads it. Two records are left to the
+//! time. A person's private record is theirs: the host keeps its ciphertext and
+//! never reads it. Two records are left to the
 //! keepers that own them: the shared desktop, whose layout names no content
 //! and is written with every window moved, and Chat's, whose members' files
 //! are kept within a quota ([`crate::workspace_bots::attachments`]).
@@ -250,7 +250,7 @@ async fn counted(
                 // Its keys reach this host as it is let into the resource's
                 // channel: until they do, what it names is not known.
                 if count == (Count::LackedOpening { waiting: true })
-                    && !workspaces.own_record(workspace, &app, &record).await
+                    && !tilo_action_policy::roles::is_private_record(&app, &record)
                     && workspaces.waits_for_keys(workspace, &app, &record).await
                 {
                     blobs = blobs.saturating_add(1);
@@ -564,8 +564,8 @@ impl KeptContent {
             }
             Err(error) => {
                 tracing::debug!(%workspace, %app, %record, %error, "a governed workspace's record is not readable yet");
-                if self.workspaces.own_record(workspace, app, record).await {
-                    // A person's own record is theirs: never asked to open.
+                if tilo_action_policy::roles::is_private_record(app, record) {
+                    // A record the policy keeps for one person alone: never asked to open.
                     self.state.lock_recover().reopened.remove(route);
                     return self.count(route, 0).await;
                 }

@@ -1,7 +1,7 @@
 //! What a person's agents spent today on this host, counted as each answer
 //! arrives.
 //!
-//! A keeper bounds what an agent may spend in a day. Every model call the
+//! A workspace bounds what an agent may spend in a day. Every model call the
 //! host makes for that agent goes through one entry, so the day is counted
 //! here, under one lock: of dozens of calls at once each adds what it cost
 //! and none is lost, and a call that starts once the limit is reached is
@@ -18,7 +18,7 @@ use tilo_lock::MutexRecover as _;
 /// The file of a person's store their agents' days are kept in.
 const FILE: &str = "model-spend.json";
 
-/// Whose day a call spends: an agent in a workspace, and the limit its keeper
+/// Whose day a call spends: an agent in a workspace, and the limit the workspace
 /// set it. A piece of an agent's work that its person bounded on its own (an
 /// event, a task) is a spender too, under an id no agent has, so the same
 /// call counts on the agent's day and on that work's.

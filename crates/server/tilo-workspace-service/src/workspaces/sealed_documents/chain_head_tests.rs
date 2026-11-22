@@ -99,7 +99,6 @@ async fn open_head(
         .send(crate::Envelope::OpenDocument {
             workspace_id,
             channel: head,
-            own: None,
         })
         .unwrap();
     tilo_test_env::within("the host answers the chain's head", async {
@@ -226,7 +225,6 @@ async fn a_chain_with_no_part_answers_its_head_with_nothing() {
         .send(crate::Envelope::OpenDocument {
             workspace_id: lounge.workspace_id,
             channel: head,
-            own: None,
         })
         .unwrap();
     let frames = tilo_test_env::within("the host answers the chain's head", async {

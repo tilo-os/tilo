@@ -2511,7 +2511,6 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
     page.send(crate::Envelope::OpenDocument {
         workspace_id,
         channel,
-        own: None,
     })
     .unwrap();
     let frames = tilo_test_env::within("the server answers the page's ask", async {
@@ -2544,7 +2543,6 @@ async fn opened_frames(page: &crate::ServerClient, workspace_id: WorkspaceId, re
     page.send(crate::Envelope::OpenDocument {
         workspace_id,
         channel,
-        own: None,
     })
     .unwrap();
     tilo_test_env::within("the server answers the page's ask", async {

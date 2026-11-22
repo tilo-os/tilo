@@ -839,10 +839,7 @@ impl Workspaces {
             .draft_resource_document(candidate, device, app, write)
             .await?;
         let CommitOperation::Document {
-            envelope,
-            own,
-            readers,
-            ..
+            envelope, readers, ..
         } = &request.operation
         else {
             return Err("a resource write must name its document".into());
@@ -853,7 +850,6 @@ impl Workspaces {
             cluster_id: governed.workspace().to_owned(),
             document_id: document.clone(),
             envelope: envelope.clone(),
-            own: own.clone(),
             readers: readers.clone(),
         };
         let device_keys = governed

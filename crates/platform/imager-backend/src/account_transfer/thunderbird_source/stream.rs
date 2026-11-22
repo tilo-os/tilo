@@ -9,7 +9,7 @@ use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use accounts::AccountStore;
+use crate::account_store::Accounts;
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use uuid::Uuid;
@@ -126,8 +126,8 @@ fn import_with(
         .map_err(|_| invalid("The source profile changed since it was reviewed"))?;
     let root =
         target_root(target_home).map_err(|_| storage("The target account store is unavailable"))?;
-    let mut store = super::super::connect::load_store(&root)
-        .map_err(|_| storage("The target account store is unavailable"))?;
+    let accounts =
+        Accounts::read(&root).map_err(|_| storage("The target account store is unavailable"))?;
     let cache = ensure_dir(target_home, &[".cache", MAIL_APP, "mail"])
         .map_err(|_| storage("The target Mail cache is unavailable"))?;
     let retained = ensure_dir(target_home, &RETAINED)
@@ -154,7 +154,7 @@ fn import_with(
             continue;
         };
         check_cancel(cancel)?;
-        let imported = import.account(account, selected, &mut store, progress)?;
+        let imported = import.account(account, selected, &accounts, progress)?;
         receipt.accounts.push(imported);
     }
     retain_sidecars(
@@ -169,8 +169,8 @@ fn import_with(
         .root
         .validate()
         .map_err(|_| invalid("The source profile changed while its mail was imported"))?;
-    store
-        .save_in(&root)
+    accounts
+        .project(&root)
         .map_err(|_| storage("The target account store could not be saved"))?;
     Ok((receipt, import.report))
 }
@@ -323,10 +323,10 @@ impl Import<'_> {
         &mut self,
         account: &ReviewedAccount,
         selected: &ThunderbirdAccountSelection,
-        store: &mut AccountStore,
+        accounts: &Accounts,
         progress: &mut dyn FnMut(u64),
     ) -> io::Result<ThunderbirdAccountReceipt> {
-        let (id, created) = publish_account(store, &account.inventory, &account.metadata)
+        let (id, created) = publish_account(accounts, &account.inventory, &account.metadata)
             .map_err(|_| storage("A selected mail account could not be published"))?;
         let stem = file_stem(id.as_str());
         let files = self.cache.join(format!("{stem}.files"));

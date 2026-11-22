@@ -4,8 +4,9 @@
 //! The plan is the machine's entry in the workspace's document
 //! ([`crate::workspaces::servers`]), so every one of the person's devices reads
 //! what it waits for and the installer's window shows the same list the
-//! command prints. The host makes the workspace when the first machine is
-//! planned; no server ever makes it ([`servers::founded`]).
+//! command prints. A machine is planned only on a device that holds the
+//! workspace: the device that made the person's root founded it, and every
+//! later device was taken in.
 //!
 //! The machine's token is the one thing that stays on the device that made it,
 //! in a file only its account reads: the plan names it by its nonce alone.
@@ -35,13 +36,14 @@ pub(super) async fn invoke(
         ServiceOperation::ShowMachine => {
             answer(&shown(workspaces, args.required_text("plan")?).await?)
         }
+        ServiceOperation::ListServers => answer(&person_servers(workspaces).await?),
         ServiceOperation::AdmitMachine => Box::pin(admit(workspaces, args)).await,
         _ => Err(ActionCallError::UnknownAction),
     }
 }
 
-/// Plan the machine `args` describes in the person's Servers workspace,
-/// making that workspace when this device holds none. Answers how the plan
+/// Plan the machine `args` describes in the person's Servers workspace.
+/// Answers how the plan
 /// reaches its machine: what the command prints.
 async fn plan_machine(workspaces: &Workspaces, args: &Args) -> Result<Value, ActionCallError> {
     if !may_admit_devices(workspaces.serving_certificate()) {
@@ -56,9 +58,11 @@ async fn plan_machine(workspaces: &Workspaces, args: &Args) -> Result<Value, Act
         .text("installer_url")?
         .unwrap_or(INSTALLER_URL)
         .to_owned();
-    servers::founded(workspaces)
-        .await
-        .map_err(|error| refused(&error))?;
+    if !crate::workspaces::person_workspace::holds_person_workspace(workspaces).await {
+        return Err(refused(
+            &"your own workspace has not reached this device yet; plan the machine once it has",
+        ));
+    }
     let document: install_profile_model::plan::Plan = serde_json::from_str(&plan)
         .map_err(|_| refused(&"a machine's plan is its own document"))?;
     let id = document.plan.clone();
@@ -125,6 +129,31 @@ async fn waiting(workspaces: &Workspaces) -> Result<Vec<WaitingPlan>, ActionCall
         .map_err(|error| refused(&error))?
         .waiting_plans()
         .map_err(|error| refused(&error))
+}
+
+/// The person's servers in service: each one the document names that is
+/// installed and not retired, with where it is dialled.
+async fn person_servers(
+    workspaces: &Workspaces,
+) -> Result<Vec<tilo_server_protocol::servers::PersonServer>, ActionCallError> {
+    let servers = servers::read(workspaces)
+        .await
+        .map_err(|error| refused(&error))?;
+    Ok(servers
+        .servers
+        .iter()
+        .filter(|(_, server)| !server.retired && !server.plan.planned())
+        .map(
+            |(device, server)| tilo_server_protocol::servers::PersonServer {
+                device: device.as_str().to_owned(),
+                label: server.label.clone(),
+                endpoint: tilo_failure::ignored!(
+                    "an address this build cannot read is no address",
+                    serde_json::from_str(&server.endpoint).ok()
+                ),
+            },
+        )
+        .collect())
 }
 
 /// The planned machine whose plan is `plan`.

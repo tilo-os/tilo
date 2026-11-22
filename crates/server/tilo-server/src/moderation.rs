@@ -1,16 +1,15 @@
 //! The workspace's moderation agent, run on the host as an installed bot over a
 //! confined replica of the record that holds the workspace's reports.
 //!
-//! Nothing here reads or writes around the record: the agent's API
+//! The agent's API
 //! ([`ReplicaApi`]) reads the person's recent changes from the replica's own
 //! history and the histories of the parts its app keeps beside it (a chat's
 //! messages), takes them back with the published `undo` action — the
 //! record's own, or for a part the chain's, naming the part — and records
-//! its decision with the record's `decide-reports`, each invoked
+//! its decision with the moderation record's `decide-reports`, each invoked
 //! through the replica's API as the bot, so the workspace's policy and history
-//! see the bot's steps like anyone's. Restricting and banning are governance,
-//! which a bot never holds: the host enforces those as the workspace's root
-//! through `govern`, held to the workspace's policy.
+//! see the bot's steps like anyone's. Only a person with workspace moderation
+//! authority can enforce a verdict that restricts or bans a member.
 
 use collab_types::document::DocumentId;
 use tilo_action_policy::Change;
@@ -43,27 +42,19 @@ pub fn files_a_report(did: &Did) -> bool {
 
 /// The workspace as the moderation agent reaches it: one record's replica, held
 /// as the installed bot, with the records its app keeps beside it (the
-/// parts of a chat's messages), and the host's governance.
-pub struct ReplicaApi<'a, R: Resource> {
+/// parts of a chat's messages).
+pub struct ReplicaApi<'a> {
     replica: &'a mut Replica,
-    moderation: fn(&R::State) -> &Moderation,
-    govern: &'a mut dyn FnMut(Change) -> Result<(), String>,
+    reports: DocumentId,
     now_ms: i64,
 }
 
-impl<'a, R: Resource> ReplicaApi<'a, R> {
-    /// The API over `replica`, whose state holds the workspace's moderation
-    /// record at `moderation`, enforcing governance through `govern`.
-    pub fn new(
-        replica: &'a mut Replica,
-        moderation: fn(&R::State) -> &Moderation,
-        govern: &'a mut dyn FnMut(Change) -> Result<(), String>,
-        now_ms: i64,
-    ) -> Self {
+impl<'a> ReplicaApi<'a> {
+    /// The API over `replica` and the workspace moderation record it holds beside it.
+    pub fn new(replica: &'a mut Replica, reports: DocumentId, now_ms: i64) -> Self {
         Self {
             replica,
-            moderation,
-            govern,
+            reports,
             now_ms,
         }
     }
@@ -71,9 +62,8 @@ impl<'a, R: Resource> ReplicaApi<'a, R> {
     /// The workspace's moderation record as the replica holds it now.
     #[must_use]
     pub fn moderation(&self) -> Option<Moderation> {
-        let pick = self.moderation;
         self.replica
-            .read(|doc| R::read(doc).ok().map(|state| pick(&state).clone()))
+            .read_resource(&self.reports, |doc| Moderation::read(doc).ok())
             .flatten()
     }
 
@@ -90,6 +80,7 @@ impl<'a, R: Resource> ReplicaApi<'a, R> {
             .into_iter()
             .find(|offered| {
                 offered.address.action == action
+                    && offered.address.resource.as_str() != Moderation::KIND
                     && collab_types::document::chain_of_resource_id(&offered.address.resource)
                         .as_ref()
                         == chain
@@ -139,7 +130,7 @@ impl<'a, R: Resource> ReplicaApi<'a, R> {
     }
 }
 
-impl<R: Resource> WorkspaceApi for ReplicaApi<'_, R> {
+impl WorkspaceApi for ReplicaApi<'_> {
     fn now_ms(&self) -> i64 {
         self.now_ms
     }
@@ -151,11 +142,11 @@ impl<R: Resource> WorkspaceApi for ReplicaApi<'_, R> {
             .replica
             .read(|doc| {
                 let versions = tilo_resource::history::committed_versions(doc);
-                let destructive = R::read(doc)
+                let destructive = chat::Chat::read(doc)
                     .map(|state| {
-                        destructive_verbs(&tilo_resource::resource::publish::<R>(
-                            R::KIND,
-                            R::LABEL,
+                        destructive_verbs(&tilo_resource::resource::publish::<chat::Chat>(
+                            chat::Chat::KIND,
+                            chat::Chat::LABEL,
                             &state,
                         ))
                     })
@@ -202,8 +193,8 @@ impl<R: Resource> WorkspaceApi for ReplicaApi<'_, R> {
         activity
     }
 
-    fn govern(&mut self, change: Change) -> Result<(), String> {
-        (self.govern)(change)
+    fn govern(&mut self, _: Change) -> Result<(), String> {
+        Err("Workspace membership changes require a person with moderation authority".into())
     }
 
     fn invoke(
@@ -241,10 +232,10 @@ impl<R: Resource> WorkspaceApi for ReplicaApi<'_, R> {
 
     fn decide(
         &mut self,
-        decision: tilo_moderation::model::moderation::Decide,
+        decision: tilo_moderation::model::moderation::DecideReports,
     ) -> Result<(), String> {
         let args = serde_json::to_value(decision).map_err(|error| error.to_string())?;
-        let address = self.address("decide-reports", None)?;
+        let address = ActionAddress::new(Moderation::KIND, "decide-reports");
         self.run_action(&address, args, None)
     }
 }

@@ -23,6 +23,10 @@ tilo-servers-set-interface = Set up a network interface
 tilo-servers-release-interface = Stop configuring a network interface
 tilo-servers-report-device-config = Say what its machine applied
 tilo-servers-retire-server = Retire server
+tilo-region = Region and formats
+tilo-region-set-formats = Set date, time and number formats
+tilo-region-choose-zone = Choose a time zone
+tilo-region-browser-zone = Keep the browser's time zone
 tilo-servers-ask-retirement = Ask a server to retire
 # The name a person's own workspace gets when they do not name it, read in
 # their language when they found it.
@@ -43,3 +47,7 @@ model-settings-unreadable = Your model settings could not be read. Try again in 
 model-cannot-take-picture = { $model } does not read pictures. Choose a model that does in Settings.
 model-workspace-refuses = This workspace does not let its content go to { $provider }.
 model-day-limit = { $agent } has used today's { $limit }. Raise its limit to let it go on.
+tilo-devices = Your devices
+tilo-devices-keep-device = Keep a device of the person's
+tilo-devices-keep-fact = Keep what a device says of itself
+tilo-devices-keep-wifi = Keep a Wi-Fi passphrase

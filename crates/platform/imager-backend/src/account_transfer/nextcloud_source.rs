@@ -108,7 +108,8 @@ mod tests {
     use super::super::Inventory;
     use super::*;
     use crate::account_sources::discover_nextcloud as discover;
-    use accounts::{AccountStore, SecretVault};
+    use crate::account_store::Accounts;
+    use accounts::SecretVault;
     use std::{cell::Cell, fs, os::unix::fs::PermissionsExt};
 
     const CONFIG: &str = "[Accounts]\n0\\url=https://cloud.example.test/base\n0\\http_user=ada\n0\\authType=http\n0\\displayName=My files\n";
@@ -189,9 +190,9 @@ mod tests {
                     .unwrap(),
                 id
             );
-            let store = AccountStore::load_in(&fixture.target);
-            let account = store.get(&id).unwrap();
-            assert_eq!(store.len(), 1);
+            let store = Accounts::read(&fixture.target).unwrap();
+            let account = store.get(id.as_str()).unwrap().unwrap();
+            assert_eq!(store.all().unwrap().len(), 1);
             assert_eq!(account.type_id.as_str(), accounts::cloud_types::NEXTCLOUD);
             assert_eq!(account.config["username"], "ada");
             assert_eq!(

@@ -283,9 +283,12 @@ fn assert_restored_grants(app: &mut App, ids: &[String]) {
         .with_widget::<InstallerPreview, _>(|view| view.accounts.prepared_handle().unwrap())
         .unwrap();
     assert_eq!(handle.selected_ids(), ids);
-    let store = ::accounts::AccountStore::load_in(&handle.config_root());
+    let store = imager_backend::account_store::Accounts::read(&handle.config_root()).unwrap();
     let spotify = ::accounts::AccountId::new("music.spotify");
-    assert_eq!(store.get(&spotify).unwrap().display_name, "Spotify");
+    assert_eq!(
+        store.get(spotify.as_str()).unwrap().unwrap().display_name,
+        "Spotify"
+    );
     let secret = ::accounts::SecretVault::open_in(&handle.config_root())
         .get(&spotify)
         .unwrap();
@@ -409,9 +412,10 @@ fn resumed_draft_without_account_checkpoint_requires_review_before_bulk_import()
     let prepared = resumed
         .with_widget::<InstallerPreview, _>(|view| view.accounts.prepared_handle().unwrap())
         .unwrap();
-    let store = ::accounts::AccountStore::load_in(&prepared.config_root());
-    assert_eq!(store.len(), 1);
-    let account = &store.all()[0];
+    let store = imager_backend::account_store::Accounts::read(&prepared.config_root()).unwrap();
+    let all = store.all().unwrap();
+    assert_eq!(all.len(), 1);
+    let account = &all[0];
     assert_eq!(
         account.config["server_url"],
         "https://files.example.test/dav"

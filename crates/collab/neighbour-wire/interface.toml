@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the server session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 59
+version = 60
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -20,7 +20,6 @@ sources = [
     "crates/server/tilo-delivery-protocol/src/transport_v2/delta.rs",
     "crates/server/tilo-delivery-protocol/src/transport_v2/presence.rs",
     "crates/collab/neighbour-wire/src/lib.rs",
-    "crates/collab/collab-types/src/own_resource.rs",
     "crates/collab/neighbour-wire/src/actions.rs",
     "crates/collab/neighbour-wire/src/colorimetry.rs",
     "crates/collab/neighbour-wire/src/hdr_metadata.rs",
@@ -315,7 +314,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::NotAuthorised.workspace_id" = "#0 WorkspaceId"
 "Envelope::OpenDocument" = "#32 struct"
 "Envelope::OpenDocument.channel" = "#1 [u8; 32]"
-"Envelope::OpenDocument.own" = "#2 Option<OwnedGroup>"
 "Envelope::OpenDocument.workspace_id" = "#0 WorkspaceId"
 "Envelope::PeerServerHello" = "#8 struct"
 "Envelope::PeerServerHello.hosted_workspaces" = "#0 Vec<WorkspaceId>"
@@ -499,9 +497,8 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "NeighbourMsg::AppDocument.cluster_id" = "#2 String"
 "NeighbourMsg::AppDocument.document_id" = "#3 String"
 "NeighbourMsg::AppDocument.envelope" = "#4 Box<SignedOp>"
-"NeighbourMsg::AppDocument.own" = "#5 Option<OwnResource>"
 "NeighbourMsg::AppDocument.peer" = "#0 PeerId"
-"NeighbourMsg::AppDocument.readers" = "#6 Option<String>"
+"NeighbourMsg::AppDocument.readers" = "#5 Option<String>"
 "NeighbourMsg::DocumentContentLacks" = "#24 struct"
 "NeighbourMsg::DocumentContentLacks.app_id" = "#2 String"
 "NeighbourMsg::DocumentContentLacks.cluster_id" = "#3 String"
@@ -637,12 +634,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "OpKind::Change" = "#0 unit"
 "OpKind::Compaction" = "#1 unit"
 "OpKind::Redaction" = "#2 unit"
-"OwnResource" = "struct"
-"OwnResource.kind" = "#0 String"
-"OwnResource.owner" = "#1 [u8; 32]"
-"OwnedGroup" = "struct"
-"OwnedGroup.app_id" = "#0 String"
-"OwnedGroup.record" = "#1 OwnResource"
 "PathStep" = "enum external"
 "PathStep::cell" = "#3 tuple(String, String)"
 "PathStep::field" = "#0 tuple(String)"

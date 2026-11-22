@@ -53,11 +53,13 @@ impl ExternalAuthority for Hold {
         if self.revoked.load(Ordering::SeqCst) || current != *requested {
             return Err(SendError::Revoked);
         }
-        let mut accounts = accounts::AccountStore::new();
-        accounts.upsert(accounts::Account::new(
-            "account",
-            service_name(self.owner.service),
-        ));
+        let mut accounts = accounts::person::PersonAccounts::default();
+        accounts
+            .keep(&accounts::Account::new(
+                "account",
+                service_name(self.owner.service),
+            ))
+            .map_err(|_| SendError::Revoked)?;
         let mut directory = tilo_contact_directory::ContactDirectory::default();
         directory
             .project_contact(current.person.clone(), "Fixture".into())

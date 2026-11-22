@@ -55,7 +55,12 @@ struct Setup {
 }
 
 impl Setup {
+    /// [`Self::made`], boxed: the whole of it is too large a future to hold in place.
     async fn new() -> Self {
+        Box::pin(Self::made()).await
+    }
+
+    async fn made() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
@@ -632,7 +637,12 @@ struct Sending {
 }
 
 impl Sending {
+    /// [`Self::made`], boxed: the whole of it is too large a future to hold in place.
     async fn new() -> Self {
+        Box::pin(Self::made()).await
+    }
+
+    async fn made() -> Self {
         let setup = Setup::new().await;
         let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
         setup.workspaces.ask_people(allowing.clone());

@@ -43,8 +43,14 @@ struct StoredProjection {
     foreign: bool,
 }
 
+/// A grant the code defines and a policy gives back when it loads: a built-in role's, or the one
+/// each person holds for their own records.
+fn is_code_grant(grant: &tilo_action_policy::Grant) -> bool {
+    roles::is_role_grant(grant) || roles::is_person_record_grant(grant)
+}
+
 impl From<StoredProjection> for AppActionAuthorityProjection {
-    /// The grants the code defines are the code's, so they are narrowed to
+    /// The grants the code defines ([`is_code_grant`]) are the code's, so they are narrowed to
     /// the app here as [`AppActionAuthorityProjection::project`] narrowed
     /// them: a projection reads back as the projection of the current policy.
     /// Grants given in the workspace stay as written, for
@@ -54,7 +60,7 @@ impl From<StoredProjection> for AppActionAuthorityProjection {
         let app = policy.node().app(&stored.app_id);
         policy
             .grants
-            .retain(|grant| !roles::is_role_grant(grant) || grant.node.overlaps(&app));
+            .retain(|grant| !is_code_grant(grant) || grant.node.overlaps(&app));
         Self {
             schema_version: stored.schema_version,
             workspace: stored.workspace,

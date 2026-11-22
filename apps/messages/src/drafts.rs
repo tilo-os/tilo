@@ -2,28 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use ui::framework::{ResourceOpener, WorkspaceResource};
+use ui::framework::WorkspaceResource;
 use ui::tilo_resource::Refusal;
 
 pub(crate) type DraftRecord = WorkspaceResource<MessageDrafts>;
 
-pub(crate) fn import_previous(
-    opener: &ResourceOpener<MessageDrafts>,
-    conversation: String,
-) -> Result<(), String> {
-    let workspace = opener
-        .open_own()
-        .filter(|record| record.may_read() && record.may("import-previous"))
-        .ok_or("the workspace must grant permission to import drafts")?;
-    if let Some(previous) = opener.legacy_member_state()?
-        && let Some(body) = previous.drafts.get(&conversation)
-    {
-        workspace
-            .invoke(&MessageDrafts::IMPORT_PREVIOUS.with((conversation, body.clone())))
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
 use ui::tilo_resource::{self, Model};
 
 const MAX_DRAFT_CHARS: usize = 16 * 1024;

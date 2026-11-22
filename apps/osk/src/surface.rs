@@ -330,30 +330,6 @@ impl OskSurface {
         if cx.mode().is_live()
             && let Some(learned) = cx.profile_resource::<Learned>()
         {
-            let current = learned.get();
-            if self
-                .preferences
-                .as_ref()
-                .is_some_and(|(settings, _)| settings.get().personalization)
-                && !current.restored_previous
-                && current.is_empty()
-            {
-                let opener = cx.resource_opener::<Learned>(crate::KEYBOARD_APP_ID);
-                let imported = opener.legacy_member_state().and_then(|previous| {
-                    if let Some(previous) = previous.filter(|previous| !previous.is_empty()) {
-                        learned
-                            .invoke(
-                                &Learned::RESTORE_PREVIOUS
-                                    .with(ui::tilo_resource::Model::to_json(&*previous)),
-                            )
-                            .map_err(|error| error.to_string())?;
-                    }
-                    Ok(())
-                });
-                if let Err(error) = imported {
-                    tracing::warn!(%error, "could not restore keyboard learning");
-                }
-            }
             self.keyboard.present_learned(learned.get());
             self.learned = Some((learned.clone(), learned.revision()));
         }

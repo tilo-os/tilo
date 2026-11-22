@@ -66,28 +66,8 @@ impl MachineSteps {
             .as_ref()
             .ok_or("this session keeps no state, so it holds no Servers workspace")?
             .clone();
-        let planning = action == machines::PLAN;
         let action = action.to_owned();
         Ok(crate::landing::off_loop(async move {
-            // The plan is sealed for the devices that take part in the
-            // workspace's group, and this device's keys know only the
-            // workspaces its engine holds. The first plan founds the Servers
-            // workspace as this device founds any of its workspaces: placed
-            // on its own service, which refuses one another device of the
-            // person keeps, and entered by the engine as its founder.
-            #[cfg(target_os = "linux")]
-            if planning {
-                let admin = tilo_server_protocol::servers::person_workspace_id(
-                    &engine.identity().device_cert.user_public_key,
-                );
-                if !engine.is_holder(&admin) {
-                    let workspace = tilo_desktop_model::WorkspaceId::parse(&admin)
-                        .ok_or("the person's Servers workspace has no workspace id")?;
-                    engine.found(workspace, "Servers").await?;
-                }
-            }
-            #[cfg(not(target_os = "linux"))]
-            let _ = planning;
             let asked = engine
                 .ask_own_host(&action, arguments)
                 .ok_or("this session's own workspace service is not open")?;
@@ -102,6 +82,7 @@ fn descriptor(step: &str) -> ActionDescriptor {
         machines::PLAN => ("Plan a machine", OperationKind::Effect),
         machines::LIST => ("List the machines you planned", OperationKind::View),
         machines::SHOW => ("Show a machine you planned", OperationKind::View),
+        machines::SERVERS => ("List your servers", OperationKind::View),
         _ => ("Take a planned machine in", OperationKind::Effect),
     };
     let contract = if kind == OperationKind::View {

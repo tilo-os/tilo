@@ -44,10 +44,10 @@ pub mod auth;
 pub mod certify;
 pub mod compaction;
 pub mod config;
+pub mod devices;
 pub mod directory;
 mod earlier;
 pub mod entering;
-pub mod home_peer;
 pub mod host_voice;
 pub mod hosted;
 pub mod invocation;
@@ -77,10 +77,7 @@ pub use tilo_workspace_join::delegation;
 
 pub use auth::{AuthError, AuthenticatedPeer};
 pub use config::{ConfigError, ServerConfig};
-pub use home_peer::{
-    HomePeerRegistration, checked_home_peers, home_peer_registry_path, personal_device_peer_path,
-    read_home_peers, remember_personal_device, valid_home_peer_label, write_home_peers,
-};
+pub use devices::{personal_device_peer_path, remember_personal_device, valid_device_label};
 pub use mesh::{
     ComputeAccelerator, DeviceKey, DeviceMeshProfile, PowerAvailability, ServerAdvertisement,
     ServiceCapabilities,
@@ -88,7 +85,7 @@ pub use mesh::{
 pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
-pub use transport::{ALPN, DocumentAnswer, Envelope, OwnedGroup};
+pub use transport::{ALPN, DocumentAnswer, Envelope};
 pub use work::{Whose, WorkFrom, WorkKinds, WorkSetting, WorkWhen};
 
 /// Domain-separated secret the server binds, derived from the device secret.

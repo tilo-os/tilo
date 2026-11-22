@@ -23,7 +23,7 @@ struct DeviceEntry<'a> {
     key: String,
     label: String,
     personal: Option<&'a super::PersonalDevice>,
-    peer: Option<&'a tilo_server_protocol::HomePeerRegistration>,
+    peer: Option<&'a tilo_server_protocol::servers::PersonServer>,
     this: bool,
 }
 
@@ -33,9 +33,9 @@ impl Page<'_> {
     fn device_entries(&self) -> Vec<DeviceEntry<'_>> {
         let devices = self.personal_devices.iter().flatten();
         let peer_of = |device: &super::PersonalDevice| {
-            self.home_peers
+            self.servers
                 .iter()
-                .find(|peer| peer.device_node_id.eq_ignore_ascii_case(&device.id))
+                .find(|peer| peer.device.eq_ignore_ascii_case(&device.id))
         };
         let mut entries = Vec::new();
         match devices.clone().find(|device| device.local) {
@@ -65,14 +65,13 @@ impl Page<'_> {
                 this: false,
             });
         }
-        for peer in &self.home_peers {
-            if !entries.iter().any(|entry| {
-                entry
-                    .peer
-                    .is_some_and(|known| known.device_node_id == peer.device_node_id)
-            }) {
+        for peer in &self.servers {
+            if !entries
+                .iter()
+                .any(|entry| entry.peer.is_some_and(|known| known.device == peer.device))
+            {
                 entries.push(DeviceEntry {
-                    key: peer.device_node_id.clone(),
+                    key: peer.device.clone(),
                     label: peer.label.clone(),
                     personal: None,
                     peer: Some(peer),
@@ -191,8 +190,8 @@ impl Page<'_> {
 
     /// A home server's line under its name: how it is doing, and when it
     /// was last seen if it is not answering.
-    fn peer_health(&self, peer: &tilo_server_protocol::HomePeerRegistration) -> String {
-        let device = &peer.device_node_id;
+    fn peer_health(&self, peer: &tilo_server_protocol::servers::PersonServer) -> String {
+        let device = &peer.device;
         let health = self.home_peer_health.get(device).copied();
         match self.home_peer_last_seen.get(device) {
             Some(last_seen) if matches!(health, None | Some(HomePeerHealth::Unreachable)) => {
@@ -334,19 +333,19 @@ impl Page<'_> {
 
     fn home_peer_rows(
         &self,
-        peer: &tilo_server_protocol::HomePeerRegistration,
+        peer: &tilo_server_protocol::servers::PersonServer,
     ) -> Vec<provider_settings_ui::widgets::Item> {
-        let device = peer.device_node_id.clone();
+        let device = peer.device.clone();
         let name = self.bind_on_row(
             &home_server_row(peer),
             EditableLabel::new(&peer.label)
-                .with_id(&peer_key("name", &peer.device_node_id))
+                .with_id(&peer_key("name", &peer.device))
                 .with_accessible_name(t("mesh-name"))
                 .edits_on_click(),
             effect(DeviceMeshEffect::RENAME_HOME_SERVER)
                 .map(move |name: String| (device.clone(), name.trim().to_owned())),
         );
-        let health = self.home_peer_health.get(&peer.device_node_id).copied();
+        let health = self.home_peer_health.get(&peer.device).copied();
         let badge = health.map_or_else(|| t("mesh-badge-checking"), peer_health_badge);
         let detail = health.map_or_else(|| t("mesh-checking"), peer_health_detail);
         let tone = match health {
@@ -406,13 +405,13 @@ impl Page<'_> {
         }
         let confirm = self.bind_row(
             Button::new(
-                &peer_key("remove", &peer.device_node_id),
+                &peer_key("remove", &peer.device),
                 &t("mesh-remove-home-confirm"),
             )
             .role(ButtonRole::Destructive),
             &live,
             DeviceMeshEffect::RemoveHomeServer {
-                device: peer.device_node_id.clone(),
+                device: peer.device.clone(),
             },
         );
         let cancel = self.bind_invocation(

@@ -26,25 +26,19 @@ __all__ = [
     "ContextField",
     "Conversation",
     "CropRef",
-    "Decision",
     "Destination",
     "FeedbackReport",
     "FrameTimings",
     "Hidden",
     "Interaction",
-    "Moderation",
     "Outcome",
-    "Outcome2",
     "Part",
     "ReadMark",
     "RecordingRef",
-    "Report",
     "ResourceRef",
-    "Reverted",
     "ReviewedFeedback",
     "ReviewedSelection",
     "ReviewedText",
-    "Ruling",
     "ScreenshotRef",
     "Span",
     "SpanUnit",
@@ -91,12 +85,18 @@ __all__ = [
     "Withdrawn",
     "Work",
     "WorkUpdate",
+    "Decision",
+    "ModerationOutcome",
+    "Report",
+    "Reverted",
+    "Ruling",
     "Emoji",
     "Example",
     "Skill",
     "Workspace",
     "Messages",
     "Drafts",
+    "Moderation",
     "WorkspaceEmoji",
     "Skills",
     "BeginChatArgs",
@@ -113,10 +113,6 @@ __all__ = [
     "ArchiveChannelArgs",
     "RenameCategoryArgs",
     "DeleteChannelArgs",
-    "ReportMessageArgs",
-    "ReportPersonArgs",
-    "DecideReportsArgs",
-    "OverturnDecisionArgs",
     "MarkReadArgs",
     "KeepSummaryArgs",
     "SubmitFeedbackArgs",
@@ -149,6 +145,10 @@ __all__ = [
     "StreamOutputArgs",
     "StartDraftArgs",
     "ImportPreviousArgs",
+    "ReportMessageArgs",
+    "ReportPersonArgs",
+    "DecideReportsArgs",
+    "OverturnDecisionArgs",
     "AddEmojiArgs",
     "RemoveEmojiArgs",
     "RemoveAnyEmojiArgs",
@@ -186,21 +186,6 @@ class CropRef(TypedDict):
     width: int
     height: int
 
-class Decision(TypedDict):
-    id: str
-    person: str
-    reports: list[str]
-    outcome: Outcome2
-    until_ms: int | None
-    reasoning: str
-    model: str
-    reverted: list[Reverted]
-    by: str
-    at_ms: int
-    overturned_by: str | None
-    overturn_note: str | None
-    overturned_at_ms: int | None
-
 class Destination(TypedDict):
     workspace: str
     provider: str
@@ -227,13 +212,7 @@ class Interaction(TypedDict):
     label: str | None
     outcome: Outcome
 
-class Moderation(TypedDict):
-    reports: list[Entry[Report]]
-    decisions: list[Entry[Decision]]
-
 Outcome = Literal["done", "refused", "failed"]
-
-Outcome2 = Literal["no-action", "restrict", "ban"]
 
 class Part(TypedDict):
     text: str
@@ -253,28 +232,11 @@ class RecordingRef(TypedDict):
     steps: int
     bytes: int
 
-class Report(TypedDict):
-    id: str
-    reporter: str
-    person: str
-    app: str | None
-    record: str | None
-    item: str | None
-    reason: str
-    at_ms: int
-    decision: str | None
-
 class ResourceRef(TypedDict):
     kind: str
     id: str
     label: str
     span: Span | None
-
-class Reverted(TypedDict):
-    app: str
-    record: str
-    run: str
-    changes: int
 
 class ReviewedFeedback(TypedDict):
     text: str
@@ -301,13 +263,6 @@ class ReviewedSelection(TypedDict):
 class ReviewedText(TypedDict):
     kind: TextKind
     parts: list[Part]
-
-class Ruling(TypedDict):
-    outcome: Outcome2
-    until_ms: int | None
-    reasoning: str
-    model: str
-    reverted: list[Reverted]
 
 class ScreenshotRef(TypedDict):
     hash: str
@@ -569,6 +524,47 @@ class WorkUpdate(TypedDict):
     detail: str | None
     answered: Answered | None
 
+class Decision(TypedDict):
+    id: str
+    person: str
+    reports: list[str]
+    outcome: ModerationOutcome
+    until_ms: int | None
+    reasoning: str
+    model: str
+    reverted: list[Reverted]
+    by: str
+    at_ms: int
+    overturned_by: str | None
+    overturn_note: str | None
+    overturned_at_ms: int | None
+
+ModerationOutcome = Literal["no-action", "restrict", "ban"]
+
+class Report(TypedDict):
+    id: str
+    reporter: str
+    person: str
+    app: str | None
+    record: str | None
+    item: str | None
+    reason: str
+    at_ms: int
+    decision: str | None
+
+class Reverted(TypedDict):
+    app: str
+    record: str
+    run: str
+    changes: int
+
+class Ruling(TypedDict):
+    outcome: ModerationOutcome
+    until_ms: int | None
+    reasoning: str
+    model: str
+    reverted: list[Reverted]
+
 class Emoji(TypedDict):
     image: Any
     added_by: str
@@ -675,33 +671,6 @@ DeleteChannelArgs = TypedDict("DeleteChannelArgs", {
     "channel": "str",
 })
 """The arguments of `delete-channel`."""
-
-ReportMessageArgs = TypedDict("ReportMessageArgs", {
-    "message": "str",
-    "author": "Any",
-    "reason": "str",
-})
-"""The arguments of `report-message`."""
-
-ReportPersonArgs = TypedDict("ReportPersonArgs", {
-    "person": "Any",
-    "reason": "str",
-})
-"""The arguments of `report-person`."""
-
-DecideReportsArgs = TypedDict("DecideReportsArgs", {
-    "id": "str",
-    "person": "Any",
-    "reports": "list[str]",
-    "ruling": "Ruling",
-})
-"""The arguments of `decide-reports`."""
-
-OverturnDecisionArgs = TypedDict("OverturnDecisionArgs", {
-    "decision": "str",
-    "note": "str",
-})
-"""The arguments of `overturn-decision`."""
 
 MarkReadArgs = TypedDict("MarkReadArgs", {
     "channel": "str",
@@ -935,6 +904,33 @@ ImportPreviousArgs = TypedDict("ImportPreviousArgs", {
 })
 """The arguments of `import-previous`."""
 
+ReportMessageArgs = TypedDict("ReportMessageArgs", {
+    "message": "str",
+    "author": "Any",
+    "reason": "str",
+})
+"""The arguments of `report-message`."""
+
+ReportPersonArgs = TypedDict("ReportPersonArgs", {
+    "person": "Any",
+    "reason": "str",
+})
+"""The arguments of `report-person`."""
+
+DecideReportsArgs = TypedDict("DecideReportsArgs", {
+    "id": "str",
+    "person": "Any",
+    "reports": "list[str]",
+    "ruling": "Ruling",
+})
+"""The arguments of `decide-reports`."""
+
+OverturnDecisionArgs = TypedDict("OverturnDecisionArgs", {
+    "decision": "str",
+    "note": "str",
+})
+"""The arguments of `overturn-decision`."""
+
 AddEmojiArgs = TypedDict("AddEmojiArgs", {
     "name": "str",
     "image": "str",
@@ -991,7 +987,7 @@ ForgetSkillArgs = TypedDict("ForgetSkillArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@30ee09d42a85747e"
+    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1002,10 +998,6 @@ class Workspace(Resource):
         return self.fields["channels"]
     read: dict[str, dict[str, ReadMark]]
     feedback: list[Entry[FeedbackReport]]
-    @property
-    def moderation(self) -> Moderation:
-        """Read only."""
-        return self.fields["moderation"]
     @property
     def files(self) -> WorkspaceFiles:
         """Read only."""
@@ -1196,57 +1188,6 @@ class Workspace(Resource):
         """Runs `delete-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-channel", items)
 
-    def report_message(self,
-        *,
-        message: str,
-        author: Any,
-        reason: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("report-message", message=message, author=author, reason=reason)
-
-    def report_message_many(self, items: list[ReportMessageArgs]) -> list[dict[str, Any]]:
-        """Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("report-message", items)
-
-    def report_person(self,
-        *,
-        person: Any,
-        reason: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("report-person", person=person, reason=reason)
-
-    def report_person_many(self, items: list[ReportPersonArgs]) -> list[dict[str, Any]]:
-        """Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("report-person", items)
-
-    def decide_reports(self,
-        *,
-        id: str,
-        person: Any,
-        reports: list[str],
-        ruling: Ruling,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("decide-reports", id=id, person=person, reports=reports, ruling=ruling)
-
-    def decide_reports_many(self, items: list[DecideReportsArgs]) -> list[dict[str, Any]]:
-        """Runs `decide-reports` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("decide-reports", items)
-
-    def overturn_decision(self,
-        *,
-        decision: str,
-        note: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("overturn-decision", decision=decision, note=note)
-
-    def overturn_decision_many(self, items: list[OverturnDecisionArgs]) -> list[dict[str, Any]]:
-        """Runs `overturn-decision` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("overturn-decision", items)
-
     def mark_read(self,
         *,
         channel: str,
@@ -1324,12 +1265,12 @@ class Workspace(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"begin_chat", "begin_chat_many", "create_category", "create_category_many", "create_channel", "create_channel_many", "create_channel_with_id", "create_channel_with_id_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many", "arrange_channels", "arrange_channels_many", "set_channel_category", "set_channel_category_many", "rename_channel", "rename_channel_many", "set_channel_topic", "set_channel_topic_many", "archive_channel", "archive_channel_many", "rename_category", "rename_category_many", "delete_channel", "delete_channel_many", "report_message", "report_message_many", "report_person", "report_person_many", "decide_reports", "decide_reports_many", "overturn_decision", "overturn_decision_many", "mark_read", "mark_read_many", "keep_summary", "keep_summary_many", "submit_feedback", "submit_feedback_many", "triage", "triage_many", "export_content", "start_call", "select_input"})
+    __actions__ = frozenset({"begin_chat", "begin_chat_many", "create_category", "create_category_many", "create_channel", "create_channel_many", "create_channel_with_id", "create_channel_with_id_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many", "arrange_channels", "arrange_channels_many", "set_channel_category", "set_channel_category_many", "rename_channel", "rename_channel_many", "set_channel_topic", "set_channel_topic_many", "archive_channel", "archive_channel_many", "rename_category", "rename_category_many", "delete_channel", "delete_channel_many", "mark_read", "mark_read_many", "keep_summary", "keep_summary_many", "submit_feedback", "submit_feedback_many", "triage", "triage_many", "export_content", "start_call", "select_input"})
 
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@30ee09d42a85747e"
+    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1803,7 +1744,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@30ee09d42a85747e"
+    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
     drafts: dict[str, str]
     @property
     def imported(self) -> list[str]:
@@ -1836,9 +1777,77 @@ class Drafts(Resource):
     __actions__ = frozenset({"start_draft", "start_draft_many", "import_previous", "import_previous_many"})
 
 
+class Moderation(Resource):
+    """Moderation — `tilo.moderation`."""
+    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
+    @property
+    def reports(self) -> list[Entry[Report]]:
+        """Read only."""
+        return self.fields["reports"]
+    @property
+    def decisions(self) -> list[Entry[Decision]]:
+        """Read only."""
+        return self.fields["decisions"]
+
+    def report_message(self,
+        *,
+        message: str,
+        author: Any,
+        reason: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("report-message", message=message, author=author, reason=reason)
+
+    def report_message_many(self, items: list[ReportMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("report-message", items)
+
+    def report_person(self,
+        *,
+        person: Any,
+        reason: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("report-person", person=person, reason=reason)
+
+    def report_person_many(self, items: list[ReportPersonArgs]) -> list[dict[str, Any]]:
+        """Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("report-person", items)
+
+    def decide_reports(self,
+        *,
+        id: str,
+        person: Any,
+        reports: list[str],
+        ruling: Ruling,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("decide-reports", id=id, person=person, reports=reports, ruling=ruling)
+
+    def decide_reports_many(self, items: list[DecideReportsArgs]) -> list[dict[str, Any]]:
+        """Runs `decide-reports` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("decide-reports", items)
+
+    def overturn_decision(self,
+        *,
+        decision: str,
+        note: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("overturn-decision", decision=decision, note=note)
+
+    def overturn_decision_many(self, items: list[OverturnDecisionArgs]) -> list[dict[str, Any]]:
+        """Runs `overturn-decision` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("overturn-decision", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"report_message", "report_message_many", "report_person", "report_person_many", "decide_reports", "decide_reports_many", "overturn_decision", "overturn_decision_many"})
+
+
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@30ee09d42a85747e"
+    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -1876,7 +1885,7 @@ class WorkspaceEmoji(Resource):
 
 class Skills(Resource):
     """Workspace Skills — `chat.skills`."""
-    __surface__ = "so.tilo.chat@30ee09d42a85747e"
+    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
     @property
     def skills(self) -> list[Entry[Skill]]:
         """Read only."""

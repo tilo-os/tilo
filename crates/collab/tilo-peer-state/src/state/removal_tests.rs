@@ -195,7 +195,6 @@ fn sealed(
         cluster_id: peer.workspace_id().into(),
         document_id: DOCUMENT.into(),
         envelope: Box::new(envelope),
-        own: None,
         readers: None,
     }
 }

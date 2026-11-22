@@ -22,7 +22,6 @@ use tilo_action_policy::turn::Turn;
 use tilo_app::framework::WorkspaceResource;
 use tilo_app::tilo_workspace_agent::learned::Learned;
 use tilo_broker_core::services::AgentTurn;
-use tilo_peer_state::PersonalSync;
 use tilo_resource::{Id, Resource as _};
 use ui::permissions::{LivePermissions, MemberId, PermissionContext};
 use ui::resource::DocumentId;
@@ -60,8 +59,8 @@ pub(crate) struct Conversations {
     sessions: Arc<crate::agent_sessions::AgentSessions>,
     /// The workspaces' records, as the workspace holds them.
     records: crate::engine_records::EngineRecords,
-    /// The acting person's store, synced only with their certified devices.
-    personal: RefCell<Option<PersonalSync>>,
+    /// Where the person's own workspace keeps what their agents learned of them.
+    personal: RefCell<Option<crate::person_resources::PersonResources>>,
     /// Wakes the session's loop when a change to a record lands.
     wake: ui::WakeScope,
     /// Each workspace's records, opened here and followed change by change.
@@ -120,8 +119,8 @@ impl Conversations {
         )
     }
 
-    pub(crate) fn use_personal_store(&self, personal: PersonalSync) {
-        self.personal.replace(Some(personal));
+    pub(crate) fn use_store(&self, store: crate::person_resources::PersonResources) {
+        self.personal.replace(Some(store));
     }
 
     /// Open the person's previous member record for recovery if it is already held.
@@ -155,18 +154,16 @@ impl Conversations {
             }
         };
         let key = personal_learned::record_id(workspace);
-        if let Some(held) = personal.read(|store| store.document(CHAT_OWNER, key.as_str())) {
+        if let Some(held) = personal.document((CHAT_OWNER, key.as_str())) {
             return read(&held);
         }
         let document = Self::previous_learned(opened, person)?;
         let facts = read(&document)?;
-        if personal_learned::restore(personal, &key, document).is_err() {
-            tracing::warn!("the previous learned facts did not reach the person's store");
-        }
+        personal_learned::restore(personal, &key, document);
         Some(facts)
     }
 
-    /// What each of the workspace's agents was told by its keeper about how to work for them, by
+    /// What each of the workspace's agents was told by the workspace about how to work, by
     /// the agent's id: what a turn's request carries to the model beside what every agent is told.
     fn agent_instructions(opened: &Opened) -> std::collections::HashMap<String, String> {
         Self::workspace_agents(opened)
@@ -330,7 +327,7 @@ impl Conversations {
             .as_ref()
             .ok_or_else(|| tilo_actions::ApiError::Unavailable {
                 code: "learned_unavailable".to_owned(),
-                reason: "the person's store is unavailable on this device".to_owned(),
+                reason: "the person's workspace is unavailable on this device".to_owned(),
             })?;
         let open = self.open.borrow();
         for (workspace, opened) in open.iter() {
@@ -344,14 +341,12 @@ impl Conversations {
             let Some(asked) = messages.messages.get(&message) else {
                 continue;
             };
-            let acts_for_keeper = Self::workspace_agents(opened).is_some_and(|agents| {
-                agents
-                    .get()
-                    .active()
-                    .any(|entry| entry.id.0 == agent && entry.keeper == person)
-            });
+            // An agent of the workspace, in a turn the person asked in their own conversation
+            // with it: what it learns there is theirs.
+            let works_here = Self::workspace_agents(opened)
+                .is_some_and(|agents| agents.get().active().any(|entry| entry.id.0 == agent));
             if asked.author != member
-                || !acts_for_keeper
+                || !works_here
                 || !private_turn(&chat.get(), &asked.channel, person, agent)
             {
                 return Err(unknown());
@@ -502,9 +497,7 @@ impl Conversations {
                     opened.and_then(|opened| self.learned(opened, &workspace.workspace, person));
                 let learned_for = |agent: &str| {
                     let entry = agents.as_ref()?.get(&Id::from_raw(agent))?;
-                    (entry.keeper == person)
-                        .then_some(learned.as_ref())
-                        .flatten()
+                    entry.is_active().then_some(learned.as_ref()).flatten()
                 };
                 let chat_record = chat.get();
                 let part_record = part.get();
@@ -1275,7 +1268,7 @@ mod tests {
     }
 
     /// What a turn's request carries beside the person's words: what was learned about them,
-    /// what their agent's keeper told it, and what to take into the conversation's summary once
+    /// what the workspace told the agent, and what to take into the conversation's summary once
     /// more of it stands outside the summary than a turn is told as written.
     #[test]
     fn a_turns_request_carries_what_was_learned_the_instruction_and_the_fold() {

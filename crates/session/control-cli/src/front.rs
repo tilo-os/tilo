@@ -554,10 +554,29 @@ pub fn run_target(
     spelling: &Spelling,
     io: &mut Io<'_>,
 ) -> u8 {
+    say(
+        call_target(sockets, target, title, args, spelling),
+        false,
+        io,
+    )
+}
+
+/// [`run_target`]'s answer, for a verb that reads what it answers rather than
+/// saying it: Tilo's API answer (`status`, `invocation`, `result`), or the
+/// sentence that says why there is none.
+///
+/// # Errors
+/// What a person reads when the action could not start, failed or was
+/// cancelled.
+pub fn call_target(
+    sockets: &[ControlSocket],
+    target: RemoteActionTarget,
+    title: &str,
+    args: &Value,
+    spelling: &Spelling,
+) -> Result<Value, String> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let answered = connect(sockets)
-        .and_then(|mut desktop| invoke(&mut desktop, target, args, title, spelling));
-    say(answered, false, io)
+    connect(sockets).and_then(|mut desktop| invoke(&mut desktop, target, args, title, spelling))
 }
 
 /// Invoke `target` with `args` and follow it until it ends: its answer as

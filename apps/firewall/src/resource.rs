@@ -41,32 +41,6 @@ impl SettingsSchema for AppliedOnDevice {
 }
 
 impl AppliedOnDevice {
-    pub(crate) fn open(cx: &ViewCx<Firewall>, workspace: &str) -> Setting<Self> {
-        let settings = cx.settings::<Self>();
-        if !settings.get().by_workspace.contains_key(workspace)
-            && let Some(device) = cx.device()
-        {
-            let opener = cx.resource_opener::<AppliedConfig>(ui::apps::FIREWALL);
-            match opener.legacy_member_state() {
-                Ok(Some(previous)) => {
-                    if let Some(config) = previous.on(device)
-                        && let Err(error) = settings.update(|state| {
-                            state
-                                .by_workspace
-                                .entry(workspace.to_owned())
-                                .or_insert_with(|| config.to_owned());
-                        })
-                    {
-                        tracing::warn!(%error, "could not restore the firewall apply receipt");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => tracing::warn!(%error, "could not read the firewall apply receipt"),
-            }
-        }
-        settings
-    }
-
     pub(crate) fn in_workspace(&self, workspace: &str) -> Option<&str> {
         self.by_workspace.get(workspace).map(String::as_str)
     }

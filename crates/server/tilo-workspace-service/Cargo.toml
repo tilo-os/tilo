@@ -76,6 +76,7 @@ tilo-session-client = { path = "../../session/client", optional = true }
 # The toolkit-free Fluent catalogue the name it gives a workspace is read from.
 tilo-history = { path = "../../sdk/tilo-history" }
 collab-types = { path = "../../collab/collab-types" }
+moderation-model = { path = "../../../apps/moderation-model" }
 key-group = { path = "../../collab/key-group" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 sha2.workspace = true

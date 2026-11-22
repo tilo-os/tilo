@@ -189,7 +189,7 @@ impl super::super::Workspaces {
             .collect()
     }
 
-    /// The row a turn this holder carries out for its agent's keeper is
+    /// The row a turn this holder carries out for the person who asked its agent is
     /// offered for connecting a calendar its person tells it of
     /// ([`held::connect`]). It is for agents alone: a person connects by
     /// saying so, and types nothing but the password, where no agent reads

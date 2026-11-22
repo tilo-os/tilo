@@ -211,29 +211,6 @@ impl RecentTarget {
     pub(crate) fn open(cx: &SurfaceCx<crate::Terminal>) -> Self {
         let workspace = cx.workspace().unwrap_or_default();
         let settings = cx.settings::<DeviceEnvironments>();
-        if !settings.get().by_workspace.contains_key(&workspace)
-            && let Some(device) = cx.device()
-        {
-            let opener = cx.resource_opener::<RecentEnvironments>(ui::apps::TERMINAL);
-            match opener.legacy_member_state() {
-                Ok(Some(previous)) => {
-                    if let Some(target) = previous.on(device)
-                        && let Err(error) = settings.update(|state| {
-                            state
-                                .by_workspace
-                                .entry(workspace.clone())
-                                .or_insert(target);
-                        })
-                    {
-                        tracing::warn!(%error, "could not restore the recent terminal environment");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::warn!(%error, "could not read the recent terminal environment");
-                }
-            }
-        }
         Self::in_settings(settings.settings().clone(), workspace)
     }
 

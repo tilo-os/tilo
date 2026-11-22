@@ -1,8 +1,6 @@
 //! Root-admitted receiving-namespace qualification; no live installer entry.
 //! Reuses the existing receiving namespace guard/held-directory contract.
-use accounts::{
-    AccountStore, AccountSyncHealth, AccountSyncStatusStore, SecretVault, VaultBackend,
-};
+use accounts::{AccountSyncHealth, AccountSyncStatusStore, SecretVault, VaultBackend};
 use cloud_source_dav::fake::{FakeDav, USER};
 use imager_backend::account_transfer::{Connector, PasswordSealedAccounts, SourceRoots, discover};
 use imager_backend::setup::service_sessions::official_format_native as backend;
@@ -140,7 +138,12 @@ fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_f
     let target = accounts::config_root().unwrap();
     assert_eq!(target, fixture.join("config/tilo"));
     let destination = backend::held_directory(86, &target, owner);
-    assert!(AccountStore::load().is_empty());
+    assert!(
+        imager_backend::account_store::Accounts::read(&accounts::config_root().unwrap())
+            .unwrap()
+            .is_empty()
+            .unwrap()
+    );
     let (admitted, fs_file, helper_file) = artifacts();
     let fuse = OpenOptions::new()
         .read(true)
@@ -207,7 +210,14 @@ fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_f
     let imported = account_credentials::password_credential(
         &SecretVault::open_read_only_in(&target).get(&id).unwrap(),
     );
-    let session = accounts::sign_ins::fixture::Fixture::serve(&home, &target);
+    let session = accounts::sign_ins::fixture::Fixture::serve(&home);
+    for account in imager_backend::account_store::Accounts::read(&target)
+        .unwrap()
+        .all()
+        .unwrap()
+    {
+        session.keep_account(account.clone());
+    }
     session.keep(id.as_str(), imported.as_str());
     let mut service = Service(CloudService::new(
         ServiceConfig {
@@ -260,9 +270,7 @@ fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_f
         AccountSyncStatusStore::load().get(&id).unwrap().health,
         AccountSyncHealth::Healthy
     );
-    let mut accounts = AccountStore::load();
-    accounts.remove(&id);
-    accounts.save().unwrap();
+    session.remove_account(id.as_str());
     service.0.reconcile();
     assert!(service.0.mounted().is_empty());
     assert!(!mounted(&mount));

@@ -1284,11 +1284,11 @@ impl AccountsPane {
         self.run_in_queue(move |pane| {
             match Self::signed_in_account(&pane.account_root, &completed) {
                 Ok(stored) => {
-                    let id = stored.id.clone();
+                    let account = stored.clone();
                     pane.commit_then(
                         vec![(stored, Some(completed.secret))],
                         Box::new(move |pane: &mut Self, result: Result<(), String>| {
-                            pane.sign_in_saved(round, result.map(|()| id))
+                            pane.sign_in_saved(round, result.map(|()| account))
                         }),
                     )
                 }
@@ -1298,13 +1298,13 @@ impl AccountsPane {
         self.changed = true;
     }
 
-    fn sign_in_saved(&mut self, round: u64, saved: Result<accounts::AccountId, String>) -> Step {
+    fn sign_in_saved(&mut self, round: u64, saved: Result<accounts::Account, String>) -> Step {
         let current = round == self.sign_in_round;
         if current {
             self.sign_in_saving = false;
         }
         match saved {
-            Ok(id) => self.publish_signed_in(id),
+            Ok(account) => self.publish_signed_in(account),
             Err(error) => {
                 if current && let Some(flow) = self.sign_in.as_mut() {
                     flow.save_failed(&error);
@@ -1315,12 +1315,12 @@ impl AccountsPane {
         Step::Done
     }
 
-    fn publish_signed_in(&mut self, id: accounts::AccountId) {
+    fn publish_signed_in(&mut self, account: accounts::Account) {
         let credential_store = self.credential_store.clone();
         let _ = crate::device_read::thread(
             "settings-accounts-worker",
             Box::new(move || {
-                if let Err(error) = credential_store.signed_in(&id) {
+                if let Err(error) = credential_store.signed_in(&account.id) {
                     warn!(target: "tilo::settings", %error, "could not publish the first credential for a new sign-in");
                 }
             }),

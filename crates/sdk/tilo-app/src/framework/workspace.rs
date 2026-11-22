@@ -53,25 +53,6 @@ impl<P: Resource> Clone for ResourceOpener<P> {
     }
 }
 
-pub type LegacyMemberContent<P> = Result<
-    Option<(
-        String,
-        Rc<<P as Resource>::State>,
-        tilo_content::ContentStore,
-    )>,
-    String,
->;
-
-/// A previous member record's id, locally held parts, and content store.
-pub type LegacyMemberParts<C> = Result<
-    Option<(
-        String,
-        Vec<(u64, Rc<<C as Resource>::State>)>,
-        tilo_content::ContentStore,
-    )>,
-    String,
->;
-
 impl<P: Resource> ResourceOpener<P> {
     pub(crate) fn new(storage: Rc<super::settings::ViewStorage>, owner: &'static str) -> Self {
         Self {
@@ -91,25 +72,6 @@ impl<P: Resource> ResourceOpener<P> {
     /// The current member's private record in this workspace.
     pub fn open_own(&self) -> Option<WorkspaceResource<P>> {
         self.storage.own_workspace_resource::<P>(self.owner)
-    }
-
-    /// Read the current member's previous record of this app's kind for import.
-    pub fn legacy_member_state(&self) -> Result<Option<Rc<P::State>>, String> {
-        self.storage.legacy_member_state::<P>(self.owner)
-    }
-
-    /// Read the current member's previous record id, state and content for import.
-    pub fn legacy_member_content(&self) -> LegacyMemberContent<P> {
-        self.storage.legacy_member_content::<P>(self.owner)
-    }
-
-    /// Read the parts kept beside the previous member record, for migration.
-    /// A part absent from this device is left for the device that holds it.
-    ///
-    /// # Errors
-    /// The previous record or one of its held parts cannot be read.
-    pub fn legacy_member_parts<C: super::Chained<Base = P>>(&self) -> LegacyMemberParts<C> {
-        self.storage.legacy_member_parts::<C>(self.owner)
     }
 }
 
@@ -552,10 +514,12 @@ impl<P: Resource> WorkspaceResource<P> {
         {
             return false;
         }
-        let node = TreePath::root()
-            .app(self.shared.owner)
-            .kind(P::KIND)
-            .resource(self.id().route());
+        let node = tilo_actions::resource_node(
+            &TreePath::root(),
+            self.shared.owner,
+            P::KIND,
+            self.id().route(),
+        );
         self.answer(&node, tilo_actions::ActionKind::Read) == tilo_actions::policy::Answer::Allow
     }
 
@@ -584,10 +548,11 @@ impl<P: Resource> WorkspaceResource<P> {
     }
 
     fn independently_sealed(&self) -> bool {
-        let app = self.shared.owner;
-        let route = self.id().route();
-        tilo_actions::policy::roles::requires_document_keys(app, route)
-            || tilo_actions::policy::roles::has_member_reader(app, P::KIND)
+        use tilo_actions::policy::roles;
+        let (app, route) = (self.shared.owner, self.id().route());
+        roles::requires_document_keys(app, route)
+            || roles::has_member_reader(app, P::KIND)
+            || roles::is_workspace_moderation(app, route)
     }
 
     /// Whether the workspace's grants let the person invoke the verb `verb` of
@@ -802,12 +767,14 @@ impl<P: Resource> WorkspaceResource<P> {
             };
         }
         let need = tilo_resource::need_of::<P>(action);
-        let node = TreePath::root()
-            .app(self.shared.owner)
-            .kind(P::KIND)
-            .resource(self.id().route())
-            .field(need.field.as_deref().unwrap_or_default())
-            .action(tilo_resource::FIELD_EDIT);
+        let node = tilo_actions::resource_node(
+            &TreePath::root(),
+            self.shared.owner,
+            P::KIND,
+            self.id().route(),
+        )
+        .field(need.field.as_deref().unwrap_or_default())
+        .action(tilo_resource::FIELD_EDIT);
         let allowed = if self.independently_sealed() {
             self.answer(&node, need.kind) == tilo_actions::policy::Answer::Allow
         } else {
@@ -1368,12 +1335,12 @@ impl WorkspaceState {
         &self,
         owner: &'static str,
     ) -> Option<WorkspaceResource<P>> {
-        let person = self.records.author().person_id()?;
-        let own = collab_types::OwnResource::of_person(person, P::KIND)?;
-        if !own.is_live_in(owner) {
+        if !tilo_actions::policy::roles::has_member_reader(owner, P::KIND) {
             return None;
         }
-        self.open_at::<P>(owner, &own.document_id())
+        let person = self.records.author().person_id()?;
+        let id = tilo_actions::policy::roles::member_record(P::KIND, person)?;
+        self.open_at::<P>(owner, &id)
     }
 
     /// The record `id` of `P` that `owner` keeps, opened on first use and

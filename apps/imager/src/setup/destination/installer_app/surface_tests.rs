@@ -412,8 +412,11 @@ tilo_test_env::scenario! {
             .unwrap()
             .unwrap()
             .path();
-        let store = accounts::AccountStore::load_in(&root);
-        let account = store.get(&controller.selected()[0]).unwrap();
+        let store = imager_backend::account_store::Accounts::read(&root).unwrap();
+        let account = store
+            .get(controller.selected()[0].as_str())
+            .unwrap()
+            .unwrap();
         assert_eq!(
             account.config["calendar"]["calendars"][0]["id"],
             selected_calendar
