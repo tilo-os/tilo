@@ -1998,6 +1998,17 @@ start_native_tls() {
   run_native tls "$state/tls" "$caddy" run --config "$state/tls/Caddyfile" --adapter caddyfile
 }
 
+# server_runtime_dir: the server's own runtime directory, short and private, under this login's
+# (XDG_RUNTIME_DIR), named for the state folder so two stacks never share one.
+server_runtime_dir() {
+  [[ -n ${XDG_RUNTIME_DIR:-} && -d $XDG_RUNTIME_DIR ]] \
+    || die "the server's apps listen in a runtime directory, and this login has none: set XDG_RUNTIME_DIR to a short directory of this account's own"
+  local dir
+  dir=$XDG_RUNTIME_DIR/tilo-sh-$(printf '%s' "$state" | sha256sum | cut -c1-12)
+  mkdir -p -m 0700 "$dir"
+  printf '%s' "$dir"
+}
+
 start_native_server() {
   local lounge=${lounge:-$native/lounge}
   { private_env server "$lounge/bin"
@@ -2009,6 +2020,10 @@ start_native_server() {
     # build, `dev-overrides`) is told where they are.
     printf '%s\n' "TILO_RUNTIME_BUNDLE_DIR=$lounge/runtimes" \
       "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$lounge/runtime-publishers.txt"
+    # The server's apps listen on sockets in its runtime directory, and a socket's path has
+    # to fit in 108 bytes: a runtime directory under a deep state folder does not leave room.
+    # So the server's is a short one of its own under this login's.
+    printf '%s\n' "XDG_RUNTIME_DIR=$(server_runtime_dir)"
     # Where the image keeps the app surfaces the server publishes at start,
     # and the product font catalog its components lay text out from.
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"
