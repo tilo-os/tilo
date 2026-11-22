@@ -626,15 +626,55 @@ impl Workspaces {
         .await
     }
 
-    pub(super) async fn edit_roles(
+    /// Make `agent` a member of `workspace` acting for `person`, as `caller` asks
+    /// ([`tilo_action_policy::Change::add_agent`]): what every place that makes an agent calls.
+    /// A member adds their own agents; one acting for someone else is an administrator's.
+    /// An agent the workspace holds already is no change.
+    ///
+    /// # Errors
+    /// The workspace refuses the caller the change, or its governance cannot be updated.
+    pub async fn add_agent(
+        &self,
+        workspace: &str,
+        caller: &DeviceCert,
+        agent: &str,
+        person: &str,
+    ) -> Result<(), CollaborationError> {
+        if self
+            .policy_of(workspace)
+            .await
+            .is_some_and(|policy| policy.agents.contains_key(agent))
+        {
+            return Ok(());
+        }
+        let request_id =
+            *blake3::hash(format!("add-agent:{workspace}:{agent}").as_bytes()).as_bytes();
+        self.edit_member_list(
+            workspace,
+            caller,
+            request_id,
+            tilo_action_policy::Change::add_agent(agent, person),
+        )
+        .await
+        .map(drop)
+    }
+
+    /// Make `change`, a custom role's or an agent's, to `workspace`'s member list as
+    /// `caller`, whom the workspace must allow it.
+    pub(super) async fn edit_member_list(
         &self,
         workspace: &str,
         caller: &DeviceCert,
         request_id: [u8; 32],
         change: tilo_action_policy::Change,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        if !change.is_custom_role_change() {
-            return Err(CollaborationError::new("expected a custom role change"));
+        use tilo_action_policy::Change;
+        if !change.is_custom_role_change()
+            && !matches!(change, Change::AddAgent { .. } | Change::RemoveAgent { .. })
+        {
+            return Err(CollaborationError::new(
+                "expected a custom role or agent change",
+            ));
         }
         let now = tilo_clock::unix_now_ns();
         let workspace = self.workspace(workspace).await?;
@@ -647,7 +687,7 @@ impl Workspaces {
             request_digest(&("custom-role", &change))?,
             |peer| {
                 peer.governance_mut()
-                    .change_custom_role(change, &key, system_time(now))
+                    .change_member_list(change, &key, system_time(now))
             },
             now,
         )

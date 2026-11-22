@@ -66,10 +66,7 @@ pub(super) async fn turns(
     let wanted: std::collections::BTreeMap<String, Option<tilo_action_policy::MemberId>> = agents
         .iter()
         .map(|(id, agent)| {
-            let keeper = tilo_action_policy::PersonId::parse(&agent.keeper)
-                .ok()
-                .and_then(|keeper| keeper.root())
-                .map(|root| tilo_action_policy::MemberId::person(hex::encode(root)));
+            let keeper = super::keeper_of(agent).map(tilo_action_policy::MemberId::person);
             (id.clone(), keeper)
         })
         .collect();

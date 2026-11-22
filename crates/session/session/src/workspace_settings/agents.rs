@@ -51,6 +51,10 @@ pub trait Host {
 
     /// Whether `person` looks after `workspace`'s agents: makes, bounds and retires them.
     fn manages(&self, workspace: &Workspace, person: &UserId) -> bool;
+
+    /// Make `agent` a member of `workspace` acting for `person`, signed by this device
+    /// ([`tilo_action_policy::Change::add_agent`]): the agent's whole membership.
+    fn add_agent(&self, workspace: &Workspace, agent: &str, person: &UserId);
 }
 
 /// A computer's copy of its workspaces: their records, decided by the grants the workspace's
@@ -78,6 +82,24 @@ impl Host for crate::engine_records::EngineRecords {
     fn manages(&self, workspace: &Workspace, person: &UserId) -> bool {
         use tilo_desktop::authority::WorkspaceAuthority as _;
         workspace.may_administer(person)
+    }
+
+    fn add_agent(&self, workspace: &Workspace, agent: &str, person: &UserId) {
+        let Some(engine) = self.engine() else {
+            return;
+        };
+        let (workspace_id, agent) = (workspace.id(), agent.to_owned());
+        let change = tilo_action_policy::Change::add_agent(agent.clone(), person.clone());
+        // The member list's change lands when the workspace takes it; until then the agent
+        // answers that it is not a member yet.
+        drop(crate::landing::off_loop(async move {
+            if let Err(error) = crate::membership::Membership::of(&engine, workspace_id)
+                .commit(&change)
+                .await
+            {
+                tracing::warn!(%agent, %error, "the workspace did not take the agent as a member");
+            }
+        }));
     }
 }
 
@@ -722,6 +744,9 @@ impl Agents {
                 mcp_client: mcp_client.map(str::to_owned),
             }))
             .map_err(|error| error.to_string())?;
+        if let Some(workspace) = workspace {
+            self.host.add_agent(workspace, &id, person);
+        }
         if RUNS_ON_HOST && mcp_client.is_none() {
             record
                 .invoke(&Record::SET_AGENT_ON_HOST.with(actions::SetAgentOnHost {

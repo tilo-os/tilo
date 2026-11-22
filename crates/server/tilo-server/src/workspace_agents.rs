@@ -110,6 +110,12 @@ const LEFT_BEGUN: &str = "I was interrupted while I worked on this: the server r
                           had started. I did not start over, so that nothing is done twice. Ask \
                           again and I begin anew.";
 
+/// What the reply says of an agent the workspace's member list does not hold yet: one made
+/// before agents were members, whose keeper's device or an administrator's has not added it.
+const NOT_A_MEMBER_YET: &str = "I am not a member of this workspace yet, so I cannot answer \
+                                here. The person who keeps me, or an administrator, adds me \
+                                when their device next opens the workspace.";
+
 /// The app that keeps the conversations.
 const CHAT: &str = "so.tilo.chat";
 /// The app that keeps the workspace's list of its agents.
@@ -1371,7 +1377,7 @@ impl ServerAgents {
         };
         // An agent is the workspace's: it works here for whichever member asks it, whoever
         // made it, and each turn is held to what the person who asked may do now.
-        Ok(agents
+        let roster: BTreeMap<String, Agent> = agents
             .agents
             .iter()
             // A sub-agent worked elsewhere is its own runner's, but for a coding agent where
@@ -1383,7 +1389,42 @@ impl ServerAgents {
                     && (sub_agents::worked_here(agent) || self.codes(agent))
             })
             .map(|agent| (agent.id.0.clone(), agent.clone()))
-            .collect())
+            .collect();
+        self.add_members(workspace, &roster).await;
+        Ok(roster)
+    }
+
+    /// Add to the workspace's member list each agent of `roster` it does not hold yet, acting
+    /// for its keeper, as this server: an agent made before agents were members becomes one
+    /// once, where this server may add it. One it may not add answers that it is not a member
+    /// yet ([`NOT_A_MEMBER_YET`]) until its keeper's device adds it.
+    async fn add_members(&self, workspace: &str, roster: &BTreeMap<String, Agent>) {
+        let Some(policy) = self.workspaces.policy_of(workspace).await else {
+            return;
+        };
+        for (id, agent) in roster {
+            if policy.agents.contains_key(id) {
+                continue;
+            }
+            let Some(keeper) = keeper_of(agent) else {
+                continue;
+            };
+            if let Err(error) = self
+                .workspaces
+                .add_agent(workspace, self.workspaces.governor(), id, &keeper)
+                .await
+            {
+                tracing::debug!(%workspace, agent = %id, %error, "an agent is not a member here yet");
+            }
+        }
+    }
+
+    /// Whether the workspace's member list holds `agent`.
+    async fn is_member(&self, workspace: &str, agent: &str) -> bool {
+        self.workspaces
+            .policy_of(workspace)
+            .await
+            .is_some_and(|policy| policy.agents.contains_key(agent))
     }
 
     async fn read<R: tilo_resource::Resource>(
@@ -1612,6 +1653,12 @@ impl ServerAgents {
                 Ok(false) => return (turn.ask, Ok(())),
                 Err(error) => return (turn.ask, Err(error)),
             }
+        }
+        if matches!(turn.ask, Ask::Asked { .. })
+            && !self.is_member(workspace, &turn.agent.id.0).await
+        {
+            let refused = Outcome::Failed(NOT_A_MEMBER_YET.to_owned());
+            return (turn.ask, reply.finished(&refused).await);
         }
         if self.codes(&turn.agent) {
             // Its harness in the workspace's machine does the work, not the model's loop: its
@@ -2379,6 +2426,15 @@ pub async fn workspace_agent(
     Vec::new()
 }
 
+/// The person `agent` acts for, by their user root, as the workspace's member list names
+/// people: its keeper.
+pub(super) fn keeper_of(agent: &Agent) -> Option<String> {
+    tilo_action_policy::PersonId::parse(&agent.keeper)
+        .ok()
+        .and_then(|keeper| keeper.root())
+        .map(hex::encode)
+}
+
 /// Add the computer's agent `agent` named `name` to `workspace`'s list of its agents, kept by
 /// `person`: the list starts with it where the workspace has none yet. Nothing when another
 /// arrival added it first.
@@ -2391,6 +2447,7 @@ async fn list_agent(
     let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     let name = tilo_resource::NonBlank::parse(name.trim()).ok_or("the agent has no name")?;
     let (agent, person) = (agent.to_owned(), person.to_owned());
+    let (listed, keeper) = (agent.clone(), person.clone());
     workspaces
         .author_workspace_document(
             workspace,
@@ -2429,6 +2486,11 @@ async fn list_agent(
                 applied
             },
         )
+        .await
+        .map_err(|error| error.to_string())?;
+    // Its membership: the workspace's member list holds it, acting for its person.
+    workspaces
+        .add_agent(workspace, workspaces.governor(), &listed, &keeper)
         .await
         .map_err(|error| error.to_string())
 }

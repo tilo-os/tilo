@@ -83,4 +83,4 @@ pub use member_access::MemberAccess;
 pub use path::{Level, PathError, Segment, Specificity, TreePath};
 pub use person::{PersonId, PersonIdError};
 pub use roles::{Preset, PresetError, Rule};
-pub use workspace::{Change, PersonGrants, Refusal, WorkspacePolicy};
+pub use workspace::{AgentMember, Change, PersonGrants, Refusal, WorkspacePolicy};

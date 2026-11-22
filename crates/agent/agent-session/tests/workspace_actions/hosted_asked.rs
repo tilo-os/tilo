@@ -21,11 +21,10 @@ use tilo_server::workspaces::{IssueInvitationRequest, Workspaces};
 use tilo_workspace_service::asks::{self, AskState};
 use tilo_workspace_service::tl_records::runtime::Value;
 use tilo_workspace_service::tl_records::runtime::rich::RichValue;
-use ui::permissions::policy::{Answer, Grant, Grantee, KindSet, TreePath};
 
 /// A hosted workspace where Ada keeps the agent Scout on the workspace's server, and Scout is a
-/// member that reads the workspace, as the grant a person gives an agent they add makes it.
-/// Ada's page joins once; no device of hers answers.
+/// member acting for her, as making an agent makes it. Ada's page joins once; no device of hers
+/// answers.
 macro_rules! ada_and_scout {
     ($root:ident, $server:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $person:ident) => {
         let ($root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -44,19 +43,6 @@ macro_rules! ada_and_scout {
         let $page = Browser::open_at(&served, &browser, &$server, &$workspace).await;
         let $person = hex::encode($root.verifying_key().to_bytes());
         make_agent(&$page, &$workspaces, &$workspace, &$person, None).await;
-        let member = Grant::new(
-            format!("agent-member:{SCOUT}"),
-            Grantee::agent(SCOUT),
-            TreePath::workspace(&$workspace),
-            KindSet::READ,
-            Answer::Allow,
-            Grantee::person($person.clone()),
-        );
-        let governor = $workspaces.governor().clone();
-        $workspaces
-            .put_workspace_grants(&$workspace, &governor, [0x5c; 32], vec![member])
-            .await
-            .expect("the workspace takes Scout as a member");
     };
 }
 
@@ -725,4 +711,109 @@ async fn a_hosted_turn_keeps_what_its_keeper_tells_it_only_where_nobody_else_rea
     }
     let _ = root;
     page.peer.close();
+}
+
+/// `person` makes Scout on the workspace's server, as the Agents tab does: the workspace's record
+/// of its agents names it, kept by them.
+async fn make_own_agent(workspaces: &Workspaces, workspace: &str, person: &str) {
+    let record = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
+    let person = person.to_owned();
+    workspaces
+        .author_workspace_document(
+            workspace,
+            workspaces.governor(),
+            (ui::tilo_workspace_agent::OWNER, &record),
+            move |doc| {
+                let mut made =
+                    ui::tilo_resource::Replica::<WorkspaceAgents>::new().as_author(&person);
+                made.apply(
+                    WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                        name: ui::tilo_resource::NonBlank::parse("Scout").unwrap(),
+                        id: Some(SCOUT.into()),
+                        model: None,
+                        mcp_client: None,
+                    }),
+                )
+                .map_err(|error| error.to_string())?;
+                made.apply(WorkspaceAgents::SET_AGENT_ON_HOST.with(
+                    workspace_agents::SetAgentOnHost {
+                        agent: Id::from_raw(SCOUT.to_owned()),
+                        on_host: true,
+                    },
+                ))
+                .map_err(|error| error.to_string())?;
+                *doc = std::mem::take(made.doc_mut());
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+}
+
+/// Bea, a plain member, makes her own agent, and her own device adds it to the workspace's
+/// member list acting for her: nobody sets up a grant for it. Cy, another plain member, may not
+/// add an agent acting for her. She mentions Scout in a channel, and it answers her, reading
+/// what she reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (served, actions) = crate::harness::hosted::serving_documents_with_actions(
+        &root,
+        &host,
+        state.path(),
+        crate::common::catalogue,
+    )
+    .await;
+    let workspaces = served.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let (bea_root, _) = tilo_user_identity::UserIdentity::generate("Bea", 1);
+    let bea = enrol(&bea_root, "bea-laptop", DeviceCapabilities::member());
+    admit(&workspaces, &host, &workspace, &bea).await;
+    let (cy_root, _) = tilo_user_identity::UserIdentity::generate("Cy", 1);
+    let cy = enrol(&cy_root, "cy-laptop", DeviceCapabilities::member());
+    admit(&workspaces, &host, &workspace, &cy).await;
+    let bea_person = hex::encode(bea.cert.user_public_key);
+
+    let refused = workspaces
+        .add_agent(&workspace, &cy.cert, "cys-scout", &bea_person)
+        .await
+        .expect_err("Cy may not add an agent acting for Bea");
+    make_own_agent(&workspaces, &workspace, &bea_person).await;
+    workspaces
+        .add_agent(&workspace, &bea.cert, SCOUT, &bea_person)
+        .await
+        .expect("Bea adds her own agent");
+    let policy = workspaces.policy_of(&workspace).await.unwrap();
+    assert_eq!(
+        policy
+            .agents
+            .get(SCOUT)
+            .map(|member| member.for_person.as_str()),
+        Some(bea_person.as_str()),
+        "Scout is a member acting for Bea"
+    );
+    assert!(
+        !policy.agents.contains_key("cys-scout"),
+        "Cy's addition changed nothing: {refused}"
+    );
+
+    mention_in_channel(&workspaces, &workspace, &bea_person, " what is planned?").await;
+    let agents = ServerAgents::for_test(
+        workspaces.clone(),
+        actions.clone(),
+        Some(looks_then_answers(1_000, Arc::default())),
+    );
+    let turn = answered_one(&agents, &workspace).await;
+    assert_eq!(turn.person, bea_person, "it works for Bea, who asked");
+    assert!(
+        turn.request.contains("what is planned?"),
+        "Scout reads what Bea wrote: {}",
+        turn.request
+    );
+    let answered = asked(&workspaces, &workspace, &bea_person).await;
+    let reply = answered[0].latest().expect("the ask has a reply");
+    assert_eq!(reply.state, AskState::Done, "{reply:?}");
+    assert!(reply.body.contains("the plan is ready"), "{}", reply.body);
 }

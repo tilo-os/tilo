@@ -88,7 +88,8 @@ pub(super) fn looks_then_answers(cost: u64, asked: Arc<Mutex<Vec<ModelRequest>>>
 
 /// The person makes an agent that runs on the server, as the Agents tab in a browser does: their
 /// device writes the workspace's record of its agents, with the agent's daily limit when one is
-/// set. Answers once the server holds it.
+/// set, and the workspace's member list takes the agent, acting for them. Answers once the
+/// server holds both.
 pub(super) async fn make_agent(
     page: &Browser,
     workspaces: &tilo_server::workspaces::Workspaces,
@@ -146,6 +147,12 @@ pub(super) async fn make_agent(
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // The page asks its host to take the agent into the workspace's member list, acting for
+    // the person.
+    workspaces
+        .add_agent(workspace, workspaces.governor(), SCOUT, person)
+        .await
+        .expect("the workspace takes Scout as a member");
 }
 
 /// A server's own model that must never be asked: a turn that reaches it failed the test.
