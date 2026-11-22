@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {chosenWorkspace, joinViaHost} from './workspaces.mjs';
+import {chosenWorkspace, enteredWorkspaces, joinViaHost} from './workspaces.mjs';
 import {AdmissionError, admit} from './admission.mjs';
 import {assistantAddress, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_SAME_PERSON} from './pairing.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
@@ -468,6 +468,38 @@ test('someone a wait-list invitation lets in comes back to their own workspace, 
   }});
   assert.equal(failure, null);
   assert.deepEqual(kept, {origin: ORIGIN, workspace: 'own-id'});
+});
+
+test('a workspace handed to the page is kept as one this browser entered', async () => {
+  // The host's device key, which a remembered workspace names as the one that
+  // held it when the browser entered.
+  const hostDevice = 'cd'.repeat(32);
+  const {failure} = await fixture({remembered: null, boot: async ({deps}, page) => {
+    deps.onScope({scope: page.router.route.target.scope, entry: {base: 'https://web.example/', home: null}});
+    // A workspace this browser joined as a member (an invitation it redeemed,
+    // an account it holds): kept under its host's device key, so a bare entry
+    // reopens it and admission comes back to it as this person.
+    deps.onPageFirst({origin: ORIGIN, workspace: 'joined',
+      host: {hostCert: {device_public_key: Array(32).fill(0xcd)}}});
+    assert.deepEqual(enteredWorkspaces().map(kept => [kept.origin, kept.workspace, kept.hostDevice]),
+      [[ORIGIN, 'joined', hostDevice]], 'the workspace it joined is remembered');
+    return null;
+  }});
+  assert.equal(failure, null);
+});
+
+test('a guest the site’s entry let in is not kept as a workspace this browser entered', async () => {
+  const {failure} = await fixture({remembered: null, boot: async ({deps}) => {
+    // A visitor the site's entry let in is a guest of the workspace, not a
+    // member of it: nothing is kept of where they were let in.
+    globalThis.__entryPageFixture.joinViaHost = async () => ({origin: ORIGIN, workspace: 'guest',
+      host: {hostCert: {device_public_key: Array(32).fill(0xcd)}}});
+    await deps.enterViaHost({workspace: {name: 'Lounge', host: {origin: ORIGIN}}});
+    deps.onPageFirst({origin: ORIGIN, workspace: 'guest', host: {hostCert: {device_public_key: Array(32).fill(0xcd)}}});
+    assert.deepEqual(enteredWorkspaces(), [], 'a guest is not kept as entered');
+    return null;
+  }});
+  assert.equal(failure, null);
 });
 
 test('an invitation from someone the workspace has not named reads their profile, else plain words, never a key', async () => {

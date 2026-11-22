@@ -459,6 +459,8 @@ export async function startEntryPage({mode}) {
   try { joinNow = sessionStorage.getItem(JOIN_NOW) === '1'; sessionStorage.removeItem(JOIN_NOW); } catch { /* No storage: no gesture asked yet. */ }
   /** Whether this page got in through a host's entry as the browser's own person (rather than by an invitation or an account). */
   let enteredViaEntry = false;
+  /** Whether a guest ticket spent on this page's pairing code let it in: a visitor of the workspace, not a member. */
+  let guestTicket = false;
   /** The workspace whose entry this page was let in through, or waits at. */
   let visitedAt = null;
   let displayName;
@@ -539,6 +541,21 @@ export async function startEntryPage({mode}) {
     });
     return true;
   }
+  /**
+   * Keep the workspace `peer` was admitted to as one this browser entered as a
+   * member: an invitation it redeemed, an account it holds or a device it
+   * paired. A bare entry reopens it, and admission comes back to it as the
+   * person this browser is rather than asking someone signed in nowhere to
+   * sign in again. A guest a site's entry or a ticket let in is no member of
+   * the workspace, and is offered back by nothing.
+   */
+  function rememberEnteredWorkspace(peer) {
+    if (embed || enteredViaEntry || guestTicket || !peer?.origin || !peer?.workspace) return;
+    const hostDevice = hostDeviceOf(peer.host?.hostCert);
+    if (!hostDevice) return;
+    remembering(() => rememberEntered(runtime, {origin: peer.origin, workspace: peer.workspace, hostDevice,
+      name: workspaceName ?? peer.workspaceName ?? null}));
+  }
   const deps = {
     loadRuntime: async () => {
       runtime = await loadRuntime();
@@ -573,6 +590,9 @@ export async function startEntryPage({mode}) {
     // it hears from a page it mounted.
     onPageFirst: peer => {
       rememberPageWorkspace({workspace: peer?.workspace ?? null, name: workspaceName ?? peer?.workspaceName ?? null});
+      // This browser is in the workspace now: kept as one it entered, so the
+      // next visit comes back to it as this person.
+      rememberEnteredWorkspace(peer);
       if (embed && enteredViaEntry) tell('joined');
     },
     // A first visit sets itself up before it is in any workspace: the entry
@@ -818,6 +838,7 @@ export async function startEntryPage({mode}) {
     // The visitor is a person without a name until they give one; their
     // device goes by what it is, never as their name.
     redeemTicket: async ({origin, workspace, ticket, tickets}) => {
+      guestTicket = true;
       const {connectServerPeer} = await import('./server.mjs');
       const hostCert = await hostCertificate(await loadRuntime(), origin);
       const admit = new URL(`${encodeURIComponent(workspace)}/admit`, tickets).href;
