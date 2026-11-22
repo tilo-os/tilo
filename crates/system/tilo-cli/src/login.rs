@@ -369,6 +369,13 @@ pub(crate) fn enter_said(error: &anyhow::Error) -> String {
         || says("answers in a way this device does not read")
     {
         TOO_OLD.to_owned()
+    } else if let Some((_, reason)) = chain.split_once("The workspace did not let this device in") {
+        // The workspace answered and said why: that reason is what the person can act on, and
+        // calling it unreachable would send them to check a connection that works.
+        format!(
+            "The workspace did not let this device in{}.",
+            reason.trim_end_matches('.')
+        )
     } else if says("did not let this key in") || says("did not let this computer in") {
         "Tilo didn't let this computer into the workspace. Ask the person to allow it in their \
          Tilo tab, then try again."
@@ -2004,6 +2011,13 @@ mod tests {
             UNREACHED
         );
         assert_eq!(enter_said(&anyhow::anyhow!(LOGIN_DAMAGED)), LOGIN_DAMAGED);
+        // A workspace that answered and refused is never called unreachable: its reason is said.
+        assert_eq!(
+            enter_said(&anyhow::anyhow!(
+                "The workspace did not let this device in: the name is empty"
+            )),
+            "The workspace did not let this device in: the name is empty."
+        );
     }
 
     #[tokio::test]
