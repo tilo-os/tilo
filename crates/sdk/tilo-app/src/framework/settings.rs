@@ -773,6 +773,7 @@ impl ViewStorage {
 
     /// Whether a document the views asked for is still on its way: the workspace had not
     /// delivered it, or its store was in use, when it was asked for.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn opening(&self) -> bool {
         self.workspace
             .as_ref()

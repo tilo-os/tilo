@@ -245,7 +245,12 @@ pub(crate) trait ControlCore: AppCore {
                 target
             }
             #[cfg(target_arch = "wasm32")]
-            (Some(_), _) => unreachable!("the web build holds no palette row back to History"),
+            (Some(_), _) => {
+                return Err(ApiError::Unavailable {
+                    code: "history_target_on_page".into(),
+                    reason: "the web build holds no palette row back to History".into(),
+                });
+            }
             (None, Some(ordinary)) => &ordinary.target,
             (None, None) => {
                 if let Some(ran) = self.history_address(&pending.address, argument.as_deref()) {

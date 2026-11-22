@@ -1454,6 +1454,7 @@ impl WorkspaceState {
     }
 
     /// Whether a document asked for is still on its way ([`Self::open_arrived`] opens it).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn opening(&self) -> bool {
         !self.unopened.borrow().is_empty()
     }
