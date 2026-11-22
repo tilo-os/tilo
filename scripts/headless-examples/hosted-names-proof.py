@@ -32,7 +32,7 @@ from atspi_external_client import (  # noqa: E402
     APP_TREE_NODE_LIMIT, ROOT_PATH, AtspiClient, CheckError, bus_pids, command,
 )
 
-CHAT = "so.tilo.lang.chat"
+CHAT = "so.tilo.chat"
 CHANNEL = "new-channel"
 MESSAGE = "hello Bo"
 TYPING = "Ada is typing…"

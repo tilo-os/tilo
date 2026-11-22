@@ -311,7 +311,7 @@ mod tests {
 
     /// Where Ada writes: a channel of Chat.
     fn channel() -> PresenceKey {
-        PresenceKey::resource("so.tilo.lang.chat", "channel-1", "TextChannel")
+        PresenceKey::resource("so.tilo.chat", "channel-1", "TextChannel")
     }
 
     /// What the fanout hands the apps of [`WORKSPACE`], each event, while its subscription lives.
@@ -342,7 +342,7 @@ mod tests {
 
     /// Ada's app in Chat says `payload` under the channel's key.
     fn ada_says(fanout: &FanoutState, payload: PresencePayload) {
-        let origin = CrdtRoute::record("so.tilo.lang.chat", WORKSPACE, "derived:main");
+        let origin = CrdtRoute::record("so.tilo.chat", WORKSPACE, "derived:main");
         let event = CollabEvent::RemotePresenceUpdate {
             member: collab_types::MemberId::person(ADA),
             key: channel(),
@@ -393,7 +393,7 @@ mod tests {
         {
             let (carets, fanout, _) = carets();
             ada_says(&fanout, PresencePayload::Selection { start: 0, end: 0 });
-            let said = || carets.said_in("so.tilo.lang.chat").expect("her caret");
+            let said = || carets.said_in("so.tilo.chat").expect("her caret");
             assert_eq!(said().composing, 0, "no draft yet");
             ada_says(&fanout, composing(true));
             assert_eq!(said().composing, 1);

@@ -495,8 +495,8 @@ tilo_test_env::scenario! {
         const NOTES: &str = "so.tilo.notes";
         const NOTES_KIND: &str = "tl.so.tilo.notes.Notebook";
         const NOTES_ROOT: &str = "tl:so.tilo.notes:notebook";
-        const CHAT_KIND: &str = "tl.so.tilo.lang.chat.Channel";
-        const CHAT_ROOT: &str = "tl:so.tilo.lang.chat:channel";
+        const CHAT_KIND: &str = "tl.so.tilo.chat.Channel";
+        const CHAT_ROOT: &str = "tl:so.tilo.chat:channel";
         // The run an agent admitted at this desktop's API works in: one run of a task.
         const RUN: &str =
             "so.tilo.session/agent-session/243b7256ef6c400fa43d111a4988b8ca@ad46de5895801c1c";

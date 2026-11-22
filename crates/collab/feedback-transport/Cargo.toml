@@ -33,7 +33,6 @@ hex.workspace = true
 tempfile.workspace = true
 # The owner's retained record is a real Chat workspace, filed into through
 # the app's own actions.
-chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 tilo-app-state = { path = "../../system/app-state" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-resource = { path = "../../sdk/tilo-resource" }

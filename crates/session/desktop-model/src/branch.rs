@@ -4,6 +4,9 @@
 
 /// Chat's records: every conversation of the workspace, which stays behind.
 pub use tilo_app_id::apps::CHAT;
+/// The id Chat keeps its own conversations under: the one it was published as before it took the
+/// id of the app it replaced (`previously:`). What the replaced app kept stays under [`CHAT`].
+pub const CHAT_DOCUMENTS: &str = "so.tilo.lang.chat";
 /// Terminal's records: its environments, which the runtime branches itself.
 pub use tilo_app_id::apps::TERMINAL;
 /// The record each person's place in the workspace's tilolang apps is kept in, one for all of them.
@@ -21,6 +24,8 @@ pub fn stays(app: &str, record: &str) -> bool {
         // Every conversation, and each person's drafts and read marks. The workspace's own emoji
         // and agents are Chat's to keep but the workspace's, so they come along.
         CHAT => collab_types::workspace_document(app, record).is_none(),
+        // Chat's own conversations, every one of them.
+        CHAT_DOCUMENTS => true,
         // The runtime branches the environments, with their own files; the branch's layout is
         // written from its own windows, never the source's layout of everyone's.
         TERMINAL | crate::ownership::DESKTOP_APP => true,

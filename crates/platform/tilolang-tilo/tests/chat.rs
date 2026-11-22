@@ -12,7 +12,7 @@ use crate::fixtures::{Replica, target};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
-const APP: &str = "so.tilo.lang.chat";
+const APP: &str = "so.tilo.chat";
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
@@ -1474,7 +1474,7 @@ fn a_message_sent_in_a_channel_names_a_verb_the_channels_surface_publishes() {
     let surfaces = tilolang_tilo::surface::package_surfaces(&meta, &tilolang_runtime::SourceWords);
     for entry in committed {
         let action = &entry.action;
-        assert_eq!(action.kind, "tl.so.tilo.lang.chat.TextChannel");
+        assert_eq!(action.kind, "tl.so.tilo.chat.TextChannel");
         let surface = surfaces
             .iter()
             .find(|surface| surface.kind == action.kind)

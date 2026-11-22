@@ -262,7 +262,7 @@ class ActionConfirmationTests(unittest.TestCase):
             menu_entry(changing, closing, asks)
         }
         """
-        self.assertEqual(check.check_source("apps/chat/src/window_bar.rs", source), [])
+        self.assertEqual(check.check_source("apps/camera/src/window_bar.rs", source), [])
 
     def test_a_manifest_file_covers_the_files_its_pattern_holds(self):
         source = """

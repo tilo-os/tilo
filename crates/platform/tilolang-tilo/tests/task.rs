@@ -368,12 +368,12 @@ fn each_argument_is_sent_as_its_published_parameter_takes_it() {
     let send = task.api.invoked.borrow().last().cloned().unwrap();
     assert_eq!(
         send["arguments"]["to"]["kind"],
-        json!("tl.so.tilo.lang.chat.TextChannel"),
+        json!("tl.so.tilo.chat.TextChannel"),
         "the union's member it is: {send:#}"
     );
     assert_eq!(
         send["arguments"]["reply_to"]["kind"],
-        json!("tl.so.tilo.lang.chat.Message"),
+        json!("tl.so.tilo.chat.Message"),
         "{send:#}"
     );
     assert_eq!(

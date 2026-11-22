@@ -28,7 +28,7 @@ class GatewayFeaturesTests(unittest.TestCase):
         self.assertEqual(declared["default"], [])
         self.assertIn("server", declared["local-models"])
         self.assertIn("server", declared["host-backend"])
-        self.assertEqual(features.arguments(["chat", "tilo-host", "tilo-agent-session"]), [])
+        self.assertEqual(features.arguments(["tilo-host", "tilo-agent-session"]), [])
         argv = features.arguments(["tilo-model-gateway"])
         self.assertEqual(argv[0], "--features")
         self.assertEqual(set(argv[1].split(",")),
@@ -73,7 +73,7 @@ class GatewayFeaturesTests(unittest.TestCase):
                 "#!/bin/sh\npython3 -c 'import json,sys; print(json.dumps([\"cargo\", *sys.argv[1:]]))' \"$@\"\n")
             (bin_dir / "cargo").chmod(0o755)
             env = {**CI_ENV, "PATH": f"{bin_dir}:{CI_ENV['PATH']}"}
-            for package in ("tilo-model-gateway", "chat"):
+            for package in ("tilo-model-gateway", "calendar"):
                 with self.subTest(package=package):
                     command = ["cargo", "nextest", "run", "--locked", "-p", package,
                                "-E", "all()"]
@@ -87,7 +87,7 @@ class GatewayFeaturesTests(unittest.TestCase):
                     self.assertNotIn("--features", argv)
                     self.assertNotIn("--all-features", argv)
                     self.assertNotIn("--workspace", argv)
-            command = ["cargo", "nextest", "run", "--locked", "-p", "chat",
+            command = ["cargo", "nextest", "run", "--locked", "-p", "calendar",
                        "--package", "tilo-model-gateway", "-E", "all()"]
             result = subprocess.run(
                 ["bash", str(ci / "nextest.sh"), *command],

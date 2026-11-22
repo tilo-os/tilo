@@ -1,8 +1,9 @@
-app so.tilo.lang.chat "Chat" (
+app so.tilo.chat "Chat" (
     icon: .message_circle,
     category: .network,
     tagline: "Workspaces for messages, calls and shared work",
     keywords: ["messenger", "instant messaging", "conversation"],
+    previously: so.tilo.lang.chat,
 )
 
 use so.tilo.lang.agent as agent

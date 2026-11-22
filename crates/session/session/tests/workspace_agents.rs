@@ -86,7 +86,7 @@ fn wait_for_chat_holding(device: &Device, wanted: &[&str]) {
         let answer = device.ask(&json!({
             "op": "resource_read",
             "app": "so.tilo.chat",
-            "records": ["", chat::parts::part(0).to_string()],
+            "records": [""],
             "wait_ms": 0,
         }));
         let held = answer["answer"]["records"].to_string();
@@ -157,7 +157,6 @@ fn laptop_with_chat(ada: &Person, site: &Site) -> Device {
     site.publish(Role::Editor);
     let mut laptop = ada.device("Ada's laptop");
     let member = site.admit(ada.public);
-    laptop.install_chat();
     laptop.join(&member);
     laptop.wait_holding(&site.workspace);
     laptop.wait_showing(&site.workspace);
@@ -173,7 +172,6 @@ fn an_agent_another_device_makes_is_in_the_sessions_copy() {
     let laptop = laptop_with_chat(&ada, &site);
     let mut phone = ada.device("Ada's phone");
     let member = site.admit(ada.public);
-    phone.install_chat();
     phone.join(&member);
     phone.wait_holding(&site.workspace);
     phone.wait_showing(&site.workspace);

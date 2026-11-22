@@ -72,7 +72,7 @@ fn world() -> World {
     }
     for app in [
         "so.tilo.notes",
-        "so.tilo.lang.chat",
+        "so.tilo.chat",
         "so.tilo.lang.board",
     ] {
         let mut other = apps.replica(app);

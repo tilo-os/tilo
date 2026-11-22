@@ -36,7 +36,7 @@ const CONVERSATION: &str = "chat.workspace/channels/c_open";
 
 /// The app the window is opened as: the packaged Chat, which announces itself by this id, while
 /// the layout publishes the turns' places under the app's short name (`chat`).
-const CHAT: &str = "so.tilo.lang.chat";
+const CHAT: &str = "so.tilo.chat";
 
 /// The resource a turn place shows: Chat's resource for one turn of the conversation.
 const TURN: &str = "chat.workspace.turns:";

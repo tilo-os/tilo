@@ -1,4 +1,4 @@
-use so.tilo.lang.chat as chat
+use so.tilo.chat as chat
 use so.tilo.notes as notes
 use so.tilo.lang.tasks as tasks
 
@@ -1490,7 +1490,7 @@ fn installed_apps() -> List<device.App> {
     return [
         device.App(key: "so.tilo.notes", name: "Notes", icon: "file-text", category: "work"),
         device.App(
-            key: "so.tilo.lang.chat",
+            key: "so.tilo.chat",
             name: "Chat",
             icon: "message-square",
             category: "work",
@@ -1693,7 +1693,7 @@ scenario "a reference lands beside its place" -> Layout {
         LayoutPlace(
             key: "ch",
             strip: talks,
-            shows: "so.tilo.lang.chat",
+            shows: "so.tilo.chat",
             resource: design?.id() ?? "",
             title: "design",
             name: "design — Chat",
@@ -1932,7 +1932,7 @@ scenario "the traditional desktop" {
             LayoutPlace(
                 key: "p3",
                 strip: talk,
-                shows: "so.tilo.lang.chat",
+                shows: "so.tilo.chat",
                 resource: c.id(),
                 title: c.name,
                 name: "{c.name} — Chat",

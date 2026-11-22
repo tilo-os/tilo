@@ -189,25 +189,6 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 expected,
                 f"the {profile} profile builds the session's siblings for its tests",
             )
-        # Chat's acceptance starts the app, the launcher that starts it and the
-        # runtime host the app runs on, so the run that drives it builds the
-        # three packages of other crates first; a branched device runs that
-        # same acceptance, with its host away, and a window lifted across to
-        # the person's phone lands in a Chat started the same way.
-        chat = scripts.pop("chat-siblings")
-        self.assertEqual(chat["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
-        self.assertEqual(chat["command"][2:], ["chat:chat", "launcher:tilo-launcher",
-                                               "tilo-runtime:tilo-runtime"])
-        for profile in ("default", "ci"):
-            rules = [rule for rule in config["profile"][profile]["scripts"]
-                     if rule["setup"] == "chat-siblings"]
-            self.assertEqual(
-                [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::)"
-                  " or test(shared_input::a_window_lifted) or test(workspace_agents::))",
-                  {"host": 'cfg(target_os = "linux")'})],
-                f"the {profile} profile builds Chat and its launcher for the acceptance",
-            )
         # A branched device's vault and provider keys are read through the apps
         # that keep them, so the run that drives it builds those two and the
         # launcher a desktop starts them from first.
@@ -315,7 +296,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # budgets: the run builds each of them first.
         opened = scripts.pop("app-open-siblings")
         self.assertEqual(opened["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                             "tasks:tasks", "chat:chat",
+                                             "tasks:tasks",
                                              "tilo-runtime:tilo-runtime",
                                              "passwords:passwords",
                                              "model-providers:model-providers",
@@ -351,10 +332,6 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             del rules[filter_]
         # `ci` inherits `default`'s rules, so it names only what it adds.
         self.assertEqual(rules, {"all()": "test-runtime",
-                                 "package(tilo-session) and binary(it) and (test(chat_2x2::) or "
-                                 "test(device_branch::) or test(shared_input::a_window_lifted) or "
-                                 "test(workspace_agents::))":
-                                     "chat-siblings",
                                  "package(tilo-session) and binary(it) and test(closed_tasks::)": "tasks-siblings",
                                  "package(tilo-session) and binary(it) and "
                                  "test(app_open_budget::)": "app-open-siblings",

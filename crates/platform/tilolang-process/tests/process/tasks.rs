@@ -585,7 +585,7 @@ impl Shell {
         );
         // Notes, Tasks and Chat are installed as apps of their own; Discussion is not, and stays
         // part of the apps that use it.
-        let installed = ["so.tilo.notes", TASKS, "so.tilo.lang.chat"]
+        let installed = ["so.tilo.notes", TASKS, "so.tilo.chat"]
             .into_iter()
             .map(|app| (app.to_owned(), app.to_owned()))
             .collect();

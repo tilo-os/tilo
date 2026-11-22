@@ -1,7 +1,7 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
-d-so-tilo-lang-chat = Chat
+d-so-tilo-chat = Chat
 
 d-lmdoxbnn = Conversations
     .doc = The workspace's conversations in the sidebar's order: channels outside any category, the categories each with its own, and the direct messages, in the list as people.

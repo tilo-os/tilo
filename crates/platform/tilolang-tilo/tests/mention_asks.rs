@@ -34,7 +34,7 @@ const AGENT: (&str, &str) = (
     include_str!("../../../../apps/tl/agent/app.ids"),
 );
 const NOTES_APP: &str = "so.tilo.notes";
-const CHAT_APP: &str = "so.tilo.lang.chat";
+const CHAT_APP: &str = "so.tilo.chat";
 const AGENT_APP: &str = "so.tilo.lang.agent";
 
 fn helper() -> MemberId {

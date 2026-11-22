@@ -370,7 +370,7 @@ fn items_of_an_older_document_move_change_and_go_keeping_their_ids() {
 fn a_message_posted_to_an_older_conversation_follows_its_messages() {
     let packages = vec![app!("agent"), app!("chat")];
     let mut replica = open(include_str!("legacy/chat.hex"), &packages);
-    let app = "so.tilo.lang.chat";
+    let app = "so.tilo.chat";
     let all = root(&replica, app);
     // The Conversations of channels reads an older conversation as a text channel.
     let (conversations, _) = field(&replica, app, "Conversations", "channels");
@@ -559,7 +559,8 @@ fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
     drop(open(bytes, &packages));
     let mut doc = saved(bytes);
     // A message id held twice: copied into another conversation of the document, as no code
-    // writes it but a damaged or hand-made document may hold it.
+    // writes it but a damaged or hand-made document may hold it. The document keeps it under
+    // the id Chat was published as when it wrote it.
     let (_, id, obj) = records(&doc)
         .into_iter()
         .find(|(app, _, _)| app == "so.tilo.lang.chat")
@@ -600,7 +601,7 @@ fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
     automerge::transaction::Transactable::put(&mut doc, &entry, "k", "zz").unwrap();
     doc.commit();
     let replica = Replica::new("ada", doc, &packages).0;
-    let all = root(&replica, "so.tilo.lang.chat");
+    let all = root(&replica, "so.tilo.chat");
     let conversation_ty = lookup(&type_of(&replica.doc, second_map))
         .unwrap()
         .id

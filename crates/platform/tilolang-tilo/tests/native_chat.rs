@@ -14,7 +14,7 @@ use tilolang_runtime::{ResourceRef, Value};
 
 use crate::fixtures::{Replica, target};
 
-const CHAT_APP: &str = "so.tilo.lang.chat";
+const CHAT_APP: &str = "so.tilo.chat";
 const CHAT: (&str, &str) = (
     include_str!("../../../../apps/tl/chat/app.tl"),
     include_str!("../../../../apps/tl/chat/app.ids"),

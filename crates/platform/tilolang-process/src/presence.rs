@@ -239,7 +239,7 @@ impl Presence {
 mod tests {
     use super::*;
 
-    const APP: &str = "so.tilo.lang.chat";
+    const APP: &str = "so.tilo.chat";
 
     fn channel() -> PresenceKey {
         PresenceKey::resource(APP, "channel-1", "TextChannel")

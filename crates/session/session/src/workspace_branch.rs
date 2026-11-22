@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 // What stays behind is one rule for a device and for a host that branches a workspace.
-use tilo_desktop_model::branch::{CHAT, TERMINAL, stays};
+use tilo_desktop_model::branch::{CHAT, CHAT_DOCUMENTS, TERMINAL, stays};
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
 };
@@ -433,7 +433,7 @@ fn placed(path: &Path, from: &str, to: &str) -> Option<PathBuf> {
     match parts.first() {
         // Chat's directory stays behind but for the workspace's own records Chat keeps (its emoji,
         // its agents), which come along in the branch's engine and so in Chat's store too.
-        Some(&CHAT)
+        Some(&CHAT | &CHAT_DOCUMENTS)
             if resource_of(&parts, from).is_none_or(|(app, record)| stays(&app, &record)) =>
         {
             return None;
@@ -984,6 +984,7 @@ mod tests {
                 &collab_types::workspace_document_id("chat.workspace")
             ));
             assert!(!stays(CHAT, &emoji), "the workspace's own emoji");
+            assert!(stays(CHAT_DOCUMENTS, "conversations"), "Chat's own conversations");
             assert!(
                 !stays("so.tilo.assistant", &agents),
                 "the workspace's agents"

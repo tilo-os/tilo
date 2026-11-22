@@ -25,7 +25,6 @@
   "camera": {"libraries": 20535456, "tests": 317841248},
   "canvas": {"libraries": 98892749, "tests": 7484853176},
   "key-group": {"libraries": 33488533, "tests": 28962736},
-  "chat": {"libraries": 74707754, "tests": 1288323600},
   "chip-design": {"libraries": 33739866, "tests": 304564024},
   "cli-shim": {"libraries": 158655, "tests": 7217272},
   "clocks": {"libraries": 24316321, "tests": 309779280},

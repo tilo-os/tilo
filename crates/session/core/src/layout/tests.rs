@@ -70,12 +70,12 @@ fn the_text_places_the_top_result_of_the_hits_a_place_can_show() {
             "Chat models",
             ResourceKind::Record,
         ),
-        opening("tl:so.tilo.lang.chat", "Chat", ResourceKind::Application),
+        opening("tl:so.tilo.chat", "Chat", ResourceKind::Application),
     ];
-    let showable = |resource: &str| resource == "tl:so.tilo.lang.chat";
+    let showable = |resource: &str| resource == "tl:so.tilo.chat";
     assert_eq!(
         found_resource(&hits, "Chat", showable).as_deref(),
-        Some("tl:so.tilo.lang.chat"),
+        Some("tl:so.tilo.chat"),
         "a hit the layout cannot place does not stand in the way of one it can"
     );
     assert_eq!(

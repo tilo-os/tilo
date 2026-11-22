@@ -1,6 +1,6 @@
 //! A person's second device in a shared workspace: Bob's phone joins one someone else's site
 //! serves by an invitation of its own, or enters the one his laptop serves from his list, as his
-//! further device. What is written there reaches the phone as it is
+//! further device. An issue written there reaches the phone as it is
 //! written and is still there after a restart, and what the phone writes reaches everyone else.
 //! Each step reads what the apps show through the actions they publish, so it reads the phone's own
 //! copy of the workspace, the one its apps read.
@@ -20,7 +20,7 @@ use crate::common::people::{Device, Person, Site, share_the_fleet, shared_invita
 const PROMPTLY: Duration = Duration::from_secs(5);
 
 /// The provider and id of Tasks' `operation` as `device` lists it, read page by page: a device
-/// with Chat open lists more actions than one page holds.
+/// with several apps open lists more actions than one page holds.
 fn tasks_action(device: &Device, operation: &str) -> Option<(String, String)> {
     let mut cursor = String::new();
     loop {
@@ -163,26 +163,16 @@ fn show(device: &Device, workspace: &str) {
     device.wait_showing(workspace);
 }
 
-/// Wait until `device`'s Chat shows `texts` from its conversation with `peer`, and answer how long
-/// it took.
-fn wait_for_texts(device: &Device, peer: &str, texts: &[&str]) -> Duration {
-    let began = Instant::now();
-    device.chat().wait_for_texts(peer, texts);
-    began.elapsed()
-}
-
 fn promptly(what: &str, took: Duration) {
     eprintln!("{what}: {took:?}");
     assert!(took <= PROMPTLY, "{what} took {took:?}");
 }
 
-/// Ada and Bob's two devices in the Studio, Chat open on all three, each knowing the other person.
+/// Ada's laptop and Bob's two devices in the Studio.
 struct Studio {
     ada_laptop: Device,
     bob_laptop: Device,
     bob_phone: Device,
-    ada_key: String,
-    bob_key: String,
     workspace: String,
     /// The site hosting the workspace, when one does: kept until the devices stopped.
     _site: Option<Site>,
@@ -201,7 +191,6 @@ impl Studio {
         let mut bob_phone = bob.device("Bob's phone");
         share_the_fleet(&bob, &[&bob_laptop, &bob_phone]);
         for device in [&ada_laptop, &bob_laptop, &bob_phone] {
-            device.install_chat();
             device.install_tasks();
         }
         ada_laptop.join(&site.admit(ada.public));
@@ -212,13 +201,7 @@ impl Studio {
         }
         bob_phone.join(&site.admit(bob.public));
         let workspace = site.workspace.clone();
-        Self::chatting(
-            &ada,
-            &bob,
-            [ada_laptop, bob_laptop, bob_phone],
-            workspace,
-            Some(site),
-        )
+        Self::following([ada_laptop, bob_laptop, bob_phone], workspace, Some(site))
     }
 
     /// Bob's own workspace, the one his laptop made and serves: Ada's laptop joins it by the
@@ -231,7 +214,6 @@ impl Studio {
         let mut bob_phone = bob.device("Bob's phone");
         share_the_fleet(&bob, &[&bob_laptop, &bob_phone]);
         for device in [&ada_laptop, &bob_laptop, &bob_phone] {
-            device.install_chat();
             device.install_tasks();
         }
         bob_laptop.start();
@@ -242,61 +224,30 @@ impl Studio {
         ada_laptop.wait_holding(&workspace);
         ada_laptop.wait_showing(&workspace);
         bob_phone.start();
-        Self::chatting(
-            &ada,
-            &bob,
-            [ada_laptop, bob_laptop, bob_phone],
-            workspace,
-            None,
-        )
+        Self::following([ada_laptop, bob_laptop, bob_phone], workspace, None)
     }
 
-    /// The three devices once the phone holds `workspace` and shows it, Chat open on each and
-    /// each person a contact of the other.
-    fn chatting(
-        ada: &Person,
-        bob: &Person,
+    /// The three devices once the phone holds `workspace` and shows it.
+    fn following(
         [ada_laptop, bob_laptop, bob_phone]: [Device; 3],
         workspace: String,
         site: Option<Site>,
     ) -> Self {
         bob_phone.wait_holding(&workspace);
         show(&bob_phone, &workspace);
-        for device in [&ada_laptop, &bob_laptop, &bob_phone] {
-            device.open("so.tilo.chat");
-            device.wait_for_window("so.tilo.chat");
-        }
-        let ada_key = hex::encode(ada.public);
-        let bob_key = hex::encode(bob.public);
-        for device in [&bob_laptop, &bob_phone] {
-            device.chat().wait_for_contact(&ada_key);
-        }
-        ada_laptop.chat().wait_for_contact(&bob_key);
         Self {
             ada_laptop,
             bob_laptop,
             bob_phone,
-            ada_key,
-            bob_key,
             workspace,
             _site: site,
         }
     }
 
-    /// Ada writes a message and an issue, which reach Bob's phone as they are written and are
-    /// still there after it restarts; then the phone writes, which reaches Ada and Bob's laptop.
+    /// Ada writes an issue, which reaches Bob's phone as it is written and is still there after
+    /// it restarts; then the phone writes one, which reaches Ada and Bob's laptop.
     fn the_phone_follows_the_workspace(mut self) {
-        let Self {
-            ada_key, bob_key, ..
-        } = &self;
-        let (ada_key, bob_key) = (ada_key.clone(), bob_key.clone());
         let workspace = self.workspace.clone();
-        self.bob_phone.chat().open(&ada_key);
-        self.ada_laptop.chat().send(&bob_key, "hello Bob");
-        promptly(
-            "Ada's message on Bob's phone",
-            wait_for_texts(&self.bob_phone, &ada_key, &["hello Bob"]),
-        );
         make_issue(&self.ada_laptop, "Book the ferry");
         promptly(
             "Ada's issue on Bob's phone",
@@ -313,26 +264,12 @@ impl Studio {
         self.bob_phone.start();
         self.bob_phone.wait_holding(&workspace);
         show(&self.bob_phone, &workspace);
-        self.bob_phone.open("so.tilo.chat");
-        self.bob_phone.wait_for_window("so.tilo.chat");
-        self.bob_phone
-            .chat()
-            .wait_for_texts(&ada_key, &["hello Bob"]);
         wait_for_issues(&self.bob_phone, &["Book the ferry"]);
         promptly(
             "Ada's issue in Tasks on the restarted phone",
             wait_for_tasks_showing(&self.bob_phone, "Book the ferry"),
         );
 
-        self.bob_phone.chat().send(&ada_key, "from my phone");
-        promptly(
-            "the phone's answer on Ada's laptop",
-            wait_for_texts(&self.ada_laptop, &bob_key, &["hello Bob", "from my phone"]),
-        );
-        promptly(
-            "the phone's answer on Bob's laptop",
-            wait_for_texts(&self.bob_laptop, &ada_key, &["hello Bob", "from my phone"]),
-        );
         make_issue(&self.bob_phone, "Pack the tent");
         for device in [&self.ada_laptop, &self.bob_laptop] {
             promptly(
@@ -345,15 +282,6 @@ impl Studio {
         promptly(
             "the phone's issue on the phone that wrote it",
             wait_for_tasks_showing(&self.bob_phone, "Pack the tent"),
-        );
-        self.ada_laptop.chat().send(&bob_key, "seen it");
-        promptly(
-            "Ada's message on the restarted phone",
-            wait_for_texts(
-                &self.bob_phone,
-                &ada_key,
-                &["hello Bob", "from my phone", "seen it"],
-            ),
         );
         for device in [
             &mut self.ada_laptop,

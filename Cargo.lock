@@ -2263,69 +2263,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chat"
-version = "0.1.0"
-dependencies = [
- "chat",
- "chat-model",
- "durable-store",
- "emoji",
- "fnv",
- "image",
- "jiff",
- "neighbour-wire",
- "runtime-dylib",
- "serde",
- "serde_json",
- "taffy",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-app-package",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-content",
- "tilo-document",
- "tilo-emoji-engine",
- "tilo-files",
- "tilo-model-client",
- "tilo-paths",
- "tilo-reference",
- "tilo-rich-text",
- "tilo-test-env",
- "tilo-vello",
- "tilo-view",
- "tilo-view-macros",
- "tilo-winit",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "chat-model"
-version = "0.1.0"
-dependencies = [
- "moderation-model",
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-document",
- "tilo-feedback",
- "tilo-reference",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "chat-model-wasm"
-version = "0.1.0"
-dependencies = [
- "chat-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "chinese-number"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4258,7 +4195,6 @@ dependencies = [
 name = "discord"
 version = "0.1.0"
 dependencies = [
- "chat",
  "data-encoding",
  "discord",
  "discord-wire",
@@ -4292,7 +4228,6 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
- "chat",
  "collab-types",
  "davey",
  "discord",
@@ -17607,7 +17542,6 @@ dependencies = [
  "calendar",
  "camera",
  "canvas",
- "chat",
  "chip-design",
  "clocks",
  "collab-types",
@@ -19040,7 +18974,6 @@ dependencies = [
  "blake3",
  "calculator",
  "calendar",
- "chat",
  "collab-types",
  "desktop-policy",
  "ed25519-dalek 3.0.0",
@@ -19656,7 +19589,6 @@ name = "tilo-feedback-transport"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "chat",
  "collab-types",
  "collaboration",
  "durable-store",
@@ -20582,7 +20514,6 @@ dependencies = [
  "calculator-model-wasm",
  "calendar-model-wasm",
  "camera-model-wasm",
- "chat-model-wasm",
  "clocks-model-wasm",
  "console-model-wasm",
  "contacts-model-wasm",
@@ -21980,7 +21911,6 @@ dependencies = [
  "blake3",
  "bounded-command",
  "bytes",
- "chat",
  "clap",
  "collab-types",
  "collaboration",
@@ -22262,7 +22192,6 @@ dependencies = [
  "block-devices",
  "bounded-command",
  "browser-continuity",
- "chat",
  "collab-types",
  "collaboration",
  "compat-catalogue",
@@ -22466,7 +22395,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bytes",
- "chat",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "fs-protocol",
@@ -23771,7 +23699,6 @@ dependencies = [
  "blake3",
  "bytes",
  "calendar-model",
- "chat",
  "collab-types",
  "collaboration",
  "ed25519-dalek 3.0.0",
@@ -28329,9 +28256,6 @@ dependencies = [
  "chacha20 0.9.1",
  "chacha20poly1305 0.10.1",
  "chacha20poly1305 0.11.0",
- "chat",
- "chat-model",
- "chat-model-wasm",
  "chinese-number",
  "chinese-variant",
  "chip-design",

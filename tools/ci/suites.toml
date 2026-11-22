@@ -745,7 +745,7 @@ package = "tilolang-cli"
 # the PDF viewer's surface, and the build test reads where the runtime names its platforms. The
 # copy they all stage from is `tests/support`, which names the packages' directory.
 inputs = [
-  "apps/chat/",
+  "crates/platform/tilolang-tilo/tests/native-chat/",
   "apps/tl/",
   "apps/pdf-viewer/surface.toml",
   "apps/tilolang/tilo-runtime.toml",
@@ -795,7 +795,7 @@ package = "tilolang-tilo"
 inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
-  "apps/chat/",
+  "crates/platform/tilolang-tilo/tests/native-chat/",
   "apps/tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
   "crates/session/session/device-surface.json",
@@ -868,7 +868,7 @@ package = "tilolang-process"
 inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
-  "apps/chat/",
+  "crates/platform/tilolang-tilo/tests/native-chat/",
   "apps/tasks/",
   "crates/platform/tilo-app-window/locales/",
   "crates/sdk/ui-core/locales/",

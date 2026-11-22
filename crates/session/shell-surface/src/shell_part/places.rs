@@ -299,7 +299,7 @@ fn the_shell_keeps_no_copy_of_the_apps_it_composes() {
     let host = part.instance.host().expect("the shell runs");
     // The apps the shell's views compose are other apps' here: what the shell's runtime runs of
     // them reads their records from the session, and the shell's record holds none of theirs.
-    for app in ["so.tilo.lang.chat", NOTES_APP, "so.tilo.lang.tasks"] {
+    for app in ["so.tilo.chat", NOTES_APP, "so.tilo.lang.tasks"] {
         assert!(
             host.package(app).is_none(),
             "`{app}` runs as the shell's own package, keeping a copy of its records"
@@ -408,7 +408,7 @@ const TASKS: &str = concat!(
     include_str!("../../../../../apps/tl/tasks/scenarios.tl")
 );
 const TASKS_IDS: &str = include_str!("../../../../../apps/tl/tasks/app.ids");
-const CHAT_APP: &str = "so.tilo.lang.chat";
+const CHAT_APP: &str = "so.tilo.chat";
 const TASKS_APP: &str = "so.tilo.lang.tasks";
 
 /// What Bo writes, and what the task made from it is called.
