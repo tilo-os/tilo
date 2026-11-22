@@ -21,11 +21,16 @@ pub struct Schema {
     pub verbs: Vec<Verb>,
 }
 
-/// What one verb writes: each kind it writes resources of.
+/// What one verb writes: each kind it writes resources of, and the kinds it may write that
+/// another surface declares.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Verb {
     pub name: String,
     pub writes: BTreeMap<String, Writes>,
+    /// The kinds nested in the verb's own record that this surface does not type — a tilolang
+    /// package publishes a surface per type, so a list's items are another surface's kind. The
+    /// verb may make, move and remove them, and their own surface declares their fields.
+    pub nested: BTreeSet<String>,
 }
 
 /// What a verb writes in a resource of one kind.
@@ -190,11 +195,13 @@ impl Schema {
                 Verb {
                     name: verb.id.clone(),
                     writes: writes_of(surface, own, &|_, field| units.contains(field), false),
+                    nested: nested_kinds(surface),
                 }
             })
             .chain(std::iter::once(Verb {
                 name: FIELD_EDIT.to_owned(),
                 writes: writes_of(surface, own, &|_, _| true, true),
+                nested: BTreeSet::new(),
             }))
             .collect();
         Self { types, verbs }
@@ -211,6 +218,28 @@ impl Schema {
     pub fn get(&self, name: &str) -> Option<&Type> {
         self.types.iter().find(|ty| ty.name == name)
     }
+}
+
+/// The kinds the surface's own record holds records of that no surface here types: each
+/// collection of resources, by its kind.
+fn nested_kinds(surface: &Surface) -> BTreeSet<String> {
+    let mut kinds = BTreeSet::new();
+    for field in surface
+        .fields
+        .iter()
+        .filter(|field| !field.path.contains('.'))
+    {
+        let mut ty = &field.ty;
+        while let FieldType::Option(inner) | FieldType::Set(inner) | FieldType::List(inner) = ty {
+            ty = inner;
+        }
+        if let FieldType::Collection(item) = ty
+            && let FieldType::Resource(kind) = item.as_ref()
+        {
+            kinds.insert(kind.clone());
+        }
+    }
+    kinds
 }
 
 /// The surface's own record, as a type: the fields it lists at its root (a dotted path names a

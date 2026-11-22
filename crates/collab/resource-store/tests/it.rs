@@ -725,6 +725,62 @@ fn tilolang_surface() -> tilo_actions::surface::Surface {
     }))
 }
 
+/// The surface of a tilolang package's list type: `add` and `move` write the list, and the items
+/// they make and move are the kind its collection nests, declared by a surface of its own.
+fn tilolang_list_surface() -> tilo_actions::surface::Surface {
+    toml_like(serde_json::json!({
+        "kind": "tl.so.tilo.todo.TodoList",
+        "label": "TodoList",
+        "version": 1,
+        "verbs": [
+            {"id": "$create", "kind": "undoable"},
+            {"id": "add", "kind": "undoable"},
+            {"id": "move", "kind": "undoable"},
+            {"id": "remove", "kind": "undoable"},
+            {"id": "mention", "kind": "undoable"},
+        ],
+        "fields": [
+            {"path": "n1", "owner": "todolist", "title": "name", "type": "text"},
+            {"path": "i5", "owner": "todolist", "title": "items", "stored": "collection",
+             "type": {"collection": {"resource": "tl.so.tilo.todo.Todo"}}},
+            {"path": "i5.*.t7", "owner": "todo", "title": "title", "type": "text"},
+        ],
+    }))
+}
+
+/// The surface of the type the list's items are: a record of its own app, with a collection of
+/// comments of a third.
+fn tilolang_todo_surface() -> tilo_actions::surface::Surface {
+    toml_like(serde_json::json!({
+        "kind": "tl.so.tilo.todo.Todo",
+        "label": "Todo",
+        "version": 1,
+        "verbs": [
+            {"id": "$create", "kind": "undoable"},
+            {"id": "toggle", "kind": "undoable"},
+        ],
+        "fields": [
+            {"path": "t7", "owner": "todo", "title": "title", "type": "text"},
+            {"path": "d1", "owner": "todo", "title": "done", "type": "bool"},
+            {"path": "c3", "owner": "todo", "title": "comments", "stored": "collection",
+             "type": {"collection": {"resource": "tl.so.tilo.todo.Comment"}}},
+        ],
+    }))
+}
+
+/// The surface of the type a todo's comments are.
+fn tilolang_comment_surface() -> tilo_actions::surface::Surface {
+    toml_like(serde_json::json!({
+        "kind": "tl.so.tilo.todo.Comment",
+        "label": "Comment",
+        "version": 1,
+        "verbs": [{"id": "$create", "kind": "undoable"}],
+        "fields": [
+            {"path": "x1", "owner": "comment", "title": "text", "type": "text"},
+        ],
+    }))
+}
+
 /// The surface of a tilolang package's item type, as `package_surfaces` writes one: `$create`
 /// and a title a document keeps under its name.
 fn tilolang_item_surface() -> tilo_actions::surface::Surface {
@@ -1785,6 +1841,68 @@ mod store {
             there.index().get(ISSUE, "a").unwrap().scalar("state"),
             Value::from("open")
         );
+    }
+
+    /// A list's verbs write the records its type nests, and those records' fields are the ones
+    /// their own app declares: a tilolang package publishes a surface per type, so an item and a
+    /// comment of it are kinds another surface declares. Made, moved, commented and removed, the
+    /// change reaches the store.
+    #[test]
+    fn an_item_verb_writes_the_items_another_surface_declares() {
+        let mut there = Store::new();
+        for surface in [
+            super::tilolang_list_surface(),
+            super::tilolang_todo_surface(),
+            super::tilolang_comment_surface(),
+        ] {
+            there.declare(Schema::from_surface(&surface));
+        }
+        let anyone = |_: &Proposal<'_>| true;
+        let item = |order: &str| Resource {
+            readers: MEMBERS.to_owned(),
+            parent: Some("l".to_owned()),
+            order: Some(order.to_owned()),
+            fields: BTreeMap::from([
+                ("title".to_owned(), Cell::One("milk".into())),
+                ("done".to_owned(), Cell::One(true.into())),
+                ("$in".to_owned(), Cell::One("items".into())),
+            ]),
+        };
+        let made = Store::new()
+            .put("tl.so.tilo.todo.Todo", "t1", item("a"), &stamp("add", "i1"))
+            .unwrap();
+        assert_eq!(deliver(&made, &mut there, &anyone), []);
+        let moved = Store::new()
+            .put(
+                "tl.so.tilo.todo.Todo",
+                "t1",
+                item("b"),
+                &stamp("move", "i2"),
+            )
+            .unwrap();
+        assert_eq!(deliver(&moved, &mut there, &anyone), []);
+        // A comment of the todo: a kind the list's type nests two records down.
+        let comment = Resource {
+            readers: MEMBERS.to_owned(),
+            parent: Some("t1".to_owned()),
+            order: Some("a".to_owned()),
+            fields: BTreeMap::from([("text".to_owned(), Cell::One("soon".into()))]),
+        };
+        let noted = Store::new()
+            .put(
+                "tl.so.tilo.todo.Comment",
+                "c1",
+                comment,
+                &stamp("mention", "i3"),
+            )
+            .unwrap();
+        assert_eq!(deliver(&noted, &mut there, &anyone), []);
+        // The list's own verb takes the item off it.
+        there
+            .remove("tl.so.tilo.todo.Todo", "t1", &stamp("remove", "i4"))
+            .unwrap();
+        let all = |_: &str| true;
+        assert!(there.get("tl.so.tilo.todo.Todo", "t1", &all).is_none());
     }
 
     /// What an item stands in is the platform's field on the item, which no declared type has:

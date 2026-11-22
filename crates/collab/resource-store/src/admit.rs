@@ -340,6 +340,12 @@ pub(crate) fn within_verb(
             continue;
         };
         let Some(writes) = verb.writes.get(kind) else {
+            // A record's verb writes the kinds its type nests that another surface declares, and
+            // their fields are the ones that surface declares: a tilolang package publishes a
+            // surface per type, so a list's items are another surface's kind.
+            if nested_kind(schema, &verb.nested, kind) {
+                continue;
+            }
             return Err(format!("`{}` writes no `{kind}`", verb.name));
         };
         if writes.sets_only && (touch.made || touch.removed || touch.placed || touch.content) {
@@ -355,6 +361,24 @@ pub(crate) fn within_verb(
         }
     }
     Ok(())
+}
+
+/// Whether `kind` stands among `nested` or among the kinds the types between them nest.
+fn nested_kind(schema: &Schema, nested: &BTreeSet<String>, kind: &str) -> bool {
+    let mut reached: Vec<&str> = nested.iter().map(String::as_str).collect();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    while let Some(at) = reached.pop() {
+        if at == kind {
+            return true;
+        }
+        if !seen.insert(at) {
+            continue;
+        }
+        if let Some(ty) = schema.get(at) {
+            reached.extend(ty.nested.iter().map(|(_, nested)| nested.as_str()));
+        }
+    }
+    false
 }
 
 impl Expected {
