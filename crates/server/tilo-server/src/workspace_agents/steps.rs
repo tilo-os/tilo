@@ -66,6 +66,19 @@ fn needs_person(failure: &ActionFailure) -> bool {
     failure.code == tilo_actions::api::ApiError::ConfirmationRequired.code()
 }
 
+/// `future`, counted for the tool call the calling task carries out, if any: a task it is
+/// spawned into is not that call's task, and what it asks of the workspace's action service
+/// would otherwise count for no step.
+pub(super) fn carried<F: Future>(future: F) -> impl Future<Output = F::Output> {
+    let asked = ASKED.try_with(Arc::clone).ok();
+    async move {
+        match asked {
+            Some(asked) => ASKED.scope(asked, future).await,
+            None => future.await,
+        }
+    }
+}
+
 /// What a request to the workspace's action service is counted as.
 enum Kind {
     List,

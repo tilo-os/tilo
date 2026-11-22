@@ -467,9 +467,10 @@ impl ActionProvider for WorkspaceActionProvider {
         };
         let (completer, answer) = pending();
         let (this, caller) = (self.clone(), caller.clone());
-        runtime.spawn(async move {
+        // The listing is counted for the tool call that asks for it, though it runs apart.
+        runtime.spawn(steps::carried(async move {
             completer.complete(this.page(&caller, query).await);
-        });
+        }));
         answer
     }
 
