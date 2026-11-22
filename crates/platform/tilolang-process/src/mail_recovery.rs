@@ -15,7 +15,9 @@ use tilolang_tilo::{
 
 pub(crate) const APP: &str = "so.tilo.mail";
 pub(crate) const ACTION: &str = "recover_previous";
-const DRAFT_FIELDS: [&str; 7] = [
+/// A draft's fields, in the order its send hands them to `smtp.send`, so a scheduled send that
+/// never went is recognised by them.
+const DRAFT_FIELDS: [&str; 8] = [
     "from",
     "to",
     "cc",
@@ -23,6 +25,7 @@ const DRAFT_FIELDS: [&str; 7] = [
     "body",
     "in_reply_to",
     "references",
+    "invitation",
 ];
 const BATCH: usize = 16;
 const THREAD_FIELDS: &[&str] = &[

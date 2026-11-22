@@ -316,7 +316,7 @@ action recover_previous(
         + m.recovered_signatures.len()
     for row in drafts {
         let key = row.at(0) ?? ""
-        if row.len() == 8 and key != "" and not m.recovered_drafts.contains(key) {
+        if row.len() == 9 and key != "" and not m.recovered_drafts.contains(key) {
             m.drafts.insert(
                 Draft(
                     from: row.at(1) ?? "",
@@ -326,6 +326,7 @@ action recover_previous(
                     body: row.at(5) ?? "",
                     in_reply_to: row.at(6) ?? "",
                     references: row.at(7) ?? "",
+                    invitation: row.at(8) ?? "",
                 ),
             )
             m.recovered_drafts.add(key)
