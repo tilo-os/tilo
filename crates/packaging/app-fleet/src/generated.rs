@@ -169,7 +169,7 @@ pub(super) const SURFACES: &[(&str, &str)] = &[
     ),
     (
         "so.tilo.model-providers",
-        "# Written by `tilo-app surface`; review changes like an API change.\n\nformat = 2\n\n[[resources]]\nkind = \"model-providers.root\"\nlabel = \"Model providers\"\nversion = 1\nshows = [\"enter-provider-key\", \"name-other-provider\"]\n\n",
+        "# Written by `tilo-app surface`; review changes like an API change.\n\nformat = 2\n\n[[resources]]\nkind = \"model-providers.root\"\nlabel = \"Model providers\"\nversion = 1\nshows = [\"enter-provider-key\", \"name-other-provider\"]\n\n[[resources.verbs]]\nid = \"list-presets\"\nkind = \"read\"\n",
     ),
     (
         "so.tilo.monitor",

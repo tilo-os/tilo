@@ -8,3 +8,6 @@ label = "Model providers"
 version = 1
 shows = ["enter-provider-key", "name-other-provider"]
 
+[[resources.verbs]]
+id = "list-presets"
+kind = "read"

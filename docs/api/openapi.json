@@ -17824,6 +17824,12 @@
         "required": [],
         "description": ""
       },
+      "model-providers.root.list-presets.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "monitor.processes.refresh.Arguments": {
         "type": "object",
         "properties": {},
@@ -39072,6 +39078,12 @@
       "resource": "tilo.contacts.identities",
       "action": "forget-endpoint",
       "arguments": "#/components/schemas/tilo.contacts.identities.forget-endpoint.Arguments"
+    },
+    {
+      "app": "so.tilo.model-providers",
+      "resource": "model-providers.root",
+      "action": "list-presets",
+      "arguments": "#/components/schemas/model-providers.root.list-presets.Arguments"
     },
     {
       "app": "so.tilo.monitor",
