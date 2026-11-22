@@ -242,13 +242,23 @@ fn serve(
     };
     while let Ok(request) = read_action_frame::<Request>(&mut stream) {
         // A request an app makes while it serves a call names the call: it is decided as the
-        // one who made it.
-        let (call, request) = match request {
-            Request::ForCall {
-                invocation,
-                request,
-            } => (Some(invocation), *request),
-            request => (None, request),
+        // one who made it. A connection the launcher opened for one call serves that call alone.
+        let (call, request) = match (handshake.call, request) {
+            (
+                None,
+                Request::ForCall {
+                    invocation,
+                    request,
+                },
+            ) => (Some(invocation), *request),
+            (Some(_), Request::ForCall { .. }) => {
+                let _ = write_action_frame(
+                    &mut stream,
+                    &Response::Denied("this connection serves one call and names no other".into()),
+                );
+                continue;
+            }
+            (call, request) => (call, request),
         };
         let bound = Bound {
             workspace: &workspace,
@@ -1507,6 +1517,7 @@ params = []
                             workspace_id: workspace.to_string(),
                             app_id: "so.tilo.notes".into(),
                             surface: None,
+                            call: None,
                         },
                         presentation_version: version,
                     },
@@ -1607,6 +1618,7 @@ params = []
                     workspace_id: workspace.to_string(),
                     app_id: "so.tilo.notes".into(),
                     surface: None,
+                    call: None,
                 },
             )
             .expect("handshake");
@@ -1794,6 +1806,7 @@ params = []
                     workspace_id: WorkspaceId::new().to_string(),
                     app_id: "so.tilo.file-explorer".into(),
                     surface: None,
+                    call: None,
                 },
             )
             .unwrap();

@@ -315,12 +315,32 @@ pub fn resolve_identity_bind(
     resolve_identity_bind_for_contract(app_id, workspace_id, no_services, None)
 }
 
+/// [`resolve_identity_bind`] for a connection that serves the one call `call`: every request on
+/// it is decided as whoever made that call, and the app cannot name another.
+pub fn resolve_identity_bind_for_call(
+    app_id: &str,
+    workspace_id: &str,
+    call: [u8; 16],
+) -> Result<Option<ResolvedService>, ServiceError> {
+    resolve_identity(app_id, Some(workspace_id), false, None, Some(call))
+}
+
 /// Validate a signed service requirement and use the canonical identity handshake.
 pub fn resolve_identity_bind_for_contract(
     app_id: &str,
     workspace_id: Option<&str>,
     no_services: bool,
     requirement: Option<&ServiceReq>,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    resolve_identity(app_id, workspace_id, no_services, requirement, None)
+}
+
+fn resolve_identity(
+    app_id: &str,
+    workspace_id: Option<&str>,
+    no_services: bool,
+    requirement: Option<&ServiceReq>,
+    call: Option<[u8; 16]>,
 ) -> Result<Option<ResolvedService>, ServiceError> {
     let presentation = requirement.is_some_and(|requirement| {
         requirement.version == tilo_identity_client::wire::PRESENTATION_SERVICE_VERSION
@@ -343,7 +363,7 @@ pub fn resolve_identity_bind_for_contract(
             return Ok(None);
         }
     };
-    write_identity_handshake_negotiated(&mut stream, app_id, workspace_id, presentation)
+    write_identity_handshake_negotiated(&mut stream, app_id, workspace_id, presentation, call)
         .map_err(|source| ServiceError::OpenFailed { path, source })?;
     Ok(Some(ResolvedService {
         name: IDENTITY_SERVICE.to_string(),
@@ -359,7 +379,7 @@ pub fn write_identity_handshake(
     app_id: &str,
     workspace_id: &str,
 ) -> std::io::Result<()> {
-    write_identity_handshake_negotiated(stream, app_id, workspace_id, false)
+    write_identity_handshake_negotiated(stream, app_id, workspace_id, false, None)
 }
 
 fn write_identity_handshake_negotiated(
@@ -367,12 +387,14 @@ fn write_identity_handshake_negotiated(
     app_id: &str,
     workspace_id: &str,
     presentation: bool,
+    call: Option<[u8; 16]>,
 ) -> std::io::Result<()> {
     let handshake = tilo_identity_client::wire::PresentationHandshake {
         handshake: tilo_identity_client::wire::Handshake {
             workspace_id: workspace_id.to_owned(),
             app_id: app_id.to_owned(),
             surface: None,
+            call,
         },
         presentation_version: if presentation {
             tilo_identity_client::wire::PRESENTATION_VERSION
@@ -1025,7 +1047,7 @@ mod tests {
         {
             for enabled in [false, true] {
                 let (mut writer, mut reader) = UnixStream::pair().unwrap();
-                write_identity_handshake_negotiated(&mut writer, "so.tilo.notes", "workspace-7", enabled)
+                write_identity_handshake_negotiated(&mut writer, "so.tilo.notes", "workspace-7", enabled, None)
                     .unwrap();
                 drop(writer);
                 let bytes = tilo_identity_client::wire::HANDSHAKE_FRAMING
@@ -1046,6 +1068,7 @@ mod tests {
                             workspace_id: "workspace-7".into(),
                             app_id: "so.tilo.notes".into(),
                             surface: None,
+                            call: None,
                         })
                         .unwrap()
                     );

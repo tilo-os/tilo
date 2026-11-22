@@ -811,6 +811,7 @@ impl Server {
                         cert: identity.device_cert.clone(),
                     },
                     cfg.state_root.clone(),
+                    app_serving.clone(),
                 )),
             );
             push_background_task(

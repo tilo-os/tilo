@@ -173,6 +173,8 @@ const SLOW_JOB: Duration = Duration::from_secs(2);
 
 struct Shared {
     log: Mutex<InvocationLog>,
+    /// The pages of the apps this device runs itself, once it runs them ([`pages::Hosted`]).
+    hosted: pages::Hosted,
     link: OnceLock<Arc<dyn WorkspaceDocumentsLink>>,
     jobs: Mutex<Option<Jobs>>,
     /// How the service joins workspaces, once its thread runs.
@@ -236,6 +238,7 @@ impl WorkspaceActions {
         Self {
             shared: Arc::new(Shared {
                 log: Mutex::new(InvocationLog::default()),
+                hosted: pages::Hosted::default(),
                 link: OnceLock::new(),
                 jobs: Mutex::new(None),
                 own_device: OnceLock::new(),

@@ -19,12 +19,46 @@ use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_server_protocol::page::{
     OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal, encode_part,
 };
+use tilo_server_protocol::page_window::{HostedOpened, HostedPage, HostedPages};
 
 /// The app name a page address carries for the workspace's search
 /// (`/w/<workspace>/search/<words>`): not an app of the catalogue but the
 /// system's own search over what the workspace holds, which the server asks
 /// and renders like a page.
 const SEARCH_APP: &str = "search";
+
+/// The number every page of an app this device runs itself carries: the service numbers its own
+/// pages from one up, so none of them ever carries it.
+const HOSTED_PAGE: u64 = 1 << 63;
+
+/// The pages of the apps a workspace installed that this device runs itself, in their own
+/// processes ([`HostedPages`]): shown beside the catalogue's, and found by the same names.
+#[derive(Default)]
+pub(super) struct Hosted {
+    pages: std::sync::OnceLock<std::sync::Arc<dyn HostedPages>>,
+    open: std::sync::Mutex<HashMap<u64, std::sync::Arc<dyn HostedPage>>>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+impl Hosted {
+    fn open(&self) -> std::sync::MutexGuard<'_, HashMap<u64, std::sync::Arc<dyn HostedPage>>> {
+        self.open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The apps of `workspace_id` this device runs itself, by page name (`notes`), each with its
+    /// name.
+    pub(super) fn apps(&self, workspace_id: WorkspaceId) -> Vec<(String, String)> {
+        self.pages.get().map_or_else(Vec::new, |pages| {
+            pages
+                .apps(workspace_id)
+                .into_iter()
+                .map(|(app, title)| (page_app_name(&app).to_owned(), title))
+                .collect()
+        })
+    }
+}
 
 /// Whether `error` says the record is not ready yet, as a replica taking its
 /// parts in does.
@@ -262,6 +296,60 @@ impl WorkspaceActions {
         address: PageAddress,
     ) -> Pending<Result<OpenedPage, PageRefusal>> {
         let (done, answer) = pending();
+        // An app this device runs itself shows its page from its own process; any other is the
+        // catalogue's.
+        let hosted = self
+            .shared
+            .hosted
+            .pages
+            .get()
+            .filter(|_| !address.is_home() && address.app != SEARCH_APP);
+        match hosted {
+            Some(pages) => {
+                let (this, caller) = (self.clone(), caller.clone());
+                pages
+                    .open(workspace_id, &address.app, &caller, address.show.clone())
+                    .then(move |opened| match opened {
+                        Some(Err(PageRefusal::NoSuchApp)) => {
+                            this.open_catalogue_page(workspace_id, &caller, address, done);
+                        }
+                        Some(opened) => done.complete(opened.map(|opened| this.held(opened))),
+                        None => done.complete(Err(unavailable("the page's app stopped"))),
+                    });
+            }
+            None => self.open_catalogue_page(workspace_id, caller, address, done),
+        }
+        answer
+    }
+
+    /// `opened`, held until its person closes it, under a number of its own.
+    fn held(&self, opened: HostedOpened) -> OpenedPage {
+        let hosted = &self.shared.hosted;
+        let page = HOSTED_PAGE
+            | hosted
+                .next
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        hosted.open().insert(page, opened.page);
+        OpenedPage {
+            page,
+            title: opened.title,
+            css: opened.css,
+            body: opened.body,
+        }
+    }
+
+    /// Show the pages of the apps this device runs itself beside the catalogue's.
+    pub fn host_pages(&self, pages: std::sync::Arc<dyn HostedPages>) {
+        let _ = self.shared.hosted.pages.set(pages);
+    }
+
+    fn open_catalogue_page(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        address: PageAddress,
+        done: Completer<Result<OpenedPage, PageRefusal>>,
+    ) {
         let job = PageJob::Open {
             workspace_id,
             caller: Box::new(caller.clone()),
@@ -273,7 +361,6 @@ impl WorkspaceActions {
         {
             done.complete(Err(unavailable("the workspace's pages are not served")));
         }
-        answer
     }
 
     /// Act on `page` of `workspace_id` as its person did (`act`: the element's
@@ -286,6 +373,13 @@ impl WorkspaceActions {
         page: u64,
         act: Option<(u32, Option<String>, PageAction)>,
     ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
+        if page & HOSTED_PAGE != 0 {
+            let held = self.shared.hosted.open().get(&page).cloned();
+            return match held {
+                Some(held) => held.act(act),
+                None => Pending::ready(Err(unavailable("the page is closed"))),
+            };
+        }
         let (done, answer) = pending();
         let job = PageJob::Act {
             workspace_id,
@@ -303,6 +397,10 @@ impl WorkspaceActions {
 
     /// Let go of `page`: its person closed it.
     pub fn close_page(&self, workspace_id: WorkspaceId, page: u64) {
+        if page & HOSTED_PAGE != 0 {
+            self.shared.hosted.open().remove(&page);
+            return;
+        }
         let _ = self.submit(Job::Page(Box::new(PageJob::Close { workspace_id, page })));
     }
 }
@@ -491,12 +589,32 @@ impl Worker {
             None => (Vec::new(), Vec::new()),
         };
         let here = here(&present);
-        let mut apps: Vec<_> = self
+        // The apps this device runs itself first, by their page names; the catalogue's after,
+        // each named once.
+        let hosted = self.shared.hosted.apps(workspace_id);
+        let mut apps: Vec<(String, String, String)> = hosted
+            .iter()
+            .map(|(name, title)| (name.clone(), title.clone(), initial_tile(title)))
+            .collect();
+        for app in self
             .catalogue
             .iter()
             .filter(|app| app.keeps_workspace_resource())
-            .collect();
-        apps.sort_by_key(|app| app.title().to_owned());
+        {
+            let name = page_app_name(app.app_id());
+            if hosted.iter().any(|(hosted, _)| hosted == name) {
+                continue;
+            }
+            // Every tile holds its icon's place, so a grid of apps reads as rows: an app with no
+            // artwork of its own stands as its first letter on the same tile.
+            let icon = match &app.icon {
+                ui::IconDescriptor::Named(icon) => ui::icons::Icon::from_name(icon)
+                    .map_or_else(|| initial_tile(app.title()), ui::icons::icon_svg),
+                ui::IconDescriptor::Glyph(_) => initial_tile(app.title()),
+            };
+            apps.push((name.to_owned(), app.title().to_owned(), icon));
+        }
+        apps.sort_by(|a, b| a.1.cmp(&b.1));
         let mut body = String::from(
             "<div class=\"tilo-view tilo-home\" data-p=\"0\">\
              <h1 class=\"tilo-home-title\">Tilo</h1>",
@@ -556,24 +674,12 @@ impl Worker {
             );
         }
         body.push_str("</ul></section><ul class=\"tilo-home-apps\">");
-        for app in apps {
-            let name = app
-                .app_id()
-                .rsplit_once('.')
-                .map_or_else(|| app.app_id(), |(_, last)| last);
-            // Every tile holds its icon's place, so a grid of apps reads as
-            // rows: an app with no artwork of its own stands as its first
-            // letter on the same tile.
-            let icon = match &app.icon {
-                ui::IconDescriptor::Named(icon) => ui::icons::Icon::from_name(icon)
-                    .map_or_else(|| initial_tile(app.title()), ui::icons::icon_svg),
-                ui::IconDescriptor::Glyph(_) => initial_tile(app.title()),
-            };
+        for (name, title, icon) in apps {
             let _ = write!(
                 body,
                 "<li><a class=\"tilo-home-app\" href=\"/w/{workspace_id}/{name}\">{icon}\
                  <span>{}</span></a></li>",
-                escape(app.title())
+                escape(&title)
             );
         }
         body.push_str("</ul></div>");
