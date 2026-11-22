@@ -719,15 +719,21 @@ class WrapperHandedProgramTests(unittest.TestCase):
         "app-cli": ("tilo-install",),
     }
 
-    def run_wrapper(self, packages: str, handed: tuple[str, ...] = (), broken: str = ""):
+    def run_wrapper(self, packages: str, handed: tuple[str, ...] = (), broken: str = "",
+                    command: tuple[str, ...] = ()):
         """A shard of PACKAGES as t starts one, through the production wrapper: the result, the
-        cargo invocations it made, and the paths of the artifacts handed to it."""
+        cargo invocations it made, and the paths of the artifacts handed to it. COMMAND is the
+        wrapped command, the shard's nextest run by default. The tree's tools/test-env.sh records
+        that it ran, as a line `test-env` among the invocations."""
         with tempfile.TemporaryDirectory() as work:
             tree, programs = Path(work) / "tree", Path(work) / "bin"
             (tree / "tools" / "ci").mkdir(parents=True)
             programs.mkdir()
             shutil.copy(T_NEXTEST, tree / "tools" / "ci" / "nextest.sh")
             shutil.copy(T_NEXTEST.parent / "handed.sh", tree / "tools" / "ci" / "handed.sh")
+            (tree / "tools" / "test-env.sh").write_text(
+                '#!/bin/sh\nprintf "test-env\\n" >>"$GIVEN"\nexec "$@"\n'
+            )
             argv = Path(work) / "argv"
             (programs / "cargo").write_text(
                 '#!/bin/sh\nprintf "%s\\n" "$*" >>"$GIVEN"\n'
@@ -746,8 +752,8 @@ class WrapperHandedProgramTests(unittest.TestCase):
                 path = Path(work) / "not-executable"
                 path.write_text("")
                 env[f"NEXTEST_BIN_EXE_{broken}"] = str(path)
-            command = ["cargo", "nextest", "run", "--locked", "--profile", "ci",
-                       "-E", "all()", "--test", "it"]
+            command = list(command) or ["cargo", "nextest", "run", "--locked", "--profile", "ci",
+                                        "-E", "all()", "--test", "it"]
             result = subprocess.run(["bash", str(tree / "tools" / "ci" / "nextest.sh"), *command],
                                     env=env, capture_output=True, text=True, check=False)
             ran = argv.read_text().splitlines() if argv.exists() else []
@@ -767,6 +773,30 @@ class WrapperHandedProgramTests(unittest.TestCase):
                 result, ran, _ = self.run_wrapper(package)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(ran, [*(self.BUILDS[program] for program in programs), self.RUN])
+
+    def test_a_family_build_through_the_wrapper_starts_no_test(self):
+        # t's build of a family lists its test binaries and then builds the programs their tests
+        # start, both through this wrapper. Neither starts a test: the listing builds no program
+        # for one, and the programs' build runs as given, outside the test environment, whose
+        # steps (the native NTFS images among them) it waited minutes for.
+        listing = ("cargo", "nextest", "list", "--list-type", "full", "-p", "tilo-session",
+                   "-E", "all()")
+        started = ("cargo", "build", "--message-format", "json", "--locked",
+                   "-p", "tilolang-process", "--bin", "tilolang-process")
+        for command in (listing, started):
+            for package in self.PROGRAMS:
+                with self.subTest(command=command[1], package=package):
+                    result, ran, _ = self.run_wrapper(package, command=command)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(ran, [" ".join(command[1:])], "the command alone")
+
+    def test_a_cargo_test_runs_in_the_test_environment(self):
+        # A command that starts tests itself, not through nextest, still gets the environment.
+        command = ("cargo", "test", "--locked", "-p", "tilo-agent-session")
+        result, ran, _ = self.run_wrapper("tilo-agent-session", handed=("tilolang-process",),
+                                          command=command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(ran, ["test-env", " ".join(command[1:])])
 
     def test_a_handed_program_that_cannot_run_fails_instead_of_building(self):
         # Building here would hide a broken handoff and compile the program in every shard again.

@@ -6,7 +6,11 @@
 # It prepares what the packages under test need beyond the builder image,
 # then runs the command: a nextest run sets up its test environment itself
 # (the ci profile's setup scripts, .config/nextest.toml), wherever cargo runs
-# it; any other command runs under tools/test-env.sh. What only a package's
+# it; any other command that runs tests runs under tools/test-env.sh. A command
+# that only builds (t's listing of a family's test binaries, and its builds of
+# the programs those tests start) runs as given: it starts no test, so it
+# neither waits for the test environment's steps nor carries their values
+# into its units. What only a package's
 # tests need (its native images, the PDF sandbox, the emulated TPM, a render
 # helper, the PAM module) is a setup step of that profile too: in this
 # wrapper's environment every one of them would key each build script's and
@@ -52,6 +56,18 @@ tested=" "
 explicit=0
 nextest=0
 [[ ${1:-} == cargo && ${2:-} == nextest ]] && nextest=1
+# Whether the command starts tests. t's build of a test family lists the test binaries (`cargo
+# nextest list`, which builds them) and builds the programs their tests start (`cargo build`), both
+# through this wrapper: neither starts a test, so neither needs a program built for one or the test
+# environment. In that environment `cargo build` waited minutes for the native NTFS images, which
+# only tilo-ntfs-helper's tests read, in every build of a family whose packages start a program.
+runs_tests=1
+if [[ ${1:-} == cargo ]]; then
+    case ${2:-} in
+        build | check | clippy | doc) runs_tests=0 ;;
+        nextest) [[ ${3:-} == run ]] || runs_tests=0 ;;
+    esac
+fi
 arguments=("$@")
 # What follows `--` goes to the test binaries (`cargo test -p NAME -- FILTER`): every option this
 # wrapper adds goes before it.
@@ -114,7 +130,7 @@ source "$root/tools/ci/handed.sh"
 
 # The app-cli and package-service trust tests execute the installer, which no package
 # depends on. A run handed it has it where the build left it, beside the tests' own build.
-if tests app-cli package-service; then
+if (( runs_tests )) && tests app-cli package-service; then
     path=$(handed_bin tilo-install)
     [[ -n $path ]] || cargo build --locked -p install --bin tilo-install
 fi
@@ -122,7 +138,7 @@ fi
 # A task's programs run in the tilolang host's own program, which the session and an agent's
 # API start beside themselves and no package depends on. A run handed it has it where the build
 # left it, beside the tests' own build.
-if tests tilo-agent-session tilo-session; then
+if (( runs_tests )) && tests tilo-agent-session tilo-session; then
     path=$(handed_bin tilolang-process)
     [[ -n $path ]] || cargo build --locked -p tilolang-process --bin tilolang-process
 fi
@@ -243,7 +259,7 @@ done
 (( ${#tail[@]} > 1 )) && timed=0
 
 environment=()
-(( nextest )) || environment=(bash "$root/tools/test-env.sh")
+(( nextest || ! runs_tests )) || environment=(bash "$root/tools/test-env.sh")
 if (( ! timed )); then
     exec "${environment[@]}" "${arguments[@]}" "${tail[@]}"
 fi
