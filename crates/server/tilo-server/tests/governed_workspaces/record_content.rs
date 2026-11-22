@@ -15,20 +15,28 @@ const PHOTOS: &str = "so.tilo.photos";
 
 /// The host's next request for `address` of `PHOTOS`, as `session` hears it.
 async fn asked_for(session: &ServerCoeditSession, address: &str) -> Vec<u8> {
+    asked_for_each(session, &[address]).await.remove(0)
+}
+
+/// The host's next request for each of `addresses` of `PHOTOS`, in that order, as `session`
+/// hears them in whatever order they come.
+async fn asked_for_each(session: &ServerCoeditSession, addresses: &[&str]) -> Vec<Vec<u8>> {
     tilo_test_env::within("the host asks for the record's content", async {
-        loop {
+        let mut asks: Vec<Option<Vec<u8>>> = vec![None; addresses.len()];
+        while asks.iter().any(Option::is_none) {
             let Ok(Some(Inbound::Presence { payload, .. })) =
                 tokio::time::timeout(Duration::from_millis(50), session.recv()).await
             else {
                 continue;
             };
-            if matches!(
-                postcard::from_bytes::<NeighbourMsg>(&payload),
-                Ok(NeighbourMsg::DocumentContentWant { hash, .. }) if hash == address
-            ) {
-                return payload;
+            if let Ok(NeighbourMsg::DocumentContentWant { hash, .. }) =
+                postcard::from_bytes::<NeighbourMsg>(&payload)
+                && let Some(at) = addresses.iter().position(|address| *address == hash)
+            {
+                asks[at].get_or_insert(payload);
             }
         }
+        asks.into_iter().flatten().collect()
     })
     .await
 }
@@ -280,6 +288,148 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     let reloaded = tilo_content::ContentStore::memory().sealing();
     reloaded.put_public(&delivered).unwrap();
     assert_eq!(reloaded.read(&reference).as_deref(), Some(&picture[..]));
+
+    server.shutdown().await;
+}
+
+/// An ask the host sent that nothing answers, the ask or its answer lost on a link that fell
+/// behind, is asked again once it lapses, though nothing writes to the record that names the
+/// content since: the host keeps all the workspace's content once the device that has it is
+/// there to answer.
+#[test]
+fn content_whose_ask_went_unanswered_is_asked_for_again() {
+    // The host reads the wall clock on its own threads, so the test takes the
+    // process to itself and moves the clock past an ask's lifetime instead of
+    // waiting it out.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "content_whose_ask_went_unanswered_is_asked_for_again",
+        || {
+            let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .enable_all()
+                .build()
+                .expect("a runtime for this test alone")
+                .block_on(an_unanswered_ask_is_asked_again(process));
+        },
+    );
+}
+
+async fn an_unanswered_ask_is_asked_again(process: tilo_clock::testing::OwnProcess) {
+    let started = tilo_clock::wall();
+    let _held = tilo_clock::testing::hold_wall_everywhere(process, started);
+    let alice = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
+    let alice_home = alice.enrol("alice-home", DeviceCapabilities::member());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = start(state.path(), &alice, &alice_home).await;
+    let workspace = create_and_enter(&server, &laptop, "Photos").await;
+    let mut peer = sealed_documents::join(
+        &server,
+        &laptop,
+        &workspace.workspace,
+        &bob,
+        &phone,
+        [7; 32],
+    )
+    .await
+    .unwrap();
+    let session = session(&server, &phone, workspace.workspace_id).await;
+    crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
+        .await;
+
+    // Bob's page keeps two pictures and names both in its record.
+    let store = tilo_content::ContentStore::memory().sealing();
+    let mut doc = AutoCommit::new();
+    let mut pictures = Vec::new();
+    for name in ["answered", "lost"] {
+        let picture = format!("the picture whose ask is {name}").into_bytes();
+        let reference = store.put(&picture).unwrap();
+        let address = tilo_content::content_address(&reference).unwrap();
+        doc.put(
+            ROOT,
+            name,
+            format!(
+                "blake3:{}:{}:{reference}",
+                blake3::hash(&picture).to_hex(),
+                picture.len()
+            ),
+        )
+        .unwrap();
+        pictures.push((address.clone(), store.read(&address).unwrap()));
+    }
+    doc.commit_edit("fixture", "pictures");
+    let created = peer
+        .publication_mut()
+        .publish_document(
+            PHOTOS,
+            "",
+            AutoCommit::new().save(),
+            &phone.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    publish(&session, &created);
+    let message = peer
+        .publication_mut()
+        .publish_incremental(
+            PHOTOS,
+            "",
+            doc.save_after(&[]),
+            &phone.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    publish(&session, &message);
+    let [(answered, answered_bytes), (lost, lost_bytes)] = <[_; 2]>::try_from(pictures).unwrap();
+
+    let answer = |ask: &[u8], address: &str, bytes: &[u8]| {
+        for piece in neighbour_wire::content::answer(
+            &phone.device_pubkey(),
+            &alice_home.device_pubkey(),
+            ask,
+            |app, cluster, wanted| {
+                (app == PHOTOS && cluster == workspace.workspace && wanted == address)
+                    .then(|| bytes.to_vec())
+            },
+        ) {
+            session
+                .publish_record_content(alice_home.device_pubkey(), piece)
+                .expect("the session carries every piece");
+        }
+    };
+    // The host asks for both; the answer to one of them never arrives.
+    let asks = asked_for_each(&session, &[&answered, &lost]).await;
+    answer(&asks[0], &answered, &answered_bytes);
+    says_it_lacks(
+        &server,
+        &workspace.workspace,
+        1,
+        "the host keeps the picture whose answer arrived",
+    )
+    .await;
+
+    // Long after, with no write to the record since, the host asks again.
+    let _later = tilo_clock::testing::hold_wall_everywhere(
+        process,
+        started
+            .checked_add(Duration::from_millis(
+                neighbour_wire::content::WANT_TTL_MS + 1_000,
+            ))
+            .expect("a time past an ask's lifetime"),
+    );
+    let ask = asked_for(&session, &lost).await;
+    answer(&ask, &lost, &lost_bytes);
+    says_it_lacks(
+        &server,
+        &workspace.workspace,
+        0,
+        "the host keeps the picture whose first ask went unanswered",
+    )
+    .await;
 
     server.shutdown().await;
 }
