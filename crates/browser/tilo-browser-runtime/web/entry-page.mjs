@@ -26,7 +26,7 @@ import {loadRuntime} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation, profileDevice, withDeviceKey} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceKey} from './device-key.mjs';
-import {createIdentityActions} from './identity-actions.mjs';
+import {createIdentityActions, setupOrigin} from './identity-actions.mjs';
 import {firstScreen, openSignIn, setupDone} from './first-screen.mjs';
 import {fetchPersonProfile} from './profile-photos.mjs';
 import {askOwnPairing, deviceLabel, ofThisSite, ownPairing, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret} from './pairing.mjs';
@@ -37,7 +37,7 @@ import {hostUnreachable, refusalText, rejoinedName, retryUnreachable} from './se
 import {deviceRemoved} from './session-refusal.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
 import {isInvitedServer, invitedOrigin, nameInvitedServer, siteNames, siteServer} from './site-host.mjs';
-import {chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keptMembership, listedWorkspaces, publicListings, membershipOrigins, ownDesktopOpen, pairViaHost, rememberEntered, settleFailedWorkspace, unmarkOwnPairing, workspaceChoices} from './workspaces.mjs';
+import {chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keptMembership, listedWorkspaces, publicListings, membershipOrigins, ownDesktopOpen, pairViaHost, rememberEntered, settleFailedWorkspace, unmarkOwnPairing, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {initial, shownName} from './person.mjs';
 
 /** Set for the one reload that joins an embed's visiting page as the person. */
@@ -499,6 +499,46 @@ export async function startEntryPage({mode}) {
     return (userPublicKey, invite) => deps.pairDevice({origin: listed.host.origin,
       workspace: listed.workspace ?? null, userPublicKey, invite, listed});
   }
+  /**
+   * Hold the page the entry would have handed over (`entry.mjs`,
+   * `holdFirstScreen`) while a first visit's first screen is in play: release
+   * the screen now that the site let the person in (`reveal`), offer the codes
+   * its buttons copy, and, when the person leaves it (skipped, or their agent
+   * is in), open the workspace that is theirs — never the shared workspace
+   * the entry admitted this browser to behind the screen. Resolves to whether
+   * the entry was held.
+   */
+  function holdFirstScreen(page) {
+    if (!firstScreen || embed) return false;
+    const peer = page.peer;
+    firstScreen.reveal();
+    const identity = currentIdentity();
+    const origin = setupOrigin({peer, home: page.entry?.home});
+    const listed = peer ? workspaceAt(listedWorkspaces({home: page.entry?.home}), peer.origin) : null;
+    if (identity && peer?.workspace && origin && runtime?.createLoginCode && peer.userPublicKey === identity.userPublicKey) {
+      offerFirstScreenCodes({origin, identity, runtime, link: grammar(runtime, page.entry), home: homeAdmissionWorkspace(page.entry),
+        pair: pairSignIn(listed)});
+    } else {
+      firstScreen.unavailable({code: 'no-codes'});
+    }
+    firstScreen.whenDone(async ({signedIn}) => {
+      // A sign-in loads the page as the person (`signInAs`): nothing of this
+      // tab's is opened.
+      if (signedIn) return setupDone();
+      const own = peer ? await askOwnWorkspace(peer) : null;
+      setupDone();
+      if (own) {
+        // Chosen before the setup is over, so a bare entry opens this
+        // workspace from now on rather than the site's home.
+        remembering(() => chooseWorkspace({origin: own.origin, workspace: own.id}));
+        rememberPageWorkspace({workspace: own.id, name: own.name});
+        globalThis.location.assign(`${page.entry.base}w/${own.id}`);
+        return;
+      }
+      globalThis.location.assign(page.url);
+    });
+    return true;
+  }
   const deps = {
     loadRuntime: async () => {
       runtime = await loadRuntime();
@@ -532,14 +572,15 @@ export async function startEntryPage({mode}) {
     // which no address carries — and a site that frames this page hears what
     // it hears from a page it mounted.
     onPageFirst: peer => {
-      try {
-        sessionStorage.setItem('tilo-page-workspace', JSON.stringify({
-          workspace: peer?.workspace ?? null,
-          name: workspaceName ?? peer?.workspaceName ?? null,
-        }));
-      } catch { /* No storage: the page names no workspace. */ }
+      rememberPageWorkspace({workspace: peer?.workspace ?? null, name: workspaceName ?? peer?.workspaceName ?? null});
       if (embed && enteredViaEntry) tell('joined');
     },
+    // A first visit sets itself up before it is in any workspace: the entry
+    // keeps the browser on its first screen, holding the page it would have
+    // handed over (`url`), until the person is done or skips, then opens the
+    // person's own workspace — or, where the host keeps none, the page it
+    // held. `page` is `{url, workspace, entry, peer}`.
+    holdFirstScreen: page => holdFirstScreen(page),
     // An embed always shows the workspace the embedding site names.
     chosenWorkspace: () => (embed ? null : remembering(() => chosenWorkspace())),
     onScope: next => {
@@ -913,6 +954,14 @@ function remembering(read) {
     console.warn('workspaces: this browser cannot remember them', error);
     return null;
   }
+}
+
+/** Keep the workspace and the name the page the entry hands the browser to
+ * shows (`page.mjs`), which no address carries. */
+function rememberPageWorkspace({workspace, name}) {
+  try {
+    sessionStorage.setItem('tilo-page-workspace', JSON.stringify({workspace: workspace ?? null, name: name ?? null}));
+  } catch { /* No storage: the page names no workspace. */ }
 }
 
 /** The remembered workspace `scope` names, if this browser entered it as a member. */

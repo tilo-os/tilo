@@ -12,7 +12,8 @@
  * 3. gets into the workspace (`admission.mjs`), which makes this browser a
  *    device of it;
  * 4. hands the browser to the page the server renders of that workspace
- *    (`/w/<workspace>/<app>`).
+ *    (`/w/<workspace>/<app>`), unless a first visit's first screen holds it
+ *    until its setup is done (`deps.holdFirstScreen`).
  */
 import {admit} from './admission.mjs';
 import {takeLinkSecrets} from './link-secrets.mjs';
@@ -230,7 +231,13 @@ export async function boot({mode, window = globalThis, status, deps, onStep = ()
     const resource = typeof route.target.resource === 'string'
       ? route.target.resource : route.target.resource?.id;
     const show = app && resource ? `/${encodeURIComponent(resource)}` : '';
-    window.location.replace(`${entry.base}w/${route.target.scope.workspace}${app}${show}`);
+    const url = `${entry.base}w/${route.target.scope.workspace}${app}${show}`;
+    // A first visit sets itself up before it is in a workspace of its own:
+    // the entry keeps the browser on its first screen, holding the page it
+    // would have handed over, until the person is done or skips
+    // (`deps.holdFirstScreen`).
+    if (deps.holdFirstScreen?.({url, workspace: route.target.scope.workspace, entry, peer})) return null;
+    window.location.replace(url);
     return null;
   }
   // A link that opens no workspace (the person's own desktop, a peer that

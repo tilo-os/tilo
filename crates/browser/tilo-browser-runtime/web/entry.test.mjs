@@ -125,6 +125,65 @@ test('the home workspace opens through its host entry, and the address becomes i
   assert.deepEqual(replaced, ['https://workspaces.example/open/w/WORKSPACE'], 'the page takes the browser from there');
 });
 
+test('a first visit’s first screen holds the page, and the entry loads it only once the screen lets go', async () => {
+  // A newcomer sets up their own workspace before anything else: while the
+  // screen that does it is on the page, the entry keeps the browser it was
+  // admitted as, and the page it would have opened waits in the page's hands.
+  const home = {name: 'Commons', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/'};
+  const runtime = runtimeFake({
+    parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
+    formatLink: () => 'https://workspaces.example/open/#/@workspaces.example/w/WORKSPACE',
+    ...entering('entry'),
+  });
+  const peer = {workspace: 'WORKSPACE', whenReady: async () => {}};
+  const replaced = [];
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://workspaces.example/open/', hash: '', replace: url => replaced.push(url)},
+    history: {state: null, replaceState: (state, title, url) => replaced.push(url), pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const held = [];
+  const deps = {
+    loadRuntime: async () => runtime,
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    readAccounts: async () => [],
+    enterViaHost: async () => peer,
+    holdFirstScreen: page => { held.push(page); return true; },
+  };
+  assert.equal(await boot({mode: 'desktop', window, deps}), null);
+  assert.deepEqual(replaced, [], 'nothing is loaded under the first screen');
+  assert.deepEqual(held.map(page => page.url), ['https://workspaces.example/open/w/WORKSPACE']);
+  assert.equal(held[0].workspace, 'WORKSPACE');
+  assert.equal(held[0].entry.base, 'https://workspaces.example/open/', 'the page it holds opens the person’s own workspace');
+});
+
+test('a visit whose page holds nothing is handed over as before', async () => {
+  const home = {name: 'Commons', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/'};
+  const runtime = runtimeFake({
+    parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
+    formatLink: () => 'https://workspaces.example/open/#/@workspaces.example/w/WORKSPACE',
+    ...entering('entry'),
+  });
+  const peer = {workspace: 'WORKSPACE', whenReady: async () => {}};
+  const replaced = [];
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://workspaces.example/open/', hash: '', replace: url => replaced.push(url)},
+    history: {state: null, replaceState: (state, title, url) => replaced.push(url), pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: async () => runtime,
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    readAccounts: async () => [],
+    enterViaHost: async () => peer,
+    holdFirstScreen: () => false,
+  };
+  assert.equal(await boot({mode: 'desktop', window, deps}), null);
+  assert.deepEqual(replaced, ['https://workspaces.example/open/w/WORKSPACE'], 'the page takes the browser over');
+});
+
 test('an invitation whose server only it names admits there, and the address names that server from then on', async () => {
   // A link carrying an invitation and no server of its own (`#/w/<workspace>?invite=…`): the
   // invitation names a server reached over iroh alone, which the page joins at, and the next
