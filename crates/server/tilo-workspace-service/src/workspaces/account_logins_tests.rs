@@ -915,4 +915,9 @@ async fn an_account_a_providers_page_signed_in_is_released_its_access_token_alon
         "made-up access token",
         "the device signs in with the access token, and never holds the grant"
     );
+    assert!(
+        !token.contains("made-up refresh token") && !token.contains("refresh_token"),
+        "nothing the device is released carries the refresh token: {}",
+        token.as_str()
+    );
 }

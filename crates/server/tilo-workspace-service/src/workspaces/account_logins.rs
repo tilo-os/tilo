@@ -210,8 +210,9 @@ impl Workspaces {
     /// ([`accounts::email::password_item`]), released only for the servers that account names
     /// now, with the use written into the entry first, saying which app signed in to which
     /// account. Any kind of account and any app: what decides is whether `by` may use
-    /// Passwords. Where the workspace's rules ask first, this device asks the person on their
-    /// approving devices, and releases it once they said yes; a device that asks nobody answers
+    /// Passwords. A grant a provider's own page left is released as its access token alone.
+    /// Where the workspace's rules ask first, this device asks the person on their approving
+    /// devices, and releases it once they said yes; a device that asks nobody answers
     /// [`ASKS_FIRST`], and no agent is asked for its person.
     ///
     /// # Errors
@@ -275,7 +276,15 @@ impl Workspaces {
             })
             .await
             .map_err(|error| refusal.unwrap_or(error))?;
-        Ok(released)
+        // A grant a provider's page left is handed out as the access token it holds now, never
+        // with the refresh token that renews it.
+        super::person_settings::oauth_grant::signs_in_with(
+            self.vault_at(workspace),
+            &self.workspace_root(workspace),
+            account,
+            released,
+        )
+        .await
     }
 
     /// Ask `by`'s person, on their approving devices, whether `app` signs in to the account

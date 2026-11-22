@@ -15,6 +15,7 @@
 
 /// The sign-ins of the accounts and providers, as entries of the workspace's vault.
 pub(in crate::workspaces) mod kept_sign_ins;
+pub(in crate::workspaces) mod oauth_grant;
 mod sending;
 /// Signing in on a provider's own page: a Nextcloud server's login flow.
 mod sign_in;
