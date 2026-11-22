@@ -3824,7 +3824,6 @@
    "legacy_at_one",
    "legacy_at_two",
    "legacy_basis_serialization_preserves_absent_linux_facts",
-   "legacy_block_id",
    "legacy_button",
    "legacy_bytes",
    "legacy_call_still_retags",

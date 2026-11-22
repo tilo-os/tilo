@@ -1002,7 +1002,9 @@ tilo_test_env::scenario! {
             let list = doc
                 .put_object(automerge::ROOT, "blocks", ObjType::List)
                 .unwrap();
-            doc.insert_object(&list, 0, ObjType::Map).unwrap();
+            let malformed = doc.insert_object(&list, 0, ObjType::Map).unwrap();
+            doc.put(&malformed, "id", Uuid::new_v4().to_string())
+                .unwrap();
             doc.commit();
             let before = (doc.base_heads(), doc.pending_ops());
             let mut editor = BlockEditor::from_markdown("retain me");

@@ -1827,7 +1827,7 @@ impl BlockEditor {
         for i in 0..doc_len {
             let kind = kind_from_str(&read_block_kind(state, list, i));
             let mut b = block_for_kind(&kind);
-            b.id = read_block_id_at(state, list, i, &kind);
+            b.id = read_block_id_at(state, list, i);
             b.nesting = list_map(state, list, i)
                 .and_then(|map| read_nesting(state, &map).ok())
                 .unwrap_or(0);
@@ -6531,30 +6531,17 @@ fn read_block_kind(state: &AutoCommit, list: &ObjId, index: usize) -> String {
     }
 }
 
-/// A block's persisted UUID, or the deterministic UUID a block map without
-/// one is known by: derived only from replicated content and position, so
-/// every replica reads the same value. The owner's action persists it.
-fn read_block_id_at(state: &AutoCommit, list: &ObjId, index: usize, kind: &BlockKind) -> String {
+/// A block's persisted UUID. Every writer gives a block its id as it creates it; a block map
+/// without one is corrupt, not a block known by another name.
+#[expect(
+    clippy::expect_used,
+    reason = "every block is written with its id; a document missing one cannot be read"
+)]
+fn read_block_id_at(state: &AutoCommit, list: &ObjId, index: usize) -> String {
     let Some(map) = list_map(state, list, index) else {
         return Uuid::new_v4().to_string();
     };
-    if let Some(id) = read_block_id(state, &map) {
-        return id;
-    }
-    let text = doc_text_obj(state, list, index)
-        .and_then(|text| state.text(&text).ok())
-        .unwrap_or_default();
-    legacy_block_id(list, index, &kind_to_str(kind), &text)
-}
-
-/// Deterministic stable ID for a legacy block map that has no persisted `id`.
-///
-/// Action-owned hosts use this read-only projection while capturing an edit;
-/// their action handler persists the ID atomically with the first operation.
-#[must_use]
-pub fn legacy_block_id(list: &ObjId, index: usize, kind: &str, text: &str) -> String {
-    let seed = format!("tilo:block:v1:{list:?}:{index}:{kind}:{text}");
-    deterministic_block_uuid(&seed).to_string()
+    read_block_id(state, &map).expect("a document's block map carries its id")
 }
 
 fn read_block_id(state: &AutoCommit, map: &ObjId) -> Option<String> {
@@ -6565,21 +6552,6 @@ fn read_block_id(state: &AutoCommit, map: &ObjId) -> Option<String> {
         return None;
     };
     Uuid::parse_str(id).ok().map(|_| id.to_string())
-}
-
-fn deterministic_block_uuid(seed: &str) -> Uuid {
-    fn fnv(seed: &[u8], initial: u64) -> u64 {
-        let mut hasher = fnv::FnvHasher::with_key(initial);
-        std::hash::Hasher::write(&mut hasher, seed);
-        std::hash::Hasher::finish(&hasher)
-    }
-    let hi = fnv(seed.as_bytes(), 0xcbf2_9ce4_8422_2325);
-    let lo = fnv(seed.as_bytes(), 0x8422_2325_cbf2_9ce4);
-    let mut raw = (u128::from(hi) << 64) | u128::from(lo);
-    // RFC 4122 variant + a deterministic name-based version marker.
-    raw = (raw & !(0xf_u128 << 76)) | (5_u128 << 76);
-    raw = (raw & !(0x3_u128 << 62)) | (0x2_u128 << 62);
-    Uuid::from_u128(raw)
 }
 
 fn read_nesting(state: &AutoCommit, map: &ObjId) -> Result<u8, ui::view::ThawError> {
@@ -8658,8 +8630,7 @@ impl Widget for BlockEditor {
             return;
         }
         for (i, block) in self.blocks.iter_mut().enumerate() {
-            let kind = kind_from_str(&read_block_kind(state, &list, i));
-            block.id = read_block_id_at(state, &list, i, &kind);
+            block.id = read_block_id_at(state, &list, i);
             if block.line.bound_obj().is_none()
                 && let Some(text) = doc_text_obj(state, &list, i)
             {
