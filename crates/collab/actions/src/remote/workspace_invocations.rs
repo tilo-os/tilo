@@ -57,6 +57,111 @@ pub fn is_listing(target: &RemoteActionTarget) -> bool {
         && target.address.action == LIST
 }
 
+/// What the workspace root names the invocations by: `invocations` lists them, and
+/// `invocations#list` reads a page of them whole.
+pub const ROOT_CHILD: &str = "invocations";
+/// The resource type of one invocation in the published tree.
+pub const INVOCATION_TYPE: &str = "invocation";
+
+/// The publisher a host lists the invocations of `workspace` under, beside its apps: browsed,
+/// it is the workspace root's `invocations`.
+#[must_use]
+pub fn publisher(workspace: &str) -> super::CatalogueProvider {
+    super::CatalogueProvider {
+        provider: PROVIDER.to_owned(),
+        app_id: ROOT_CHILD.to_owned(),
+        workspace: workspace.to_owned(),
+        browsable: true,
+        ..super::CatalogueProvider::default()
+    }
+}
+
+/// The published tree of a workspace's invocations, as one catalogue page lists it: the
+/// workspace's invocations ([`RESOURCE`], which [`LIST`] is the action of), holding one
+/// resource for each of `listed`, newest first. A listing pages through them as it pages any
+/// resource's children.
+#[must_use]
+pub fn tree_rows(listed: &[Invocation]) -> Vec<super::CatalogueRow> {
+    let row = |parent: &str, id: String, of_type: &str, label: String| super::CatalogueRow {
+        provider: PROVIDER.to_owned(),
+        app_id: ROOT_CHILD.to_owned(),
+        parent_resource: parent.to_owned(),
+        resource: super::CatalogueResource {
+            id,
+            kind: of_type.to_owned(),
+            label,
+            presentation: None,
+        },
+        ..super::CatalogueRow::default()
+    };
+    let mut root = row(
+        "",
+        RESOURCE.to_owned(),
+        "workspace.invocations",
+        "Invocations".to_owned(),
+    );
+    root.has_children = !listed.is_empty();
+    let mut list = root.clone();
+    list.action = Some(list_action());
+    [root, list]
+        .into_iter()
+        .chain(listed.iter().map(|invocation| {
+            let id = invocation
+                .id
+                .clone()
+                .or_else(|| invocation.step.clone())
+                .unwrap_or_default();
+            let status = serde_json::to_value(invocation.status)
+                .ok()
+                .and_then(|status| status.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            let mut label = format!("{status} by {}", invocation.by.name);
+            if let Some(title) = &invocation.title {
+                label.push_str(": ");
+                label.push_str(title);
+            }
+            row(RESOURCE, id, INVOCATION_TYPE, label)
+        }))
+        .collect()
+}
+
+/// [`LIST`] as the tree publishes it: a read of one page, by `limit` and `cursor`.
+fn list_action() -> crate::ActionDescriptor {
+    use crate::{ActionContract, ActionKind, ActionParam, ParamType};
+    crate::ActionDescriptor {
+        did: None,
+        state: crate::ActionState::default(),
+        semantic_identity: None,
+        address: ActionAddress::new(RESOURCE, LIST),
+        resource_kind: "workspace.invocations".to_owned(),
+        resource_label: "Invocations".to_owned(),
+        action_label: "List invocations".to_owned(),
+        keywords: Vec::new(),
+        icon: None,
+        description: Some(
+            "The workspace's invocations in records you may read, newest first: who made each, \
+             how it stands, what it changed and whether it can still be taken back."
+                .to_owned(),
+        ),
+        locus: crate::ExecutionLocus::ServerPreferred,
+        kind: crate::OperationKind::Effect,
+        contract: ActionContract {
+            kind: ActionKind::Read,
+            ..ActionContract::default()
+        },
+        input: crate::InputSpec::None,
+        params: vec![
+            ActionParam::optional("limit", ParamType::Integer, "How many, at most 200."),
+            ActionParam::optional(
+                "cursor",
+                ParamType::Text,
+                "Where the page before ended: its `next_cursor`.",
+            ),
+        ],
+        view: None,
+    }
+}
+
 /// One page of a workspace's invocations.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]

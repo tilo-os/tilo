@@ -109,7 +109,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return Err(BridgeError::Host(error.clone()));
         }
         answer
-            .map(|_| Admission::Answered)
+            .map(|receipt| match receipt.status {
+                ReceiptStatus::Completed { output } => Admission::Answered(Some(output)),
+                _ => Admission::Answered(None),
+            })
             .map_err(BridgeError::Host)
     }
     /// Start `request`. An action that asks for confirmation is put to the
@@ -171,8 +174,10 @@ pub(super) const fn needs_the_person(failure: &super::Failure) -> bool {
 /// Whether the host answered an invocation's admission while the call
 /// waited for it.
 pub(super) enum Admission {
-    /// Admitted: the invocation runs, and its outcome can be awaited.
-    Answered,
+    /// Admitted: the invocation runs, and its outcome can be awaited. A read the host
+    /// answered as it admitted it holds its output: it is remembered as no invocation
+    /// to follow.
+    Answered(Option<tilo_actions::ActionOutput>),
     /// Not answered within this long; the admission goes on regardless.
     Unanswered(std::time::Duration),
 }

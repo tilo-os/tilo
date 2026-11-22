@@ -497,9 +497,8 @@ pub fn read(reach: Reach<'_>, workspace: &str, path: &str, cursor: Option<&str>)
 }
 
 /// `tilo invocations -w <workspace>`: the workspace's invocations in records
-/// the key may read, newest first, as `tilo_read workspace/invocations` lists
-/// them: `limit` to a page, and the `cursor` a page ended with for the older
-/// ones.
+/// the key may read, newest first, as `invocations#list` answers them: `limit`
+/// to a page, and the `cursor` a page ended with for the older ones.
 pub fn invocations(
     reach: Reach<'_>,
     workspace: &str,
@@ -509,29 +508,72 @@ pub fn invocations(
     run(async {
         let client = Client::open(reach)?;
         let workspace = client.workspace_id(workspace).await?;
-        let mut query = Vec::new();
+        let mut arguments = serde_json::Map::new();
         if let Some(limit) = limit {
-            query.push(format!("limit={limit}"));
+            arguments.insert("limit".into(), limit.into());
         }
         if let Some(cursor) = cursor.map(str::trim).filter(|cursor| !cursor.is_empty()) {
-            query.push(format!("cursor={}", api::encode_query(cursor)));
+            arguments.insert("cursor".into(), cursor.into());
         }
-        let mut route = format!("/v1/workspaces/{workspace}/invocations");
-        if !query.is_empty() {
-            let _ = write!(route, "?{}", query.join("&"));
-        }
-        let listed = client.get(&route).await?;
+        let answered = client
+            .act(
+                &workspace,
+                "invocations",
+                "list",
+                &Value::Object(arguments),
+                "invocations#list",
+            )
+            .await?;
+        let listed = answered.get("result").cloned().unwrap_or(Value::Null);
         Ok(show(reach.json, &listed, &invocations_text(&listed)))
     })
 }
 
-/// A workspace's invocations as a person reads them: the lines the host
-/// wrote, and the command that reads on.
+/// A workspace's invocations as a person reads them: how many, one line per
+/// invocation (who made it, how it stands, what it changed), and the command
+/// that reads on.
 fn invocations_text(listed: &Value) -> String {
-    let mut said = text(listed, "text").to_owned();
-    if said.is_empty() {
-        let total = listed.get("total").and_then(Value::as_u64).unwrap_or(0);
-        said = format!("{total} invocations");
+    let count = |name: &str| listed.get(name).and_then(Value::as_u64).unwrap_or(0);
+    let plural = |n: u64, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    let mut said = format!(
+        "{}, newest first",
+        plural(count("total"), "invocation", "invocations")
+    );
+    if count("waiting") > 0 {
+        let _ = write!(said, "; {} waiting for the person", count("waiting"));
+    }
+    for listed in listed
+        .get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let field = |name: &str| listed.get(name).and_then(Value::as_str);
+        let number = |name: &str| listed.get(name).and_then(Value::as_u64).unwrap_or(0);
+        let by = |name: &str| {
+            listed
+                .pointer(&format!("/by/{name}"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        };
+        let id = field("id").or_else(|| field("step")).unwrap_or_default();
+        let _ = write!(
+            said,
+            "\n{id} {} by {} ({})",
+            field("status").unwrap_or_default(),
+            by("name"),
+            by("kind")
+        );
+        if let Some(title) = field("title") {
+            let _ = write!(said, " \"{title}\"");
+        }
+        let _ = write!(said, ": {}", plural(number("changes"), "change", "changes"));
+        if number("undone") > 0 {
+            let _ = write!(said, ", {} undone", number("undone"));
+        }
+        if let Some(about) = field("summary").or_else(|| field("action")) {
+            let _ = write!(said, "; {about}");
+        }
     }
     if let Some(cursor) = listed.get("next_cursor").and_then(Value::as_str) {
         let _ = write!(said, "\nolder: tilo invocations --cursor {cursor}");
@@ -2239,14 +2281,15 @@ mod tests {
             ("GET", route) if route.contains("/content/") => {
                 Some(test_http::Reply::status(200).body(b"hello".to_vec()))
             }
-            ("GET", route) if route.contains("/invocations") => json_reply(
-                200,
-                json!({"items": [{"id": "run-2", "status": "waiting",
-                    "by": {"name": "Jane Doe's agent", "kind": "agent"}}],
-                    "total": 2, "waiting": 1, "next_cursor": "17:s1",
-                    "text": "2 invocations, newest first; 1 waiting for the person\n\
-                             run-2 waiting by Jane Doe's agent (agent): 0 changes"}),
-            ),
+            ("POST", route) if route.ends_with("/resources/invocations/actions/list") => {
+                json_reply(
+                    200,
+                    json!({"status": "ok", "path": "invocations#list", "result": {
+                    "items": [{"id": "run-2", "status": "waiting",
+                        "by": {"name": "Jane Doe's agent", "kind": "agent"}}],
+                    "total": 2, "waiting": 1, "next_cursor": "17:s1"}}),
+                )
+            }
             ("GET", route) if route.contains("/resources?path=") => json_reply(
                 200,
                 json!({"path": "notes", "rows": [], "text": "notes  (notes.notebook)"}),
@@ -2632,8 +2675,8 @@ mod tests {
         }
 
         phase a_workspaces_invocations_are_listed_page_by_page;
-        // `tilo invocations` is `GET …/invocations`, its limit and cursor the
-        // query's, and says how to read on.
+        // `tilo invocations` is `invocations#list`, its limit and cursor the
+        // action's arguments, and says how to read on.
         {
             let _key = keyed();
             let api_server = fake_api();
@@ -2649,17 +2692,25 @@ mod tests {
             );
             let listed = api_server.drain_requests();
             let listing = listed.last().expect("the listing");
-            assert_eq!(listing.method, "GET");
+            assert_eq!(listing.method, "POST");
             assert_eq!(
                 listing.target,
-                format!("/v1/workspaces/{WORKSPACE}/invocations?limit=1&cursor=17%3As0")
+                format!("/v1/workspaces/{WORKSPACE}/resources/invocations/actions/list")
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&listing.body).unwrap(),
+                json!({"limit": 1, "cursor": "17:s0"})
             );
             let said = invocations_text(&json!({
-                "items": [], "total": 2, "waiting": 1, "next_cursor": "17:s1",
-                "text": "2 invocations, newest first; 1 waiting for the person",
+                "items": [{"id": "run-2", "status": "waiting", "changes": 1,
+                    "by": {"name": "Jane Doe's agent", "kind": "agent"}}],
+                "total": 2, "waiting": 1, "next_cursor": "17:s1",
             }));
             assert!(
-                said.starts_with("2 invocations, newest first; 1 waiting"),
+                said.starts_with(concat!(
+                    "2 invocations, newest first; 1 waiting for the person\n",
+                    "run-2 waiting by Jane Doe's agent (agent): 1 change"
+                )),
                 "{said}"
             );
             assert!(

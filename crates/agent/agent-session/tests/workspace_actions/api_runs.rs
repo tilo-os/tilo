@@ -1,6 +1,6 @@
 //! A workspace's runs, listed through the API on the server as tilo.sh
-//! hosts it (`GET /v1/workspaces/{workspace}/invocations`, `tilo_read
-//! workspace/invocations` over MCP): two keys made for the workspace and the
+//! hosts it (`invocations#list`, the resource `invocations` beside the
+//! workspace's apps, over REST and MCP alike): two keys made for the workspace and the
 //! person's own key each run something there, and each of those keys, which
 //! all may read every record there, reads all three, newest first, each with who ran it and how it
 //! ended. A command waiting for the person reads as waiting until they allow
@@ -74,13 +74,17 @@ async fn write_letter(key: &Key<'_>, workspace: &str, text: &str, title: &str) -
     written["invocation"].as_str().unwrap().to_owned()
 }
 
-/// The page of `workspace`'s runs `query` asks for, as `key` reads it.
-async fn invocations(key: &Key<'_>, workspace: &str, query: &str) -> Value {
-    let (status, listed) = key
-        .get(&format!("/v1/workspaces/{workspace}/invocations{query}"))
-        .await;
-    assert_eq!(status, 200, "{listed}");
-    listed
+/// Where `invocations#list` is run.
+fn listing(workspace: &str) -> String {
+    format!("/v1/workspaces/{workspace}/resources/invocations/actions/list")
+}
+
+/// The page of `workspace`'s runs `asked` asks for (`limit`, `cursor`), as `key`
+/// reads it.
+async fn invocations(key: &Key<'_>, workspace: &str, asked: &Value) -> Value {
+    let (status, answered) = key.post(&listing(workspace), asked).await;
+    assert_eq!(status, 200, "{answered}");
+    answered["result"].clone()
 }
 
 /// The run titled `title` in `listed`.
@@ -151,7 +155,7 @@ async fn taken_back_after_a_restart() {
         )
         .await;
     assert_eq!(status, 200, "{undone}");
-    let listed = invocations(&person, &ws, "").await;
+    let listed = invocations(&person, &ws, &json!({})).await;
     let taken = titled(&listed, "Cover letter");
     assert_eq!(taken["status"], "undone", "{listed}");
     assert_eq!(taken["undone"], taken["changes"], "{taken}");
@@ -163,7 +167,7 @@ async fn taken_back_after_a_restart() {
         api: &on_server.api,
         token: Box::pin(approved_key(&on_server, &ada, &page, "Visa backend")).await,
     };
-    let listed = invocations(&person, &third, "").await;
+    let listed = invocations(&person, &third, &json!({})).await;
     let postscript_run = titled(&listed, "Postscript");
     assert_eq!(postscript_run["remembered"], false, "{postscript_run}");
     let (status, undone) = person
@@ -173,12 +177,12 @@ async fn taken_back_after_a_restart() {
         )
         .await;
     assert_eq!(status, 200, "{undone}");
-    let listed = invocations(&person, &third, "").await;
+    let listed = invocations(&person, &third, &json!({})).await;
     let taken = titled(&listed, "Postscript");
     assert_eq!(taken["status"], "undone", "{listed}");
     assert_eq!(taken["undone"], taken["changes"], "{taken}");
 
-    let listed = invocations(&person, &later, "").await;
+    let listed = invocations(&person, &later, &json!({})).await;
     let closing = titled(&listed, "Closing");
     assert_eq!(closing["remembered"], false, "{closing}");
     let step = closing["step"].as_str().unwrap();
@@ -189,7 +193,7 @@ async fn taken_back_after_a_restart() {
         )
         .await;
     assert_eq!(status, 200, "{undone}");
-    let listed = invocations(&person, &later, "").await;
+    let listed = invocations(&person, &later, &json!({})).await;
     let closing = titled(&listed, "Closing");
     assert_eq!(closing["status"], "undone", "{listed}");
     assert_eq!(closing["undone"], closing["changes"], "{closing}");
@@ -231,7 +235,7 @@ async fn every_run_listed() {
     // Each key, reading every record there, lists all three, newest first,
     // each with who ran it and how it ended.
     for reader in [&agent, &reviewer, &person] {
-        let listed = invocations(reader, &ws, "").await;
+        let listed = invocations(reader, &ws, &json!({})).await;
         let order: Vec<&str> = listed["items"]
             .as_array()
             .unwrap()
@@ -272,10 +276,10 @@ async fn every_run_listed() {
             listed["items"].as_array().unwrap().len(),
             "the first page holds every run: {listed}"
         );
-        assert!(listed["text"].as_str().unwrap().contains("Agent's letter"));
+        titled(&listed, "Agent's letter");
     }
     // The agent's letter stands under the others' lines: it says so.
-    let listed = invocations(&agent, &ws, "").await;
+    let listed = invocations(&agent, &ws, &json!({})).await;
     let first = titled(&listed, "Agent's letter");
     assert_eq!(first["undoable"], false, "{first}");
     assert!(
@@ -309,7 +313,7 @@ async fn every_run_listed() {
     let (status, ran) = beside(&mut page, agent.run(&ws, "echo listed-while-waiting")).await;
     let command = waiting(status, &ran).unwrap_or_else(|| panic!("asked: {status} {ran}"));
     asked(&mut page, &ada_at_page, 1).await;
-    let listed = beside(&mut page, invocations(&reviewer, &ws, "")).await;
+    let listed = beside(&mut page, invocations(&reviewer, &ws, &json!({}))).await;
     let waits = with_id(&listed, &command);
     assert_eq!(waits["status"], "waiting", "{waits}");
     assert!(
@@ -324,7 +328,7 @@ async fn every_run_listed() {
     ada_at_page.answer(ConfirmationAnswer::AllowOnce);
     let (status, followed) = beside(&mut page, agent.follow(&ws, &command)).await;
     assert_eq!(status, 200, "{followed}");
-    let listed = beside(&mut page, invocations(&reviewer, &ws, "")).await;
+    let listed = beside(&mut page, invocations(&reviewer, &ws, &json!({}))).await;
     let ended = with_id(&listed, &command);
     assert_eq!(ended["status"], "ended", "{ended}");
     assert!(ended["ended_ms"].is_i64(), "{ended}");
@@ -351,7 +355,7 @@ async fn every_run_listed() {
         )
         .await;
     assert_eq!(status, 200, "{undone}");
-    let listed = invocations(&agent, &ws, "").await;
+    let listed = invocations(&agent, &ws, &json!({})).await;
     let taken = titled(&listed, "Backend's postscript");
     assert_eq!(taken["status"], "undone", "{taken}");
     assert_eq!(taken["undone"], taken["changes"], "{taken}");
@@ -364,11 +368,11 @@ async fn every_run_listed() {
         total >= 5,
         "three letters, the command and the undo: {listed}"
     );
-    let first = invocations(&agent, &ws, "?limit=2").await;
+    let first = invocations(&agent, &ws, &json!({"limit": 2})).await;
     assert_eq!(first["items"].as_array().unwrap().len(), 2, "{first}");
     assert_eq!(first["total"], total, "{first}");
     let cursor = first["next_cursor"].as_str().unwrap();
-    let second = invocations(&agent, &ws, &format!("?limit=2&cursor={cursor}")).await;
+    let second = invocations(&agent, &ws, &json!({"limit": 2, "cursor": cursor})).await;
     assert_eq!(second["items"].as_array().unwrap().len(), 2, "{second}");
     let seen = |page: &Value| -> Vec<Value> {
         page["items"]
@@ -384,15 +388,11 @@ async fn every_run_listed() {
         "the second page reads on, older: {first} {second}"
     );
     assert_eq!(listed["items"][2], second["items"][0], "{listed} {second}");
-    let (status, refused) = agent
-        .get(&format!("/v1/workspaces/{ws}/invocations?limit=many"))
-        .await;
+    let (status, refused) = agent.post(&listing(&ws), &json!({"limit": "many"})).await;
     assert_eq!(status, 400, "{refused}");
 
     // A key for another workspace is refused as on the routes beside it.
-    let (status, refused) = others
-        .get(&format!("/v1/workspaces/{ws}/invocations"))
-        .await;
+    let (status, refused) = others.post(&listing(&ws), &json!({})).await;
     let (beside_status, beside_refused) = others
         .get(&format!("/v1/workspaces/{ws}/invocations/{}", ids[0]))
         .await;
@@ -410,7 +410,8 @@ async fn every_run_listed() {
     );
     assert_eq!(status, 403, "{refused}");
 
-    // Over MCP, the agent's own key reads the same listing, as it is told.
+    // Over MCP, the agent's own key finds the listing beside the workspace's apps,
+    // pages it as any other resource and runs the same action.
     let (status, minted) = person
         .post(
             "/v1/keys",
@@ -431,20 +432,39 @@ async fn every_run_listed() {
     };
     let (status, initialized) = mcp.initialize().await;
     assert_eq!(status, 200, "{initialized}");
+    let (status, root) = mcp
+        .post(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                     "params": {"name": "tilo_ls", "arguments": {"path": ""}}}))
+        .await;
+    assert_eq!(status, 200, "{root}");
+    let root_said = root["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
     assert!(
-        initialized["result"]["instructions"]
-            .as_str()
-            .unwrap()
-            .contains("tilo_read workspace/invocations"),
-        "{initialized}"
+        root_said
+            .lines()
+            .any(|line| line.starts_with("invocations")),
+        "the workspace's root lists its invocations: {root}"
+    );
+    let (status, paged) = mcp
+        .post(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                     "params": {"name": "tilo_ls", "arguments": {"path": "invocations", "limit": 1}}}))
+        .await;
+    assert_eq!(status, 200, "{paged}");
+    let paged_said = paged["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        paged_said.contains("cursor"),
+        "one invocation to a page, and where the next starts: {paged}"
     );
     let (status, read) = mcp
-        .post(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                     "params": {"name": "tilo_read", "arguments": {"path": "workspace/invocations"},
+        .post(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                     "params": {"name": "tilo_do", "arguments": {"path": "invocations#list"},
                                 "_meta": {"so.tilo.mcp": {"structured": true}}}}))
         .await;
     assert_eq!(status, 200, "{read}");
-    let over_mcp = &read["result"]["structuredContent"];
+    let over_mcp = &read["result"]["structuredContent"]["result"];
     assert_eq!(over_mcp["total"], total, "{read}");
     titled(over_mcp, "Agent's letter");
 
@@ -463,7 +483,7 @@ async fn every_run_listed() {
         api: &on_server.api,
         token: Box::pin(approved_key(&on_server, &ada, &page, "Visa backend")).await,
     };
-    let listed = invocations(&person, &ws, "").await;
+    let listed = invocations(&person, &ws, &json!({})).await;
     for (title, step) in &steps {
         let run = titled(&listed, title);
         assert!(step.is_string(), "{title} had a step");

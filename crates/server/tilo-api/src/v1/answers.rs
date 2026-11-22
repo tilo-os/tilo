@@ -411,117 +411,6 @@ pub struct Hit {
     pub action: Option<String>,
 }
 
-/// Who made the invocation.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct InvocationBy {
-    /// The name it goes by: a key's, as the person named it, an agent's, or a
-    /// person's.
-    pub name: String,
-    /// `agent` (every key is one, acting for its person), `person`, `bot` or
-    /// `automation`.
-    pub kind: String,
-}
-
-/// A record an invocation changed.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct InvocationChange {
-    /// The app, as a path names it (`word-processor`).
-    pub app: String,
-    /// The app's id (`so.tilo.word-processor`).
-    pub app_id: String,
-    /// The record's id there; empty for the app's own record of the workspace.
-    #[serde(default)]
-    pub record: String,
-}
-
-/// One invocation of a workspace, as the listing of them answers it.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct InvocationInfo {
-    /// What `…/invocations/{invocation}`, its `cancel` and its `undo` take:
-    /// the invocation of its newest call (the undo of any call of an
-    /// invocation takes back the whole of it). Absent for one known only from
-    /// the workspace's records, whose calls the host no longer remembers (it
-    /// restarted since).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    /// Every call of it the host remembers, oldest first: one, or each call
-    /// of an invocation its client named with `Tilo-Invocation`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub calls: Vec<String>,
-    /// The undo step its changes are kept under in each record's history
-    /// (`step` of a version there): what tells it apart across the host's
-    /// restarts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step: Option<String>,
-    pub by: InvocationBy,
-    /// What its client called it (`Tilo-Invocation-Title`), when it named it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    /// `waiting` (for the person), `running`, `ended`, `failed`,
-    /// `cancelled` or `undone` (everything it changed was taken back).
-    pub status: String,
-    /// Why it failed, typed (`confirmation_required` when the person did not
-    /// allow it). Its words stay with whoever ran it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<String>,
-    /// When it started, in milliseconds since the Unix epoch.
-    pub started_ms: i64,
-    /// When it ended; absent while it has not.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ended_ms: Option<i64>,
-    /// What its last call asked for, `<app>#<action>`, while the host
-    /// remembers it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<String>,
-    /// What its newest change did, without the values it carried: the action
-    /// by its published label.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary: Option<String>,
-    /// How many changes it made to the workspace's records: its edits, and
-    /// what it brought in from outside (what a command printed).
-    pub changes: u64,
-    /// How many of its edits were taken back since; what came from outside is
-    /// no edit, and no undo takes it back.
-    pub undone: u64,
-    /// The records it changed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub records: Vec<InvocationChange>,
-    /// Its edits still stand and nobody's edit stands on them: its undo would
-    /// take back exactly its own.
-    pub undoable: bool,
-    /// Why it would not be taken back, when someone's change stands on its own.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub undo_blocked: Option<String>,
-    /// The workspace's records keep it: it is listed after the host restarts.
-    pub recorded: bool,
-    /// The host remembers its calls: `id` reads, stops and takes it back.
-    pub remembered: bool,
-}
-
-/// `GET /v1/workspaces/{workspace}/invocations`: a page of them in records
-/// the key may read, newest first: of each invocation only what lies in those
-/// records, and the totals over them alone.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct InvocationList {
-    pub items: Vec<InvocationInfo>,
-    /// Invocations the workspace holds, of which `items` is a page.
-    pub total: u64,
-    /// Of those, the ones waiting for the person.
-    pub waiting: u64,
-    /// A record could not be read yet: invocations that changed only it are
-    /// missing until it can.
-    #[serde(default)]
-    pub pending: bool,
-    /// Passed back as `cursor` for the next page; absent on the last.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<String>,
-    /// The page as a person reads it, one line per invocation: what
-    /// `tilo invocations` and an MCP client's `tilo_read workspace/invocations`
-    /// print.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SearchHits {
     pub hits: Vec<Hit>,
@@ -835,7 +724,6 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         Listing,
         Resource,
         ActionAnswer,
-        InvocationList,
         SearchHits,
         Link,
         View,

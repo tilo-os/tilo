@@ -2303,7 +2303,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let settling = timing_start();
         let mut value = match started? {
             Admission::Unanswered(patience) => unanswered_admission(invocation, patience),
-            Admission::Answered => self.settled(invocation, wait).await?,
+            Admission::Answered(Some(output)) if self.observed(invocation).await.is_none() => {
+                let update = tilo_actions::InvocationUpdate::Succeeded { invocation, output };
+                state_json(
+                    invocation,
+                    &tilo_actions::remote::InvocationState::new(invocation, update),
+                )
+            }
+            Admission::Answered(_) => self.settled(invocation, wait).await?,
         };
         timing_done("call.settle", settling);
         // The person changed what would run before allowing it: the agent

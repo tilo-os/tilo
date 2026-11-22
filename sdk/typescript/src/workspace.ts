@@ -295,12 +295,19 @@ export class Workspace {
   ): Promise<InvocationList> {
     const endpoint = await this.endpoint();
     const page = async (cursor: string | null): Promise<InvocationList> => {
-      const answer = await endpoint.answer(
-        "GET",
-        `${routes.invocations(endpoint.id)}${queryOf({ limit: options.limit, cursor })}`,
-        { idempotent: false },
-      );
-      return new InvocationList(answer, (next) => page(next));
+      // The workspace's invocations are a resource of its own: `invocations#list` answers a page.
+      const args: Record<string, unknown> = {};
+      if (options.limit !== undefined && options.limit !== null) {
+        args.limit = options.limit;
+      }
+      if (cursor !== null) {
+        args.cursor = cursor;
+      }
+      const answer = await endpoint.action("invocations#list", args);
+      if (typeof answer !== "object" || answer === null) {
+        throw new ProtocolError("the workspace answered no page of its invocations");
+      }
+      return new InvocationList(answer as Record<string, unknown>, (next) => page(next));
     };
     return page(options.cursor ?? null);
   }

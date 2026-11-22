@@ -443,10 +443,8 @@ impl<'a> Caller<'a> {
             "listResources" | "readResource" | "search" | "getLink" | "viewResource" => {
                 self.resource_operation(operation.id).await
             }
-            "runAction" | "listInvocations" | "getInvocation" | "cancelInvocation"
-            | "undoInvocation" | "invocationOutput" => {
-                self.invocation_operation(operation.id).await
-            }
+            "runAction" | "getInvocation" | "cancelInvocation" | "undoInvocation"
+            | "invocationOutput" => self.invocation_operation(operation.id).await,
             "listWebhooks" | "createWebhook" | "deleteWebhook" => {
                 self.webhook_operation(operation.id)
             }
@@ -649,7 +647,6 @@ impl<'a> Caller<'a> {
         let invocation = self.params.get("invocation");
         match id {
             "runAction" => self.run_action().await,
-            "listInvocations" => self.list_invocations().await,
             "getInvocation" => self.get_invocation().await,
             "cancelInvocation" => {
                 let args = json!({"invocation_id": invocation, "cancel": true});
@@ -976,28 +973,6 @@ impl<'a> Caller<'a> {
         );
         let answered = self.call("tilo_do", call).await?;
         action_answer(answered, &ws)
-    }
-
-    /// A page of the workspace's invocations, newest first: what `tilo_ls
-    /// workspace/invocations` answers.
-    async fn list_invocations(&self) -> Result<Answer, ApiError> {
-        let limit = self
-            .query("limit")
-            .map(|limit| {
-                limit
-                    .parse::<u64>()
-                    .map_err(|_| ApiError::new("invalid_arguments", "`limit` is a number"))
-            })
-            .transpose()?;
-        let args = with(
-            json!({"path": crate::session::invocations::ROOT}),
-            "cursor",
-            self.query("cursor"),
-        );
-        let (listed, said) = self
-            .call_said("tilo_ls", with(args, "limit", limit))
-            .await?;
-        shaped::<answers::InvocationList>(with(listed, "text", said)).map(Answer::ok)
     }
 
     async fn get_invocation(&self) -> Result<Answer, ApiError> {

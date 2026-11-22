@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tilo import (
@@ -193,12 +195,12 @@ async def test_the_workspaces_runs_list_newest_first_and_read_on_page_by_page(wo
         "Visa backend",
         "agent",
     )
-    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/invocations")[-1]["query"] == {"limit": "1"}
+    assert json.loads(api.asked("POST", f"/v1/workspaces/{WORKSPACE_ID}/resources/invocations/actions/list")[-1]["body"]) == {"limit": 1}
     every = [listed async for listed in first]
     assert [listed.status for listed in every] == ["undone", "ended"]
     assert every[1].changes == 1 and every[1].undoable
-    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/invocations")[-1]["query"] == {
-        "limit": "1",
+    assert json.loads(api.asked("POST", f"/v1/workspaces/{WORKSPACE_ID}/resources/invocations/actions/list")[-1]["body"]) == {
+        "limit": 1,
         "cursor": "1",
     }
 

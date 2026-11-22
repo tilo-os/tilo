@@ -1943,6 +1943,10 @@ impl Worker {
                     }
                     let result = if query.view_resource.is_some() {
                         self.view_catalogue_page(workspace_id, &caller, &query)
+                    } else if query.provider.as_deref()
+                        == Some(tilo_actions::remote::workspace_invocations::PROVIDER)
+                    {
+                        self.invocations_page(workspace_id, &caller, &query)
                     } else {
                         self.catalogue_page(workspace_id, &caller, &query)
                     };

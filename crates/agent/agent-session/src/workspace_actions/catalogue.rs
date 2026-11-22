@@ -2,6 +2,7 @@
 //! to open, and where each opens.
 
 use crate::record_actions::{open_row, open_row_needing};
+use tilo_actions::remote::workspace_invocations::{self, InvocationsQuery, MOST};
 use tilo_actions::remote::{CatalogueProvider, workspace_provider};
 
 use super::{
@@ -124,6 +125,8 @@ impl Worker {
                     browsable: false,
                 }))
                 .collect();
+            page.providers
+                .push(workspace_invocations::publisher(&cluster_id));
         }
         tracing::debug!(
             records = routes.len(),
@@ -247,5 +250,45 @@ impl Worker {
                 open_row_needing(workspace, placed.app_id, placed.title, placed.needs)
             }))
             .collect()
+    }
+}
+
+impl Worker {
+    /// A page of the workspace's invocations as a published tree
+    /// ([`workspace_invocations::tree_rows`]): the invocations newest first, read as far as
+    /// the page reaches. Its revision is how many there are, so a page read on from a cursor
+    /// reads the listing it was cut from, and one that grew since is read again from its start.
+    pub(super) fn invocations_page(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        query: &CatalogueQuery,
+    ) -> Result<CataloguePage, ActionCallError> {
+        let wanted = query
+            .offset()
+            .saturating_add(query.page_size())
+            .saturating_add(1);
+        let mut listed = Vec::new();
+        let mut cursor = None;
+        let mut total;
+        loop {
+            let page = self.invocations(
+                workspace_id,
+                caller,
+                &InvocationsQuery {
+                    limit: MOST,
+                    cursor: cursor.take(),
+                    ..InvocationsQuery::default()
+                },
+            )?;
+            total = page.total;
+            listed.extend(page.items);
+            match page.next_cursor {
+                Some(next) if listed.len() < wanted => cursor = Some(next),
+                _ => break,
+            }
+        }
+        let rows = workspace_invocations::tree_rows(&listed);
+        Ok(CataloguePage::from_rows(total.to_string(), rows, query))
     }
 }

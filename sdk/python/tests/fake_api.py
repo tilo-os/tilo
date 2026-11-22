@@ -346,8 +346,6 @@ class FakeApi:
             )
         if after == "events":
             return self.stream(self.events, call)
-        if after == "invocations" and request.method == "GET":
-            return self.list_invocations(call)
         if after.startswith("invocations/"):
             return self.invocation_route(request, after.removeprefix("invocations/"))
         return self.refuse(404, "not_found", "the API has no such route")
@@ -578,6 +576,8 @@ class FakeApi:
                 [f"write the types again: tilo sdk gen -w {WORKSPACE_ID}"],
             )
         args = json.loads(call["body"] or b"{}")
+        if at == "invocations#list":
+            return self.list_invocations(args)
         if action == "group":
             members = args.get("actions")
             if not isinstance(members, list):
@@ -664,22 +664,22 @@ class FakeApi:
                     listed["undone"] = listed["changes"]
                     listed["undoable"] = False
 
-    def list_invocations(self, call: dict[str, Any]) -> httpx.Response:
-        """A page of the invocations, newest first; the cursor is where it ends."""
+    def list_invocations(self, args: dict[str, Any]) -> httpx.Response:
+        """`invocations#list`: a page of the invocations, newest first; the cursor is
+        where it ends."""
         newest = list(reversed(self.invocations))
-        limit = min(int(call["query"].get("limit") or 50), 200)
-        start = int(call["query"].get("cursor") or 0)
+        limit = min(int(args.get("limit") or 50), 200)
+        start = int(args.get("cursor") or 0)
         page = newest[start : start + limit]
-        answer: dict[str, Any] = {
+        listed: dict[str, Any] = {
             "items": page,
             "total": len(newest),
             "waiting": sum(1 for invocation in newest if invocation["status"] == "waiting"),
             "pending": False,
-            "text": "\n".join(f"{invocation['id']} {invocation['status']}" for invocation in page),
         }
         if start + limit < len(newest):
-            answer["next_cursor"] = str(start + limit)
-        return self.answer(200, answer)
+            listed["next_cursor"] = str(start + limit)
+        return self.answer(200, {"status": "ok", "path": "invocations#list", "result": listed})
 
     def apply_edit(self, resource: str, edit: dict[str, Any]) -> None:
         steps = list(edit.get("path") or [])

@@ -122,9 +122,11 @@ made for it, and you), as far as the key asking may read the records they change
 working in a workspace of their own leave one list per workspace of what was invoked, what waits for you,
 and what can still be taken back.
 
-`ws.invocations()` (`GET /v1/workspaces/{workspace}/invocations`; over MCP
-`tilo_read workspace/invocations`; `tilo invocations -w <workspace>`) answers a page of 50, `limit` up to
-200, and reads on from the cursor a page ends with. Each says:
+The invocations are a resource of the workspace, `invocations`, beside its apps: an agent finds it in
+`tilo_ls ""` and pages it with `tilo_ls invocations` like any other resource. Its action `list`
+(`ws.invocations()`; `POST /v1/workspaces/{workspace}/resources/invocations/actions/list`; over MCP
+`tilo_do invocations#list`; `tilo invocations -w <workspace>`) answers a page of 50 as its `result`,
+`limit` up to 200, and reads on from the `cursor` a page ends with. Each says:
 
 - **who made it**: the name of its key or agent, and its kind (`agent` for every key; `person`,
   `bot` or `automation` otherwise), and the title its client gave it with `ws.invocation(title)`;
@@ -231,8 +233,9 @@ curl -sS --fail-with-body "$api/workspaces/$workspace/resources/word-processor/a
   -d '{"text": "Dear Visa Officer,"}' > /dev/null
 
 # Newest first: who made each, how it stands and what it changed.
-curl -sS --fail-with-body "$api/workspaces/$workspace/invocations?limit=10" -H "$auth" \
-  | jq -e -r '.items[] | select(.title == "Write the cover letter")
+curl -sS --fail-with-body "$api/workspaces/$workspace/resources/invocations/actions/list" \
+  -H "$auth" -H "$json" -d '{"limit": 10}' \
+  | jq -e -r '.result.items[] | select(.title == "Write the cover letter")
       | "\(.status) by \(.by.name): \(.changes) changes, undoable: \(.undoable)"'
 ```
 

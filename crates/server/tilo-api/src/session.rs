@@ -34,7 +34,6 @@
 //! does, while the session lives: the host is the session's one voice, so the
 //! server says nothing of it itself.
 
-pub mod invocations;
 pub mod keys;
 pub mod members;
 pub mod models;
@@ -471,10 +470,6 @@ impl Session {
                     .await;
                 return Reply::one(result(&id, &answered));
             }
-            if invocations::addresses(tool, arguments) {
-                let answered = self.invocations(workspace, arguments, structured).await;
-                return Reply::one(result(&id, &answered));
-            }
         }
         let entering = timing_start();
         let served = match self.served(workspace, program).await {
@@ -577,7 +572,7 @@ impl Session {
             if answer.get("error").is_some() {
                 return Err(answer);
             }
-            return Ok(with_hosted_instructions(answer));
+            return Ok(answer);
         }
         let asked = request
             .pointer("/params/protocolVersion")
@@ -973,8 +968,8 @@ time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}
 to let keys minted for that workspace alone run commands there without asking (and in branches \
 made from it), answering `pending` until they decide; this key itself is still asked, and \
 `{on: false}` asks again from the next command. \
-`tilo_read workspace/invocations` (with `workspace`) lists a workspace's invocations in records this key may read, \
-newest first, whoever made them (`tilo_ls workspace/invocations` with `limit` and `cursor` pages on): who made \
+`tilo_ls invocations` (with `workspace`, `limit` and `cursor`) lists a workspace's invocations in records this \
+key may read, newest first, whoever made them, and `invocations#list` answers a page of them whole: who made \
 it, how it stands \
 (`waiting` for the person, `running`, `ended`, `failed`, `cancelled`, `undone`), what it changed and \
 whether it can still be taken back; its `id` is the invocation `tilo_status` reads, stops (`cancel`) \
@@ -985,16 +980,6 @@ app for the workspace's members and carries no secret, so invite the person firs
 Files go in with `tilo_put_begin`/`_append`/`_finish` (or `PUT /w/<workspace>/content`), answering \
 a `tilo.content:<hash>` an action takes; an action that makes a file (Writer's `export-content`) \
 names its `tilo.content:` in the answer's resources, and `tilo_get {content, offset}` reads it back.";
-
-/// `initialize`'s answer, telling the client what this server answers beside
-/// the workspace's own tools: the workspace's runs ([`runs`]).
-fn with_hosted_instructions(mut answer: Value) -> Value {
-    if let Some(Value::String(instructions)) = answer.pointer_mut("/result/instructions") {
-        instructions.push(' ');
-        instructions.push_str(invocations::INSTRUCTIONS);
-    }
-    answer
-}
 
 /// The tools every session serves, each with the `workspace` an account
 /// session's call names: what the API and every workspace session answer,

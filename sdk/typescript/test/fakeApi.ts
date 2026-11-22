@@ -483,6 +483,9 @@ export class FakeApi {
       );
     }
     const args = JSON.parse(call.body || "{}") as Answer;
+    if (path === "invocations" && action === "list") {
+      return this.listInvocations(args);
+    }
     const invocation = `inv-${this.calls.length}`;
     const whole = `${path}#${action}`;
     if (action === "group") {
@@ -595,26 +598,26 @@ export class FakeApi {
   }
 
   /** A page of the invocations, newest first; the cursor is where it ends. */
-  private listInvocations(call: Recorded): Response {
+  private listInvocations(args: Answer): Response {
     const newest = [...this.invocations].reverse();
-    const limit = Math.min(Number(call.query.limit ?? 50), 200);
-    const start = Number(call.query.cursor ?? 0);
+    const limit = Math.min(Number(args.limit ?? 50), 200);
+    const start = Number(args.cursor ?? 0);
     const page = newest.slice(start, start + limit);
     return this.json({
-      items: page,
-      total: newest.length,
-      waiting: newest.filter((invocation) => invocation.status === "waiting").length,
-      pending: false,
-      text: page.map((invocation) => `${String(invocation.id)} ${String(invocation.status)}`).join("\n"),
-      ...(start + limit < newest.length ? { next_cursor: String(start + limit) } : {}),
+      status: "ok",
+      path: "invocations#list",
+      result: {
+        items: page,
+        total: newest.length,
+        waiting: newest.filter((invocation) => invocation.status === "waiting").length,
+        pending: false,
+        ...(start + limit < newest.length ? { next_cursor: String(start + limit) } : {}),
+      },
     });
   }
 
   private invocation(tail: string[], method: string, call: Recorded): Response {
     const invocation = tail[0] ?? "";
-    if (tail.length === 0 && method === "GET") {
-      return this.listInvocations(call);
-    }
     if (tail[1] === "cancel") {
       this.listedAs(invocation, "cancelled");
       return this.json({ status: "cancelled", invocation, path: `${TODO}#append-paragraph` });

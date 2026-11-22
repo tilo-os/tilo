@@ -235,17 +235,6 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Arguments)
         .answers(Answer::Action),
         op(
-            "listInvocations",
-            Method::GET,
-            "/v1/workspaces/{workspace}/invocations",
-            "The workspace's invocations in records the key may read, newest first",
-        )
-        .query(&[
-            ("limit", "How many invocations at most: 50 unless said, at most 200"),
-            ("cursor", "Where the previous page ended"),
-        ])
-        .json(200, "InvocationList"),
-        op(
             "getInvocation",
             Method::GET,
             "/v1/workspaces/{workspace}/invocations/{invocation}",

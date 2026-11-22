@@ -66,7 +66,6 @@ export const routes = {
   action: (workspace: string, path: string, action: string) =>
     `${PREFIX}/workspaces/${segment(workspace)}/resources/${encodePath(path)}/actions/${segment(action)}`,
 
-  invocations: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/invocations`,
   invocation: (workspace: string, invocation: string) =>
     `${PREFIX}/workspaces/${segment(workspace)}/invocations/${segment(invocation)}`,
   invocationCancel: (workspace: string, invocation: string) =>

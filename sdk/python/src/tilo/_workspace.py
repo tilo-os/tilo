@@ -305,9 +305,16 @@ class Workspace:
         self, limit: int | None, cursor: str | None = None
     ) -> InvocationList:
         endpoint = await self._endpoint()
-        answer = await endpoint.json(
-            "GET", endpoint.path("invocations"), query={"limit": limit, "cursor": cursor}
-        )
+        # The workspace's invocations are a resource of its own: `invocations#list`
+        # answers a page.
+        args = {
+            name: value
+            for name, value in (("limit", limit), ("cursor", cursor))
+            if value is not None
+        }
+        answer = await endpoint.act("invocations#list", args)
+        if not isinstance(answer, Mapping):
+            raise ProtocolError("the workspace answered no page of its invocations")
         return InvocationList.of(
             answer, self.client, lambda next_cursor: self._invocations(limit, next_cursor)
         )

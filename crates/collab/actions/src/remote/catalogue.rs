@@ -209,7 +209,7 @@ pub struct CatalogueLimits {
 }
 
 /// A resource as a catalogue row describes it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogueResource {
     pub id: String,
     pub kind: String,
@@ -234,7 +234,7 @@ impl CatalogueResource {
 }
 
 /// One row: an action on a resource, or a resource that contains more.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CatalogueRow {
     /// Provider-issued token naming the publisher; copy it into an invocation.
     pub provider: String,
@@ -547,7 +547,7 @@ pub struct RowVisibility {
 }
 
 /// A publisher the caller may browse or invoke.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogueProvider {
     pub provider: String,
     pub app_id: String,
