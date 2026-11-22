@@ -593,7 +593,9 @@ fn seal_entry(keys: &key_group::ContentKeys, entry: &SecretItem) -> Result<Strin
 }
 
 /// Whether the workspace's policy lets `by` read the workspace's vault document, the node every
-/// reader of it is decided on, or with `app` that app's node: for `by`'s whole acting.
+/// reader of it is decided on, or with `app` that app's node: for `by`'s whole acting. Only the
+/// machine secrets a workspace's programs are started with ask this.
+#[cfg(feature = "agents")]
 pub(crate) fn may_read_vault(
     policy: &tilo_action_policy::WorkspacePolicy,
     workspace: &str,
