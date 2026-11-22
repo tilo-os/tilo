@@ -221,6 +221,7 @@ struct AppearanceInspection<'a> {
     wallpaper_scope: &'a str,
     wallpaper_target: &'a str,
     wallpaper: &'a str,
+    accent: Option<&'a str>,
 }
 
 impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
@@ -243,6 +244,7 @@ impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
             wallpaper_target: &prefs.wallpaper_target,
             wallpaper: tilo_wallpapers::choice(prefs.wallpaper.as_deref())
                 .map_or("", tilo_wallpapers::value_of),
+            accent: prefs.accent.as_deref(),
         }
     }
 }

@@ -768,6 +768,7 @@ impl crate::Published for WidgetSurface {
                 identity: None,
                 rect: self.logical(rect),
                 level: None,
+                selected: false,
             })
             .collect()
     }

@@ -1474,6 +1474,7 @@ mod tests {
                 rect: [10.0, 20.0, 110.0, 40.0],
                 actions: vec![TargetAction::Activate],
                 level: None,
+                selected: false,
             }],
         );
         assert!(

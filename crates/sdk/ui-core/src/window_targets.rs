@@ -47,6 +47,11 @@ pub struct WindowTarget {
     /// Absent for a control that is no row of one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<usize>,
+    /// Whether it shows itself the chosen one now: a segment that holds the look, a swatch the
+    /// accent, a switch that is on. What a caller tells a control already holding what it would
+    /// press by.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub selected: bool,
 }
 
 impl WindowTarget {
@@ -67,4 +72,6 @@ pub struct WindowControl {
     pub rect: (f64, f64, f64, f64),
     /// How deep it stands in the tree it is a row of ([`WindowTarget::level`]).
     pub level: Option<usize>,
+    /// Whether it shows itself the chosen one now ([`WindowTarget::selected`]).
+    pub selected: bool,
 }

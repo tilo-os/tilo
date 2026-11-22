@@ -127,6 +127,8 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 }
 
 #[cfg(test)]
+mod appearance_clicks_tests;
+#[cfg(test)]
 mod cpu_profile;
 #[cfg(test)]
 mod relayout_tests;

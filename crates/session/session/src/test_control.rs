@@ -1573,14 +1573,21 @@ fn listed_targets(session: &Session<'_>) -> Vec<Json> {
         .map(|control| {
             let (x, y, w, h) = control.rect;
             let level = control.level;
+            let selected = control.selected;
             match control.identity {
                 Some(identity) => json!({
                     "name": control.name,
                     "identity": identity,
                     "rect": [x, y, w, h],
                     "level": level,
+                    "selected": selected,
                 }),
-                None => json!({"name": control.name, "rect": [x, y, w, h], "level": level}),
+                None => json!({
+                    "name": control.name,
+                    "rect": [x, y, w, h],
+                    "level": level,
+                    "selected": selected,
+                }),
             }
         })
         .collect()

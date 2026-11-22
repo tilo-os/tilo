@@ -33,6 +33,7 @@ impl App {
                     identity: target.identity,
                     rect: (x0, y0, x1 - x0, y1 - y0),
                     level: target.level,
+                    selected: target.selected,
                 }
             })
             .collect()
@@ -124,6 +125,11 @@ impl App {
                 rect: [bounds.x0, bounds.y0, bounds.x1, bounds.y1],
                 actions,
                 level: described.level(),
+                // A strip's chosen segment carries its choice as a toggle's on state, a swatch as
+                // a list item's selected one: both mean the same to a caller, that this control
+                // is the chosen one.
+                selected: described.is_selected().unwrap_or(false)
+                    || matches!(described.toggled(), Some(crate::accesskit::Toggled::True)),
             });
         }
         targets

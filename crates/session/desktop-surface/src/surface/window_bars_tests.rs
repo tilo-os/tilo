@@ -427,6 +427,7 @@ fn a_windows_app_describes_its_controls_and_the_press_goes_back_on_its_connectio
             rect: [10.0, 20.0, 110.0, 40.0],
             actions: vec![TargetAction::Activate, TargetAction::ShowContextMenu],
             level: None,
+            selected: false,
         }],
     );
     for _ in 0..3 {
